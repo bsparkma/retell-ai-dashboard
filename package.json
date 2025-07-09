@@ -1,0 +1,21 @@
+{
+  "name": "retell-ai-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard for managing and monitoring Retell AI voice agent calls",
+  "scripts": {
+    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "backend:dev": "cd backend && npm run dev",
+    "frontend:dev": "cd frontend && npm start",
+    "backend:install": "cd backend && npm install",
+    "frontend:install": "cd frontend && npm install",
+    "install:all": "npm install && npm run backend:install && npm run frontend:install",
+    "build": "cd frontend && npm run build",
+    "start": "cd backend && npm start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": ["retell-ai", "dashboard", "voice-agent", "call-management"],
+  "author": "",
+  "license": "MIT"
+} 
