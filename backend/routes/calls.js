@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
 
-// Mock data generator for fallback
+// Enhanced mock data with AI-extracted names
 const generateMockCalls = () => [
   {
     call_id: '1',
@@ -15,61 +15,91 @@ const generateMockCalls = () => [
     sentiment: 'positive',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'Patient called to schedule a routine checkup appointment.'
+    summary: 'Patient called to schedule a routine checkup appointment for next week. Discussed available time slots and confirmed insurance coverage.',
+    transcript: 'Agent: Hello, thank you for calling our medical practice. How can I help you today? User: Hi, my name is John Smith, I need to schedule an appointment for a routine checkup. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me check our available slots.',
+    recording_url: 'https://example.com/recordings/call1.mp3'
   },
   {
     call_id: '2',
     caller_name: 'Sarah Johnson',
     caller_number: '+0987654321',
     call_date: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    reason: 'Emergency consultation',
+    duration: 420,
+    success_status: 'Unresolved',
+    sentiment: 'negative',
+    is_new_patient: false,
+    is_emergency: true,
+    summary: 'URGENT: Emergency call regarding severe chest pain. Patient experiencing shortness of breath and was advised to seek immediate medical attention.',
+    transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. I need help immediately. Agent: I understand this is urgent, Sarah. Let me help you right away.',
+    recording_url: 'https://example.com/recordings/call2.mp3'
+  },
+  {
+    call_id: '3',
+    caller_name: 'Mike Williams',
+    caller_number: '+1122334455',
+    call_date: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
     reason: 'Prescription refill',
-    duration: 120,
+    duration: 150,
     success_status: 'Resolved',
     sentiment: 'neutral',
     is_new_patient: false,
     is_emergency: false,
-    summary: 'Patient requested prescription refill for ongoing medication.'
-  },
-  {
-    call_id: '3',
-    caller_name: 'Emergency Call',
-    caller_number: '+1122334455',
-    call_date: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
-    reason: 'Medical emergency',
-    duration: 300,
-    success_status: 'Resolved',
-    sentiment: 'negative',
-    is_new_patient: false,
-    is_emergency: true,
-    summary: 'Emergency call regarding chest pain, directed to emergency services.'
+    summary: 'Patient requested prescription refill for ongoing medication. Verified patient information and processed refill request.',
+    transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill for my blood pressure medication. Agent: I can help you with that, Mike. Let me verify your information.',
+    recording_url: 'https://example.com/recordings/call3.mp3'
   },
   {
     call_id: '4',
-    caller_name: 'Mike Davis',
-    caller_number: '+5566778899',
-    call_date: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
-    reason: 'Lab results inquiry',
-    duration: 90,
-    success_status: 'Resolved',
-    sentiment: 'positive',
-    is_new_patient: false,
-    is_emergency: false,
-    summary: 'Patient called to inquire about recent lab test results.'
-  },
-  {
-    call_id: '5',
     caller_name: 'Lisa Brown',
     caller_number: '+2233445566',
     call_date: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
     reason: 'Insurance verification',
     duration: 240,
-    success_status: 'Unresolved',
+    success_status: 'Resolved',
     sentiment: 'neutral',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'Patient called to verify insurance coverage for upcoming procedure.'
+    summary: 'Patient called to verify insurance coverage for upcoming procedure. Confirmed coverage details and provided authorization codes.',
+    transcript: 'Agent: Thank you for calling. User: Hi, this is Lisa Brown. I need to verify my insurance coverage for an upcoming procedure. Agent: I\'ll be happy to help you with that, Lisa.',
+    recording_url: null
   }
 ];
+
+// AI Name extraction function - improved to exclude agent names
+const extractCallerName = (transcript, callerNumber) => {
+  if (!transcript) return callerNumber;
+  
+  // Common AI agent names to exclude
+  const agentNames = ['karen', 'assistant', 'agent', 'bot', 'ai', 'system', 'operator'];
+  
+  // Look for caller-specific patterns (what the USER says, not the agent)
+  const callerPatterns = [
+    /(?:user|caller):\s*.*?(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+    /(?:user|caller):\s*.*?(?:call me|it's|name's)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+    // Look for direct caller introduction patterns
+    /(?:user|caller):\s*(?:hi|hello),?\s*(?:my name is|i'm|this is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+    // Generic patterns but exclude agent responses
+    /(?<!agent:.*?)(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i
+  ];
+  
+  for (const pattern of callerPatterns) {
+    const match = transcript.match(pattern);
+    if (match && match[1]) {
+      const name = match[1].trim().toLowerCase();
+      
+      // Validate the name and exclude agent names
+      const commonWords = ['okay', 'yes', 'no', 'sure', 'well', 'um', 'uh', 'the', 'that', 'this', 'here', 'calling'];
+      if (name.length > 1 && 
+          !commonWords.includes(name) && 
+          !agentNames.includes(name)) {
+        return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+      }
+    }
+  }
+  
+  return callerNumber;
+};
 
 // Get all calls
 router.get('/', async (req, res) => {
@@ -117,7 +147,8 @@ router.get('/', async (req, res) => {
     const transformedCalls = calls.map(call => ({
       ...call,
       call_id: call.call_id || call.id,
-      caller_name: useMockData ? call.caller_name : (call.from_number || 'Unknown'),
+      id: call.call_id || call.id, // Ensure we have both id and call_id
+      caller_name: useMockData ? call.caller_name : extractCallerName(call.transcript, call.from_number || 'Unknown'),
       caller_number: useMockData ? call.caller_number : call.from_number,
       call_date: useMockData ? call.call_date : call.start_timestamp,
       reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
@@ -127,7 +158,9 @@ router.get('/', async (req, res) => {
       sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
       is_new_patient: useMockData ? call.is_new_patient : (call.metadata?.is_new_patient || false),
       is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
-      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available')
+      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
+      transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
+      recording_url: useMockData ? call.recording_url : call.recording_url
     }));
 
     res.json({
@@ -145,7 +178,7 @@ router.get('/', async (req, res) => {
     // Final fallback to mock data
     const mockCalls = generateMockCalls();
     res.json({
-      calls: mockCalls,
+      calls: mockCalls.map(call => ({ ...call, id: call.call_id })),
       total: mockCalls.length,
       pagination: {
         limit: 50,
@@ -173,11 +206,16 @@ router.get('/:id', async (req, res) => {
       call = mockCalls.find(c => c.call_id === id) || mockCalls[0];
       useMockData = true;
     }
+
+    if (!call) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
     
     const transformedCall = {
       ...call,
       call_id: call.call_id || call.id,
-      caller_name: useMockData ? call.caller_name : (call.from_number || 'Unknown'),
+      id: call.call_id || call.id,
+      caller_name: useMockData ? call.caller_name : extractCallerName(call.transcript, call.from_number || 'Unknown'),
       caller_number: useMockData ? call.caller_number : call.from_number,
       call_date: useMockData ? call.call_date : call.start_timestamp,
       reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
@@ -188,8 +226,14 @@ router.get('/:id', async (req, res) => {
       is_new_patient: useMockData ? call.is_new_patient : (call.metadata?.is_new_patient || false),
       is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
       summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
-      transcript: useMockData ? 'Mock transcript for demonstration purposes.' : (call.transcript || 'Transcript not available'),
-      recording_url: useMockData ? null : call.recording_url
+      transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
+      recording_url: useMockData ? call.recording_url : call.recording_url,
+      // Add sentiment analysis data
+      sentiment_scores: useMockData && call.sentiment_scores ? call.sentiment_scores : [
+        { time: '0:00', score: 0.5 },
+        { time: '1:00', score: 0.3 },
+        { time: '2:00', score: 0.7 }
+      ]
     };
 
     res.json(transformedCall);
@@ -199,8 +243,14 @@ router.get('/:id', async (req, res) => {
     const mockCall = mockCalls[0];
     res.json({
       ...mockCall,
-      transcript: 'Mock transcript for demonstration purposes.',
-      recording_url: null
+      id: mockCall.call_id,
+      transcript: mockCall.transcript || 'Mock transcript for demonstration purposes.',
+      recording_url: mockCall.recording_url || null,
+      sentiment_scores: [
+        { time: '0:00', score: 0.5 },
+        { time: '1:00', score: 0.3 },
+        { time: '2:00', score: 0.7 }
+      ]
     });
   }
 });
@@ -215,13 +265,17 @@ router.get('/:id/transcript', async (req, res) => {
       transcript = await retellService.getCallTranscript(id);
     } catch (apiError) {
       console.log('Retell API not available, using mock transcript');
+      // Find mock call by ID for transcript
+      const mockCalls = generateMockCalls();
+      const mockCall = mockCalls.find(c => c.call_id === id) || mockCalls[0];
+      
       transcript = {
-        transcript: 'Mock transcript for demonstration purposes. This would contain the actual conversation transcription.',
-        transcript_object: [
-          { role: 'agent', content: 'Hello, how can I help you today?' },
-          { role: 'user', content: 'I need to schedule an appointment.' },
-          { role: 'agent', content: 'I\'d be happy to help you schedule an appointment.' }
-        ]
+        transcript: mockCall.transcript || 'Mock transcript for demonstration purposes.',
+        transcript_object: mockCall.transcript ? [
+          { role: 'agent', content: 'Hello, how can I help you today?', timestamp: '00:00:00' },
+          { role: 'user', content: mockCall.transcript.split('User: ')[1]?.split(' Agent:')[0] || 'I need assistance.', timestamp: '00:00:05' },
+          { role: 'agent', content: 'I\'d be happy to help you with that.', timestamp: '00:00:10' }
+        ] : []
       };
     }
 
@@ -230,7 +284,11 @@ router.get('/:id/transcript', async (req, res) => {
     console.error('Error fetching transcript:', error);
     res.json({
       transcript: 'Mock transcript for demonstration purposes.',
-      transcript_object: []
+      transcript_object: [
+        { role: 'agent', content: 'Hello, how can I help you today?', timestamp: '00:00:00' },
+        { role: 'user', content: 'I need assistance.', timestamp: '00:00:05' },
+        { role: 'agent', content: 'I\'d be happy to help you with that.', timestamp: '00:00:10' }
+      ]
     });
   }
 });
@@ -244,14 +302,26 @@ router.get('/:id/recording', async (req, res) => {
     try {
       recording = await retellService.getCallRecording(id);
     } catch (apiError) {
-      console.log('Retell API not available, no recording available');
-      recording = { recording_url: null };
+      console.log('Retell API not available, checking mock data for recording');
+      // Find mock call by ID for recording URL
+      const mockCalls = generateMockCalls();
+      const mockCall = mockCalls.find(c => c.call_id === id) || mockCalls[0];
+      
+      recording = { 
+        recording_url: mockCall.recording_url || null,
+        call_id: id,
+        duration: mockCall.duration || 0
+      };
     }
 
     res.json(recording);
   } catch (error) {
     console.error('Error fetching recording:', error);
-    res.json({ recording_url: null });
+    res.json({ 
+      recording_url: null,
+      call_id: req.params.id,
+      duration: 0
+    });
   }
 });
 
@@ -275,8 +345,8 @@ router.post('/search', async (req, res) => {
     if (query) {
       filteredCalls = calls.filter(call => {
         const searchFields = useMockData ? 
-          [call.caller_name, call.caller_number, call.reason, call.summary] :
-          [call.from_number, call.call_summary];
+          [call.caller_name, call.caller_number, call.reason, call.summary, call.transcript] :
+          [call.from_number, call.call_summary, call.transcript];
         
         return searchFields.some(field => 
           field && field.toLowerCase().includes(query.toLowerCase())
@@ -299,7 +369,8 @@ router.post('/search', async (req, res) => {
     const transformedCalls = filteredCalls.map(call => ({
       ...call,
       call_id: call.call_id || call.id,
-      caller_name: useMockData ? call.caller_name : (call.from_number || 'Unknown'),
+      id: call.call_id || call.id,
+      caller_name: useMockData ? call.caller_name : extractCallerName(call.transcript, call.from_number || 'Unknown'),
       caller_number: useMockData ? call.caller_number : call.from_number,
       call_date: useMockData ? call.call_date : call.start_timestamp,
       reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
@@ -309,13 +380,16 @@ router.post('/search', async (req, res) => {
       sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
       is_new_patient: useMockData ? call.is_new_patient : (call.metadata?.is_new_patient || false),
       is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
-      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available')
+      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
+      transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
+      recording_url: useMockData ? call.recording_url : call.recording_url
     }));
 
     res.json({ calls: transformedCalls });
   } catch (error) {
     console.error('Error searching calls:', error);
-    res.json({ calls: generateMockCalls() });
+    const mockCalls = generateMockCalls();
+    res.json({ calls: mockCalls.map(call => ({ ...call, id: call.call_id })) });
   }
 });
 

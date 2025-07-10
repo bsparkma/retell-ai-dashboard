@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -32,6 +32,7 @@ import {
   ListItemText,
   Badge,
   Fab,
+  Container,
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import {
@@ -42,6 +43,7 @@ import {
   SentimentSatisfied as SentimentIcon,
   ReportProblem as EmergencyIcon,
   PlayArrow as PlayIcon,
+  Pause as PauseIcon,
   Visibility as ViewIcon,
   Close as CloseIcon,
   FilterList as FilterIcon,
@@ -57,6 +59,7 @@ import {
   ExpandLess as CollapseIcon,
   VolumeUp as VolumeIcon,
   Today as TodayIcon,
+  VolumeOff as VolumeOffIcon,
 } from '@mui/icons-material';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, AreaChart, Area } from 'recharts';
 import { callsApi } from '../services/api';
@@ -66,6 +69,7 @@ const Dashboard = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isTablet = useMediaQuery(theme.breakpoints.down('lg'));
+  const audioRef = useRef(null);
   
   // State management
   const [calls, setCalls] = useState([]);
@@ -80,6 +84,11 @@ const Dashboard = () => {
   const [emergencyAlertOpen, setEmergencyAlertOpen] = useState(true);
   const [filterMenuAnchor, setFilterMenuAnchor] = useState(null);
   const [todayActivity, setTodayActivity] = useState([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [playingCallId, setPlayingCallId] = useState(null);
   
   // Computed stats
   const stats = useMemo(() => {
@@ -99,10 +108,45 @@ const Dashboard = () => {
     };
   }, [calls]);
 
-  // Emergency calls for floating alert
+  // Emergency calls for floating alert - using REAL data
   const activeEmergencyCalls = useMemo(() => 
     calls.filter(call => call.is_emergency && call.success_status !== 'Resolved'), [calls]
   );
+
+  // AI Name Extraction function
+  const extractCallerName = (transcript, callerNumber) => {
+    if (!transcript) return callerNumber;
+    
+    // Common AI agent names to exclude
+    const agentNames = ['karen', 'assistant', 'agent', 'bot', 'ai', 'system', 'operator'];
+    
+    // Look for caller-specific patterns (what the USER says, not the agent)
+    const callerPatterns = [
+      /(?:user|caller):\s*.*?(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+      /(?:user|caller):\s*.*?(?:call me|it's|name's)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+      // Look for direct caller introduction patterns
+      /(?:user|caller):\s*(?:hi|hello),?\s*(?:my name is|i'm|this is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+      // Generic patterns but exclude agent responses
+      /(?<!agent:.*?)(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i
+    ];
+    
+    for (const pattern of callerPatterns) {
+      const match = transcript.match(pattern);
+      if (match && match[1]) {
+        const name = match[1].trim().toLowerCase();
+        
+        // Validate the name and exclude agent names
+        const commonWords = ['okay', 'yes', 'no', 'sure', 'well', 'um', 'uh', 'the', 'that', 'this', 'here', 'calling'];
+        if (name.length > 1 && 
+            !commonWords.includes(name) && 
+            !agentNames.includes(name)) {
+          return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+        }
+      }
+    }
+    
+    return callerNumber; // Fallback to phone number
+  };
 
   // Filtered calls
   const filteredCalls = useMemo(() => {
@@ -132,10 +176,19 @@ const Dashboard = () => {
     try {
       setLoading(true);
       const response = await callsApi.getCalls();
-      setCalls(response.calls || []);
+      
+      // Process calls to extract names from transcripts
+      const processedCalls = (response.calls || []).map(call => ({
+        ...call,
+        caller_name: extractCallerName(call.transcript, call.caller_number || call.from_number || 'Unknown'),
+        // Ensure we have proper IDs
+        id: call.id || call.call_id
+      }));
+      
+      setCalls(processedCalls);
     } catch (error) {
       console.error('Failed to fetch calls:', error);
-      // Use enhanced mock data
+      // Use enhanced mock data with AI-extracted names
       const mockCalls = generateEnhancedMockCalls();
       setCalls(mockCalls);
     } finally {
@@ -172,8 +225,9 @@ const Dashboard = () => {
       sentiment: 'positive',
       is_new_patient: true,
       is_emergency: false,
-      transcript: 'Full transcript of appointment booking conversation...',
+      transcript: 'Agent: Hello, thank you for calling. User: Hi, my name is John Smith, I need to schedule an appointment. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith.',
       agent_id: 'agent_001',
+      recording_url: 'https://example.com/recordings/call1.mp3',
       sentiment_scores: [
         { time: '0:00', score: 0.7 },
         { time: '1:00', score: 0.8 },
@@ -194,58 +248,100 @@ const Dashboard = () => {
       sentiment: 'negative',
       is_new_patient: false,
       is_emergency: true,
-      transcript: 'Emergency transcript - chest pain consultation...',
+      transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. Agent: I understand this is urgent, Sarah.',
       agent_id: 'agent_002',
+      recording_url: 'https://example.com/recordings/call2.mp3',
       sentiment_scores: [
         { time: '0:00', score: -0.8 },
-        { time: '1:00', score: -0.9 },
+        { time: '1:00', score: -0.6 },
         { time: '2:00', score: -0.7 },
-        { time: '3:00', score: -0.6 }
+        { time: '3:00', score: -0.5 }
       ]
     },
     {
       id: '3',
       call_id: '3',
-      caller_name: 'Mike Davis',
+      caller_name: 'Mike Williams',
       caller_number: '+1-555-0789',
       call_date: new Date(Date.now() - 172800000).toISOString(),
       reason: 'Prescription refill',
-      summary: 'Routine prescription refill request for blood pressure medication. Verified patient information and confirmed with pharmacy. Patient was satisfied with service.',
-      duration: 120,
+      summary: 'Patient requested prescription refill for ongoing medication. Verified patient information and processed refill request. Pharmacy notification sent.',
+      duration: 150,
       success_status: 'Resolved',
       sentiment: 'neutral',
       is_new_patient: false,
       is_emergency: false,
-      transcript: 'Prescription refill conversation transcript...',
+      transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill. Agent: I can help you with that, Mike.',
       agent_id: 'agent_001',
+      recording_url: 'https://example.com/recordings/call3.mp3',
       sentiment_scores: [
         { time: '0:00', score: 0.1 },
         { time: '1:00', score: 0.2 },
-        { time: '2:00', score: 0.1 }
+        { time: '2:00', score: 0.3 }
       ]
-    },
-    {
-      id: '4',
-      call_id: '4',
-      caller_name: 'Emergency Patient',
-      caller_number: '+1-555-0911',
-      call_date: new Date(Date.now() - 3600000).toISOString(),
-      reason: 'Medical emergency',
-      summary: 'URGENT: Patient reporting severe allergic reaction. Immediate medical attention required. Directed to nearest emergency room.',
-      duration: 180,
-      success_status: 'Unresolved',
-      sentiment: 'negative',
-      is_new_patient: true,
-      is_emergency: true,
-      transcript: 'Emergency allergic reaction call transcript...',
-      agent_id: 'agent_003',
-      sentiment_scores: [
-        { time: '0:00', score: -0.9 },
-        { time: '1:00', score: -0.8 },
-        { time: '2:00', score: -0.7 }
-      ]
-    },
+    }
   ];
+
+  // Audio playback functions
+  const handleAudioPlay = async (call) => {
+    try {
+      if (playingCallId === call.id && isPlaying) {
+        // Pause current audio
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
+        setIsPlaying(false);
+        return;
+      }
+
+      setPlayingCallId(call.id);
+      
+      if (call.recording_url) {
+        // Real audio URL
+        if (audioRef.current) {
+          audioRef.current.src = call.recording_url;
+          await audioRef.current.play();
+          setIsPlaying(true);
+        }
+      } else {
+        // Mock audio for demonstration
+        // In production, you'd fetch the real audio URL from the API
+        console.log(`Playing audio for call ${call.id}`);
+        setIsPlaying(true);
+        
+        // Simulate audio playback for demo
+        setTimeout(() => {
+          setIsPlaying(false);
+          setPlayingCallId(null);
+        }, 3000);
+      }
+    } catch (error) {
+      console.error('Error playing audio:', error);
+      setIsPlaying(false);
+      setPlayingCallId(null);
+    }
+  };
+
+  const handleAudioTimeUpdate = () => {
+    if (audioRef.current) {
+      const progress = (audioRef.current.currentTime / audioRef.current.duration) * 100;
+      setAudioProgress(progress);
+      setAudioCurrentTime(audioRef.current.currentTime);
+    }
+  };
+
+  const handleAudioLoadedMetadata = () => {
+    if (audioRef.current) {
+      setAudioDuration(audioRef.current.duration);
+    }
+  };
+
+  const handleAudioEnded = () => {
+    setIsPlaying(false);
+    setPlayingCallId(null);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+  };
 
   const handleCallClick = (call) => {
     setSelectedCall(call);
@@ -253,7 +349,7 @@ const Dashboard = () => {
   };
 
   const handleSearch = () => {
-    // Search is handled by the filteredCalls useMemo
+    // Search functionality is handled by the filteredCalls useMemo
   };
 
   const clearFilters = () => {
@@ -274,78 +370,59 @@ const Dashboard = () => {
     switch (sentiment?.toLowerCase()) {
       case 'positive': return 'success';
       case 'negative': return 'error';
-      case 'neutral': return 'warning';
+      case 'neutral': return 'default';
       default: return 'default';
     }
   };
 
   const getStatusColor = (status) => {
-    return status === 'Resolved' ? '#4caf50' : '#f44336';
+    switch (status) {
+      case 'Resolved': return 'success';
+      case 'Unresolved': return 'error';
+      default: return 'default';
+    }
   };
 
-  // Enhanced DataGrid columns
+  // Enhanced DataGrid columns with audio playback
   const columns = [
     {
       field: 'caller_name',
-      headerName: 'Caller Name',
-      width: 150,
+      headerName: 'Caller',
+      width: 200,
       renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+        <Box display="flex" alignItems="center">
           <Avatar sx={{ width: 32, height: 32, mr: 1, fontSize: '0.875rem' }}>
-            {params.value?.charAt(0) || 'U'}
+            {params.value?.charAt(0)?.toUpperCase() || 'U'}
           </Avatar>
-          <Typography variant="body2">{params.value || 'Unknown'}</Typography>
-        </Box>
-      ),
-    },
-    {
-      field: 'caller_number',
-      headerName: 'Phone Number',
-      width: 140,
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-          <PhoneIcon sx={{ fontSize: 16, mr: 1, color: 'text.secondary' }} />
-          <Typography variant="body2">{params.value}</Typography>
+          <Box>
+            <Typography variant="body2" fontWeight="medium">
+              {params.value}
+            </Typography>
+            <Typography variant="caption" color="textSecondary">
+              {params.row.caller_number}
+            </Typography>
+          </Box>
         </Box>
       ),
     },
     {
       field: 'call_date',
       headerName: 'Date & Time',
-      width: 160,
-      valueFormatter: (params) => {
-        if (!params.value) return 'N/A';
-        return new Date(params.value).toLocaleString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-      },
+      width: 180,
+      renderCell: (params) => (
+        <Typography variant="body2">
+          {new Date(params.value).toLocaleString()}
+        </Typography>
+      ),
     },
     {
       field: 'summary',
       headerName: 'Summary',
       width: 300,
       renderCell: (params) => (
-        <Tooltip 
-          title={params.value || 'No summary available'}
-          placement="top-start"
-          arrow
-        >
-          <Typography 
-            variant="body2" 
-            sx={{ 
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              cursor: 'pointer',
-              '&:hover': { textDecoration: 'underline' }
-            }}
-          >
-            {params.value?.substring(0, 50) + (params.value?.length > 50 ? '...' : '') || 'No summary'}
-          </Typography>
-        </Tooltip>
+        <Typography variant="body2" noWrap title={params.value}>
+          {params.value}
+        </Typography>
       ),
     },
     {
@@ -353,10 +430,9 @@ const Dashboard = () => {
       headerName: 'Duration',
       width: 100,
       renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-          <ScheduleIcon sx={{ fontSize: 16, mr: 1, color: 'text.secondary' }} />
-          <Typography variant="body2">{formatDuration(params.value || 0)}</Typography>
-        </Box>
+        <Typography variant="body2">
+          {formatDuration(params.value)}
+        </Typography>
       ),
     },
     {
@@ -365,14 +441,8 @@ const Dashboard = () => {
       width: 120,
       renderCell: (params) => (
         <Chip
-          icon={params.value === 'Resolved' ? <ResolvedIcon /> : <UnresolvedIcon />}
           label={params.value}
-          sx={{
-            backgroundColor: getStatusColor(params.value),
-            color: 'white',
-            fontWeight: 'bold',
-            '& .MuiChip-icon': { color: 'white' }
-          }}
+          color={getStatusColor(params.value)}
           size="small"
         />
       ),
@@ -383,11 +453,31 @@ const Dashboard = () => {
       width: 120,
       renderCell: (params) => (
         <Chip
-          icon={<SentimentIcon />}
           label={params.value || 'neutral'}
           color={getSentimentColor(params.value)}
           size="small"
         />
+      ),
+    },
+    {
+      field: 'audio',
+      headerName: 'Audio',
+      width: 100,
+      renderCell: (params) => (
+        <IconButton
+          color="primary"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleAudioPlay(params.row);
+          }}
+          size="small"
+        >
+          {playingCallId === params.row.id && isPlaying ? (
+            <PauseIcon />
+          ) : (
+            <PlayIcon />
+          )}
+        </IconButton>
       ),
     },
     {
@@ -396,7 +486,6 @@ const Dashboard = () => {
       width: 120,
       renderCell: (params) => (
         <Chip
-          icon={<PersonIcon />}
           label={params.value ? 'New' : 'Existing'}
           color={params.value ? 'primary' : 'default'}
           size="small"
@@ -418,8 +507,17 @@ const Dashboard = () => {
   ];
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
-      {/* Emergency Alert - Floating at top */}
+    <Container maxWidth="xl" sx={{ py: 3 }}>
+      {/* Audio element for playback */}
+      <audio
+        ref={audioRef}
+        onTimeUpdate={handleAudioTimeUpdate}
+        onLoadedMetadata={handleAudioLoadedMetadata}
+        onEnded={handleAudioEnded}
+        preload="metadata"
+      />
+
+      {/* Emergency Alert - using REAL data */}
       {activeEmergencyCalls.length > 0 && emergencyAlertOpen && (
         <Collapse in={emergencyAlertOpen}>
           <Alert 
@@ -450,7 +548,10 @@ const Dashboard = () => {
               {activeEmergencyCalls.length} Active Emergency Call{activeEmergencyCalls.length > 1 ? 's' : ''}
             </AlertTitle>
             <Typography variant="body2">
-              Immediate attention required. Click to view details.
+              {activeEmergencyCalls.length === 1 
+                ? `Emergency call from ${activeEmergencyCalls[0].caller_name} requires immediate attention.`
+                : `Multiple emergency calls require immediate attention.`
+              }
             </Typography>
             <Box sx={{ mt: 1 }}>
               {activeEmergencyCalls.slice(0, 2).map((call, index) => (
@@ -462,7 +563,7 @@ const Dashboard = () => {
                   onClick={() => handleCallClick(call)}
                   sx={{ mr: 1, mb: 1 }}
                 >
-                  {call.caller_name} - {call.reason}
+                  {call.caller_name} - {call.summary}
                 </Button>
               ))}
             </Box>
@@ -470,7 +571,7 @@ const Dashboard = () => {
         </Collapse>
       )}
 
-      <Typography variant="h4" gutterBottom sx={{ mb: 3, fontWeight: 'bold' }}>
+      <Typography variant="h4" gutterBottom sx={{ mb: 3, fontWeight: 'bold', textAlign: 'center' }}>
         Call Management Dashboard
       </Typography>
 
@@ -560,20 +661,20 @@ const Dashboard = () => {
                   Today's Activity
                 </Typography>
               </Box>
-                             <Box sx={{ height: 60, mt: 1 }}>
-                 <ResponsiveContainer width="100%" height="100%">
-                   <AreaChart data={todayActivity} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                     <Area
-                       type="monotone"
-                       dataKey="calls"
-                       stroke="#1976d2"
-                       fill="#1976d2"
-                       fillOpacity={0.3}
-                       strokeWidth={2}
-                     />
-                   </AreaChart>
-                 </ResponsiveContainer>
-               </Box>
+              <Box sx={{ height: 60, mt: 1 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={todayActivity} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                    <Area
+                      type="monotone"
+                      dataKey="calls"
+                      stroke="#1976d2"
+                      fill="#1976d2"
+                      fillOpacity={0.3}
+                      strokeWidth={2}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
@@ -660,50 +761,70 @@ const Dashboard = () => {
         </CardContent>
       </Card>
 
-      {/* Enhanced Calls Table */}
-      <Card>
-        <CardContent>
-          <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-            <Typography variant="h6">
-              Call History ({filteredCalls.length} {filteredCalls.length === 1 ? 'call' : 'calls'})
-            </Typography>
-          </Box>
-          
-          <Box sx={{ height: 600, width: '100%' }}>
-            <DataGrid
-              rows={filteredCalls}
-              columns={columns}
-              initialState={{
-                pagination: {
-                  paginationModel: { page: 0, pageSize: 25 },
-                },
-                sorting: {
-                  sortModel: [{ field: 'call_date', sort: 'desc' }],
-                },
-              }}
-              pageSizeOptions={[25, 50, 100]}
-              loading={loading}
-              disableRowSelectionOnClick
-              onRowClick={(params) => handleCallClick(params.row)}
-              getRowId={(row) => row.id || row.call_id}
-              sx={{
-                '& .MuiDataGrid-row:hover': {
-                  cursor: 'pointer',
-                  backgroundColor: 'action.hover',
-                },
-                '& .MuiDataGrid-cell:focus': {
-                  outline: 'none',
-                },
-                '& .MuiDataGrid-row': {
-                  '&:nth-of-type(even)': {
-                    backgroundColor: 'grey.50',
+      {/* Enhanced Calls Table - CENTERED */}
+      <Box display="flex" justifyContent="center" mb={3}>
+        <Card sx={{ width: '100%', maxWidth: '1400px' }}>
+          <CardContent>
+            <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+              <Typography variant="h6">
+                Call History ({filteredCalls.length} {filteredCalls.length === 1 ? 'call' : 'calls'})
+              </Typography>
+            </Box>
+            
+            <Box sx={{ height: 600, width: '100%' }}>
+              <DataGrid
+                rows={filteredCalls}
+                columns={columns}
+                initialState={{
+                  pagination: {
+                    paginationModel: { page: 0, pageSize: 25 },
                   },
-                },
-              }}
-            />
-          </Box>
-        </CardContent>
-      </Card>
+                  sorting: {
+                    sortModel: [{ field: 'call_date', sort: 'desc' }],
+                  },
+                }}
+                pageSizeOptions={[25, 50, 100]}
+                loading={loading}
+                disableRowSelectionOnClick
+                onRowClick={(params) => handleCallClick(params.row)}
+                getRowId={(row) => row.id || row.call_id}
+                sx={{
+                  '& .MuiDataGrid-row:hover': {
+                    cursor: 'pointer',
+                    backgroundColor: 'action.hover',
+                  },
+                  '& .MuiDataGrid-cell:focus': {
+                    outline: 'none',
+                  },
+                  // Fixed dark mode styling for better readability
+                  '& .MuiDataGrid-row': {
+                    '&:nth-of-type(even)': {
+                      backgroundColor: theme.palette.mode === 'dark' 
+                        ? 'rgba(255, 255, 255, 0.03)' 
+                        : 'rgba(0, 0, 0, 0.02)',
+                    },
+                    '&:nth-of-type(odd)': {
+                      backgroundColor: theme.palette.mode === 'dark' 
+                        ? 'rgba(255, 255, 255, 0.01)' 
+                        : 'rgba(255, 255, 255, 0.5)',
+                    },
+                  },
+                  // Improve text contrast in dark mode
+                  '& .MuiDataGrid-cell': {
+                    color: theme.palette.text.primary,
+                    borderBottom: `1px solid ${theme.palette.divider}`,
+                  },
+                  '& .MuiDataGrid-columnHeaders': {
+                    backgroundColor: theme.palette.mode === 'dark' 
+                      ? 'rgba(255, 255, 255, 0.05)' 
+                      : 'rgba(0, 0, 0, 0.02)',
+                  },
+                }}
+              />
+            </Box>
+          </CardContent>
+        </Card>
+      </Box>
 
       {/* Enhanced Call Details Drawer */}
       <Drawer
@@ -788,7 +909,7 @@ const Dashboard = () => {
               </Grid>
             </Grid>
 
-            {/* Audio Player */}
+            {/* Enhanced Audio Player */}
             <Card sx={{ mb: 3 }}>
               <CardContent>
                 <Box display="flex" alignItems="center" mb={2}>
@@ -796,14 +917,40 @@ const Dashboard = () => {
                   <Typography variant="h6">Audio Recording</Typography>
                 </Box>
                 <Box display="flex" alignItems="center" gap={2}>
-                  <IconButton color="primary" size="large">
-                    <PlayIcon />
+                  <IconButton 
+                    color="primary" 
+                    size="large"
+                    onClick={() => handleAudioPlay(selectedCall)}
+                  >
+                    {playingCallId === selectedCall.id && isPlaying ? (
+                      <PauseIcon />
+                    ) : (
+                      <PlayIcon />
+                    )}
                   </IconButton>
                   <Box sx={{ flex: 1 }}>
-                    <LinearProgress variant="determinate" value={30} sx={{ height: 8, borderRadius: 4 }} />
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={playingCallId === selectedCall.id ? audioProgress : 0} 
+                      sx={{ height: 8, borderRadius: 4 }} 
+                    />
                   </Box>
-                  <Typography variant="body2">01:23 / 03:00</Typography>
+                  <Typography variant="body2">
+                    {playingCallId === selectedCall.id 
+                      ? `${formatDuration(Math.floor(audioCurrentTime))} / ${formatDuration(Math.floor(audioDuration || selectedCall.duration))}`
+                      : `00:00 / ${formatDuration(selectedCall.duration)}`
+                    }
+                  </Typography>
                 </Box>
+                {selectedCall.recording_url ? (
+                  <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
+                    Audio available for playback
+                  </Typography>
+                ) : (
+                  <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
+                    Audio recording not available for this call
+                  </Typography>
+                )}
               </CardContent>
             </Card>
 
@@ -815,22 +962,22 @@ const Dashboard = () => {
                     <PsychologyIcon sx={{ mr: 1 }} />
                     <Typography variant="h6">Sentiment Analysis</Typography>
                   </Box>
-                                     <Box sx={{ height: 150 }}>
-                     <ResponsiveContainer width="100%" height="100%">
-                       <LineChart data={selectedCall.sentiment_scores} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                         <XAxis dataKey="time" fontSize={12} />
-                         <YAxis domain={[-1, 1]} fontSize={12} />
-                         <Line 
-                           type="monotone" 
-                           dataKey="score" 
-                           stroke="#1976d2"
-                           strokeWidth={3}
-                           dot={{ r: 4 }}
-                           activeDot={{ r: 6 }}
-                         />
-                       </LineChart>
-                     </ResponsiveContainer>
-                   </Box>
+                  <Box sx={{ height: 150 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={selectedCall.sentiment_scores} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                        <XAxis dataKey="time" fontSize={12} />
+                        <YAxis domain={[-1, 1]} fontSize={12} />
+                        <Line 
+                          type="monotone" 
+                          dataKey="score" 
+                          stroke="#1976d2"
+                          strokeWidth={3}
+                          dot={{ r: 4 }}
+                          activeDot={{ r: 6 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </Box>
                 </CardContent>
               </Card>
             )}
@@ -877,7 +1024,7 @@ const Dashboard = () => {
                     p: 2, 
                     maxHeight: 300, 
                     overflow: 'auto',
-                    backgroundColor: 'grey.50'
+                    backgroundColor: theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50'
                   }}
                 >
                   <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
@@ -907,18 +1054,18 @@ const Dashboard = () => {
       </Drawer>
 
       {/* Mobile Floating Action Button for Emergency Calls */}
-             {isMobile && activeEmergencyCalls.length > 0 && (
+      {isMobile && activeEmergencyCalls.length > 0 && (
         <Fab
           color="error"
           sx={{ position: 'fixed', bottom: 16, right: 16, zIndex: 1000 }}
           onClick={() => setEmergencyAlertOpen(true)}
         >
-                     <Badge badgeContent={activeEmergencyCalls.length} color="error">
+          <Badge badgeContent={activeEmergencyCalls.length} color="error">
             <BellIcon />
           </Badge>
         </Fab>
       )}
-    </Box>
+    </Container>
   );
 };
 

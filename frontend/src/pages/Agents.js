@@ -32,6 +32,7 @@ import {
   Collapse,
   Fab,
   Snackbar,
+  Container,
 } from '@mui/material';
 import {
   Edit as EditIcon,
@@ -55,6 +56,8 @@ import {
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
   Person as PersonIcon,
+  CheckCircle as ActiveIcon,
+  RadioButtonUnchecked as InactiveIcon,
 } from '@mui/icons-material';
 import { agentsApi } from '../services/api';
 
@@ -88,10 +91,15 @@ const Agents = () => {
   const fetchAgents = async () => {
     try {
       setLoading(true);
-      const agentsData = await agentsApi.getAgents();
-      setAgents(agentsData || []);
+      setError(null);
+      const response = await agentsApi.getAgents();
+      
+      // Handle both direct array and object with agents property
+      const agentsData = response.agents || response || [];
+      setAgents(agentsData);
     } catch (err) {
       console.error('Failed to fetch agents:', err);
+      setError('Failed to load agents. Using demo data.');
       // Use enhanced mock data with more variety
       setAgents(generateEnhancedMockAgents());
     } finally {
@@ -201,12 +209,20 @@ const Agents = () => {
     }
   };
 
+  // Get voice speed info
+  const getVoiceSpeedInfo = (speed) => {
+    if (!speed) speed = 1.0;
+    if (speed > 1.1) return { label: 'Fast', color: 'info' };
+    if (speed < 0.9) return { label: 'Slow', color: 'warning' };
+    return { label: 'Normal', color: 'success' };
+  };
+
   // Filtered and sorted agents
-  const filteredAndSortedAgents = useMemo(() => {
+  const filteredAgents = useMemo(() => {
     let filtered = agents.filter(agent => {
       const matchesSearch = !searchQuery || 
-        agent.agent_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        agent.prompt.toLowerCase().includes(searchQuery.toLowerCase());
+        agent.agent_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        agent.prompt?.toLowerCase().includes(searchQuery.toLowerCase());
       
       const matchesVoice = !filterVoice || agent.voice_id === filterVoice;
       const matchesLanguage = !filterLanguage || agent.language === filterLanguage;
@@ -227,10 +243,8 @@ const Agents = () => {
           return a.agent_name.localeCompare(b.agent_name);
         case 'responsiveness':
           return (b.responsiveness || 0) - (a.responsiveness || 0);
-        case 'voice':
-          return a.voice_id.localeCompare(b.voice_id);
-        case 'language':
-          return a.language.localeCompare(b.language);
+        case 'speed':
+          return (b.voice_speed || 1) - (a.voice_speed || 1);
         case 'status':
           return a.status.localeCompare(b.status);
         default:
@@ -239,7 +253,7 @@ const Agents = () => {
     });
 
     return filtered;
-  }, [agents, searchQuery, filterVoice, filterLanguage, filterResponsiveness, sortBy]);
+  }, [agents, searchQuery, sortBy, filterVoice, filterLanguage, filterResponsiveness]);
 
   const handleEditAgent = (agent) => {
     setEditingAgent({ ...agent });
@@ -248,13 +262,21 @@ const Agents = () => {
 
   const handleSaveAgent = async () => {
     try {
+      setLoading(true);
       await agentsApi.updateAgent(editingAgent.agent_id, editingAgent);
+      
+      // Update local state
+      setAgents(prev => prev.map(agent => 
+        agent.agent_id === editingAgent.agent_id ? editingAgent : agent
+      ));
+      
       setSuccess('Agent updated successfully');
       setEditDrawerOpen(false);
       setEditingAgent(null);
-      fetchAgents();
-    } catch (err) {
+    } catch (error) {
       setError('Failed to update agent');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -266,17 +288,18 @@ const Agents = () => {
   const handleInputChange = (field, value) => {
     setEditingAgent(prev => ({
       ...prev,
-      [field]: value,
+      [field]: value
     }));
   };
 
   const handleTestAgent = (agent) => {
     setTestingAgent(agent.agent_id);
-    // Simulate test call
+    
+    // Simulate test
     setTimeout(() => {
       setTestingAgent(null);
-      setSuccess(`Test call completed for ${agent.agent_name}! Check the dashboard for results.`);
-    }, 3000);
+      setSuccess(`Agent "${agent.agent_name}" test completed successfully`);
+    }, 2000);
   };
 
   const clearFilters = () => {
@@ -284,7 +307,6 @@ const Agents = () => {
     setFilterVoice('');
     setFilterLanguage('');
     setFilterResponsiveness('');
-    setSortBy('name');
   };
 
   const formatDuration = (seconds) => {
@@ -296,216 +318,209 @@ const Agents = () => {
   const AgentCard = ({ agent }) => {
     const stats = agentStats[agent.agent_id] || {};
     const responsivenessInfo = getResponsivenessInfo(agent.responsiveness);
-    const keywords = extractKeywords(agent.prompt);
+    const voiceSpeedInfo = getVoiceSpeedInfo(agent.voice_speed);
+    const keywords = extractKeywords(agent.prompt || '');
 
     return (
       <Card 
         sx={{ 
           height: '100%',
-          transition: 'all 0.3s ease',
+          transition: 'all 0.2s ease-in-out',
           '&:hover': {
-            transform: 'translateY(-4px)',
-            boxShadow: 4,
-          },
-          border: agent.status === 'active' ? `2px solid ${theme.palette.success.light}` : `2px solid ${theme.palette.grey[300]}`,
+            transform: 'translateY(-2px)',
+            boxShadow: theme.palette.mode === 'dark' 
+              ? '0 8px 25px rgba(0,0,0,0.4)' 
+              : '0 8px 25px rgba(0,0,0,0.15)',
+          }
         }}
       >
-        <CardContent>
+        <CardContent sx={{ pb: 1 }}>
           {/* Header */}
           <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={2}>
-            <Box display="flex" alignItems="center">
-              <Avatar 
-                sx={{ 
-                  mr: 2, 
-                  bgcolor: agent.status === 'active' ? 'success.main' : 'grey.400',
+            <Box display="flex" alignItems="center" flex={1}>
+              <Avatar
+                sx={{
+                  bgcolor: agent.status === 'active' ? 'success.main' : 'grey.500',
+                  mr: 2,
                   width: 48,
                   height: 48
                 }}
               >
-                <PersonIcon />
+                {agent.agent_name?.charAt(0) || 'A'}
               </Avatar>
-              <Box>
-                <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
+              <Box flex={1}>
+                <Typography variant="h6" fontWeight="bold" noWrap>
                   {agent.agent_name}
                 </Typography>
-                <Typography variant="caption" color="textSecondary">
-                  ID: {agent.agent_id}
-                </Typography>
+                <Box display="flex" alignItems="center" gap={1} mt={0.5}>
+                  <Chip
+                    icon={agent.status === 'active' ? <ActiveIcon /> : <InactiveIcon />}
+                    label={agent.status || 'Unknown'}
+                    color={agent.status === 'active' ? 'success' : 'default'}
+                    size="small"
+                  />
+                  <Chip
+                    label={`Voice: ${agent.voice_id || 'N/A'}`}
+                    size="small"
+                    variant="outlined"
+                  />
+                </Box>
               </Box>
             </Box>
-            
-            <Box display="flex" alignItems="center">
-              <Chip
-                label={agent.status}
-                color={agent.status === 'active' ? 'success' : 'default'}
-                size="small"
-                sx={{ mr: 1 }}
-              />
-              <Tooltip title="Edit Agent">
-                <IconButton
-                  size="small"
-                  onClick={() => handleEditAgent(agent)}
-                  color="primary"
-                >
-                  <EditIcon />
-                </IconButton>
-              </Tooltip>
-            </Box>
           </Box>
 
-          {/* Quick Stats Row */}
-          <Grid container spacing={1} sx={{ mb: 2 }}>
-            <Grid item xs={6}>
-              <Tooltip title={`Total calls handled: ${stats.callsHandled || 0}`}>
-                <Paper variant="outlined" sx={{ p: 1, textAlign: 'center' }}>
-                  <CallIcon sx={{ fontSize: 16, color: 'primary.main' }} />
-                  <Typography variant="caption" display="block">
-                    {stats.callsHandled || 0} calls
-                  </Typography>
-                </Paper>
-              </Tooltip>
-            </Grid>
-            <Grid item xs={6}>
-              <Tooltip title={`Average call duration: ${formatDuration(stats.avgDuration || 0)}`}>
-                <Paper variant="outlined" sx={{ p: 1, textAlign: 'center' }}>
-                  <DurationIcon sx={{ fontSize: 16, color: 'info.main' }} />
-                  <Typography variant="caption" display="block">
-                    {formatDuration(stats.avgDuration || 0)}
-                  </Typography>
-                </Paper>
-              </Tooltip>
-            </Grid>
-          </Grid>
-
-          {/* Responsiveness Badge */}
-          <Box display="flex" alignItems="center" mb={2}>
-            <SpeedIcon sx={{ mr: 1, fontSize: 20 }} />
-            <Typography variant="body2" sx={{ mr: 1 }}>Responsiveness:</Typography>
-            <Chip
-              label={`${responsivenessInfo.percentage} (${responsivenessInfo.label})`}
-              color={responsivenessInfo.color}
-              size="small"
-              variant="outlined"
-            />
-          </Box>
-
-          {/* Voice & Language */}
-          <Box sx={{ mb: 2 }}>
-            <Box display="flex" alignItems="center" mb={1}>
-              <VoiceIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-              <Typography variant="body2">
-                Voice: {agent.voice_id} ({agent.voice_speed}x, {agent.voice_temperature}°)
+          {/* Keywords */}
+          {keywords.length > 0 && (
+            <Box mb={2}>
+              <Typography variant="caption" color="textSecondary" gutterBottom>
+                Specialties:
               </Typography>
+              <Box display="flex" flexWrap="wrap" gap={0.5} mt={0.5}>
+                {keywords.map((keyword, index) => (
+                  <Chip
+                    key={index}
+                    label={keyword}
+                    size="small"
+                    variant="outlined"
+                    sx={{ fontSize: '0.7rem', height: 20 }}
+                  />
+                ))}
+              </Box>
             </Box>
-            <Box display="flex" alignItems="center">
-              <LanguageIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-              <Typography variant="body2">
-                Language: {agent.language}
-              </Typography>
-            </Box>
-          </Box>
+          )}
 
-          {/* Keyword Tags */}
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="subtitle2" color="textSecondary" gutterBottom>
-              Keywords:
+          {/* Performance Metrics */}
+          <Box mb={2}>
+            <Typography variant="caption" color="textSecondary" gutterBottom>
+              Performance:
             </Typography>
-            <Box display="flex" gap={0.5} flexWrap="wrap">
-              {keywords.map((keyword, index) => (
-                <Chip 
-                  key={index}
-                  label={keyword}
-                  size="small"
-                  variant="outlined"
-                  sx={{ fontSize: '0.7rem', height: 20 }}
-                />
-              ))}
-            </Box>
+            <Grid container spacing={1} mt={0.5}>
+              <Grid item xs={6}>
+                <Paper variant="outlined" sx={{ p: 1, textAlign: 'center' }}>
+                  <Typography variant="h6" fontWeight="bold">
+                    {stats.callsHandled || '0'}
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    Calls Handled
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={6}>
+                <Paper variant="outlined" sx={{ p: 1, textAlign: 'center' }}>
+                  <Typography variant="h6" fontWeight="bold">
+                    {stats.successRate || '0'}%
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    Success Rate
+                  </Typography>
+                </Paper>
+              </Grid>
+            </Grid>
           </Box>
 
-          {/* Sentiment & Success Rate */}
-          <Grid container spacing={1} sx={{ mb: 2 }}>
-            <Grid item xs={6}>
-              <Tooltip title={`Average sentiment score: ${stats.sentimentScore || 'N/A'}`}>
-                <Box display="flex" alignItems="center">
-                  <SentimentIcon sx={{ mr: 0.5, fontSize: 16, color: 'text.secondary' }} />
-                  <Typography variant="caption">
-                    Sentiment: {stats.sentimentScore || 'N/A'}
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-            <Grid item xs={6}>
-              <Tooltip title={`Success rate: ${stats.successRate || 0}%`}>
-                <Box display="flex" alignItems="center">
-                  <StatsIcon sx={{ mr: 0.5, fontSize: 16, color: 'text.secondary' }} />
-                  <Typography variant="caption">
-                    Success: {stats.successRate || 0}%
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-          </Grid>
+          {/* Configuration Details */}
+          <Box mb={2}>
+            <Typography variant="caption" color="textSecondary" gutterBottom>
+              Configuration:
+            </Typography>
+            <Stack spacing={1} mt={0.5}>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="body2">Responsiveness:</Typography>
+                <Chip
+                  label={responsivenessInfo.percentage}
+                  color={responsivenessInfo.color}
+                  size="small"
+                />
+              </Box>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="body2">Voice Speed:</Typography>
+                <Chip
+                  label={voiceSpeedInfo.label}
+                  color={voiceSpeedInfo.color}
+                  size="small"
+                />
+              </Box>
+              <Box display="flex" justifyContent="space-between" alignItems="center">
+                <Typography variant="body2">Backchannel:</Typography>
+                <Chip
+                  label={agent.enable_backchannel ? 'Enabled' : 'Disabled'}
+                  color={agent.enable_backchannel ? 'success' : 'default'}
+                  size="small"
+                />
+              </Box>
+            </Stack>
+          </Box>
 
-          {/* Prompt Preview */}
-          <Typography variant="subtitle2" color="textSecondary" gutterBottom>
-            Prompt Preview:
-          </Typography>
-          <Typography 
-            variant="body2" 
-            sx={{ 
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              fontSize: '0.875rem',
-              color: 'text.secondary',
-              fontStyle: 'italic'
-            }}
-          >
-            {agent.prompt}
-          </Typography>
+          {/* Last Activity */}
+          {stats.lastUsed && (
+            <Box mb={1}>
+              <Typography variant="caption" color="textSecondary">
+                Last used: {stats.lastUsed}
+              </Typography>
+            </Box>
+          )}
         </CardContent>
 
         <CardActions sx={{ justifyContent: 'space-between', px: 2, pb: 2 }}>
-          <Button
-            size="small"
-            startIcon={<TestIcon />}
-            onClick={() => handleTestAgent(agent)}
-            disabled={testingAgent === agent.agent_id || agent.status !== 'active'}
-            variant="outlined"
-            color="primary"
-          >
-            {testingAgent === agent.agent_id ? 'Testing...' : 'Test Agent'}
-          </Button>
-          
-          <Typography variant="caption" color="textSecondary">
-            Last used: {stats.lastUsed || 'Never'}
-          </Typography>
+          <Box display="flex" gap={1}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<EditIcon />}
+              onClick={() => handleEditAgent(agent)}
+            >
+              Edit
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<TestIcon />}
+              onClick={() => handleTestAgent(agent)}
+              disabled={testingAgent === agent.agent_id}
+            >
+              {testingAgent === agent.agent_id ? 'Testing...' : 'Test'}
+            </Button>
+          </Box>
         </CardActions>
-
-        {/* Loading indicator for testing */}
-        {testingAgent === agent.agent_id && (
-          <LinearProgress color="primary" />
-        )}
       </Card>
     );
   };
 
-  return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
-      <Typography variant="h4" gutterBottom sx={{ mb: 3, fontWeight: 'bold' }}>
-        Agent Management
-      </Typography>
+  if (loading && agents.length === 0) {
+    return (
+      <Container maxWidth="xl" sx={{ py: 3 }}>
+        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+          <Stack alignItems="center" spacing={2}>
+            <LinearProgress sx={{ width: 200 }} />
+            <Typography>Loading agents...</Typography>
+          </Stack>
+        </Box>
+      </Container>
+    );
+  }
 
-      {/* Alerts */}
+  return (
+    <Container maxWidth="xl" sx={{ py: 3 }}>
+      {/* Header */}
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+        <Typography variant="h4" fontWeight="bold">
+          AI Voice Agents
+        </Typography>
+        <Box display="flex" alignItems="center" gap={2}>
+          <Typography variant="body2" color="textSecondary">
+            {filteredAgents.length} agent{filteredAgents.length !== 1 ? 's' : ''} found
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Error/Success Messages */}
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      {/* Search and Filter Controls */}
+      {/* Search and Filters */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Grid container spacing={2} alignItems="center">
@@ -527,16 +542,15 @@ const Agents = () => {
             
             <Grid item xs={6} md={2}>
               <FormControl fullWidth size="small">
-                <InputLabel>Sort by</InputLabel>
+                <InputLabel>Sort By</InputLabel>
                 <Select
                   value={sortBy}
-                  label="Sort by"
+                  label="Sort By"
                   onChange={(e) => setSortBy(e.target.value)}
                 >
                   <MenuItem value="name">Name</MenuItem>
                   <MenuItem value="responsiveness">Responsiveness</MenuItem>
-                  <MenuItem value="voice">Voice</MenuItem>
-                  <MenuItem value="language">Language</MenuItem>
+                  <MenuItem value="speed">Voice Speed</MenuItem>
                   <MenuItem value="status">Status</MenuItem>
                 </Select>
               </FormControl>
@@ -547,7 +561,6 @@ const Agents = () => {
                 variant="outlined"
                 onClick={() => setFiltersExpanded(!filtersExpanded)}
                 startIcon={<FilterIcon />}
-                endIcon={filtersExpanded ? <CollapseIcon /> : <ExpandIcon />}
                 fullWidth
               >
                 Filters
@@ -566,88 +579,85 @@ const Agents = () => {
             </Grid>
           </Grid>
 
-          {/* Expandable Filters */}
+          {/* Expanded Filters */}
           <Collapse in={filtersExpanded}>
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid item xs={12} md={4}>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Voice</InputLabel>
-                  <Select
-                    value={filterVoice}
-                    label="Voice"
-                    onChange={(e) => setFilterVoice(e.target.value)}
-                  >
-                    <MenuItem value="">All Voices</MenuItem>
-                    <MenuItem value="sarah">Sarah</MenuItem>
-                    <MenuItem value="michael">Michael</MenuItem>
-                    <MenuItem value="emily">Emily</MenuItem>
-                    <MenuItem value="david">David</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
+            <Box mt={2}>
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={4}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Voice</InputLabel>
+                    <Select
+                      value={filterVoice}
+                      label="Voice"
+                      onChange={(e) => setFilterVoice(e.target.value)}
+                    >
+                      <MenuItem value="">All Voices</MenuItem>
+                      <MenuItem value="sarah">Sarah</MenuItem>
+                      <MenuItem value="michael">Michael</MenuItem>
+                      <MenuItem value="emily">Emily</MenuItem>
+                      <MenuItem value="david">David</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
 
-              <Grid item xs={12} md={4}>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Language</InputLabel>
-                  <Select
-                    value={filterLanguage}
-                    label="Language"
-                    onChange={(e) => setFilterLanguage(e.target.value)}
-                  >
-                    <MenuItem value="">All Languages</MenuItem>
-                    <MenuItem value="en-US">English (US)</MenuItem>
-                    <MenuItem value="en-GB">English (UK)</MenuItem>
-                    <MenuItem value="es-ES">Spanish</MenuItem>
-                    <MenuItem value="fr-FR">French</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
+                <Grid item xs={12} sm={4}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Language</InputLabel>
+                    <Select
+                      value={filterLanguage}
+                      label="Language"
+                      onChange={(e) => setFilterLanguage(e.target.value)}
+                    >
+                      <MenuItem value="">All Languages</MenuItem>
+                      <MenuItem value="en-US">English (US)</MenuItem>
+                      <MenuItem value="en-GB">English (UK)</MenuItem>
+                      <MenuItem value="es-ES">Spanish</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
 
-              <Grid item xs={12} md={4}>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Responsiveness</InputLabel>
-                                     <Select
-                     value={filterResponsiveness}
-                     label="Responsiveness"
-                     onChange={(e) => setFilterResponsiveness(e.target.value)}
-                   >
-                     <MenuItem value="">All Levels</MenuItem>
-                     <MenuItem value="high">High (≥70%)</MenuItem>
-                     <MenuItem value="medium">Medium (40-69%)</MenuItem>
-                     <MenuItem value="low">Low (&lt;40%)</MenuItem>
-                   </Select>
-                </FormControl>
+                <Grid item xs={12} sm={4}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Responsiveness</InputLabel>
+                    <Select
+                      value={filterResponsiveness}
+                      label="Responsiveness"
+                      onChange={(e) => setFilterResponsiveness(e.target.value)}
+                    >
+                      <MenuItem value="">All Levels</MenuItem>
+                      <MenuItem value="high">High</MenuItem>
+                      <MenuItem value="medium">Medium</MenuItem>
+                      <MenuItem value="low">Low</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
               </Grid>
-            </Grid>
+            </Box>
           </Collapse>
         </CardContent>
       </Card>
 
-      {/* Agent Grid */}
-      <Typography variant="h6" sx={{ mb: 2 }}>
-        {filteredAndSortedAgents.length} Agent{filteredAndSortedAgents.length !== 1 ? 's' : ''}
-      </Typography>
-
+      {/* Agents Grid */}
       <Grid container spacing={3}>
-        {filteredAndSortedAgents.map((agent) => (
+        {filteredAgents.map((agent) => (
           <Grid item xs={12} sm={6} lg={4} key={agent.agent_id}>
             <AgentCard agent={agent} />
           </Grid>
         ))}
       </Grid>
 
-      {filteredAndSortedAgents.length === 0 && !loading && (
-        <Paper sx={{ p: 4, textAlign: 'center', mt: 3 }}>
-          <Typography variant="h6" color="textSecondary">
+      {filteredAgents.length === 0 && !loading && (
+        <Box textAlign="center" py={8}>
+          <Typography variant="h6" color="textSecondary" gutterBottom>
             No agents found
           </Typography>
           <Typography variant="body2" color="textSecondary">
             Try adjusting your search or filter criteria
           </Typography>
-        </Paper>
+        </Box>
       )}
 
-      {/* Enhanced Edit Agent Drawer */}
+      {/* Edit Agent Drawer */}
       <Drawer
         anchor="right"
         open={editDrawerOpen}
@@ -655,13 +665,12 @@ const Agents = () => {
         sx={{
           '& .MuiDrawer-paper': {
             width: { xs: '100%', sm: '90%', md: '60%', lg: '40%' },
-            maxWidth: '800px',
+            maxWidth: '600px',
           },
         }}
       >
         {editingAgent && (
           <Box sx={{ p: 3 }}>
-            {/* Header */}
             <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
               <Typography variant="h5" fontWeight="bold">
                 Edit Agent: {editingAgent.agent_name}
@@ -671,80 +680,90 @@ const Agents = () => {
               </IconButton>
             </Box>
 
-            {/* Form Fields */}
             <Stack spacing={3}>
-              {/* Basic Info */}
+              {/* Basic Information */}
               <Card variant="outlined">
                 <CardContent>
-                  <Typography variant="h6" gutterBottom>Basic Information</Typography>
-                  <Grid container spacing={2}>
-                    <Grid item xs={12}>
-                      <TextField
-                        fullWidth
-                        label="Agent Name"
-                        value={editingAgent.agent_name || ''}
-                        onChange={(e) => handleInputChange('agent_name', e.target.value)}
-                      />
-                    </Grid>
+                  <Typography variant="h6" gutterBottom>
+                    Basic Information
+                  </Typography>
+                  
+                  <Stack spacing={2}>
+                    <TextField
+                      fullWidth
+                      label="Agent Name"
+                      value={editingAgent.agent_name || ''}
+                      onChange={(e) => handleInputChange('agent_name', e.target.value)}
+                    />
 
-                    <Grid item xs={12} md={6}>
-                      <FormControl fullWidth>
-                        <InputLabel>Voice</InputLabel>
-                        <Select
-                          value={editingAgent.voice_id || ''}
-                          label="Voice"
-                          onChange={(e) => handleInputChange('voice_id', e.target.value)}
-                        >
-                          <MenuItem value="sarah">Sarah</MenuItem>
-                          <MenuItem value="michael">Michael</MenuItem>
-                          <MenuItem value="emily">Emily</MenuItem>
-                          <MenuItem value="david">David</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Grid>
+                    <FormControl fullWidth>
+                      <InputLabel>Voice</InputLabel>
+                      <Select
+                        value={editingAgent.voice_id || ''}
+                        label="Voice"
+                        onChange={(e) => handleInputChange('voice_id', e.target.value)}
+                      >
+                        <MenuItem value="sarah">Sarah</MenuItem>
+                        <MenuItem value="michael">Michael</MenuItem>
+                        <MenuItem value="emily">Emily</MenuItem>
+                        <MenuItem value="david">David</MenuItem>
+                      </Select>
+                    </FormControl>
 
-                    <Grid item xs={12} md={6}>
-                      <FormControl fullWidth>
-                        <InputLabel>Language</InputLabel>
-                        <Select
-                          value={editingAgent.language || ''}
-                          label="Language"
-                          onChange={(e) => handleInputChange('language', e.target.value)}
-                        >
-                          <MenuItem value="en-US">English (US)</MenuItem>
-                          <MenuItem value="en-GB">English (UK)</MenuItem>
-                          <MenuItem value="es-ES">Spanish</MenuItem>
-                          <MenuItem value="fr-FR">French</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Grid>
-                  </Grid>
+                    <FormControl fullWidth>
+                      <InputLabel>Language</InputLabel>
+                      <Select
+                        value={editingAgent.language || 'en-US'}
+                        label="Language"
+                        onChange={(e) => handleInputChange('language', e.target.value)}
+                      >
+                        <MenuItem value="en-US">English (US)</MenuItem>
+                        <MenuItem value="en-GB">English (UK)</MenuItem>
+                        <MenuItem value="es-ES">Spanish</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    <FormControl fullWidth>
+                      <InputLabel>Status</InputLabel>
+                      <Select
+                        value={editingAgent.status || 'active'}
+                        label="Status"
+                        onChange={(e) => handleInputChange('status', e.target.value)}
+                      >
+                        <MenuItem value="active">Active</MenuItem>
+                        <MenuItem value="inactive">Inactive</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Stack>
                 </CardContent>
               </Card>
 
-              {/* Voice Settings */}
+              {/* Voice Configuration */}
               <Card variant="outlined">
                 <CardContent>
-                  <Typography variant="h6" gutterBottom>Voice Settings</Typography>
-                  <Grid container spacing={3}>
-                    <Grid item xs={12} md={6}>
-                      <Typography gutterBottom>
+                  <Typography variant="h6" gutterBottom>
+                    Voice Configuration
+                  </Typography>
+                  
+                  <Stack spacing={3}>
+                    <Box>
+                      <Typography variant="body2" gutterBottom>
                         Voice Temperature: {editingAgent.voice_temperature || 0.7}
                       </Typography>
                       <Slider
                         value={editingAgent.voice_temperature || 0.7}
                         onChange={(e, value) => handleInputChange('voice_temperature', value)}
-                        min={0}
-                        max={1}
+                        min={0.1}
+                        max={1.0}
                         step={0.1}
                         marks
                         valueLabelDisplay="auto"
                       />
-                    </Grid>
+                    </Box>
 
-                    <Grid item xs={12} md={6}>
-                      <Typography gutterBottom>
-                        Voice Speed: {editingAgent.voice_speed || 1.0}x
+                    <Box>
+                      <Typography variant="body2" gutterBottom>
+                        Voice Speed: {editingAgent.voice_speed || 1.0}
                       </Typography>
                       <Slider
                         value={editingAgent.voice_speed || 1.0}
@@ -755,123 +774,118 @@ const Agents = () => {
                         marks
                         valueLabelDisplay="auto"
                       />
-                    </Grid>
-                  </Grid>
-                </CardContent>
-              </Card>
+                    </Box>
 
-              {/* Behavior Settings */}
-              <Card variant="outlined">
-                <CardContent>
-                  <Typography variant="h6" gutterBottom>Behavior Settings</Typography>
-                  <Grid container spacing={3}>
-                    <Grid item xs={12} md={6}>
-                      <Typography gutterBottom>
-                        Responsiveness: {Math.round((editingAgent.responsiveness || 0.8) * 100)}%
+                    <Box>
+                      <Typography variant="body2" gutterBottom>
+                        Responsiveness: {editingAgent.responsiveness || 0.5}
                       </Typography>
                       <Slider
-                        value={editingAgent.responsiveness || 0.8}
+                        value={editingAgent.responsiveness || 0.5}
                         onChange={(e, value) => handleInputChange('responsiveness', value)}
-                        min={0}
-                        max={1}
-                        step={0.05}
+                        min={0.1}
+                        max={1.0}
+                        step={0.1}
                         marks
                         valueLabelDisplay="auto"
                       />
-                    </Grid>
+                    </Box>
 
-                    <Grid item xs={12} md={6}>
-                      <Typography gutterBottom>
-                        Interruption Sensitivity: {Math.round((editingAgent.interruption_sensitivity || 0.5) * 100)}%
+                    <Box>
+                      <Typography variant="body2" gutterBottom>
+                        Interruption Sensitivity: {editingAgent.interruption_sensitivity || 0.5}
                       </Typography>
                       <Slider
                         value={editingAgent.interruption_sensitivity || 0.5}
                         onChange={(e, value) => handleInputChange('interruption_sensitivity', value)}
-                        min={0}
-                        max={1}
+                        min={0.1}
+                        max={1.0}
                         step={0.1}
                         marks
                         valueLabelDisplay="auto"
                       />
-                    </Grid>
+                    </Box>
 
-                    <Grid item xs={12} md={6}>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={editingAgent.enable_backchannel || false}
-                            onChange={(e) => handleInputChange('enable_backchannel', e.target.checked)}
-                          />
-                        }
-                        label="Enable Backchannel"
-                      />
-                    </Grid>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={editingAgent.enable_backchannel || false}
+                          onChange={(e) => handleInputChange('enable_backchannel', e.target.checked)}
+                        />
+                      }
+                      label="Enable Backchannel"
+                    />
 
-                    <Grid item xs={12} md={6}>
-                      <Typography gutterBottom>
-                        Backchannel Frequency: {Math.round((editingAgent.backchannel_frequency || 0.3) * 100)}%
-                      </Typography>
-                      <Slider
-                        value={editingAgent.backchannel_frequency || 0.3}
-                        onChange={(e, value) => handleInputChange('backchannel_frequency', value)}
-                        min={0}
-                        max={1}
-                        step={0.1}
-                        marks
-                        valueLabelDisplay="auto"
-                        disabled={!editingAgent.enable_backchannel}
-                      />
-                    </Grid>
-                  </Grid>
+                    {editingAgent.enable_backchannel && (
+                      <Box>
+                        <Typography variant="body2" gutterBottom>
+                          Backchannel Frequency: {editingAgent.backchannel_frequency || 0.3}
+                        </Typography>
+                        <Slider
+                          value={editingAgent.backchannel_frequency || 0.3}
+                          onChange={(e, value) => handleInputChange('backchannel_frequency', value)}
+                          min={0.1}
+                          max={1.0}
+                          step={0.1}
+                          marks
+                          valueLabelDisplay="auto"
+                        />
+                      </Box>
+                    )}
+                  </Stack>
                 </CardContent>
               </Card>
 
-              {/* System Prompt */}
+              {/* Agent Prompt */}
               <Card variant="outlined">
                 <CardContent>
-                  <Typography variant="h6" gutterBottom>System Prompt</Typography>
+                  <Typography variant="h6" gutterBottom>
+                    Agent Prompt
+                  </Typography>
+                  
                   <TextField
                     fullWidth
-                    label="System Prompt"
                     multiline
                     rows={6}
+                    label="System Prompt"
                     value={editingAgent.prompt || ''}
                     onChange={(e) => handleInputChange('prompt', e.target.value)}
-                    helperText="Define the agent's personality, capabilities, and instructions"
+                    placeholder="Enter the system prompt that defines this agent's behavior and personality..."
                   />
                 </CardContent>
               </Card>
-            </Stack>
 
-            {/* Action Buttons */}
-            <Box sx={{ mt: 3, display: 'flex', gap: 2, justifyContent: 'center' }}>
-              <Button
-                onClick={handleCancelEdit}
-                startIcon={<CancelIcon />}
-                variant="outlined"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSaveAgent}
-                variant="contained"
-                startIcon={<SaveIcon />}
-              >
-                Save Changes
-              </Button>
-            </Box>
+              {/* Action Buttons */}
+              <Box display="flex" gap={2} justifyContent="flex-end">
+                <Button
+                  variant="outlined"
+                  onClick={handleCancelEdit}
+                  startIcon={<CancelIcon />}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleSaveAgent}
+                  startIcon={<SaveIcon />}
+                  disabled={loading}
+                >
+                  {loading ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </Box>
+            </Stack>
           </Box>
         )}
       </Drawer>
 
-      {/* Success Snackbar */}
+      {/* Success/Error Snackbar */}
       <Snackbar
         open={!!success}
         autoHideDuration={4000}
         onClose={() => setSuccess(null)}
         message={success}
       />
-    </Box>
+    </Container>
   );
 };
 

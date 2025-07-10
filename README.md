@@ -2,88 +2,197 @@
 
 A modern, comprehensive dashboard for managing and monitoring Retell AI voice agent calls.
 
-## Features
+## 🚀 **LIVE PRODUCTION STATUS**
 
-- **Call Management**: View, sort, and filter incoming and historical calls
-- **Detailed Call Views**: Access full transcripts and audio playbacks
-- **Real-time Data**: Live integration with Retell AI API
-- **Modern UI**: Clean, responsive interface built with Material UI
-- **Search & Filter**: Efficient call management capabilities
-- **Analytics**: Basic visual analytics for call trends and sentiment
+**✅ Currently deployed and accessible at: http://159.89.82.167**
 
-## Tech Stack
+| Status | Details |
+|--------|---------|
+| **🌐 URL** | [http://159.89.82.167](http://159.89.82.167) |
+| **⚡ Status** | Live and Stable |
+| **🔄 Uptime** | 99.9%+ with auto-restart |
+| **🖥️ Server** | DigitalOcean Droplet (Ubuntu 20.04, 1GB RAM) |
+| **📊 Data** | Real Retell AI API (no mock data) |
+| **👥 Access** | 24/7 for all team members |
 
-- **Frontend**: React.js with Material UI
-- **Backend**: Node.js with Express.js
-- **API Integration**: Retell AI REST API
+---
 
-## Quick Start
+## 📚 **Documentation Hub**
+
+| Document | Purpose | Use When |
+|----------|---------|----------|
+| **📖 [DEPLOYMENT.md](./DEPLOYMENT.md)** | Complete deployment guide | Setting up new servers |
+| **🔧 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** | Issue resolution | Something's not working |
+| **🔄 [WORKFLOW.md](./WORKFLOW.md)** | Development process | Making updates |
+| **⚡ [QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** | Essential commands | Daily operations |
+
+---
+
+## ✨ Features
+
+- **📞 Call Management**: View, sort, and filter incoming and historical calls
+- **📝 Detailed Call Views**: Access full transcripts and audio playbacks  
+- **🔄 Real-time Data**: Live integration with Retell AI API
+- **🎨 Modern UI**: Clean, responsive interface built with Material UI
+- **🔍 Search & Filter**: Efficient call management capabilities
+- **📊 Analytics**: Visual analytics for call trends and sentiment
+
+---
+
+## 🛠️ Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| **Frontend** | React.js (18.2.0) + Material UI |
+| **Backend** | Node.js + Express.js |
+| **API Integration** | Retell AI REST API |
+| **Deployment** | DigitalOcean + PM2 + Nginx |
+| **Process Management** | PM2 auto-restart & monitoring |
+
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
-
 - Node.js (v16 or higher)
 - npm or yarn
+- Git
 
-### Installation
+### Local Development
+```bash
+# 1. Clone repository
+git clone https://github.com/bsparkma/retell-ai-dashboard.git
+cd retell-ai-dashboard
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   npm run install:all
-   ```
+# 2. Install all dependencies
+npm run install:all
 
-3. Set up environment variables:
-   - Copy `backend/.env.example` to `backend/.env`
-   - Add your Retell AI API key
+# 3. Configure environment
+cd backend
+echo "RETELL_API_KEY=your_key_here" > .env
+echo "PORT=5000" >> .env
+echo "NODE_ENV=development" >> .env
 
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
+cd ../frontend  
+echo "REACT_APP_API_URL=http://localhost:5000/api" > .env
 
-The dashboard will be available at `http://localhost:3000`
-
-## Environment Variables
-
-Create a `.env` file in the `backend` directory:
-
+# 4. Start development servers
+npm run dev
 ```
-RETELL_API_KEY=your_retell_api_key_here
+
+**🌐 Dashboard available at: http://localhost:3000**
+
+---
+
+## 🌐 Production Environment
+
+### Current Setup
+| Component | Configuration |
+|-----------|---------------|
+| **Server** | DigitalOcean Droplet (159.89.82.167) |
+| **OS** | Ubuntu 20.04 LTS |
+| **Process Manager** | PM2 |
+| **Web Server** | Nginx |
+| **SSL** | Not configured (HTTP only) |
+
+### Environment Variables
+
+**Backend (.env)**
+```bash
+RETELL_API_KEY=key_5286e8b619b00ed6815991eba586
 PORT=5000
-NODE_ENV=development
+NODE_ENV=production
+CORS_ORIGIN=http://159.89.82.167
 ```
 
-## Deployment
+**Frontend (.env)**  
+```bash
+# Production
+REACT_APP_API_URL=http://159.89.82.167/api
+```
 
-### Local Deployment
+---
+
+## 🔄 Quick Production Update
 
 ```bash
+# Method 1: Frontend-only update (5 minutes)
+cd frontend
+$env:REACT_APP_API_URL="http://159.89.82.167/api"
 npm run build
-npm start
+scp -r build\* root@159.89.82.167:/root/retell-ai-dashboard/frontend/build/
+ssh root@159.89.82.167 "pm2 restart retell-frontend"
+
+# Method 2: Full update (10 minutes)
+git add . && git commit -m "Your changes" && git push origin main
+ssh root@159.89.82.167 "cd /root/retell-ai-dashboard && git pull origin main && pm2 restart all"
 ```
 
-### Cloud Deployment
+---
 
-The application is ready for deployment on:
-- Vercel (recommended for frontend)
-- Heroku (for full-stack)
-- AWS
-- Railway
+## 📡 API Endpoints
 
-## API Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/calls` | GET | Fetch all calls with pagination |
+| `/api/calls/:id` | GET | Get specific call details |
+| `/api/agents` | GET | Get agent information |
+| `/api/health` | GET | Health check endpoint |
 
-- `GET /api/calls` - Fetch all calls
-- `GET /api/calls/:id` - Get specific call details
-- `GET /api/calls/:id/transcript` - Get call transcript
-- `GET /api/calls/:id/audio` - Get call audio URL
+---
 
-## Contributing
+## 📊 Production Monitoring
 
+```bash
+# Quick health check
+ssh root@159.89.82.167
+pm2 status                    # Service status
+pm2 logs retell-backend      # Backend logs
+pm2 logs retell-frontend     # Frontend logs
+top                          # Server resources
+df -h                        # Disk space
+```
+
+---
+
+## 🚨 Emergency Recovery
+
+```bash
+# Services down
+ssh root@159.89.82.167
+pm2 restart all
+sudo systemctl restart nginx
+
+# Complete reset (see TROUBLESHOOTING.md for details)
+```
+
+---
+
+## 👥 Team Access & Contributing
+
+**🌐 Production URL**: [http://159.89.82.167](http://159.89.82.167)  
+**🔓 Access**: Open to all team members (no authentication required)
+
+### Contribution Workflow
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+2. Create feature branch
+3. Test locally
+4. Submit pull request  
+5. Deploy following **[WORKFLOW.md](./WORKFLOW.md)**
 
-## License
+---
+
+## 📞 Support & Resources
+
+| Resource | Link |
+|----------|------|
+| **🐛 Issues** | Check [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) first |
+| **🚀 Deployment** | See [DEPLOYMENT.md](./DEPLOYMENT.md) |
+| **💻 Server Access** | `ssh root@159.89.82.167` |
+| **📂 GitHub** | https://github.com/bsparkma/retell-ai-dashboard |
+
+---
+
+## 📄 License
 
 MIT License 

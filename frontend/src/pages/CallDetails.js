@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -14,6 +14,10 @@ import {
   Tooltip,
   CircularProgress,
   Alert,
+  Container,
+  LinearProgress,
+  Stack,
+  Avatar,
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -25,21 +29,35 @@ import {
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
   VolumeUp as VolumeUpIcon,
+  Mic as MicIcon,
+  Psychology as PsychologyIcon,
+  SupportAgent as AgentIcon,
 } from '@mui/icons-material';
+import { LineChart, Line, ResponsiveContainer, XAxis, YAxis } from 'recharts';
 import { callsApi } from '../services/api';
 
 const CallDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const audioRef = useRef(null);
+  
   const [call, setCall] = useState(null);
   const [transcript, setTranscript] = useState(null);
   const [recording, setRecording] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
 
   useEffect(() => {
-    fetchCallDetails();
+    if (id) {
+      fetchCallDetails();
+    } else {
+      setError('No call ID provided');
+      setLoading(false);
+    }
   }, [id]);
 
   const fetchCallDetails = async () => {
@@ -48,34 +66,39 @@ const CallDetails = () => {
       setError(null);
 
       // Fetch call details, transcript, and recording in parallel
-      const [callData, transcriptData, recordingData] = await Promise.allSettled([
+      const [callResponse, transcriptResponse, recordingResponse] = await Promise.allSettled([
         callsApi.getCall(id),
         callsApi.getCallTranscript(id),
         callsApi.getCallRecording(id),
       ]);
 
-      if (callData.status === 'fulfilled') {
-        setCall(callData.value);
+      // Handle call data
+      if (callResponse.status === 'fulfilled' && callResponse.value) {
+        setCall(callResponse.value);
       } else {
-        // Use mock data if API fails
+        // Generate mock call data if API fails
         setCall(generateMockCallData(id));
       }
 
-      if (transcriptData.status === 'fulfilled') {
-        setTranscript(transcriptData.value);
+      // Handle transcript data
+      if (transcriptResponse.status === 'fulfilled' && transcriptResponse.value) {
+        setTranscript(transcriptResponse.value);
       } else {
         setTranscript(generateMockTranscript());
       }
 
-      if (recordingData.status === 'fulfilled') {
-        setRecording(recordingData.value);
+      // Handle recording data
+      if (recordingResponse.status === 'fulfilled' && recordingResponse.value) {
+        setRecording(recordingResponse.value);
       } else {
         setRecording({ recording_url: null });
       }
     } catch (err) {
-      setError('Failed to fetch call details');
+      console.error('Error fetching call details:', err);
+      setError('Failed to load call details. Using demo data.');
       setCall(generateMockCallData(id));
       setTranscript(generateMockTranscript());
+      setRecording({ recording_url: null });
     } finally {
       setLoading(false);
     }
@@ -83,6 +106,7 @@ const CallDetails = () => {
 
   const generateMockCallData = (callId) => ({
     id: callId,
+    call_id: callId,
     caller_name: 'John Smith',
     caller_number: '+1-555-0123',
     call_date: new Date().toISOString(),
@@ -92,14 +116,22 @@ const CallDetails = () => {
     sentiment: 'positive',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'Patient called to schedule annual checkup. Appointment scheduled for next Tuesday at 2 PM. Patient has insurance coverage verified.',
+    summary: 'Patient called to schedule annual checkup. Appointment scheduled for next Tuesday at 2 PM. Patient has insurance coverage verified and confirmed availability.',
     call_status: 'completed',
     start_timestamp: new Date(Date.now() - 180000).toISOString(),
     end_timestamp: new Date().toISOString(),
+    agent_id: 'agent_001',
+    sentiment_scores: [
+      { time: '0:00', score: 0.7 },
+      { time: '1:00', score: 0.8 },
+      { time: '2:00', score: 0.9 },
+      { time: '3:00', score: 0.8 }
+    ]
   });
 
   const generateMockTranscript = () => ({
-    transcript: [
+    transcript: 'Agent: Hello! Thank you for calling our medical practice. I\'m here to help you today. How can I assist you?\nUser: Hi, I\'d like to schedule an appointment for my annual checkup.\nAgent: I\'d be happy to help you schedule your annual checkup. Can I start by getting your full name and date of birth?\nUser: Yes, it\'s John Smith, born March 15th, 1985.\nAgent: Thank you, Mr. Smith. I see you\'re a new patient with us. Let me check our available appointment slots for annual checkups.\nUser: That sounds great. I\'m pretty flexible with timing.\nAgent: Perfect! I have availability next Tuesday, March 21st at 2:00 PM with Dr. Johnson. Would that work for you?\nUser: Yes, that works perfectly for me.\nAgent: Excellent! I\'ve scheduled your appointment for Tuesday, March 21st at 2:00 PM. You\'ll receive a confirmation text shortly. Is there anything else I can help you with today?\nUser: No, that\'s everything. Thank you so much for your help!\nAgent: You\'re very welcome, Mr. Smith! We look forward to seeing you next Tuesday. Have a great day!',
+    transcript_object: [
       {
         role: 'agent',
         content: 'Hello! Thank you for calling our medical practice. I\'m here to help you today. How can I assist you?',
@@ -173,224 +205,394 @@ const CallDetails = () => {
     }
   };
 
-  const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
-    // Audio playback logic would go here
+  const handleAudioPlay = async () => {
+    try {
+      if (isPlaying) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
+        setIsPlaying(false);
+        return;
+      }
+
+      if (recording?.recording_url) {
+        if (audioRef.current) {
+          audioRef.current.src = recording.recording_url;
+          await audioRef.current.play();
+          setIsPlaying(true);
+        }
+      } else {
+        // Mock audio playback for demo
+        console.log('Playing mock audio for call', id);
+        setIsPlaying(true);
+        setTimeout(() => {
+          setIsPlaying(false);
+        }, 3000);
+      }
+    } catch (error) {
+      console.error('Error playing audio:', error);
+      setIsPlaying(false);
+    }
+  };
+
+  const handleAudioTimeUpdate = () => {
+    if (audioRef.current) {
+      const progress = (audioRef.current.currentTime / audioRef.current.duration) * 100;
+      setAudioProgress(progress);
+      setAudioCurrentTime(audioRef.current.currentTime);
+    }
+  };
+
+  const handleAudioLoadedMetadata = () => {
+    if (audioRef.current) {
+      setAudioDuration(audioRef.current.duration);
+    }
+  };
+
+  const handleAudioEnded = () => {
+    setIsPlaying(false);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
   };
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-        <CircularProgress />
-      </Box>
+      <Container maxWidth="lg" sx={{ py: 3 }}>
+        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+          <Stack alignItems="center" spacing={2}>
+            <CircularProgress />
+            <Typography>Loading call details...</Typography>
+          </Stack>
+        </Box>
+      </Container>
     );
   }
 
-  if (error && !call) {
+  if (!call) {
     return (
-      <Alert severity="error" sx={{ mt: 2 }}>
-        {error}
-      </Alert>
+      <Container maxWidth="lg" sx={{ py: 3 }}>
+        <Alert severity="error" sx={{ mt: 2 }}>
+          <Typography variant="h6">Call Not Found</Typography>
+          <Typography>The requested call could not be found.</Typography>
+          <Button 
+            variant="outlined" 
+            onClick={() => navigate('/dashboard')} 
+            sx={{ mt: 2 }}
+          >
+            Return to Dashboard
+          </Button>
+        </Alert>
+      </Container>
     );
   }
 
   return (
-    <Box>
+    <Container maxWidth="lg" sx={{ py: 3 }}>
+      {/* Audio element for playback */}
+      <audio
+        ref={audioRef}
+        onTimeUpdate={handleAudioTimeUpdate}
+        onLoadedMetadata={handleAudioLoadedMetadata}
+        onEnded={handleAudioEnded}
+        preload="metadata"
+      />
+
       {/* Header */}
       <Box display="flex" alignItems="center" mb={3}>
-        <IconButton onClick={() => navigate('/')} sx={{ mr: 2 }}>
+        <IconButton 
+          onClick={() => navigate('/dashboard')} 
+          sx={{ mr: 2 }}
+        >
           <ArrowBackIcon />
         </IconButton>
-        <Typography variant="h4">
+        <Typography variant="h4" fontWeight="bold">
           Call Details
         </Typography>
       </Box>
 
-      <Grid container spacing={3}>
-        {/* Call Information */}
+      {/* Error Alert */}
+      {error && (
+        <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+
+      {/* Emergency Badge */}
+      {call.is_emergency && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          <Box display="flex" alignItems="center">
+            <EmergencyIcon sx={{ mr: 1 }} />
+            <Typography variant="h6" fontWeight="bold">
+              Emergency Call - Immediate Attention Required
+            </Typography>
+          </Box>
+        </Alert>
+      )}
+
+      {/* Call Overview Cards */}
+      <Grid container spacing={3} sx={{ mb: 3 }}>
         <Grid item xs={12} md={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
+              <Box display="flex" alignItems="center" mb={2}>
+                <Avatar sx={{ mr: 2, bgcolor: 'primary.main' }}>
+                  {call.caller_name?.charAt(0) || 'U'}
+                </Avatar>
+                <Box>
+                  <Typography variant="h6" fontWeight="bold">
+                    {call.caller_name}
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary">
+                    {call.caller_number}
+                  </Typography>
+                </Box>
+              </Box>
+              <Box display="flex" alignItems="center" gap={1}>
+                <Chip
+                  label={call.is_new_patient ? 'New Patient' : 'Existing Patient'}
+                  color={call.is_new_patient ? 'primary' : 'default'}
+                  size="small"
+                />
+                {call.is_emergency && (
+                  <Chip
+                    label="Emergency"
+                    color="error"
+                    size="small"
+                    icon={<EmergencyIcon />}
+                  />
+                )}
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" fontWeight="bold" gutterBottom>
                 Call Information
               </Typography>
-              
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Caller Name
-                </Typography>
-                <Typography variant="body1">
-                  {call?.caller_name || 'Unknown'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Phone Number
-                </Typography>
-                <Typography variant="body1">
-                  {call?.caller_number || 'N/A'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Date & Time
-                </Typography>
-                <Typography variant="body1">
-                  {call?.call_date ? new Date(call.call_date).toLocaleString() : 'N/A'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Duration
-                </Typography>
-                <Typography variant="body1">
-                  {formatDuration(call?.duration || 0)}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Status
-                </Typography>
-                <Chip
-                  label={call?.success_status || 'Unknown'}
-                  color={call?.success_status === 'Resolved' ? 'success' : 'error'}
-                  size="small"
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Sentiment
-                </Typography>
-                <Chip
-                  label={call?.sentiment || 'neutral'}
-                  color={getSentimentColor(call?.sentiment)}
-                  size="small"
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="textSecondary">
-                  Patient Type
-                </Typography>
-                <Chip
-                  label={call?.is_new_patient ? 'New Patient' : 'Existing Patient'}
-                  color={call?.is_new_patient ? 'primary' : 'default'}
-                  size="small"
-                />
-              </Box>
-
-              {call?.is_emergency && (
-                <Box sx={{ mb: 2 }}>
+              <Stack spacing={1}>
+                <Box display="flex" justifyContent="space-between">
+                  <Typography variant="body2" color="textSecondary">Date & Time:</Typography>
+                  <Typography variant="body2">
+                    {new Date(call.call_date).toLocaleString()}
+                  </Typography>
+                </Box>
+                <Box display="flex" justifyContent="space-between">
+                  <Typography variant="body2" color="textSecondary">Duration:</Typography>
+                  <Typography variant="body2">
+                    {formatDuration(call.duration)}
+                  </Typography>
+                </Box>
+                <Box display="flex" justifyContent="space-between">
+                  <Typography variant="body2" color="textSecondary">Status:</Typography>
                   <Chip
-                    icon={<EmergencyIcon />}
-                    label="Emergency Call"
-                    color="error"
+                    label={call.success_status}
+                    color={call.success_status === 'Resolved' ? 'success' : 'error'}
                     size="small"
                   />
                 </Box>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Call Summary */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Call Summary
-              </Typography>
-              <Typography variant="body1">
-                {call?.summary || 'No summary available for this call.'}
-              </Typography>
-            </CardContent>
-          </Card>
-
-          {/* Audio Player */}
-          <Card sx={{ mt: 2 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Call Recording
-              </Typography>
-              {recording?.recording_url ? (
-                <Box display="flex" alignItems="center" gap={2}>
-                  <IconButton
-                    onClick={handlePlayPause}
-                    color="primary"
-                    size="large"
-                  >
-                    {isPlaying ? <PauseIcon /> : <PlayIcon />}
-                  </IconButton>
-                  <Box flexGrow={1}>
-                    <Typography variant="body2" color="textSecondary">
-                      Audio playback controls would be implemented here
-                    </Typography>
-                  </Box>
-                  <VolumeUpIcon color="action" />
+                <Box display="flex" justifyContent="space-between">
+                  <Typography variant="body2" color="textSecondary">Sentiment:</Typography>
+                  <Chip
+                    label={call.sentiment || 'neutral'}
+                    color={getSentimentColor(call.sentiment)}
+                    size="small"
+                  />
                 </Box>
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  No recording available for this call.
-                </Typography>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Transcript */}
-        <Grid item xs={12}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Call Transcript
-              </Typography>
-              {transcript?.transcript ? (
-                <Box>
-                  {transcript.transcript.map((entry, index) => (
-                    <Paper
-                      key={index}
-                      elevation={1}
-                      sx={{
-                        p: 2,
-                        mb: 2,
-                        backgroundColor: entry.role === 'agent' ? '#f5f5f5' : '#e3f2fd',
-                      }}
-                    >
-                      <Box display="flex" justifyContent="space-between" alignItems="flex-start">
-                        <Box flexGrow={1}>
-                          <Typography
-                            variant="subtitle2"
-                            color="primary"
-                            sx={{ mb: 1 }}
-                          >
-                            {entry.role === 'agent' ? 'AI Agent' : 'Caller'}
-                          </Typography>
-                          <Typography variant="body1">
-                            {entry.content}
-                          </Typography>
-                        </Box>
-                        <Typography variant="caption" color="textSecondary">
-                          {entry.timestamp}
-                        </Typography>
-                      </Box>
-                    </Paper>
-                  ))}
-                </Box>
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  No transcript available for this call.
-                </Typography>
-              )}
+              </Stack>
             </CardContent>
           </Card>
         </Grid>
       </Grid>
-    </Box>
+
+      {/* Call Reason */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" fontWeight="bold" gutterBottom>
+            Call Reason
+          </Typography>
+          <Typography variant="body1">
+            {call.reason}
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Audio Player */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Box display="flex" alignItems="center" mb={2}>
+            <VolumeUpIcon sx={{ mr: 1 }} />
+            <Typography variant="h6" fontWeight="bold">
+              Audio Recording
+            </Typography>
+          </Box>
+          <Box display="flex" alignItems="center" gap={2}>
+            <IconButton 
+              color="primary" 
+              size="large"
+              onClick={handleAudioPlay}
+            >
+              {isPlaying ? <PauseIcon /> : <PlayIcon />}
+            </IconButton>
+            <Box sx={{ flex: 1 }}>
+              <LinearProgress 
+                variant="determinate" 
+                value={audioProgress} 
+                sx={{ height: 8, borderRadius: 4 }} 
+              />
+            </Box>
+            <Typography variant="body2">
+              {isPlaying
+                ? `${formatDuration(Math.floor(audioCurrentTime))} / ${formatDuration(Math.floor(audioDuration || call.duration))}`
+                : `00:00 / ${formatDuration(call.duration)}`
+              }
+            </Typography>
+          </Box>
+          {recording?.recording_url ? (
+            <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
+              Audio available for playback
+            </Typography>
+          ) : (
+            <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
+              Audio recording not available for this call
+            </Typography>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Sentiment Analysis */}
+      {call.sentiment_scores && call.sentiment_scores.length > 0 && (
+        <Card sx={{ mb: 3 }}>
+          <CardContent>
+            <Box display="flex" alignItems="center" mb={2}>
+              <PsychologyIcon sx={{ mr: 1 }} />
+              <Typography variant="h6" fontWeight="bold">
+                Sentiment Analysis Over Time
+              </Typography>
+            </Box>
+            <Box sx={{ height: 200 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={call.sentiment_scores} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                  <XAxis dataKey="time" fontSize={12} />
+                  <YAxis domain={[-1, 1]} fontSize={12} />
+                  <Line 
+                    type="monotone" 
+                    dataKey="score" 
+                    stroke="#1976d2"
+                    strokeWidth={3}
+                    dot={{ r: 4 }}
+                    activeDot={{ r: 6 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Agent Information */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Box display="flex" alignItems="center" mb={2}>
+            <AgentIcon sx={{ mr: 1 }} />
+            <Typography variant="h6" fontWeight="bold">
+              Assigned Agent
+            </Typography>
+          </Box>
+          <Box display="flex" alignItems="center">
+            <Avatar sx={{ mr: 2 }}>AI</Avatar>
+            <Box>
+              <Typography variant="body1" fontWeight="medium">
+                AI Agent {call.agent_id}
+              </Typography>
+              <Typography variant="body2" color="textSecondary">
+                Retell Voice Assistant
+              </Typography>
+            </Box>
+          </Box>
+        </CardContent>
+      </Card>
+
+      {/* Call Summary */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" fontWeight="bold" gutterBottom>
+            Call Summary
+          </Typography>
+          <Typography variant="body1" sx={{ lineHeight: 1.6 }}>
+            {call.summary}
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Transcript */}
+      <Card>
+        <CardContent>
+          <Box display="flex" alignItems="center" mb={2}>
+            <MicIcon sx={{ mr: 1 }} />
+            <Typography variant="h6" fontWeight="bold">
+              Call Transcript
+            </Typography>
+          </Box>
+          
+          {transcript?.transcript_object && transcript.transcript_object.length > 0 ? (
+            <Stack spacing={2}>
+              {transcript.transcript_object.map((message, index) => (
+                <Box key={index} display="flex" gap={2}>
+                  <Typography 
+                    variant="caption" 
+                    color="textSecondary" 
+                    sx={{ minWidth: 60, mt: 0.5 }}
+                  >
+                    {message.timestamp}
+                  </Typography>
+                  <Box flex={1}>
+                    <Typography 
+                      variant="body2" 
+                      fontWeight="medium" 
+                      color={message.role === 'agent' ? 'primary.main' : 'text.primary'}
+                      gutterBottom
+                    >
+                      {message.role === 'agent' ? 'Agent' : 'Caller'}:
+                    </Typography>
+                    <Typography variant="body2" sx={{ ml: 1 }}>
+                      {message.content}
+                    </Typography>
+                  </Box>
+                </Box>
+              ))}
+            </Stack>
+          ) : (
+            <Paper 
+              variant="outlined" 
+              sx={{ 
+                p: 2, 
+                maxHeight: 400, 
+                overflow: 'auto',
+                backgroundColor: 'grey.50'
+              }}
+            >
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                {transcript?.transcript || call.transcript || 'Transcript not available for this call.'}
+              </Typography>
+            </Paper>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Back Button */}
+      <Box sx={{ mt: 3, textAlign: 'center' }}>
+        <Button
+          variant="outlined"
+          onClick={() => navigate('/dashboard')}
+          startIcon={<ArrowBackIcon />}
+        >
+          Back to Dashboard
+        </Button>
+      </Box>
+    </Container>
   );
 };
 
