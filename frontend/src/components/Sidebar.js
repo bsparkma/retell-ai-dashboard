@@ -20,6 +20,7 @@ import {
   Person as PersonIcon,
   Analytics as AnalyticsIcon,
   Settings as SettingsIcon,
+  CalendarToday as CalendarIcon,
 } from '@mui/icons-material';
 import config from '../config/env';
 
@@ -27,6 +28,7 @@ const drawerWidth = 240;
 
 const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
+  { text: 'Calendar', icon: <CalendarIcon />, path: '/calendar' },
   { text: 'Agents', icon: <PersonIcon />, path: '/agents' },
   { text: 'Analytics', icon: <AnalyticsIcon />, path: '/analytics' },
 ];

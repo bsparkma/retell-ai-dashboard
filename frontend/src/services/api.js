@@ -95,4 +95,67 @@ export const healthApi = {
   },
 };
 
+export const openDentalApi = {
+  // Check Open Dental health
+  getHealth: async () => {
+    const response = await api.get('/od/health');
+    return response.data;
+  },
+
+  // Get calendar appointments
+  getCalendarAppointments: async (startDate, endDate) => {
+    const response = await api.get('/od/calendar', {
+      params: { startDate, endDate }
+    });
+    return response.data;
+  },
+
+  // Get available appointment slots (enhanced)
+  getSlots: async (params = {}) => {
+    const response = await api.post('/od/slots', params);
+    return response.data;
+  },
+
+  // Book an appointment
+  bookAppointment: async (bookingData) => {
+    const response = await api.post('/od/book', bookingData);
+    return response.data;
+  },
+
+  // Smart booking from call data
+  smartBook: async (callData) => {
+    const response = await api.post('/od/smart-book', callData);
+    return response.data;
+  },
+
+  // Search patient by phone
+  searchPatient: async (phone) => {
+    const response = await api.get('/od/patient/search', { params: { phone } });
+    return response.data;
+  },
+
+  // Get patient details
+  getPatient: async (patNum) => {
+    const response = await api.get(`/od/patient/${patNum}`);
+    return response.data;
+  },
+
+  // Create new patient
+  createPatient: async (patientData) => {
+    const response = await api.post('/od/patient', patientData);
+    return response.data;
+  },
+};
+
+// Helper function to check if Open Dental is available
+export const isOpenDentalEnabled = async () => {
+  try {
+    const health = await openDentalApi.getHealth();
+    return health.enabled;
+  } catch (error) {
+    console.warn('Open Dental health check failed:', error);
+    return false;
+  }
+};
+
 export default api; 

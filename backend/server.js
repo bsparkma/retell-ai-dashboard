@@ -7,6 +7,7 @@ require('dotenv').config();
 
 const callsRouter = require('./routes/calls');
 const agentsRouter = require('./routes/agents');
+const openDentalRouter = require('./routes/openDental');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -31,13 +32,18 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use('/api/calls', callsRouter);
 app.use('/api/agents', agentsRouter);
+app.use('/api/od', openDentalRouter);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    services: {
+      retell: 'connected',
+      openDental: process.env.OD_API_URL ? 'configured' : 'not configured'
+    }
   });
 });
 

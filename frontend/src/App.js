@@ -7,6 +7,7 @@ import Breadcrumbs from './components/common/Breadcrumbs';
 import FloatingActionMenu from './components/common/FloatingActionMenu';
 import Dashboard from './pages/Dashboard';
 import CallDetails from './pages/CallDetails';
+import Calendar from './pages/Calendar';
 import Agents from './pages/Agents';
 import Analytics from './pages/Analytics';
 import config from './config/env';
@@ -36,6 +37,7 @@ function App() {
           <Breadcrumbs />
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/calendar" element={<Calendar />} />
             <Route path="/calls/:id" element={<CallDetails />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/analytics" element={<Analytics />} />
