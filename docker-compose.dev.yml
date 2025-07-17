@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5000"
+    environment:
+      - NODE_ENV=development
+      - PORT=5000
+      - RETELL_API_KEY=${RETELL_API_KEY:-key_5286e8b619b00ed6815991eba586}
+      - CORS_ORIGIN=http://localhost:3001
+      - OD_API_URL=${OD_API_URL:-}
+      - OD_API_KEY=${OD_API_KEY:-}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  frontend-dev:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:5001/api
+      - WDS_SOCKET_PORT=3001
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend-dev
+    restart: unless-stopped
+
+volumes:
+  backend_node_modules:
+  frontend_node_modules: 
