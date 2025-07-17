@@ -12,10 +12,7 @@ import {
   Alert,
   CircularProgress,
   Grid,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
+  Paper,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -23,6 +20,13 @@ import {
   Switch,
   FormControlLabel,
   useTheme,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  styled,
 } from '@mui/material';
 import {
   CalendarToday as CalendarIcon,
@@ -38,6 +42,70 @@ import {
 } from '@mui/icons-material';
 import { openDentalApi } from '../services/api';
 
+// Styled components for the PMS grid
+const TimeSlotCell = styled(TableCell)(({ theme }) => ({
+  borderRight: `1px solid ${theme.palette.divider}`,
+  borderBottom: `1px solid ${theme.palette.divider}`,
+  width: '80px',
+  padding: '4px 8px',
+  fontSize: '0.75rem',
+  backgroundColor: theme.palette.grey[50],
+  fontWeight: 'bold',
+  textAlign: 'center',
+  position: 'sticky',
+  left: 0,
+  zIndex: 1,
+}));
+
+const ProviderHeaderCell = styled(TableCell)(({ theme }) => ({
+  borderRight: `1px solid ${theme.palette.divider}`,
+  borderBottom: `2px solid ${theme.palette.primary.main}`,
+  padding: '8px',
+  backgroundColor: theme.palette.primary.main,
+  color: theme.palette.primary.contrastText,
+  fontWeight: 'bold',
+  textAlign: 'center',
+  minWidth: '150px',
+}));
+
+const AppointmentCell = styled(TableCell)(({ theme }) => ({
+  borderRight: `1px solid ${theme.palette.divider}`,
+  borderBottom: `1px solid ${theme.palette.divider}`,
+  padding: '2px',
+  height: '40px',
+  verticalAlign: 'top',
+  position: 'relative',
+  minWidth: '150px',
+}));
+
+const AppointmentBlock = styled(Paper)(({ theme, status }) => ({
+  padding: '4px 6px',
+  margin: '1px',
+  borderRadius: '4px',
+  cursor: 'pointer',
+  fontSize: '0.75rem',
+  lineHeight: '1.2',
+  backgroundColor: getAppointmentColor(status, theme),
+  color: theme.palette.getContrastText(getAppointmentColor(status, theme)),
+  boxShadow: theme.shadows[1],
+  '&:hover': {
+    boxShadow: theme.shadows[3],
+    transform: 'translateY(-1px)',
+  },
+  transition: 'all 0.2s ease-in-out',
+}));
+
+function getAppointmentColor(status, theme) {
+  switch (status) {
+    case 'scheduled': return theme.palette.info.light;
+    case 'confirmed': return theme.palette.primary.light;
+    case 'arrived': return theme.palette.warning.light;
+    case 'completed': return theme.palette.success.light;
+    case 'cancelled': return theme.palette.error.light;
+    default: return theme.palette.grey[300];
+  }
+}
+
 const OpenDentalCalendar = ({ height = 600 }) => {
   const theme = useTheme();
   
@@ -48,67 +116,105 @@ const OpenDentalCalendar = ({ height = 600 }) => {
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [odEnabled, setOdEnabled] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
   const [appointmentDetailsOpen, setAppointmentDetailsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   
-  // Refs
+  // Refs for cleanup
   const refreshTimer = useRef(null);
+  const visibilityTimer = useRef(null);
 
-  // Check Open Dental status on mount
+  // Time slots configuration
+  const timeSlots = [
+    '8:00 AM', '8:15 AM', '8:30 AM', '8:45 AM',
+    '9:00 AM', '9:15 AM', '9:30 AM', '9:45 AM',
+    '10:00 AM', '10:15 AM', '10:30 AM', '10:45 AM',
+    '11:00 AM', '11:15 AM', '11:30 AM', '11:45 AM',
+    '12:00 PM', '12:15 PM', '12:30 PM', '12:45 PM',
+    '1:00 PM', '1:15 PM', '1:30 PM', '1:45 PM',
+    '2:00 PM', '2:15 PM', '2:30 PM', '2:45 PM',
+    '3:00 PM', '3:15 PM', '3:30 PM', '3:45 PM',
+    '4:00 PM', '4:15 PM', '4:30 PM', '4:45 PM',
+    '5:00 PM', '5:15 PM', '5:30 PM', '5:45 PM',
+  ];
+
+  // Check Open Dental health on mount
   useEffect(() => {
-    checkOpenDentalStatus();
+    const checkOdHealth = async () => {
+      try {
+        await openDentalApi.getHealth();
+        setOdEnabled(true);
+      } catch (error) {
+        console.log('Open Dental not available, using mock data');
+        setOdEnabled(false);
+      }
+    };
+    
+    checkOdHealth();
   }, []);
 
-  // Set up auto-refresh every 5 minutes
+  // Auto-refresh logic
   useEffect(() => {
-    if (autoRefreshEnabled && odEnabled) {
-      startAutoRefresh();
-    } else {
-      stopAutoRefresh();
+    if (autoRefreshEnabled && !loading) {
+      refreshTimer.current = setInterval(() => {
+        if (!document.hidden) {
+          fetchAppointments(false);
+        }
+      }, 300000); // 5 minutes
+
+      return () => {
+        if (refreshTimer.current) {
+          clearInterval(refreshTimer.current);
+        }
+      };
     }
+  }, [autoRefreshEnabled, loading, fetchAppointments]);
 
-    return () => stopAutoRefresh();
-  }, [autoRefreshEnabled, odEnabled]);
-
-  const checkOpenDentalStatus = async () => {
-    try {
-      const health = await openDentalApi.getHealth();
-      setOdEnabled(health.enabled);
-      if (health.enabled) {
-        fetchAppointments();
+  // Page visibility optimization
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && autoRefreshEnabled) {
+        clearTimeout(visibilityTimer.current);
+        visibilityTimer.current = setTimeout(() => {
+          fetchAppointments(false);
+        }, 1000);
       }
-    } catch (error) {
-      console.warn('Open Dental health check failed:', error);
-      setOdEnabled(false);
-      // Show mock data for demonstration
-      setAppointments(generateMockAppointments());
-    }
-  };
+    };
 
-  const startAutoRefresh = () => {
-    stopAutoRefresh();
-    // Refresh every 5 minutes (300,000 ms)
-    refreshTimer.current = setInterval(() => {
-      fetchAppointments(false); // Silent refresh
-    }, 300000);
-  };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (visibilityTimer.current) {
+        clearTimeout(visibilityTimer.current);
+      }
+    };
+  }, [autoRefreshEnabled, fetchAppointments]);
 
-  const stopAutoRefresh = () => {
-    if (refreshTimer.current) {
-      clearInterval(refreshTimer.current);
-      refreshTimer.current = null;
-    }
-  };
+  // Initial data load
+  useEffect(() => {
+    fetchAppointments();
+  }, [currentDate]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshTimer.current) {
+        clearInterval(refreshTimer.current);
+        refreshTimer.current = null;
+      }
+    };
+  }, []);
 
   const fetchAppointments = useCallback(async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true);
       setError(null);
 
-      const startDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-      const endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+      const startDate = new Date(currentDate);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(currentDate);
+      endDate.setHours(23, 59, 59, 999);
       
       const response = await openDentalApi.getSlots({
         startDate: startDate.toISOString().split('T')[0],
@@ -130,25 +236,23 @@ const OpenDentalCalendar = ({ height = 600 }) => {
 
   const generateMockAppointments = () => {
     const appointments = [];
-    const today = new Date();
+    const today = new Date(currentDate);
     
-    for (let i = 0; i < 15; i++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + Math.floor(Math.random() * 30) - 15);
-      
+    // Generate appointments for the selected day only
+    for (let i = 0; i < 12; i++) {
       const hour = 8 + Math.floor(Math.random() * 10);
-      const minute = Math.random() > 0.5 ? 0 : 30;
+      const minute = Math.floor(Math.random() * 4) * 15; // 0, 15, 30, 45
       
       appointments.push({
         id: `mock-${i}`,
         patientName: `Patient ${i + 1}`,
         patientPhone: `+1-555-${String(Math.floor(Math.random() * 9000) + 1000)}`,
-        appointmentType: ['Checkup', 'Cleaning', 'Consultation', 'Emergency'][Math.floor(Math.random() * 4)],
-        duration: [30, 45, 60][Math.floor(Math.random() * 3)],
-        providerName: ['Dr. Smith', 'Dr. Johnson', 'Dr. Brown'][Math.floor(Math.random() * 3)],
-        roomName: `Room ${Math.floor(Math.random() * 5) + 1}`,
+        appointmentType: ['Checkup', 'Cleaning', 'Consultation', 'Emergency', 'Crown Prep', 'Root Canal'][Math.floor(Math.random() * 6)],
+        duration: [15, 30, 45, 60][Math.floor(Math.random() * 4)],
+        providerName: ['Dr. Smith', 'Dr. Johnson', 'Dr. Brown', 'Dr. Wilson'][Math.floor(Math.random() * 4)],
+        roomName: `Op ${Math.floor(Math.random() * 6) + 1}`,
         status: ['scheduled', 'confirmed', 'arrived', 'completed'][Math.floor(Math.random() * 4)],
-        dateTime: new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour, minute),
+        dateTime: new Date(today.getFullYear(), today.getMonth(), today.getDate(), hour, minute),
         notes: Math.random() > 0.7 ? 'Special instructions needed' : '',
         isEmergency: Math.random() > 0.9,
       });
@@ -157,35 +261,40 @@ const OpenDentalCalendar = ({ height = 600 }) => {
     return appointments.sort((a, b) => a.dateTime - b.dateTime);
   };
 
-  // Get today's appointments
-  const getTodaysAppointments = () => {
-    const today = new Date();
-    return appointments.filter(apt => {
-      const aptDate = new Date(apt.dateTime);
-      return aptDate.toDateString() === today.toDateString();
+  // Get unique providers/operatories
+  const getProviders = () => {
+    const providersSet = new Set();
+    appointments.forEach(apt => {
+      providersSet.add(`${apt.providerName} (${apt.roomName})`);
     });
+    return Array.from(providersSet).sort();
   };
 
-  // Get this week's appointments
-  const getWeeksAppointments = () => {
-    const today = new Date();
-    const oneWeekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+  // Get appointments for a specific time slot and provider
+  const getAppointmentsForSlot = (timeSlot, provider) => {
+    const [time, period] = timeSlot.split(' ');
+    const [hour, minute] = time.split(':').map(Number);
+    const adjustedHour = period === 'PM' && hour !== 12 ? hour + 12 : (period === 'AM' && hour === 12 ? 0 : hour);
     
     return appointments.filter(apt => {
       const aptDate = new Date(apt.dateTime);
-      return aptDate >= today && aptDate <= oneWeekFromNow;
+      const aptHour = aptDate.getHours();
+      const aptMinute = aptDate.getMinutes();
+      const providerMatch = provider.includes(apt.providerName) && provider.includes(apt.roomName);
+      
+      // Check if appointment starts within this 15-minute slot
+      return providerMatch && aptHour === adjustedHour && Math.floor(aptMinute / 15) * 15 === minute;
     });
   };
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'scheduled': return 'primary';
-      case 'confirmed': return 'info';
-      case 'arrived': return 'warning';
-      case 'completed': return 'success';
-      case 'cancelled': return 'error';
-      default: return 'default';
-    }
+  const handleDateChange = (days) => {
+    const newDate = new Date(currentDate);
+    newDate.setDate(currentDate.getDate() + days);
+    setCurrentDate(newDate);
+  };
+
+  const goToToday = () => {
+    setCurrentDate(new Date());
   };
 
   const handleAppointmentClick = (appointment) => {
@@ -206,188 +315,147 @@ const OpenDentalCalendar = ({ height = 600 }) => {
     const date = new Date(dateTime);
     return date.toLocaleDateString('en-US', { 
       month: 'short', 
-      day: 'numeric',
-      weekday: 'short'
+      day: 'numeric' 
     });
   };
 
-  if (!odEnabled) {
-    return (
-      <Card>
-        <CardContent>
-          <Alert severity="info" icon={<WarningIcon />}>
-            <Typography variant="h6">Open Dental Calendar</Typography>
-            <Typography variant="body2">
-              Open Dental integration is not configured. Showing sample appointment data for demonstration.
-            </Typography>
-          </Alert>
-          
-          {/* Still show sample data */}
-          <Box mt={2}>
-            <Typography variant="h6" gutterBottom>Sample Appointments</Typography>
-            <List>
-              {generateMockAppointments().slice(0, 5).map((appointment) => (
-                <ListItem key={appointment.id} button onClick={() => handleAppointmentClick(appointment)}>
-                  <ListItemIcon>
-                    <EventIcon color={appointment.isEmergency ? 'error' : 'primary'} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={`${formatTime(appointment.dateTime)} - ${appointment.patientName}`}
-                    secondary={`${appointment.appointmentType} with ${appointment.providerName}`}
-                  />
-                  <Chip
-                    label={appointment.status}
-                    size="small"
-                    color={getStatusColor(appointment.status)}
-                  />
-                </ListItem>
-              ))}
-            </List>
-          </Box>
-        </CardContent>
-      </Card>
-    );
-  }
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'scheduled': return 'primary';
+      case 'confirmed': return 'info';
+      case 'arrived': return 'warning';
+      case 'completed': return 'success';
+      case 'cancelled': return 'error';
+      default: return 'default';
+    }
+  };
+
+  const providers = getProviders();
 
   return (
-    <Card sx={{ height: height }}>
+    <Card sx={{ height, display: 'flex', flexDirection: 'column' }}>
       <CardHeader
         title={
-          <Box display="flex" alignItems="center">
-            <CalendarIcon sx={{ mr: 1 }} />
-            <Typography variant="h6">
-              Open Dental Calendar
+          <Box display="flex" alignItems="center" gap={1}>
+            <CalendarIcon />
+            <Typography variant="h6" component="span">
+              Schedule - {currentDate.toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              })}
             </Typography>
-            {loading && <CircularProgress size={20} sx={{ ml: 1 }} />}
+            {!odEnabled && (
+              <Chip 
+                label="Demo Mode" 
+                color="warning" 
+                size="small"
+                icon={<WarningIcon />}
+              />
+            )}
           </Box>
         }
         action={
-          <Box display="flex" alignItems="center" gap={1}>
-            {lastRefresh && (
-              <Typography variant="caption" color="textSecondary">
-                Updated: {lastRefresh.toLocaleTimeString()}
-              </Typography>
-            )}
-            
-            <Tooltip title="Refresh now">
-              <IconButton onClick={() => fetchAppointments()} disabled={loading}>
-                <RefreshIcon />
-              </IconButton>
-            </Tooltip>
-            
-            <Tooltip title="Settings">
-              <IconButton onClick={() => setSettingsOpen(true)}>
-                <SettingsIcon />
-              </IconButton>
-            </Tooltip>
+          <Box display="flex" gap={1}>
+            <IconButton onClick={() => handleDateChange(-1)} size="small">
+              <PrevIcon />
+            </IconButton>
+            <IconButton onClick={goToToday} size="small">
+              <TodayIcon />
+            </IconButton>
+            <IconButton onClick={() => handleDateChange(1)} size="small">
+              <NextIcon />
+            </IconButton>
+            <IconButton 
+              onClick={() => fetchAppointments()} 
+              disabled={loading}
+              size="small"
+            >
+              {loading ? <CircularProgress size={20} /> : <RefreshIcon />}
+            </IconButton>
+            <IconButton 
+              onClick={() => setSettingsOpen(true)} 
+              size="small"
+            >
+              <SettingsIcon />
+            </IconButton>
           </Box>
         }
       />
 
-      <CardContent sx={{ height: height - 80, overflow: 'auto' }}>
+      <CardContent sx={{ flex: 1, p: 0, overflow: 'hidden' }}>
         {error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {error}
+          <Alert severity="warning" sx={{ m: 2 }}>
+            {error} - Showing sample data for demonstration.
           </Alert>
         )}
 
-        <Grid container spacing={3}>
-          {/* Today's Appointments */}
-          <Grid item xs={12} md={6}>
-            <Typography variant="h6" gutterBottom>
-              Today's Appointments ({getTodaysAppointments().length})
+        {lastRefresh && (
+          <Box px={2} py={1}>
+            <Typography variant="caption" color="textSecondary">
+              Last updated: {lastRefresh.toLocaleTimeString()}
+              {autoRefreshEnabled && ' • Auto-refresh enabled'}
             </Typography>
-            
-            {getTodaysAppointments().length === 0 ? (
-              <Typography variant="body2" color="textSecondary">
-                No appointments scheduled for today
-              </Typography>
-            ) : (
-              <List dense>
-                {getTodaysAppointments().map((appointment) => (
-                  <ListItem
-                    key={appointment.id}
-                    button
-                    onClick={() => handleAppointmentClick(appointment)}
-                    sx={{
-                      border: 1,
-                      borderColor: 'divider',
-                      borderRadius: 1,
-                      mb: 1,
-                    }}
-                  >
-                    <ListItemIcon>
-                      <EventIcon color={appointment.isEmergency ? 'error' : 'primary'} />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={
-                        <Box display="flex" alignItems="center" gap={1}>
-                          <Typography variant="body2" fontWeight="medium">
-                            {formatTime(appointment.dateTime)}
-                          </Typography>
-                          <Typography variant="body2">
-                            {appointment.patientName}
-                          </Typography>
-                        </Box>
-                      }
-                      secondary={`${appointment.appointmentType} • ${appointment.providerName}`}
-                    />
-                    <Chip
-                      label={appointment.status}
-                      size="small"
-                      color={getStatusColor(appointment.status)}
-                    />
-                  </ListItem>
-                ))}
-              </List>
-            )}
-          </Grid>
+          </Box>
+        )}
 
-          {/* This Week's Appointments */}
-          <Grid item xs={12} md={6}>
-            <Typography variant="h6" gutterBottom>
-              This Week ({getWeeksAppointments().length})
-            </Typography>
-            
-            <List dense>
-              {getWeeksAppointments().slice(0, 10).map((appointment) => (
-                <ListItem
-                  key={appointment.id}
-                  button
-                  onClick={() => handleAppointmentClick(appointment)}
-                  sx={{
-                    border: 1,
-                    borderColor: 'divider',
-                    borderRadius: 1,
-                    mb: 1,
-                  }}
-                >
-                  <ListItemIcon>
-                    <EventIcon color={appointment.isEmergency ? 'error' : 'primary'} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={
-                      <Box display="flex" alignItems="center" gap={1}>
-                        <Typography variant="body2" fontWeight="medium">
-                          {formatDate(appointment.dateTime)}
-                        </Typography>
-                        <Typography variant="body2">
-                          {formatTime(appointment.dateTime)}
-                        </Typography>
-                      </Box>
-                    }
-                    secondary={`${appointment.patientName} • ${appointment.appointmentType}`}
-                  />
-                  <Chip
-                    label={appointment.status}
-                    size="small"
-                    color={getStatusColor(appointment.status)}
-                  />
-                </ListItem>
+        <TableContainer sx={{ height: 'calc(100% - 60px)', overflow: 'auto' }}>
+          <Table stickyHeader size="small">
+            <TableHead>
+              <TableRow>
+                <TimeSlotCell>Time</TimeSlotCell>
+                {providers.map((provider) => (
+                  <ProviderHeaderCell key={provider}>
+                    {provider}
+                  </ProviderHeaderCell>
+                ))}
+                {providers.length === 0 && (
+                  <ProviderHeaderCell>
+                    No appointments found
+                  </ProviderHeaderCell>
+                )}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {timeSlots.map((timeSlot) => (
+                <TableRow key={timeSlot}>
+                  <TimeSlotCell>{timeSlot}</TimeSlotCell>
+                  {providers.map((provider) => {
+                    const slotAppointments = getAppointmentsForSlot(timeSlot, provider);
+                    return (
+                      <AppointmentCell key={`${timeSlot}-${provider}`}>
+                        {slotAppointments.map((appointment) => (
+                          <AppointmentBlock
+                            key={appointment.id}
+                            status={appointment.status}
+                            onClick={() => handleAppointmentClick(appointment)}
+                            elevation={1}
+                          >
+                            <Typography variant="caption" display="block" fontWeight="bold">
+                              {appointment.patientName}
+                            </Typography>
+                            <Typography variant="caption" display="block">
+                              {appointment.appointmentType}
+                            </Typography>
+                            <Typography variant="caption" display="block" sx={{ opacity: 0.8 }}>
+                              {appointment.duration}min
+                            </Typography>
+                          </AppointmentBlock>
+                        ))}
+                      </AppointmentCell>
+                    );
+                  })}
+                  {providers.length === 0 && (
+                    <AppointmentCell>
+                      {/* Empty cell when no providers */}
+                    </AppointmentCell>
+                  )}
+                </TableRow>
               ))}
-            </List>
-          </Grid>
-        </Grid>
+            </TableBody>
+          </Table>
+        </TableContainer>
       </CardContent>
 
       {/* Settings Dialog */}
@@ -407,6 +475,7 @@ const OpenDentalCalendar = ({ height = 600 }) => {
             
             <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
               Calendar will automatically sync with Open Dental every 5 minutes when enabled.
+              Refresh is paused when the page is not visible to conserve bandwidth.
             </Typography>
           </Box>
         </DialogContent>
