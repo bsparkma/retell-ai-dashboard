@@ -96,13 +96,28 @@ export const healthApi = {
 };
 
 export const openDentalApi = {
-  // Check Open Dental health
+  // Health and sync status
   getHealth: async () => {
     const response = await api.get('/od/health');
     return response.data;
   },
 
-  // Get calendar appointments
+  getSyncStatus: async () => {
+    const response = await api.get('/od/sync/status');
+    return response.data;
+  },
+
+  triggerSync: async () => {
+    const response = await api.post('/od/sync/trigger');
+    return response.data;
+  },
+
+  // Calendar and appointments
+  getCalendar: async (params = {}) => {
+    const response = await api.get('/od/calendar', { params });
+    return response.data;
+  },
+
   getCalendarAppointments: async (startDate, endDate) => {
     const response = await api.get('/od/calendar', {
       params: { startDate, endDate }
@@ -110,41 +125,129 @@ export const openDentalApi = {
     return response.data;
   },
 
-  // Get available appointment slots (enhanced)
+  getAppointmentRange: async (params = {}) => {
+    const response = await api.get('/od/appointments/range', { params });
+    return response.data;
+  },
+
+  getAppointmentDetails: async (appointmentId) => {
+    const response = await api.get(`/od/appointments/${appointmentId}`);
+    return response.data;
+  },
+
+  // Conflict detection and smart scheduling
+  checkConflicts: async (appointmentData) => {
+    const response = await api.post('/od/appointments/check-conflicts', appointmentData);
+    return response.data;
+  },
+
+  findSlots: async (searchCriteria) => {
+    const response = await api.post('/od/appointments/find-slots', searchCriteria);
+    return response.data;
+  },
+
   getSlots: async (params = {}) => {
     const response = await api.post('/od/slots', params);
     return response.data;
   },
 
-  // Book an appointment
-  bookAppointment: async (bookingData) => {
-    const response = await api.post('/od/book', bookingData);
+  // Appointment booking and management
+  bookAppointment: async (appointmentData) => {
+    const response = await api.post('/od/appointments', appointmentData);
     return response.data;
   },
 
-  // Smart booking from call data
-  smartBook: async (callData) => {
-    const response = await api.post('/od/smart-book', callData);
+  updateAppointment: async (appointmentId, updateData) => {
+    const response = await api.put(`/od/appointments/${appointmentId}`, updateData);
     return response.data;
   },
 
-  // Search patient by phone
+  updateAppointmentStatus: async (appointmentId, status, notes = '') => {
+    const response = await api.patch(`/od/appointments/${appointmentId}/status`, { status, notes });
+    return response.data;
+  },
+
+  cancelAppointment: async (appointmentId, reason = '') => {
+    const response = await api.delete(`/od/appointments/${appointmentId}`, { data: { reason } });
+    return response.data;
+  },
+
+  // Patient management
+  searchPatients: async (query) => {
+    const response = await api.get('/od/patients/search', { params: { q: query } });
+    return response.data;
+  },
+
   searchPatient: async (phone) => {
     const response = await api.get('/od/patient/search', { params: { phone } });
     return response.data;
   },
 
-  // Get patient details
+  getPatientDetails: async (patientId) => {
+    const response = await api.get(`/od/patients/${patientId}`);
+    return response.data;
+  },
+
   getPatient: async (patNum) => {
     const response = await api.get(`/od/patient/${patNum}`);
     return response.data;
   },
 
-  // Create new patient
+  verifyPatientAppointments: async (patientId, includeHistory = true) => {
+    const response = await api.get(`/od/patients/${patientId}/appointments`, {
+      params: { includeHistory }
+    });
+    return response.data;
+  },
+
   createPatient: async (patientData) => {
     const response = await api.post('/od/patient', patientData);
     return response.data;
   },
+
+  // Providers and operatories
+  getProviders: async () => {
+    const response = await api.get('/od/providers');
+    return response.data;
+  },
+
+  getOperatories: async () => {
+    const response = await api.get('/od/operatories');
+    return response.data;
+  },
+
+  getProviderSchedule: async (providerId, date) => {
+    const response = await api.get(`/od/providers/${providerId}/schedule`, {
+      params: { date }
+    });
+    return response.data;
+  },
+
+  // Legacy methods for backward compatibility
+  smartBook: async (callData) => {
+    const response = await api.post('/od/smart-book', callData);
+    return response.data;
+  },
+
+  // AI Agent specific endpoints
+  ai: {
+    smartBook: async (bookingRequest) => {
+      const response = await api.post('/od/ai/smart-book', bookingRequest);
+      return response.data;
+    },
+
+    verifyAppointment: async (searchParams) => {
+      const response = await api.get('/od/ai/verify-appointment', { params: searchParams });
+      return response.data;
+    },
+
+    getScheduleOverview: async (date, providerId = null) => {
+      const response = await api.get('/od/ai/schedule-overview', {
+        params: { date, providerId }
+      });
+      return response.data;
+    }
+  }
 };
 
 // Helper function to check if Open Dental is available

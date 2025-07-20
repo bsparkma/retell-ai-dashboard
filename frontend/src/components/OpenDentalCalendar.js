@@ -17,20 +17,26 @@ import {
   InputLabel,
   Tooltip,
   CircularProgress,
-  Alert
+  Alert,
+  Badge,
+  Fab,
+  Snackbar
 } from '@mui/material';
 import {
   ChevronLeft,
   ChevronRight,
   Today,
   Refresh,
-  ViewModule,
-  ViewList,
+  Add,
+  Sync,
+  Warning,
+  CheckCircle,
   Person,
   LocationOn
 } from '@mui/icons-material';
 import { format, addDays, subDays, isToday, parseISO } from 'date-fns';
 import { openDentalApi } from '../services/api';
+import AppointmentBookingDialog from './AppointmentBookingDialog';
 
 // Time configuration
 const START_HOUR = 8; // 8 AM
@@ -65,6 +71,12 @@ const OpenDentalCalendar = () => {
   const [selectedAppointment, setSelectedAppointment] = useState(null);
   const [viewMode, setViewMode] = useState('provider'); // 'provider' or 'operatory'
   const [refreshing, setRefreshing] = useState(false);
+  
+  // New booking functionality
+  const [bookingDialogOpen, setBookingDialogOpen] = useState(false);
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState(null);
+  const [syncStatus, setSyncStatus] = useState({ enabled: false, lastSync: null, conflicts: 0 });
+  const [notification, setNotification] = useState({ open: false, message: '', severity: 'info' });
 
   // Generate time slots for the day
   const timeSlots = useMemo(() => {
@@ -171,7 +183,7 @@ const OpenDentalCalendar = () => {
     setAppointments(mockAppointments);
   }, []);
 
-  // Fetch calendar data
+  // Fetch calendar data with enhanced error handling
   const fetchCalendarData = useCallback(async (showRefreshing = false) => {
     if (showRefreshing) setRefreshing(true);
     else setLoading(true);
@@ -191,6 +203,15 @@ const OpenDentalCalendar = () => {
         setAppointments(response.appointments);
         setProviders(response.providers || []);
         setOperatories(response.operatories || []);
+        
+        // Update sync status if available
+        if (response.lastSync) {
+          setSyncStatus(prev => ({
+            ...prev,
+            lastSync: response.lastSync,
+            enabled: true
+          }));
+        }
       } else {
         // Fallback to mock data
         generateMockData();
@@ -203,6 +224,45 @@ const OpenDentalCalendar = () => {
       setRefreshing(false);
     }
   }, [selectedDate, viewMode, generateMockData]);
+
+  // Show notification
+  const showNotification = useCallback((message, severity = 'info') => {
+    setNotification({ open: true, message, severity });
+  }, []);
+
+  // Check sync status
+  const checkSyncStatus = useCallback(async () => {
+    try {
+      const response = await openDentalApi.getSyncStatus();
+      setSyncStatus({
+        enabled: response.enabled,
+        lastSync: response.lastSync,
+        conflicts: response.conflicts?.length || 0,
+        isActive: response.isActive
+      });
+    } catch (error) {
+      console.error('Failed to check sync status:', error);
+    }
+  }, []);
+
+  // Trigger manual sync
+  const triggerSync = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await openDentalApi.triggerSync();
+      showNotification('Sync triggered successfully', 'success');
+      // Refresh calendar data after sync
+      setTimeout(() => {
+        fetchCalendarData(false);
+        checkSyncStatus();
+      }, 2000);
+    } catch (error) {
+      console.error('Manual sync failed:', error);
+      showNotification('Sync failed. Please try again.', 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchCalendarData, checkSyncStatus, showNotification]);
 
   // Get columns based on view mode
   const columns = useMemo(() => {
@@ -271,12 +331,45 @@ const OpenDentalCalendar = () => {
     setSelectedAppointment(appointment);
   };
 
-  // Auto-refresh setup
+  // Handle cell click for booking
+  const handleCellClick = useCallback((columnId, timeSlot) => {
+    const column = columns.find(c => c.id === columnId);
+    if (!column) return;
+
+    const selectedDateTime = new Date(selectedDate);
+    selectedDateTime.setHours(timeSlot.hour, timeSlot.minute, 0, 0);
+
+    setSelectedTimeSlot({
+      date: format(selectedDate, 'yyyy-MM-dd'),
+      time: timeSlot.time,
+      dateTime: selectedDateTime,
+      provider: viewMode === 'provider' ? column : null,
+      operatory: viewMode === 'operatory' ? column : null
+    });
+    setBookingDialogOpen(true);
+  }, [columns, selectedDate, viewMode]);
+
+  // Handle appointment booked
+  const handleAppointmentBooked = useCallback((newAppointment) => {
+    showNotification('Appointment booked successfully!', 'success');
+    fetchCalendarData(); // Refresh calendar
+    setBookingDialogOpen(false);
+    setSelectedTimeSlot(null);
+  }, [fetchCalendarData, showNotification]);
+
+  // Close notification
+  const handleCloseNotification = () => {
+    setNotification(prev => ({ ...prev, open: false }));
+  };
+
+  // Auto-refresh setup with sync status checking
   useEffect(() => {
     fetchCalendarData();
+    checkSyncStatus();
     
     const interval = setInterval(() => {
       fetchCalendarData(true);
+      checkSyncStatus();
     }, REFRESH_INTERVAL);
 
     return () => clearInterval(interval);
@@ -344,6 +437,21 @@ const OpenDentalCalendar = () => {
                 {refreshing ? <CircularProgress size={20} /> : <Refresh />}
               </IconButton>
             </Tooltip>
+
+            {syncStatus.enabled && (
+              <Tooltip title={`Sync Status: ${syncStatus.isActive ? 'Active' : 'Inactive'} | Last: ${syncStatus.lastSync ? format(new Date(syncStatus.lastSync), 'h:mm a') : 'Never'}`}>
+                <Badge badgeContent={syncStatus.conflicts} color="warning">
+                  <IconButton 
+                    onClick={triggerSync}
+                    disabled={refreshing}
+                    size="small"
+                    color={syncStatus.isActive ? 'success' : 'default'}
+                  >
+                    <Sync />
+                  </IconButton>
+                </Badge>
+              </Tooltip>
+            )}
           </Box>
         </Box>
       </Paper>
@@ -437,12 +545,18 @@ const OpenDentalCalendar = () => {
                 {timeSlots.map((slot, index) => (
                   <Box 
                     key={slot.time}
+                    onClick={() => handleCellClick(column.id, slot)}
                     sx={{ 
                       height: '60px',
                       borderBottom: 1,
                       borderColor: 'divider',
                       position: 'relative',
-                      backgroundColor: slot.minute === 0 ? 'rgba(0,0,0,0.02)' : 'transparent'
+                      backgroundColor: slot.minute === 0 ? 'rgba(0,0,0,0.02)' : 'transparent',
+                      cursor: 'pointer',
+                      '&:hover': {
+                        backgroundColor: 'primary.light',
+                        opacity: 0.1
+                      }
                     }}
                   />
                 ))}
@@ -556,6 +670,52 @@ const OpenDentalCalendar = () => {
           </>
         )}
       </Dialog>
+
+      {/* Floating Action Button for New Appointments */}
+      <Fab
+        color="primary"
+        sx={{
+          position: 'fixed',
+          bottom: 24,
+          right: 24,
+          zIndex: 1000
+        }}
+        onClick={() => setBookingDialogOpen(true)}
+      >
+        <Add />
+      </Fab>
+
+      {/* Appointment Booking Dialog */}
+      <AppointmentBookingDialog
+        open={bookingDialogOpen}
+        onClose={() => {
+          setBookingDialogOpen(false);
+          setSelectedTimeSlot(null);
+        }}
+        providers={providers}
+        operatories={operatories}
+        selectedDate={selectedTimeSlot?.date}
+        selectedProvider={selectedTimeSlot?.provider}
+        selectedOperatory={selectedTimeSlot?.operatory}
+        selectedTime={selectedTimeSlot?.time}
+        onAppointmentBooked={handleAppointmentBooked}
+      />
+
+      {/* Notification Snackbar */}
+      <Snackbar
+        open={notification.open}
+        autoHideDuration={6000}
+        onClose={handleCloseNotification}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Alert 
+          onClose={handleCloseNotification} 
+          severity={notification.severity}
+          sx={{ width: '100%' }}
+        >
+          {notification.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };
