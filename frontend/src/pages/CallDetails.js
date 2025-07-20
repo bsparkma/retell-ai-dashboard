@@ -257,20 +257,20 @@ const CallDetails = () => {
 
   if (loading) {
     return (
-      <Container maxWidth="lg" sx={{ py: 3 }}>
+      <Box sx={{ width: '100%' }}>
         <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
           <Stack alignItems="center" spacing={2}>
             <CircularProgress />
             <Typography>Loading call details...</Typography>
           </Stack>
         </Box>
-      </Container>
+      </Box>
     );
   }
 
   if (!call) {
     return (
-      <Container maxWidth="lg" sx={{ py: 3 }}>
+      <Box sx={{ width: '100%' }}>
         <Alert severity="error" sx={{ mt: 2 }}>
           <Typography variant="h6">Call Not Found</Typography>
           <Typography>The requested call could not be found.</Typography>
@@ -282,12 +282,12 @@ const CallDetails = () => {
             Return to Dashboard
           </Button>
         </Alert>
-      </Container>
+      </Box>
     );
   }
 
   return (
-    <Container maxWidth="lg" sx={{ py: 3 }}>
+    <Box sx={{ width: '100%' }}>
       {/* Audio element for playback */}
       <audio
         ref={audioRef}
@@ -592,7 +592,7 @@ const CallDetails = () => {
           Back to Dashboard
         </Button>
       </Box>
-    </Container>
+    </Box>
   );
 };
 

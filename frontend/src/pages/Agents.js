@@ -488,19 +488,19 @@ const Agents = () => {
 
   if (loading && agents.length === 0) {
     return (
-      <Container maxWidth="xl" sx={{ py: 3 }}>
+      <Box sx={{ width: '100%' }}>
         <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
           <Stack alignItems="center" spacing={2}>
             <LinearProgress sx={{ width: 200 }} />
             <Typography>Loading agents...</Typography>
           </Stack>
         </Box>
-      </Container>
+      </Box>
     );
   }
 
   return (
-    <Container maxWidth="xl" sx={{ py: 3 }}>
+    <Box sx={{ width: '100%' }}>
       {/* Header */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <Typography variant="h4" fontWeight="bold">
@@ -885,7 +885,7 @@ const Agents = () => {
         onClose={() => setSuccess(null)}
         message={success}
       />
-    </Container>
+    </Box>
   );
 };
 

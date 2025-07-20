@@ -507,7 +507,7 @@ const Dashboard = () => {
   ];
 
   return (
-    <Container maxWidth="xl" sx={{ py: 3 }}>
+    <Box sx={{ width: '100%' }}>
       {/* Audio element for playback */}
       <audio
         ref={audioRef}
@@ -1065,7 +1065,7 @@ const Dashboard = () => {
           </Badge>
         </Fab>
       )}
-    </Container>
+    </Box>
   );
 };
 

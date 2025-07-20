@@ -28,21 +28,21 @@ function App() {
         sx={{
           flexGrow: 1,
           mt: config.ui.headerHeight / 8, // Account for header height
-          ml: sidebarOpen ? config.ui.drawerWidth / 8 : 7, // Account for sidebar width
+          ml: sidebarOpen ? config.ui.drawerWidth / 8 - 1.5 : 5, // Reduced left margin for better space utilization
           transition: 'margin-left 0.3s ease',
-          p: 3,
+          px: 2, // Reduced horizontal padding
+          py: 3,
+          width: `calc(100% - ${sidebarOpen ? config.ui.drawerWidth : 56}px)`, // Ensure full width usage
         }}
       >
-        <Container maxWidth="xl">
-          <Breadcrumbs />
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/calendar" element={<Calendar />} />
-            <Route path="/calls/:id" element={<CallDetails />} />
-            <Route path="/agents" element={<Agents />} />
-            <Route path="/analytics" element={<Analytics />} />
-          </Routes>
-        </Container>
+        <Breadcrumbs />
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/calendar" element={<Calendar />} />
+          <Route path="/calls/:id" element={<CallDetails />} />
+          <Route path="/agents" element={<Agents />} />
+          <Route path="/analytics" element={<Analytics />} />
+        </Routes>
       </Box>
       
       <FloatingActionMenu />

@@ -108,7 +108,7 @@ const Calendar = () => {
   );
 
   return (
-    <Container maxWidth="xl" sx={{ py: 3 }}>
+    <Box sx={{ width: '100%' }}>
       <Box mb={3}>
         <Typography variant="h4" component="h1" gutterBottom>
           📅 Appointment Calendar
@@ -135,7 +135,7 @@ const Calendar = () => {
           </Typography>
         </Alert>
       </Box>
-    </Container>
+    </Box>
   );
 };
 
