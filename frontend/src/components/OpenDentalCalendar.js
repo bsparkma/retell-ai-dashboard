@@ -1,555 +1,562 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Box,
-  Card,
-  CardContent,
-  CardHeader,
-  Typography,
-  IconButton,
-  Button,
-  Chip,
-  Tooltip,
-  Alert,
-  CircularProgress,
-  Grid,
   Paper,
+  Typography,
+  Button,
+  ButtonGroup,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  Switch,
-  FormControlLabel,
-  useTheme,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  styled,
+  Chip,
+  IconButton,
+  FormControl,
+  Select,
+  MenuItem,
+  InputLabel,
+  Tooltip,
+  CircularProgress,
+  Alert
 } from '@mui/material';
 import {
-  CalendarToday as CalendarIcon,
-  Refresh as RefreshIcon,
-  Settings as SettingsIcon,
-  Event as EventIcon,
-  Person as PersonIcon,
-  Schedule as ScheduleIcon,
-  ChevronLeft as PrevIcon,
-  ChevronRight as NextIcon,
-  Today as TodayIcon,
-  Warning as WarningIcon,
+  ChevronLeft,
+  ChevronRight,
+  Today,
+  Refresh,
+  ViewModule,
+  ViewList,
+  Person,
+  LocationOn
 } from '@mui/icons-material';
+import { format, addDays, subDays, isToday, parseISO } from 'date-fns';
 import { openDentalApi } from '../services/api';
 
-// Styled components for the PMS grid
-const TimeSlotCell = styled(TableCell)(({ theme }) => ({
-  borderRight: `1px solid ${theme.palette.divider}`,
-  borderBottom: `1px solid ${theme.palette.divider}`,
-  width: '80px',
-  padding: '4px 8px',
-  fontSize: '0.75rem',
-  backgroundColor: theme.palette.grey[50],
-  fontWeight: 'bold',
-  textAlign: 'center',
-  position: 'sticky',
-  left: 0,
-  zIndex: 1,
-}));
+// Time configuration
+const START_HOUR = 8; // 8 AM
+const END_HOUR = 18; // 6 PM
+const TIME_SLOT_MINUTES = 30;
+const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
-const ProviderHeaderCell = styled(TableCell)(({ theme }) => ({
-  borderRight: `1px solid ${theme.palette.divider}`,
-  borderBottom: `2px solid ${theme.palette.primary.main}`,
-  padding: '8px',
-  backgroundColor: theme.palette.primary.main,
-  color: theme.palette.primary.contrastText,
-  fontWeight: 'bold',
-  textAlign: 'center',
-  minWidth: '150px',
-}));
+// Provider/Operatory colors
+const PROVIDER_COLORS = [
+  '#1976d2', '#388e3c', '#f57c00', '#7b1fa2', 
+  '#c2185b', '#00796b', '#5d4037', '#455a64',
+  '#e91e63', '#9c27b0', '#673ab7', '#3f51b5'
+];
 
-const AppointmentCell = styled(TableCell)(({ theme }) => ({
-  borderRight: `1px solid ${theme.palette.divider}`,
-  borderBottom: `1px solid ${theme.palette.divider}`,
-  padding: '2px',
-  height: '40px',
-  verticalAlign: 'top',
-  position: 'relative',
-  minWidth: '150px',
-}));
+// Appointment status colors
+const STATUS_COLORS = {
+  scheduled: '#2196f3',
+  confirmed: '#4caf50', 
+  arrived: '#ff9800',
+  completed: '#9e9e9e',
+  cancelled: '#f44336',
+  no_show: '#795548'
+};
 
-const AppointmentBlock = styled(Paper)(({ theme, status }) => ({
-  padding: '4px 6px',
-  margin: '1px',
-  borderRadius: '4px',
-  cursor: 'pointer',
-  fontSize: '0.75rem',
-  lineHeight: '1.2',
-  backgroundColor: getAppointmentColor(status, theme),
-  color: theme.palette.getContrastText(getAppointmentColor(status, theme)),
-  boxShadow: theme.shadows[1],
-  '&:hover': {
-    boxShadow: theme.shadows[3],
-    transform: 'translateY(-1px)',
-  },
-  transition: 'all 0.2s ease-in-out',
-}));
-
-function getAppointmentColor(status, theme) {
-  switch (status) {
-    case 'scheduled': return theme.palette.info.light;
-    case 'confirmed': return theme.palette.primary.light;
-    case 'arrived': return theme.palette.warning.light;
-    case 'completed': return theme.palette.success.light;
-    case 'cancelled': return theme.palette.error.light;
-    default: return theme.palette.grey[300];
-  }
-}
-
-const OpenDentalCalendar = ({ height = 600 }) => {
-  const theme = useTheme();
-  
-  // State management
-  const [currentDate, setCurrentDate] = useState(new Date());
+const OpenDentalCalendar = () => {
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [appointments, setAppointments] = useState([]);
+  const [providers, setProviders] = useState([]);
+  const [operatories, setOperatories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [lastRefresh, setLastRefresh] = useState(null);
-  const [odEnabled, setOdEnabled] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
-  const [appointmentDetailsOpen, setAppointmentDetailsOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
-  
-  // Refs for cleanup
-  const refreshTimer = useRef(null);
-  const visibilityTimer = useRef(null);
+  const [viewMode, setViewMode] = useState('provider'); // 'provider' or 'operatory'
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Time slots configuration
-  const timeSlots = [
-    '8:00 AM', '8:15 AM', '8:30 AM', '8:45 AM',
-    '9:00 AM', '9:15 AM', '9:30 AM', '9:45 AM',
-    '10:00 AM', '10:15 AM', '10:30 AM', '10:45 AM',
-    '11:00 AM', '11:15 AM', '11:30 AM', '11:45 AM',
-    '12:00 PM', '12:15 PM', '12:30 PM', '12:45 PM',
-    '1:00 PM', '1:15 PM', '1:30 PM', '1:45 PM',
-    '2:00 PM', '2:15 PM', '2:30 PM', '2:45 PM',
-    '3:00 PM', '3:15 PM', '3:30 PM', '3:45 PM',
-    '4:00 PM', '4:15 PM', '4:30 PM', '4:45 PM',
-    '5:00 PM', '5:15 PM', '5:30 PM', '5:45 PM',
-  ];
-
-  // Check Open Dental health on mount
-  useEffect(() => {
-    const checkOdHealth = async () => {
-      try {
-        await openDentalApi.getHealth();
-        setOdEnabled(true);
-      } catch (error) {
-        console.log('Open Dental not available, using mock data');
-        setOdEnabled(false);
-      }
-    };
+  // Generate time slots for the day
+  const timeSlots = useMemo(() => {
+    const slots = [];
+    const totalMinutes = (END_HOUR - START_HOUR) * 60;
     
-    checkOdHealth();
-  }, []);
-
-  // Auto-refresh logic
-  useEffect(() => {
-    if (autoRefreshEnabled && !loading) {
-      refreshTimer.current = setInterval(() => {
-        if (!document.hidden) {
-          fetchAppointments(false);
-        }
-      }, 300000); // 5 minutes
-
-      return () => {
-        if (refreshTimer.current) {
-          clearInterval(refreshTimer.current);
-        }
-      };
-    }
-  }, [autoRefreshEnabled, loading, fetchAppointments]);
-
-  // Page visibility optimization
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden && autoRefreshEnabled) {
-        clearTimeout(visibilityTimer.current);
-        visibilityTimer.current = setTimeout(() => {
-          fetchAppointments(false);
-        }, 1000);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (visibilityTimer.current) {
-        clearTimeout(visibilityTimer.current);
-      }
-    };
-  }, [autoRefreshEnabled, fetchAppointments]);
-
-  // Initial data load
-  useEffect(() => {
-    fetchAppointments();
-  }, [currentDate]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (refreshTimer.current) {
-        clearInterval(refreshTimer.current);
-        refreshTimer.current = null;
-      }
-    };
-  }, []);
-
-  const fetchAppointments = useCallback(async (showLoading = true) => {
-    try {
-      if (showLoading) setLoading(true);
-      setError(null);
-
-      const startDate = new Date(currentDate);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(currentDate);
-      endDate.setHours(23, 59, 59, 999);
+    for (let i = 0; i <= totalMinutes; i += TIME_SLOT_MINUTES) {
+      const hour = START_HOUR + Math.floor(i / 60);
+      const minute = i % 60;
+      const time = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      const timeValue = hour * 60 + minute;
       
-      const response = await openDentalApi.getSlots({
-        startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
-        includeBooked: true,
+      slots.push({
+        time,
+        timeValue,
+        hour,
+        minute
       });
+    }
+    return slots;
+  }, []);
 
-      setAppointments(response.slots || []);
-      setLastRefresh(new Date());
-    } catch (error) {
-      console.error('Failed to fetch appointments:', error);
-      setError(error.message);
-      // Use mock data for demonstration
-      setAppointments(generateMockAppointments());
+  // Get current time indicator position
+  const getCurrentTimePosition = useCallback(() => {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTimeValue = currentHour * 60 + currentMinute;
+    
+    if (currentTimeValue < START_HOUR * 60 || currentTimeValue > END_HOUR * 60) {
+      return null;
+    }
+    
+    const totalMinutes = (END_HOUR - START_HOUR) * 60;
+    const position = ((currentTimeValue - START_HOUR * 60) / totalMinutes) * 100;
+    return position;
+  }, []);
+
+  // Generate mock data for demonstration
+  const generateMockData = useCallback(() => {
+    const mockProviders = [
+      { id: 1, name: 'Dr. Brian Albert', color: PROVIDER_COLORS[0] },
+      { id: 2, name: 'Dr. Sarah Lexington', color: PROVIDER_COLORS[1] },
+      { id: 3, name: 'Dr. Michael Chen', color: PROVIDER_COLORS[2] },
+      { id: 4, name: 'Dr. Emily Rodriguez', color: PROVIDER_COLORS[3] }
+    ];
+
+    const mockOperatories = [
+      { id: 1, name: 'Op 1', color: PROVIDER_COLORS[4] },
+      { id: 2, name: 'Op 2', color: PROVIDER_COLORS[5] },
+      { id: 3, name: 'Op 3', color: PROVIDER_COLORS[6] },
+      { id: 4, name: 'Hygiene 1', color: PROVIDER_COLORS[7] }
+    ];
+
+    const mockAppointments = [
+      {
+        id: 1,
+        patient: 'John Smith',
+        time: '09:00',
+        duration: 60,
+        type: 'Cleaning',
+        status: 'confirmed',
+        providerId: 1,
+        operatoryId: 1,
+        notes: 'Regular checkup and cleaning'
+      },
+      {
+        id: 2,
+        patient: 'Mary Johnson',
+        time: '10:30',
+        duration: 30,
+        type: 'Consultation',
+        status: 'scheduled',
+        providerId: 2,
+        operatoryId: 2,
+        notes: 'New patient consultation'
+      },
+      {
+        id: 3,
+        patient: 'Robert Davis',
+        time: '14:00',
+        duration: 90,
+        type: 'Root Canal',
+        status: 'arrived',
+        providerId: 1,
+        operatoryId: 1,
+        notes: 'Endodontic treatment'
+      },
+      {
+        id: 4,
+        patient: 'Lisa Wilson',
+        time: '15:30',
+        duration: 45,
+        type: 'Crown Prep',
+        status: 'confirmed',
+        providerId: 3,
+        operatoryId: 3,
+        notes: 'Crown preparation'
+      }
+    ];
+
+    setProviders(mockProviders);
+    setOperatories(mockOperatories);
+    setAppointments(mockAppointments);
+  }, []);
+
+  // Fetch calendar data
+  const fetchCalendarData = useCallback(async (showRefreshing = false) => {
+    if (showRefreshing) setRefreshing(true);
+    else setLoading(true);
+    
+    setError(null);
+
+    try {
+      const dateStr = format(selectedDate, 'yyyy-MM-dd');
+      
+      // Try to fetch from Open Dental API
+      const response = await openDentalApi.getCalendar({
+        date: dateStr,
+        view: viewMode
+      });
+      
+      if (response.appointments) {
+        setAppointments(response.appointments);
+        setProviders(response.providers || []);
+        setOperatories(response.operatories || []);
+      } else {
+        // Fallback to mock data
+        generateMockData();
+      }
+    } catch (err) {
+      console.warn('Open Dental API not available, using mock data:', err);
+      generateMockData();
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }, [currentDate]);
+  }, [selectedDate, viewMode, generateMockData]);
 
-  const generateMockAppointments = () => {
-    const appointments = [];
-    const today = new Date(currentDate);
-    
-    // Generate appointments for the selected day only
-    for (let i = 0; i < 12; i++) {
-      const hour = 8 + Math.floor(Math.random() * 10);
-      const minute = Math.floor(Math.random() * 4) * 15; // 0, 15, 30, 45
-      
-      appointments.push({
-        id: `mock-${i}`,
-        patientName: `Patient ${i + 1}`,
-        patientPhone: `+1-555-${String(Math.floor(Math.random() * 9000) + 1000)}`,
-        appointmentType: ['Checkup', 'Cleaning', 'Consultation', 'Emergency', 'Crown Prep', 'Root Canal'][Math.floor(Math.random() * 6)],
-        duration: [15, 30, 45, 60][Math.floor(Math.random() * 4)],
-        providerName: ['Dr. Smith', 'Dr. Johnson', 'Dr. Brown', 'Dr. Wilson'][Math.floor(Math.random() * 4)],
-        roomName: `Op ${Math.floor(Math.random() * 6) + 1}`,
-        status: ['scheduled', 'confirmed', 'arrived', 'completed'][Math.floor(Math.random() * 4)],
-        dateTime: new Date(today.getFullYear(), today.getMonth(), today.getDate(), hour, minute),
-        notes: Math.random() > 0.7 ? 'Special instructions needed' : '',
-        isEmergency: Math.random() > 0.9,
-      });
-    }
-    
-    return appointments.sort((a, b) => a.dateTime - b.dateTime);
-  };
+  // Get columns based on view mode
+  const columns = useMemo(() => {
+    return viewMode === 'provider' ? providers : operatories;
+  }, [viewMode, providers, operatories]);
 
-  // Get unique providers/operatories
-  const getProviders = () => {
-    const providersSet = new Set();
-    appointments.forEach(apt => {
-      providersSet.add(`${apt.providerName} (${apt.roomName})`);
-    });
-    return Array.from(providersSet).sort();
-  };
-
-  // Get appointments for a specific time slot and provider
-  const getAppointmentsForSlot = (timeSlot, provider) => {
-    const [time, period] = timeSlot.split(' ');
-    const [hour, minute] = time.split(':').map(Number);
-    const adjustedHour = period === 'PM' && hour !== 12 ? hour + 12 : (period === 'AM' && hour === 12 ? 0 : hour);
+  // Calculate appointment position and height
+  const getAppointmentStyle = useCallback((appointment) => {
+    const [hour, minute] = appointment.time.split(':').map(Number);
+    const startTimeValue = hour * 60 + minute;
+    const endTimeValue = startTimeValue + appointment.duration;
     
+    const totalMinutes = (END_HOUR - START_HOUR) * 60;
+    const top = ((startTimeValue - START_HOUR * 60) / totalMinutes) * 100;
+    const height = (appointment.duration / totalMinutes) * 100;
+    
+    return {
+      position: 'absolute',
+      top: `${top}%`,
+      height: `${height}%`,
+      left: '2px',
+      right: '2px',
+      backgroundColor: STATUS_COLORS[appointment.status] || STATUS_COLORS.scheduled,
+      border: '1px solid rgba(255,255,255,0.2)',
+      borderRadius: '4px',
+      padding: '4px',
+      fontSize: '12px',
+      color: 'white',
+      overflow: 'hidden',
+      cursor: 'pointer',
+      zIndex: 1,
+      '&:hover': {
+        boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+        zIndex: 2
+      }
+    };
+  }, []);
+
+  // Get appointments for a specific column and time slot
+  const getAppointmentsForSlot = useCallback((columnId, timeSlot) => {
     return appointments.filter(apt => {
-      const aptDate = new Date(apt.dateTime);
-      const aptHour = aptDate.getHours();
-      const aptMinute = aptDate.getMinutes();
-      const providerMatch = provider.includes(apt.providerName) && provider.includes(apt.roomName);
+      const columnField = viewMode === 'provider' ? 'providerId' : 'operatoryId';
+      const [hour, minute] = apt.time.split(':').map(Number);
+      const aptTimeValue = hour * 60 + minute;
+      const endTimeValue = aptTimeValue + apt.duration;
       
-      // Check if appointment starts within this 15-minute slot
-      return providerMatch && aptHour === adjustedHour && Math.floor(aptMinute / 15) * 15 === minute;
+      return apt[columnField] === columnId && 
+             aptTimeValue < (timeSlot.timeValue + TIME_SLOT_MINUTES) &&
+             endTimeValue > timeSlot.timeValue;
     });
+  }, [appointments, viewMode]);
+
+  // Handle date navigation
+  const navigateDate = (direction) => {
+    if (direction === 'prev') {
+      setSelectedDate(subDays(selectedDate, 1));
+    } else if (direction === 'next') {
+      setSelectedDate(addDays(selectedDate, 1));
+    } else {
+      setSelectedDate(new Date());
+    }
   };
 
-  const handleDateChange = (days) => {
-    const newDate = new Date(currentDate);
-    newDate.setDate(currentDate.getDate() + days);
-    setCurrentDate(newDate);
-  };
-
-  const goToToday = () => {
-    setCurrentDate(new Date());
-  };
-
+  // Handle appointment click
   const handleAppointmentClick = (appointment) => {
     setSelectedAppointment(appointment);
-    setAppointmentDetailsOpen(true);
   };
 
-  const formatTime = (dateTime) => {
-    const date = new Date(dateTime);
-    return date.toLocaleTimeString('en-US', { 
-      hour: 'numeric', 
-      minute: '2-digit',
-      hour12: true 
-    });
-  };
+  // Auto-refresh setup
+  useEffect(() => {
+    fetchCalendarData();
+    
+    const interval = setInterval(() => {
+      fetchCalendarData(true);
+    }, REFRESH_INTERVAL);
 
-  const formatDate = (dateTime) => {
-    const date = new Date(dateTime);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric' 
-    });
-  };
+    return () => clearInterval(interval);
+  }, [fetchCalendarData]);
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'scheduled': return 'primary';
-      case 'confirmed': return 'info';
-      case 'arrived': return 'warning';
-      case 'completed': return 'success';
-      case 'cancelled': return 'error';
-      default: return 'default';
-    }
-  };
+  // Current time indicator position
+  const currentTimePosition = getCurrentTimePosition();
 
-  const providers = getProviders();
+  if (loading && !refreshing) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" height="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
-    <Card sx={{ height, display: 'flex', flexDirection: 'column' }}>
-      <CardHeader
-        title={
+    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      {/* Header Controls */}
+      <Paper elevation={1} sx={{ p: 2, mb: 2 }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+          {/* Date Navigation */}
           <Box display="flex" alignItems="center" gap={1}>
-            <CalendarIcon />
-            <Typography variant="h6" component="span">
-              Schedule - {currentDate.toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
-              })}
+            <ButtonGroup variant="outlined" size="small">
+              <IconButton onClick={() => navigateDate('prev')}>
+                <ChevronLeft />
+              </IconButton>
+              <Button onClick={() => navigateDate('today')} startIcon={<Today />}>
+                Today
+              </Button>
+              <IconButton onClick={() => navigateDate('next')}>
+                <ChevronRight />
+              </IconButton>
+            </ButtonGroup>
+            
+            <Typography variant="h6" sx={{ ml: 2, minWidth: '200px' }}>
+              {format(selectedDate, 'EEEE, MMMM d, yyyy')}
             </Typography>
-            {!odEnabled && (
-              <Chip 
-                label="Demo Mode" 
-                color="warning" 
+          </Box>
+
+          {/* View Controls */}
+          <Box display="flex" alignItems="center" gap={2}>
+            <FormControl size="small" sx={{ minWidth: 120 }}>
+              <InputLabel>View</InputLabel>
+              <Select
+                value={viewMode}
+                label="View"
+                onChange={(e) => setViewMode(e.target.value)}
+              >
+                <MenuItem value="provider">
+                  <Person sx={{ mr: 1 }} /> Providers
+                </MenuItem>
+                <MenuItem value="operatory">
+                  <LocationOn sx={{ mr: 1 }} /> Operatories
+                </MenuItem>
+              </Select>
+            </FormControl>
+
+            <Tooltip title="Refresh Calendar">
+              <IconButton 
+                onClick={() => fetchCalendarData(true)}
+                disabled={refreshing}
                 size="small"
-                icon={<WarningIcon />}
+              >
+                {refreshing ? <CircularProgress size={20} /> : <Refresh />}
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+      </Paper>
+
+      {error && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+
+      {/* Calendar Grid */}
+      <Paper elevation={2} sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {/* Column Headers */}
+        <Box 
+          sx={{ 
+            display: 'grid',
+            gridTemplateColumns: `80px repeat(${columns.length}, 1fr)`,
+            borderBottom: 1,
+            borderColor: 'divider',
+            backgroundColor: 'grey.50'
+          }}
+        >
+          <Box sx={{ p: 1, borderRight: 1, borderColor: 'divider' }}>
+            <Typography variant="subtitle2" color="text.secondary">Time</Typography>
+          </Box>
+          {columns.map((column) => (
+            <Box 
+              key={column.id}
+              sx={{ 
+                p: 1, 
+                borderRight: 1, 
+                borderColor: 'divider',
+                backgroundColor: column.color,
+                color: 'white',
+                textAlign: 'center'
+              }}
+            >
+              <Typography variant="subtitle2" fontWeight="bold">
+                {column.name}
+              </Typography>
+            </Box>
+          ))}
+        </Box>
+
+        {/* Calendar Body */}
+        <Box sx={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+          <Box 
+            sx={{ 
+              display: 'grid',
+              gridTemplateColumns: `80px repeat(${columns.length}, 1fr)`,
+              minHeight: '100%',
+              position: 'relative'
+            }}
+          >
+            {/* Time Labels Column */}
+            <Box sx={{ borderRight: 1, borderColor: 'divider' }}>
+              {timeSlots.map((slot, index) => (
+                <Box 
+                  key={slot.time}
+                  sx={{ 
+                    height: '60px',
+                    borderBottom: 1,
+                    borderColor: 'divider',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: slot.minute === 0 ? 'grey.50' : 'transparent'
+                  }}
+                >
+                  {slot.minute === 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      {slot.time}
+                    </Typography>
+                  )}
+                </Box>
+              ))}
+            </Box>
+
+            {/* Calendar Columns */}
+            {columns.map((column) => (
+              <Box 
+                key={column.id}
+                sx={{ 
+                  borderRight: 1, 
+                  borderColor: 'divider',
+                  position: 'relative',
+                  minHeight: `${timeSlots.length * 60}px`
+                }}
+              >
+                {/* Time Slot Grid */}
+                {timeSlots.map((slot, index) => (
+                  <Box 
+                    key={slot.time}
+                    sx={{ 
+                      height: '60px',
+                      borderBottom: 1,
+                      borderColor: 'divider',
+                      position: 'relative',
+                      backgroundColor: slot.minute === 0 ? 'rgba(0,0,0,0.02)' : 'transparent'
+                    }}
+                  />
+                ))}
+
+                {/* Appointments */}
+                {appointments
+                  .filter(apt => {
+                    const columnField = viewMode === 'provider' ? 'providerId' : 'operatoryId';
+                    return apt[columnField] === column.id;
+                  })
+                  .map((appointment) => (
+                    <Box
+                      key={appointment.id}
+                      onClick={() => handleAppointmentClick(appointment)}
+                      sx={getAppointmentStyle(appointment)}
+                    >
+                      <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block' }}>
+                        {appointment.time}
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block' }}>
+                        {appointment.patient}
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block', opacity: 0.9 }}>
+                        {appointment.type}
+                      </Typography>
+                    </Box>
+                  ))
+                }
+              </Box>
+            ))}
+
+            {/* Current Time Indicator */}
+            {isToday(selectedDate) && currentTimePosition !== null && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: `${currentTimePosition}%`,
+                  left: '80px',
+                  right: 0,
+                  height: '2px',
+                  backgroundColor: 'error.main',
+                  zIndex: 10,
+                  '&::before': {
+                    content: '""',
+                    position: 'absolute',
+                    left: '-6px',
+                    top: '-4px',
+                    width: '10px',
+                    height: '10px',
+                    backgroundColor: 'error.main',
+                    borderRadius: '50%'
+                  }
+                }}
               />
             )}
           </Box>
-        }
-        action={
-          <Box display="flex" gap={1}>
-            <IconButton onClick={() => handleDateChange(-1)} size="small">
-              <PrevIcon />
-            </IconButton>
-            <IconButton onClick={goToToday} size="small">
-              <TodayIcon />
-            </IconButton>
-            <IconButton onClick={() => handleDateChange(1)} size="small">
-              <NextIcon />
-            </IconButton>
-            <IconButton 
-              onClick={() => fetchAppointments()} 
-              disabled={loading}
-              size="small"
-            >
-              {loading ? <CircularProgress size={20} /> : <RefreshIcon />}
-            </IconButton>
-            <IconButton 
-              onClick={() => setSettingsOpen(true)} 
-              size="small"
-            >
-              <SettingsIcon />
-            </IconButton>
-          </Box>
-        }
-      />
+        </Box>
+      </Paper>
 
-      <CardContent sx={{ flex: 1, p: 0, overflow: 'hidden' }}>
-        {error && (
-          <Alert severity="warning" sx={{ m: 2 }}>
-            {error} - Showing sample data for demonstration.
-          </Alert>
-        )}
-
-        {lastRefresh && (
-          <Box px={2} py={1}>
-            <Typography variant="caption" color="textSecondary">
-              Last updated: {lastRefresh.toLocaleTimeString()}
-              {autoRefreshEnabled && ' • Auto-refresh enabled'}
-            </Typography>
-          </Box>
-        )}
-
-        <TableContainer sx={{ height: 'calc(100% - 60px)', overflow: 'auto' }}>
-          <Table stickyHeader size="small">
-            <TableHead>
-              <TableRow>
-                <TimeSlotCell>Time</TimeSlotCell>
-                {providers.map((provider) => (
-                  <ProviderHeaderCell key={provider}>
-                    {provider}
-                  </ProviderHeaderCell>
-                ))}
-                {providers.length === 0 && (
-                  <ProviderHeaderCell>
-                    No appointments found
-                  </ProviderHeaderCell>
-                )}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {timeSlots.map((timeSlot) => (
-                <TableRow key={timeSlot}>
-                  <TimeSlotCell>{timeSlot}</TimeSlotCell>
-                  {providers.map((provider) => {
-                    const slotAppointments = getAppointmentsForSlot(timeSlot, provider);
-                    return (
-                      <AppointmentCell key={`${timeSlot}-${provider}`}>
-                        {slotAppointments.map((appointment) => (
-                          <AppointmentBlock
-                            key={appointment.id}
-                            status={appointment.status}
-                            onClick={() => handleAppointmentClick(appointment)}
-                            elevation={1}
-                          >
-                            <Typography variant="caption" display="block" fontWeight="bold">
-                              {appointment.patientName}
-                            </Typography>
-                            <Typography variant="caption" display="block">
-                              {appointment.appointmentType}
-                            </Typography>
-                            <Typography variant="caption" display="block" sx={{ opacity: 0.8 }}>
-                              {appointment.duration}min
-                            </Typography>
-                          </AppointmentBlock>
-                        ))}
-                      </AppointmentCell>
-                    );
-                  })}
-                  {providers.length === 0 && (
-                    <AppointmentCell>
-                      {/* Empty cell when no providers */}
-                    </AppointmentCell>
-                  )}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </CardContent>
-
-      {/* Settings Dialog */}
-      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Calendar Settings</DialogTitle>
-        <DialogContent>
-          <Box py={2}>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={autoRefreshEnabled}
-                  onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
-                />
-              }
-              label="Auto-refresh calendar every 5 minutes"
-            />
-            
-            <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-              Calendar will automatically sync with Open Dental every 5 minutes when enabled.
-              Refresh is paused when the page is not visible to conserve bandwidth.
-            </Typography>
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSettingsOpen(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Appointment Details Dialog */}
+      {/* Appointment Detail Dialog */}
       <Dialog 
-        open={appointmentDetailsOpen} 
-        onClose={() => setAppointmentDetailsOpen(false)}
+        open={!!selectedAppointment} 
+        onClose={() => setSelectedAppointment(null)}
         maxWidth="sm"
         fullWidth
       >
         {selectedAppointment && (
           <>
             <DialogTitle>
-              <Box display="flex" alignItems="center" gap={1}>
-                <EventIcon />
-                Appointment Details
-                {selectedAppointment.isEmergency && (
-                  <Chip label="Emergency" color="error" size="small" />
-                )}
-              </Box>
+              Appointment Details
+              <Chip 
+                label={selectedAppointment.status}
+                color={selectedAppointment.status === 'confirmed' ? 'success' : 'default'}
+                size="small"
+                sx={{ ml: 2 }}
+              />
             </DialogTitle>
             <DialogContent>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6}>
-                  <Typography variant="subtitle2" color="textSecondary">Patient</Typography>
-                  <Typography variant="body1">{selectedAppointment.patientName}</Typography>
-                  <Typography variant="body2">{selectedAppointment.patientPhone}</Typography>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <Typography variant="subtitle2" color="textSecondary">Date & Time</Typography>
+              <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: '1fr 1fr' }}>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Patient</Typography>
+                  <Typography variant="body1">{selectedAppointment.patient}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Time</Typography>
                   <Typography variant="body1">
-                    {new Date(selectedAppointment.dateTime).toLocaleDateString()}
+                    {selectedAppointment.time} ({selectedAppointment.duration} min)
                   </Typography>
-                  <Typography variant="body2">
-                    {formatTime(selectedAppointment.dateTime)} ({selectedAppointment.duration} min)
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Appointment Type</Typography>
+                  <Typography variant="body1">{selectedAppointment.type}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Status</Typography>
+                  <Typography variant="body1" sx={{ textTransform: 'capitalize' }}>
+                    {selectedAppointment.status.replace('_', ' ')}
                   </Typography>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <Typography variant="subtitle2" color="textSecondary">Provider</Typography>
-                  <Typography variant="body1">{selectedAppointment.providerName}</Typography>
-                  <Typography variant="body2">{selectedAppointment.roomName}</Typography>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <Typography variant="subtitle2" color="textSecondary">Status</Typography>
-                  <Chip
-                    label={selectedAppointment.status}
-                    color={getStatusColor(selectedAppointment.status)}
-                    sx={{ mt: 0.5 }}
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="subtitle2" color="textSecondary">Appointment Type</Typography>
-                  <Typography variant="body1">{selectedAppointment.appointmentType}</Typography>
-                </Grid>
+                </Box>
                 {selectedAppointment.notes && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle2" color="textSecondary">Notes</Typography>
+                  <Box sx={{ gridColumn: '1 / -1' }}>
+                    <Typography variant="subtitle2" color="text.secondary">Notes</Typography>
                     <Typography variant="body2">{selectedAppointment.notes}</Typography>
-                  </Grid>
+                  </Box>
                 )}
-              </Grid>
+              </Box>
             </DialogContent>
             <DialogActions>
-              <Button onClick={() => setAppointmentDetailsOpen(false)}>Close</Button>
+              <Button onClick={() => setSelectedAppointment(null)}>Close</Button>
             </DialogActions>
           </>
         )}
       </Dialog>
-    </Card>
+    </Box>
   );
 };
 

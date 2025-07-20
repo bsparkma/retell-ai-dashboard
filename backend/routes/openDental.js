@@ -11,63 +11,141 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Get calendar appointments for a date range
+// Get calendar data with provider/operatory view support
 router.get('/calendar', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         error: 'Open Dental not configured',
         message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const { startDate, endDate } = req.query;
-    
-    if (!startDate) {
-      return res.status(400).json({ 
-        error: 'Start date required',
-        message: 'Please provide startDate parameter (YYYY-MM-DD format)'
-      });
-    }
+    const { date, view, providerIds, operatoryIds } = req.query;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const viewMode = view || 'provider';
 
-    const appointments = await openDentalService.getCalendarAppointments(startDate, endDate);
-    
-    res.json({ 
-      appointments,
-      dateRange: { startDate, endDate },
-      count: appointments.length
+    // Get appointments for the specified date
+    const appointments = await openDentalService.getCalendarAppointments({
+      date: targetDate,
+      view: viewMode,
+      providerIds: providerIds ? providerIds.split(',') : undefined,
+      operatoryIds: operatoryIds ? operatoryIds.split(',') : undefined
     });
+
+    // Get providers and operatories
+    const [providers, operatories] = await Promise.all([
+      openDentalService.getProviders(),
+      openDentalService.getOperatories()
+    ]);
+
+    res.json({
+      date: targetDate,
+      view: viewMode,
+      appointments: appointments || [],
+      providers: providers || [],
+      operatories: operatories || [],
+      totalAppointments: appointments ? appointments.length : 0
+    });
+
   } catch (error) {
-    console.error('Error fetching calendar appointments:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch calendar appointments',
-      message: error.message 
+    console.error('Calendar API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch calendar data',
+      message: error.message
     });
   }
 });
 
-// Enhanced slots endpoint with calendar support
-router.post('/slots', async (req, res) => {
+// Get providers list
+router.get('/providers', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         error: 'Open Dental not configured',
         message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const slots = await openDentalService.getSlots(req.body);
-    
-    res.json({ 
-      slots,
-      refreshedAt: new Date().toISOString(),
-      parameters: req.body
+    const providers = await openDentalService.getProviders();
+    res.json({
+      providers: providers || [],
+      count: providers ? providers.length : 0
     });
+
   } catch (error) {
-    console.error('Error fetching appointment slots:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch appointment slots',
-      message: error.message 
+    console.error('Providers API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch providers',
+      message: error.message
+    });
+  }
+});
+
+// Get operatories list
+router.get('/operatories', async (req, res) => {
+  try {
+    if (!openDentalService.isEnabled()) {
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
+      });
+    }
+
+    const operatories = await openDentalService.getOperatories();
+    res.json({
+      operatories: operatories || [],
+      count: operatories ? operatories.length : 0
+    });
+
+  } catch (error) {
+    console.error('Operatories API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch operatories',
+      message: error.message
+    });
+  }
+});
+
+// Get appointment slots for a date range
+router.get('/slots', async (req, res) => {
+  try {
+    if (!openDentalService.isEnabled()) {
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
+      });
+    }
+
+    const { 
+      startDate, 
+      endDate, 
+      providerId, 
+      operatoryId,
+      appointmentType,
+      duration 
+    } = req.query;
+
+    const slots = await openDentalService.getAvailableSlots({
+      startDate,
+      endDate,
+      providerId,
+      operatoryId,
+      appointmentType,
+      duration: duration ? parseInt(duration) : undefined
+    });
+
+    res.json({
+      slots: slots || [],
+      count: slots ? slots.length : 0,
+      dateRange: { startDate, endDate }
+    });
+
+  } catch (error) {
+    console.error('Slots API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch available slots',
+      message: error.message
     });
   }
 });
@@ -76,194 +154,215 @@ router.post('/slots', async (req, res) => {
 router.post('/book', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         error: 'Open Dental not configured',
         message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const { patNum, slot, defNumApptType, callId } = req.body;
-
-    if (!patNum || !slot || !defNumApptType) {
-      return res.status(400).json({ 
+    const appointmentData = req.body;
+    
+    // Validate required fields
+    const requiredFields = ['patientId', 'providerId', 'operatoryId', 'dateTime', 'duration', 'appointmentType'];
+    const missingFields = requiredFields.filter(field => !appointmentData[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
         error: 'Missing required fields',
-        required: ['patNum', 'slot', 'defNumApptType']
+        message: `The following fields are required: ${missingFields.join(', ')}`
       });
     }
 
-    const appointment = await openDentalService.bookSlot(patNum, slot, defNumApptType);
+    const result = await openDentalService.bookAppointment(appointmentData);
     
-    // Log the successful booking
-    console.log(`✅ Appointment booked for patient ${patNum}:`, appointment);
-    
-    res.json({ 
+    res.status(201).json({
       success: true,
-      appointment,
-      message: 'Appointment successfully booked'
+      appointment: result,
+      message: 'Appointment booked successfully'
     });
+
   } catch (error) {
-    console.error('Error booking appointment:', error);
-    
-    if (error.message === 'Appointment slot already booked') {
-      return res.status(409).json({ 
-        error: 'Slot already booked',
-        message: 'This appointment slot is no longer available'
-      });
-    }
-    
-    res.status(500).json({ 
+    console.error('Booking API error:', error);
+    res.status(500).json({
       error: 'Failed to book appointment',
-      message: error.message 
+      message: error.message
     });
   }
 });
 
-// Search patient by phone number
-router.get('/patient/search', async (req, res) => {
+// Update appointment status
+router.patch('/appointments/:id/status', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
-        error: 'Open Dental not configured'
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const { phone } = req.query;
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        error: 'Status is required',
+        message: 'Please provide a valid appointment status'
+      });
+    }
+
+    const result = await openDentalService.updateAppointmentStatus(id, status);
     
-    if (!phone) {
-      return res.status(400).json({ 
-        error: 'Phone number required',
-        message: 'Please provide a phone parameter'
-      });
-    }
+    res.json({
+      success: true,
+      appointment: result,
+      message: 'Appointment status updated successfully'
+    });
 
-    const patients = await openDentalService.searchPatientByPhone(phone);
-    res.json({ patients });
   } catch (error) {
-    console.error('Error searching patient:', error);
-    res.status(500).json({ 
-      error: 'Failed to search patient',
-      message: error.message 
+    console.error('Update status API error:', error);
+    res.status(500).json({
+      error: 'Failed to update appointment status',
+      message: error.message
     });
   }
 });
 
-// Get patient details
-router.get('/patient/:patNum', async (req, res) => {
+// Cancel appointment
+router.delete('/appointments/:id', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
-        error: 'Open Dental not configured'
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const { patNum } = req.params;
-    const patient = await openDentalService.getPatient(patNum);
-    res.json({ patient });
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const result = await openDentalService.cancelAppointment(id, reason);
+    
+    res.json({
+      success: true,
+      message: 'Appointment cancelled successfully',
+      cancellationId: result.id
+    });
+
   } catch (error) {
-    console.error('Error fetching patient:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch patient',
-      message: error.message 
+    console.error('Cancel appointment API error:', error);
+    res.status(500).json({
+      error: 'Failed to cancel appointment',
+      message: error.message
+    });
+  }
+});
+
+// Search patients
+router.get('/patients/search', async (req, res) => {
+  try {
+    if (!openDentalService.isEnabled()) {
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
+      });
+    }
+
+    const { q } = req.query;
+    
+    if (!q || q.trim().length < 2) {
+      return res.status(400).json({
+        error: 'Invalid search query',
+        message: 'Search query must be at least 2 characters long'
+      });
+    }
+
+    const patients = await openDentalService.searchPatients(q.trim());
+    
+    res.json({
+      patients: patients || [],
+      count: patients ? patients.length : 0,
+      query: q.trim()
+    });
+
+  } catch (error) {
+    console.error('Patient search API error:', error);
+    res.status(500).json({
+      error: 'Failed to search patients',
+      message: error.message
     });
   }
 });
 
 // Create new patient
-router.post('/patient', async (req, res) => {
+router.post('/patients', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
-        error: 'Open Dental not configured'
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const patient = await openDentalService.createPatient(req.body);
-    res.json({ 
+    const patientData = req.body;
+    
+    // Validate required fields
+    const requiredFields = ['firstName', 'lastName', 'dateOfBirth'];
+    const missingFields = requiredFields.filter(field => !patientData[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: `The following fields are required: ${missingFields.join(', ')}`
+      });
+    }
+
+    const result = await openDentalService.createPatient(patientData);
+    
+    res.status(201).json({
       success: true,
-      patient,
-      message: 'Patient successfully created'
+      patient: result,
+      message: 'Patient created successfully'
     });
+
   } catch (error) {
-    console.error('Error creating patient:', error);
-    res.status(500).json({ 
+    console.error('Create patient API error:', error);
+    res.status(500).json({
       error: 'Failed to create patient',
-      message: error.message 
+      message: error.message
     });
   }
 });
 
-// Smart appointment booking from call data
-router.post('/smart-book', async (req, res) => {
+// Get appointment details
+router.get('/appointments/:id', async (req, res) => {
   try {
     if (!openDentalService.isEnabled()) {
-      return res.status(503).json({ 
-        error: 'Open Dental not configured'
+      return res.status(503).json({
+        error: 'Open Dental not configured',
+        message: 'Please configure OD_API_URL and OD_API_KEY environment variables'
       });
     }
 
-    const { callId, callerPhone, callerName, appointmentType = 'checkup' } = req.body;
-
-    // Step 1: Search for existing patient
-    let patient;
-    try {
-      const searchResults = await openDentalService.searchPatientByPhone(callerPhone);
-      patient = searchResults.length > 0 ? searchResults[0] : null;
-    } catch (error) {
-      console.log('Patient search failed, will create new patient');
-    }
-
-    // Step 2: Create patient if not found
-    if (!patient) {
-      const patientData = {
-        FName: callerName.split(' ')[0] || 'Unknown',
-        LName: callerName.split(' ').slice(1).join(' ') || 'Patient',
-        HmPhone: callerPhone,
-        // Add other required fields based on your Open Dental setup
-      };
-      
-      try {
-        patient = await openDentalService.createPatient(patientData);
-      } catch (error) {
-        return res.status(500).json({
-          error: 'Failed to create patient',
-          message: error.message
-        });
-      }
-    }
-
-    // Step 3: Get available slots
-    const slotsResponse = await openDentalService.getSlots({
-      startDate: new Date().toISOString().split('T')[0], // Today
-      days: 14, // Next 2 weeks
-      appointmentType
-    });
-
-    if (!slotsResponse.length) {
-      return res.json({
-        success: false,
-        message: 'No available appointment slots found',
-        patient,
-        availableSlots: []
+    const { id } = req.params;
+    const appointment = await openDentalService.getAppointmentDetails(id);
+    
+    if (!appointment) {
+      return res.status(404).json({
+        error: 'Appointment not found',
+        message: `No appointment found with ID: ${id}`
       });
     }
 
     res.json({
-      success: true,
-      message: 'Patient found/created, slots available',
-      patient,
-      availableSlots: slotsResponse,
-      suggestedBooking: {
-        patNum: patient.PatNum,
-        slot: slotsResponse[0], // First available slot
-        defNumApptType: 1 // Default appointment type
-      }
+      appointment,
+      success: true
     });
 
   } catch (error) {
-    console.error('Error in smart booking:', error);
-    res.status(500).json({ 
-      error: 'Smart booking failed',
-      message: error.message 
+    console.error('Get appointment API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch appointment details',
+      message: error.message
     });
   }
 });
