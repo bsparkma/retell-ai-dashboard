@@ -28,9 +28,10 @@ function App() {
         sx={{
           flexGrow: 1,
           mt: config.ui.headerHeight / 8, // Account for header height
-          ml: sidebarOpen ? config.ui.drawerWidth / 8 - 1.5 : 5, // Reduced left margin for better space utilization
+          ml: 0, // No left margin - content starts immediately after sidebar
           transition: 'margin-left 0.3s ease',
-          px: 2, // Reduced horizontal padding
+          pl: 0, // No left padding - content starts immediately
+          pr: 0, // No right padding
           py: 3,
           width: `calc(100% - ${sidebarOpen ? config.ui.drawerWidth : 56}px)`, // Ensure full width usage
         }}

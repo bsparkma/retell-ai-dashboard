@@ -523,7 +523,7 @@ const Agents = () => {
       {/* Search and Filters */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
-          <Grid container spacing={2} alignItems="center">
+          <Grid container spacing={2} alignItems="center" justifyContent="flex-start">
             <Grid item xs={12} md={6}>
               <TextField
                 fullWidth
@@ -582,7 +582,7 @@ const Agents = () => {
           {/* Expanded Filters */}
           <Collapse in={filtersExpanded}>
             <Box mt={2}>
-              <Grid container spacing={2}>
+              <Grid container spacing={2} sx={{ justifyContent: 'flex-start' }}>
                 <Grid item xs={12} sm={4}>
                   <FormControl fullWidth size="small">
                     <InputLabel>Voice</InputLabel>
@@ -638,7 +638,7 @@ const Agents = () => {
       </Card>
 
       {/* Agents Grid */}
-      <Grid container spacing={3}>
+      <Grid container spacing={2} sx={{ justifyContent: 'flex-start' }}>
         {filteredAgents.map((agent) => (
           <Grid item xs={12} sm={6} lg={4} key={agent.agent_id}>
             <AgentCard agent={agent} />

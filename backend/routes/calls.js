@@ -1,73 +1,33 @@
 const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
+const openDentalService = require('../config/openDental');
 
-// Enhanced mock data with AI-extracted names
-const generateMockCalls = () => [
-  {
-    call_id: '1',
-    caller_name: 'John Smith',
-    caller_number: '+1234567890',
-    call_date: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    reason: 'Appointment booking',
-    duration: 180,
-    success_status: 'Resolved',
-    sentiment: 'positive',
-    is_new_patient: true,
-    is_emergency: false,
-    summary: 'Patient called to schedule a routine checkup appointment for next week. Discussed available time slots and confirmed insurance coverage.',
-    transcript: 'Agent: Hello, thank you for calling our medical practice. How can I help you today? User: Hi, my name is John Smith, I need to schedule an appointment for a routine checkup. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me check our available slots.',
-    recording_url: 'https://example.com/recordings/call1.mp3'
-  },
-  {
-    call_id: '2',
-    caller_name: 'Sarah Johnson',
-    caller_number: '+0987654321',
-    call_date: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-    reason: 'Emergency consultation',
-    duration: 420,
-    success_status: 'Unresolved',
-    sentiment: 'negative',
-    is_new_patient: false,
-    is_emergency: true,
-    summary: 'URGENT: Emergency call regarding severe chest pain. Patient experiencing shortness of breath and was advised to seek immediate medical attention.',
-    transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. I need help immediately. Agent: I understand this is urgent, Sarah. Let me help you right away.',
-    recording_url: 'https://example.com/recordings/call2.mp3'
-  },
-  {
-    call_id: '3',
-    caller_name: 'Mike Williams',
-    caller_number: '+1122334455',
-    call_date: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
-    reason: 'Prescription refill',
-    duration: 150,
-    success_status: 'Resolved',
-    sentiment: 'neutral',
-    is_new_patient: false,
-    is_emergency: false,
-    summary: 'Patient requested prescription refill for ongoing medication. Verified patient information and processed refill request.',
-    transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill for my blood pressure medication. Agent: I can help you with that, Mike. Let me verify your information.',
-    recording_url: 'https://example.com/recordings/call3.mp3'
-  },
-  {
-    call_id: '4',
-    caller_name: 'Lisa Brown',
-    caller_number: '+2233445566',
-    call_date: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
-    reason: 'Insurance verification',
-    duration: 240,
-    success_status: 'Resolved',
-    sentiment: 'neutral',
-    is_new_patient: true,
-    is_emergency: false,
-    summary: 'Patient called to verify insurance coverage for upcoming procedure. Confirmed coverage details and provided authorization codes.',
-    transcript: 'Agent: Thank you for calling. User: Hi, this is Lisa Brown. I need to verify my insurance coverage for an upcoming procedure. Agent: I\'ll be happy to help you with that, Lisa.',
-    recording_url: null
+// Enhanced AI-powered name extraction function
+const extractCallerNameAdvanced = async (transcript, summary, callerNumber) => {
+  // First try basic extraction patterns
+  const basicName = extractCallerNameBasic(transcript, callerNumber);
+  if (basicName !== callerNumber) {
+    return basicName;
   }
-];
 
-// AI Name extraction function - improved to exclude agent names
-const extractCallerName = (transcript, callerNumber) => {
+  // Try AI-powered analysis of summary
+  const summaryName = extractNameFromSummary(summary);
+  if (summaryName) {
+    return summaryName;
+  }
+
+  // Try more advanced transcript analysis
+  const advancedName = extractNameAdvanced(transcript, summary);
+  if (advancedName) {
+    return advancedName;
+  }
+
+  return callerNumber; // Final fallback
+};
+
+// Basic regex-based name extraction (existing logic)
+const extractCallerNameBasic = (transcript, callerNumber) => {
   if (!transcript) return callerNumber;
   
   // Common AI agent names to exclude
@@ -80,7 +40,11 @@ const extractCallerName = (transcript, callerNumber) => {
     // Look for direct caller introduction patterns
     /(?:user|caller):\s*(?:hi|hello),?\s*(?:my name is|i'm|this is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
     // Generic patterns but exclude agent responses
-    /(?<!agent:.*?)(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i
+    /(?<!agent:.*?)(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
+    // More natural conversation patterns
+    /(?:user|caller):\s*(?:hi|hello),?\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:here|speaking|calling)/i,
+    // Phone greeting patterns
+    /(?:user|caller):\s*(?:this is|it's)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i
   ];
   
   for (const pattern of callerPatterns) {
@@ -100,6 +64,205 @@ const extractCallerName = (transcript, callerNumber) => {
   
   return callerNumber;
 };
+
+// Extract name from call summary using AI-style analysis
+const extractNameFromSummary = (summary) => {
+  if (!summary) return null;
+
+  // Look for name patterns in summaries
+  const summaryPatterns = [
+    /patient\s+(?:named\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+    /caller\s+(?:named\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+    /Mr\.?\s+([A-Z][a-zA-Z]+)/i,
+    /Mrs\.?\s+([A-Z][a-zA-Z]+)/i,
+    /Ms\.?\s+([A-Z][a-zA-Z]+)/i,
+    /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+called/i,
+    /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+is\s+(?:calling|requesting|asking)/i
+  ];
+
+  for (const pattern of summaryPatterns) {
+    const match = summary.match(pattern);
+    if (match && match[1]) {
+      const name = match[1].trim();
+      // Validate it's a real name (not common words)
+      const commonWords = ['Patient', 'Caller', 'Person', 'User', 'Someone', 'Individual'];
+      if (!commonWords.includes(name)) {
+        return name;
+      }
+    }
+  }
+
+  return null;
+};
+
+// Advanced name extraction using context analysis
+const extractNameAdvanced = (transcript, summary) => {
+  if (!transcript && !summary) return null;
+
+  const fullText = `${transcript || ''} ${summary || ''}`;
+  
+  // Look for name patterns with better context awareness
+  const advancedPatterns = [
+    // Agent addressing caller by name
+    /(?:agent|assistant):\s*.*?(?:thank you|hello|hi),?\s+([A-Z][a-zA-Z]+)/i,
+    /(?:agent|assistant):\s*.*?I(?:'ll|'d)\s+(?:be happy to\s+)?help\s+you,?\s+([A-Z][a-zA-Z]+)/i,
+    // Appointment scheduling context
+    /(?:appointment|booking|schedule).*?for\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+    // Prescription/medical context
+    /(?:prescription|medication|refill).*for\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+    // General medical context
+    /(?:patient|caller)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+(?:needs|wants|requires|is)/i
+  ];
+
+  for (const pattern of advancedPatterns) {
+    const match = fullText.match(pattern);
+    if (match && match[1]) {
+      const name = match[1].trim();
+      // Additional validation
+      if (name.length > 1 && !/^\d/.test(name)) {
+        return name;
+      }
+    }
+  }
+
+  return null;
+};
+
+// Check if caller is new or existing patient using OpenDental
+const determinePatientStatus = async (callerName, callerNumber) => {
+  try {
+    // First try to find patient by phone number
+    let patients = [];
+    
+    if (callerNumber && callerNumber !== 'Unknown') {
+      const cleanPhone = callerNumber.replace(/\D/g, '');
+      if (cleanPhone.length >= 10) {
+        patients = await openDentalService.searchPatients(cleanPhone);
+      }
+    }
+
+    // If no match by phone, try by name
+    if (patients.length === 0 && callerName && callerName !== callerNumber) {
+      patients = await openDentalService.searchPatients(callerName);
+    }
+
+    if (patients.length > 0) {
+      // Found matching patient(s) - they're existing
+      const patient = patients[0]; // Take the first match
+      
+      // Get appointment history to confirm they're really existing
+      const appointmentHistory = await openDentalService.verifyPatientAppointments(patient.id);
+      
+      return {
+        isNewPatient: false,
+        patientId: patient.id,
+        patientName: patient.fullName,
+        hasAppointmentHistory: appointmentHistory.recentAppointments.length > 0 || appointmentHistory.hasUpcoming,
+        matchedBy: callerNumber && callerNumber !== 'Unknown' ? 'phone' : 'name'
+      };
+    }
+
+    // No matching patient found - they're new
+    return {
+      isNewPatient: true,
+      patientId: null,
+      patientName: callerName,
+      hasAppointmentHistory: false,
+      matchedBy: null
+    };
+
+  } catch (error) {
+    console.error('Error determining patient status:', error);
+    // Default to new patient if we can't determine
+    return {
+      isNewPatient: true,
+      patientId: null,
+      patientName: callerName,
+      hasAppointmentHistory: false,
+      matchedBy: null,
+      error: error.message
+    };
+  }
+};
+
+// Enhanced mock data with better variety
+const generateMockCalls = () => [
+  {
+    call_id: '1',
+    caller_name: 'John Smith',
+    caller_number: '+1234567890',
+    call_date: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    reason: 'Appointment booking',
+    duration: 180,
+    success_status: 'Resolved',
+    sentiment: 'positive',
+    is_new_patient: true,
+    is_emergency: false,
+    summary: 'Patient John Smith called to schedule a routine checkup appointment for next week. Discussed available time slots and confirmed insurance coverage.',
+    transcript: 'Agent: Hello, thank you for calling our medical practice. How can I help you today? User: Hi, my name is John Smith, I need to schedule an appointment for a routine checkup. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me check our available slots.',
+    recording_url: 'https://example.com/recordings/call1.mp3'
+  },
+  {
+    call_id: '2',
+    caller_name: 'Sarah Johnson',
+    caller_number: '+0987654321',
+    call_date: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    reason: 'Emergency consultation',
+    duration: 420,
+    success_status: 'Unresolved',
+    sentiment: 'negative',
+    is_new_patient: false,
+    is_emergency: true,
+    summary: 'URGENT: Emergency call from existing patient Sarah Johnson regarding severe chest pain. Patient experiencing shortness of breath and was advised to seek immediate medical attention.',
+    transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. I need help immediately. Agent: I understand this is urgent, Sarah. Let me help you right away.',
+    recording_url: 'https://example.com/recordings/call2.mp3'
+  },
+  {
+    call_id: '3',
+    caller_name: 'Mike Williams',
+    caller_number: '+1122334455',
+    call_date: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+    reason: 'Prescription refill',
+    duration: 150,
+    success_status: 'Resolved',
+    sentiment: 'neutral',
+    is_new_patient: false,
+    is_emergency: false,
+    summary: 'Existing patient Mike Williams requested prescription refill for ongoing blood pressure medication. Verified patient information and processed refill request successfully.',
+    transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill for my blood pressure medication. Agent: I can help you with that, Mike. Let me verify your information and process that refill for you.',
+    recording_url: 'https://example.com/recordings/call3.mp3'
+  },
+  {
+    call_id: '4',
+    caller_name: 'Lisa Brown',
+    caller_number: '+2233445566',
+    call_date: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
+    reason: 'Insurance verification',
+    duration: 240,
+    success_status: 'Resolved',
+    sentiment: 'neutral',
+    is_new_patient: true,
+    is_emergency: false,
+    summary: 'New patient Lisa Brown called to verify insurance coverage for upcoming procedure. Confirmed coverage details and provided authorization codes.',
+    transcript: 'Agent: Thank you for calling. How can I assist you? User: Hi, this is Lisa Brown. I need to verify my insurance coverage for an upcoming procedure. Agent: I\'ll be happy to help you with that, Lisa. Let me look up your coverage information.',
+    recording_url: null
+  },
+  {
+    call_id: '5',
+    caller_name: '+5555551234',
+    caller_number: '+5555551234',
+    call_date: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+    reason: 'Appointment inquiry',
+    duration: 90,
+    success_status: 'Resolved',
+    sentiment: 'neutral',
+    is_new_patient: true,
+    is_emergency: false,
+    summary: 'Caller inquired about appointment availability but did not provide their name clearly. Provided general information about scheduling.',
+    transcript: 'Agent: Hello, how can I help you? User: Yeah, I need to see if I can get an appointment. Agent: Of course! Let me check our availability. Can I get your name please? User: Um, well, I just want to know what times you have available first.',
+    recording_url: null
+  }
+];
 
 // Get all calls
 router.get('/', async (req, res) => {
@@ -144,23 +307,49 @@ router.get('/', async (req, res) => {
     }
     
     // Transform data to include additional fields for the dashboard
-    const transformedCalls = calls.map(call => ({
-      ...call,
-      call_id: call.call_id || call.id,
-      id: call.call_id || call.id, // Ensure we have both id and call_id
-      caller_name: useMockData ? call.caller_name : extractCallerName(call.transcript, call.from_number || 'Unknown'),
-      caller_number: useMockData ? call.caller_number : call.from_number,
-      call_date: useMockData ? call.call_date : call.start_timestamp,
-      reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
-      duration: useMockData ? call.duration : (call.end_timestamp && call.start_timestamp ? 
-        Math.round((new Date(call.end_timestamp) - new Date(call.start_timestamp)) / 1000) : 0),
-      success_status: useMockData ? call.success_status : (call.call_status === 'completed' ? 'Resolved' : 'Unresolved'),
-      sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
-      is_new_patient: useMockData ? call.is_new_patient : (call.metadata?.is_new_patient || false),
-      is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
-      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
-      transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
-      recording_url: useMockData ? call.recording_url : call.recording_url
+    const transformedCalls = await Promise.all(calls.map(async (call) => {
+      let callerName, isNewPatient, patientInfo;
+      
+      if (useMockData) {
+        // Use mock data as-is
+        callerName = call.caller_name;
+        isNewPatient = call.is_new_patient;
+        patientInfo = { isNewPatient, patientName: callerName };
+      } else {
+        // Process real API data with enhanced name extraction and patient lookup
+        const extractedName = await extractCallerNameAdvanced(
+          call.transcript, 
+          call.call_summary || call.summary, 
+          call.from_number || 'Unknown'
+        );
+        
+        // Determine patient status using OpenDental
+        patientInfo = await determinePatientStatus(extractedName, call.from_number);
+        
+        callerName = patientInfo.patientName || extractedName;
+        isNewPatient = patientInfo.isNewPatient;
+      }
+
+      return {
+        ...call,
+        call_id: call.call_id || call.id,
+        id: call.call_id || call.id, // Ensure we have both id and call_id
+        caller_name: callerName,
+        caller_number: useMockData ? call.caller_number : call.from_number,
+        call_date: useMockData ? call.call_date : call.start_timestamp,
+        reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
+        duration: useMockData ? call.duration : (call.end_timestamp && call.start_timestamp ? 
+          Math.round((new Date(call.end_timestamp) - new Date(call.start_timestamp)) / 1000) : 0),
+        success_status: useMockData ? call.success_status : (call.call_status === 'completed' ? 'Resolved' : 'Unresolved'),
+        sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
+        is_new_patient: isNewPatient,
+        is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
+        summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
+        transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
+        recording_url: useMockData ? call.recording_url : call.recording_url,
+        // Add patient matching info for debugging/display
+        patient_match_info: useMockData ? null : patientInfo
+      };
     }));
 
     res.json({
@@ -366,23 +555,44 @@ router.post('/search', async (req, res) => {
       );
     }
 
-    const transformedCalls = filteredCalls.map(call => ({
-      ...call,
-      call_id: call.call_id || call.id,
-      id: call.call_id || call.id,
-      caller_name: useMockData ? call.caller_name : extractCallerName(call.transcript, call.from_number || 'Unknown'),
-      caller_number: useMockData ? call.caller_number : call.from_number,
-      call_date: useMockData ? call.call_date : call.start_timestamp,
-      reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
-      duration: useMockData ? call.duration : (call.end_timestamp && call.start_timestamp ? 
-        Math.round((new Date(call.end_timestamp) - new Date(call.start_timestamp)) / 1000) : 0),
-      success_status: useMockData ? call.success_status : (call.call_status === 'completed' ? 'Resolved' : 'Unresolved'),
-      sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
-      is_new_patient: useMockData ? call.is_new_patient : (call.metadata?.is_new_patient || false),
-      is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
-      summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
-      transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
-      recording_url: useMockData ? call.recording_url : call.recording_url
+    const transformedCalls = await Promise.all(filteredCalls.map(async (call) => {
+      let callerName, isNewPatient, patientInfo;
+      
+      if (useMockData) {
+        callerName = call.caller_name;
+        isNewPatient = call.is_new_patient;
+        patientInfo = { isNewPatient, patientName: callerName };
+      } else {
+        const extractedName = await extractCallerNameAdvanced(
+          call.transcript, 
+          call.call_summary || call.summary, 
+          call.from_number || 'Unknown'
+        );
+        
+        patientInfo = await determinePatientStatus(extractedName, call.from_number);
+        callerName = patientInfo.patientName || extractedName;
+        isNewPatient = patientInfo.isNewPatient;
+      }
+
+      return {
+        ...call,
+        call_id: call.call_id || call.id,
+        id: call.call_id || call.id,
+        caller_name: callerName,
+        caller_number: useMockData ? call.caller_number : call.from_number,
+        call_date: useMockData ? call.call_date : call.start_timestamp,
+        reason: useMockData ? call.reason : (call.call_summary || 'Not available'),
+        duration: useMockData ? call.duration : (call.end_timestamp && call.start_timestamp ? 
+          Math.round((new Date(call.end_timestamp) - new Date(call.start_timestamp)) / 1000) : 0),
+        success_status: useMockData ? call.success_status : (call.call_status === 'completed' ? 'Resolved' : 'Unresolved'),
+        sentiment: useMockData ? call.sentiment : (call.sentiment || 'neutral'),
+        is_new_patient: isNewPatient,
+        is_emergency: useMockData ? call.is_emergency : (call.metadata?.is_emergency || false),
+        summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
+        transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
+        recording_url: useMockData ? call.recording_url : call.recording_url,
+        patient_match_info: useMockData ? null : patientInfo
+      };
     }));
 
     res.json({ calls: transformedCalls });
@@ -390,6 +600,77 @@ router.post('/search', async (req, res) => {
     console.error('Error searching calls:', error);
     const mockCalls = generateMockCalls();
     res.json({ calls: mockCalls.map(call => ({ ...call, id: call.call_id })) });
+  }
+});
+
+// Test patient lookup endpoint
+router.post('/test-patient-lookup', async (req, res) => {
+  try {
+    const { transcript, summary, callerNumber, callerName } = req.body;
+    
+    if (!transcript && !summary && !callerName) {
+      return res.status(400).json({ 
+        error: 'Must provide at least one of: transcript, summary, or callerName' 
+      });
+    }
+
+    // Test name extraction
+    const extractedName = callerName || await extractCallerNameAdvanced(
+      transcript, 
+      summary, 
+      callerNumber || 'Unknown'
+    );
+
+    // Test patient status determination
+    const patientInfo = await determinePatientStatus(extractedName, callerNumber);
+
+    res.json({
+      success: true,
+      extractedName,
+      patientInfo,
+      tests: {
+        basicExtraction: extractCallerNameBasic(transcript || '', callerNumber || 'Unknown'),
+        summaryExtraction: extractNameFromSummary(summary),
+        advancedExtraction: extractNameAdvanced(transcript, summary)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in patient lookup test:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      extractedName: null,
+      patientInfo: null
+    });
+  }
+});
+
+// Get patient suggestions for a given input
+router.get('/patient-suggestions/:query', async (req, res) => {
+  try {
+    const { query } = req.params;
+    
+    if (!query || query.length < 2) {
+      return res.json({ suggestions: [] });
+    }
+
+    const patients = await openDentalService.searchPatients(query);
+    
+    res.json({
+      suggestions: patients.map(patient => ({
+        id: patient.id,
+        name: patient.fullName,
+        phone: patient.phone,
+        email: patient.email,
+        lastVisit: patient.lastVisit,
+        isActive: patient.isActive
+      }))
+    });
+
+  } catch (error) {
+    console.error('Error getting patient suggestions:', error);
+    res.json({ suggestions: [] });
   }
 });
 

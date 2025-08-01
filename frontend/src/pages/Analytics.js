@@ -233,7 +233,7 @@ const Analytics = () => {
 
   return (
     <Box>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3} sx={{ maxWidth: '1200px' }}>
         <Typography variant="h4">
           Analytics Dashboard
         </Typography>
@@ -258,8 +258,8 @@ const Analytics = () => {
 
       {/* Enhanced Filters */}
       <Collapse in={showFilters}>
-        <Card sx={{ mb: 3, p: 2 }}>
-          <Grid container spacing={2} alignItems="center">
+        <Card sx={{ mb: 3, p: 2, maxWidth: '1200px' }}>
+          <Grid container spacing={2} alignItems="center" justifyContent="flex-start">
             <Grid item xs={12} sm={6} md={2.4}>
               <FormControl fullWidth size="small">
                 <InputLabel>Time Range</InputLabel>
@@ -340,7 +340,7 @@ const Analytics = () => {
         </Card>
       </Collapse>
 
-      <Grid container spacing={3}>
+      <Grid container spacing={2} sx={{ justifyContent: 'flex-start' }}>
         {/* Clickable Call Volume Chart */}
         <Grid item xs={12} md={6}>
           <Card>

@@ -119,15 +119,17 @@ const Calendar = () => {
       </Box>
 
       {/* Quick Stats */}
-      <Box mb={3}>
+      <Box mb={3} sx={{ maxWidth: '1200px' }}>
         <QuickStats />
       </Box>
 
       {/* Calendar Component */}
-      <OpenDentalCalendar height={700} />
+      <Box sx={{ maxWidth: '1200px' }}>
+        <OpenDentalCalendar height={700} />
+      </Box>
 
       {/* Additional Info */}
-      <Box mt={3}>
+      <Box mt={3} sx={{ maxWidth: '1200px' }}>
         <Alert severity="info">
           <Typography variant="body2">
             📊 This calendar automatically syncs with your Open Dental system every 5 minutes. 

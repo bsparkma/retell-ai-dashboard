@@ -50,6 +50,7 @@ import {
   Sort as SortIcon,
   NotificationsActive as BellIcon,
   CheckCircle as ResolvedIcon,
+  CheckCircle as CheckCircleIcon,
   RadioButtonUnchecked as UnresolvedIcon,
   Person as PersonIcon,
   Mic as MicIcon,
@@ -113,41 +114,6 @@ const Dashboard = () => {
     calls.filter(call => call.is_emergency && call.success_status !== 'Resolved'), [calls]
   );
 
-  // AI Name Extraction function
-  const extractCallerName = (transcript, callerNumber) => {
-    if (!transcript) return callerNumber;
-    
-    // Common AI agent names to exclude
-    const agentNames = ['karen', 'assistant', 'agent', 'bot', 'ai', 'system', 'operator'];
-    
-    // Look for caller-specific patterns (what the USER says, not the agent)
-    const callerPatterns = [
-      /(?:user|caller):\s*.*?(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
-      /(?:user|caller):\s*.*?(?:call me|it's|name's)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
-      // Look for direct caller introduction patterns
-      /(?:user|caller):\s*(?:hi|hello),?\s*(?:my name is|i'm|this is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i,
-      // Generic patterns but exclude agent responses
-      /(?<!agent:.*?)(?:my name is|i'm|this is|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i
-    ];
-    
-    for (const pattern of callerPatterns) {
-      const match = transcript.match(pattern);
-      if (match && match[1]) {
-        const name = match[1].trim().toLowerCase();
-        
-        // Validate the name and exclude agent names
-        const commonWords = ['okay', 'yes', 'no', 'sure', 'well', 'um', 'uh', 'the', 'that', 'this', 'here', 'calling'];
-        if (name.length > 1 && 
-            !commonWords.includes(name) && 
-            !agentNames.includes(name)) {
-          return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
-        }
-      }
-    }
-    
-    return callerNumber; // Fallback to phone number
-  };
-
   // Filtered calls
   const filteredCalls = useMemo(() => {
     return calls.filter(call => {
@@ -177,10 +143,9 @@ const Dashboard = () => {
       setLoading(true);
       const response = await callsApi.getCalls();
       
-      // Process calls to extract names from transcripts
+      // The backend now handles name extraction and patient identification
       const processedCalls = (response.calls || []).map(call => ({
         ...call,
-        caller_name: extractCallerName(call.transcript, call.caller_number || call.from_number || 'Unknown'),
         // Ensure we have proper IDs
         id: call.id || call.call_id
       }));
@@ -188,7 +153,7 @@ const Dashboard = () => {
       setCalls(processedCalls);
     } catch (error) {
       console.error('Failed to fetch calls:', error);
-      // Use enhanced mock data with AI-extracted names
+      // Use enhanced mock data if API fails
       const mockCalls = generateEnhancedMockCalls();
       setCalls(mockCalls);
     } finally {
@@ -388,22 +353,45 @@ const Dashboard = () => {
     {
       field: 'caller_name',
       headerName: 'Caller',
-      width: 200,
-      renderCell: (params) => (
-        <Box display="flex" alignItems="center">
-          <Avatar sx={{ width: 32, height: 32, mr: 1, fontSize: '0.875rem' }}>
-            {params.value?.charAt(0)?.toUpperCase() || 'U'}
-          </Avatar>
-          <Box>
-            <Typography variant="body2" fontWeight="medium">
-              {params.value}
-            </Typography>
-            <Typography variant="caption" color="textSecondary">
-              {params.row.caller_number}
-            </Typography>
+      width: 240,
+      renderCell: (params) => {
+        const isPhoneNumber = params.value?.startsWith('+') || /^\d+$/.test(params.value?.replace(/[-\s()]/g, ''));
+        const patientInfo = params.row.patient_match_info;
+        
+        return (
+          <Box display="flex" alignItems="center">
+            <Avatar sx={{ 
+              width: 32, 
+              height: 32, 
+              mr: 1, 
+              fontSize: '0.875rem',
+              bgcolor: params.row.is_new_patient ? 'primary.main' : 'success.main'
+            }}>
+              {isPhoneNumber ? 'U' : params.value?.charAt(0)?.toUpperCase() || 'U'}
+            </Avatar>
+            <Box flex={1}>
+              <Box display="flex" alignItems="center" gap={0.5}>
+                <Typography variant="body2" fontWeight="medium">
+                  {isPhoneNumber ? 'Unknown Caller' : params.value}
+                </Typography>
+                {patientInfo?.matchedBy && (
+                  <Tooltip title={`Matched by ${patientInfo.matchedBy === 'phone' ? 'phone number' : 'name'}`}>
+                    <CheckCircleIcon sx={{ fontSize: 12, color: 'success.main' }} />
+                  </Tooltip>
+                )}
+              </Box>
+              <Typography variant="caption" color="textSecondary">
+                {params.row.caller_number}
+              </Typography>
+              {isPhoneNumber && (
+                <Typography variant="caption" color="warning.main" display="block">
+                  Name not identified
+                </Typography>
+              )}
+            </Box>
           </Box>
-        </Box>
-      ),
+        );
+      },
     },
     {
       field: 'call_date',
@@ -483,14 +471,29 @@ const Dashboard = () => {
     {
       field: 'is_new_patient',
       headerName: 'Patient Type',
-      width: 120,
-      renderCell: (params) => (
-        <Chip
-          label={params.value ? 'New' : 'Existing'}
-          color={params.value ? 'primary' : 'default'}
-          size="small"
-        />
-      ),
+      width: 140,
+      renderCell: (params) => {
+        const patientInfo = params.row.patient_match_info;
+        const isNew = params.value;
+        
+        let tooltipText = isNew ? 'New Patient' : 'Existing Patient';
+        if (patientInfo && !isNew) {
+          tooltipText += patientInfo.hasAppointmentHistory 
+            ? ' (Has appointment history)' 
+            : ' (In system, no appointments)';
+        }
+        
+        return (
+          <Tooltip title={tooltipText}>
+            <Chip
+              label={isNew ? 'New' : 'Existing'}
+              color={isNew ? 'primary' : 'success'}
+              size="small"
+              variant={patientInfo?.patientId ? 'filled' : 'outlined'}
+            />
+          </Tooltip>
+        );
+      },
     },
     {
       field: 'is_emergency',
@@ -527,7 +530,8 @@ const Dashboard = () => {
               '& .MuiAlert-message': { width: '100%' },
               border: '2px solid',
               borderColor: 'error.main',
-              boxShadow: 3
+              boxShadow: 3,
+              maxWidth: '1200px'
             }}
             icon={
               <Badge badgeContent={activeEmergencyCalls.length} color="error">
@@ -571,12 +575,12 @@ const Dashboard = () => {
         </Collapse>
       )}
 
-      <Typography variant="h4" gutterBottom sx={{ mb: 3, fontWeight: 'bold', textAlign: 'center' }}>
+      <Typography variant="h4" gutterBottom sx={{ mb: 3, fontWeight: 'bold', textAlign: 'left' }}>
         Call Management Dashboard
       </Typography>
 
-      {/* Enhanced Statistics Cards */}
-      <Grid container spacing={3} sx={{ mb: 3 }}>
+      {/* Enhanced Statistics Cards - COMPACT */}
+      <Grid container spacing={2} sx={{ mb: 3, justifyContent: 'flex-start' }}>
         <Grid item xs={12} sm={6} lg={2.4}>
           <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
             <CardContent>
@@ -680,10 +684,10 @@ const Dashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Enhanced Search and Filter Controls */}
+      {/* Enhanced Search and Filter Controls - COMPACT */}
       <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <Grid container spacing={2} alignItems="center">
+        <CardContent sx={{ pl: 2, pr: 2 }}>
+          <Grid container spacing={2} alignItems="center" justifyContent="flex-start">
             <Grid item xs={12} md={6}>
               <TextField
                 fullWidth
@@ -761,17 +765,17 @@ const Dashboard = () => {
         </CardContent>
       </Card>
 
-      {/* Enhanced Calls Table - CENTERED */}
-      <Box display="flex" justifyContent="center" mb={3}>
-        <Card sx={{ width: '100%', maxWidth: '1400px' }}>
-          <CardContent>
+      {/* Enhanced Calls Table - LEFT ALIGNED */}
+      <Box display="flex" justifyContent="flex-start" mb={3}>
+        <Card sx={{ width: '100%', maxWidth: '1200px' }}>
+          <CardContent sx={{ pl: 2, pr: 2 }}>
             <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
               <Typography variant="h6">
                 Call History ({filteredCalls.length} {filteredCalls.length === 1 ? 'call' : 'calls'})
               </Typography>
             </Box>
             
-            <Box sx={{ height: 600, width: '100%' }}>
+            <Box sx={{ height: 600, width: '100%', ml: 0 }}>
               <DataGrid
                 rows={filteredCalls}
                 columns={columns}
