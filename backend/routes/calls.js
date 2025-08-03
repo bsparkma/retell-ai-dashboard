@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
 const openDentalService = require('../config/openDental');
+const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
 
 // Enhanced AI-powered name extraction function
 const extractCallerNameAdvanced = async (transcript, summary, callerNumber) => {
@@ -273,7 +274,8 @@ router.get('/', async (req, res) => {
       sort_order = 'descending',
       filter_criteria = {},
       start_time,
-      end_time
+      end_time,
+      office_id
     } = req.query;
 
     const params = {
@@ -347,20 +349,26 @@ router.get('/', async (req, res) => {
         summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
         transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
         recording_url: useMockData ? call.recording_url : call.recording_url,
+        // Include agent information
+        agent_id: useMockData ? call.agent_id : call.agent_id,
         // Add patient matching info for debugging/display
         patient_match_info: useMockData ? null : patientInfo
       };
     }));
 
+    // Filter calls based on office configuration if office_id provided
+    const finalCalls = office_id ? filterCallsForOffice(transformedCalls, office_id) : transformedCalls;
+
     res.json({
-      calls: transformedCalls,
-      total: transformedCalls.length,
+      calls: finalCalls,
+      total: finalCalls.length,
       pagination: {
         limit: parseInt(limit),
         offset: parseInt(offset),
-        has_more: transformedCalls.length === parseInt(limit)
+        has_more: finalCalls.length === parseInt(limit)
       },
-      source: useMockData ? 'mock' : 'api'
+      source: useMockData ? 'mock' : 'api',
+      office_config: office_id ? getOfficeConfig(office_id) : null
     });
   } catch (error) {
     console.error('Error in calls route:', error);

@@ -63,7 +63,8 @@ import {
   VolumeOff as VolumeOffIcon,
 } from '@mui/icons-material';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, AreaChart, Area } from 'recharts';
-import { callsApi } from '../services/api';
+import { callsApi, agentsApi } from '../services/api';
+import { getAllOfficeConfigs } from '../config/officeConfig';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -74,12 +75,16 @@ const Dashboard = () => {
   
   // State management
   const [calls, setCalls] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [sentimentFilter, setSentimentFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [patientTypeFilter, setPatientTypeFilter] = useState('');
   const [emergencyFilter, setEmergencyFilter] = useState('');
+  const [agentFilter, setAgentFilter] = useState('');
+  const [officeId, setOfficeId] = useState('default'); // Office configuration
+  const [officeConfigs] = useState(getAllOfficeConfigs());
   const [selectedCall, setSelectedCall] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [emergencyAlertOpen, setEmergencyAlertOpen] = useState(true);
@@ -128,20 +133,22 @@ const Dashboard = () => {
         (patientTypeFilter === 'new' ? call.is_new_patient : !call.is_new_patient);
       const matchesEmergency = !emergencyFilter ||
         (emergencyFilter === 'emergency' ? call.is_emergency : !call.is_emergency);
+      const matchesAgent = !agentFilter || call.agent_id === agentFilter;
 
-      return matchesSearch && matchesSentiment && matchesStatus && matchesPatientType && matchesEmergency;
+      return matchesSearch && matchesSentiment && matchesStatus && matchesPatientType && matchesEmergency && matchesAgent;
     });
-  }, [calls, searchQuery, sentimentFilter, statusFilter, patientTypeFilter, emergencyFilter]);
+  }, [calls, searchQuery, sentimentFilter, statusFilter, patientTypeFilter, emergencyFilter, agentFilter]);
 
   useEffect(() => {
     fetchCalls();
+    fetchAgents();
     generateTodayActivity();
-  }, []);
+  }, [officeId]); // Re-fetch when office changes
 
   const fetchCalls = async () => {
     try {
       setLoading(true);
-      const response = await callsApi.getCalls();
+      const response = await callsApi.getCalls({ office_id: officeId });
       
       // The backend now handles name extraction and patient identification
       const processedCalls = (response.calls || []).map(call => ({
@@ -158,6 +165,22 @@ const Dashboard = () => {
       setCalls(mockCalls);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAgents = async () => {
+    try {
+      const response = await agentsApi.getAgents();
+      setAgents(response.agents || []);
+    } catch (error) {
+      console.error('Failed to fetch agents:', error);
+      // Use fallback agents if API fails
+      setAgents([
+        { agent_id: '1', agent_name: 'Medical Receptionist' },
+        { agent_id: '2', agent_name: 'Emergency Triage' },
+        { agent_id: '3', agent_name: 'Billing Support' },
+        { agent_id: '4', agent_name: 'Appointment Scheduler' }
+      ]);
     }
   };
 
@@ -323,6 +346,7 @@ const Dashboard = () => {
     setStatusFilter('');
     setPatientTypeFilter('');
     setEmergencyFilter('');
+    setAgentFilter('');
   };
 
   const formatDuration = (seconds) => {
@@ -446,6 +470,19 @@ const Dashboard = () => {
           size="small"
         />
       ),
+    },
+    {
+      field: 'agent_id',
+      headerName: 'Agent',
+      width: 150,
+      renderCell: (params) => {
+        const agent = agents.find(a => a.agent_id === params.value);
+        return (
+          <Typography variant="body2">
+            {agent?.agent_name || params.value || 'Unknown'}
+          </Typography>
+        );
+      },
     },
     {
       field: 'audio',
@@ -751,6 +788,24 @@ const Dashboard = () => {
               </FormControl>
             </Grid>
 
+            <Grid item xs={6} md={2}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Agent</InputLabel>
+                <Select
+                  value={agentFilter}
+                  label="Agent"
+                  onChange={(e) => setAgentFilter(e.target.value)}
+                >
+                  <MenuItem value="">All Agents</MenuItem>
+                  {agents.map((agent) => (
+                    <MenuItem key={agent.agent_id} value={agent.agent_id}>
+                      {agent.agent_name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+
             <Grid item xs={6} md={1}>
               <Button
                 variant="outlined"
@@ -772,7 +827,32 @@ const Dashboard = () => {
             <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
               <Typography variant="h6">
                 Call History ({filteredCalls.length} {filteredCalls.length === 1 ? 'call' : 'calls'})
+                {agentFilter && (
+                  <Chip 
+                    label={`Agent: ${agents.find(a => a.agent_id === agentFilter)?.agent_name || agentFilter}`}
+                    size="small"
+                    color="primary"
+                    sx={{ ml: 1 }}
+                    onDelete={() => setAgentFilter('')}
+                  />
+                )}
               </Typography>
+              
+              {/* Office Selector */}
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <InputLabel>Office</InputLabel>
+                <Select
+                  value={officeId}
+                  label="Office"
+                  onChange={(e) => setOfficeId(e.target.value)}
+                >
+                  {officeConfigs.map((config) => (
+                    <MenuItem key={config.id} value={config.id}>
+                      {config.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Box>
             
             <Box sx={{ height: 600, width: '100%', ml: 0 }}>
