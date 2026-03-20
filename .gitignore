@@ -71,3 +71,7 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/ 
+# Patient data / recordings (HIPAA)
+backend/recordings/
+data/
+calls_data.json

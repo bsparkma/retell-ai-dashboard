@@ -10,6 +10,9 @@ import CallDetails from './pages/CallDetails';
 import Calendar from './pages/Calendar';
 import Agents from './pages/Agents';
 import Analytics from './pages/Analytics';
+import LiveMonitor from './pages/LiveMonitor';
+import Admin from './pages/Admin';
+import Callbacks from './pages/Callbacks';
 import config from './config/env';
 
 function App() {
@@ -39,10 +42,13 @@ function App() {
         <Breadcrumbs />
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/live" element={<LiveMonitor />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/calls/:id" element={<CallDetails />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/callbacks" element={<Callbacks />} />
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </Box>
       

@@ -17,6 +17,7 @@ import {
   Event as EventIcon,
 } from '@mui/icons-material';
 import OpenDentalCalendar from '../components/OpenDentalCalendar';
+import { openDentalApi } from '../services/api';
 
 const Calendar = () => {
   const theme = useTheme();
@@ -27,15 +28,73 @@ const Calendar = () => {
     pendingCount: 0,
     completedCount: 0,
   });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
+  // Fetch real Open Dental statistics
   useEffect(() => {
-    // In a real implementation, these would come from the API
-    setStats({
-      todayCount: 12,
-      weekCount: 67,
-      pendingCount: 3,
-      completedCount: 8,
-    });
+    const fetchStats = async () => {
+      try {
+        setLoading(true);
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        
+        // Get Monday of current week
+        const monday = new Date(today);
+        const day = monday.getDay();
+        const diff = monday.getDate() - day + (day === 0 ? -6 : 1);
+        monday.setDate(diff);
+        
+        // Get Sunday of current week
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        
+        // Fetch today's appointments
+        const todayResponse = await openDentalApi.getCalendar({ 
+          date: todayStr 
+        });
+        
+        // Fetch week's appointments
+        const weekResponse = await openDentalApi.getAppointmentRange({
+          startDate: monday.toISOString().split('T')[0],
+          endDate: sunday.toISOString().split('T')[0]
+        });
+        
+        const todayAppointments = todayResponse.appointments || [];
+        const weekAppointments = weekResponse.appointments || [];
+        
+        // Calculate stats
+        const pendingCount = todayAppointments.filter(apt => 
+          apt.status === 'scheduled' || apt.status === 'confirmed'
+        ).length;
+        
+        const completedCount = todayAppointments.filter(apt => 
+          apt.status === 'completed'
+        ).length;
+        
+        setStats({
+          todayCount: todayAppointments.length,
+          weekCount: weekAppointments.length,
+          pendingCount,
+          completedCount,
+        });
+        
+      } catch (err) {
+        console.warn('Failed to fetch Open Dental stats, using defaults:', err);
+        // Fallback to default stats if API fails
+        setStats({
+          todayCount: 0,
+          weekCount: 0,
+          pendingCount: 0,
+          completedCount: 0,
+        });
+        setError('Unable to connect to Open Dental. Showing calendar with limited data.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchStats();
   }, []);
 
   // Quick stats component
@@ -107,16 +166,33 @@ const Calendar = () => {
     </Grid>
   );
 
+  if (loading) {
+    return (
+      <Box sx={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <Box textAlign="center">
+          <Typography variant="h6" gutterBottom>Loading Open Dental Calendar...</Typography>
+          <Typography variant="body2" color="textSecondary">Connecting to your dental practice management system</Typography>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ width: '100%' }}>
       <Box mb={3}>
         <Typography variant="h4" component="h1" gutterBottom>
-          📅 Appointment Calendar
+          📅 Open Dental Calendar
         </Typography>
         <Typography variant="body1" color="textSecondary">
-          Real-time sync with Open Dental scheduling system
+          {error ? 'Demo mode - Connect your Open Dental database for live data' : 'Real-time sync with your Open Dental scheduling system'}
         </Typography>
       </Box>
+
+      {error && (
+        <Alert severity="warning" sx={{ mb: 3, maxWidth: '1200px' }}>
+          {error}
+        </Alert>
+      )}
 
       {/* Quick Stats */}
       <Box mb={3} sx={{ maxWidth: '1200px' }}>
@@ -130,10 +206,12 @@ const Calendar = () => {
 
       {/* Additional Info */}
       <Box mt={3} sx={{ maxWidth: '1200px' }}>
-        <Alert severity="info">
+        <Alert severity={error ? "warning" : "info"}>
           <Typography variant="body2">
-            📊 This calendar automatically syncs with your Open Dental system every 5 minutes. 
-            The refresh rate has been optimized for medical practices to balance real-time updates with system performance.
+            {error ? 
+              "📋 To connect your Open Dental database, set the OPENDENTAL_DB_URL environment variable with your database connection string and restart the backend service." :
+              "📊 This calendar automatically syncs with your Open Dental system every 5 minutes. The refresh rate has been optimized for dental practices to balance real-time updates with system performance."
+            }
           </Typography>
         </Alert>
       </Box>

@@ -7,13 +7,29 @@ const openDentalService = require('../config/openDental');
 // ============================================================================
 
 // Health check for Open Dental integration
-router.get('/health', (req, res) => {
-  res.json({
-    enabled: openDentalService.isEnabled(),
-    status: openDentalService.isEnabled() ? 'connected' : 'disabled',
-    lastSync: openDentalService.lastSyncTime,
-    lastCheck: new Date().toISOString()
-  });
+router.get('/health', async (req, res) => {
+  try {
+    const connectionTest = await openDentalService.testConnection();
+    
+    res.json({
+      enabled: openDentalService.isEnabled(),
+      status: connectionTest.success ? 'connected' : 'error',
+      connectionType: connectionTest.connectionType || 'unknown',
+      message: connectionTest.message,
+      lastSync: openDentalService.lastSyncTime,
+      lastCheck: new Date().toISOString(),
+      useDatabase: openDentalService.useDatabase || false,
+      patientCount: connectionTest.patientCount
+    });
+  } catch (error) {
+    res.json({
+      enabled: openDentalService.isEnabled(),
+      status: 'error',
+      message: error.message,
+      lastCheck: new Date().toISOString(),
+      useDatabase: openDentalService.useDatabase || false
+    });
+  }
 });
 
 // Get sync status and data
