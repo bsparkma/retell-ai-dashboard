@@ -61,9 +61,19 @@ import {
   VolumeUp as VolumeIcon,
   Today as TodayIcon,
   VolumeOff as VolumeOffIcon,
+  SwapHoriz as TransferIcon,
+  CallMade as CallbackIcon,
+  CheckCircleOutline as SuccessIcon,
+  ErrorOutline as FailedIcon,
+  Voicemail as VoicemailIcon,
+  SmartToy as AIIcon,
+  Headset as StaffIcon,
+  Cloud as RetellIcon,
+  PhoneInTalk as MangoIcon,
 } from '@mui/icons-material';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, AreaChart, Area } from 'recharts';
-import { callsApi } from '../services/api';
+import { callsApi, agentsApi, unifiedCallsApi } from '../services/api';
+import { getAllOfficeConfigs } from '../config/officeConfig';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -74,12 +84,20 @@ const Dashboard = () => {
   
   // State management
   const [calls, setCalls] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [sentimentFilter, setSentimentFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [patientTypeFilter, setPatientTypeFilter] = useState('');
   const [emergencyFilter, setEmergencyFilter] = useState('');
+  const [agentFilter, setAgentFilter] = useState('');
+  const [transferFilter, setTransferFilter] = useState('');
+  const [sourceFilter, setSourceFilter] = useState(''); // 'retell', 'mango', or '' for all
+  const [handlerTypeFilter, setHandlerTypeFilter] = useState(''); // 'ai', 'staff', or '' for all
+  const [useUnifiedApi, setUseUnifiedApi] = useState(true); // Use new unified API
+  const [officeId, setOfficeId] = useState('default'); // Office configuration
+  const [officeConfigs] = useState(getAllOfficeConfigs());
   const [selectedCall, setSelectedCall] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [emergencyAlertOpen, setEmergencyAlertOpen] = useState(true);
@@ -94,11 +112,25 @@ const Dashboard = () => {
   // Computed stats
   const stats = useMemo(() => {
     const totalCalls = calls.length;
-    const resolvedCalls = calls.filter(call => call.success_status === 'Resolved').length;
-    const totalDuration = calls.reduce((sum, call) => sum + (call.duration || 0), 0);
+    const resolvedCalls = calls.filter(call => call.success_status === 'Resolved' || call.outcome === 'resolved').length;
+    const totalDuration = calls.reduce((sum, call) => sum + (call.duration || call.duration_seconds || 0), 0);
     const averageDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
     const emergencyCalls = calls.filter(call => call.is_emergency).length;
     const resolvedRate = totalCalls > 0 ? Math.round((resolvedCalls / totalCalls) * 100) : 0;
+    
+    // Transfer statistics
+    const transferAttempted = calls.filter(call => call.transfer_attempted).length;
+    const successfulTransfers = calls.filter(call => call.transfer_status === 'successful').length;
+    const failedTransfers = calls.filter(call => call.transfer_status === 'failed').length;
+    const voicemailTransfers = calls.filter(call => call.transfer_status === 'voicemail').length;
+    const callbackRequired = calls.filter(call => call.callback_required).length;
+    const transferSuccessRate = transferAttempted > 0 ? Math.round((successfulTransfers / transferAttempted) * 100) : 0;
+    
+    // Source breakdown (unified API)
+    const retellCalls = calls.filter(call => call.source === 'retell' || call.handler_type === 'ai').length;
+    const mangoCalls = calls.filter(call => call.source === 'mango' || call.handler_type === 'staff').length;
+    const aiCalls = calls.filter(call => call.handler_type === 'ai').length;
+    const staffCalls = calls.filter(call => call.handler_type === 'staff').length;
     
     return {
       totalCalls,
@@ -106,6 +138,17 @@ const Dashboard = () => {
       averageDuration,
       emergencyCalls,
       resolvedRate,
+      transferAttempted,
+      successfulTransfers,
+      failedTransfers,
+      voicemailTransfers,
+      callbackRequired,
+      transferSuccessRate,
+      // Source breakdown
+      retellCalls,
+      mangoCalls,
+      aiCalls,
+      staffCalls,
     };
   }, [calls]);
 
@@ -113,6 +156,24 @@ const Dashboard = () => {
   const activeEmergencyCalls = useMemo(() => 
     calls.filter(call => call.is_emergency && call.success_status !== 'Resolved'), [calls]
   );
+
+  // Available agents based on office configuration
+  const availableAgents = useMemo(() => {
+    if (officeId === 'default') {
+      return agents; // Show all agents for default office
+    }
+    
+    // Get current office config
+    const currentOffice = officeConfigs.find(config => config.id === officeId);
+    if (!currentOffice?.allowedAgents) {
+      return agents; // Fallback to all agents if no config found
+    }
+    
+    // Filter agents based on office configuration
+    return agents.filter(agent => 
+      currentOffice.allowedAgents.includes(agent.agent_id)
+    );
+  }, [agents, officeId, officeConfigs]);
 
   // Filtered calls
   const filteredCalls = useMemo(() => {
@@ -123,31 +184,71 @@ const Dashboard = () => {
         call.summary?.toLowerCase().includes(searchQuery.toLowerCase());
       
       const matchesSentiment = !sentimentFilter || call.sentiment === sentimentFilter;
-      const matchesStatus = !statusFilter || call.success_status === statusFilter;
+      const matchesStatus = !statusFilter || 
+        call.success_status === statusFilter || 
+        (statusFilter === 'Resolved' && call.outcome === 'resolved') ||
+        (statusFilter === 'Unresolved' && call.outcome !== 'resolved');
       const matchesPatientType = !patientTypeFilter || 
         (patientTypeFilter === 'new' ? call.is_new_patient : !call.is_new_patient);
       const matchesEmergency = !emergencyFilter ||
         (emergencyFilter === 'emergency' ? call.is_emergency : !call.is_emergency);
+      const matchesAgent = !agentFilter || call.agent_id === agentFilter || call.handler_id === agentFilter;
+      
+      // Transfer filter
+      const matchesTransfer = !transferFilter || 
+        (transferFilter === 'successful' ? call.transfer_status === 'successful' :
+         transferFilter === 'failed' ? call.transfer_status === 'failed' :
+         transferFilter === 'voicemail' ? call.transfer_status === 'voicemail' :
+         transferFilter === 'callback_needed' ? call.callback_required :
+         transferFilter === 'no_transfer' ? !call.transfer_attempted : true);
 
-      return matchesSearch && matchesSentiment && matchesStatus && matchesPatientType && matchesEmergency;
+      // Source filter (Retell AI vs Mango Voice)
+      const matchesSource = !sourceFilter || call.source === sourceFilter;
+      
+      // Handler type filter (AI vs Staff)
+      const matchesHandlerType = !handlerTypeFilter || call.handler_type === handlerTypeFilter;
+
+      // Additional filter: only show calls from available agents for this office (for AI calls)
+      const isAgentAllowed = call.source === 'mango' || call.handler_type === 'staff' || 
+        availableAgents.some(agent => agent.agent_id === call.agent_id || agent.agent_id === call.handler_id);
+
+      return matchesSearch && matchesSentiment && matchesStatus && matchesPatientType && 
+             matchesEmergency && matchesAgent && matchesTransfer && matchesSource && 
+             matchesHandlerType && isAgentAllowed;
     });
-  }, [calls, searchQuery, sentimentFilter, statusFilter, patientTypeFilter, emergencyFilter]);
+  }, [calls, searchQuery, sentimentFilter, statusFilter, patientTypeFilter, emergencyFilter, agentFilter, transferFilter, sourceFilter, handlerTypeFilter, availableAgents]);
 
   useEffect(() => {
     fetchCalls();
+    fetchAgents();
     generateTodayActivity();
-  }, []);
+  }, [officeId]); // Re-fetch when office changes
 
   const fetchCalls = async () => {
     try {
       setLoading(true);
-      const response = await callsApi.getCalls();
+      
+      let response;
+      if (useUnifiedApi) {
+        // Use the new unified API that combines Retell + Mango calls
+        response = await unifiedCallsApi.getCalls({ 
+          office_id: officeId,
+          limit: 100,
+        });
+      } else {
+        // Fallback to legacy API
+        response = await callsApi.getCalls({ office_id: officeId });
+      }
       
       // The backend now handles name extraction and patient identification
       const processedCalls = (response.calls || []).map(call => ({
         ...call,
         // Ensure we have proper IDs
-        id: call.id || call.call_id
+        id: call.id || call.call_id || call.external_id,
+        // Normalize duration field
+        duration: call.duration || call.duration_seconds || 0,
+        // Normalize status field
+        success_status: call.success_status || (call.outcome === 'resolved' ? 'Resolved' : 'Unresolved'),
       }));
       
       setCalls(processedCalls);
@@ -158,6 +259,22 @@ const Dashboard = () => {
       setCalls(mockCalls);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAgents = async () => {
+    try {
+      const response = await agentsApi.getAgents();
+      setAgents(response.agents || []);
+    } catch (error) {
+      console.error('Failed to fetch agents:', error);
+      // Use fallback agents if API fails
+      setAgents([
+        { agent_id: '1', agent_name: 'Medical Receptionist' },
+        { agent_id: '2', agent_name: 'Emergency Triage' },
+        { agent_id: '3', agent_name: 'Billing Support' },
+        { agent_id: '4', agent_name: 'Appointment Scheduler' }
+      ]);
     }
   };
 
@@ -177,21 +294,30 @@ const Dashboard = () => {
   };
 
   const generateEnhancedMockCalls = () => [
+    // AI-handled calls (Retell)
     {
       id: '1',
       call_id: '1',
+      source: 'retell',
+      handler_type: 'ai',
       caller_name: 'John Smith',
       caller_number: '+1-555-0123',
       call_date: new Date().toISOString(),
       reason: 'Appointment booking',
-      summary: 'Patient called to schedule a routine checkup appointment for next week. Discussed available time slots and confirmed insurance coverage. Very polite and cooperative throughout the call.',
+      summary: 'Patient called to schedule a routine checkup appointment for next week. Successfully transferred to appointment desk and appointment scheduled.',
       duration: 180,
       success_status: 'Resolved',
       sentiment: 'positive',
       is_new_patient: true,
       is_emergency: false,
-      transcript: 'Agent: Hello, thank you for calling. User: Hi, my name is John Smith, I need to schedule an appointment. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith.',
+      transfer_status: 'successful',
+      transfer_attempted: true,
+      transfer_destination: 'Appointment Desk',
+      transfer_timestamp: new Date(Date.now() + 120000).toISOString(),
+      callback_required: false,
+      transcript: 'Agent: Hello, thank you for calling. User: Hi, my name is John Smith, I need to schedule an appointment. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me transfer you to our appointment desk.',
       agent_id: 'agent_001',
+      handler_name: 'AI Receptionist',
       recording_url: 'https://example.com/recordings/call1.mp3',
       sentiment_scores: [
         { time: '0:00', score: 0.7 },
@@ -203,18 +329,27 @@ const Dashboard = () => {
     {
       id: '2',
       call_id: '2',
+      source: 'retell',
+      handler_type: 'ai',
       caller_name: 'Sarah Johnson',
       caller_number: '+1-555-0456',
       call_date: new Date(Date.now() - 86400000).toISOString(),
       reason: 'Emergency consultation',
-      summary: 'URGENT: Emergency call regarding severe chest pain. Patient experiencing shortness of breath and was advised to seek immediate medical attention. Call transferred to emergency services immediately.',
+      summary: 'URGENT: Emergency call regarding severe chest pain. Transfer to emergency line failed - patient disconnected. REQUIRES IMMEDIATE CALLBACK.',
       duration: 420,
       success_status: 'Unresolved',
       sentiment: 'negative',
       is_new_patient: false,
       is_emergency: true,
-      transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. Agent: I understand this is urgent, Sarah.',
+      transfer_status: 'failed',
+      transfer_attempted: true,
+      transfer_destination: 'Emergency Line',
+      transfer_timestamp: new Date(Date.now() - 86400000 + 300000).toISOString(),
+      callback_required: true,
+      callback_reason: 'Transfer to emergency line failed - patient disconnected',
+      transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. Agent: I understand this is urgent, Sarah. Let me transfer you immediately. User: Please hurry... [call disconnected]',
       agent_id: 'agent_002',
+      handler_name: 'AI Emergency Triage',
       recording_url: 'https://example.com/recordings/call2.mp3',
       sentiment_scores: [
         { time: '0:00', score: -0.8 },
@@ -223,26 +358,118 @@ const Dashboard = () => {
         { time: '3:00', score: -0.5 }
       ]
     },
+    // Staff-handled calls (Mango Voice)
     {
       id: '3',
       call_id: '3',
+      source: 'mango',
+      handler_type: 'staff',
       caller_name: 'Mike Williams',
       caller_number: '+1-555-0789',
       call_date: new Date(Date.now() - 172800000).toISOString(),
       reason: 'Prescription refill',
-      summary: 'Patient requested prescription refill for ongoing medication. Verified patient information and processed refill request. Pharmacy notification sent.',
+      summary: 'Patient requested prescription refill for ongoing medication. Staff member processed request and confirmed with pharmacy.',
       duration: 150,
       success_status: 'Resolved',
       sentiment: 'neutral',
       is_new_patient: false,
       is_emergency: false,
-      transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill. Agent: I can help you with that, Mike.',
-      agent_id: 'agent_001',
-      recording_url: 'https://example.com/recordings/call3.mp3',
+      transfer_status: 'none',
+      transfer_attempted: false,
+      callback_required: false,
+      transcript: 'Staff: Good morning, dental office. How can I help? Caller: Hi, I\'m Mike Williams and I need a prescription refill for my pain medication. Staff: Of course, let me pull up your file and verify with the doctor. I\'ll have this ready for you shortly.',
+      handler_id: 'staff_001',
+      handler_name: 'Maria Garcia',
+      recording_url: 'https://example.com/recordings/mango_call3.mp3',
       sentiment_scores: [
         { time: '0:00', score: 0.1 },
         { time: '1:00', score: 0.2 },
         { time: '2:00', score: 0.3 }
+      ]
+    },
+    {
+      id: '4',
+      call_id: '4',
+      source: 'mango',
+      handler_type: 'staff',
+      caller_name: 'Lisa Chen',
+      caller_number: '+1-555-1234',
+      call_date: new Date(Date.now() - 259200000).toISOString(),
+      reason: 'Insurance inquiry',
+      summary: 'Patient called about insurance coverage for upcoming procedure. Staff provided detailed explanation and scheduled follow-up.',
+      duration: 240,
+      success_status: 'Resolved',
+      sentiment: 'positive',
+      is_new_patient: false,
+      is_emergency: false,
+      transfer_status: 'none',
+      transfer_attempted: false,
+      callback_required: false,
+      transcript: 'Staff: Thank you for calling. How may I assist you? Caller: Hi, I\'m Lisa Chen and I have questions about my insurance coverage for a root canal. Staff: I\'d be happy to help you with that. Let me check your coverage details.',
+      handler_id: 'staff_002',
+      handler_name: 'Jessica Taylor',
+      recording_url: 'https://example.com/recordings/mango_call4.mp3',
+      sentiment_scores: [
+        { time: '0:00', score: 0.2 },
+        { time: '1:00', score: 0.3 },
+        { time: '2:00', score: 0.4 },
+        { time: '3:00', score: 0.5 }
+      ]
+    },
+    {
+      id: '5',
+      call_id: '5',
+      source: 'mango',
+      handler_type: 'staff',
+      caller_name: 'Robert Brown',
+      caller_number: '+1-555-5678',
+      call_date: new Date(Date.now() - 43200000).toISOString(),
+      reason: 'Appointment confirmation',
+      summary: 'Existing patient called to confirm tomorrow\'s appointment. Staff confirmed time and reminded patient of required documents.',
+      duration: 90,
+      success_status: 'Resolved',
+      sentiment: 'positive',
+      is_new_patient: false,
+      is_emergency: false,
+      transfer_status: 'none',
+      transfer_attempted: false,
+      callback_required: false,
+      transcript: 'Staff: Good afternoon, dental office. Caller: Hi, this is Robert Brown. I just wanted to confirm my appointment for tomorrow at 2pm. Staff: Yes, Mr. Brown, you\'re all set for 2pm tomorrow with Dr. Smith. Please bring your insurance card.',
+      handler_id: 'staff_001',
+      handler_name: 'Maria Garcia',
+      recording_url: 'https://example.com/recordings/mango_call5.mp3',
+      sentiment_scores: [
+        { time: '0:00', score: 0.3 },
+        { time: '1:00', score: 0.5 }
+      ]
+    },
+    {
+      id: '6',
+      call_id: '6',
+      source: 'retell',
+      handler_type: 'ai',
+      caller_name: 'Emily Davis',
+      caller_number: '+1-555-9999',
+      call_date: new Date(Date.now() - 3600000).toISOString(),
+      reason: 'New patient inquiry',
+      summary: 'New patient inquiring about services and availability. AI provided information and scheduled initial consultation.',
+      duration: 300,
+      success_status: 'Resolved',
+      sentiment: 'positive',
+      is_new_patient: true,
+      is_emergency: false,
+      transfer_status: 'none',
+      transfer_attempted: false,
+      callback_required: false,
+      transcript: 'Agent: Thank you for calling our dental office. How can I help you today? User: Hi, I\'m Emily Davis and I\'m looking for a new dentist. Can you tell me about your services? Agent: Absolutely! We offer comprehensive dental care including...',
+      agent_id: 'agent_001',
+      handler_name: 'AI Receptionist',
+      recording_url: 'https://example.com/recordings/call6.mp3',
+      sentiment_scores: [
+        { time: '0:00', score: 0.4 },
+        { time: '1:00', score: 0.5 },
+        { time: '2:00', score: 0.6 },
+        { time: '3:00', score: 0.7 }
       ]
     }
   ];
@@ -323,6 +550,10 @@ const Dashboard = () => {
     setStatusFilter('');
     setPatientTypeFilter('');
     setEmergencyFilter('');
+    setAgentFilter('');
+    setTransferFilter('');
+    setSourceFilter('');
+    setHandlerTypeFilter('');
   };
 
   const formatDuration = (seconds) => {
@@ -345,6 +576,25 @@ const Dashboard = () => {
       case 'Resolved': return 'success';
       case 'Unresolved': return 'error';
       default: return 'default';
+    }
+  };
+
+  const getTransferStatusColor = (status) => {
+    switch (status) {
+      case 'successful': return 'success';
+      case 'failed': return 'error';
+      case 'voicemail': return 'warning';
+      case 'none': return 'default';
+      default: return 'default';
+    }
+  };
+
+  const getTransferStatusIcon = (status) => {
+    switch (status) {
+      case 'successful': return <SuccessIcon />;
+      case 'failed': return <FailedIcon />;
+      case 'voicemail': return <VoicemailIcon />;
+      default: return <TransferIcon />;
     }
   };
 
@@ -446,6 +696,98 @@ const Dashboard = () => {
           size="small"
         />
       ),
+    },
+    {
+      field: 'transfer_status',
+      headerName: 'Transfer Status',
+      width: 150,
+      renderCell: (params) => {
+        const status = params.value || 'none';
+        const showCallbackBadge = params.row.callback_required;
+        
+        if (!params.row.transfer_attempted) {
+          return (
+            <Chip
+              label="No Transfer"
+              color="default"
+              size="small"
+              variant="outlined"
+            />
+          );
+        }
+        
+        return (
+          <Box display="flex" alignItems="center" gap={0.5}>
+            <Chip
+              icon={getTransferStatusIcon(status)}
+              label={status === 'successful' ? 'Success' : 
+                     status === 'failed' ? 'Failed' : 
+                     status === 'voicemail' ? 'Voicemail' : 'Unknown'}
+              color={getTransferStatusColor(status)}
+              size="small"
+            />
+            {showCallbackBadge && (
+              <Tooltip title="Callback Required">
+                <CallbackIcon sx={{ color: 'error.main', fontSize: 16 }} />
+              </Tooltip>
+            )}
+          </Box>
+        );
+      },
+    },
+    {
+      field: 'source',
+      headerName: 'Source',
+      width: 120,
+      renderCell: (params) => {
+        const source = params.value || (params.row.handler_type === 'staff' ? 'mango' : 'retell');
+        const handlerType = params.row.handler_type || (source === 'mango' ? 'staff' : 'ai');
+        
+        return (
+          <Box display="flex" alignItems="center" gap={0.5}>
+            <Chip
+              icon={handlerType === 'ai' ? <AIIcon sx={{ fontSize: 16 }} /> : <StaffIcon sx={{ fontSize: 16 }} />}
+              label={handlerType === 'ai' ? 'AI' : 'Staff'}
+              size="small"
+              color={handlerType === 'ai' ? 'primary' : 'secondary'}
+              variant="outlined"
+              sx={{ 
+                '& .MuiChip-icon': { marginLeft: '4px' },
+                minWidth: 70,
+              }}
+            />
+          </Box>
+        );
+      },
+    },
+    {
+      field: 'handler_name',
+      headerName: 'Handler',
+      width: 150,
+      renderCell: (params) => {
+        const handlerType = params.row.handler_type || 'ai';
+        const handlerName = params.value || params.row.handler_id;
+        const agent = agents.find(a => a.agent_id === params.row.agent_id || a.agent_id === params.row.handler_id);
+        
+        return (
+          <Box display="flex" alignItems="center">
+            <Avatar 
+              sx={{ 
+                width: 24, 
+                height: 24, 
+                mr: 1, 
+                fontSize: '0.7rem',
+                bgcolor: handlerType === 'ai' ? 'primary.main' : 'secondary.main'
+              }}
+            >
+              {handlerType === 'ai' ? 'AI' : 'ST'}
+            </Avatar>
+            <Typography variant="body2" noWrap>
+              {agent?.agent_name || handlerName || (handlerType === 'ai' ? 'AI Agent' : 'Staff')}
+            </Typography>
+          </Box>
+        );
+      },
     },
     {
       field: 'audio',
@@ -579,8 +921,9 @@ const Dashboard = () => {
         Call Management Dashboard
       </Typography>
 
-      {/* Enhanced Statistics Cards - COMPACT */}
+      {/* Enhanced Statistics Cards with Transfer Metrics */}
       <Grid container spacing={2} sx={{ mb: 3, justifyContent: 'flex-start' }}>
+        {/* Row 1: Core Metrics */}
         <Grid item xs={12} sm={6} lg={2.4}>
           <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
             <CardContent>
@@ -621,25 +964,49 @@ const Dashboard = () => {
         </Grid>
 
         <Grid item xs={12} sm={6} lg={2.4}>
-          <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+          <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' }}>
             <CardContent>
               <Box display="flex" alignItems="center" justifyContent="space-between">
                 <Box sx={{ color: 'white' }}>
                   <Typography color="inherit" variant="body2" gutterBottom>
-                    Avg Duration
+                    Transfer Success
                   </Typography>
                   <Typography variant="h4" fontWeight="bold">
-                    {formatDuration(stats.averageDuration)}
+                    {stats.transferSuccessRate}%
+                  </Typography>
+                  <Typography variant="caption" color="inherit">
+                    {stats.successfulTransfers}/{stats.transferAttempted} transfers
                   </Typography>
                 </Box>
-                <ScheduleIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
+                <SuccessIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
               </Box>
             </CardContent>
           </Card>
         </Grid>
 
         <Grid item xs={12} sm={6} lg={2.4}>
-          <Card sx={{ height: '100%', background: stats.emergencyCalls > 0 ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' : 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' }}>
+          <Card sx={{ height: '100%', background: stats.callbackRequired > 0 ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box sx={{ color: 'white' }}>
+                  <Typography color="inherit" variant="body2" gutterBottom>
+                    Callbacks Needed
+                  </Typography>
+                  <Typography variant="h4" fontWeight="bold">
+                    {stats.callbackRequired}
+                  </Typography>
+                  <Typography variant="caption" color="inherit">
+                    Failed transfers & voicemails
+                  </Typography>
+                </Box>
+                <CallbackIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%', background: stats.emergencyCalls > 0 ? 'linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%)' : 'linear-gradient(135deg, #a8e6cf 0%, #88d8a3 100%)' }}>
             <CardContent>
               <Box display="flex" alignItems="center" justifyContent="space-between">
                 <Box sx={{ color: 'white' }}>
@@ -652,6 +1019,113 @@ const Dashboard = () => {
                 </Box>
                 <EmergencyIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
               </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Row 2: Transfer Breakdown */}
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <SuccessIcon color="success" sx={{ mr: 1 }} />
+                <Typography variant="body2" color="textSecondary">
+                  Successful Transfers
+                </Typography>
+              </Box>
+              <Typography variant="h5" fontWeight="bold" color="success.main">
+                {stats.successfulTransfers}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <FailedIcon color="error" sx={{ mr: 1 }} />
+                <Typography variant="body2" color="textSecondary">
+                  Failed Transfers
+                </Typography>
+              </Box>
+              <Typography variant="h5" fontWeight="bold" color="error.main">
+                {stats.failedTransfers}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <VoicemailIcon color="warning" sx={{ mr: 1 }} />
+                <Typography variant="body2" color="textSecondary">
+                  Voicemails Left
+                </Typography>
+              </Box>
+              <Typography variant="h5" fontWeight="bold" color="warning.main">
+                {stats.voicemailTransfers}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box sx={{ color: 'white' }}>
+                  <Typography color="inherit" variant="body2" gutterBottom>
+                    AI Handled
+                  </Typography>
+                  <Typography variant="h4" fontWeight="bold">
+                    {stats.aiCalls}
+                  </Typography>
+                  <Typography variant="caption" color="inherit">
+                    Retell AI calls
+                  </Typography>
+                </Box>
+                <AIIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%', background: 'linear-gradient(135deg, #ec4899 0%, #f472b6 100%)' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box sx={{ color: 'white' }}>
+                  <Typography color="inherit" variant="body2" gutterBottom>
+                    Staff Handled
+                  </Typography>
+                  <Typography variant="h4" fontWeight="bold">
+                    {stats.staffCalls}
+                  </Typography>
+                  <Typography variant="caption" color="inherit">
+                    Mango Voice calls
+                  </Typography>
+                </Box>
+                <StaffIcon sx={{ color: 'white', fontSize: 40, opacity: 0.8 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} lg={2.4}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <ScheduleIcon color="primary" sx={{ mr: 1 }} />
+                <Typography variant="body2" color="textSecondary">
+                  Avg Duration
+                </Typography>
+              </Box>
+              <Typography variant="h5" fontWeight="bold" color="primary.main">
+                {formatDuration(stats.averageDuration)}
+              </Typography>
             </CardContent>
           </Card>
         </Grid>
@@ -751,6 +1225,51 @@ const Dashboard = () => {
               </FormControl>
             </Grid>
 
+
+
+            <Grid item xs={6} md={1.5}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Transfer</InputLabel>
+                <Select
+                  value={transferFilter}
+                  label="Transfer"
+                  onChange={(e) => setTransferFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  <MenuItem value="successful">Successful</MenuItem>
+                  <MenuItem value="failed">Failed</MenuItem>
+                  <MenuItem value="voicemail">Voicemail</MenuItem>
+                  <MenuItem value="callback_needed">Callback Needed</MenuItem>
+                  <MenuItem value="no_transfer">No Transfer</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+
+            <Grid item xs={6} md={1.5}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Handler</InputLabel>
+                <Select
+                  value={handlerTypeFilter}
+                  label="Handler"
+                  onChange={(e) => setHandlerTypeFilter(e.target.value)}
+                >
+                  <MenuItem value="">All Handlers</MenuItem>
+                  <MenuItem value="ai">
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <AIIcon fontSize="small" color="primary" />
+                      AI Agents
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="staff">
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <StaffIcon fontSize="small" color="secondary" />
+                      Staff
+                    </Box>
+                  </MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+
             <Grid item xs={6} md={1}>
               <Button
                 variant="outlined"
@@ -773,6 +1292,42 @@ const Dashboard = () => {
               <Typography variant="h6">
                 Call History ({filteredCalls.length} {filteredCalls.length === 1 ? 'call' : 'calls'})
               </Typography>
+              
+              {/* Primary Agent & Office Filters */}
+              <Box display="flex" gap={2} alignItems="center">
+                {/* Agent Filter - Now Primary */}
+                <FormControl size="small" sx={{ minWidth: 180 }}>
+                  <InputLabel>Filter by Agent</InputLabel>
+                  <Select
+                    value={agentFilter}
+                    label="Filter by Agent"
+                    onChange={(e) => setAgentFilter(e.target.value)}
+                  >
+                    <MenuItem value="">All Available Agents</MenuItem>
+                    {availableAgents.map((agent) => (
+                      <MenuItem key={agent.agent_id} value={agent.agent_id}>
+                        {agent.agent_name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                {/* Office Configuration */}
+                <FormControl size="small" sx={{ minWidth: 150 }}>
+                  <InputLabel>Office</InputLabel>
+                  <Select
+                    value={officeId}
+                    label="Office"
+                    onChange={(e) => setOfficeId(e.target.value)}
+                  >
+                    {officeConfigs.map((config) => (
+                      <MenuItem key={config.id} value={config.id}>
+                        {config.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
             </Box>
             
             <Box sx={{ height: 600, width: '100%', ml: 0 }}>
@@ -982,6 +1537,62 @@ const Dashboard = () => {
                       </LineChart>
                     </ResponsiveContainer>
                   </Box>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Transfer Information */}
+            {selectedCall.transfer_attempted && (
+              <Card sx={{ mb: 3 }}>
+                <CardContent>
+                  <Box display="flex" alignItems="center" mb={2}>
+                    <TransferIcon sx={{ mr: 1 }} />
+                    <Typography variant="h6">Transfer Details</Typography>
+                  </Box>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={6}>
+                      <Typography variant="subtitle2" color="textSecondary">Transfer Status</Typography>
+                      <Box display="flex" alignItems="center" gap={1} mt={1}>
+                        <Chip
+                          icon={getTransferStatusIcon(selectedCall.transfer_status)}
+                          label={selectedCall.transfer_status === 'successful' ? 'Successful' : 
+                                 selectedCall.transfer_status === 'failed' ? 'Failed' : 
+                                 selectedCall.transfer_status === 'voicemail' ? 'Voicemail Left' : 'Unknown'}
+                          color={getTransferStatusColor(selectedCall.transfer_status)}
+                        />
+                        {selectedCall.callback_required && (
+                          <Chip
+                            icon={<CallbackIcon />}
+                            label="Callback Required"
+                            color="error"
+                            variant="outlined"
+                          />
+                        )}
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <Typography variant="subtitle2" color="textSecondary">Destination</Typography>
+                      <Typography variant="body1" sx={{ mt: 1 }}>
+                        {selectedCall.transfer_destination || 'Not specified'}
+                      </Typography>
+                    </Grid>
+                    {selectedCall.transfer_timestamp && (
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" color="textSecondary">Transfer Time</Typography>
+                        <Typography variant="body2" sx={{ mt: 1 }}>
+                          {new Date(selectedCall.transfer_timestamp).toLocaleString()}
+                        </Typography>
+                      </Grid>
+                    )}
+                    {selectedCall.callback_reason && (
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" color="textSecondary">Callback Reason</Typography>
+                        <Typography variant="body2" sx={{ mt: 1, color: 'error.main' }}>
+                          {selectedCall.callback_reason}
+                        </Typography>
+                      </Grid>
+                    )}
+                  </Grid>
                 </CardContent>
               </Card>
             )}

@@ -35,21 +35,14 @@ import {
   LocationOn
 } from '@mui/icons-material';
 import { format, addDays, subDays, isToday, parseISO } from 'date-fns';
+import FullCalendar from '@fullcalendar/react';
+import resourceTimeGridPlugin from '@fullcalendar/resource-timegrid';
+import interactionPlugin from '@fullcalendar/interaction';
 import { openDentalApi } from '../services/api';
 import AppointmentBookingDialog from './AppointmentBookingDialog';
 
 // Time configuration
-const START_HOUR = 8; // 8 AM
-const END_HOUR = 18; // 6 PM
-const TIME_SLOT_MINUTES = 30;
 const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
-
-// Provider/Operatory colors
-const PROVIDER_COLORS = [
-  '#1976d2', '#388e3c', '#f57c00', '#7b1fa2', 
-  '#c2185b', '#00796b', '#5d4037', '#455a64',
-  '#e91e63', '#9c27b0', '#673ab7', '#3f51b5'
-];
 
 // Appointment status colors
 const STATUS_COLORS = {
@@ -66,6 +59,8 @@ const OpenDentalCalendar = () => {
   const [appointments, setAppointments] = useState([]);
   const [providers, setProviders] = useState([]);
   const [operatories, setOperatories] = useState([]);
+  const [resources, setResources] = useState([]);
+  const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
@@ -78,110 +73,77 @@ const OpenDentalCalendar = () => {
   const [syncStatus, setSyncStatus] = useState({ enabled: false, lastSync: null, conflicts: 0 });
   const [notification, setNotification] = useState({ open: false, message: '', severity: 'info' });
 
-  // Generate time slots for the day
-  const timeSlots = useMemo(() => {
-    const slots = [];
-    const totalMinutes = (END_HOUR - START_HOUR) * 60;
-    
-    for (let i = 0; i <= totalMinutes; i += TIME_SLOT_MINUTES) {
-      const hour = START_HOUR + Math.floor(i / 60);
-      const minute = i % 60;
-      const time = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-      const timeValue = hour * 60 + minute;
+  // Transform providers/operatories to FullCalendar resources
+  const transformToResources = useCallback((data, type) => {
+    return data.map(item => ({
+      id: `${type}_${item.id}`,
+      title: item.name,
+      originalId: item.id,
+      type: type
+    }));
+  }, []);
+
+  // Transform appointments to FullCalendar events
+  const transformToEvents = useCallback((appointments, viewMode) => {
+    return appointments.map(apt => {
+      const resourceField = viewMode === 'provider' ? 'providerId' : 'operatoryId';
+      const resourcePrefix = viewMode === 'provider' ? 'provider' : 'operatory';
       
-      slots.push({
-        time,
-        timeValue,
-        hour,
-        minute
-      });
-    }
-    return slots;
-  }, []);
+      return {
+        id: apt.id,
+        title: `${apt.patient} - ${apt.type}`,
+        start: `${format(selectedDate, 'yyyy-MM-dd')}T${apt.time}:00`,
+        end: calculateEndTime(apt.time, apt.duration),
+        resourceId: `${resourcePrefix}_${apt[resourceField]}`,
+        backgroundColor: STATUS_COLORS[apt.status] || STATUS_COLORS.scheduled,
+        borderColor: STATUS_COLORS[apt.status] || STATUS_COLORS.scheduled,
+        textColor: 'white',
+        extendedProps: {
+          patient: apt.patient,
+          type: apt.type,
+          status: apt.status,
+          notes: apt.notes,
+          duration: apt.duration
+        }
+      };
+    });
+  }, [selectedDate]);
 
-  // Get current time indicator position
-  const getCurrentTimePosition = useCallback(() => {
-    const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const currentTimeValue = currentHour * 60 + currentMinute;
-    
-    if (currentTimeValue < START_HOUR * 60 || currentTimeValue > END_HOUR * 60) {
-      return null;
-    }
-    
-    const totalMinutes = (END_HOUR - START_HOUR) * 60;
-    const position = ((currentTimeValue - START_HOUR * 60) / totalMinutes) * 100;
-    return position;
-  }, []);
+  // Helper function to calculate end time
+  const calculateEndTime = (startTime, duration) => {
+    const [hours, minutes] = startTime.split(':').map(Number);
+    const startDate = new Date(selectedDate);
+    startDate.setHours(hours, minutes, 0, 0);
+    startDate.setMinutes(startDate.getMinutes() + duration);
+    return startDate.toISOString();
+  };
 
-  // Generate mock data for demonstration
-  const generateMockData = useCallback(() => {
-    const mockProviders = [
-      { id: 1, name: 'Dr. Brian Albert', color: PROVIDER_COLORS[0] },
-      { id: 2, name: 'Dr. Sarah Lexington', color: PROVIDER_COLORS[1] },
-      { id: 3, name: 'Dr. Michael Chen', color: PROVIDER_COLORS[2] },
-      { id: 4, name: 'Dr. Emily Rodriguez', color: PROVIDER_COLORS[3] }
-    ];
-
-    const mockOperatories = [
-      { id: 1, name: 'Op 1', color: PROVIDER_COLORS[4] },
-      { id: 2, name: 'Op 2', color: PROVIDER_COLORS[5] },
-      { id: 3, name: 'Op 3', color: PROVIDER_COLORS[6] },
-      { id: 4, name: 'Hygiene 1', color: PROVIDER_COLORS[7] }
-    ];
-
-    const mockAppointments = [
-      {
-        id: 1,
-        patient: 'John Smith',
-        time: '09:00',
-        duration: 60,
-        type: 'Cleaning',
-        status: 'confirmed',
-        providerId: 1,
-        operatoryId: 1,
-        notes: 'Regular checkup and cleaning'
-      },
-      {
-        id: 2,
-        patient: 'Mary Johnson',
-        time: '10:30',
-        duration: 30,
-        type: 'Consultation',
-        status: 'scheduled',
-        providerId: 2,
-        operatoryId: 2,
-        notes: 'New patient consultation'
-      },
-      {
-        id: 3,
-        patient: 'Robert Davis',
-        time: '14:00',
-        duration: 90,
-        type: 'Root Canal',
-        status: 'arrived',
-        providerId: 1,
-        operatoryId: 1,
-        notes: 'Endodontic treatment'
-      },
-      {
-        id: 4,
-        patient: 'Lisa Wilson',
-        time: '15:30',
-        duration: 45,
-        type: 'Crown Prep',
-        status: 'confirmed',
-        providerId: 3,
-        operatoryId: 3,
-        notes: 'Crown preparation'
+  // Fetch providers from API
+  const fetchProviders = useCallback(async () => {
+    try {
+      const response = await openDentalApi.getProviders();
+      if (response && response.success) {
+        return response.providers || [];
       }
-    ];
-
-    setProviders(mockProviders);
-    setOperatories(mockOperatories);
-    setAppointments(mockAppointments);
+      return [];
+    } catch (error) {
+      console.error('Failed to fetch providers:', error);
+      return [];
+    }
   }, []);
+
+  // Update resources when data changes
+  useEffect(() => {
+    const currentData = viewMode === 'provider' ? providers : operatories;
+    const transformedResources = transformToResources(currentData, viewMode);
+    setResources(transformedResources);
+  }, [providers, operatories, viewMode, transformToResources]);
+
+  // Update events when appointments change
+  useEffect(() => {
+    const transformedEvents = transformToEvents(appointments, viewMode);
+    setEvents(transformedEvents);
+  }, [appointments, viewMode, transformToEvents]);
 
   // Fetch calendar data with enhanced error handling
   const fetchCalendarData = useCallback(async (showRefreshing = false) => {
@@ -193,37 +155,49 @@ const OpenDentalCalendar = () => {
     try {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       
-      // Try to fetch from Open Dental API
-      const response = await openDentalApi.getCalendar({
-        date: dateStr,
-        view: viewMode
-      });
+      // Fetch providers and calendar data in parallel
+      const [providersData, calendarResponse] = await Promise.all([
+        fetchProviders(),
+        openDentalApi.getCalendar({
+          date: dateStr,
+          view: viewMode
+        })
+      ]);
       
-      if (response.appointments) {
-        setAppointments(response.appointments);
-        setProviders(response.providers || []);
-        setOperatories(response.operatories || []);
+      console.log('🎯 API Response:', calendarResponse);
+      
+      if (calendarResponse && calendarResponse.success) {
+        setAppointments(calendarResponse.appointments || []);
+        setProviders(calendarResponse.providers || providersData);
+        setOperatories(calendarResponse.operatories || []);
         
         // Update sync status if available
-        if (response.lastSync) {
+        if (calendarResponse.lastSync) {
           setSyncStatus(prev => ({
             ...prev,
-            lastSync: response.lastSync,
+            lastSync: calendarResponse.lastSync,
             enabled: true
           }));
         }
+        
+        console.log('✅ Real data loaded:', calendarResponse.appointments?.length || 0, 'appointments');
       } else {
-        // Fallback to mock data
-        generateMockData();
+        console.log('❌ No success in response, using providers only');
+        setAppointments([]);
+        setProviders(providersData);
+        setOperatories([]);
       }
     } catch (err) {
-      console.warn('Open Dental API not available, using mock data:', err);
-      generateMockData();
+      console.error('🚨 Open Dental API Error:', err);
+      setAppointments([]);
+      setProviders([]);
+      setOperatories([]);
+      setError('Failed to load calendar data');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedDate, viewMode, generateMockData]);
+  }, [selectedDate, viewMode, fetchProviders]);
 
   // Show notification
   const showNotification = useCallback((message, severity = 'info') => {
@@ -264,56 +238,33 @@ const OpenDentalCalendar = () => {
     }
   }, [fetchCalendarData, checkSyncStatus, showNotification]);
 
-  // Get columns based on view mode
-  const columns = useMemo(() => {
-    return viewMode === 'provider' ? providers : operatories;
-  }, [viewMode, providers, operatories]);
-
-  // Calculate appointment position and height
-  const getAppointmentStyle = useCallback((appointment) => {
-    const [hour, minute] = appointment.time.split(':').map(Number);
-    const startTimeValue = hour * 60 + minute;
-    const endTimeValue = startTimeValue + appointment.duration;
-    
-    const totalMinutes = (END_HOUR - START_HOUR) * 60;
-    const top = ((startTimeValue - START_HOUR * 60) / totalMinutes) * 100;
-    const height = (appointment.duration / totalMinutes) * 100;
-    
-    return {
-      position: 'absolute',
-      top: `${top}%`,
-      height: `${height}%`,
-      left: '2px',
-      right: '2px',
-      backgroundColor: STATUS_COLORS[appointment.status] || STATUS_COLORS.scheduled,
-      border: '1px solid rgba(255,255,255,0.2)',
-      borderRadius: '4px',
-      padding: '4px',
-      fontSize: '12px',
-      color: 'white',
-      overflow: 'hidden',
-      cursor: 'pointer',
-      zIndex: 1,
-      '&:hover': {
-        boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-        zIndex: 2
-      }
+  // FullCalendar event handlers
+  const handleEventClick = useCallback((clickInfo) => {
+    const appointment = {
+      id: clickInfo.event.id,
+      patient: clickInfo.event.extendedProps.patient,
+      time: format(new Date(clickInfo.event.start), 'HH:mm'),
+      duration: clickInfo.event.extendedProps.duration,
+      type: clickInfo.event.extendedProps.type,
+      status: clickInfo.event.extendedProps.status,
+      notes: clickInfo.event.extendedProps.notes
     };
+    setSelectedAppointment(appointment);
   }, []);
 
-  // Get appointments for a specific column and time slot
-  const getAppointmentsForSlot = useCallback((columnId, timeSlot) => {
-    return appointments.filter(apt => {
-      const columnField = viewMode === 'provider' ? 'providerId' : 'operatoryId';
-      const [hour, minute] = apt.time.split(':').map(Number);
-      const aptTimeValue = hour * 60 + minute;
-      const endTimeValue = aptTimeValue + apt.duration;
-      
-      return apt[columnField] === columnId && 
-             aptTimeValue < (timeSlot.timeValue + TIME_SLOT_MINUTES) &&
-             endTimeValue > timeSlot.timeValue;
+  const handleDateSelect = useCallback((selectInfo) => {
+    const resource = resources.find(r => r.id === selectInfo.resource.id);
+    if (!resource) return;
+
+    setSelectedTimeSlot({
+      date: format(selectInfo.start, 'yyyy-MM-dd'),
+      time: format(selectInfo.start, 'HH:mm'),
+      dateTime: selectInfo.start,
+      provider: resource.type === 'provider' ? { id: resource.originalId, name: resource.title } : null,
+      operatory: resource.type === 'operatory' ? { id: resource.originalId, name: resource.title } : null
     });
-  }, [appointments, viewMode]);
+    setBookingDialogOpen(true);
+  }, [resources]);
 
   // Handle date navigation
   const navigateDate = (direction) => {
@@ -325,29 +276,6 @@ const OpenDentalCalendar = () => {
       setSelectedDate(new Date());
     }
   };
-
-  // Handle appointment click
-  const handleAppointmentClick = (appointment) => {
-    setSelectedAppointment(appointment);
-  };
-
-  // Handle cell click for booking
-  const handleCellClick = useCallback((columnId, timeSlot) => {
-    const column = columns.find(c => c.id === columnId);
-    if (!column) return;
-
-    const selectedDateTime = new Date(selectedDate);
-    selectedDateTime.setHours(timeSlot.hour, timeSlot.minute, 0, 0);
-
-    setSelectedTimeSlot({
-      date: format(selectedDate, 'yyyy-MM-dd'),
-      time: timeSlot.time,
-      dateTime: selectedDateTime,
-      provider: viewMode === 'provider' ? column : null,
-      operatory: viewMode === 'operatory' ? column : null
-    });
-    setBookingDialogOpen(true);
-  }, [columns, selectedDate, viewMode]);
 
   // Handle appointment booked
   const handleAppointmentBooked = useCallback((newAppointment) => {
@@ -373,10 +301,7 @@ const OpenDentalCalendar = () => {
     }, REFRESH_INTERVAL);
 
     return () => clearInterval(interval);
-  }, [fetchCalendarData]);
-
-  // Current time indicator position
-  const currentTimePosition = getCurrentTimePosition();
+  }, [fetchCalendarData, checkSyncStatus]);
 
   if (loading && !refreshing) {
     return (
@@ -462,158 +387,59 @@ const OpenDentalCalendar = () => {
         </Alert>
       )}
 
-      {/* Calendar Grid */}
-      <Paper elevation={2} sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {/* Column Headers */}
-        <Box 
-          sx={{ 
-            display: 'grid',
-            gridTemplateColumns: `80px repeat(${columns.length}, 1fr)`,
-            borderBottom: 1,
-            borderColor: 'divider',
-            backgroundColor: 'grey.50'
+      {/* FullCalendar Component */}
+      <Paper elevation={2} sx={{ flex: 1, overflow: 'hidden', p: 2 }}>
+        <FullCalendar
+          plugins={[resourceTimeGridPlugin, interactionPlugin]}
+          initialView="resourceTimeGridDay"
+          date={selectedDate}
+          resources={resources}
+          events={events}
+          
+          // Office hours configuration
+          slotDuration="00:15:00"
+          slotLabelInterval="01:00"
+          slotMinTime="08:00:00"
+          slotMaxTime="17:00:00"
+          businessHours={[{
+            daysOfWeek: [1, 2, 3, 4], // Monday to Thursday
+            startTime: '08:00',
+            endTime: '17:00'
+          }]}
+          weekends={false}
+          
+          // Header and resource configuration
+          headerToolbar={{
+            left: 'prev,next today',
+            center: 'title',
+            right: ''
           }}
-        >
-          <Box sx={{ p: 1, borderRight: 1, borderColor: 'divider' }}>
-            <Typography variant="subtitle2" color="text.secondary">Time</Typography>
-          </Box>
-          {columns.map((column) => (
-            <Box 
-              key={column.id}
-              sx={{ 
-                p: 1, 
-                borderRight: 1, 
-                borderColor: 'divider',
-                backgroundColor: column.color,
-                color: 'white',
-                textAlign: 'center'
-              }}
-            >
-              <Typography variant="subtitle2" fontWeight="bold">
-                {column.name}
-              </Typography>
-            </Box>
-          ))}
-        </Box>
-
-        {/* Calendar Body */}
-        <Box sx={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-          <Box 
-            sx={{ 
-              display: 'grid',
-              gridTemplateColumns: `80px repeat(${columns.length}, 1fr)`,
-              minHeight: '100%',
-              position: 'relative'
-            }}
-          >
-            {/* Time Labels Column */}
-            <Box sx={{ borderRight: 1, borderColor: 'divider' }}>
-              {timeSlots.map((slot, index) => (
-                <Box 
-                  key={slot.time}
-                  sx={{ 
-                    height: '60px',
-                    borderBottom: 1,
-                    borderColor: 'divider',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: slot.minute === 0 ? 'grey.50' : 'transparent'
-                  }}
-                >
-                  {slot.minute === 0 && (
-                    <Typography variant="caption" color="text.secondary">
-                      {slot.time}
-                    </Typography>
-                  )}
-                </Box>
-              ))}
-            </Box>
-
-            {/* Calendar Columns */}
-            {columns.map((column) => (
-              <Box 
-                key={column.id}
-                sx={{ 
-                  borderRight: 1, 
-                  borderColor: 'divider',
-                  position: 'relative',
-                  minHeight: `${timeSlots.length * 60}px`
-                }}
-              >
-                {/* Time Slot Grid */}
-                {timeSlots.map((slot, index) => (
-                  <Box 
-                    key={slot.time}
-                    onClick={() => handleCellClick(column.id, slot)}
-                    sx={{ 
-                      height: '60px',
-                      borderBottom: 1,
-                      borderColor: 'divider',
-                      position: 'relative',
-                      backgroundColor: slot.minute === 0 ? 'rgba(0,0,0,0.02)' : 'transparent',
-                      cursor: 'pointer',
-                      '&:hover': {
-                        backgroundColor: 'primary.light',
-                        opacity: 0.1
-                      }
-                    }}
-                  />
-                ))}
-
-                {/* Appointments */}
-                {appointments
-                  .filter(apt => {
-                    const columnField = viewMode === 'provider' ? 'providerId' : 'operatoryId';
-                    return apt[columnField] === column.id;
-                  })
-                  .map((appointment) => (
-                    <Box
-                      key={appointment.id}
-                      onClick={() => handleAppointmentClick(appointment)}
-                      sx={getAppointmentStyle(appointment)}
-                    >
-                      <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block' }}>
-                        {appointment.time}
-                      </Typography>
-                      <Typography variant="caption" sx={{ display: 'block' }}>
-                        {appointment.patient}
-                      </Typography>
-                      <Typography variant="caption" sx={{ display: 'block', opacity: 0.9 }}>
-                        {appointment.type}
-                      </Typography>
-                    </Box>
-                  ))
-                }
-              </Box>
-            ))}
-
-            {/* Current Time Indicator */}
-            {isToday(selectedDate) && currentTimePosition !== null && (
-              <Box
-                sx={{
-                  position: 'absolute',
-                  top: `${currentTimePosition}%`,
-                  left: '80px',
-                  right: 0,
-                  height: '2px',
-                  backgroundColor: 'error.main',
-                  zIndex: 10,
-                  '&::before': {
-                    content: '""',
-                    position: 'absolute',
-                    left: '-6px',
-                    top: '-4px',
-                    width: '10px',
-                    height: '10px',
-                    backgroundColor: 'error.main',
-                    borderRadius: '50%'
-                  }
-                }}
-              />
-            )}
-          </Box>
-        </Box>
+          resourceAreaHeaderContent="Provider / Operatory"
+          resourceAreaWidth="150px"
+          
+          // Event handlers
+          eventClick={handleEventClick}
+          select={handleDateSelect}
+          selectable={true}
+          selectMirror={true}
+          
+          // Styling
+          height="100%"
+          dayHeaderFormat={{ weekday: 'long', month: 'numeric', day: 'numeric' }}
+          slotLabelFormat={{
+            hour: 'numeric',
+            minute: '2-digit',
+            omitZeroMinute: false,
+            meridiem: 'short'
+          }}
+          
+          // Appearance
+          nowIndicator={true}
+          eventDisplay="block"
+          eventTextColor="white"
+          eventBackgroundColor="#1976d2"
+          eventBorderColor="#1976d2"
+        />
       </Paper>
 
       {/* Appointment Detail Dialog */}

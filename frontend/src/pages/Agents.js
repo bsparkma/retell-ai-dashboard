@@ -60,6 +60,7 @@ import {
   RadioButtonUnchecked as InactiveIcon,
 } from '@mui/icons-material';
 import { agentsApi } from '../services/api';
+import { getAllOfficeConfigs } from '../config/officeConfig';
 
 const Agents = () => {
   const theme = useTheme();
@@ -79,6 +80,10 @@ const Agents = () => {
   const [filterResponsiveness, setFilterResponsiveness] = useState('');
   const [testingAgent, setTestingAgent] = useState(null);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
+  
+  // Office configuration
+  const [officeId, setOfficeId] = useState('default');
+  const [officeConfigs] = useState(getAllOfficeConfigs());
 
   // Mock usage statistics for agents
   const [agentStats, setAgentStats] = useState({});
@@ -217,9 +222,18 @@ const Agents = () => {
     return { label: 'Normal', color: 'success' };
   };
 
-  // Filtered and sorted agents
+  // Filtered and sorted agents with office-based visibility
   const filteredAgents = useMemo(() => {
     let filtered = agents.filter(agent => {
+      // Office-based filtering: only show agents allowed for this office
+      let isOfficeAllowed = true;
+      if (officeId !== 'default') {
+        const currentOffice = officeConfigs.find(config => config.id === officeId);
+        if (currentOffice?.allowedAgents && currentOffice.allowedAgents.length > 0) {
+          isOfficeAllowed = currentOffice.allowedAgents.includes(agent.agent_id);
+        }
+      }
+
       const matchesSearch = !searchQuery || 
         agent.agent_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         agent.prompt?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -233,7 +247,7 @@ const Agents = () => {
         matchesResponsiveness = respInfo.label.toLowerCase() === filterResponsiveness.toLowerCase();
       }
 
-      return matchesSearch && matchesVoice && matchesLanguage && matchesResponsiveness;
+      return isOfficeAllowed && matchesSearch && matchesVoice && matchesLanguage && matchesResponsiveness;
     });
 
     // Sort agents
@@ -253,7 +267,7 @@ const Agents = () => {
     });
 
     return filtered;
-  }, [agents, searchQuery, sortBy, filterVoice, filterLanguage, filterResponsiveness]);
+  }, [agents, searchQuery, sortBy, filterVoice, filterLanguage, filterResponsiveness, officeId, officeConfigs]);
 
   const handleEditAgent = (agent) => {
     setEditingAgent({ ...agent });
@@ -510,6 +524,22 @@ const Agents = () => {
           <Typography variant="body2" color="textSecondary">
             {filteredAgents.length} agent{filteredAgents.length !== 1 ? 's' : ''} found
           </Typography>
+          
+          {/* Office Selector */}
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Office View</InputLabel>
+            <Select
+              value={officeId}
+              label="Office View"
+              onChange={(e) => setOfficeId(e.target.value)}
+            >
+              {officeConfigs.map((config) => (
+                <MenuItem key={config.id} value={config.id}>
+                  {config.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Box>
       </Box>
 

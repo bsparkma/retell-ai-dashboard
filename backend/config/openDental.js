@@ -1,32 +1,90 @@
-const axios = require('axios');
+const mysql = require('mysql2/promise');
 const EventEmitter = require('events');
+const moment = require('moment');
 
 class OpenDentalService extends EventEmitter {
   constructor() {
     super();
-    this.apiUrl = process.env.OD_API_URL;
+    // Support both database and API connections
+    // Also support alternative variable names
+    this.dbUrl = process.env.OPENDENTAL_DB_URL;
+    this.apiUrl = process.env.OD_API_URL || process.env.OPENDENTAL_API_BASE_URL;
     this.apiKey = process.env.OD_API_KEY;
-    this.enabled = !!(this.apiUrl && this.apiKey);
+    
+    // Open Dental eConnector API uses developer key + customer key
+    this.developerKey = process.env.OPENDENTAL_DEVELOPER_KEY;
+    this.customerKey = process.env.OPENDENTAL_CUSTOMER_KEY;
+    
+    // Prefer database connection if available, fallback to API
+    this.useDatabase = !!this.dbUrl;
+    // Enable if we have DB URL, or API URL with either single key or developer+customer keys
+    this.enabled = !!(this.dbUrl || (this.apiUrl && (this.apiKey || (this.developerKey && this.customerKey))));
+    
     this.syncInterval = null;
     this.lastSyncTime = null;
     this.conflicts = new Map(); // Track scheduling conflicts
     this.bookingQueue = []; // Queue for booking operations
+    this.pool = null;
     
     if (this.enabled) {
-      this.client = axios.create({
-        baseURL: this.apiUrl,
-        timeout: 30000,
-        headers: {
+      if (this.useDatabase) {
+        this.setupDatabaseConnection();
+      } else {
+        // Keep existing API setup as fallback
+        const axios = require('axios');
+        
+        // Build headers based on available credentials
+        const headers = {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
+        };
+        
+        // Open Dental eConnector API uses: Authorization: ODFHIR {DeveloperKey}/{CustomerKey}
+        if (this.developerKey && this.customerKey) {
+          headers['Authorization'] = `ODFHIR ${this.developerKey}/${this.customerKey}`;
+        } else if (this.apiKey) {
+          // Single API key (legacy or custom setup)
+          headers['Authorization'] = `Bearer ${this.apiKey}`;
         }
-      });
-
-      // Setup request/response interceptors
-      this.setupInterceptors();
+        
+        console.log('[OD API] Initializing with URL:', this.apiUrl);
+        console.log('[OD API] Using ODFHIR authentication:', !!(this.developerKey && this.customerKey));
+        
+        this.client = axios.create({
+          baseURL: this.apiUrl,
+          timeout: 30000,
+          headers
+        });
+        this.setupInterceptors();
+      }
       
       // Start real-time sync
       this.startRealTimeSync();
+    }
+  }
+
+  setupDatabaseConnection() {
+    try {
+      // Parse the database URL
+      const url = new URL(this.dbUrl);
+      
+      this.pool = mysql.createPool({
+        host: url.hostname,
+        port: url.port || 3306,
+        user: url.username || 'root',
+        password: url.password || '',
+        database: url.pathname.slice(1), // Remove leading slash
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0,
+        acquireTimeout: 60000,
+        timeout: 60000,
+        reconnect: true
+      });
+
+      console.log('[OD DB] Database connection pool created');
+    } catch (error) {
+      console.error('[OD DB] Database connection failed:', error.message);
+      this.enabled = false;
     }
   }
 
@@ -158,9 +216,16 @@ class OpenDentalService extends EventEmitter {
       return this.getMockCalendarData(params);
     }
 
+    if (this.useDatabase) {
+      return this.getCalendarAppointmentsFromDB(params);
+    }
+
     try {
+      const targetDate = params.date || new Date().toISOString().split('T')[0];
+      // Open Dental API expects dateStart/dateEnd for calendar; single-day range so we get only that day's appointments (not all patients/users)
       const queryParams = {
-        date: params.date || new Date().toISOString().split('T')[0],
+        dateStart: targetDate,
+        dateEnd: targetDate,
         includePatientInfo: true,
         includeProviderInfo: true,
         includeOperatoryInfo: true
@@ -175,11 +240,101 @@ class OpenDentalService extends EventEmitter {
       }
 
       const response = await this.client.get('/appointments', { params: queryParams });
-      
-      return this.transformAppointmentData(response.data);
-
+      const raw = response.data;
+      // API may return array or { value: { data: [...] } }; only use appointment records, never patient lists
+      const list = Array.isArray(raw) ? raw : (raw?.value?.data ?? raw?.data ?? []);
+      if (!Array.isArray(list)) return this.getMockCalendarData(params);
+      const transformed = this.transformAppointmentData(list);
+      // Only return appointment records for this date (never patient lists or other records)
+      return transformed.filter(apt => {
+        if (!apt.id) return false;
+        const dt = apt.dateTime;
+        if (!dt) return false;
+        const aptDate = (typeof dt === 'string' ? dt : (dt.toISOString && dt.toISOString()))?.split('T')[0];
+        return aptDate === targetDate;
+      });
     } catch (error) {
       console.error('[OD API] Calendar fetch failed:', error.message);
+      return this.getMockCalendarData(params);
+    }
+  }
+
+  async getCalendarAppointmentsFromDB(params = {}) {
+    try {
+      const targetDate = params.date || new Date().toISOString().split('T')[0];
+      console.log('[OD DB] Fetching appointments for date:', targetDate);
+      
+      // Check available columns in each table
+      const [aptColumns] = await this.pool.execute("SHOW COLUMNS FROM appointment");
+      const [patColumns] = await this.pool.execute("SHOW COLUMNS FROM patient");
+      const [provColumns] = await this.pool.execute("SHOW COLUMNS FROM provider");
+      const [opColumns] = await this.pool.execute("SHOW COLUMNS FROM operatory");
+      
+      const aptCols = aptColumns.map(col => col.Field);
+      const patCols = patColumns.map(col => col.Field);
+      const provCols = provColumns.map(col => col.Field);
+      const opCols = opColumns.map(col => col.Field);
+      
+      // Build query with available columns
+      let query = `SELECT a.AptNum`;
+      if (aptCols.includes('AptDateTime')) query += `, a.AptDateTime`;
+      if (aptCols.includes('Pattern')) query += `, a.Pattern`;
+      if (aptCols.includes('AptStatus')) query += `, a.AptStatus`;
+      if (aptCols.includes('ProcDescript')) query += `, a.ProcDescript`;
+      if (aptCols.includes('Note')) query += `, a.Note`;
+      if (aptCols.includes('Op')) query += `, a.Op`;
+      if (aptCols.includes('ProvNum')) query += `, a.ProvNum`;
+      if (aptCols.includes('PatNum')) query += `, a.PatNum`;
+      if (aptCols.includes('Confirmed')) query += `, a.Confirmed`;
+      if (aptCols.includes('IsNewPatient')) query += `, a.IsNewPatient`;
+      
+      // Patient columns
+      if (patCols.includes('LName')) query += `, p.LName`;
+      if (patCols.includes('FName')) query += `, p.FName`;
+      if (patCols.includes('Preferred')) query += `, p.Preferred`;
+      if (patCols.includes('HmPhone')) query += `, p.HmPhone`;
+      if (patCols.includes('WkPhone')) query += `, p.WkPhone`;
+      if (patCols.includes('Email')) query += `, p.Email`;
+      
+      // Provider columns
+      if (provCols.includes('LName')) query += `, pr.LName as ProvLName`;
+      if (provCols.includes('FName')) query += `, pr.FName as ProvFName`;
+      if (provCols.includes('Abbr')) query += `, pr.Abbr as ProvAbbr`;
+      
+      // Operatory columns
+      if (opCols.includes('OpName')) query += `, o.OpName`;
+      
+      query += ` FROM appointment a
+        LEFT JOIN patient p ON a.PatNum = p.PatNum
+        LEFT JOIN provider pr ON a.ProvNum = pr.ProvNum
+        LEFT JOIN operatory o ON a.Op = o.OperatoryNum
+        WHERE DATE(a.AptDateTime) = ?
+        AND a.AptStatus NOT IN (8, 10)`;
+      
+      const queryParams = [targetDate];
+      
+      // Add provider filter if specified
+      if (params.providerIds?.length) {
+        query += ` AND a.ProvNum IN (${params.providerIds.map(() => '?').join(',')})`;
+        queryParams.push(...params.providerIds);
+      }
+      
+      // Add operatory filter if specified
+      if (params.operatoryIds?.length) {
+        query += ` AND a.Op IN (${params.operatoryIds.map(() => '?').join(',')})`;
+        queryParams.push(...params.operatoryIds);
+      }
+      
+      query += ' ORDER BY a.AptDateTime LIMIT 100';
+      
+      console.log('[OD DB] Executing query for appointments');
+      const [rows] = await this.pool.execute(query, queryParams);
+      console.log('[OD DB] Found', rows.length, 'appointments');
+      
+      return this.transformAppointmentDataFromDB(rows);
+      
+    } catch (error) {
+      console.error('[OD DB] Calendar fetch failed:', error.message);
       return this.getMockCalendarData(params);
     }
   }
@@ -230,6 +385,41 @@ class OpenDentalService extends EventEmitter {
       lastModified: apt.DateTStamp || apt.lastModified,
       conflicts: this.checkForConflicts(apt)
     }));
+  }
+
+  transformAppointmentDataFromDB(rows) {
+    if (!rows || !Array.isArray(rows)) return [];
+
+    return rows.map(apt => ({
+      id: apt.AptNum,
+      patient: this.formatPatientNameFromDB(apt),
+      patientId: apt.PatNum,
+      time: this.formatTime(apt.AptDateTime),
+      dateTime: moment(apt.AptDateTime).format('YYYY-MM-DDTHH:mm:ss'),
+      duration: apt.Pattern ? this.calculateDurationFromPattern(apt.Pattern) : 30,
+      type: apt.ProcDescript || 'Appointment',
+      status: this.mapAppointmentStatus(apt.AptStatus),
+      providerId: apt.ProvNum,
+      providerName: apt.ProvFName && apt.ProvLName ? `${apt.ProvFName} ${apt.ProvLName}` : apt.ProvAbbr,
+      operatoryId: apt.Op,
+      operatoryName: apt.OpName || apt.OpAbbr,
+      notes: apt.Note || '',
+      confirmed: !!apt.Confirmed,
+      isNew: !!apt.IsNewPatient,
+      phone: apt.HmPhone || apt.WkPhone || '',
+      email: apt.Email || '',
+      lastModified: apt.DateTStamp,
+      conflicts: []
+    }));
+  }
+
+  formatPatientNameFromDB(apt) {
+    const first = apt.FName || '';
+    const last = apt.LName || '';
+    const preferred = apt.Preferred || '';
+    
+    if (preferred) return `${preferred} ${last}`.trim();
+    return `${first} ${last}`.trim() || 'Unknown Patient';
   }
 
   formatPatientName(apt) {
@@ -668,6 +858,10 @@ class OpenDentalService extends EventEmitter {
       return this.getMockPatients(query);
     }
 
+    if (this.useDatabase) {
+      return this.searchPatientsFromDB(query);
+    }
+
     try {
       // Try multiple search methods
       const searchPromises = [];
@@ -719,6 +913,73 @@ class OpenDentalService extends EventEmitter {
       console.error('[OD Search] Patient search failed:', error.message);
       return this.getMockPatients(query);
     }
+  }
+
+  async searchPatientsFromDB(query) {
+    try {
+      const searchTerm = `%${query}%`;
+      
+      let dbQuery = `
+        SELECT 
+          PatNum,
+          LName,
+          FName,
+          Preferred,
+          Birthdate,
+          HmPhone,
+          WkPhone,
+          Email,
+          Address,
+          City,
+          State,
+          Zip,
+          PatStatus,
+          BalTotal
+        FROM patient
+        WHERE (
+          CONCAT(FName, ' ', LName) LIKE ?
+          OR CONCAT(LName, ', ', FName) LIKE ?
+          OR Preferred LIKE ?
+          OR HmPhone LIKE ?
+          OR WkPhone LIKE ?
+          OR Email LIKE ?
+        )
+        AND PatStatus = 0
+        ORDER BY LName, FName
+        LIMIT 20
+      `;
+      
+      const queryParams = [searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, searchTerm];
+      
+      const [rows] = await this.pool.execute(dbQuery, queryParams);
+      
+      return this.transformPatientDataFromDB(rows);
+      
+    } catch (error) {
+      console.error('[OD DB] Patient search failed:', error.message);
+      return this.getMockPatients(query);
+    }
+  }
+
+  transformPatientDataFromDB(rawPatients) {
+    return rawPatients.map(patient => ({
+      id: patient.PatNum,
+      firstName: patient.FName,
+      lastName: patient.LName,
+      preferredName: patient.Preferred,
+      fullName: this.formatPatientNameFromDB(patient),
+      dateOfBirth: patient.Birthdate ? moment(patient.Birthdate).format('YYYY-MM-DD') : null,
+      phone: patient.HmPhone || patient.WkPhone,
+      email: patient.Email,
+      address: {
+        street: patient.Address,
+        city: patient.City,
+        state: patient.State,
+        zip: patient.Zip
+      },
+      balance: patient.BalTotal || 0,
+      isActive: patient.PatStatus === 0
+    }));
   }
 
   async verifyPatientAppointments(patientId, includeHistory = true) {
@@ -840,6 +1101,10 @@ class OpenDentalService extends EventEmitter {
       return this.getMockProviders();
     }
 
+    if (this.useDatabase) {
+      return this.getProvidersFromDB();
+    }
+
     try {
       const response = await this.client.get('/providers');
       
@@ -859,9 +1124,49 @@ class OpenDentalService extends EventEmitter {
     }
   }
 
+  async getProvidersFromDB() {
+    try {
+      // Check available columns first
+      const [columns] = await this.pool.execute("SHOW COLUMNS FROM provider");
+      const columnNames = columns.map(col => col.Field);
+      
+      console.log('[OD DB] Available provider columns:', columnNames);
+      
+      let query = `SELECT ProvNum`;
+      if (columnNames.includes('FName')) query += `, FName`;
+      if (columnNames.includes('LName')) query += `, LName`;
+      if (columnNames.includes('Abbr')) query += `, Abbr`;
+      if (columnNames.includes('IsHygienist')) query += `, IsHygienist`;
+      if (columnNames.includes('IsHidden')) query += `, IsHidden`;
+      if (columnNames.includes('EMailAddress')) query += `, EMailAddress`;
+      
+      query += ` FROM provider ORDER BY LName, FName LIMIT 20`;
+      
+      const [rows] = await this.pool.execute(query);
+      
+      return rows.map((provider, index) => ({
+        id: provider.ProvNum,
+        name: `${provider.FName || ''} ${provider.LName || ''}`.trim() || `Provider ${provider.ProvNum}`,
+        abbr: provider.Abbr || provider.LName?.substring(0, 2) || `P${provider.ProvNum}`,
+        color: this.getProviderColor(provider.ProvNum),
+        isHygienist: !!provider.IsHygienist,
+        isActive: provider.IsHidden !== undefined ? !provider.IsHidden : true,
+        email: provider.EMailAddress || '',
+        workingHours: this.getDefaultWorkingHours()
+      }));
+    } catch (error) {
+      console.error('[OD DB] Provider fetch failed:', error.message);
+      return this.getMockProviders();
+    }
+  }
+
   async getOperatories() {
     if (!this.enabled) {
       return this.getMockOperatories();
+    }
+
+    if (this.useDatabase) {
+      return this.getOperatoriesFromDB();
     }
 
     try {
@@ -879,6 +1184,43 @@ class OpenDentalService extends EventEmitter {
       }));
     } catch (error) {
       console.error('[OD Operatories] Operatory fetch failed:', error.message);
+      return this.getMockOperatories();
+    }
+  }
+
+  async getOperatoriesFromDB() {
+    try {
+      // First try to get table structure to see what columns exist
+      const [columns] = await this.pool.execute("SHOW COLUMNS FROM operatory");
+      const columnNames = columns.map(col => col.Field);
+      
+      console.log('[OD DB] Available operatory columns:', columnNames);
+      
+      // Build query based on available columns
+      let query = `SELECT OperatoryNum, OpName`;
+      
+      if (columnNames.includes('Abbr')) query += `, Abbr`;
+      if (columnNames.includes('IsHidden')) query += `, IsHidden`;
+      if (columnNames.includes('IsHygiene')) query += `, IsHygiene`;
+      if (columnNames.includes('ProvDentist')) query += `, ProvDentist`;
+      if (columnNames.includes('ProvHygienist')) query += `, ProvHygienist`;
+      
+      query += ` FROM operatory ORDER BY OpName LIMIT 20`;
+      
+      const [rows] = await this.pool.execute(query);
+      
+      return rows.map((op, index) => ({
+        id: op.OperatoryNum,
+        name: op.OpName || `Op ${op.OperatoryNum}`,
+        abbr: op.Abbr || op.OpName?.substring(0, 2) || `O${op.OperatoryNum}`,
+        color: this.getOperatoryColor(op.OperatoryNum),
+        isActive: op.IsHidden !== undefined ? !op.IsHidden : true,
+        isHygiene: !!op.IsHygiene,
+        providerId: op.ProvDentist || null,
+        providerHygId: op.ProvHygienist || null
+      }));
+    } catch (error) {
+      console.error('[OD DB] Operatory fetch failed:', error.message);
       return this.getMockOperatories();
     }
   }
@@ -1262,8 +1604,59 @@ class OpenDentalService extends EventEmitter {
   // CLEANUP AND SHUTDOWN
   // ============================================================================
 
-  shutdown() {
+  async testConnection() {
+    if (!this.enabled) {
+      return { success: false, message: 'Service not enabled' };
+    }
+
+    if (this.useDatabase) {
+      try {
+        const [rows] = await this.pool.execute('SELECT COUNT(*) as count FROM patient LIMIT 1');
+        return { 
+          success: true, 
+          message: 'Database connection successful',
+          connectionType: 'database',
+          patientCount: rows[0]?.count || 0
+        };
+      } catch (error) {
+        return { 
+          success: false, 
+          message: `Database connection failed: ${error.message}`,
+          connectionType: 'database'
+        };
+      }
+    } else {
+      try {
+        // Test with /providers endpoint which we know exists
+        const response = await this.client.get('/providers');
+        return { 
+          success: response.status === 200, 
+          message: `API connection successful - found ${response.data?.length || 0} providers`,
+          connectionType: 'api',
+          providerCount: response.data?.length || 0
+        };
+      } catch (error) {
+        return { 
+          success: false, 
+          message: `API connection failed: ${error.message}`,
+          connectionType: 'api'
+        };
+      }
+    }
+  }
+
+  async shutdown() {
     this.stopRealTimeSync();
+    
+    if (this.pool) {
+      try {
+        await this.pool.end();
+        console.log('[OD DB] Database pool closed');
+      } catch (error) {
+        console.error('[OD DB] Error closing database pool:', error.message);
+      }
+    }
+    
     this.removeAllListeners();
     console.log('[OD Service] Shutdown complete');
   }

@@ -10,6 +10,9 @@ import CallDetails from './pages/CallDetails';
 import Calendar from './pages/Calendar';
 import Agents from './pages/Agents';
 import Analytics from './pages/Analytics';
+import LiveMonitor from './pages/LiveMonitor';
+import Admin from './pages/Admin';
+import Callbacks from './pages/Callbacks';
 import config from './config/env';
 
 function App() {
@@ -28,21 +31,24 @@ function App() {
         sx={{
           flexGrow: 1,
           mt: config.ui.headerHeight / 8, // Account for header height
-          ml: 0, // No left margin - content starts immediately after sidebar
+          ml: 2, // Add left margin for spacing between sidebar and content
           transition: 'margin-left 0.3s ease',
           pl: 0, // No left padding - content starts immediately
           pr: 0, // No right padding
           py: 3,
-          width: `calc(100% - ${sidebarOpen ? config.ui.drawerWidth : 56}px)`, // Ensure full width usage
+          width: `calc(100% - ${sidebarOpen ? config.ui.drawerWidth : 56}px - 16px)`, // Account for margin in width calculation
         }}
       >
         <Breadcrumbs />
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/live" element={<LiveMonitor />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/calls/:id" element={<CallDetails />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/callbacks" element={<Callbacks />} />
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </Box>
       

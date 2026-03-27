@@ -1,0 +1,394 @@
+/**
+ * CallDetail — Individual call view with transcript, recording, patient link, and analysis
+ */
+import { useParams, Link } from "wouter";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
+  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock
+} from "lucide-react";
+import { api, type UnifiedCall } from "@/lib/api";
+import { formatDuration, formatTimeAgo } from "@/lib/utils";
+import { toast } from "sonner";
+
+function buildTranscript(call: UnifiedCall) {
+  if (call.transcript_object && call.transcript_object.length > 0) {
+    return call.transcript_object.map((u, i) => ({
+      role: (u.role === "agent" || u.role === "assistant") ? "agent" : "patient" as "agent" | "patient",
+      text: (u.content ?? "") as string,
+      ts: i * 5,
+    }));
+  }
+  if (typeof call.transcript === "string" && call.transcript.trim()) {
+    return call.transcript.trim().split("\n").filter(Boolean).map((line, i) => ({
+      role: (i % 2 === 0 ? "agent" : "patient") as "agent" | "patient",
+      text: line,
+      ts: i * 5,
+    }));
+  }
+  return null;
+}
+
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
+
+function resolveRecordingUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  if (url.startsWith("http")) return url;
+  // Relative URL — prepend API base (strip trailing /api if present since url may already include path)
+  const base = API_BASE.replace(/\/api\/?$/, "");
+  return `${base}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
+function formatAudioTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+export default function CallDetail() {
+  const { id } = useParams<{ id: string }>();
+  const [call, setCall] = useState<UnifiedCall | null | "loading">("loading");
+  const [error, setError] = useState<string | null>(null);
+
+  // Audio player state
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+    } else {
+      audio.play().catch(() => toast.error("Unable to play recording"));
+    }
+  }, [isPlaying]);
+
+  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    if (!audio || !audioDuration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = pct * audioDuration;
+  }, [audioDuration]);
+
+  useEffect(() => {
+    if (!id) return;
+    setCall("loading");
+    setError(null);
+    api.getUnifiedCall(id)
+      .then(setCall)
+      .catch(() => { setCall(null); setError("Call not found"); });
+  }, [id]);
+
+  if (call === "loading") {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-[200px] text-muted-foreground">
+        Loading call…
+      </div>
+    );
+  }
+  if (call === null) {
+    return (
+      <div className="p-6 space-y-4">
+        <Link href="/calls"><Button variant="ghost" size="sm">← Back to Calls</Button></Link>
+        <p className="text-muted-foreground">{error ?? "Call not found."}</p>
+      </div>
+    );
+  }
+
+  const displayCall = call;
+
+  const transcript = buildTranscript(displayCall);
+  const analysis = {
+    summary: displayCall.summary || "",
+    outcome: displayCall.outcome || "",
+    sentiment: displayCall.sentiment,
+  };
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Back + header */}
+      <div className="flex items-start gap-4">
+        <Link href="/calls">
+          <Button variant="ghost" size="sm" className="gap-1.5 -ml-1">
+            <ArrowLeft size={14} /> Back to Calls
+          </Button>
+        </Link>
+      </div>
+
+      <div className="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+              {displayCall.patientName}
+            </h1>
+            {displayCall.isEmergency && (
+              <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold bg-destructive/15 text-destructive">
+                <AlertTriangle size={14} /> Emergency
+              </span>
+            )}
+            <span
+              className="text-sm font-medium px-2.5 py-1 rounded-full"
+              style={displayCall.source === "retell"
+                ? { backgroundColor: "oklch(0.55 0.18 210 / 0.12)", color: "oklch(0.40 0.18 210)" }
+                : { backgroundColor: "oklch(0.78 0.17 75 / 0.12)", color: "oklch(0.50 0.17 75)" }
+              }
+            >
+              {displayCall.source === "retell" ? "AI · Rover" : "Staff · Mango"}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground flex-wrap">
+            <span className="font-mono">{displayCall.fromNumber}</span>
+            <span>·</span>
+            <span>{formatTimeAgo(displayCall.date)}</span>
+            <span>·</span>
+            <span className="font-mono">{formatDuration(displayCall.duration)}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {displayCall.recording_url ? (
+            <a
+              href={resolveRecordingUrl(displayCall.recording_url) ?? "#"}
+              download
+              className="inline-flex items-center"
+            >
+              <Button variant="outline" size="sm" asChild>
+                <span><Download size={14} className="mr-1.5" /> Download</span>
+              </Button>
+            </a>
+          ) : (
+            <Button variant="outline" size="sm" disabled>
+              <Download size={14} className="mr-1.5" /> No Recording
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => toast.info("Adding to callback queue...")}>
+            Add Callback
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* Left: Transcript + Recording */}
+        <div className="xl:col-span-2 space-y-6">
+          {/* Recording player */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Play size={14} className="text-primary" /> Recording
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {displayCall.recording_url ? (
+                <>
+                  <audio
+                    ref={audioRef}
+                    src={resolveRecordingUrl(displayCall.recording_url) ?? undefined}
+                    preload="metadata"
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                    onEnded={() => setIsPlaying(false)}
+                    onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+                    onLoadedMetadata={() => setAudioDuration(audioRef.current?.duration ?? 0)}
+                  />
+                  <div className="flex items-center gap-4 p-4 bg-muted/40 rounded-lg">
+                    <Button
+                      size="sm"
+                      className="w-9 h-9 rounded-full p-0 flex-shrink-0"
+                      onClick={togglePlay}
+                    >
+                      {isPlaying ? <Pause size={14} /> : <Play size={14} />}
+                    </Button>
+                    <div className="flex-1">
+                      <div
+                        className="h-2 bg-border rounded-full overflow-hidden cursor-pointer"
+                        onClick={handleSeek}
+                      >
+                        <div
+                          className="h-full rounded-full transition-[width] duration-100"
+                          style={{
+                            backgroundColor: "oklch(0.55 0.18 210)",
+                            width: audioDuration > 0 ? `${(currentTime / audioDuration) * 100}%` : "0%",
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between mt-1 text-xs font-mono text-muted-foreground">
+                        <span>{formatAudioTime(currentTime)}</span>
+                        <span>{audioDuration > 0 ? formatAudioTime(audioDuration) : formatDuration(displayCall.duration)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-center p-6 bg-muted/40 rounded-lg">
+                  <p className="text-sm text-muted-foreground">No recording available</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Transcript */}
+          {transcript && transcript.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <FileText size={14} className="text-primary" /> Transcript
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {transcript.map((line, i) => (
+                    <div key={i} className={`flex gap-3 ${line.role === "patient" ? "flex-row-reverse" : ""}`}>
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                        line.role === "agent" ? "bg-primary/15" : "bg-muted"
+                      }`}>
+                        {line.role === "agent" ? (
+                          <Bot size={12} className="text-primary" />
+                        ) : (
+                          <User size={12} className="text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="max-w-[80%]">
+                        <div className="text-xs text-muted-foreground mb-1 font-mono">
+                          {line.role === "agent" ? "Rover (AI)" : displayCall.patientName} · {line.ts}s
+                        </div>
+                        <div className={`text-sm px-3 py-2 rounded-lg ${
+                          line.role === "agent"
+                            ? "bg-primary/8 text-foreground rounded-tl-none"
+                            : "bg-muted text-foreground rounded-tr-none"
+                        }`}>
+                          {line.text}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        {/* Right: Analysis + Patient + Actions */}
+        <div className="space-y-6">
+          {/* AI Analysis */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Bot size={14} className="text-primary" /> AI Analysis
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {analysis.summary ? (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1.5">Call Summary</div>
+                  <p className="text-sm text-foreground leading-relaxed">{analysis.summary}</p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No analysis available for this call.</p>
+              )}
+
+              {analysis.outcome && (
+                <div className="p-3 rounded-lg bg-muted/40">
+                  <div className="text-xs text-muted-foreground mb-1">Outcome</div>
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 size={12} className="text-green-500" />
+                    <span className="text-sm font-medium">{analysis.outcome}</span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="text-xs text-muted-foreground mb-1.5">Sentiment</div>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{
+                      backgroundColor: displayCall.sentiment === "positive"
+                        ? "oklch(0.65 0.18 155)"
+                        : displayCall.sentiment === "negative"
+                        ? "oklch(0.62 0.22 25)"
+                        : "oklch(0.52 0.015 240)",
+                    }}
+                  />
+                  <span className="text-sm capitalize">{displayCall.sentiment}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Patient record */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <User size={14} className="text-primary" /> Patient Record
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {displayCall.patientId ? (
+                <>
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/40">
+                    <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center font-semibold text-primary">
+                      {displayCall.patientName.split(" ").map(n => n[0]).join("")}
+                    </div>
+                    <div>
+                      <div className="font-medium text-sm">{displayCall.patientName}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{displayCall.fromNumber}</div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full text-xs"
+                    onClick={() => toast.info("Opening Open Dental record...")}
+                  >
+                    View in Open Dental
+                  </Button>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">No patient record linked</p>
+                  <Button
+                    size="sm"
+                    className="w-full text-xs"
+                    onClick={() => toast.info("Patient search opening...")}
+                  >
+                    Link to Patient
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Call metadata */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">Call Details</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2.5 text-sm">
+                {[
+                  { label: "Call ID", value: displayCall.id, mono: true },
+                  { label: "Date", value: new Date(displayCall.date).toLocaleString() },
+                  { label: "Duration", value: formatDuration(displayCall.duration), mono: true },
+                  { label: "Agent", value: displayCall.agentName || "Staff" },
+                  { label: "Source", value: displayCall.source === "retell" ? "Retell AI" : "Mango Voice" },
+                  { label: "Intent", value: displayCall.intent || "—" },
+                ].map(({ label, value, mono }) => (
+                  <div key={label} className="flex items-start justify-between gap-2">
+                    <span className="text-muted-foreground text-xs">{label}</span>
+                    <span className={`text-xs font-medium text-right ${mono ? "font-mono" : ""}`}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

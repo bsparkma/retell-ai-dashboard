@@ -3,49 +3,122 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
 require('dotenv').config();
 
 const callsRouter = require('./routes/calls');
 const agentsRouter = require('./routes/agents');
 const openDentalRouter = require('./routes/openDental');
+const openDentalSyncRouter = require('./routes/openDentalSync');
+const webhooksRouter = require('./routes/webhooks');
+const liveCallsRouter = require('./routes/liveCalls');
+const adminRouter = require('./routes/admin');
+const mangoRouter = require('./routes/mango');
+const callbacksRouter = require('./routes/callbacks');
+const unifiedCallsRouter = require('./routes/unifiedCalls');
+const analyticsRouter = require('./routes/analytics');
+const { initializeSocketHandlers } = require('./socket/socketHandler');
+const unifiedCallStore = require('./services/unifiedCallStore');
+const syncScheduler = require('./services/syncScheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Parse CORS origins (supports comma-separated list in env). Always include new dashboard (3005).
+const corsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
+  : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3004', 'http://localhost:3005'];
+if (!corsOrigins.includes('http://localhost:3005')) {
+  corsOrigins.push('http://localhost:3005');
+}
+
+// Create HTTP server for Socket.IO
+const server = http.createServer(app);
+
+// Initialize Socket.IO with CORS settings
+const io = new Server(server, {
+  cors: {
+    origin: corsOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// Initialize Socket.IO event handlers
+initializeSocketHandlers(io);
+
 // Trust proxy for rate limiting
 app.set('trust proxy', 1);
 
-// Rate limiting
+// Rate limiting - higher limits for development
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  max: process.env.NODE_ENV === 'production' ? 100 : 1000 // Higher limit for development
 });
 
-// Middleware
-app.use(helmet());
+// Middleware (relax Helmet cross-origin so dashboard on 3005 can read API responses)
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false
+}));
+// CORS: allow new dashboard (3005) and others; explicit methods/headers so preflight succeeds
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true
+  origin: corsOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 app.use(morgan('combined'));
 app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve downloaded Mango recordings (MP3) from disk
+app.use('/api/mango/recordings', express.static(path.join(__dirname, 'recordings', 'mango')));
+
 // Routes
 app.use('/api/calls', callsRouter);
 app.use('/api/agents', agentsRouter);
-app.use('/api/od', openDentalRouter);
+app.use('/api/opendental', openDentalRouter);
+app.use('/api/opendental-sync', openDentalSyncRouter);
+app.use('/api/webhooks', webhooksRouter);
+app.use('/api/live-calls', liveCallsRouter);
+app.use('/api/admin', adminRouter);
+app.use('/api/mango', mangoRouter);
+app.use('/api/callbacks', callbacksRouter);
+app.use('/api/unified-calls', unifiedCallsRouter);
+app.use('/api/analytics', analyticsRouter);
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  const liveCallManager = require('./services/liveCallManager');
+  const { getConnectedClientCount } = require('./socket/socketHandler');
+  
+  let connectedClients = 0;
+  try {
+    connectedClients = await getConnectedClientCount();
+  } catch (e) {
+    // Ignore errors getting client count
+  }
+  
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     services: {
       retell: 'connected',
-      openDental: process.env.OD_API_URL ? 'configured' : 'not configured'
+      openDental: process.env.OPENDENTAL_DB_URL ? 'database configured' : 
+                  process.env.OD_API_URL ? 'api configured' : 'not configured',
+      socketIO: 'active'
+    },
+    realtime: {
+      connected_clients: connectedClients,
+      active_calls: liveCallManager.getActiveCount(),
+      emergency_calls: liveCallManager.getEmergencyCalls().length
     }
   });
 });
@@ -64,7 +137,58 @@ app.use('*', (req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Dashboard API ready at http://localhost:${PORT}/api`);
+// Initialize unified call store and start server
+unifiedCallStore.initialize().then(async () => {
+  server.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📊 Dashboard API ready at http://localhost:${PORT}/api`);
+    console.log(`🔌 Socket.IO ready for real-time connections`);
+    console.log(`📞 Webhook endpoint: http://localhost:${PORT}/api/webhooks/retell`);
+    console.log(`📁 Unified call store initialized with ${unifiedCallStore.getStats().totalCalls} calls`);
+  });
+
+  // --- Post-startup sync pipeline (non-blocking) ---
+
+  // 1. Immediate Retell sync on startup
+  console.log('🔄 Running initial Retell sync...');
+  syncScheduler.runRetellSync({ limit: 200 }).catch(err =>
+    console.error('Initial Retell sync error:', err.message)
+  );
+
+  // 2. Periodic Retell sync every 15 minutes
+  const RETELL_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+  setInterval(() => {
+    syncScheduler.runRetellSync({ limit: 100 }).catch(err =>
+      console.error('Periodic Retell sync error:', err.message)
+    );
+  }, RETELL_SYNC_INTERVAL_MS);
+  console.log('⏰ Retell auto-sync scheduled every 15 minutes');
+
+  // 3. Start Mango sync scheduler (cron-based, default: every hour at :15)
+  syncScheduler.start();
+
+  // 4. Transcribe any untranscribed Mango calls that have local recordings
+  //    (runs once on startup, then again after each Mango sync via the scheduler)
+  setTimeout(() => {
+    syncScheduler.transcribeUntranscribedMango({ maxCalls: 10 }).catch(err =>
+      console.error('Mango transcription backfill error:', err.message)
+    );
+  }, 10000); // wait 10s for Retell sync to finish first
+
+}).catch(error => {
+  console.error('Failed to initialize unified call store:', error);
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM, shutting down gracefully...');
+  await unifiedCallStore.shutdown();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('Received SIGINT, shutting down gracefully...');
+  await unifiedCallStore.shutdown();
+  process.exit(0);
 }); 

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
 const openDentalService = require('../config/openDental');
+const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
 
 // Enhanced AI-powered name extraction function
 const extractCallerNameAdvanced = async (transcript, summary, callerNumber) => {
@@ -185,7 +186,7 @@ const determinePatientStatus = async (callerName, callerNumber) => {
   }
 };
 
-// Enhanced mock data with better variety
+// Enhanced mock data with better variety including transfer tracking
 const generateMockCalls = () => [
   {
     call_id: '1',
@@ -198,8 +199,13 @@ const generateMockCalls = () => [
     sentiment: 'positive',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'Patient John Smith called to schedule a routine checkup appointment for next week. Discussed available time slots and confirmed insurance coverage.',
-    transcript: 'Agent: Hello, thank you for calling our medical practice. How can I help you today? User: Hi, my name is John Smith, I need to schedule an appointment for a routine checkup. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me check our available slots.',
+    transfer_status: 'successful',
+    transfer_attempted: true,
+    transfer_destination: 'Appointment Desk',
+    transfer_timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000 + 120000).toISOString(),
+    callback_required: false,
+    summary: 'Patient John Smith called to schedule a routine checkup appointment for next week. Successfully transferred to appointment desk after initial screening. Patient was able to schedule appointment.',
+    transcript: 'Agent: Hello, thank you for calling our medical practice. How can I help you today? User: Hi, my name is John Smith, I need to schedule an appointment for a routine checkup. Agent: I\'d be happy to help you schedule that appointment, Mr. Smith. Let me transfer you to our appointment desk. User: That sounds great, thank you.',
     recording_url: 'https://example.com/recordings/call1.mp3'
   },
   {
@@ -213,8 +219,14 @@ const generateMockCalls = () => [
     sentiment: 'negative',
     is_new_patient: false,
     is_emergency: true,
-    summary: 'URGENT: Emergency call from existing patient Sarah Johnson regarding severe chest pain. Patient experiencing shortness of breath and was advised to seek immediate medical attention.',
-    transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. I need help immediately. Agent: I understand this is urgent, Sarah. Let me help you right away.',
+    transfer_status: 'failed',
+    transfer_attempted: true,
+    transfer_destination: 'Emergency Line',
+    transfer_timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000 + 300000).toISOString(),
+    callback_required: true,
+    callback_reason: 'Transfer to emergency line failed - patient disconnected',
+    summary: 'URGENT: Emergency call from existing patient Sarah Johnson regarding severe chest pain. Attempted transfer to emergency line but call was disconnected. REQUIRES IMMEDIATE CALLBACK.',
+    transcript: 'Agent: Emergency line, how can I help? User: This is Sarah Johnson, I\'m having severe chest pain and trouble breathing. I need help immediately. Agent: I understand this is urgent, Sarah. Let me transfer you to our emergency line right away. User: Please hurry, I... [call disconnected]',
     recording_url: 'https://example.com/recordings/call2.mp3'
   },
   {
@@ -228,8 +240,13 @@ const generateMockCalls = () => [
     sentiment: 'neutral',
     is_new_patient: false,
     is_emergency: false,
-    summary: 'Existing patient Mike Williams requested prescription refill for ongoing blood pressure medication. Verified patient information and processed refill request successfully.',
-    transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill for my blood pressure medication. Agent: I can help you with that, Mike. Let me verify your information and process that refill for you.',
+    transfer_status: 'successful',
+    transfer_attempted: true,
+    transfer_destination: 'Pharmacy Department',
+    transfer_timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000 + 90000).toISOString(),
+    callback_required: false,
+    summary: 'Existing patient Mike Williams requested prescription refill for ongoing blood pressure medication. Successfully transferred to pharmacy department and refill processed.',
+    transcript: 'Agent: How can I help you today? User: Hi, I\'m Mike Williams and I need a prescription refill for my blood pressure medication. Agent: I can help you with that, Mike. Let me verify your information and transfer you to our pharmacy department.',
     recording_url: 'https://example.com/recordings/call3.mp3'
   },
   {
@@ -239,12 +256,18 @@ const generateMockCalls = () => [
     call_date: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
     reason: 'Insurance verification',
     duration: 240,
-    success_status: 'Resolved',
+    success_status: 'Unresolved',
     sentiment: 'neutral',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'New patient Lisa Brown called to verify insurance coverage for upcoming procedure. Confirmed coverage details and provided authorization codes.',
-    transcript: 'Agent: Thank you for calling. How can I assist you? User: Hi, this is Lisa Brown. I need to verify my insurance coverage for an upcoming procedure. Agent: I\'ll be happy to help you with that, Lisa. Let me look up your coverage information.',
+    transfer_status: 'voicemail',
+    transfer_attempted: true,
+    transfer_destination: 'Billing Department',
+    transfer_timestamp: new Date(Date.now() - 12 * 60 * 60 * 1000 + 180000).toISOString(),
+    callback_required: true,
+    callback_reason: 'Billing department unavailable - patient left voicemail requesting callback',
+    summary: 'New patient Lisa Brown called to verify insurance coverage for upcoming procedure. Billing department was unavailable, patient left voicemail requesting callback about coverage details.',
+    transcript: 'Agent: Thank you for calling. How can I assist you? User: Hi, this is Lisa Brown. I need to verify my insurance coverage for an upcoming procedure. Agent: I\'ll transfer you to our billing department for insurance verification. [Transfer to voicemail] User: Hi, this is Lisa Brown, please call me back about my insurance coverage verification.',
     recording_url: null
   },
   {
@@ -254,12 +277,18 @@ const generateMockCalls = () => [
     call_date: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
     reason: 'Appointment inquiry',
     duration: 90,
-    success_status: 'Resolved',
-    sentiment: 'neutral',
+    success_status: 'Unresolved',
+    sentiment: 'negative',
     is_new_patient: true,
     is_emergency: false,
-    summary: 'Caller inquired about appointment availability but did not provide their name clearly. Provided general information about scheduling.',
-    transcript: 'Agent: Hello, how can I help you? User: Yeah, I need to see if I can get an appointment. Agent: Of course! Let me check our availability. Can I get your name please? User: Um, well, I just want to know what times you have available first.',
+    transfer_status: 'failed',
+    transfer_attempted: true,
+    transfer_destination: 'Scheduling Department',
+    transfer_timestamp: new Date(Date.now() - 8 * 60 * 60 * 1000 + 60000).toISOString(),
+    callback_required: true,
+    callback_reason: 'Transfer failed due to technical issues - caller hung up frustrated',
+    summary: 'Unknown caller inquired about appointment availability. Transfer to scheduling department failed due to technical issues. Caller became frustrated and disconnected. REQUIRES CALLBACK.',
+    transcript: 'Agent: Hello, how can I help you? User: Yeah, I need to see if I can get an appointment. Agent: Of course! Let me transfer you to our scheduling department. User: This is taking too long! [hangs up]',
     recording_url: null
   }
 ];
@@ -273,7 +302,8 @@ router.get('/', async (req, res) => {
       sort_order = 'descending',
       filter_criteria = {},
       start_time,
-      end_time
+      end_time,
+      office_id
     } = req.query;
 
     const params = {
@@ -347,20 +377,33 @@ router.get('/', async (req, res) => {
         summary: useMockData ? call.summary : (call.call_analysis?.call_summary || 'No summary available'),
         transcript: useMockData ? call.transcript : (call.transcript || 'Transcript not available'),
         recording_url: useMockData ? call.recording_url : call.recording_url,
+        // Include agent information
+        agent_id: useMockData ? call.agent_id : call.agent_id,
+        // Add transfer tracking fields
+        transfer_status: useMockData ? call.transfer_status : (call.metadata?.transfer_status || 'none'),
+        transfer_attempted: useMockData ? call.transfer_attempted : (call.metadata?.transfer_attempted || false),
+        transfer_destination: useMockData ? call.transfer_destination : (call.metadata?.transfer_destination || null),
+        transfer_timestamp: useMockData ? call.transfer_timestamp : (call.metadata?.transfer_timestamp || null),
+        callback_required: useMockData ? call.callback_required : (call.metadata?.callback_required || false),
+        callback_reason: useMockData ? call.callback_reason : (call.metadata?.callback_reason || null),
         // Add patient matching info for debugging/display
         patient_match_info: useMockData ? null : patientInfo
       };
     }));
 
+    // Filter calls based on office configuration if office_id provided
+    const finalCalls = office_id ? filterCallsForOffice(transformedCalls, office_id) : transformedCalls;
+
     res.json({
-      calls: transformedCalls,
-      total: transformedCalls.length,
+      calls: finalCalls,
+      total: finalCalls.length,
       pagination: {
         limit: parseInt(limit),
         offset: parseInt(offset),
-        has_more: transformedCalls.length === parseInt(limit)
+        has_more: finalCalls.length === parseInt(limit)
       },
-      source: useMockData ? 'mock' : 'api'
+      source: useMockData ? 'mock' : 'api',
+      office_config: office_id ? getOfficeConfig(office_id) : null
     });
   } catch (error) {
     console.error('Error in calls route:', error);
