@@ -170,6 +170,14 @@ export default defineConfig({
     port: 3005,
     strictPort: false, // Use 3005 by default; if busy, Vite will try next (3006, …)
     host: true,
+    proxy: {
+      // Proxy scheduling API calls to the Express server during development.
+      // Run `pnpm dev:server` in a separate terminal to start the Express server on port 3000.
+      "/api/scheduling": {
+        target: `http://localhost:${process.env.SCHEDULING_SERVER_PORT ?? 3000}`,
+        changeOrigin: true,
+      },
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",

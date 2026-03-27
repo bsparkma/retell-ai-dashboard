@@ -1,11 +1,12 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, RefreshCw, Calendar as CalIcon, CheckCircle2, Clock } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Calendar as CalIcon, CheckCircle2, Clock, Plus } from "lucide-react";
 import { useCalendarState } from "../store/CalendarContext";
 import { useCalendarActions } from "../store/CalendarContext";
 import { topBarMetrics } from "../store/calendarSelectors";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { NewAppointmentSheet } from "./NewAppointmentSheet";
 
 const TIME_RAIL_START = 8;
 const TIME_RAIL_END = 18;
@@ -15,6 +16,7 @@ export function CalendarTopBar() {
   const actions = useCalendarActions();
   const metrics = topBarMetrics(state);
   const providers = useMemo(() => (Object.values(state.data.providersById) as import("../types").Provider[]).filter((p) => !p.isHidden), [state.data.providersById]);
+  const [newApptOpen, setNewApptOpen] = useState(false);
 
   const selectedDate = state.ui.selectedDate;
   const dateObj = useMemo(() => new Date(selectedDate + "T12:00:00"), [selectedDate]);
@@ -69,6 +71,9 @@ export function CalendarTopBar() {
         )}
 
         <div className="ml-auto flex items-center gap-4 flex-wrap">
+          <Button size="sm" onClick={() => setNewApptOpen(true)} className="gap-1.5 cursor-pointer">
+            <Plus size={14} /> New Appointment
+          </Button>
           <Button variant="outline" size="sm" onClick={() => actions.refresh()} className="gap-1.5">
             <RefreshCw size={14} /> Sync OD
           </Button>
@@ -91,6 +96,7 @@ export function CalendarTopBar() {
           </div>
         </div>
       </div>
+      <NewAppointmentSheet open={newApptOpen} onOpenChange={setNewApptOpen} />
     </div>
   );
 }
