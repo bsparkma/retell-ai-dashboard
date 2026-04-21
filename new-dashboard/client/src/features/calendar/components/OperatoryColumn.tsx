@@ -5,8 +5,10 @@ import { useCalendarActions } from "../store/CalendarContext";
 import { appointmentCardsForColumn, blockoutsByOperatory, providerAvailabilityByOperatory } from "../store/calendarSelectors";
 import { AppointmentCard } from "./AppointmentCard";
 import { ScheduleOverlay } from "./ScheduleOverlay";
+import { SlotMarkerCard } from "./SlotMarkerCard";
 import { TIME_RAIL_START, TIME_RAIL_END } from "./CalendarTopBar";
 import { Stethoscope } from "lucide-react";
+import { useSlotMarkersForDate } from "@/features/slotMarkers";
 
 const PIXELS_PER_HOUR = 64;
 const HOURS = Array.from(
@@ -28,6 +30,10 @@ export function OperatoryColumn({ operatoryId, name, abbr, isHygiene }: Operator
   const blockouts = blockoutsByOperatory(state)[operatoryId] ?? [];
   const providerSchedules = providerAvailabilityByOperatory(state)[operatoryId] ?? [];
   const selectedId = state.ui.selectedAppointmentId;
+  const selectedDate = state.ui.selectedDate;
+  const markersForColumn = useSlotMarkersForDate(selectedDate).filter(
+    (m) => m.operatoryId === operatoryId
+  );
 
   return (
     <div className="border-r last:border-r-0 relative flex flex-col min-w-[140px]">
@@ -50,6 +56,11 @@ export function OperatoryColumn({ operatoryId, name, abbr, isHygiene }: Operator
                   onClick={() => actions.setSelectedAppointmentId(vm.appointment.id)}
                   isSelected={selectedId === vm.appointment.id}
                 />
+              </div>
+            ))}
+            {markersForColumn.map((m) => (
+              <div key={`marker-${m.id}`} className="absolute inset-x-0 pointer-events-auto">
+                <SlotMarkerCard marker={m} />
               </div>
             ))}
           </div>
