@@ -30,8 +30,14 @@ class UnifiedCallStore {
     
     // Persistence settings
     this.persistPath = path.join(__dirname, '../../data/unified_calls.json');
+    this.tempPath = `${this.persistPath}.tmp`;
     this.isDirty = false;
     this.autoSaveInterval = null;
+    // Concurrency / debounce control for persist().
+    this.persistInFlight = null;       // Promise of the currently-running persist
+    this.persistRequeued = false;      // Another write came in while persisting
+    this.persistDebounceTimer = null;  // Debounce handle for requestPersist()
+    this.persistDebounceMs = 500;
     
     // Stats
     this.stats = {
@@ -125,6 +131,7 @@ class UnifiedCallStore {
     
     if (markDirty) {
       this.isDirty = true;
+      this.requestPersist();
     }
     
     return normalizedCall;
@@ -257,6 +264,7 @@ class UnifiedCallStore {
           };
           this.calls.set(existingId, merged);
           this.isDirty = true;
+          this.requestPersist();
           updated.push(merged);
         }
         continue;
@@ -417,7 +425,8 @@ class UnifiedCallStore {
     
     this.calls.set(id, updatedCall);
     this.isDirty = true;
-    
+    this.requestPersist();
+
     return updatedCall;
   }
 
@@ -467,26 +476,80 @@ class UnifiedCallStore {
   }
 
   /**
-   * Persist store to disk
+   * Request a persist soon (debounced).
+   *
+   * Callers in hot paths (every webhook event, every transcript update) should
+   * call this instead of `persist()` directly so we coalesce bursts of writes
+   * into a single fsync.
+   */
+  requestPersist() {
+    if (this.persistDebounceTimer) return;
+    this.persistDebounceTimer = setTimeout(() => {
+      this.persistDebounceTimer = null;
+      this.persist().catch(err =>
+        console.error('❌ Debounced persist failed:', err)
+      );
+    }, this.persistDebounceMs);
+  }
+
+  /**
+   * Persist store to disk atomically.
+   *
+   * Writes to `<path>.tmp` first then renames into place — on POSIX, rename(2)
+   * is atomic, so a crash mid-write cannot leave us with a half-written
+   * unified_calls.json. (On Windows the underlying MoveFile is also effectively
+   * atomic for same-volume renames, which is what we have here.)
+   *
+   * Concurrency: only one persist runs at a time. If another write lands while
+   * we're persisting, we set a "requeued" flag and run one more persist after
+   * the current one finishes. This prevents fsync pile-ups under load and
+   * still guarantees the latest state is eventually flushed.
    */
   async persist() {
-    if (!this.isDirty) {
-      return;
+    if (!this.isDirty) return;
+
+    if (this.persistInFlight) {
+      // Coalesce: just remember that another write is needed.
+      this.persistRequeued = true;
+      return this.persistInFlight;
     }
-    
-    try {
-      const data = {
-        calls: Array.from(this.calls.values()),
-        stats: this.stats,
-        savedAt: new Date().toISOString(),
-      };
-      
-      await fs.writeFile(this.persistPath, JSON.stringify(data, null, 2));
-      this.isDirty = false;
-      console.log(`💾 Saved ${this.calls.size} calls to disk`);
-    } catch (error) {
-      console.error('❌ Failed to persist call store:', error);
-    }
+
+    this.persistInFlight = (async () => {
+      try {
+        do {
+          this.persistRequeued = false;
+          this.isDirty = false; // clear before snapshot — any new write while
+                                // we're serializing will re-set it
+          const snapshot = JSON.stringify(
+            {
+              calls: Array.from(this.calls.values()),
+              stats: this.stats,
+              savedAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          );
+          await fs.writeFile(this.tempPath, snapshot);
+          await fs.rename(this.tempPath, this.persistPath);
+          // Loop again only if another write came in during this iteration.
+        } while (this.persistRequeued || this.isDirty);
+        console.log(`💾 Saved ${this.calls.size} calls to disk`);
+      } catch (error) {
+        // On failure, mark dirty again so the next interval picks it up.
+        this.isDirty = true;
+        console.error('❌ Failed to persist call store:', error);
+        // Best-effort cleanup of the temp file.
+        try {
+          await fs.unlink(this.tempPath);
+        } catch (_) {
+          /* ignore */
+        }
+      } finally {
+        this.persistInFlight = null;
+      }
+    })();
+
+    return this.persistInFlight;
   }
 
   /**

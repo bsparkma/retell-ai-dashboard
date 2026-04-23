@@ -2,7 +2,10 @@ const axios = require('axios');
 
 class RetellService {
   constructor() {
-    this.apiKey = process.env.RETELL_API_KEY || 'key_5286e8b619b00ed6815991eba586';
+    this.apiKey = process.env.RETELL_API_KEY;
+    if (!this.apiKey) {
+      console.error('❌ RETELL_API_KEY environment variable is not set');
+    }
     this.baseURL = 'https://api.retellai.com';
     
     this.client = axios.create({

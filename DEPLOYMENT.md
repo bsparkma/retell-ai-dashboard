@@ -114,7 +114,7 @@ docker-compose up -d
 
 **Backend (.env):**
 ```bash
-RETELL_API_KEY=key_5286e8b619b00ed6815991eba586
+RETELL_API_KEY=<your-retell-api-key>
 PORT=5000
 NODE_ENV=production
 CORS_ORIGIN=http://159.89.82.167

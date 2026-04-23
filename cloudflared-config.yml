@@ -1,0 +1,10 @@
+tunnel: carein
+credentials-file: C:\Users\beau\.cloudflared\carein.json
+
+ingress:
+  # Main CareIN backend — Retell webhooks + dashboard API
+  - hostname: carein-do.flamingketchup.com
+    service: http://localhost:5000
+
+  # Catch-all — required by cloudflared
+  - service: http_status:404

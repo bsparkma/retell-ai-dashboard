@@ -27,7 +27,7 @@ npm run install:all
 
 # 3. Configure backend environment
 cd backend
-echo "RETELL_API_KEY=key_5286e8b619b00ed6815991eba586" > .env
+echo "RETELL_API_KEY=<your-retell-api-key>" > .env
 echo "PORT=5000" >> .env
 echo "NODE_ENV=development" >> .env
 

@@ -7,29 +7,66 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Bot, Save, Copy, Eye, EyeOff, Clock, MapPin, Users, Shield,
-  Stethoscope, FileText, ChevronDown, ChevronRight, Plus, Trash2, RotateCcw
+  Stethoscope, FileText, ChevronDown, ChevronRight, Plus, Trash2, RotateCcw,
+  AlertTriangle, Upload, Loader2, CheckCircle2
 } from "lucide-react";
 import { toast } from "sonner";
+import api from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface KnowledgeSection {
+/**
+ * A knowledge-base section the staff fills in (office hours, providers, etc).
+ *
+ * `icon` and `placeholder` are *runtime-only* presentation concerns — they
+ * come from `DEFAULT_KNOWLEDGE` on the client and are never persisted to the
+ * backend (functions can't be JSON-serialized anyway). When config is loaded
+ * from the server we re-attach `icon`/`placeholder` by merging on `id` with
+ * the defaults.
+ */
+export interface KnowledgeSection {
   id: string;
   title: string;
-  icon: React.ElementType;
-  placeholder: string;
+  value: string;
+  icon?: React.ElementType;
+  placeholder?: string;
+}
+
+export interface CustomSection {
+  id: string;
+  title: string;
   value: string;
 }
 
-interface AgentConfig {
+export interface AgentConfig {
   name: string;
   prompt: string;
   knowledge: KnowledgeSection[];
-  customSections: { id: string; title: string; value: string }[];
+  customSections: CustomSection[];
   lastSaved: string | null;
+  /** Retell agent_id this draft was last published to (null until first publish). */
+  retellAgentId: string | null;
+  /** ISO timestamp of the last successful publish to Retell. */
+  lastPublished: string | null;
+}
+
+interface RetellAgentSummary {
+  agent_id: string;
+  agent_name?: string;
+  voice_id?: string;
+  status?: string;
+  updated_at?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,19 +120,29 @@ const DEFAULT_KNOWLEDGE: KnowledgeSection[] = [
 
 const DEFAULT_PROMPT = `You are a friendly, professional dental office receptionist for {{office_name}}. Your job is to help callers with scheduling, answer questions about services, and collect information for new patients.
 
+OPENING (FIRST TURN ONLY):
+Say: "Thank you for calling {{office_name}}. This call may be recorded for quality and your medical record. How can I help you today?"
+You MUST say the recording disclosure before any other conversation. Do not skip this even if the caller speaks first.
+
+MEDICAL EMERGENCY (HIGHEST PRIORITY):
+If the caller describes any of the following — chest pain, trouble breathing, can't breathe, fainting, unconscious, stroke symptoms, severe uncontrolled bleeding, or any life-threatening condition — interrupt and say:
+"This sounds like a medical emergency. Please hang up and call 911 immediately. We are a dental office and cannot help with this."
+Do not try to schedule. Do not try to triage. Tell them to call 911 and end the call politely.
+
+DENTAL EMERGENCY:
+If the caller describes severe dental pain, swelling, a knocked-out tooth, broken tooth with bleeding, or visible abscess — offer the next available emergency slot today or tomorrow.
+
 PERSONALITY:
 - Warm and welcoming, like a small-town dental office
 - Speak clearly and at a comfortable pace
 - Use the caller's name once you learn it
 - Be empathetic about dental anxiety or pain
 
-SCHEDULING FLOW:
-For non-emergency callers, use the 2-question script:
+SCHEDULING FLOW (non-emergency):
+Use the 2-question script:
 1. "Do you prefer mornings or afternoons?"
 2. "Do you prefer early in the week or later in the week?"
 Then offer two specific time slots matching their preference.
-
-For emergencies: offer the next available slot today or tomorrow.
 
 RULES:
 - Never diagnose or give medical advice
@@ -194,7 +241,7 @@ const STORAGE_KEY = "carein-agent-config";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildCompiledPrompt(prompt: string, knowledge: KnowledgeSection[], customSections: { title: string; value: string }[]): string {
+function buildCompiledPrompt(prompt: string, knowledge: KnowledgeSection[], customSections: CustomSection[]): string {
   const filledSections = [...knowledge.filter(s => s.value.trim()), ...customSections.filter(s => s.value.trim())];
 
   if (filledSections.length === 0) {
@@ -202,7 +249,7 @@ function buildCompiledPrompt(prompt: string, knowledge: KnowledgeSection[], cust
   }
 
   const kb = filledSections
-    .map(s => `## ${"title" in s ? s.title : ""}\n${s.value.trim()}`)
+    .map(s => `## ${s.title}\n${s.value.trim()}`)
     .join("\n\n");
 
   return prompt.replace("{{knowledge_base}}", kb);
@@ -212,46 +259,128 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+/**
+ * Merge a server-provided AgentConfig with the local DEFAULT_KNOWLEDGE so we
+ * re-attach `icon` and `placeholder` (which can't survive JSON serialization).
+ *
+ * Behavior:
+ *   - For every default section, look for a saved value by `id` and prefer it.
+ *   - Any extra knowledge sections from the server (not in defaults) are kept
+ *     as-is so we never silently drop user data.
+ */
+function mergeWithDefaults(saved: AgentConfig): AgentConfig {
+  const merged = DEFAULT_KNOWLEDGE.map(def => {
+    const fromSaved = saved.knowledge?.find(s => s.id === def.id);
+    return fromSaved ? { ...def, ...fromSaved, icon: def.icon, placeholder: def.placeholder } : def;
+  });
+  const extras = (saved.knowledge ?? []).filter(s => !DEFAULT_KNOWLEDGE.some(d => d.id === s.id));
+  return { ...saved, knowledge: [...merged, ...extras] };
+}
+
+/**
+ * Strip non-serializable fields before sending the config to the backend.
+ * `icon` is a React component reference and `placeholder` is presentation-only.
+ */
+function stripForApi(config: AgentConfig): AgentConfig {
+  return {
+    ...config,
+    knowledge: config.knowledge.map(({ id, title, value }) => ({ id, title, value })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
+const INITIAL_CONFIG: AgentConfig = {
+  name: "Rover",
+  prompt: DEFAULT_PROMPT,
+  knowledge: DEFAULT_KNOWLEDGE,
+  customSections: [],
+  lastSaved: null,
+  retellAgentId: null,
+  lastPublished: null,
+};
+
 export default function AgentBuilder() {
+  // Start from the localStorage cache (instant paint) and reconcile with the
+  // backend on mount. The backend is the source of truth — localStorage is a
+  // fallback for offline / backend-down situations.
   const [config, setConfig] = useState<AgentConfig>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as AgentConfig;
-        // Merge saved knowledge with defaults (in case new sections were added)
-        const mergedKnowledge = DEFAULT_KNOWLEDGE.map(def => {
-          const saved = parsed.knowledge?.find((s: KnowledgeSection) => s.id === def.id);
-          return saved ? { ...def, value: saved.value } : def;
-        });
-        return { ...parsed, knowledge: mergedKnowledge };
+        return mergeWithDefaults(parsed);
       }
     } catch { /* ignore */ }
-    return {
-      name: "Rover",
-      prompt: DEFAULT_PROMPT,
-      knowledge: DEFAULT_KNOWLEDGE,
-      customSections: [],
-      lastSaved: null,
-    };
+    return INITIAL_CONFIG;
   });
 
   const [showPreview, setShowPreview] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["hours", "locations"]));
-  const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  // True once we've loaded from the backend (or fallen back to local). We use
+  // this to suppress the "unsaved" flag until the user actually edits.
+  const [hydrated, setHydrated] = useState(false);
 
-  // Track unsaved changes
+  // Publish-to-Retell flow state.
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishLoading, setPublishLoading] = useState(false);
+  const [publishAgents, setPublishAgents] = useState<RetellAgentSummary[]>([]);
+  const [publishSource, setPublishSource] = useState<"api" | "mock" | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [publishing, setPublishing] = useState(false);
+
+  // Reconcile with backend on mount. Server wins if it has knowledge; otherwise
+  // we treat the local config as a one-time migration and push it up.
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      setHasUnsaved(JSON.stringify(config) !== saved);
-    } else {
-      setHasUnsaved(true);
-    }
-  }, [config]);
+    let cancelled = false;
+    api.getAgentConfig()
+      .then((serverConfig) => {
+        if (cancelled) return;
+        const hasServerContent =
+          (serverConfig.knowledge && serverConfig.knowledge.length > 0) ||
+          (serverConfig.prompt && serverConfig.prompt.trim().length > 0) ||
+          (serverConfig.name && serverConfig.name.trim().length > 0);
+
+        if (hasServerContent) {
+          setConfig(mergeWithDefaults(serverConfig));
+        } else {
+          // Server is empty — best-effort migrate the localStorage draft up so
+          // every other device starts from the same point.
+          try {
+            const local = localStorage.getItem(STORAGE_KEY);
+            if (local) {
+              const parsed = JSON.parse(local) as AgentConfig;
+              const merged = mergeWithDefaults(parsed);
+              setConfig(merged);
+              api.saveAgentConfig(stripForApi(merged)).catch(() => { /* best-effort */ });
+            }
+          } catch { /* ignore */ }
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        toast.warning("Could not reach backend — changes will only save locally");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setInitialLoading(false);
+        setHydrated(true);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  // Once hydrated, any subsequent state change marks the config as dirty.
+  useEffect(() => {
+    if (!hydrated) return;
+    setHasUnsavedChanges(true);
+  }, [config, hydrated]);
 
   const toggleSection = (id: string) => {
     setExpandedSections(prev => {
@@ -292,12 +421,34 @@ export default function AgentBuilder() {
     }));
   };
 
-  const handleSave = () => {
-    const toSave = { ...config, lastSaved: new Date().toISOString() };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-    setConfig(toSave);
-    setHasUnsaved(false);
-    toast.success("Agent configuration saved");
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const saved = await api.saveAgentConfig(stripForApi(config));
+      const next = mergeWithDefaults(saved);
+      setConfig(next);
+      // Write-through cache so the next page load paints instantly even if
+      // the backend is briefly unreachable.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripForApi(next)));
+      setHasUnsavedChanges(false);
+      toast.success("Configuration saved", {
+        description:
+          "Stored on the server — every device will see this. " +
+          "This does NOT update the live Retell agent. Use \"Publish to Retell\" to deploy.",
+      });
+    } catch (err) {
+      // Backend unreachable: fall back to localStorage so work isn't lost.
+      const fallback = { ...config, lastSaved: new Date().toISOString() };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripForApi(fallback)));
+      } catch { /* quota / private mode */ }
+      setConfig(fallback);
+      toast.error("Save failed — changes are stored locally only", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCopyPrompt = () => {
@@ -314,15 +465,101 @@ export default function AgentBuilder() {
   const handleReset = () => {
     if (window.confirm("Reset all fields to defaults? Your current configuration will be lost.")) {
       localStorage.removeItem(STORAGE_KEY);
-      setConfig({
-        name: "Rover",
-        prompt: DEFAULT_PROMPT,
-        knowledge: DEFAULT_KNOWLEDGE,
-        customSections: [],
-        lastSaved: null,
+      setConfig(INITIAL_CONFIG);
+      setHasUnsavedChanges(true);
+      toast.success("Reset to defaults — click Save changes to persist");
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Publish to Retell
+  //
+  // Sends the COMPILED prompt (knowledge already injected) to the backend's
+  // PATCH /api/agents/:id, which forwards to retellService.updateAgent.
+  // The backend response includes `source: "api" | "mock"`. "mock" means
+  // the Retell call failed and the backend returned a simulated response —
+  // we surface that to the user instead of pretending the publish worked.
+  // -------------------------------------------------------------------------
+
+  const openPublishDialog = async () => {
+    setPublishOpen(true);
+    setPublishError(null);
+    setPublishLoading(true);
+    setSelectedAgentId(config.retellAgentId ?? "");
+    try {
+      const data = await api.getAgents();
+      setPublishAgents(data.agents ?? []);
+      setPublishSource(data.source);
+    } catch (err) {
+      setPublishError(err instanceof Error ? err.message : "Failed to load agents");
+      setPublishAgents([]);
+      setPublishSource(null);
+    } finally {
+      setPublishLoading(false);
+    }
+  };
+
+  const handlePublish = async () => {
+    if (!selectedAgentId) {
+      toast.error("Pick an agent first.");
+      return;
+    }
+    setPublishing(true);
+    try {
+      const result = await api.publishAgent(selectedAgentId, {
+        prompt: compiledPrompt,
+        agent_name: config.name,
       });
-      setHasUnsaved(false);
-      toast.success("Reset to defaults");
+
+      if (result.source === "mock") {
+        toast.error(
+          "Backend could not reach Retell — nothing was published.",
+          {
+            description:
+              "The backend returned a simulated response (source=mock). " +
+              "Check that RETELL_API_KEY is set on the server and the agent_id is correct.",
+          }
+        );
+        return;
+      }
+
+      const publishedAt = new Date().toISOString();
+      const next: AgentConfig = {
+        ...config,
+        retellAgentId: selectedAgentId,
+        lastPublished: publishedAt,
+      };
+
+      // Persist publish metadata (retellAgentId, lastPublished) to the backend
+      // so other staff devices know which agent is currently live.
+      try {
+        const saved = await api.saveAgentConfig(stripForApi(next));
+        const merged = mergeWithDefaults(saved);
+        setConfig(merged);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripForApi(merged)));
+      } catch {
+        // Don't fail the publish if backend persistence fails — Retell already
+        // has the new prompt; we just couldn't record it server-side.
+        const fallback = { ...next, lastSaved: publishedAt };
+        setConfig(fallback);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(stripForApi(fallback)));
+        } catch { /* quota */ }
+        toast.warning("Published to Retell, but couldn't record it on the server");
+      }
+
+      setHasUnsavedChanges(false);
+      setPublishOpen(false);
+      toast.success(`Published to Retell agent ${selectedAgentId}`, {
+        description: `${countWords(compiledPrompt)} words. Place a test call to verify.`,
+        icon: <CheckCircle2 size={16} />,
+      });
+    } catch (err) {
+      toast.error("Publish failed", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -349,9 +586,58 @@ export default function AgentBuilder() {
           <Button variant="outline" size="sm" onClick={handleCopyPrompt} className="gap-1.5">
             <Copy size={13} /> Copy Prompt
           </Button>
-          <Button size="sm" onClick={handleSave} className="gap-1.5" disabled={!hasUnsaved}>
-            <Save size={13} /> {hasUnsaved ? "Save" : "Saved"}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSave}
+            className="gap-1.5"
+            disabled={saving || (!hasUnsavedChanges && !!config.lastSaved)}
+          >
+            {saving ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Save size={13} />
+            )}
+            {saving ? "Saving…" : hasUnsavedChanges ? "Save changes" : "Saved"}
           </Button>
+          <Button size="sm" onClick={openPublishDialog} className="gap-1.5">
+            <Upload size={13} /> Publish to Retell
+          </Button>
+        </div>
+      </div>
+
+      {initialLoading && (
+        <div className="rounded-lg border border-border bg-muted/30 p-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={14} className="animate-spin" /> Loading configuration from server…
+        </div>
+      )}
+
+      {/* Honesty banner — Save persists to the backend (shared across devices);
+          Publish actually PATCHes the Retell agent. */}
+      <div className="rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-700/40 p-3 flex items-start gap-3">
+        <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+        <div className="text-sm text-amber-900 dark:text-amber-100 leading-snug space-y-1">
+          <p>
+            <strong>Save changes</strong> stores your config on the server so
+            every staff device sees the same knowledge base. It does{" "}
+            <em>not</em> change the live agent.
+          </p>
+          <p>
+            <strong>Publish to Retell</strong> sends the compiled prompt to
+            your Retell agent's System Prompt via the backend. Place a test
+            call after publishing to confirm the new prompt is live.
+          </p>
+          {hasUnsavedChanges && (
+            <p className="text-xs font-medium text-amber-800 dark:text-amber-200 pt-1">
+              You have unsaved changes — click <strong>Save changes</strong> to persist them.
+            </p>
+          )}
+          {config.retellAgentId && config.lastPublished && (
+            <p className="text-xs text-amber-800 dark:text-amber-200 pt-1">
+              Last published to <span className="font-mono">{config.retellAgentId}</span>{" "}
+              at <span className="font-mono">{new Date(config.lastPublished).toLocaleString()}</span>.
+            </p>
+          )}
         </div>
       </div>
 
@@ -476,7 +762,7 @@ export default function AgentBuilder() {
             <CardContent className="space-y-2">
               {/* Built-in sections */}
               {config.knowledge.map((section) => {
-                const Icon = section.icon;
+                const Icon = section.icon ?? FileText;
                 const isExpanded = expandedSections.has(section.id);
                 const isFilled = section.value.trim().length > 0;
 
@@ -603,6 +889,112 @@ export default function AgentBuilder() {
           </Card>
         </div>
       </div>
+
+      {/* Publish-to-Retell dialog */}
+      <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload size={16} /> Publish to Retell
+            </DialogTitle>
+            <DialogDescription>
+              This sends the compiled prompt ({countWords(compiledPrompt)} words,
+              {" "}{filledKBCount} knowledge sections) to a live Retell agent's
+              System Prompt. Pick which agent to update.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            {publishLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 size={14} className="animate-spin" /> Loading agents…
+              </div>
+            )}
+
+            {publishError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                {publishError}
+              </div>
+            )}
+
+            {!publishLoading && !publishError && publishSource === "mock" && (
+              <div className="rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-700/40 p-3 text-xs text-amber-900 dark:text-amber-100 leading-snug">
+                <strong>Showing mock agents.</strong> The backend could not
+                reach Retell, so this list is fake. Publishing now will not
+                update a real agent. Set <code className="font-mono">RETELL_API_KEY</code>{" "}
+                on the backend and reload.
+              </div>
+            )}
+
+            {!publishLoading && publishAgents.length > 0 && (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {publishAgents.map((a) => {
+                  const isSelected = selectedAgentId === a.agent_id;
+                  return (
+                    <button
+                      key={a.agent_id}
+                      type="button"
+                      onClick={() => setSelectedAgentId(a.agent_id)}
+                      className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                        isSelected
+                          ? "border-primary bg-primary/10"
+                          : "border-border hover:border-primary/40 hover:bg-muted/30"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium text-foreground">
+                          {a.agent_name || "(no name)"}
+                        </div>
+                        <div className="text-xs font-mono text-muted-foreground">
+                          {a.agent_id}
+                        </div>
+                      </div>
+                      {(a.voice_id || a.status) && (
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {a.voice_id && <>voice: {a.voice_id}</>}
+                          {a.voice_id && a.status && " · "}
+                          {a.status && <>status: {a.status}</>}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {!publishLoading && !publishError && publishAgents.length === 0 && (
+              <div className="text-sm text-muted-foreground py-4 text-center">
+                No agents found. Create one in the Retell dashboard first.
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPublishOpen(false)}
+              disabled={publishing}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handlePublish}
+              disabled={publishing || publishLoading || !selectedAgentId}
+              className="gap-1.5"
+            >
+              {publishing ? (
+                <>
+                  <Loader2 size={13} className="animate-spin" /> Publishing…
+                </>
+              ) : (
+                <>
+                  <Upload size={13} /> Publish
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

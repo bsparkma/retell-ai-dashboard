@@ -1,6 +1,6 @@
 /**
  * Dashboard — CareIn Home Page
- * Command center overview: live stats, active calls, today's schedule, callbacks queue
+ * Command center overview: stats, today's schedule, callbacks queue, recent calls
  */
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
@@ -8,14 +8,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  PhoneCall, PhoneOff, Clock, TrendingUp, Users, CalendarDays,
-  ArrowRight, AlertTriangle, CheckCircle2, Bot, Mic,
-  PhoneIncoming, BarChart3, RefreshCw, UserPlus
+  PhoneCall, Clock, TrendingUp, CalendarDays,
+  ArrowRight, CheckCircle2, Bot,
+  PhoneIncoming, BarChart3, RefreshCw
 } from "lucide-react";
-import { useLiveCalls } from "@/contexts/SocketContext";
 import { api, type UnifiedCall, type CallbackDisplay } from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
-import NewPatientIntake from "@/components/NewPatientIntake";
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { toast } from "sonner";
 
@@ -25,15 +23,12 @@ type HourlyDataPoint = { hour: string; calls: number };
 export default function Dashboard() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [lastRefresh, setLastRefresh] = useState(new Date());
-  const [intakeOpen, setIntakeOpen] = useState(false);
   const [callbacks, setCallbacks] = useState<CallbackDisplay[]>([]);
   const [recentCalls, setRecentCalls] = useState<UnifiedCall[]>([]);
   const [todayAppointments, setTodayAppointments] = useState<AppointmentDisplay[]>([]);
   const [loading, setLoading] = useState(true);
   const [hourlyData, setHourlyData] = useState<HourlyDataPoint[]>([]);
 
-  const liveCalls = useLiveCalls();
-  const emergencyCalls = liveCalls.filter(c => c.isEmergency);
   const pendingCallbacks = callbacks.filter(c => c.status === "pending");
   const confirmedApts = todayAppointments.filter(a => a.status === "confirmed");
   const unconfirmedApts = todayAppointments.filter(a => a.status === "unconfirmed");
@@ -50,7 +45,6 @@ export default function Dashboard() {
       api.getCallbacks().then(setCallbacks).catch(() => setCallbacks([])),
       api.getUnifiedCalls({ limit: 10 }).then(({ calls }) => setRecentCalls(calls)).catch(() => setRecentCalls([])),
       api.getAnalyticsSummary({ days: 1 }).then((res) => {
-        // Filter to business hours (7AM-7PM)
         const filtered = res.hourlyVolume.filter((h) => {
           const match = h.hour.match(/^(\d+)(AM|PM)$/);
           if (!match) return false;
@@ -79,19 +73,11 @@ export default function Dashboard() {
 
   const stats = [
     {
-      label: "Active Calls",
-      value: liveCalls.length,
-      sub: `${emergencyCalls.length} emergency`,
+      label: "Today's Calls",
+      value: recentCalls.length,
+      sub: loading ? "Loading..." : `${recentCalls.filter(c => c.source === "retell").length} AI handled`,
       icon: PhoneCall,
       color: "teal",
-      urgent: emergencyCalls.length > 0,
-    },
-    {
-      label: "Recent Calls",
-      value: recentCalls.length,
-      sub: loading ? "Loading…" : `${recentCalls.filter(c => c.source === "retell").length} AI`,
-      icon: TrendingUp,
-      color: "blue",
     },
     {
       label: "AI Handled",
@@ -118,7 +104,7 @@ export default function Dashboard() {
     {
       label: "Avg Call Duration",
       value: recentCalls.length ? formatDuration(Math.round(recentCalls.reduce((a, c) => a + c.duration, 0) / recentCalls.length)) : "—",
-      sub: loading ? "Loading…" : "From API",
+      sub: loading ? "Loading..." : "From API",
       icon: Clock,
       color: "slate",
     },
@@ -126,7 +112,6 @@ export default function Dashboard() {
 
   const colorMap: Record<string, { bg: string; icon: string; text: string }> = {
     teal: { bg: "oklch(0.55 0.18 210 / 0.1)", icon: "oklch(0.55 0.18 210)", text: "oklch(0.40 0.18 210)" },
-    blue: { bg: "oklch(0.55 0.18 250 / 0.1)", icon: "oklch(0.55 0.18 250)", text: "oklch(0.40 0.18 250)" },
     green: { bg: "oklch(0.65 0.18 155 / 0.1)", icon: "oklch(0.55 0.18 155)", text: "oklch(0.40 0.18 155)" },
     amber: { bg: "oklch(0.78 0.17 75 / 0.1)", icon: "oklch(0.65 0.17 75)", text: "oklch(0.50 0.17 75)" },
     purple: { bg: "oklch(0.60 0.15 280 / 0.1)", icon: "oklch(0.55 0.15 280)", text: "oklch(0.40 0.15 280)" },
@@ -139,7 +124,7 @@ export default function Dashboard() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Good morning, Downtown Dental
+            Good morning
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {currentTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
@@ -147,37 +132,19 @@ export default function Dashboard() {
             {currentTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {emergencyCalls.length > 0 && (
-            <Link href="/live">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg emergency-flash border border-destructive/30 cursor-pointer">
-                <AlertTriangle size={14} className="text-destructive" />
-                <span className="text-sm font-semibold text-destructive">{emergencyCalls.length} Emergency</span>
-              </div>
-            </Link>
-          )}
-          <Button
-            size="sm"
-            onClick={() => setIntakeOpen(true)}
-            className="gap-1.5"
-          >
-            <UserPlus size={14} />
-            New Patient
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => { setLastRefresh(new Date()); toast.success("Refreshing…"); }}
-            disabled={loading}
-          >
-            <RefreshCw size={14} className="mr-1.5" />
-            Refresh
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { setLastRefresh(new Date()); toast.success("Refreshing..."); }}
+          disabled={loading}
+        >
+          <RefreshCw size={14} className="mr-1.5" />
+          Refresh
+        </Button>
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         {stats.map((stat) => {
           const colors = colorMap[stat.color];
           const Icon = stat.icon;
@@ -208,98 +175,8 @@ export default function Dashboard() {
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left: Live calls + Call volume */}
+        {/* Left: Call volume chart */}
         <div className="xl:col-span-2 space-y-6">
-          {/* Live calls */}
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold flex items-center gap-2">
-                  <span className="live-dot" />
-                  Live Calls
-                  <Badge variant="secondary" className="text-xs">{liveCalls.length} active</Badge>
-                </CardTitle>
-                <Link href="/live">
-                  <Button variant="ghost" size="sm" className="text-xs gap-1">
-                    Full Monitor <ArrowRight size={12} />
-                  </Button>
-                </Link>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {liveCalls.map((call) => (
-                <div
-                  key={call.id}
-                  className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${
-                    call.isEmergency
-                      ? "emergency-flash border-destructive/30"
-                      : "bg-muted/30 border-border hover:bg-muted/60"
-                  }`}
-                >
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    call.source === "retell" ? "bg-primary/10" : "bg-amber-500/10"
-                  }`}>
-                    {call.source === "retell" ? (
-                      <Bot size={14} className="text-primary" />
-                    ) : (
-                      <Users size={14} className="text-amber-600" />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm text-foreground">{call.patientName}</span>
-                      {call.isEmergency && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold bg-destructive/15 text-destructive">
-                          <AlertTriangle size={10} /> EMERGENCY
-                        </span>
-                      )}
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${
-                        call.source === "retell"
-                          ? "bg-primary/10 text-primary"
-                          : "bg-amber-500/10 text-amber-700"
-                      }`}>
-                        {call.source === "retell" ? "AI · Rover" : "Staff"}
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5 font-mono">{call.fromNumber}</div>
-                    {call.intent && (
-                      <div className="text-xs text-muted-foreground mt-0.5">{call.intent}</div>
-                    )}
-                    {call.transcript && call.transcript.length > 0 && (
-                      <div className="text-xs text-muted-foreground mt-1.5 italic line-clamp-1">
-                        "{call.transcript[call.transcript.length - 1].text}"
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                    <div className="flex items-center gap-1">
-                      {[1,2,3,4,5].map((i) => (
-                        <div
-                          key={i}
-                          className="waveform-bar w-1"
-                          style={{
-                            height: `${8 + Math.random() * 12}px`,
-                            animationDelay: `${i * 0.15}s`,
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <span className="text-xs font-mono text-muted-foreground">
-                      {formatDuration(call.duration)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {liveCalls.length === 0 && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <PhoneOff size={32} className="mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">No active calls</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Call volume chart */}
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -312,7 +189,7 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={160}>
+              <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={hourlyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                   <defs>
                     <linearGradient id="callGrad" x1="0" y1="0" x2="0" y2="1">
@@ -338,6 +215,45 @@ export default function Dashboard() {
               </ResponsiveContainer>
             </CardContent>
           </Card>
+
+          {/* Recent calls */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-semibold">Recent Calls</CardTitle>
+                <Link href="/calls">
+                  <Button variant="ghost" size="sm" className="text-xs gap-1">
+                    All Calls <ArrowRight size={12} />
+                  </Button>
+                </Link>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {recentCalls.slice(0, 5).map((call) => (
+                <Link key={call.id} href={`/calls/${call.id}`}>
+                  <div className="flex items-center gap-3 py-1.5 hover:bg-muted/40 rounded-md px-1 transition-colors cursor-pointer">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      call.source === "retell" ? "bg-primary/10" : "bg-amber-500/10"
+                    }`}>
+                      {call.source === "retell" ? (
+                        <Bot size={12} className="text-primary" />
+                      ) : (
+                        <TrendingUp size={12} className="text-amber-600" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-foreground truncate">{call.patientName}</div>
+                      <div className="text-xs text-muted-foreground">{call.intent}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-xs font-mono text-muted-foreground">{formatDuration(call.duration)}</div>
+                      <div className="text-xs text-muted-foreground">{formatTimeAgo(call.date)}</div>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
         </div>
 
         {/* Right: Today's schedule + Callbacks */}
@@ -347,9 +263,9 @@ export default function Dashboard() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-semibold">Today's Schedule</CardTitle>
-                <Link href="/calendar">
+                <Link href="/scheduling">
                   <Button variant="ghost" size="sm" className="text-xs gap-1">
-                    Calendar <ArrowRight size={12} />
+                    Scheduling <ArrowRight size={12} />
                   </Button>
                 </Link>
               </div>
@@ -378,20 +294,10 @@ export default function Dashboard() {
                     <div className="text-sm font-medium text-foreground truncate">{apt.patientName}</div>
                     <div className="text-xs text-muted-foreground truncate">{apt.type} · {apt.provider}</div>
                   </div>
-                  {apt.status === "unconfirmed" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="text-xs h-6 px-2 flex-shrink-0"
-                      onClick={() => toast.info("Confirmation call feature coming soon")}
-                    >
-                      Confirm
-                    </Button>
-                  )}
                 </div>
               ))}
               {todayAppointments.length > 6 && (
-                <Link href="/calendar">
+                <Link href="/scheduling">
                   <div className="text-xs text-primary text-center pt-1 hover:underline cursor-pointer">
                     +{todayAppointments.length - 6} more appointments
                   </div>
@@ -410,7 +316,7 @@ export default function Dashboard() {
                     <Badge variant="destructive" className="text-xs">{pendingCallbacks.length}</Badge>
                   )}
                 </CardTitle>
-                <Link href="/callbacks">
+                <Link href="/calls">
                   <Button variant="ghost" size="sm" className="text-xs gap-1">
                     View All <ArrowRight size={12} />
                   </Button>
@@ -435,60 +341,12 @@ export default function Dashboard() {
                     <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{cb.reason}</div>
                     <div className="text-xs font-mono text-muted-foreground mt-0.5">{cb.phone}</div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-xs h-6 px-2 flex-shrink-0"
-                    onClick={() => toast.info("Initiating callback...")}
-                  >
-                    Call
-                  </Button>
                 </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* Recent calls */}
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">Recent Calls</CardTitle>
-                <Link href="/calls">
-                  <Button variant="ghost" size="sm" className="text-xs gap-1">
-                    All Calls <ArrowRight size={12} />
-                  </Button>
-                </Link>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {recentCalls.slice(0, 5).map((call) => (
-                <Link key={call.id} href={`/calls/${call.id}`}>
-                  <div className="flex items-center gap-3 py-1.5 hover:bg-muted/40 rounded-md px-1 transition-colors cursor-pointer">
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
-                      call.source === "retell" ? "bg-primary/10" : "bg-amber-500/10"
-                    }`}>
-                      {call.source === "retell" ? (
-                        <Bot size={12} className="text-primary" />
-                      ) : (
-                        <Users size={12} className="text-amber-600" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-foreground truncate">{call.patientName}</div>
-                      <div className="text-xs text-muted-foreground">{call.intent}</div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-xs font-mono text-muted-foreground">{formatDuration(call.duration)}</div>
-                      <div className="text-xs text-muted-foreground">{formatTimeAgo(call.date)}</div>
-                    </div>
-                  </div>
-                </Link>
               ))}
             </CardContent>
           </Card>
         </div>
       </div>
-      <NewPatientIntake open={intakeOpen} onClose={() => setIntakeOpen(false)} />
     </div>
   );
 }

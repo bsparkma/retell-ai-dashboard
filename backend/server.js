@@ -19,9 +19,12 @@ const mangoRouter = require('./routes/mango');
 const callbacksRouter = require('./routes/callbacks');
 const unifiedCallsRouter = require('./routes/unifiedCalls');
 const analyticsRouter = require('./routes/analytics');
+const retellToolsRouter = require('./routes/retellTools');
+const agentConfigRouter = require('./routes/agentConfig');
 const { initializeSocketHandlers } = require('./socket/socketHandler');
 const unifiedCallStore = require('./services/unifiedCallStore');
 const syncScheduler = require('./services/syncScheduler');
+const { requireDashboardToken, socketAuth } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,6 +36,14 @@ const corsOrigins = process.env.CORS_ORIGIN
 if (!corsOrigins.includes('http://localhost:3005')) {
   corsOrigins.push('http://localhost:3005');
 }
+
+const PRODUCTION_DOMAINS = [
+  'https://carein-do.flamingketchup.com',
+  'http://carein-do.flamingketchup.com',
+];
+PRODUCTION_DOMAINS.forEach(domain => {
+  if (!corsOrigins.includes(domain)) corsOrigins.push(domain);
+});
 
 // Create HTTP server for Socket.IO
 const server = http.createServer(app);
@@ -47,6 +58,10 @@ const io = new Server(server, {
   pingTimeout: 60000,
   pingInterval: 25000
 });
+
+// Require DASHBOARD_API_TOKEN on Socket.IO connections so live transcripts
+// and call events aren't readable by anyone who can reach the server.
+io.use(socketAuth);
 
 // Initialize Socket.IO event handlers
 initializeSocketHandlers(io);
@@ -74,11 +89,28 @@ app.use(cors({
 }));
 app.use(morgan('combined'));
 app.use(limiter);
-app.use(express.json());
+// Capture raw body for HMAC signature verification (e.g. Retell webhooks).
+// Without this, signature verification cannot use the raw body Retell signed.
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    if (buf && buf.length) req.rawBody = buf.toString('utf8');
+  },
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Serve downloaded Mango recordings (MP3) from disk
 app.use('/api/mango/recordings', express.static(path.join(__dirname, 'recordings', 'mango')));
+
+// Bearer-token auth gate for /api/*. Webhooks (HMAC-authenticated) and the
+// health check are exempt so monitors and Retell can still reach them.
+app.use(
+  '/api',
+  requireDashboardToken({
+    // /retell-tools/* is authenticated via Retell's HMAC signature instead
+    // of the dashboard bearer token; see backend/routes/retellTools.js.
+    exempt: [/^\/webhooks(\/|$)/, /^\/health$/, /^\/retell-tools(\/|$)/],
+  })
+);
 
 // Routes
 app.use('/api/calls', callsRouter);
@@ -92,6 +124,8 @@ app.use('/api/mango', mangoRouter);
 app.use('/api/callbacks', callbacksRouter);
 app.use('/api/unified-calls', unifiedCallsRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/retell-tools', retellToolsRouter);
+app.use('/api/agent-config', agentConfigRouter);
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {

@@ -1,46 +1,125 @@
 /**
  * Callbacks Routes
- * 
- * Manages callback queue - tracking calls that need follow-up.
+ *
+ * Manages the callback queue — calls that need staff follow-up.
+ *
+ * Persistence:
+ *   The queue is loaded from `data/callbacks.json` at startup and written
+ *   back atomically (tmp + rename) on every mutation. The previous
+ *   implementation kept callbacks only in memory and seeded fake demo data
+ *   on every server start; that meant real callbacks were lost on restart
+ *   and fake ones reappeared, both of which are unacceptable when the office
+ *   is using this list to call patients back.
  */
 
 const express = require('express');
+const fs = require('fs');
+const fsp = require('fs').promises;
+const path = require('path');
+
 const router = express.Router();
 
-// In-memory storage (would be database in production)
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+const DATA_DIR = path.join(__dirname, '..', '..', 'data');
+const CALLBACKS_PATH = path.join(DATA_DIR, 'callbacks.json');
+const CALLBACKS_TMP_PATH = `${CALLBACKS_PATH}.tmp`;
+
 let callbacks = [];
 let callbackIdCounter = 1;
 
+// Concurrency guard so two simultaneous mutations don't race on disk.
+let persistInFlight = null;
+let persistRequeued = false;
+
+function loadFromDisk() {
+  try {
+    if (!fs.existsSync(CALLBACKS_PATH)) {
+      callbacks = [];
+      callbackIdCounter = 1;
+      return;
+    }
+    const raw = fs.readFileSync(CALLBACKS_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    callbacks = Array.isArray(parsed.callbacks) ? parsed.callbacks : [];
+    callbackIdCounter =
+      Number.isInteger(parsed.idCounter) && parsed.idCounter > 0
+        ? parsed.idCounter
+        : Math.max(1, callbacks.length + 1);
+    console.log(`✅ Callbacks loaded: ${callbacks.length} entries`);
+  } catch (err) {
+    console.error('⚠️ Failed to load callbacks.json — starting empty:', err.message);
+    callbacks = [];
+    callbackIdCounter = 1;
+  }
+}
+
+async function persist() {
+  if (persistInFlight) {
+    persistRequeued = true;
+    return persistInFlight;
+  }
+
+  persistInFlight = (async () => {
+    try {
+      do {
+        persistRequeued = false;
+        await fsp.mkdir(DATA_DIR, { recursive: true });
+        const snapshot = JSON.stringify(
+          {
+            callbacks,
+            idCounter: callbackIdCounter,
+            savedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        );
+        await fsp.writeFile(CALLBACKS_TMP_PATH, snapshot);
+        await fsp.rename(CALLBACKS_TMP_PATH, CALLBACKS_PATH);
+      } while (persistRequeued);
+    } catch (err) {
+      console.error('❌ Failed to persist callbacks:', err.message);
+      try {
+        await fsp.unlink(CALLBACKS_TMP_PATH);
+      } catch (_) {
+        /* ignore */
+      }
+    } finally {
+      persistInFlight = null;
+    }
+  })();
+
+  return persistInFlight;
+}
+
+loadFromDisk();
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
 /**
  * GET /api/callbacks
- * 
- * Get all callbacks, optionally filtered by status
+ * List callbacks, optionally filtered by status / priority.
  */
 router.get('/', (req, res) => {
   try {
     const { status, priority } = req.query;
     let filtered = [...callbacks];
-    
-    if (status) {
-      filtered = filtered.filter(cb => cb.status === status);
-    }
-    if (priority) {
-      filtered = filtered.filter(cb => cb.priority === priority);
-    }
-    
-    // Sort by priority (emergency > high > medium > low) then by due date
+
+    if (status) filtered = filtered.filter(cb => cb.status === status);
+    if (priority) filtered = filtered.filter(cb => cb.priority === priority);
+
     const priorityOrder = { emergency: 0, high: 1, medium: 2, low: 3 };
     filtered.sort((a, b) => {
-      const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
-      if (priorityDiff !== 0) return priorityDiff;
+      const diff = priorityOrder[a.priority] - priorityOrder[b.priority];
+      if (diff !== 0) return diff;
       return new Date(a.due_at) - new Date(b.due_at);
     });
-    
-    res.json({
-      success: true,
-      count: filtered.length,
-      callbacks: filtered,
-    });
+
+    res.json({ success: true, count: filtered.length, callbacks: filtered });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -48,14 +127,12 @@ router.get('/', (req, res) => {
 
 /**
  * GET /api/callbacks/stats
- * 
- * Get callback statistics
  */
 router.get('/stats', (req, res) => {
   try {
     const pending = callbacks.filter(cb => cb.status === 'pending');
     const overdue = pending.filter(cb => new Date(cb.due_at) < new Date());
-    
+
     const stats = {
       total: callbacks.length,
       pending: pending.length,
@@ -68,7 +145,7 @@ router.get('/stats', (req, res) => {
         low: pending.filter(cb => cb.priority === 'low').length,
       },
     };
-    
+
     res.json({ success: true, stats });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -77,17 +154,15 @@ router.get('/stats', (req, res) => {
 
 /**
  * GET /api/callbacks/:id
- * 
- * Get a specific callback
  */
 router.get('/:id', (req, res) => {
   try {
     const callback = callbacks.find(cb => cb.id === req.params.id);
-    
     if (!callback) {
-      return res.status(404).json({ success: false, error: 'Callback not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Callback not found' });
     }
-    
     res.json({ success: true, callback });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -96,10 +171,8 @@ router.get('/:id', (req, res) => {
 
 /**
  * POST /api/callbacks
- * 
- * Create a new callback
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const {
       call_id,
@@ -120,7 +193,7 @@ router.post('/', (req, res) => {
       reason,
       priority,
       status: 'pending',
-      due_at: due_at || new Date(Date.now() + 60 * 60 * 1000).toISOString(), // Default: 1 hour
+      due_at: due_at || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       assigned_to,
       notes,
       attempts: 0,
@@ -129,14 +202,14 @@ router.post('/', (req, res) => {
     };
 
     callbacks.push(callback);
-    
-    // Emit to connected clients
+    await persist();
+
     const liveCallManager = require('../services/liveCallManager');
     if (liveCallManager.io) {
       liveCallManager.io.emit('callback:created', callback);
       liveCallManager.io.emit('callbacks:stats-updated', getStats());
     }
-    
+
     res.status(201).json({ success: true, callback });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -145,31 +218,29 @@ router.post('/', (req, res) => {
 
 /**
  * PATCH /api/callbacks/:id
- * 
- * Update a callback
  */
-router.patch('/:id', (req, res) => {
+router.patch('/:id', async (req, res) => {
   try {
     const index = callbacks.findIndex(cb => cb.id === req.params.id);
-    
     if (index === -1) {
-      return res.status(404).json({ success: false, error: 'Callback not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Callback not found' });
     }
-    
-    const updates = req.body;
+
     callbacks[index] = {
       ...callbacks[index],
-      ...updates,
+      ...req.body,
       updated_at: new Date().toISOString(),
     };
-    
-    // Emit to connected clients
+    await persist();
+
     const liveCallManager = require('../services/liveCallManager');
     if (liveCallManager.io) {
       liveCallManager.io.emit('callback:updated', callbacks[index]);
       liveCallManager.io.emit('callbacks:stats-updated', getStats());
     }
-    
+
     res.json({ success: true, callback: callbacks[index] });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -178,42 +249,41 @@ router.patch('/:id', (req, res) => {
 
 /**
  * POST /api/callbacks/:id/attempt
- * 
- * Log a callback attempt
  */
-router.post('/:id/attempt', (req, res) => {
+router.post('/:id/attempt', async (req, res) => {
   try {
     const index = callbacks.findIndex(cb => cb.id === req.params.id);
-    
     if (index === -1) {
-      return res.status(404).json({ success: false, error: 'Callback not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Callback not found' });
     }
-    
+
     const { result, notes } = req.body;
-    
-    callbacks[index].attempts++;
-    callbacks[index].last_attempt_at = new Date().toISOString();
-    callbacks[index].updated_at = new Date().toISOString();
-    
+    const cb = callbacks[index];
+
+    cb.attempts++;
+    cb.last_attempt_at = new Date().toISOString();
+    cb.updated_at = new Date().toISOString();
+
     if (result === 'completed') {
-      callbacks[index].status = 'completed';
-      callbacks[index].completed_at = new Date().toISOString();
-    } else if (result === 'no_answer' && callbacks[index].attempts >= 3) {
-      callbacks[index].status = 'failed';
+      cb.status = 'completed';
+      cb.completed_at = new Date().toISOString();
+    } else if (result === 'no_answer' && cb.attempts >= 3) {
+      cb.status = 'failed';
     }
-    
-    if (notes) {
-      callbacks[index].resolution_notes = notes;
-    }
-    
-    // Emit to connected clients
+
+    if (notes) cb.resolution_notes = notes;
+
+    await persist();
+
     const liveCallManager = require('../services/liveCallManager');
     if (liveCallManager.io) {
-      liveCallManager.io.emit('callback:updated', callbacks[index]);
+      liveCallManager.io.emit('callback:updated', cb);
       liveCallManager.io.emit('callbacks:stats-updated', getStats());
     }
-    
-    res.json({ success: true, callback: callbacks[index] });
+
+    res.json({ success: true, callback: cb });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -221,33 +291,35 @@ router.post('/:id/attempt', (req, res) => {
 
 /**
  * DELETE /api/callbacks/:id
- * 
- * Delete a callback
  */
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const index = callbacks.findIndex(cb => cb.id === req.params.id);
-    
     if (index === -1) {
-      return res.status(404).json({ success: false, error: 'Callback not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Callback not found' });
     }
-    
+
     callbacks.splice(index, 1);
-    
-    // Emit to connected clients
+    await persist();
+
     const liveCallManager = require('../services/liveCallManager');
     if (liveCallManager.io) {
       liveCallManager.io.emit('callback:deleted', req.params.id);
       liveCallManager.io.emit('callbacks:stats-updated', getStats());
     }
-    
+
     res.json({ success: true, message: 'Callback deleted' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Helper function to get stats
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function getStats() {
   const pending = callbacks.filter(cb => cb.status === 'pending');
   return {
@@ -257,76 +329,4 @@ function getStats() {
   };
 }
 
-// Create some sample callbacks for testing
-function createSampleCallbacks() {
-  callbacks = [
-    {
-      id: 'cb_1',
-      call_id: 'call_001',
-      caller_name: 'John Smith',
-      caller_number: '+1-555-123-4567',
-      reason: 'Left voicemail - requesting appointment',
-      priority: 'high',
-      status: 'pending',
-      due_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 mins
-      assigned_to: null,
-      notes: 'New patient inquiry',
-      attempts: 0,
-      created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-      updated_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'cb_2',
-      call_id: 'call_002',
-      caller_name: 'Sarah Johnson',
-      caller_number: '+1-555-987-6543',
-      reason: 'Emergency - severe toothache',
-      priority: 'emergency',
-      status: 'pending',
-      due_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(), // 15 mins ago (overdue)
-      assigned_to: null,
-      notes: 'Patient in pain, needs immediate callback',
-      attempts: 1,
-      last_attempt_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-      created_at: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
-      updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'cb_3',
-      call_id: 'call_003',
-      caller_name: 'Mike Davis',
-      caller_number: '+1-555-456-7890',
-      reason: 'Transfer failed - insurance question',
-      priority: 'medium',
-      status: 'pending',
-      due_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours
-      assigned_to: null,
-      notes: 'Needs to speak with billing',
-      attempts: 0,
-      created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-      updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'cb_4',
-      call_id: 'call_004',
-      caller_name: 'Emily Brown',
-      caller_number: '+1-555-321-0987',
-      reason: 'General inquiry - office hours',
-      priority: 'low',
-      status: 'pending',
-      due_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
-      assigned_to: null,
-      notes: null,
-      attempts: 0,
-      created_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-      updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-    },
-  ];
-  callbackIdCounter = 5;
-}
-
-// Initialize with sample data
-createSampleCallbacks();
-
 module.exports = router;
-

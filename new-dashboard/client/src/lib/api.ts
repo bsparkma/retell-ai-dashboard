@@ -1,9 +1,17 @@
 /**
  * CareIn Dashboard API client
  * Connects to the existing backend at VITE_API_URL (default http://localhost:5000/api)
+ *
+ * Auth: when VITE_DASHBOARD_API_TOKEN is set, every request includes
+ *   `Authorization: Bearer <token>`. The backend requires this token on
+ *   /api/* (webhooks and /api/health are exempt). Set the same value as
+ *   DASHBOARD_API_TOKEN on the backend.
  */
 
+import type { AgentConfig } from "@/pages/AgentBuilder";
+
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
+const DASHBOARD_TOKEN = (import.meta.env.VITE_DASHBOARD_API_TOKEN ?? "").trim();
 
 async function request<T>(
   path: string,
@@ -16,9 +24,12 @@ async function request<T>(
       if (v !== undefined && v !== "") url.searchParams.set(k, String(v));
     });
   }
+  const authHeaders: Record<string, string> = DASHBOARD_TOKEN
+    ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` }
+    : {};
   const res = await fetch(url.toString(), {
     ...init,
-    headers: { "Content-Type": "application/json", ...init.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders, ...init.headers },
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: res.statusText }));
@@ -301,11 +312,38 @@ export const api = {
   },
 
   async getAgents() {
-    return request<unknown[]>("/agents");
+    return request<{
+      agents: Array<{ agent_id: string; agent_name?: string; voice_id?: string; status?: string; updated_at?: string }>;
+      total: number;
+      source: "api" | "mock";
+    }>("/agents");
   },
 
   async getAgent(id: string) {
     return request<unknown>(`/agents/${id}`);
+  },
+
+  /**
+   * Push a new prompt (and optionally other fields) to a Retell agent.
+   * Backend forwards to retellService.updateAgent which calls Retell's
+   * PATCH /update-agent/{agent_id}. Response.source === 'mock' means
+   * Retell rejected the update and we fell back to a simulated response —
+   * surface that to the user honestly.
+   */
+  async publishAgent(
+    id: string,
+    updates: { prompt?: string; agent_name?: string }
+  ) {
+    return request<{
+      agent_id: string;
+      prompt?: string;
+      updated_at?: string;
+      source: "api" | "mock";
+      [key: string]: unknown;
+    }>(`/agents/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
   },
 
   // ---------------------------------------------------------------------------
@@ -380,6 +418,29 @@ export const api = {
       "/opendental/appointments/find-slots",
       { method: "POST", body: JSON.stringify(params) }
     );
+  },
+
+  // ---------------------------------------------------------------------------
+  // Agent Builder config (knowledge base + system prompt)
+  //
+  // Backed by `data/agent-config.json` on the server. Replaces the previous
+  // localStorage-only flow so every staff device sees the same config and
+  // browser-cache clears don't wipe the practice's knowledge base.
+  // ---------------------------------------------------------------------------
+
+  async getAgentConfig(): Promise<AgentConfig> {
+    const res = await request<{ success: boolean; config: AgentConfig }>(
+      "/agent-config"
+    );
+    return res.config;
+  },
+
+  async saveAgentConfig(config: AgentConfig): Promise<AgentConfig> {
+    const res = await request<{ success: boolean; config: AgentConfig }>(
+      "/agent-config",
+      { method: "PUT", body: JSON.stringify(config) }
+    );
+    return res.config;
   },
 
   async getScheduleOverview(params?: { date?: string; providerId?: number }) {

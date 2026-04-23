@@ -20,7 +20,9 @@ const SOCKET_OPTIONS = {
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
   timeout: 20000,
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  // Backend requires DASHBOARD_API_TOKEN on every connection (when set).
+  auth: config.dashboardApiToken ? { token: config.dashboardApiToken } : undefined,
 };
 
 /**

@@ -6,9 +6,85 @@
  */
 
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const liveCallManager = require('../services/liveCallManager');
 const unifiedCallStore = require('../services/unifiedCallStore');
+const openDentalSyncService = require('../services/openDentalSync');
+
+/**
+ * Verify Retell webhook signature.
+ *
+ * Per https://docs.retellai.com/features/secure-webhook the X-Retell-Signature
+ * header has the format `v={ms-timestamp},d={hex-digest}` and the digest is
+ *   HMAC-SHA256( raw_body + timestamp, api_key ) → hex
+ *
+ * We must verify against the raw request body (captured in server.js as
+ * req.rawBody), NOT against JSON.stringify(req.body) — re-stringifying loses
+ * key ordering and whitespace and will not match Retell's digest.
+ *
+ * Setting WEBHOOK_VERIFY_DISABLED=true bypasses verification (for local
+ * development only; the bypass is logged loudly so it cannot ship silently).
+ */
+const SIGNATURE_PATTERN = /^v=(\d+),d=([0-9a-f]+)$/i;
+const REPLAY_WINDOW_MS = 5 * 60 * 1000; // Retell recommends 5 minutes
+
+function verifyRetellSignature(req) {
+  if (process.env.WEBHOOK_VERIFY_DISABLED === 'true') {
+    console.warn(
+      '⚠️ WEBHOOK_VERIFY_DISABLED=true — Retell signature NOT verified. ' +
+      'Do not ship this to production.'
+    );
+    return true;
+  }
+
+  const apiKey = process.env.RETELL_API_KEY;
+  if (!apiKey) {
+    console.error('❌ RETELL_API_KEY is not set; cannot verify webhook.');
+    return false;
+  }
+
+  const header = req.headers['x-retell-signature'];
+  if (!header) {
+    console.warn('⚠️ Missing x-retell-signature header');
+    return false;
+  }
+
+  const match = SIGNATURE_PATTERN.exec(header.trim());
+  if (!match) {
+    console.warn(`⚠️ Malformed x-retell-signature header: ${header}`);
+    return false;
+  }
+  const timestamp = match[1];
+  const providedHex = match[2];
+
+  const ageMs = Math.abs(Date.now() - Number(timestamp));
+  if (ageMs > REPLAY_WINDOW_MS) {
+    console.warn(
+      `⚠️ Retell webhook outside ${REPLAY_WINDOW_MS}ms replay window (age=${ageMs}ms)`
+    );
+    return false;
+  }
+
+  const rawBody = req.rawBody;
+  if (typeof rawBody !== 'string') {
+    console.error(
+      '❌ req.rawBody not captured. Ensure server.js attaches express.json({verify}) ' +
+      'so HMAC can be computed against the unparsed body.'
+    );
+    return false;
+  }
+
+  const expectedHex = crypto
+    .createHmac('sha256', apiKey)
+    .update(rawBody + timestamp, 'utf8')
+    .digest('hex');
+
+  const provided = Buffer.from(providedHex, 'hex');
+  const expected = Buffer.from(expectedHex, 'hex');
+  if (provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(provided, expected);
+}
 
 /**
  * POST /api/webhooks/retell
@@ -24,6 +100,12 @@ const unifiedCallStore = require('../services/unifiedCallStore');
  * - transcript: Real-time transcript updates
  */
 router.post('/retell', async (req, res) => {
+  // Verify signature in production
+  if (!verifyRetellSignature(req)) {
+    console.warn('⚠️ Invalid Retell signature — rejecting webhook');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
   try {
     const event = req.body;
     
@@ -177,6 +259,69 @@ async function handleCallAnalyzed(event) {
     await unifiedCallStore.persist();
   } catch (e) {
     console.warn('⚠️ Failed to persist call_analyzed to unified store:', e.message);
+  }
+
+  // Write Open Dental commlog entry
+  try {
+    // Match call to patient by phone number
+    const matchResult = await openDentalSyncService.matchCallToPatient({
+      caller_number: callData.from_number,
+      caller_name: callData.call_analysis?.caller_name || 'Unknown'
+    });
+
+    // Calculate call duration in seconds
+    const startTime = callData.start_timestamp ? new Date(callData.start_timestamp).getTime() : 0;
+    const endTime = callData.end_timestamp ? new Date(callData.end_timestamp).getTime() : 0;
+    const durationSeconds = startTime && endTime ? Math.round((endTime - startTime) / 1000) : 0;
+
+    // Build formatted commlog note
+    const patientType = callData.call_analysis?.["new_patient or existing_patient"] || 'unknown';
+    const appointmentBooked = callData.call_analysis?.appointment_booked ? 'yes' : 'no';
+    const emergency = callData.call_analysis?.emergency_caller ? 'yes' : 'no';
+    const insurance = callData.call_analysis?.dental_insurance || 'not provided';
+    const summary = callData.call_analysis?.detailed_call_summary || callData.call_analysis?.call_summary || 'No summary available';
+    const transcript = callData.transcript || 'No transcript available';
+
+    const commlogNote = `[CareIN AI — Inbound Call] Duration: ${durationSeconds}s
+Summary: ${summary}
+Patient Type: ${patientType}
+Appointment Booked: ${appointmentBooked}
+Emergency: ${emergency}
+Insurance: ${insurance}
+
+--- Full Transcript ---
+${transcript}`;
+
+    // If patient match found with high confidence, write the commlog
+    if (matchResult.patient && matchResult.confidence >= 0.7) {
+      const patient = matchResult.patient;
+      
+      // Write commlog using the insertCommLogToDatabase method directly
+      const commLogEntry = {
+        CommDateTime: callData.end_timestamp || new Date().toISOString(),
+        Mode_: 3, // Phone
+        SentOrReceived: 1, // Received
+        Note: commlogNote,
+        CommType: emergency === 'yes' ? 4 : (appointmentBooked === 'yes' ? 2 : 1),
+        UserNum: 0,
+        DateTimeEnd: callData.end_timestamp || new Date().toISOString()
+      };
+
+      const result = await openDentalSyncService.insertCommLogToDatabase(patient.id, commLogEntry);
+      
+      if (result.success) {
+        console.log(`✅ [Webhook] Open Dental commlog written for call ${callData.call_id}, patient: ${patient.lastName}, ${patient.firstName}`);
+      } else {
+        console.warn(`⚠️ [Webhook] Failed to write Open Dental commlog: ${result.error}`);
+      }
+    } else {
+      // No patient match or low confidence - log warning for manual review
+      console.warn(`⚠️ [Webhook] No patient match found for call ${callData.call_id}, caller: ${callData.from_number} (confidence: ${matchResult.confidence})`);
+      console.warn(`   Match method: ${matchResult.method}, requires manual review`);
+    }
+  } catch (odError) {
+    // Never break the webhook response due to commlog failure
+    console.error(`❌ [Webhook] Open Dental commlog sync failed for call ${callData.call_id}:`, odError.message);
   }
 }
 

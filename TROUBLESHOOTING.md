@@ -52,7 +52,7 @@ pm2 restart retell-backend
 #### **C. Network Connectivity Issues** 🌐 *(Test)*
 ```bash
 # Test Retell API directly from server
-curl -H "Authorization: Bearer key_5286e8b619b00ed6815991eba586" \
+curl -H "Authorization: Bearer $RETELL_API_KEY" \
      -H "Content-Type: application/json" \
      -X POST https://api.retellai.com/v2/list-calls \
      -d '{"limit": 5}'
@@ -228,7 +228,7 @@ pm2 status
 ```bash
 cd /root/retell-ai-dashboard/backend
 cat > .env << EOF
-RETELL_API_KEY=key_5286e8b619b00ed6815991eba586
+RETELL_API_KEY=<your-retell-api-key>
 PORT=5000
 NODE_ENV=production
 CORS_ORIGIN=http://159.89.82.167
@@ -309,7 +309,7 @@ grep CORS .env                  # Should be: CORS_ORIGIN=http://159.89.82.167
 pm2 restart retell-backend      # Restart after changes
 
 # 3. Retell API Issues
-curl -H "Authorization: Bearer key_5286e8b619b00ed6815991eba586" \
+curl -H "Authorization: Bearer $RETELL_API_KEY" \
      https://api.retellai.com/v2/list-calls  # Test Retell API directly
 ```
 

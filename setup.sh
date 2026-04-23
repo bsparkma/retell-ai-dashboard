@@ -36,11 +36,18 @@ cd ..
 # Create backend .env file if it doesn't exist
 if [ ! -f "backend/.env" ]; then
     echo "📝 Creating backend .env file..."
-    cp backend/.env.example backend/.env 2>/dev/null || echo "RETELL_API_KEY=key_5286e8b619b00ed6815991eba586
+    if [ -f "backend/.env.example" ]; then
+        cp backend/.env.example backend/.env
+        echo "✅ Created backend/.env from .env.example — fill in RETELL_API_KEY before starting"
+    else
+        cat > backend/.env <<'EOF'
+RETELL_API_KEY=<set-me>
 PORT=5000
 NODE_ENV=development
-CORS_ORIGIN=http://localhost:3000" > backend/.env
-    echo "✅ Created backend/.env with default values"
+CORS_ORIGIN=http://localhost:3000
+EOF
+        echo "⚠️  Created backend/.env with placeholder values. Set RETELL_API_KEY before starting."
+    fi
 fi
 
 echo ""

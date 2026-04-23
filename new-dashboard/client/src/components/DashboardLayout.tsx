@@ -7,47 +7,37 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   LayoutDashboard,
-  Radio,
   PhoneCall,
   Bot,
-  CalendarDays,
-  PhoneIncoming,
+  CalendarClock,
   BarChart3,
   Settings,
   Building2,
   ChevronDown,
   Moon,
   Sun,
-  Bell,
-  Search,
   Menu,
   X,
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { toast } from "sonner";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/live", label: "Live Monitor", icon: Radio, badge: "3", badgeType: "live" as const },
-  { path: "/calls", label: "Call Log", icon: PhoneCall },
+  { path: "/calls", label: "Calls", icon: PhoneCall },
   { path: "/agents", label: "Agent Builder", icon: Bot },
-  { path: "/calendar", label: "Calendar", icon: CalendarDays },
-  { path: "/callbacks", label: "Callbacks", icon: PhoneIncoming, badge: "7", badgeType: "warning" as const },
+  { path: "/scheduling", label: "Scheduling", icon: CalendarClock },
   { path: "/analytics", label: "Analytics", icon: BarChart3 },
   { path: "/admin", label: "Admin", icon: Settings },
 ];
 
 const offices = [
-  "Downtown Dental",
-  "Westside Smiles",
-  "North Campus Dental",
-  "Eastview Family Dental",
+  "Valley Family Dental",
+  "Roland Family Dental",
 ];
 
 interface DashboardLayoutProps {
@@ -136,7 +126,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="text-xs font-semibold uppercase tracking-wider mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
             Operations
           </div>
-          {navItems.slice(0, 6).map(({ path, label, icon: Icon, badge, badgeType }) => {
+          {navItems.slice(0, 4).map(({ path, label, icon: Icon }) => {
             const isActive = path === "/" ? location === "/" : location.startsWith(path);
             return (
               <Link key={path} href={path} onClick={handleNavClick}>
@@ -152,24 +142,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 >
                   <Icon size={16} className="flex-shrink-0" />
                   <span className="flex-1">{label}</span>
-                  {badge && (
-                    <span
-                      className="text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center"
-                      style={{
-                        backgroundColor: badgeType === "live"
-                          ? "oklch(0.65 0.18 155 / 0.25)"
-                          : "oklch(0.78 0.17 75 / 0.25)",
-                        color: badgeType === "live"
-                          ? "oklch(0.65 0.18 155)"
-                          : "oklch(0.78 0.17 75)",
-                      }}
-                    >
-                      {badge}
-                    </span>
-                  )}
-                  {path === "/live" && (
-                    <span className="live-dot flex-shrink-0" />
-                  )}
                 </div>
               </Link>
             );
@@ -178,7 +150,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="text-xs font-semibold uppercase tracking-wider mt-4 mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
             Insights
           </div>
-          {navItems.slice(6).map(({ path, label, icon: Icon }) => {
+          {navItems.slice(4).map(({ path, label, icon: Icon }) => {
             const isActive = location.startsWith(path);
             return (
               <Link key={path} href={path} onClick={handleNavClick}>
@@ -220,7 +192,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium truncate" style={{ color: "oklch(0.80 0.01 240)" }}>Front Desk</div>
-              <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>Downtown Dental</div>
+              <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>{selectedOffice}</div>
             </div>
           </div>
         </div>
@@ -237,35 +209,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <Menu size={20} />
           </button>
 
-          {/* Search */}
-          <div className="flex-1 max-w-md">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search patients, calls, agents... (⌘K)"
-                className="w-full pl-9 pr-4 py-2 text-sm bg-muted rounded-md border border-transparent focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-                onFocus={() => toast.info("Global search coming soon")}
-              />
-            </div>
-          </div>
+          <div className="flex-1" />
 
           <div className="flex items-center gap-2 ml-auto">
-            {/* Connection status */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "oklch(0.65 0.18 155 / 0.1)", color: "oklch(0.50 0.18 155)" }}>
-              <span className="live-dot" style={{ width: 6, height: 6 }} />
-              Live
-            </div>
-
-            {/* Notifications */}
-            <button
-              className="relative p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              onClick={() => toast.info("Notifications panel coming soon")}
-            >
-              <Bell size={18} />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-destructive" />
-            </button>
-
             {/* Theme toggle */}
             <button
               className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

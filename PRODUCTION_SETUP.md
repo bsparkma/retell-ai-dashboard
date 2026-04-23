@@ -138,7 +138,7 @@ cd ..
 cd backend
 
 # Create environment file
-echo "RETELL_API_KEY=key_5286e8b619b00ed6815991eba586" > .env
+echo "RETELL_API_KEY=<your-retell-api-key>" > .env
 echo "PORT=5000" >> .env
 echo "NODE_ENV=production" >> .env
 echo "CORS_ORIGIN=http://159.89.82.167" >> .env
@@ -344,7 +344,7 @@ free -m
 ### Environment Variables Summary
 **Backend (.env):**
 ```
-RETELL_API_KEY=key_5286e8b619b00ed6815991eba586
+RETELL_API_KEY=<your-retell-api-key>
 PORT=5000
 NODE_ENV=production
 CORS_ORIGIN=http://159.89.82.167

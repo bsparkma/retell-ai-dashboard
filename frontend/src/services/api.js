@@ -9,15 +9,17 @@ const api = axios.create({
   },
 });
 
-// Request interceptor for adding auth tokens if needed
+// Request interceptor: attach DASHBOARD_API_TOKEN as a Bearer header so the
+// backend's auth middleware (added in B-P0-08) accepts our requests.
 api.interceptors.request.use(
-  (config) => {
-    // Add auth token here if implementing authentication
-    return config;
+  (req) => {
+    if (config.dashboardApiToken) {
+      req.headers = req.headers || {};
+      req.headers['Authorization'] = `Bearer ${config.dashboardApiToken}`;
+    }
+    return req;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
 // Response interceptor for error handling

@@ -2,6 +2,9 @@
 const config = {
   // API Configuration
   apiUrl: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
+  // Bearer token sent on every API + Socket.IO request when set.
+  // Must match DASHBOARD_API_TOKEN on the backend.
+  dashboardApiToken: process.env.REACT_APP_DASHBOARD_API_TOKEN || '',
   
   // Application Configuration
   appName: process.env.REACT_APP_APP_NAME || 'Retell AI Dashboard',

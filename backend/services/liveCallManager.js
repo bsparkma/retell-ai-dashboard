@@ -34,6 +34,7 @@ class LiveCallManager {
       duration: 0,
       status: 'active',
       is_emergency: false,
+      emergency_type: 'none', // 'none' | 'dental' | 'medical'
       sentiment: 'neutral',
       sentiment_score: 0,
       transcript: [],
@@ -115,8 +116,23 @@ class LiveCallManager {
     // Analyze sentiment from content
     call.sentiment = this.analyzeSentiment(call.transcript_text);
 
-    // Detect emergency keywords
-    call.is_emergency = this.detectEmergency(call.transcript_text);
+    // Detect emergency keywords (medical wins over dental).
+    call.emergency_type = this.classifyEmergency(call.transcript_text);
+    call.is_emergency = call.emergency_type !== 'none';
+    if (call.emergency_type === 'medical' && !call.medical_emergency_warned) {
+      call.medical_emergency_warned = true;
+      console.warn(
+        `🚨 Medical emergency keywords detected on call ${callId}. ` +
+        'Surfaced for immediate review — caller should be directed to 911.'
+      );
+      if (this.io) {
+        this.io.emit('call:medical_emergency', {
+          call_id: callId,
+          caller_number: call.caller_number,
+          detected_at: new Date().toISOString(),
+        });
+      }
+    }
 
     // Try to extract caller name if not already set
     if (!call.caller_name || call.caller_name === call.caller_number) {
@@ -253,19 +269,80 @@ class LiveCallManager {
   }
 
   /**
-   * Detect emergency keywords in transcript
+   * Phrases that indicate a *medical* emergency the dental office cannot
+   * handle. The agent should be told to redirect to 911. These should NEVER
+   * be classified as a dental same-day appointment.
+   */
+  static MEDICAL_EMERGENCY_KEYWORDS = [
+    "can't breathe",
+    'cannot breathe',
+    'trouble breathing',
+    'chest pain',
+    'heart attack',
+    'stroke',
+    'unconscious',
+    'passed out',
+    'overdose',
+    'choking',
+  ];
+
+  /**
+   * Phrases that indicate a *dental* emergency — same-day or urgent slot.
+   * These are the cases the office wants to triage and book.
+   */
+  static DENTAL_EMERGENCY_KEYWORDS = [
+    'emergency',
+    'urgent',
+    'severe pain',
+    'severe toothache',
+    'unbearable pain',
+    'bleeding gums',
+    'mouth bleeding',
+    'swelling',
+    'swollen face',
+    'accident',
+    'broken tooth',
+    'cracked tooth',
+    'chipped tooth',
+    'knocked out',
+    'tooth fell out',
+    'tooth came out',
+    'abscess',
+    'pus',
+  ];
+
+  /**
+   * Classify the urgency hint in a transcript.
+   *
+   *   'medical'  → caller described a medical emergency; agent should direct to 911.
+   *   'dental'   → caller described a dental emergency; agent should offer same-day.
+   *   'none'     → no emergency keywords detected.
+   *
+   * `medical` always wins over `dental` if both match (e.g. "I'm bleeding and
+   * can't breathe" → medical).
+   */
+  classifyEmergency(text) {
+    if (!text) return 'none';
+    const lowerText = text.toLowerCase();
+
+    const isMedical = LiveCallManager.MEDICAL_EMERGENCY_KEYWORDS.some(k =>
+      lowerText.includes(k),
+    );
+    if (isMedical) return 'medical';
+
+    const isDental = LiveCallManager.DENTAL_EMERGENCY_KEYWORDS.some(k =>
+      lowerText.includes(k),
+    );
+    return isDental ? 'dental' : 'none';
+  }
+
+  /**
+   * Backwards-compatible boolean check used by older callers.
+   * Returns true for *any* emergency (medical or dental). New code should
+   * call `classifyEmergency()` so it can branch on the type.
    */
   detectEmergency(text) {
-    if (!text) return false;
-
-    const lowerText = text.toLowerCase();
-    const emergencyKeywords = [
-      'emergency', 'urgent', 'severe pain', 'bleeding',
-      'swelling', 'can\'t breathe', 'chest pain', 'accident',
-      'broken', 'knocked out', 'tooth fell out', 'abscess'
-    ];
-
-    return emergencyKeywords.some(keyword => lowerText.includes(keyword));
+    return this.classifyEmergency(text) !== 'none';
   }
 
   /**
