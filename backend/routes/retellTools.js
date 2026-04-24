@@ -72,6 +72,35 @@ function loadToolsConfig() {
 }
 
 // ---------------------------------------------------------------------------
+// Booking idempotency cache
+// ---------------------------------------------------------------------------
+//
+// Retell may retry a tool call if the first response is slow. Cache booking
+// results by call_id for 30 minutes so retries return the same outcome
+// without hitting Open Dental again.
+
+const _bookingCache = new Map(); // callId → { result, expiresAt }
+const BOOKING_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function getBookingCache(callId) {
+  const entry = _bookingCache.get(callId);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { _bookingCache.delete(callId); return null; }
+  return entry.result;
+}
+
+function setBookingCache(callId, result) {
+  _bookingCache.set(callId, { result, expiresAt: Date.now() + BOOKING_CACHE_TTL_MS });
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _bookingCache) {
+    if (now > entry.expiresAt) _bookingCache.delete(key);
+  }
+}, 5 * 60 * 1000).unref();
+
+// ---------------------------------------------------------------------------
 // Signature verification (mirrors backend/routes/webhooks.js)
 // ---------------------------------------------------------------------------
 
@@ -390,6 +419,13 @@ router.post('/book_appointment', async (req, res) => {
     }
   }
 
+  // Idempotency: return cached result if Retell is retrying this call
+  const bookCallId = args.call_id || null;
+  if (bookCallId) {
+    const cached = getBookingCache(bookCallId);
+    if (cached) return res.json(cached);
+  }
+
   const appointmentData = {
     patientId: Number(args.patient_id),
     dateTime: args.date_time,
@@ -409,15 +445,17 @@ router.post('/book_appointment', async (req, res) => {
     );
 
     if (result.success) {
-      return res.json({
+      const payload = {
         ok: true,
         booked: true,
         appointment_id: result.appointmentId,
         message: `Great — you're booked for ${formatSlotForSpeech(args.date_time)}.`,
-      });
+      };
+      if (bookCallId) setBookingCache(bookCallId, payload);
+      return res.json(payload);
     }
 
-    return res.json({
+    const failPayload = {
       ok: true,
       booked: false,
       conflicts: result.conflicts || [],
@@ -428,8 +466,10 @@ router.post('/book_appointment', async (req, res) => {
       message:
         result.message === 'timeout'
           ? "I couldn't confirm that booking with our scheduling system. Let me take a message and have someone call you back."
-          : `That time isn't available. Would any of these work instead?`,
-    });
+          : "That time isn't available. Would any of these work instead?",
+    };
+    if (bookCallId) setBookingCache(bookCallId, failPayload);
+    return res.json(failPayload);
   } catch (err) {
     console.error('[Retell tool] book_appointment failed:', err.message);
     return res.json({

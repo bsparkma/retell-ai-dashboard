@@ -13,6 +13,16 @@ const unifiedCallStore = require('./unifiedCallStore');
 const retellService = require('../config/retell');
 const mangoConfig = require('../config/mango');
 
+// Last sync result — read by admin health endpoint
+const _syncState = {
+  lastRunAt: null,
+  lastSuccess: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+};
+
+function getSyncState() { return { ..._syncState }; }
+
 class SyncScheduler {
   constructor() {
     this.cronJob = null;
@@ -182,6 +192,9 @@ class SyncScheduler {
       this.lastSync = new Date();
       this.updateNextSyncTime();
 
+      _syncState.lastRunAt = new Date().toISOString();
+      _syncState.lastSuccess = new Date().toISOString();
+
       // After Mango sync, transcribe any new recordings
       if (syncLog.calls_imported > 0) {
         this.transcribeUntranscribedMango({ maxCalls: syncLog.calls_imported }).catch(err =>
@@ -191,6 +204,9 @@ class SyncScheduler {
 
     } catch (error) {
       console.error('❌ Sync job failed:', error.message);
+      _syncState.lastRunAt = new Date().toISOString();
+      _syncState.lastErrorAt = new Date().toISOString();
+      _syncState.lastErrorMessage = error.message;
       syncLog.status = 'failed';
       syncLog.errors.push(error.message);
     } finally {
@@ -377,5 +393,7 @@ class SyncScheduler {
 }
 
 // Export singleton instance
-module.exports = new SyncScheduler();
+const _instance = new SyncScheduler();
+_instance.getSyncState = getSyncState;
+module.exports = _instance;
 

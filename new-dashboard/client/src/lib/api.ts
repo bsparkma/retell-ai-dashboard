@@ -78,6 +78,151 @@ export interface BackendLiveCall {
   [key: string]: unknown;
 }
 
+export interface OdPatientAddress {
+  street: string;
+  city: string;
+  state: string;
+  zip: string;
+}
+
+export interface OdPatientInsurance {
+  primary: string;
+  secondary: string;
+}
+
+export interface OdPatient {
+  id: number;
+  firstName: string;
+  lastName: string;
+  preferredName: string;
+  fullName: string;
+  dateOfBirth: string;
+  phone: string;
+  email: string;
+  address: OdPatientAddress;
+  insurance: OdPatientInsurance;
+  lastVisit: string;
+  balance: number;
+  isActive: boolean;
+}
+
+/**
+ * Per-tool enable/disable flags for the four Retell custom-function endpoints
+ * (`/api/retell-tools/lookup_patient`, `/find_available_slots`,
+ * `/book_appointment`, `/create_callback`).
+ *
+ * The global `RETELL_TOOLS_ENABLED` env var is still the master switch — when
+ * it is `false` no tool fires regardless of these flags.
+ *
+ * Persisted in `data/retell-tools-config.json`. `lastSaved` is ISO-8601 from
+ * the server, or `null` if the file has never been written.
+ */
+export interface RetellToolsConfig {
+  lookupPatient: boolean;
+  findAvailableSlots: boolean;
+  bookAppointment: boolean;
+  createCallback: boolean;
+  lastSaved: string | null;
+}
+
+export interface NotificationsConfig {
+  emergencyCallAlerts: boolean;
+  missedCallNotifications: boolean;
+  dailyCallSummaryEmail: boolean;
+  agentErrorAlerts: boolean;
+  lastSaved: string | null;
+}
+
+export interface AdminServiceStatus {
+  status: string;
+  connected_clients?: number;
+  active_calls?: number;
+  webhook_configured?: boolean;
+  last_sync?: string | null;
+  next_sync?: string | null;
+  scheduler_running?: boolean;
+  connection_type?: string;
+  provider?: string;
+  stats?: Record<string, unknown>;
+}
+
+export interface AdminHealthData {
+  status: string;
+  timestamp: string;
+  mangoSync?: {
+    lastRunAt: string | null;
+    lastSuccess: string | null;
+    lastErrorAt: string | null;
+    lastErrorMessage: string | null;
+  } | null;
+  services: Record<string, AdminServiceStatus>;
+}
+
+export interface AdminCostsData {
+  transcription?: {
+    provider: string;
+    total_minutes: number;
+    total_transcriptions: number;
+    estimated_cost: number;
+    rate: string;
+  };
+  analysis?: {
+    provider: string;
+    total_analyses: number;
+    total_tokens: number;
+    estimated_cost: number;
+    rate: string;
+  };
+  total_estimated: number;
+}
+
+export interface AdminConfigData {
+  mango?: {
+    portal_url?: string;
+    sync_schedule?: string;
+    max_calls_per_sync?: number;
+    download_recordings?: boolean;
+    credentials_configured?: boolean;
+    enabled?: boolean;
+    sync_interval?: string;
+    [k: string]: unknown;
+  };
+  openDental?: {
+    enabled?: boolean;
+    connection_type?: string;
+    api_url_configured?: boolean;
+    api_key_configured?: boolean;
+    developer_key_configured?: boolean;
+    customer_key_configured?: boolean;
+    db_url_configured?: boolean;
+    api_url?: string;
+    [k: string]: unknown;
+  };
+  transcription?: { provider?: string; configured?: boolean; enabled?: boolean };
+  analysis?: { provider?: string; model?: string; configured?: boolean; enabled?: boolean };
+}
+
+export interface SyncHistoryEntry {
+  id: string;
+  started_at: string;
+  completed_at?: string;
+  calls_processed?: number;
+  errors?: string[];
+  status?: string;
+}
+
+export interface AdminQueuesData {
+  transcription: { pending: number; processing: number; completed_today: number };
+  analysis: { pending: number; processing: number; completed_today: number };
+  open_dental_sync: { pending: number; processing: number; completed_today: number };
+}
+
+export interface AdminErrorEntry {
+  sync_id: string;
+  timestamp: string;
+  error: string;
+}
+
 export interface BackendCallback {
   id: string;
   patient_name?: string;
@@ -195,7 +340,7 @@ export function normalizeCallback(c: BackendCallback) {
     phone: String((c.phone ?? (c as Record<string, unknown>).caller_number) ?? ""),
     reason: String(c.reason ?? ""),
     priority: (c.priority as "high" | "medium" | "low") ?? "medium",
-    status: (c.status as "pending" | "in-progress" | "completed") ?? "pending",
+    status: (c.status as "pending" | "in-progress" | "completed" | "failed") ?? "pending",
     dueDate: (c.due_at ?? c.dueDate) ?? "",
     attempts: c.attempts ?? 0,
     lastAttempt: c.last_attempt,
@@ -271,8 +416,18 @@ export const api = {
     await request(`/callbacks/${id}`, { method: "PATCH", body: JSON.stringify(updates) });
   },
 
-  async logCallbackAttempt(id: string) {
-    await request(`/callbacks/${id}/attempt`, { method: "POST" });
+  async logCallbackAttempt(
+    id: string,
+    data?: { result?: "completed" | "no_answer"; notes?: string }
+  ): Promise<void> {
+    await request(`/callbacks/${encodeURIComponent(id)}/attempt`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+  },
+
+  async deleteCallback(id: string): Promise<void> {
+    await request(`/callbacks/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 
   async getLiveCalls() {
@@ -307,8 +462,29 @@ export const api = {
   },
 
   /** Lazy-load patient for drawer. GET /api/opendental/patients/:id */
-  async getOpenDentalPatient(patientId: number) {
-    return request<Record<string, unknown>>(`/opendental/patients/${patientId}`);
+  async getOpenDentalPatient(patientId: number): Promise<OdPatient> {
+    const res = await request<{ success: boolean; patient: OdPatient }>(
+      `/opendental/patients/${patientId}`
+    );
+    return res.patient;
+  },
+
+  /**
+   * Look up an Open Dental patient by phone number.
+   * Returns the first match or null. Network/server failures resolve to null
+   * so callers can fall through to a no-match UI without try/catch.
+   */
+  async searchPatientByPhone(phone: string): Promise<OdPatient | null> {
+    try {
+      const res = await request<{
+        success: boolean;
+        patients: OdPatient[];
+        count: number;
+      }>(`/opendental/patients/search?q=${encodeURIComponent(phone)}`);
+      return res.patients.length > 0 ? res.patients[0] : null;
+    } catch {
+      return null;
+    }
   },
 
   async getAgents() {
@@ -350,16 +526,16 @@ export const api = {
   // Admin endpoints
   // ---------------------------------------------------------------------------
 
-  async getAdminHealth() {
-    return request<{ status: string; timestamp: string; services: Record<string, unknown> }>("/admin/health");
+  async getAdminHealth(): Promise<AdminHealthData> {
+    return request<AdminHealthData>("/admin/health");
   },
 
-  async getAdminConfig() {
-    return request<{ success: boolean; config: Record<string, unknown> }>("/admin/config");
+  async getAdminConfig(): Promise<{ success: boolean; config: AdminConfigData }> {
+    return request<{ success: boolean; config: AdminConfigData }>("/admin/config");
   },
 
-  async getAdminCosts() {
-    return request<{ success: boolean; costs: Record<string, unknown> }>("/admin/costs");
+  async getAdminCosts(): Promise<{ success: boolean; costs: AdminCostsData }> {
+    return request<{ success: boolean; costs: AdminCostsData }>("/admin/costs");
   },
 
   async getAdminSyncStatus() {
@@ -375,6 +551,39 @@ export const api = {
 
   async triggerMangoSync() {
     return request<{ success: boolean; message: string }>("/admin/sync/run", { method: "POST" });
+  },
+
+  async getAdminSyncHistory(): Promise<{ success: boolean; history: SyncHistoryEntry[] }> {
+    return request<{ success: boolean; history: SyncHistoryEntry[] }>("/admin/sync/history");
+  },
+
+  async startMangoScheduler(): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>("/admin/sync/start", { method: "POST" });
+  },
+
+  async stopMangoScheduler(): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>("/admin/sync/stop", { method: "POST" });
+  },
+
+  async getAdminQueues(): Promise<{ success: boolean; queues: AdminQueuesData }> {
+    return request<{ success: boolean; queues: AdminQueuesData }>("/admin/queues");
+  },
+
+  async getAdminErrors(): Promise<{ success: boolean; errors: AdminErrorEntry[] }> {
+    return request<{ success: boolean; errors: AdminErrorEntry[] }>("/admin/errors");
+  },
+
+  async getNotificationsConfig(): Promise<NotificationsConfig> {
+    const res = await request<{ success: boolean; config: NotificationsConfig }>("/notifications-config");
+    return res.config;
+  },
+
+  async saveNotificationsConfig(config: Omit<NotificationsConfig, "lastSaved">): Promise<NotificationsConfig> {
+    const res = await request<{ success: boolean; config: NotificationsConfig }>(
+      "/notifications-config",
+      { method: "PUT", body: JSON.stringify(config) }
+    );
+    return res.config;
   },
 
   // ---------------------------------------------------------------------------
@@ -438,6 +647,31 @@ export const api = {
   async saveAgentConfig(config: AgentConfig): Promise<AgentConfig> {
     const res = await request<{ success: boolean; config: AgentConfig }>(
       "/agent-config",
+      { method: "PUT", body: JSON.stringify(config) }
+    );
+    return res.config;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Retell tools per-tool enable/disable config
+  //
+  // Backed by `data/retell-tools-config.json` on the server. Used by the
+  // Agent Tools card on the Agent Builder page. The save shape omits
+  // `lastSaved` because the server stamps it on every PUT.
+  // ---------------------------------------------------------------------------
+
+  async getRetellToolsConfig(): Promise<RetellToolsConfig> {
+    const res = await request<{ success: boolean; config: RetellToolsConfig }>(
+      "/retell-tools-config"
+    );
+    return res.config;
+  },
+
+  async saveRetellToolsConfig(
+    config: Omit<RetellToolsConfig, "lastSaved">
+  ): Promise<RetellToolsConfig> {
+    const res = await request<{ success: boolean; config: RetellToolsConfig }>(
+      "/retell-tools-config",
       { method: "PUT", body: JSON.stringify(config) }
     );
     return res.config;

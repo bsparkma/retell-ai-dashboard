@@ -37,6 +37,7 @@ router.get('/health', async (req, res) => {
     const health = {
       status: 'healthy',
       timestamp: new Date().toISOString(),
+      mangoSync: syncScheduler.getSyncState ? syncScheduler.getSyncState() : null,
       services: {
         socketIO: {
           status: 'active',
@@ -217,19 +218,19 @@ router.get('/costs', (req, res) => {
       costs: {
         transcription: {
           provider: 'deepgram',
-          total_minutes: transcriptionStats.totalMinutes.toFixed(2),
+          total_minutes: transcriptionStats.totalMinutes,
           total_transcriptions: transcriptionStats.totalTranscriptions,
-          estimated_cost: `$${transcriptionStats.totalCost.toFixed(4)}`,
+          estimated_cost: transcriptionStats.totalCost,
           rate: '$0.0043/min',
         },
         analysis: {
           provider: 'openai',
           total_analyses: analyzerStats.totalAnalyses,
           total_tokens: analyzerStats.totalTokens,
-          estimated_cost: `$${analyzerStats.estimatedCost.toFixed(4)}`,
+          estimated_cost: analyzerStats.estimatedCost,
           rate: '$0.002/1K tokens',
         },
-        total_estimated: `$${(transcriptionStats.totalCost + analyzerStats.estimatedCost).toFixed(4)}`,
+        total_estimated: transcriptionStats.totalCost + analyzerStats.estimatedCost,
       },
     });
   } catch (error) {
@@ -324,6 +325,16 @@ router.post('/test-connection', async (req, res) => {
           message: analyzerAvailable 
             ? 'OpenAI API key is configured' 
             : 'OpenAI API key not set',
+        };
+        break;
+
+      case 'retell':
+        const retellKey = process.env.RETELL_API_KEY;
+        result = {
+          success: !!retellKey,
+          message: retellKey
+            ? 'Retell API key is configured'
+            : 'RETELL_API_KEY is not set in environment',
         };
         break;
 

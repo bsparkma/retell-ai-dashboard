@@ -8,47 +8,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2, Users, Settings, CheckCircle2, AlertCircle,
-  Globe, Key, Bell, ChevronRight, RefreshCw, Loader2,
+  Globe, Key, Bell, ChevronRight, ChevronDown, RefreshCw, Loader2,
+  Play, Square,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-
-// ---------------------------------------------------------------------------
-// Types for backend responses
-// ---------------------------------------------------------------------------
-
-interface ServiceStatus {
-  status: string;
-  connected_clients?: number;
-  active_calls?: number;
-  webhook_configured?: boolean;
-  last_sync?: string;
-  next_sync?: string;
-  scheduler_running?: boolean;
-  connection_type?: string;
-  provider?: string;
-  stats?: Record<string, unknown>;
-}
-
-interface HealthData {
-  status: string;
-  timestamp: string;
-  services: Record<string, ServiceStatus>;
-}
-
-interface ConfigData {
-  mango?: { enabled?: boolean; sync_interval?: string; [k: string]: unknown };
-  openDental?: { enabled?: boolean; connection_type?: string; api_url_configured?: boolean; [k: string]: unknown };
-  transcription?: { enabled?: boolean; provider?: string; [k: string]: unknown };
-  analysis?: { enabled?: boolean; provider?: string; [k: string]: unknown };
-  [k: string]: unknown;
-}
-
-interface CostsData {
-  transcription?: { provider?: string; total_minutes?: number; total_transcriptions?: number; estimated_cost?: number; rate?: string };
-  analysis?: { provider?: string; total_analyses?: number; total_tokens?: number; estimated_cost?: number; rate?: string };
-  total_estimated?: number;
-}
+import type {
+  AdminHealthData, AdminConfigData, AdminCostsData,
+  AdminServiceStatus, SyncHistoryEntry, AdminQueuesData, AdminErrorEntry,
+  NotificationsConfig,
+} from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Integration display config: maps backend service keys to UI
@@ -94,36 +63,58 @@ type AdminTab = "offices" | "users" | "integrations" | "settings";
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<AdminTab>("integrations");
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [config, setConfig] = useState<ConfigData | null>(null);
-  const [costs, setCosts] = useState<CostsData | null>(null);
+  const [health, setHealth] = useState<AdminHealthData | null>(null);
+  const [config, setConfig] = useState<AdminConfigData | null>(null);
+  const [costs, setCosts] = useState<AdminCostsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [testingService, setTestingService] = useState<string | null>(null);
   const [syncingMango, setSyncingMango] = useState(false);
 
+  const [syncHistory, setSyncHistory] = useState<SyncHistoryEntry[]>([]);
+  const [queues, setQueues] = useState<AdminQueuesData | null>(null);
+  const [adminErrors, setAdminErrors] = useState<AdminErrorEntry[]>([]);
+  const [notifConfig, setNotifConfig] = useState<NotificationsConfig>({
+    emergencyCallAlerts: true,
+    missedCallNotifications: true,
+    dailyCallSummaryEmail: true,
+    agentErrorAlerts: false,
+    lastSaved: null,
+  });
+  const [notifHasUnsaved, setNotifHasUnsaved] = useState(false);
+  const [notifSaving, setNotifSaving] = useState(false);
+  const [startingScheduler, setStartingScheduler] = useState(false);
+  const [stoppingScheduler, setStoppingScheduler] = useState(false);
+  const [syncHistoryOpen, setSyncHistoryOpen] = useState(false);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [healthRes, configRes, costsRes] = await Promise.allSettled([
-        api.getAdminHealth(),
-        api.getAdminConfig(),
-        api.getAdminCosts(),
-      ]);
+      const [healthRes, configRes, costsRes, historyRes, queuesRes, errorsRes, notifRes] =
+        await Promise.allSettled([
+          api.getAdminHealth(),
+          api.getAdminConfig(),
+          api.getAdminCosts(),
+          api.getAdminSyncHistory(),
+          api.getAdminQueues(),
+          api.getAdminErrors(),
+          api.getNotificationsConfig(),
+        ]);
 
-      if (healthRes.status === "fulfilled") {
-        setHealth(healthRes.value as HealthData);
-      }
-      if (configRes.status === "fulfilled") {
-        setConfig((configRes.value as { config: ConfigData }).config ?? null);
-      }
-      if (costsRes.status === "fulfilled") {
-        setCosts((costsRes.value as { costs: CostsData }).costs ?? null);
-      }
+      if (healthRes.status === "fulfilled") setHealth(healthRes.value);
+      if (configRes.status === "fulfilled") setConfig(configRes.value.config ?? null);
+      if (costsRes.status === "fulfilled") setCosts(costsRes.value.costs ?? null);
+      if (historyRes.status === "fulfilled") setSyncHistory(historyRes.value.history ?? []);
+      if (queuesRes.status === "fulfilled") setQueues(queuesRes.value.queues ?? null);
+      if (errorsRes.status === "fulfilled") setAdminErrors(errorsRes.value.errors ?? []);
+      if (notifRes.status === "fulfilled") setNotifConfig(notifRes.value);
 
-      // If all three failed, show error
-      if (healthRes.status === "rejected" && configRes.status === "rejected" && costsRes.status === "rejected") {
+      if (
+        healthRes.status === "rejected" &&
+        configRes.status === "rejected" &&
+        costsRes.status === "rejected"
+      ) {
         setError("Unable to reach admin API. Is the backend running?");
       }
     } catch (err) {
@@ -159,7 +150,6 @@ export default function Admin() {
       const res = await api.triggerMangoSync();
       if (res.success) {
         toast.success(res.message || "Mango sync triggered");
-        // Refresh data after sync
         setTimeout(() => fetchData(), 2000);
       } else {
         toast.error(res.message || "Sync failed");
@@ -171,6 +161,41 @@ export default function Admin() {
     }
   };
 
+  const handleStartScheduler = async () => {
+    setStartingScheduler(true);
+    try {
+      const res = await api.startMangoScheduler();
+      if (res.success) { toast.success(res.message || "Scheduler started"); fetchData(); }
+      else toast.error(res.message || "Failed to start scheduler");
+    } catch { toast.error("Failed to start scheduler"); }
+    finally { setStartingScheduler(false); }
+  };
+
+  const handleStopScheduler = async () => {
+    setStoppingScheduler(true);
+    try {
+      const res = await api.stopMangoScheduler();
+      if (res.success) { toast.success(res.message || "Scheduler stopped"); fetchData(); }
+      else toast.error(res.message || "Failed to stop scheduler");
+    } catch { toast.error("Failed to stop scheduler"); }
+    finally { setStoppingScheduler(false); }
+  };
+
+  const handleSaveNotifications = async () => {
+    setNotifSaving(true);
+    try {
+      const { lastSaved: _ls, ...toSave } = notifConfig;
+      const saved = await api.saveNotificationsConfig(toSave);
+      setNotifConfig(saved);
+      setNotifHasUnsaved(false);
+      toast.success("Notification settings saved");
+    } catch {
+      toast.error("Save failed — try again");
+    } finally {
+      setNotifSaving(false);
+    }
+  };
+
   const tabs = [
     { id: "offices", label: "Office", icon: Building2 },
     { id: "users", label: "Users & Roles", icon: Users },
@@ -179,6 +204,13 @@ export default function Admin() {
   ] as const;
 
   const services = health?.services ?? {};
+
+  const NOTIF_TOGGLES: Array<{ label: string; key: keyof NotificationsConfig }> = [
+    { label: "Emergency call alerts", key: "emergencyCallAlerts" },
+    { label: "Missed call notifications", key: "missedCallNotifications" },
+    { label: "Daily call summary email", key: "dailyCallSummaryEmail" },
+    { label: "Agent error alerts", key: "agentErrorAlerts" },
+  ];
 
   return (
     <div className="p-6 space-y-6">
@@ -238,91 +270,156 @@ export default function Admin() {
         </div>
       )}
 
-      {/* OFFICES TAB */}
+      {/* ================================================================
+          OFFICES TAB — Two location cards
+          ================================================================ */}
       {activeTab === "offices" && !loading && (
         <div className="space-y-4">
-          <div className="text-sm text-muted-foreground">Current practice</div>
+          <div className="text-sm text-muted-foreground">Practice locations — system-level status shared across offices</div>
 
-          <Card className="hover:shadow-md transition-shadow max-w-xl">
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between mb-4">
-                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                  <Building2 size={18} className="text-primary" />
-                </div>
-                <span
-                  className="text-xs px-2 py-0.5 rounded-full font-medium"
-                  style={
-                    health?.status === "healthy"
-                      ? { backgroundColor: "oklch(0.65 0.18 155 / 0.15)", color: "oklch(0.45 0.18 155)" }
-                      : { backgroundColor: "oklch(0.78 0.17 75 / 0.15)", color: "oklch(0.50 0.17 75)" }
-                  }
-                >
-                  {health?.status === "healthy" ? "Active" : health?.status ?? "Unknown"}
-                </span>
-              </div>
-
-              <div className="font-semibold text-foreground">CareIn Dashboard</div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                Connected via {String((config?.openDental as Record<string, unknown>)?.connection_type ?? "unknown")}
-              </div>
-
-              {/* Service status summary */}
-              <div className="flex items-center gap-2 mt-4 flex-wrap">
-                {Object.entries(services).map(([key, svc]) => {
-                  const s = svc as ServiceStatus;
-                  const connected = s.status === "connected" || s.status === "active" || s.status === "healthy";
-                  return (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl">
+            {([
+              { name: "Valley Family Dental", location: "Fort Smith, AR" },
+              { name: "Roland Family Dental", location: "Roland, OK" },
+            ] as const).map((office) => (
+              <Card key={office.name} className="hover:shadow-md transition-shadow">
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                      <Building2 size={18} className="text-primary" />
+                    </div>
                     <span
-                      key={key}
-                      className="text-xs px-1.5 py-0.5 rounded"
+                      className="text-xs px-2 py-0.5 rounded-full font-medium"
                       style={
-                        connected
-                          ? { backgroundColor: "oklch(0.65 0.18 155 / 0.12)", color: "oklch(0.45 0.18 155)" }
-                          : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "oklch(0.52 0.015 240)" }
+                        health?.status === "healthy"
+                          ? { backgroundColor: "oklch(0.65 0.18 155 / 0.15)", color: "oklch(0.45 0.18 155)" }
+                          : { backgroundColor: "oklch(0.78 0.17 75 / 0.15)", color: "oklch(0.50 0.17 75)" }
                       }
                     >
-                      {key}
+                      {health?.status === "healthy" ? "Active" : health?.status ?? "Unknown"}
                     </span>
-                  );
-                })}
-              </div>
-
-              {/* Costs summary */}
-              {costs?.total_estimated !== undefined && (
-                <div className="mt-4 pt-4 border-t border-border">
-                  <div className="text-xs text-muted-foreground">Estimated Monthly Cost</div>
-                  <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
-                    ${typeof costs.total_estimated === "number" ? costs.total_estimated.toFixed(2) : costs.total_estimated}
                   </div>
-                </div>
-              )}
 
-              {health?.timestamp && (
-                <div className="text-xs text-muted-foreground mt-3">
-                  Last checked: {formatTimestamp(health.timestamp)}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                  <div className="font-semibold text-foreground">{office.name}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{office.location}</div>
+
+                  {/* Service chips */}
+                  <div className="flex items-center gap-2 mt-4 flex-wrap">
+                    {Object.entries(services).map(([key, svc]) => {
+                      const s = svc as AdminServiceStatus;
+                      const connected = s.status === "connected" || s.status === "active" || s.status === "healthy" || s.status === "configured" || s.status === "available";
+                      return (
+                        <span
+                          key={key}
+                          className="text-xs px-1.5 py-0.5 rounded"
+                          style={
+                            connected
+                              ? { backgroundColor: "oklch(0.65 0.18 155 / 0.12)", color: "oklch(0.45 0.18 155)" }
+                              : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "oklch(0.52 0.015 240)" }
+                          }
+                        >
+                          {key}
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  {/* Cost summary */}
+                  {costs?.total_estimated !== undefined && (
+                    <div className="mt-4 pt-4 border-t border-border">
+                      <div className="text-xs text-muted-foreground">Estimated Cost (system-wide)</div>
+                      <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+                        ${costs.total_estimated.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
+                  {health?.mangoSync && (
+                    <div className={`text-xs mt-2 flex items-center gap-1.5 ${
+                      health.mangoSync.lastErrorAt && (!health.mangoSync.lastSuccess || new Date(health.mangoSync.lastErrorAt) > new Date(health.mangoSync.lastSuccess))
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}>
+                      {health.mangoSync.lastErrorAt && (!health.mangoSync.lastSuccess || new Date(health.mangoSync.lastErrorAt) > new Date(health.mangoSync.lastSuccess))
+                        ? `⚠ Mango sync failed: ${health.mangoSync.lastErrorMessage ?? "unknown error"}`
+                        : health.mangoSync.lastSuccess
+                          ? `Mango sync: last OK ${new Date(health.mangoSync.lastSuccess).toLocaleTimeString()}`
+                          : "Mango sync: not yet run"
+                      }
+                    </div>
+                  )}
+
+                  {health?.timestamp && (
+                    <div className="text-xs text-muted-foreground mt-3">
+                      Last checked: {formatTimestamp(health.timestamp)}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* USERS TAB */}
+      {/* ================================================================
+          USERS TAB — Structured placeholder
+          ================================================================ */}
       {activeTab === "users" && (
-        <div className="space-y-4">
-          <Card className="max-w-2xl">
-            <CardContent className="py-12 text-center">
-              <Users size={32} className="mx-auto text-muted-foreground mb-3" />
-              <div className="text-sm font-medium text-foreground">User Management Coming Soon</div>
-              <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
-                Role-based access control and user invitations will be available in a future update.
+        <div className="space-y-4 max-w-2xl">
+          {/* Current system user */}
+          <Card>
+            <CardContent className="p-5">
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white" style={{ backgroundColor: "oklch(0.55 0.18 210)" }}>
+                  FD
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-foreground">Front Desk</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">All offices</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="text-xs">Administrator</Badge>
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full font-medium"
+                    style={{ backgroundColor: "oklch(0.65 0.18 155 / 0.15)", color: "oklch(0.45 0.18 155)" }}
+                  >
+                    Active
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Planned features */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">User Management — Coming Soon</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-xs text-muted-foreground mb-4">
+                Role-based access and team invitations will be available in a future update.
               </p>
+              <div className="space-y-2.5">
+                {[
+                  "Invite staff by email",
+                  "Role-based access control (Admin, Scheduler, View-only)",
+                  "Per-office access restrictions",
+                  "Session audit log",
+                ].map((feature) => (
+                  <div key={feature} className="flex items-center gap-2.5">
+                    <CheckCircle2 size={14} className="text-muted-foreground/50 flex-shrink-0" />
+                    <span className="text-sm text-muted-foreground">{feature}</span>
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         </div>
       )}
 
-      {/* INTEGRATIONS TAB */}
+      {/* ================================================================
+          INTEGRATIONS TAB
+          ================================================================ */}
       {activeTab === "integrations" && !loading && (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -330,9 +427,9 @@ export default function Admin() {
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {INTEGRATION_DEFS.map((intg) => {
-              const svc = services[intg.serviceKey] as ServiceStatus | undefined;
+              const svc = services[intg.serviceKey] as AdminServiceStatus | undefined;
               const connected = svc
-                ? svc.status === "connected" || svc.status === "active" || svc.status === "healthy"
+                ? svc.status === "connected" || svc.status === "active" || svc.status === "healthy" || svc.status === "configured" || svc.status === "available"
                 : false;
               const statusLabel = svc?.status ?? "unknown";
               const lastSync = svc?.last_sync;
@@ -384,15 +481,40 @@ export default function Admin() {
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0">
                         {intg.canSync && connected && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 text-xs"
-                            disabled={syncingMango}
-                            onClick={handleMangoSync}
-                          >
-                            {syncingMango ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                          </Button>
+                          <>
+                            {svc?.scheduler_running ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
+                                disabled={stoppingScheduler}
+                                onClick={handleStopScheduler}
+                              >
+                                {stoppingScheduler ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+                                <span className="ml-1">Stop</span>
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                disabled={startingScheduler}
+                                onClick={handleStartScheduler}
+                              >
+                                {startingScheduler ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                                <span className="ml-1">Start</span>
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              disabled={syncingMango}
+                              onClick={handleMangoSync}
+                            >
+                              {syncingMango ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                            </Button>
+                          </>
                         )}
                         <Button
                           variant="outline"
@@ -409,6 +531,47 @@ export default function Admin() {
                         </Button>
                       </div>
                     </div>
+
+                    {/* Sync history disclosure for Mango */}
+                    {intg.serviceKey === "mango" && connected && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <button
+                          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setSyncHistoryOpen(!syncHistoryOpen)}
+                        >
+                          {syncHistoryOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          Sync history ({syncHistory.length})
+                        </button>
+                        {syncHistoryOpen && (
+                          <div className="mt-2 space-y-1.5">
+                            {syncHistory.length === 0 ? (
+                              <p className="text-xs text-muted-foreground pl-5">No sync history yet</p>
+                            ) : (
+                              syncHistory.slice(0, 5).map((entry, i) => {
+                                const hasErrors = (entry.errors?.length ?? 0) > 0;
+                                return (
+                                  <div key={entry.id || i} className="flex items-center justify-between text-xs pl-5">
+                                    <span className="text-muted-foreground">{formatTimestamp(entry.started_at)}</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-muted-foreground">{entry.calls_processed ?? 0} calls</span>
+                                      {hasErrors ? (
+                                        <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: "oklch(0.65 0.20 25 / 0.12)", color: "oklch(0.45 0.20 25)" }}>
+                                          {entry.errors!.length} errors
+                                        </span>
+                                      ) : (
+                                        <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: "oklch(0.65 0.18 155 / 0.12)", color: "oklch(0.45 0.18 155)" }}>
+                                          OK
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );
@@ -417,7 +580,9 @@ export default function Admin() {
         </div>
       )}
 
-      {/* SETTINGS TAB */}
+      {/* ================================================================
+          SETTINGS TAB
+          ================================================================ */}
       {activeTab === "settings" && !loading && (
         <div className="space-y-6 max-w-2xl">
           {/* Open Dental Config */}
@@ -429,15 +594,15 @@ export default function Admin() {
               {[
                 {
                   label: "Connection Type",
-                  value: (config?.openDental as Record<string, unknown>)?.connection_type ?? "Not configured",
+                  value: config?.openDental?.connection_type ?? "Not configured",
                 },
                 {
                   label: "API URL Configured",
-                  value: (config?.openDental as Record<string, unknown>)?.api_url_configured ? "Yes" : "No",
+                  value: config?.openDental?.api_url_configured ? "Yes" : "No",
                 },
                 {
                   label: "Enabled",
-                  value: (config?.openDental as Record<string, unknown>)?.enabled ? "Yes" : "No",
+                  value: config?.openDental?.enabled ? "Yes" : "No",
                 },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between gap-4">
@@ -467,15 +632,15 @@ export default function Admin() {
                 },
                 {
                   label: "Scheduler Status",
-                  value: (services.mango as ServiceStatus)?.scheduler_running ? "Running" : "Stopped",
+                  value: (services.mango as AdminServiceStatus | undefined)?.scheduler_running ? "Running" : "Stopped",
                 },
                 {
                   label: "Last Sync",
-                  value: formatTimestamp((services.mango as ServiceStatus)?.last_sync),
+                  value: formatTimestamp((services.mango as AdminServiceStatus | undefined)?.last_sync),
                 },
                 {
                   label: "Next Sync",
-                  value: formatTimestamp((services.mango as ServiceStatus)?.next_sync),
+                  value: formatTimestamp((services.mango as AdminServiceStatus | undefined)?.next_sync),
                 },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between gap-4">
@@ -488,7 +653,7 @@ export default function Admin() {
             </CardContent>
           </Card>
 
-          {/* Transcription & Analysis Config */}
+          {/* AI Services Config */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold">AI Services</CardTitle>
@@ -497,19 +662,19 @@ export default function Admin() {
               {[
                 {
                   label: "Transcription Provider",
-                  value: config?.transcription?.provider ?? (services.transcription as ServiceStatus)?.provider ?? "Not configured",
+                  value: config?.transcription?.provider ?? (services.transcription as AdminServiceStatus | undefined)?.provider ?? "Not configured",
                 },
                 {
-                  label: "Transcription Enabled",
-                  value: config?.transcription?.enabled ? "Yes" : "No",
+                  label: "Transcription Configured",
+                  value: config?.transcription?.configured ? "Yes" : "No",
                 },
                 {
                   label: "Analysis Provider",
-                  value: config?.analysis?.provider ?? (services.callAnalyzer as ServiceStatus)?.provider ?? "Not configured",
+                  value: config?.analysis?.provider ?? (services.callAnalyzer as AdminServiceStatus | undefined)?.provider ?? "Not configured",
                 },
                 {
-                  label: "Analysis Enabled",
-                  value: config?.analysis?.enabled ? "Yes" : "No",
+                  label: "Analysis Configured",
+                  value: config?.analysis?.configured ? "Yes" : "No",
                 },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between gap-4">
@@ -533,10 +698,10 @@ export default function Admin() {
                   <div className="p-3 rounded-lg bg-muted/40">
                     <div className="text-sm font-medium text-foreground">Transcription ({costs.transcription.provider})</div>
                     <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
-                      <div>Total transcriptions: {costs.transcription.total_transcriptions ?? "N/A"}</div>
-                      <div>Total minutes: {costs.transcription.total_minutes?.toFixed(1) ?? "N/A"}</div>
-                      <div>Rate: {costs.transcription.rate ?? "N/A"}</div>
-                      <div>Estimated cost: ${costs.transcription.estimated_cost?.toFixed(4) ?? "N/A"}</div>
+                      <div>Total transcriptions: {costs.transcription.total_transcriptions}</div>
+                      <div>Total minutes: {costs.transcription.total_minutes.toFixed(1)}</div>
+                      <div>Rate: {costs.transcription.rate}</div>
+                      <div>Estimated cost: ${costs.transcription.estimated_cost.toFixed(4)}</div>
                     </div>
                   </div>
                 )}
@@ -544,10 +709,10 @@ export default function Admin() {
                   <div className="p-3 rounded-lg bg-muted/40">
                     <div className="text-sm font-medium text-foreground">Analysis ({costs.analysis.provider})</div>
                     <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
-                      <div>Total analyses: {costs.analysis.total_analyses ?? "N/A"}</div>
-                      <div>Total tokens: {costs.analysis.total_tokens?.toLocaleString() ?? "N/A"}</div>
-                      <div>Rate: {costs.analysis.rate ?? "N/A"}</div>
-                      <div>Estimated cost: ${costs.analysis.estimated_cost?.toFixed(4) ?? "N/A"}</div>
+                      <div>Total analyses: {costs.analysis.total_analyses}</div>
+                      <div>Total tokens: {costs.analysis.total_tokens.toLocaleString()}</div>
+                      <div>Rate: {costs.analysis.rate}</div>
+                      <div>Estimated cost: ${costs.analysis.estimated_cost.toFixed(4)}</div>
                     </div>
                   </div>
                 )}
@@ -555,7 +720,7 @@ export default function Admin() {
                   <div className="flex items-center justify-between pt-2 border-t border-border">
                     <span className="text-sm font-medium text-foreground">Total Estimated</span>
                     <span className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
-                      ${typeof costs.total_estimated === "number" ? costs.total_estimated.toFixed(2) : costs.total_estimated}
+                      ${costs.total_estimated.toFixed(2)}
                     </span>
                   </div>
                 )}
@@ -563,7 +728,36 @@ export default function Admin() {
             </Card>
           )}
 
-          {/* Notifications — static for now */}
+          {/* Processing Queues */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">Processing Queues</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {queues ? (
+                <div className="space-y-3">
+                  {([
+                    { label: "Transcription", q: queues.transcription },
+                    { label: "Call Analysis", q: queues.analysis },
+                    { label: "Open Dental Sync", q: queues.open_dental_sync },
+                  ] as const).map(({ label, q }) => (
+                    <div key={label} className="flex items-center justify-between">
+                      <span className="text-sm text-foreground">{label}</span>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        {q.pending > 0 && <span className="text-amber-600">{q.pending} pending</span>}
+                        {q.processing > 0 && <span className="text-blue-600">{q.processing} processing</span>}
+                        <span>{q.completed_today} today</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">Queue data unavailable</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Notifications */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold flex items-center gap-2">
@@ -571,28 +765,69 @@ export default function Admin() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {[
-                { label: "Emergency call alerts", enabled: true },
-                { label: "Missed call notifications", enabled: true },
-                { label: "Daily call summary email", enabled: true },
-                { label: "Agent error alerts", enabled: false },
-              ].map(({ label, enabled }) => (
-                <div key={label} className="flex items-center justify-between">
-                  <span className="text-sm text-foreground">{label}</span>
-                  <button
-                    className="relative w-10 h-5 rounded-full transition-all"
-                    style={{ backgroundColor: enabled ? "oklch(0.55 0.18 210)" : "oklch(0.70 0.01 240)" }}
-                    onClick={() => toast.info("Notification settings saved")}
-                  >
-                    <span
-                      className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
-                      style={{ transform: enabled ? "translateX(20px)" : "translateX(0)" }}
-                    />
-                  </button>
+              {NOTIF_TOGGLES.map(({ label, key }) => {
+                const enabled = !!notifConfig[key];
+                return (
+                  <div key={key} className="flex items-center justify-between">
+                    <span className="text-sm text-foreground">{label}</span>
+                    <button
+                      className="relative w-10 h-5 rounded-full transition-all"
+                      style={{ backgroundColor: enabled ? "oklch(0.55 0.18 210)" : "oklch(0.70 0.01 240)" }}
+                      onClick={() => {
+                        setNotifConfig(prev => ({ ...prev, [key]: !prev[key] }));
+                        setNotifHasUnsaved(true);
+                      }}
+                    >
+                      <span
+                        className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
+                        style={{ transform: enabled ? "translateX(20px)" : "translateX(0)" }}
+                      />
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-xs text-muted-foreground">
+                  {notifConfig.lastSaved
+                    ? `Last saved ${new Date(notifConfig.lastSaved).toLocaleString()}`
+                    : "Never saved"}
                 </div>
-              ))}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5"
+                  disabled={!notifHasUnsaved || notifSaving}
+                  onClick={handleSaveNotifications}
+                >
+                  {notifSaving && <Loader2 size={12} className="animate-spin" />}
+                  {notifHasUnsaved ? "Save changes" : "Saved"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
+
+          {/* Recent Errors */}
+          {adminErrors.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <AlertCircle size={14} className="text-destructive" />
+                  Recent Sync Errors
+                  <span className="ml-auto text-xs font-normal text-muted-foreground">{adminErrors.length} total</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {adminErrors.slice(0, 10).map((e, i) => (
+                    <div key={i} className="text-xs p-2 rounded bg-destructive/5 border border-destructive/10">
+                      <div className="text-muted-foreground mb-0.5">{formatTimestamp(e.timestamp)}</div>
+                      <div className="text-foreground font-medium truncate">{e.error}</div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>
