@@ -35,6 +35,8 @@ export default function Callbacks() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
+  const [myName, setMyName] = useState<string>(() => localStorage.getItem('carein_staff_name') || '');
+  const [namePromptOpen, setNamePromptOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -100,6 +102,18 @@ export default function Callbacks() {
     finally { setActionInFlight(null); }
   };
 
+  const handleClaim = async (cb: CallbackDisplay) => {
+    if (!myName) { setNamePromptOpen(true); return; }
+    const isAlreadyMine = cb.claimed_by === myName;
+    setActionInFlight(cb.id + '-claim');
+    try {
+      await api.claimCallback(cb.id, isAlreadyMine ? null : myName);
+      toast.success(isAlreadyMine ? 'Claim released' : `Claimed by ${myName}`);
+      fetchData();
+    } catch { toast.error('Failed to update claim'); }
+    finally { setActionInFlight(null); }
+  };
+
   const isOverdue = (cb: CallbackDisplay) =>
     cb.status === "pending" && cb.dueDate && new Date(cb.dueDate) < new Date();
 
@@ -122,6 +136,31 @@ export default function Callbacks() {
 
   return (
     <div className="p-6 space-y-6">
+      {namePromptOpen && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+          <div className="bg-card rounded-xl p-6 shadow-xl w-80 space-y-4">
+            <div className="text-sm font-semibold">What's your name?</div>
+            <div className="text-xs text-muted-foreground">Used to mark callbacks as "in progress by you." Saved in this browser.</div>
+            <input
+              className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background"
+              placeholder="e.g. Sarah"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const name = (e.target as HTMLInputElement).value.trim();
+                  if (name) {
+                    localStorage.setItem('carein_staff_name', name);
+                    setMyName(name);
+                    setNamePromptOpen(false);
+                  }
+                }
+              }}
+            />
+            <div className="text-xs text-muted-foreground">Press Enter to save.</div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -269,6 +308,17 @@ export default function Callbacks() {
                           >
                             {actionInFlight === cb.id + "-attempt" ? <Loader2 size={12} className="animate-spin" /> : <Clock size={12} />}
                             Log Attempt
+                          </Button>
+                          <Button
+                            variant={cb.claimed_by === myName ? "secondary" : "ghost"}
+                            size="sm"
+                            className="text-xs h-7 gap-1"
+                            disabled={!!(cb.claimed_by && cb.claimed_by !== myName) || actionInFlight === cb.id + '-claim'}
+                            onClick={() => handleClaim(cb)}
+                            title={cb.claimed_by && cb.claimed_by !== myName ? `Claimed by ${cb.claimed_by}` : undefined}
+                          >
+                            {actionInFlight === cb.id + '-claim' ? <Loader2 size={12} className="animate-spin" /> : null}
+                            {cb.claimed_by === myName ? 'Release' : cb.claimed_by ? `By ${cb.claimed_by}` : 'Claim'}
                           </Button>
                           {cb.linkedCallId && (
                             <Link href={`/calls/${cb.linkedCallId}`}>

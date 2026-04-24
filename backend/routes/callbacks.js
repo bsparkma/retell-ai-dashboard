@@ -248,6 +248,31 @@ router.patch('/:id', async (req, res) => {
 });
 
 /**
+ * PATCH /api/callbacks/:id/claim — claim or release a callback
+ */
+router.patch('/:id/claim', async (req, res) => {
+  const { id } = req.params;
+  const { claimed_by } = req.body;
+
+  const idx = callbacks.findIndex(cb => cb.id === id);
+  if (idx === -1) return res.status(404).json({ success: false, error: 'Not found' });
+
+  if (typeof claimed_by !== 'string' && claimed_by !== null) {
+    return res.status(400).json({ success: false, error: 'claimed_by must be a string or null' });
+  }
+
+  callbacks[idx] = {
+    ...callbacks[idx],
+    claimed_by: claimed_by || null,
+    claimed_at: claimed_by ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+  };
+
+  await persist();
+  return res.json({ success: true, callback: callbacks[idx] });
+});
+
+/**
  * POST /api/callbacks/:id/attempt
  */
 router.post('/:id/attempt', async (req, res) => {

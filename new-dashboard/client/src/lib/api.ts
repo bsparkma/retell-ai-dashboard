@@ -239,6 +239,8 @@ export interface BackendCallback {
   linked_call_id?: string;
   completed_at?: string;
   assigned_to?: string;
+  claimed_by?: string | null;
+  claimed_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -348,6 +350,8 @@ export function normalizeCallback(c: BackendCallback) {
     linkedCallId: c.linked_call_id,
     completedAt: c.completed_at,
     assignedTo: c.assigned_to,
+    claimed_by: c.claimed_by ?? null,
+    claimed_at: c.claimed_at ?? null,
   };
 }
 
@@ -428,6 +432,14 @@ export const api = {
 
   async deleteCallback(id: string): Promise<void> {
     await request(`/callbacks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  async claimCallback(id: string, claimedBy: string | null): Promise<CallbackDisplay> {
+    const res = await request<{ success: boolean; callback: BackendCallback }>(
+      `/callbacks/${encodeURIComponent(id)}/claim`,
+      { method: 'PATCH', body: JSON.stringify({ claimed_by: claimedBy }) }
+    );
+    return normalizeCallback(res.callback);
   },
 
   async getLiveCalls() {

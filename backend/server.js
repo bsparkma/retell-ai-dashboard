@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const callsRouter = require('./routes/calls');
@@ -91,6 +92,31 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 app.use(morgan('combined'));
+
+// Structured access log — append-only JSONL for HIPAA audit trail
+const _accessLogStream = fs.createWriteStream(
+  path.join(__dirname, '..', 'data', 'access-log.jsonl'),
+  { flags: 'a' }
+);
+
+app.use((req, res, next) => {
+  if (req.path === '/api/health' || req.path.startsWith('/api/webhooks')) return next();
+  const started = Date.now();
+  res.on('finish', () => {
+    const entry = {
+      ts: new Date().toISOString(),
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      ms: Date.now() - started,
+      ip: req.ip || req.socket?.remoteAddress || null,
+      ua: req.headers['user-agent'] || null,
+    };
+    _accessLogStream.write(JSON.stringify(entry) + '\n');
+  });
+  next();
+});
+
 app.use(limiter);
 // Capture raw body for HMAC signature verification (e.g. Retell webhooks).
 // Without this, signature verification cannot use the raw body Retell signed.
