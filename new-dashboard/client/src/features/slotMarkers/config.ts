@@ -2,7 +2,7 @@ import type { SlotCategory, SlotCategoryMeta } from "./types";
 
 export const CAREIN_BLOCK_PATNUM = 13290;
 
-export const USE_MOCK_SLOT_MARKERS = true;
+export const USE_MOCK_SLOT_MARKERS = false;
 
 export const SLOT_CATEGORIES: Record<SlotCategory, SlotCategoryMeta> = {
   "new-patient":             { label: "New Patient",              color: "#3B82F6", icon: "UserPlus" },

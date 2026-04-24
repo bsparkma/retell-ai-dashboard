@@ -20,7 +20,10 @@ const callbacksRouter = require('./routes/callbacks');
 const unifiedCallsRouter = require('./routes/unifiedCalls');
 const analyticsRouter = require('./routes/analytics');
 const retellToolsRouter = require('./routes/retellTools');
+const retellToolsConfigRouter = require('./routes/retellToolsConfig');
 const agentConfigRouter = require('./routes/agentConfig');
+const notificationsConfigRouter = require('./routes/notificationsConfig');
+const slotMarkersRouter = require('./routes/slotMarkers');
 const { initializeSocketHandlers } = require('./socket/socketHandler');
 const unifiedCallStore = require('./services/unifiedCallStore');
 const syncScheduler = require('./services/syncScheduler');
@@ -125,7 +128,10 @@ app.use('/api/callbacks', callbacksRouter);
 app.use('/api/unified-calls', unifiedCallsRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/retell-tools', retellToolsRouter);
+app.use('/api/retell-tools-config', retellToolsConfigRouter);
 app.use('/api/agent-config', agentConfigRouter);
+app.use('/api/notifications-config', notificationsConfigRouter);
+app.use('/api/slot-markers', slotMarkersRouter);
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
