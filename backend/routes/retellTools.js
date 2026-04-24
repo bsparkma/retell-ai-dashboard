@@ -37,10 +37,39 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 
 const openDentalService = require('../config/openDental');
 const openDentalSyncService = require('../services/openDentalSync');
+
+// ---------------------------------------------------------------------------
+// Per-tool enable/disable config
+// ---------------------------------------------------------------------------
+//
+// Read at every handler invocation (file is small, ops can edit it without a
+// restart). The global `RETELL_TOOLS_ENABLED` env var still gates ALL tools
+// via the router-level middleware below — this per-tool flag only matters
+// when that master switch is `true`.
+
+const TOOLS_CONFIG_FILE = path.join(__dirname, '..', '..', 'data', 'retell-tools-config.json');
+
+const TOOLS_CONFIG_DEFAULTS = {
+  lookupPatient: true,
+  findAvailableSlots: true,
+  bookAppointment: false,
+  createCallback: true,
+};
+
+function loadToolsConfig() {
+  try {
+    const raw = fs.readFileSync(TOOLS_CONFIG_FILE, 'utf8');
+    return { ...TOOLS_CONFIG_DEFAULTS, ...JSON.parse(raw) };
+  } catch {
+    return { ...TOOLS_CONFIG_DEFAULTS };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Signature verification (mirrors backend/routes/webhooks.js)
@@ -141,6 +170,11 @@ function digitsOnly(s) {
  * read patient.id back to the caller — that's an internal Open Dental key.
  */
 router.post('/lookup_patient', async (req, res) => {
+  const toolsConfig = loadToolsConfig();
+  if (!toolsConfig.lookupPatient) {
+    return res.json({ ok: false, message: 'Patient lookup is currently disabled.' });
+  }
+
   const args = (req.body && req.body.args) || req.body || {};
   const phone = args.phone_number;
   const name = args.full_name;
@@ -220,6 +254,11 @@ router.post('/lookup_patient', async (req, res) => {
  *   { ok: true, slots: [{ display: "Tuesday, May 12 at 10:30 AM", iso: "...", ... }] }
  */
 router.post('/find_available_slots', async (req, res) => {
+  const toolsConfig = loadToolsConfig();
+  if (!toolsConfig.findAvailableSlots) {
+    return res.json({ ok: false, message: 'Slot finder is currently disabled.' });
+  }
+
   const args = (req.body && req.body.args) || req.body || {};
   const duration = Number(args.duration_minutes) || 30;
   const providerId = args.provider_id ? Number(args.provider_id) : null;
@@ -330,6 +369,15 @@ function formatSlotForSpeech(iso) {
  * for speech.
  */
 router.post('/book_appointment', async (req, res) => {
+  const toolsConfig = loadToolsConfig();
+  if (!toolsConfig.bookAppointment) {
+    return res.json({
+      ok: true,
+      booked: false,
+      message: 'Live booking is currently disabled. I will take a message instead.',
+    });
+  }
+
   const args = (req.body && req.body.args) || req.body || {};
   const required = ['patient_id', 'date_time', 'duration_minutes'];
   for (const k of required) {
@@ -415,6 +463,11 @@ router.post('/book_appointment', async (req, res) => {
  *   }
  */
 router.post('/create_callback', async (req, res) => {
+  const toolsConfig = loadToolsConfig();
+  if (!toolsConfig.createCallback) {
+    return res.json({ ok: true, created: false, message: 'Callback logging is currently disabled.' });
+  }
+
   const args = (req.body && req.body.args) || req.body || {};
   if (!args.reason || !args.caller_number) {
     return res.json({
@@ -455,6 +508,19 @@ router.post('/create_callback', async (req, res) => {
       if (!Number.isInteger(store.idCounter)) store.idCounter = store.callbacks.length + 1;
     } catch (_) {
       /* file may not exist on first call */
+    }
+
+    // Deduplicate: if Retell retries this call, return the first callback created
+    if (callbackPayload.call_id) {
+      const existing = store.callbacks.find(cb => cb.call_id === callbackPayload.call_id);
+      if (existing) {
+        return res.json({
+          ok: true,
+          created: false,
+          callback_id: existing.id,
+          message: 'Got it. Someone from the office will call you back soon.',
+        });
+      }
     }
 
     const callback = {
@@ -505,10 +571,16 @@ router.post('/create_callback', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 router.get('/health', (_req, res) => {
+  const toolsConfig = loadToolsConfig();
   res.json({
     ok: true,
     enabled: process.env.RETELL_TOOLS_ENABLED === 'true',
-    tools: ['lookup_patient', 'find_available_slots', 'book_appointment', 'create_callback'],
+    tools: {
+      lookup_patient: toolsConfig.lookupPatient,
+      find_available_slots: toolsConfig.findAvailableSlots,
+      book_appointment: toolsConfig.bookAppointment,
+      create_callback: toolsConfig.createCallback,
+    },
   });
 });
 

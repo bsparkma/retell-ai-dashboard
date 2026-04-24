@@ -28,6 +28,13 @@ export default function Dashboard() {
   const [todayAppointments, setTodayAppointments] = useState<AppointmentDisplay[]>([]);
   const [loading, setLoading] = useState(true);
   const [hourlyData, setHourlyData] = useState<HourlyDataPoint[]>([]);
+  const [todayKpis, setTodayKpis] = useState<{
+    totalCalls: number;
+    aiHandled: number;
+    aiHandledPct: number;
+    avgDurationSec: number;
+  } | null>(null);
+  const [analyticsError, setAnalyticsError] = useState(false);
 
   const pendingCallbacks = callbacks.filter(c => c.status === "pending");
   const confirmedApts = todayAppointments.filter(a => a.status === "confirmed");
@@ -39,6 +46,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    setAnalyticsError(false);
     setLoading(true);
     const today = new Date().toISOString().split("T")[0];
     Promise.all([
@@ -54,7 +62,13 @@ export default function Dashboard() {
           return hr >= 8 && hr <= 17;
         });
         setHourlyData(filtered.length > 0 ? filtered : []);
-      }).catch(() => setHourlyData([])),
+        setTodayKpis({
+          totalCalls: res.kpis.totalCalls,
+          aiHandled: res.kpis.aiHandled,
+          aiHandledPct: res.kpis.aiHandledPct,
+          avgDurationSec: res.kpis.avgDurationSec,
+        });
+      }).catch(() => { setHourlyData([]); setAnalyticsError(true); }),
       api.getOpenDentalCalendar({ date: today }).then(({ appointments }) => {
         if (Array.isArray(appointments) && appointments.length > 0) {
           const mapped = (appointments as Array<Record<string, unknown>>).map((a, i) => ({
@@ -71,18 +85,21 @@ export default function Dashboard() {
     ]).finally(() => setLoading(false));
   }, [lastRefresh]);
 
+  const hour = currentTime.getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
   const stats = [
     {
       label: "Today's Calls",
-      value: recentCalls.length,
-      sub: loading ? "Loading..." : `${recentCalls.filter(c => c.source === "retell").length} AI handled`,
+      value: analyticsError && !todayKpis ? "—" : (todayKpis?.totalCalls ?? recentCalls.length),
+      sub: loading ? "Loading..." : analyticsError && !todayKpis ? "Unavailable" : todayKpis ? `${todayKpis.aiHandled} AI handled` : `${recentCalls.filter(c => c.source === "retell").length} AI handled`,
       icon: PhoneCall,
       color: "teal",
     },
     {
       label: "AI Handled",
-      value: recentCalls.length ? `${Math.round((recentCalls.filter(c => c.source === "retell").length / recentCalls.length) * 100)}%` : "—",
-      sub: recentCalls.length ? `${recentCalls.filter(c => c.source === "retell").length} of ${recentCalls.length}` : "No data",
+      value: analyticsError && !todayKpis ? "—" : (todayKpis ? `${todayKpis.aiHandledPct}%` : "—"),
+      sub: analyticsError && !todayKpis ? "Unavailable" : (todayKpis ? `${todayKpis.aiHandled} of ${todayKpis.totalCalls}` : "No data"),
       icon: Bot,
       color: "green",
     },
@@ -103,8 +120,8 @@ export default function Dashboard() {
     },
     {
       label: "Avg Call Duration",
-      value: recentCalls.length ? formatDuration(Math.round(recentCalls.reduce((a, c) => a + c.duration, 0) / recentCalls.length)) : "—",
-      sub: loading ? "Loading..." : "From API",
+      value: analyticsError && !todayKpis ? "—" : (todayKpis ? formatDuration(todayKpis.avgDurationSec) : "—"),
+      sub: analyticsError && !todayKpis ? "Unavailable" : "Today",
       icon: Clock,
       color: "slate",
     },
@@ -124,7 +141,7 @@ export default function Dashboard() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
-            Good morning
+            {greeting}
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {currentTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
@@ -316,7 +333,7 @@ export default function Dashboard() {
                     <Badge variant="destructive" className="text-xs">{pendingCallbacks.length}</Badge>
                   )}
                 </CardTitle>
-                <Link href="/calls">
+                <Link href="/callbacks">
                   <Button variant="ghost" size="sm" className="text-xs gap-1">
                     View All <ArrowRight size={12} />
                   </Button>

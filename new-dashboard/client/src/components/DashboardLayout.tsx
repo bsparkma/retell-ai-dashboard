@@ -3,13 +3,14 @@
  * Fixed deep-navy sidebar + top header bar + main content area
  * Sidebar: 240px fixed, navy background, teal active indicators
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard,
   PhoneCall,
+  PhoneIncoming,
   Bot,
   CalendarClock,
   BarChart3,
@@ -23,12 +24,14 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
+import { api } from "@/lib/api";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/calls", label: "Calls", icon: PhoneCall },
+  { path: "/callbacks", label: "Callbacks", icon: PhoneIncoming },
   { path: "/agents", label: "Agent Builder", icon: Bot },
   { path: "/scheduling", label: "Scheduling", icon: CalendarClock },
   { path: "/analytics", label: "Analytics", icon: BarChart3 },
@@ -50,7 +53,21 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [selectedOffice, setSelectedOffice] = useState(offices[0]);
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isConnected] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const check = () => {
+      api.getAdminHealth()
+        .then(() => { if (!cancelled) setIsConnected(true); })
+        .catch(() => { if (!cancelled) setIsConnected(false); });
+    };
+
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const handleNavClick = () => {
     setSidebarOpen(false);
@@ -126,7 +143,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="text-xs font-semibold uppercase tracking-wider mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
             Operations
           </div>
-          {navItems.slice(0, 4).map(({ path, label, icon: Icon }) => {
+          {navItems.slice(0, 5).map(({ path, label, icon: Icon }) => {
             const isActive = path === "/" ? location === "/" : location.startsWith(path);
             return (
               <Link key={path} href={path} onClick={handleNavClick}>
@@ -150,7 +167,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="text-xs font-semibold uppercase tracking-wider mt-4 mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
             Insights
           </div>
-          {navItems.slice(4).map(({ path, label, icon: Icon }) => {
+          {navItems.slice(5).map(({ path, label, icon: Icon }) => {
             const isActive = location.startsWith(path);
             return (
               <Link key={path} href={path} onClick={handleNavClick}>
@@ -221,6 +238,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </button>
           </div>
         </header>
+
+        {!isConnected && (
+          <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
+            <WifiOff size={13} />
+            <span>Backend is offline — changes won't save until reconnected.</span>
+          </div>
+        )}
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto">
