@@ -47,6 +47,7 @@ const cbStatusConfig = {
   pending: { label: "Pending", color: "oklch(0.55 0.18 210)", bg: "oklch(0.55 0.18 210 / 0.1)" },
   "in-progress": { label: "In Progress", color: "oklch(0.65 0.17 75)", bg: "oklch(0.78 0.17 75 / 0.1)" },
   completed: { label: "Completed", color: "oklch(0.55 0.18 155)", bg: "oklch(0.65 0.18 155 / 0.1)" },
+  failed: { label: "Failed", color: "oklch(0.52 0.015 240)", bg: "oklch(0.52 0.015 240 / 0.1)" },
 };
 
 function getTranscriptPreview(call: UnifiedCall): string | null {
@@ -87,7 +88,7 @@ export default function Calls() {
 
   const loadCalls = () => {
     setLoading(true);
-    api.getUnifiedCalls({ limit: 200, source: source === "all" ? undefined : source, search: search || undefined })
+    api.getUnifiedCalls({ limit: 1000, source: source === "all" ? undefined : source, search: search || undefined })
       .then(({ calls: list }) => setCalls(list))
       .catch(() => setCalls([]))
       .finally(() => setLoading(false));
@@ -107,7 +108,7 @@ export default function Calls() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const res = await api.syncRetell({ limit: 50 });
+      const res = await api.syncRetell({ limit: 1000 });
       toast.success(res.message ?? "Sync complete");
       loadCalls();
     } catch {

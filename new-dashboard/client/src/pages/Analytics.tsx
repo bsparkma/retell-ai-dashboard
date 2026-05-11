@@ -47,6 +47,26 @@ function formatDurationShort(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function parseHour24(label: string): number {
+  const m = label.match(/^(\d+)(AM|PM)$/);
+  if (!m) return -1;
+  let h = parseInt(m[1]);
+  if (m[2] === "PM" && h !== 12) h += 12;
+  if (m[2] === "AM" && h === 12) h = 0;
+  return h;
+}
+
+function downloadCSV(filename: string, rows: string[][]): void {
+  const csv = rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function Analytics() {
   const [dateRange, setDateRange] = useState<DateRange>("7d");
   const [data, setData] = useState<AnalyticsData | null>(null);
@@ -89,6 +109,13 @@ export default function Analytics() {
       ]
     : [];
 
+  const hourlyChartData = data
+    ? data.hourlyVolume.filter((h) => {
+        const h24 = parseHour24(h.hour);
+        return h24 >= 7 && h24 <= 19;
+      })
+    : [];
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
@@ -126,7 +153,16 @@ export default function Analytics() {
           >
             <RefreshCw size={14} className="mr-1.5" /> Refresh
           </Button>
-          <Button variant="outline" size="sm" onClick={() => toast.info("Export coming soon")}>
+          <Button variant="outline" size="sm" onClick={() => {
+            if (!data) { toast.warning("No data to export"); return; }
+            const dateStr = new Date().toISOString().slice(0, 10);
+            const volumeRows: string[][] = [
+              ["Date", "AI (Retell)", "Staff (Mango)", "Total"],
+              ...data.callVolume.map((r) => [r.date, String(r.retell), String(r.mango), String(r.retell + r.mango)]),
+            ];
+            downloadCSV(`carein-call-volume-${dateStr}.csv`, volumeRows);
+            toast.success("Call volume exported");
+          }}>
             <Download size={14} className="mr-1.5" /> Export
           </Button>
         </div>
@@ -263,23 +299,12 @@ export default function Analytics() {
               </CardHeader>
               <CardContent>
                 <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={data.hourlyVolume.filter((h) => {
-                    const n = parseInt(h.hour);
-                    return n >= 7 && n <= 19;
-                  }).length > 0 ? data.hourlyVolume.filter((h) => {
-                    // Show 7AM-7PM for dental office hours
-                    const match = h.hour.match(/^(\d+)(AM|PM)$/);
-                    if (!match) return false;
-                    let hr = parseInt(match[1]);
-                    if (match[2] === "PM" && hr !== 12) hr += 12;
-                    if (match[2] === "AM" && hr === 12) hr = 0;
-                    return hr >= 7 && hr <= 19;
-                  }) : data.hourlyVolume} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                  <BarChart data={hourlyChartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                     <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
                     <Tooltip contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }} />
                     <Bar dataKey="calls" fill="oklch(0.55 0.18 210 / 0.7)" radius={[3, 3, 0, 0]}>
-                      {data.hourlyVolume.map((entry, i) => (
+                      {hourlyChartData.map((entry, i) => (
                         <Cell key={i} fill={entry.calls > 5 ? "oklch(0.55 0.18 210)" : "oklch(0.55 0.18 210 / 0.5)"} />
                       ))}
                     </Bar>

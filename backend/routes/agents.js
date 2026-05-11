@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
+const { requireAgentPublishEnabled } = require('../middleware/envGuards');
 
 // Enhanced mock data for agents
 const generateMockAgents = () => [
@@ -172,7 +173,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Update agent (for agent adjustment feature)
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireAgentPublishEnabled, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;

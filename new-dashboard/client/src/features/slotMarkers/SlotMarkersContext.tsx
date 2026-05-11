@@ -13,7 +13,7 @@ interface SlotMarkersContextValue {
 
 const SlotMarkersContext = createContext<SlotMarkersContextValue | null>(null);
 
-const DEFAULT_CLINIC_NUM = 1;
+const DEFAULT_CLINIC_NUM = 0;
 
 function todayIso(): string {
   return new Date().toISOString().split("T")[0];

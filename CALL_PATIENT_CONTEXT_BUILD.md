@@ -14,6 +14,18 @@ The backend already has a working patient endpoint (`GET /opendental/patients/:i
 
 ---
 
+## Dev Environment Note — Open Dental Connector
+
+If the Open Dental connector is not running in the dev environment, **the patient panel will always render the "no match" state**. That is expected behavior, not a bug. The lookup endpoints will return empty results (or the API client's catch will return `null`), and `CallPatientPanel` should fall through to the no-match branch showing the caller name and phone number from the call record.
+
+This means:
+
+- Visual audits should still pass on UI rendering (loading state → no-match state with caller info + Link button + toast on "Open in Open Dental").
+- You will not be able to manually verify the "patient found" or "phone-match — verify identity" rendering paths without a live connector. That is OK — verify those branches via TypeScript, prop shape, and code review only.
+- Do not add fake patient data, mock responses, or dev-only stubs to force the "found" state to render. The no-match state is the correct dev fallback.
+
+---
+
 ## What Is In Scope
 
 - `OdPatient` interface matching the `/patients/:id` response shape
@@ -250,12 +262,16 @@ Find the existing stub Patient Record card (around lines 325–365). Replace it 
 `npx tsc --noEmit` — zero errors.
 
 Verify manually (run dev server):
-- [ ] Open a call detail page — patient panel renders (loading state visible briefly if OD is connected, or "no match" if in dev without OD)
-- [ ] Panel shows correct fields for a matched patient
-- [ ] Phone-match shows "verify identity" note
-- [ ] No-match state shows caller name/phone with "Link" button
+- [ ] Open a call detail page — patient panel renders
+- [ ] Without Open Dental connected (typical dev): no-match state shows caller name/phone with "Link" button — this is the expected dev path
+- [ ] With Open Dental connected: loading state visible briefly, then patient fields render with correct labels and source badge
 - [ ] "View in Open Dental" shows toast
 - [ ] Rest of call detail page unchanged (transcript, summary, recording still present)
+
+Code-review only (cannot verify visually without connector):
+- [ ] Patient-found branch renders all fields per the table in Phase 3
+- [ ] Phone-match branch shows "Matched by phone number — verify identity"
+- [ ] ID-match branch shows "Matched by patient ID"
 
 ---
 
@@ -304,16 +320,18 @@ None — `CallPatientPanel` lives inside `CallDetail.tsx`.
 - [ ] No `any` types introduced in modified files
 - [ ] `OdPatient`, `OdPatientAddress`, `OdPatientInsurance` exported from `api.ts`
 
-**Patient panel**
+**Patient panel** (visually verifiable in dev without OD connector)
 - [ ] Loading state renders while fetch is in flight
+- [ ] No-match state shows caller info + Link button (this is the default dev render)
+- [ ] "Open in Open Dental" button shows toast
+
+**Patient panel** (code-review only without OD connector)
 - [ ] Patient-found state shows all non-empty fields with correct labels
 - [ ] Phone-match shows "Matched by phone number — verify identity"
 - [ ] ID-match shows "Matched by patient ID"
-- [ ] No-match state shows caller info + Link button
 - [ ] Balance only shows when non-zero
 - [ ] Inactive badge only shows when `!isActive`
 - [ ] "Goes by" only shows when different from firstName
-- [ ] "Open in Open Dental" button shows toast
 
 **No regressions**
 - [ ] Call transcript still renders

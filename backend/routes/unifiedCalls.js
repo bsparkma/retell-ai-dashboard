@@ -63,21 +63,21 @@ const extractNameFromSummary = (summary) => {
   if (!summary) return null;
 
   const summaryPatterns = [
-    /patient\s+(?:named\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
-    /caller\s+(?:named\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+    /(?:patient|caller),\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})(?:,|\s+(?:called|requested|asked|provided|said)\b)/,
+    /(?:patient|caller)\s+named\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/,
     /Mr\.?\s+([A-Z][a-zA-Z]+)/i,
     /Mrs\.?\s+([A-Z][a-zA-Z]+)/i,
     /Ms\.?\s+([A-Z][a-zA-Z]+)/i,
-    /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+called/i,
-    /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+is\s+(?:calling|requesting|asking)/i
+    /([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\s+(?:called|requested|asked|provided)\b/,
+    /([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\s+is\s+(?:calling|requesting|asking)\b/
   ];
 
   for (const pattern of summaryPatterns) {
     const match = summary.match(pattern);
     if (match && match[1]) {
       const name = match[1].trim();
-      const commonWords = ['Patient', 'Caller', 'Person', 'User', 'Someone', 'Individual'];
-      if (!commonWords.includes(name)) {
+      const commonWords = ['Patient', 'Caller', 'Person', 'User', 'Someone', 'Individual', 'The Caller', 'The Patient'];
+      if (!commonWords.includes(name) && !/\b(reached|provided|requested|called|assistant|office|appointment|number)\b/i.test(name)) {
         return name;
       }
     }
@@ -99,7 +99,7 @@ const extractNameAdvanced = (transcript, summary) => {
     /(?:agent|assistant):\s*.*?I(?:'ll|'d)\s+(?:be happy to\s+)?help\s+you,?\s+([A-Z][a-zA-Z]+)/i,
     /(?:appointment|booking|schedule).*?for\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
     /(?:prescription|medication|refill).*for\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
-    /(?:patient|caller)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+(?:needs|wants|requires|is)/i
+    /(?:patient|caller),\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s*(?:,|\s+(?:needs|wants|requires|is)\b)/
   ];
 
   for (const pattern of advancedPatterns) {
@@ -340,7 +340,7 @@ router.get('/phone/:phoneNumber', async (req, res) => {
  */
 router.post('/sync-retell', async (req, res) => {
   try {
-    const { limit = 100, start_time, end_time } = req.body;
+    const { limit = 1000, start_time, end_time } = req.body;
 
     console.log('🔄 Starting manual Retell sync...');
 

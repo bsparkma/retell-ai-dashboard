@@ -252,16 +252,20 @@ function extractNameFromText(transcript?: string, summary?: string): string | nu
   // Try summary first
   if (summary) {
     const summaryPatterns = [
-      /patient\s+(?:named?\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
-      /caller\s+(?:named?\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
+      /(?:patient|caller),\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})(?:,|\s+(?:called|requested|asked|provided|said)\b)/,
+      /(?:patient|caller)\s+named\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/,
       /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+called/i,
       /(?:Mr|Mrs|Ms)\.?\s+([A-Z][a-zA-Z]+)/i,
       /([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\s+is\s+(?:calling|requesting|asking)/i,
     ];
-    const exclude = new Set(["patient", "caller", "person", "user", "someone", "individual", "the", "unknown"]);
+    const exclude = new Set(["patient", "caller", "person", "user", "someone", "individual", "the", "unknown", "reached", "provided", "requested", "assistant", "office", "appointment", "number"]);
     for (const pat of summaryPatterns) {
       const m = summary.match(pat);
-      if (m?.[1] && !exclude.has(m[1].toLowerCase())) return m[1].trim();
+      if (m?.[1]) {
+        const name = m[1].trim();
+        const words = name.toLowerCase().split(/\s+/);
+        if (!words.some((word) => exclude.has(word))) return name;
+      }
     }
   }
   // Try transcript

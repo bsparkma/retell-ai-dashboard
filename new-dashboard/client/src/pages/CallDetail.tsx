@@ -6,13 +6,16 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
   User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock
 } from "lucide-react";
-import { api, type UnifiedCall } from "@/lib/api";
+import { api, type UnifiedCall, type OdPatient, type OdPatientAddress } from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
+
+type PatientMatchSource = "id" | "phone" | "none";
 
 function buildTranscript(call: UnifiedCall) {
   if (call.transcript_object && call.transcript_object.length > 0) {
@@ -48,10 +51,217 @@ function formatAudioTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function formatDob(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getFullYear()}`;
+}
+
+function formatLastVisit(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatBalance(amount: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+}
+
+function formatPatientAddress(addr: OdPatientAddress | undefined): string | null {
+  if (!addr) return null;
+  const street = addr.street?.trim() ?? "";
+  const city = addr.city?.trim() ?? "";
+  const state = addr.state?.trim() ?? "";
+  const zip = addr.zip?.trim() ?? "";
+  if (!street && !city && !state && !zip) return null;
+  const cityState = [city, state].filter(Boolean).join(", ");
+  const tail = [cityState, zip].filter(Boolean).join(" ");
+  return [street, tail].filter(Boolean).join(", ");
+}
+
+function initialsOf(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((n) => n[0]?.toUpperCase() ?? "")
+    .join("")
+    .slice(0, 2);
+}
+
+interface CallPatientPanelProps {
+  patient: OdPatient | null;
+  loading: boolean;
+  source: PatientMatchSource;
+  callerName: string;
+  callerPhone: string;
+}
+
+function CallPatientPanel({ patient, loading, source, callerName, callerPhone }: CallPatientPanelProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base font-semibold flex items-center gap-2">
+          <User size={14} className="text-primary" /> Patient Record
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <div className="space-y-2" aria-label="Loading patient record">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-full" />
+              <div className="flex-1 space-y-1.5">
+                <Skeleton className="h-3.5 w-2/3" />
+                <Skeleton className="h-3 w-1/2" />
+              </div>
+            </div>
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-3/4" />
+          </div>
+        ) : patient ? (
+          <PatientFoundView patient={patient} source={source} />
+        ) : (
+          <PatientNoMatchView callerName={callerName} callerPhone={callerPhone} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PatientNoMatchView({ callerName, callerPhone }: { callerName: string; callerPhone: string }) {
+  const initials = initialsOf(callerName) || "?";
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/40">
+        <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center font-semibold text-muted-foreground">
+          {initials}
+        </div>
+        <div className="min-w-0">
+          <div className="font-medium text-sm truncate">{callerName || "Unknown caller"}</div>
+          <div className="text-xs text-muted-foreground font-mono">{callerPhone || "—"}</div>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">No matching Open Dental patient found</p>
+      <Button
+        size="sm"
+        className="w-full text-xs"
+        onClick={() => toast.info("Patient search opening...")}
+      >
+        Link to Patient
+      </Button>
+    </div>
+  );
+}
+
+function PatientFoundView({ patient, source }: { patient: OdPatient; source: PatientMatchSource }) {
+  const fullName = patient.fullName?.trim()
+    ? patient.fullName
+    : `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim();
+  const displayName = fullName || "Patient";
+  const initials = initialsOf(displayName) || "?";
+
+  const preferred = patient.preferredName?.trim();
+  const goesBy = preferred && preferred !== patient.firstName ? preferred : null;
+
+  const dob = formatDob(patient.dateOfBirth);
+  const phone = patient.phone?.trim() ? patient.phone : null;
+  const email = patient.email?.trim() ? patient.email : null;
+  const address = formatPatientAddress(patient.address);
+  const primaryIns = patient.insurance?.primary?.trim() ? patient.insurance.primary : null;
+  const secondaryIns = patient.insurance?.secondary?.trim() ? patient.insurance.secondary : null;
+  const lastVisitLabel = patient.lastVisit ? formatLastVisit(patient.lastVisit) ?? "No visits on record" : "No visits on record";
+  const showBalance = typeof patient.balance === "number" && patient.balance !== 0;
+  const showInactive = patient.isActive === false;
+
+  const sourceBadge: { text: string; tone: "muted" | "warning" } | null =
+    source === "id"
+      ? { text: "Matched by patient ID", tone: "muted" }
+      : source === "phone"
+      ? { text: "Matched by phone number — verify identity", tone: "warning" }
+      : null;
+
+  const fields: Array<{ label: string; value: React.ReactNode }> = [];
+  if (goesBy) fields.push({ label: "Goes by", value: goesBy });
+  if (dob) fields.push({ label: "Date of birth", value: dob });
+  if (phone) fields.push({ label: "Phone", value: <span className="font-mono">{phone}</span> });
+  if (email) fields.push({ label: "Email", value: <span className="break-all">{email}</span> });
+  if (address) fields.push({ label: "Address", value: address });
+  if (primaryIns) fields.push({ label: "Primary insurance", value: primaryIns });
+  if (secondaryIns) fields.push({ label: "Secondary insurance", value: secondaryIns });
+  fields.push({ label: "Last visit", value: lastVisitLabel });
+  if (showBalance) {
+    fields.push({
+      label: "Balance",
+      value: <span className="font-mono">{formatBalance(patient.balance)}</span>,
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/40">
+        <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center font-semibold text-primary flex-shrink-0">
+          {initials}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="font-medium text-sm truncate">{displayName}</div>
+            {showInactive && (
+              <Badge
+                variant="outline"
+                className="text-[10px] border-destructive/40 text-destructive bg-destructive/10"
+              >
+                Inactive
+              </Badge>
+            )}
+          </div>
+          {sourceBadge && (
+            <div
+              className={`text-[11px] mt-0.5 ${
+                sourceBadge.tone === "warning"
+                  ? "text-amber-600 dark:text-amber-500"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {sourceBadge.text}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {fields.length > 0 && (
+        <div className="space-y-2 text-sm">
+          {fields.map(({ label, value }) => (
+            <div key={label} className="flex items-start justify-between gap-2">
+              <span className="text-muted-foreground text-xs">{label}</span>
+              <span className="text-xs font-medium text-right">{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full text-xs"
+        onClick={() => toast.info("Open Dental deep-link coming soon")}
+      >
+        Open in Open Dental
+      </Button>
+    </div>
+  );
+}
+
 export default function CallDetail() {
   const { id } = useParams<{ id: string }>();
   const [call, setCall] = useState<UnifiedCall | null | "loading">("loading");
   const [error, setError] = useState<string | null>(null);
+
+  const [patient, setPatient] = useState<OdPatient | null>(null);
+  const [patientLoading, setPatientLoading] = useState(false);
+  const [patientSource, setPatientSource] = useState<PatientMatchSource>("none");
 
   // Audio player state
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -85,6 +295,48 @@ export default function CallDetail() {
       .then(setCall)
       .catch(() => { setCall(null); setError("Call not found"); });
   }, [id]);
+
+  useEffect(() => {
+    if (!call || call === "loading") return;
+
+    let cancelled = false;
+
+    const rawPatientId = call.patientId;
+    const parsedPatientId = rawPatientId ? Number(rawPatientId) : NaN;
+    const patientId = Number.isFinite(parsedPatientId) && parsedPatientId > 0 ? parsedPatientId : null;
+    const phone = call.fromNumber && call.fromNumber !== "Unknown" ? call.fromNumber : "";
+
+    setPatient(null);
+    setPatientSource("none");
+    setPatientLoading(true);
+
+    const lookup: Promise<OdPatient | null> = patientId
+      ? api.getOpenDentalPatient(patientId).then((p) => {
+          if (!cancelled) setPatientSource("id");
+          return p;
+        })
+      : phone
+      ? api.searchPatientByPhone(phone).then((p) => {
+          if (!cancelled) setPatientSource(p ? "phone" : "none");
+          return p;
+        })
+      : Promise.resolve(null);
+
+    lookup
+      .then((p) => {
+        if (!cancelled) setPatient(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPatient(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPatientLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [call]);
 
   if (call === "loading") {
     return (
@@ -322,47 +574,13 @@ export default function CallDetail() {
           </Card>
 
           {/* Patient record */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <User size={14} className="text-primary" /> Patient Record
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {displayCall.patientId ? (
-                <>
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/40">
-                    <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center font-semibold text-primary">
-                      {displayCall.patientName.split(" ").map(n => n[0]).join("")}
-                    </div>
-                    <div>
-                      <div className="font-medium text-sm">{displayCall.patientName}</div>
-                      <div className="text-xs text-muted-foreground font-mono">{displayCall.fromNumber}</div>
-                    </div>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full text-xs"
-                    onClick={() => toast.info("Opening Open Dental record...")}
-                  >
-                    View in Open Dental
-                  </Button>
-                </>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-sm text-muted-foreground">No patient record linked</p>
-                  <Button
-                    size="sm"
-                    className="w-full text-xs"
-                    onClick={() => toast.info("Patient search opening...")}
-                  >
-                    Link to Patient
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <CallPatientPanel
+            patient={patient}
+            loading={patientLoading}
+            source={patientSource}
+            callerName={displayCall.patientName ?? "Unknown"}
+            callerPhone={displayCall.fromNumber ?? ""}
+          />
 
           {/* Call metadata */}
           <Card>

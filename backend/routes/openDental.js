@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const openDentalService = require('../config/openDental');
+const { requireOdWriteEnabled } = require('../middleware/envGuards');
 
 // ============================================================================
 // HEALTH AND STATUS ENDPOINTS
@@ -316,7 +317,7 @@ router.post('/appointments/find-slots', async (req, res) => {
 // ============================================================================
 
 // Book a new appointment
-router.post('/appointments', async (req, res) => {
+router.post('/appointments', requireOdWriteEnabled, async (req, res) => {
   try {
     const appointmentData = req.body;
     
@@ -362,7 +363,7 @@ router.post('/appointments', async (req, res) => {
 });
 
 // Update an existing appointment
-router.put('/appointments/:id', async (req, res) => {
+router.put('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -394,7 +395,7 @@ router.put('/appointments/:id', async (req, res) => {
 });
 
 // Update appointment status only
-router.patch('/appointments/:id/status', async (req, res) => {
+router.patch('/appointments/:id/status', requireOdWriteEnabled, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, notes } = req.body;
@@ -436,7 +437,7 @@ router.patch('/appointments/:id/status', async (req, res) => {
 });
 
 // Cancel an appointment
-router.delete('/appointments/:id', async (req, res) => {
+router.delete('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
@@ -639,7 +640,7 @@ router.get('/providers/:id/schedule', async (req, res) => {
 // ============================================================================
 
 // Smart booking for AI agents with comprehensive conflict handling
-router.post('/ai/smart-book', async (req, res) => {
+router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
   try {
     const { 
       patientInfo,

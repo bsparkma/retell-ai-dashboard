@@ -43,6 +43,7 @@ const router = express.Router();
 
 const openDentalService = require('../config/openDental');
 const openDentalSyncService = require('../services/openDentalSync');
+const { requireOdWriteEnabled } = require('../middleware/envGuards');
 
 // ---------------------------------------------------------------------------
 // Per-tool enable/disable config
@@ -397,7 +398,7 @@ function formatSlotForSpeech(iso) {
  * The agent should always read `message` to the caller — it is phrased
  * for speech.
  */
-router.post('/book_appointment', async (req, res) => {
+router.post('/book_appointment', requireOdWriteEnabled, async (req, res) => {
   const toolsConfig = loadToolsConfig();
   if (!toolsConfig.bookAppointment) {
     return res.json({

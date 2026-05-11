@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +18,10 @@ import {
 import {
   Bot, Save, Copy, Eye, EyeOff, Clock, MapPin, Users, Shield,
   Stethoscope, FileText, ChevronDown, ChevronRight, Plus, Trash2, RotateCcw,
-  AlertTriangle, Upload, Loader2, CheckCircle2
+  AlertTriangle, Upload, Loader2, CheckCircle2, Wrench
 } from "lucide-react";
 import { toast } from "sonner";
-import api from "@/lib/api";
+import api, { type RetellToolsConfig } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -326,6 +327,19 @@ export default function AgentBuilder() {
   // this to suppress the "unsaved" flag until the user actually edits.
   const [hydrated, setHydrated] = useState(false);
 
+  // Per-tool enable/disable state for the four Retell custom-function
+  // endpoints. Defaults match the backend's DEFAULT_CONFIG so the card
+  // renders sensibly even before the backend reply lands.
+  const [toolsConfig, setToolsConfig] = useState<RetellToolsConfig>({
+    lookupPatient: true,
+    findAvailableSlots: true,
+    bookAppointment: false,
+    createCallback: true,
+    lastSaved: null,
+  });
+  const [toolsHasUnsaved, setToolsHasUnsaved] = useState(false);
+  const [toolsSaving, setToolsSaving] = useState(false);
+
   // Publish-to-Retell flow state.
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishLoading, setPublishLoading] = useState(false);
@@ -373,6 +387,17 @@ export default function AgentBuilder() {
         setHydrated(true);
       });
 
+    return () => { cancelled = true; };
+  }, []);
+
+  // Reconcile per-tool config with the backend on mount. If the call fails
+  // we silently keep the defaults — the agent-config load already shows a
+  // toast for backend-unreachable, so we don't double up.
+  useEffect(() => {
+    let cancelled = false;
+    api.getRetellToolsConfig()
+      .then((cfg) => { if (!cancelled) setToolsConfig(cfg); })
+      .catch(() => { /* backend unavailable — stay on defaults */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -448,6 +473,31 @@ export default function AgentBuilder() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ---- Agent Tools (per-tool enable/disable) ------------------------------
+
+  const handleToolToggle = (key: keyof Omit<RetellToolsConfig, "lastSaved">) => {
+    setToolsConfig((prev) => ({ ...prev, [key]: !prev[key] }));
+    setToolsHasUnsaved(true);
+  };
+
+  const handleSaveTools = async () => {
+    setToolsSaving(true);
+    try {
+      const { lastSaved: _lastSaved, ...toSave } = toolsConfig;
+      void _lastSaved;
+      const saved = await api.saveRetellToolsConfig(toSave);
+      setToolsConfig(saved);
+      setToolsHasUnsaved(false);
+      toast.success("Tool settings saved");
+    } catch (err) {
+      toast.error("Save failed — try again", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setToolsSaving(false);
     }
   };
 
@@ -890,6 +940,76 @@ export default function AgentBuilder() {
         </div>
       </div>
 
+      {/* Agent Tools — per-tool enable/disable for Retell custom functions.
+          Lives at the bottom of the page so it sits below the knowledge cards
+          but above any modal/portal content. The global RETELL_TOOLS_ENABLED
+          env var is the master switch — these flags only matter when it is
+          true. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Wrench size={16} className="text-muted-foreground" />
+            <CardTitle className="text-base font-semibold">Agent Tools</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Control which live-call tools the AI agent can use. The global{" "}
+            <code className="bg-muted px-1 rounded">RETELL_TOOLS_ENABLED</code>{" "}
+            env var must also be <code className="bg-muted px-1 rounded">true</code>{" "}
+            for any tool to fire.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <ToolToggleRow
+              label="Patient Lookup"
+              description="Lets the agent find an existing patient record by phone number before offering an appointment."
+              checked={toolsConfig.lookupPatient}
+              onCheckedChange={() => handleToolToggle("lookupPatient")}
+            />
+            <ToolToggleRow
+              label="Slot Finder"
+              description="Lets the agent offer specific open time slots from the schedule."
+              checked={toolsConfig.findAvailableSlots}
+              onCheckedChange={() => handleToolToggle("findAvailableSlots")}
+            />
+            <ToolToggleRow
+              label="Live Booking"
+              description="Lets the agent book directly into Open Dental. Only enable when the OD connector is fully configured."
+              checked={toolsConfig.bookAppointment}
+              onCheckedChange={() => handleToolToggle("bookAppointment")}
+              warningBadge="Requires OD connector"
+            />
+            <ToolToggleRow
+              label="Callback Creation"
+              description="Lets the agent drop a callback request into the staff queue when it can't resolve the caller's need."
+              checked={toolsConfig.createCallback}
+              onCheckedChange={() => handleToolToggle("createCallback")}
+            />
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-border flex items-center justify-between gap-3">
+            <span className="text-xs text-muted-foreground">
+              {toolsConfig.lastSaved
+                ? `Last saved ${new Date(toolsConfig.lastSaved).toLocaleString()}`
+                : "Never saved"}
+            </span>
+            <Button
+              size="sm"
+              onClick={handleSaveTools}
+              disabled={toolsSaving || (!toolsHasUnsaved && !!toolsConfig.lastSaved)}
+              className="gap-1.5"
+            >
+              {toolsSaving ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Save size={13} />
+              )}
+              {toolsSaving ? "Saving…" : toolsHasUnsaved ? "Save changes" : "Saved"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Publish-to-Retell dialog */}
       <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
         <DialogContent className="sm:max-w-lg">
@@ -995,6 +1115,53 @@ export default function AgentBuilder() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent Tools sub-components
+// ---------------------------------------------------------------------------
+
+interface ToolToggleRowProps {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: () => void;
+  /**
+   * Optional amber warning badge rendered below the description. Used by the
+   * Live Booking row to make the OD-connector dependency obvious without
+   * disabling the toggle.
+   */
+  warningBadge?: string;
+}
+
+function ToolToggleRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+  warningBadge,
+}: ToolToggleRowProps) {
+  return (
+    <div className="flex items-start justify-between gap-4 p-3 rounded-lg border border-border">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-foreground">{label}</div>
+        <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+          {description}
+        </div>
+        {warningBadge && (
+          <span className="inline-block mt-2 bg-amber-100 text-amber-800 text-xs px-2 py-0.5 rounded">
+            {warningBadge}
+          </span>
+        )}
+      </div>
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={label}
+        className="mt-1 flex-shrink-0"
+      />
     </div>
   );
 }

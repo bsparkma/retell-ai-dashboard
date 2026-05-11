@@ -70,8 +70,20 @@ Thumbs.db
 
 # Temporary files
 tmp/
-temp/ 
+temp/
 # Patient data / recordings (HIPAA)
 backend/recordings/
 data/
 calls_data.json
+
+# Claude Code / agent worktree artifacts
+.claude/
+.clone/
+new-dashboard/.claude/
+new-dashboard/.claire/
+
+# PM2 logs
+logs/
+
+# Local-only dev artifacts and session notes
+*.local.md

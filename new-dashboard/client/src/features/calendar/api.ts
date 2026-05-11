@@ -89,7 +89,7 @@ export const calendarApi = {
   },
 
   async getPatient(patientId: number): Promise<Patient> {
-    const raw = await api.getOpenDentalPatient(patientId) as Record<string, unknown>;
+    const raw = (await api.getOpenDentalPatient(patientId)) as unknown as Record<string, unknown>;
     const preferred = (raw.Preferred ?? raw.preferred ?? raw.preferredName) as string | undefined;
     const first = (raw.FName ?? raw.firstName ?? "") as string;
     const last = (raw.LName ?? raw.lastName ?? "") as string;

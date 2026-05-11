@@ -217,14 +217,14 @@ unifiedCallStore.initialize().then(async () => {
 
   // 1. Immediate Retell sync on startup
   console.log('🔄 Running initial Retell sync...');
-  syncScheduler.runRetellSync({ limit: 200 }).catch(err =>
+  syncScheduler.runRetellSync({ limit: 1000 }).catch(err =>
     console.error('Initial Retell sync error:', err.message)
   );
 
   // 2. Periodic Retell sync every 15 minutes
   const RETELL_SYNC_INTERVAL_MS = 15 * 60 * 1000;
   setInterval(() => {
-    syncScheduler.runRetellSync({ limit: 100 }).catch(err =>
+    syncScheduler.runRetellSync({ limit: 1000 }).catch(err =>
       console.error('Periodic Retell sync error:', err.message)
     );
   }, RETELL_SYNC_INTERVAL_MS);

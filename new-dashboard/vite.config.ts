@@ -27,7 +27,7 @@ export default defineConfig({
     allowedHosts: ["localhost", "127.0.0.1"],
     proxy: {
       '/api/slot-markers': {
-        target: 'http://localhost:5000',
+        target: 'http://localhost:5003',
         changeOrigin: true,
       },
     },

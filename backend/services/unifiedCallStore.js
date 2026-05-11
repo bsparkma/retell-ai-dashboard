@@ -14,6 +14,98 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+function normalizeCallDate(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? new Date().toISOString() : value.toISOString();
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const milliseconds = value > 1e12 ? value : value * 1000;
+    return new Date(milliseconds).toISOString();
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+
+  return new Date().toISOString();
+}
+
+function cleanCallerName(value) {
+  if (typeof value !== 'string') return null;
+
+  const cleaned = value
+    .replace(/[^a-zA-Z\s.'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\.$/, '');
+
+  if (!cleaned) return null;
+
+  const commonWords = new Set([
+    'caller', 'patient', 'user', 'someone', 'appointment', 'cleaning',
+    'morning', 'afternoon', 'emergency', 'office', 'phone', 'number',
+    'unknown', 'yes', 'no', 'okay', 'sure', 'thanks', 'thank',
+  ]);
+
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 3) return null;
+  if (words.some(word => commonWords.has(word.toLowerCase()))) return null;
+
+  return words
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function extractCallerNameFromCall(call) {
+  const analysis = call.call_analysis || {};
+  const explicitName =
+    call.caller_name ||
+    call.patient_name ||
+    analysis.caller_name ||
+    analysis.patient_name ||
+    analysis.name;
+  const explicit = cleanCallerName(explicitName);
+  if (explicit) return explicit;
+
+  const summary =
+    call.summary ||
+    call.call_summary ||
+    analysis.call_summary ||
+    analysis.detailed_call_summary ||
+    '';
+  const summaryPatterns = [
+    /(?:caller|patient),?\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})(?:,|\s+(?:called|requested|asked|wants|needs|provided|said|is|was)\b)/,
+    /(?:caller|patient)\s+(?:named\s+)?([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/,
+    /([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\s+(?:called|requested|asked|provided)\b/,
+  ];
+  for (const pattern of summaryPatterns) {
+    const match = summary.match(pattern);
+    const name = cleanCallerName(match?.[1]);
+    if (name) return name;
+  }
+
+  const transcript = call.transcript || '';
+  const thanksMatch = transcript.match(/(?:thanks|thank you),?\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/);
+  const thanksName = cleanCallerName(thanksMatch?.[1]);
+  if (thanksName) return thanksName;
+
+  const lines = transcript.split('\n').map(line => line.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!/^Agent:/i.test(lines[i]) || !/\b(name|who am i speaking with)\b/i.test(lines[i])) {
+      continue;
+    }
+
+    const nextUserLine = lines.slice(i + 1).find(line => /^User:/i.test(line));
+    const userText = nextUserLine?.replace(/^User:\s*/i, '');
+    const name = cleanCallerName(userText);
+    if (name) return name;
+  }
+
+  return null;
+}
+
 class UnifiedCallStore {
   constructor() {
     // All calls indexed by ID
@@ -114,7 +206,7 @@ class UnifiedCallStore {
     }
     
     // Update date index
-    const dateKey = normalizedCall.call_date?.split('T')[0] || new Date().toISOString().split('T')[0];
+    const dateKey = normalizedCall.call_date.split('T')[0];
     if (!this.byDate.has(dateKey)) {
       this.byDate.set(dateKey, new Set());
     }
@@ -150,12 +242,12 @@ class UnifiedCallStore {
       external_id: call.external_id || call.call_id || call.id,
       
       // Call metadata
-      call_date: call.call_date || call.start_timestamp || new Date().toISOString(),
+      call_date: normalizeCallDate(call.call_date || call.start_timestamp),
       duration_seconds: call.duration_seconds || call.duration || 0,
       
       // Caller info
       caller_number: call.caller_number || call.from_number || 'Unknown',
-      caller_name: call.caller_name || null,
+      caller_name: cleanCallerName(call.caller_name) || extractCallerNameFromCall(call),
       
       // Handler info
       handler_type: call.handler_type || (source === 'mango' ? 'staff' : 'ai'),

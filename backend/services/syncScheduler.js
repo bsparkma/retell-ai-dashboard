@@ -12,6 +12,7 @@ const callAnalyzer = require('./callAnalyzer');
 const unifiedCallStore = require('./unifiedCallStore');
 const retellService = require('../config/retell');
 const mangoConfig = require('../config/mango');
+const { isMangoSyncDisabled } = require('../middleware/envGuards');
 
 // Last sync result — read by admin health endpoint
 const _syncState = {
@@ -37,6 +38,10 @@ class SyncScheduler {
    * Start the scheduled sync job
    */
   start() {
+    if (isMangoSyncDisabled()) {
+      console.log('⏸️  Mango sync disabled in this environment (MANGO_SYNC_DISABLED=true)');
+      return;
+    }
     if (this.cronJob) {
       console.log('⚠️ Sync scheduler already running');
       return;
@@ -74,6 +79,10 @@ class SyncScheduler {
    * Run a sync job (can be called manually or by scheduler)
    */
   async runSync(options = {}) {
+    if (isMangoSyncDisabled()) {
+      console.log('⏸️  Mango sync skipped (MANGO_SYNC_DISABLED=true)');
+      return { success: false, message: 'Mango sync disabled in this environment' };
+    }
     if (this.isRunning) {
       console.log('⚠️ Sync already in progress, skipping...');
       return { success: false, message: 'Sync already in progress' };
@@ -227,7 +236,7 @@ class SyncScheduler {
    * Also transcribes any Mango calls that have local recordings but no transcript.
    */
   async runRetellSync(options = {}) {
-    const limit = options.limit || 200;
+    const limit = options.limit || 1000;
     console.log(`🔄 Retell sync: fetching up to ${limit} calls...`);
 
     try {

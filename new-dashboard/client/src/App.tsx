@@ -12,6 +12,7 @@ import AgentBuilder from "./pages/AgentBuilder";
 import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
+import Callbacks from "./pages/Callbacks";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 
 function Router() {
@@ -21,6 +22,7 @@ function Router() {
         <Route path="/" component={Dashboard} />
         <Route path="/calls" component={Calls} />
         <Route path="/calls/:id" component={CallDetail} />
+        <Route path="/callbacks" component={Callbacks} />
         <Route path="/agents" component={AgentBuilder} />
         <Route path="/scheduling" component={Scheduling} />
         <Route path="/analytics" component={Analytics} />

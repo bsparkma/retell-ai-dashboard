@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   CalendarClock, Settings2, Clock, Users, Stethoscope,
   AlertTriangle, Plus, Trash2, Edit3, Save, ChevronDown, ChevronUp,
@@ -206,9 +207,9 @@ function SlotMarkerSchedulingCard() {
 // ------------------------------------------------------------------
 
 function SlotMarkerSummarySection() {
-  const summary = useSlotMarkerSummary();
+  const { counts, loading } = useSlotMarkerSummary();
   const categoryKeys = Object.keys(SLOT_CATEGORIES) as SlotCategory[];
-  const totalMarkers = categoryKeys.reduce((sum, key) => sum + summary[key], 0);
+  const totalMarkers = categoryKeys.reduce((sum, key) => sum + counts[key], 0);
 
   return (
     <Card>
@@ -221,7 +222,25 @@ function SlotMarkerSummarySection() {
         </p>
       </CardHeader>
       <CardContent>
-        {totalMarkers === 0 ? (
+        {loading ? (
+          <div
+            className="grid grid-cols-2 md:grid-cols-4 gap-3"
+            aria-label="Loading slot marker summary"
+          >
+            {categoryKeys.map((key) => (
+              <div
+                key={key}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border bg-card"
+              >
+                <Skeleton className="w-2.5 h-2.5 rounded-full flex-shrink-0" />
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <Skeleton className="h-3 w-3/4" />
+                  <Skeleton className="h-2.5 w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : totalMarkers === 0 ? (
           <div className="rounded-lg border border-border bg-muted/20 p-4 text-sm text-muted-foreground text-center">
             <p className="font-medium">No slot markers found for the next 30 days.</p>
             <p className="text-xs mt-1">
@@ -232,7 +251,7 @@ function SlotMarkerSummarySection() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {categoryKeys.map((key) => {
               const meta = SLOT_CATEGORIES[key];
-              const count = summary[key];
+              const count = counts[key];
               return (
                 <div
                   key={key}

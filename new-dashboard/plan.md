@@ -8,7 +8,7 @@ add calendar scheduling blocks for the voice agent, and validate end-to-end.
 
 ## Task 1: Fix Config Mismatches
 - [ ] Clean up `new-dashboard/.env` — remove Mango creds, Deepgram, OpenAI keys (these belong in backend only)
-- [ ] Ensure `VITE_API_URL` points to correct backend port (5001)
+- [ ] Ensure `VITE_API_URL` points to correct backend port (5000)
 - [ ] Verify backend `CORS_ORIGIN` includes the new-dashboard dev port (3005)
 - [ ] Create a clean `.env.example` for the new-dashboard with only the vars it needs
 

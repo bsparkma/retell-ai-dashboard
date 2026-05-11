@@ -47,17 +47,33 @@ function emptyCategoryCounts(): Record<SlotCategory, number> {
   return result;
 }
 
-export function useSlotMarkerSummary(): Record<SlotCategory, number> {
-  const { markers } = useSlotMarkers();
-  return useMemo(() => {
+export interface SlotMarkerSummary {
+  counts: Record<SlotCategory, number>;
+  loading: boolean;
+}
+
+/**
+ * 30-day rolling category counts.
+ *
+ * Returns `loading: true` while the underlying provider's initial fetch is in
+ * flight so consumers can render a skeleton instead of a misleading "no
+ * markers" empty state. Without this, the counts hook would resolve to all
+ * zeros on first render (because `markers` starts as `[]`) and any consumer
+ * branching on `total === 0` would flash the empty state for one frame
+ * before the real data arrives.
+ */
+export function useSlotMarkerSummary(): SlotMarkerSummary {
+  const { markers, loading } = useSlotMarkers();
+  const counts = useMemo(() => {
     const start = todayIso();
     const end = plusDaysIso(30);
-    const counts = emptyCategoryCounts();
+    const result = emptyCategoryCounts();
     for (const m of markers) {
       if (m.date >= start && m.date <= end) {
-        counts[m.category] += 1;
+        result[m.category] += 1;
       }
     }
-    return counts;
+    return result;
   }, [markers]);
+  return { counts, loading };
 }
