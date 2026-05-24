@@ -68,8 +68,8 @@ practice outcomes before being used for performance reviews.
    Retell API sync). Merging requires deciding which is the source of truth.
 3. **Commlog retries**: The retry button is wired to the mock writer. When a
    real Open Dental writer is added, the retry flow is already in place.
-4. **Webhook authentication**: The `/api/webhook/retell` endpoint has no auth.
-   Retell supports a webhook secret in the request header — add validation before
-   production.
+4. **Webhook authentication**: ✅ RESOLVED (2026-05-24). `Retell.verify()` from
+   `retell-sdk` is used. Set `RETELL_API_KEY` in `.env` to enable enforcement.
+   Without it: server warns at startup and accepts all payloads (dev-safe).
 5. **Data retention**: `data/calls.json` grows unbounded. Add a TTL or max-size
    limit once the data volume is known.

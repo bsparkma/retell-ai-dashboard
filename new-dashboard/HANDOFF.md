@@ -1,9 +1,60 @@
 # HANDOFF — CareIN AI Call Dashboard
 
-**Date:** 2026-05-23  
-**Branch:** `main` (commits `ea03403` → `ef5def5` + this commit)
+**Date:** 2026-05-24 (updated)  
+**Branch:** `main` (commits `ea03403` → `ea88b72`)
 
 ---
+
+## Session 3 Changes (2026-05-24) — Live Integration
+
+### What was wired
+
+**`server/index.ts`** — the only file changed in this session:
+
+- **Retell webhook signature verification** (Q4 from NOTES.md, now resolved):
+  - Added `retell-sdk` dependency; uses `Retell.verify(rawBodyString, RETELL_API_KEY, signatureHeader)`.
+  - Webhook route is now registered **before** `app.use(express.json())`. The route uses `express.raw({ type: "*/*" })` to capture the raw body as a Buffer, then converts to string for `Retell.verify()`.
+  - When `RETELL_API_KEY` is set: verifies `x-retell-signature` header; rejects with `401` if invalid.
+  - When `RETELL_API_KEY` is absent: emits `[WARN]` at startup and accepts all payloads (safe for dev/curl testing).
+
+- **`USE_SEED_DATA` flag**:
+  - `USE_SEED_DATA=true` → always load seed fixtures on startup (dev/demo mode).
+  - Default (unset): load persisted `data/calls.json`; seed only if empty (correct for production).
+
+- **`.env.example`**: documented `RETELL_API_KEY`, `VITE_CAREIN_API_URL`, `USE_SEED_DATA`.
+
+### Gate B live flow (validated)
+
+```
+POST http://localhost:3002/api/webhook/retell  (no RETELL_API_KEY set → accepted)
+Body: tests/fixtures/retell-webhook-call-ended.json
+
+Response: { received: true, processed: true, id: "call_fixture_call_001" }
+
+GET /api/calls → 16 calls (15 seed + 1 ingested)
+call_fixture_call_001:
+  callerName:    "Sarah Mitchell"
+  office:        "Downtown Dental"
+  tag:           "appointment_scheduled"
+  routedTo:      "Rover (AI)"
+  sentiment:     "positive"
+  commlogStatus: "written"   ← MockCommlogWriter, OD writes DRY-RUN
+  qualityScore:  100
+```
+
+### What is live vs mocked
+
+| Component | Status |
+|---|---|
+| Retell webhook ingestion | ✅ **LIVE** — ready to receive real Retell payloads |
+| Signature verification | ✅ **LIVE** — enforced when `RETELL_API_KEY` is set |
+| Call store (`data/calls.json`) | ✅ **LIVE** — persists real calls |
+| Open Dental commlog writes | 🔒 **DRY-RUN** — `MockCommlogWriter` always; display only |
+| Office mapping (`OFFICE_BY_NUMBER`) | ⚠️ Hardcoded (see NOTES.md Q1) |
+
+---
+
+## Session 1+2 Changes — Original Build
 
 ## What Changed (High Level)
 
@@ -41,7 +92,7 @@ New code lives in:
 
 ---
 
-## Commands to Install / Run / Test
+## Commands to Install / Run / Test (updated)
 
 ```powershell
 # From: new-dashboard/
@@ -49,8 +100,15 @@ New code lives in:
 # 1. Install dependencies (already done if you cloned fresh)
 pnpm install
 
-# 2. Start the CareIN API server (port 3000, loads seed data)
+# 2. Set your Retell API key in .env (copy from .env.example)
+#    RETELL_API_KEY=key_live_xxxx
+#    Without it the server starts but verification is disabled (warning logged).
+
+# 3. Start the CareIN API server (port 3000, live data mode)
 npx tsx server/index.ts
+
+# 3a. OR start in seed/demo mode (resets data to 15 fixtures on every restart)
+#     $env:USE_SEED_DATA = "true"; npx tsx server/index.ts
 
 # 3. In a second terminal: start the Vite dev server (port 3005)
 pnpm dev
@@ -65,10 +123,17 @@ pnpm test
 # 6. Run tests with coverage report
 pnpm test:coverage
 
-# 7. Test the webhook manually
+# 7. Test the webhook manually (no RETELL_API_KEY set = signature skipped)
 curl -X POST http://localhost:3000/api/webhook/retell \
   -H "Content-Type: application/json" \
   -d @tests/fixtures/retell-webhook-call-ended.json
+
+# 7a. In production Retell will sign requests; set RETELL_API_KEY and
+#     signature verification enforces automatically.
+
+# 8. Point Retell to your server
+#    In Retell dashboard → Agent → Webhook URL: https://your-host/api/webhook/retell
+#    Events to enable: call_ended, call_analyzed
 
 # 8. Seed reset (if data gets polluted in dev)
 curl -X POST http://localhost:3000/api/dev/seed
