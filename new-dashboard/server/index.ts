@@ -2,6 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+import Retell from "retell-sdk";
 import { loadStore, seedStore, queryCalls, getCallById, insertCall, updateCall, getAllCalls, getOffices, getTags } from "./lib/store.js";
 import { ingestRetellWebhook, validateWebhookPayload, IngestionError } from "./lib/ingestion.js";
 import { computeAnalytics, filterCalls } from "./lib/analytics.js";
@@ -14,34 +15,78 @@ const __dirname = path.dirname(__filename);
 
 const commlogWriter = createCommlogWriter();
 
+// ---------------------------------------------------------------------------
+// Environment config — read once at startup, never mutated
+// ---------------------------------------------------------------------------
+
+const RETELL_API_KEY = (process.env["RETELL_API_KEY"] ?? "").trim();
+const USE_SEED_DATA = process.env["USE_SEED_DATA"] === "true";
+
+if (!RETELL_API_KEY) {
+  console.warn(
+    "[WARN] RETELL_API_KEY not set — Retell webhook signature verification " +
+    "is DISABLED. Set RETELL_API_KEY before receiving live traffic."
+  );
+}
+if (USE_SEED_DATA) {
+  console.warn(
+    "[WARN] USE_SEED_DATA=true — loading seed fixture data and ignoring any " +
+    "persisted calls. Unset this env var in production."
+  );
+}
+
 async function startServer() {
-  // Load persisted call data; fall back to seed data if store is empty
-  loadStore();
-  const existing = getAllCalls();
-  if (existing.length === 0) {
+  // Load data: force seed when USE_SEED_DATA=true; otherwise prefer live data
+  // and fall back to seed only when the store is completely empty.
+  if (USE_SEED_DATA) {
     seedStore(SEED_CALLS);
+  } else {
+    loadStore();
+    if (getAllCalls().length === 0) {
+      seedStore(SEED_CALLS);
+    }
   }
 
   const app = express();
   const server = createServer(app);
 
-  app.use(express.json({ limit: "2mb" }));
-
   // ---------------------------------------------------------------------------
-  // Health
-  // ---------------------------------------------------------------------------
-
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", calls: getAllCalls().length });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Retell webhook ingestion — POST /api/webhook/retell
+  // Retell webhook — MUST be registered before app.use(express.json()) so
+  // express.raw() can capture the body as a Buffer for signature verification.
+  // Retell.verify() requires the raw bytes; re-serialising parsed JSON breaks it.
   // ---------------------------------------------------------------------------
 
-  app.post("/api/webhook/retell", async (req, res) => {
+  app.post("/api/webhook/retell", express.raw({ type: "*/*" }), async (req, res) => {
+    // Convert raw buffer to string — Retell.verify expects a string.
+    const rawBody = (req.body as Buffer).toString("utf-8");
+    const sigHeader = req.headers["x-retell-signature"];
+    // Express can return string | string[] | undefined; normalise to string.
+    // Empty string → Retell.verify returns false (correct: missing header = reject).
+    const signature: string = Array.isArray(sigHeader)
+      ? (sigHeader[0] ?? "")
+      : (sigHeader ?? "");
+
+    // Verify signature when RETELL_API_KEY is present; warn-and-continue when absent.
+    if (RETELL_API_KEY) {
+      if (!Retell.verify(rawBody, RETELL_API_KEY, signature)) {
+        console.warn("[WARN] Retell webhook rejected: invalid x-retell-signature");
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+    }
+
+    // Parse JSON manually (express.json() has not run on this route).
+    let body: unknown;
     try {
-      validateWebhookPayload(req.body);
+      body = JSON.parse(rawBody);
+    } catch {
+      res.status(400).json({ error: "Invalid JSON body" });
+      return;
+    }
+
+    // Validate structure.
+    try {
+      validateWebhookPayload(body);
     } catch (err) {
       if (err instanceof IngestionError) {
         res.status(400).json({ error: err.message, field: err.field });
@@ -51,32 +96,32 @@ async function startServer() {
       return;
     }
 
-    // Only process call_ended / call_analyzed events
-    const event: string = (req.body as Record<string, unknown>)["event"] as string;
+    // Acknowledge non-call events immediately (204 = received, no content).
+    const event = (body as Record<string, unknown>)["event"] as string;
     if (event !== "call_ended" && event !== "call_analyzed" && event !== "call_completed") {
-      res.json({ received: true, processed: false, reason: "event_ignored" });
+      res.status(204).send();
       return;
     }
 
+    // Ingest.
     let call;
     try {
-      call = ingestRetellWebhook(req.body);
+      call = ingestRetellWebhook(body);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Ingestion failed";
       res.status(422).json({ error: msg });
       return;
     }
 
-    // Check for duplicates
-    const existing = getCallById(call.id);
-    if (existing) {
+    // Deduplication.
+    if (getCallById(call.id)) {
       res.json({ received: true, processed: false, reason: "duplicate", id: call.id });
       return;
     }
 
     insertCall(call);
 
-    // Async commlog write — don't block the webhook response
+    // Async commlog write (MockCommlogWriter — OD writes are DRY-RUN only).
     commlogWriter.write({
       callId: call.id,
       callerName: call.callerName,
@@ -102,13 +147,21 @@ async function startServer() {
       }
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : "Commlog write failed";
-      updateCall(call.id, {
-        commlogStatus: "failed",
-        commlogError: msg,
-      });
+      updateCall(call.id, { commlogStatus: "failed", commlogError: msg });
     });
 
     res.status(201).json({ received: true, processed: true, id: call.id });
+  });
+
+  // JSON parser for all other routes (must be after the raw-body webhook above).
+  app.use(express.json({ limit: "2mb" }));
+
+  // ---------------------------------------------------------------------------
+  // Health
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", calls: getAllCalls().length });
   });
 
   // ---------------------------------------------------------------------------
