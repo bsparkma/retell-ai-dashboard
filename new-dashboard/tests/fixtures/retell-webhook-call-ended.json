@@ -1,0 +1,35 @@
+{
+  "event": "call_ended",
+  "call": {
+    "call_id": "fixture_call_001",
+    "call_type": "phone_call",
+    "agent_id": "agent_rover_main",
+    "call_status": "ended",
+    "start_timestamp": 1748000000000,
+    "end_timestamp": 1748000240000,
+    "duration_ms": 240000,
+    "from_number": "+16025550142",
+    "to_number": "+16025550101",
+    "call_analysis": {
+      "call_summary": "Patient Sarah Mitchell called to schedule a routine cleaning. Appointment was scheduled for Tuesday at 9 AM.",
+      "in_voicemail": false,
+      "user_sentiment": "Positive",
+      "call_successful": true,
+      "custom_analysis_data": {
+        "tag": "appointment_scheduled",
+        "outcome": "Appointment scheduled for Tuesday 9 AM",
+        "routed_to": "Rover (AI)"
+      }
+    },
+    "transcript": "Agent: Thank you for calling Downtown Dental, this is Rover. How can I help you today?\nUser: Hi, my name is Sarah Mitchell. I need to schedule a cleaning.\nAgent: Of course! We have Tuesday at 9 AM available. Does that work for you?\nUser: That sounds perfect, thank you!\nAgent: Great, you're all set for Tuesday at 9 AM.",
+    "transcript_object": [
+      { "role": "agent", "content": "Thank you for calling Downtown Dental, this is Rover. How can I help you today?" },
+      { "role": "user",  "content": "Hi, my name is Sarah Mitchell. I need to schedule a cleaning." },
+      { "role": "agent", "content": "Of course! We have Tuesday at 9 AM available. Does that work for you?" },
+      { "role": "user",  "content": "That sounds perfect, thank you!" },
+      { "role": "agent", "content": "Great, you're all set for Tuesday at 9 AM." }
+    ],
+    "recording_url": "",
+    "metadata": {}
+  }
+}
