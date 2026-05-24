@@ -9,6 +9,8 @@
     "start": "NODE_ENV=production node dist/index.js",
     "preview": "vite preview --host",
     "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "format": "prettier --write ."
   },
   "dependencies": {
@@ -74,6 +76,7 @@
     "@types/react": "^19.2.1",
     "@types/react-dom": "^19.2.1",
     "@vitejs/plugin-react": "^5.0.4",
+    "@vitest/coverage-v8": "^2.1.9",
     "add": "^2.0.6",
     "autoprefixer": "^10.4.20",
     "esbuild": "^0.25.0",
