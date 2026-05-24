@@ -712,3 +712,151 @@ export const api = {
 };
 
 export default api;
+
+// ---------------------------------------------------------------------------
+// CareIN Call Dashboard — direct API client
+//
+// These methods call the new CareIN ingestion server (default port 3000).
+// They are completely separate from the existing `api` object above and do
+// NOT affect any existing functionality.
+//
+// In dev: start the CareIN server with `npx tsx server/index.ts` from the
+// new-dashboard directory. In production both are served from the same origin.
+// ---------------------------------------------------------------------------
+
+const CAREIN_BASE =
+  (import.meta.env.VITE_CAREIN_API_URL as string | undefined) ??
+  "http://localhost:3000/api";
+
+async function careInRequest<T>(
+  path: string,
+  options?: RequestInit & { params?: Record<string, string | undefined> }
+): Promise<T> {
+  const { params, ...init } = options ?? {};
+  const url = new URL(`${CAREIN_BASE}${path.startsWith("/") ? "" : "/"}${path}`);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== "") url.searchParams.set(k, v);
+    });
+  }
+  const res = await fetch(url.toString(), {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init.headers },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------------------
+// CareIN call record shape (mirrors server/lib/types.ts Call)
+// ---------------------------------------------------------------------------
+
+export type CareInCommlogStatus = "pending" | "written" | "failed";
+export type CareInSentiment = "positive" | "neutral" | "negative";
+
+export interface CareInCall {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  callerNumber: string;
+  callerName: string;
+  office: string;
+  toNumber: string;
+  tag: string;
+  routedTo: string;
+  transcript: string;
+  transcriptObject: Array<{ role: string; content: string }>;
+  summary: string;
+  outcome: string;
+  sentiment: CareInSentiment;
+  qualityScore: number;
+  recordingUrl: string;
+  isEmergency: boolean;
+  commlogStatus: CareInCommlogStatus;
+  commlogWrittenAt: string | null;
+  commlogError: string | null;
+  retellCallId: string | null;
+  ingestedAt: string;
+}
+
+export interface CareInAnalytics {
+  period: { startDate: string; endDate: string; days: number };
+  totalCalls: number;
+  byTag: Array<{ tag: string; count: number }>;
+  byOutcome: Array<{ outcome: string; count: number }>;
+  byOffice: Record<string, number>;
+  dailyVolume: Array<{
+    date: string;
+    total: number;
+    byOffice: Record<string, number>;
+    byTag: Record<string, number>;
+  }>;
+  sentiment: { positive: number; neutral: number; negative: number };
+  avgQualityScore: number;
+  commlogStats: { written: number; pending: number; failed: number };
+  avgDurationSeconds: number;
+}
+
+// ---------------------------------------------------------------------------
+// API methods
+// ---------------------------------------------------------------------------
+
+export const careInApi = {
+  /**
+   * List CareIN calls with optional filters.
+   * Returns the calls array, total count, and available offices/tags for filters.
+   */
+  async getCalls(params?: {
+    office?: string;
+    start_date?: string;
+    end_date?: string;
+    tag?: string;
+    outcome?: string;
+    commlog_status?: CareInCommlogStatus;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ calls: CareInCall[]; total: number; offices: string[]; tags: string[] }> {
+    return careInRequest<{ calls: CareInCall[]; total: number; offices: string[]; tags: string[] }>(
+      "/calls",
+      {
+        params: params
+          ? Object.fromEntries(
+              Object.entries(params).map(([k, v]) => [k, v != null ? String(v) : undefined])
+            ) as Record<string, string | undefined>
+          : undefined,
+      }
+    );
+  },
+
+  /** Get a single CareIN call by ID. */
+  async getCall(id: string): Promise<CareInCall> {
+    return careInRequest<CareInCall>(`/calls/${encodeURIComponent(id)}`);
+  },
+
+  /** Retry the commlog write for a failed or pending call. */
+  async retryCommlog(id: string): Promise<{ success: boolean; call: CareInCall; error?: string }> {
+    return careInRequest<{ success: boolean; call: CareInCall; error?: string }>(
+      `/calls/${encodeURIComponent(id)}/retry-commlog`,
+      { method: "POST" }
+    );
+  },
+
+  /** Fetch analytics aggregations. */
+  async getAnalytics(params?: {
+    days?: number;
+    office?: string;
+  }): Promise<CareInAnalytics> {
+    return careInRequest<{ success: boolean } & CareInAnalytics>("/analytics/calls", {
+      params: params
+        ? Object.fromEntries(
+            Object.entries(params).map(([k, v]) => [k, v != null ? String(v) : undefined])
+          ) as Record<string, string | undefined>
+        : undefined,
+    });
+  },
+};

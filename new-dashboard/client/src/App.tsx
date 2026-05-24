@@ -8,6 +8,7 @@ import DashboardLayout from "./components/DashboardLayout";
 import Dashboard from "./pages/Dashboard";
 import Calls from "./pages/Calls";
 import CallDetail from "./pages/CallDetail";
+import CareInCallDetail from "./pages/CareInCallDetail";
 import AgentBuilder from "./pages/AgentBuilder";
 import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
@@ -22,6 +23,7 @@ function Router() {
         <Route path="/" component={Dashboard} />
         <Route path="/calls" component={Calls} />
         <Route path="/calls/:id" component={CallDetail} />
+        <Route path="/carein-calls/:id" component={CareInCallDetail} />
         <Route path="/callbacks" component={Callbacks} />
         <Route path="/agents" component={AgentBuilder} />
         <Route path="/scheduling" component={Scheduling} />

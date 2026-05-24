@@ -9,8 +9,8 @@ import {
   BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, ResponsiveContainer, Tooltip, Legend,
 } from "recharts";
-import { Download, TrendingUp, TrendingDown, Bot, Users, Phone, RefreshCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { Download, TrendingUp, TrendingDown, Bot, Users, Phone, RefreshCw, FileText, Building2 } from "lucide-react";
+import { api, careInApi, type CareInAnalytics } from "@/lib/api";
 import { toast } from "sonner";
 
 const INTENT_COLORS = [
@@ -73,6 +73,10 @@ export default function Analytics() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // CareIN analytics state
+  const [careInData, setCareInData] = useState<CareInAnalytics | null>(null);
+  const [careInLoading, setCareInLoading] = useState(false);
+
   const fetchData = (range: DateRange) => {
     setLoading(true);
     setError(null);
@@ -96,6 +100,12 @@ export default function Analytics() {
 
   useEffect(() => {
     fetchData(dateRange);
+    // Fetch CareIN analytics in parallel
+    setCareInLoading(true);
+    careInApi.getAnalytics({ days: DAYS_MAP[dateRange] })
+      .then(setCareInData)
+      .catch(() => setCareInData(null))
+      .finally(() => setCareInLoading(false));
   }, [dateRange]);
 
   const kpis = data
@@ -362,6 +372,132 @@ export default function Analytics() {
           </Card>
         </>
       )}
+
+      {/* CareIN Analytics Section */}
+      <CareInAnalyticsSection data={careInData} loading={careInLoading} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CareIN analytics sub-section
+// ---------------------------------------------------------------------------
+
+const COMMLOG_COLORS = {
+  written: "oklch(0.55 0.18 155)",
+  pending: "oklch(0.55 0.15 280)",
+  failed:  "oklch(0.62 0.22 25)",
+};
+
+function CareInAnalyticsSection({
+  data,
+  loading,
+}: {
+  data: CareInAnalytics | null;
+  loading: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-3 border-b">
+        <CardTitle className="text-base font-semibold flex items-center gap-2">
+          <FileText size={14} className="text-primary" /> CareIN Ingested Calls
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-4">
+        {loading ? (
+          <p className="text-sm text-muted-foreground" role="status">Loading CareIN analytics…</p>
+        ) : !data ? (
+          <p className="text-sm text-muted-foreground">
+            CareIN server not available. Start it with <code className="text-xs bg-muted px-1 rounded">npx tsx server/index.ts</code>.
+          </p>
+        ) : (
+          <div className="space-y-6">
+            {/* KPI row */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                { label: "Total Calls", value: data.totalCalls, sub: "In period" },
+                { label: "Avg Quality", value: `${data.avgQualityScore}/100`, sub: "Sentiment + success" },
+                { label: "Avg Duration", value: `${Math.round(data.avgDurationSeconds / 60)}m ${data.avgDurationSeconds % 60}s`, sub: "Per call" },
+                { label: "Offices Active", value: Object.keys(data.byOffice).length, sub: "Distinct offices" },
+              ].map((s) => (
+                <div key={s.label} className="p-3 rounded-xl bg-muted/30">
+                  <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif" }}>{s.value}</div>
+                  <div className="text-sm font-medium text-foreground mt-0.5">{s.label}</div>
+                  <div className="text-xs text-muted-foreground">{s.sub}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Commlog status */}
+            <div>
+              <div className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                <FileText size={13} className="text-primary" aria-hidden /> Open Dental Commlog Status
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                {(["written", "pending", "failed"] as const).map((status) => (
+                  <div key={status} className="p-3 rounded-xl bg-muted/30 text-center">
+                    <div
+                      className="text-2xl font-bold"
+                      style={{ fontFamily: "Outfit, sans-serif", color: COMMLOG_COLORS[status] }}
+                    >
+                      {data.commlogStats[status]}
+                    </div>
+                    <div className="text-xs text-muted-foreground capitalize mt-0.5">{status}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Calls by office */}
+            {Object.keys(data.byOffice).length > 0 && (
+              <div>
+                <div className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                  <Building2 size={13} className="text-primary" aria-hidden /> Calls by Office
+                </div>
+                <div className="space-y-2">
+                  {Object.entries(data.byOffice)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([office, count]) => {
+                      const pct = data.totalCalls > 0 ? Math.round((count / data.totalCalls) * 100) : 0;
+                      return (
+                        <div key={office} className="flex items-center gap-3">
+                          <div className="text-xs text-muted-foreground w-36 truncate shrink-0">{office}</div>
+                          <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${pct}%`, backgroundColor: "oklch(0.55 0.18 210)" }}
+                              role="progressbar"
+                              aria-valuenow={pct}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-label={`${office}: ${count} calls`}
+                            />
+                          </div>
+                          <div className="text-xs font-mono text-muted-foreground w-8 text-right shrink-0">{count}</div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {/* Calls by tag */}
+            {data.byTag.length > 0 && (
+              <div>
+                <div className="text-sm font-semibold text-foreground mb-3">Top Call Types</div>
+                <div className="space-y-1.5">
+                  {data.byTag.slice(0, 6).map(({ tag, count }) => (
+                    <div key={tag} className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground capitalize">{tag.replace(/_/g, " ")}</span>
+                      <span className="font-mono font-medium">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

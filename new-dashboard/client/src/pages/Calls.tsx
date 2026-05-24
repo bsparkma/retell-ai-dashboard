@@ -1,7 +1,8 @@
 /**
- * Calls — Unified Call Log + Callbacks (tabbed view)
+ * Calls — Unified Call Log + Callbacks + CareIN Log (tabbed view)
  * Tab 1: Call log (Retell + Mango Voice) with search, filters, transcript preview
  * Tab 2: Callback queue with priority, status tracking, attempt logging
+ * Tab 3: CareIN ingested calls — office, tag, commlog status, quality score
  */
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
@@ -14,7 +15,7 @@ import {
   Download, RefreshCw, Mic, FileText, AlertTriangle,
   Volume2, Clock, CheckCircle2, User, Plus
 } from "lucide-react";
-import { api, type UnifiedCall, type CallbackDisplay } from "@/lib/api";
+import { api, careInApi, type UnifiedCall, type CallbackDisplay, type CareInCall } from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -22,7 +23,7 @@ type CallSource = "all" | "retell" | "mango";
 type CallStatus = "all" | "completed" | "transferred" | "voicemail" | "missed";
 type CallbackStatusFilter = "all" | "pending" | "in-progress" | "completed";
 type Priority = "all" | "high" | "medium" | "low";
-type ActiveTab = "calls" | "callbacks";
+type ActiveTab = "calls" | "callbacks" | "carein";
 
 const statusConfig: Record<string, { label: string; icon: React.ElementType; style: React.CSSProperties }> = {
   completed: { label: "Completed", icon: Phone, style: { color: "oklch(0.55 0.18 155)", backgroundColor: "oklch(0.65 0.18 155 / 0.12)" } },
@@ -86,12 +87,41 @@ export default function Calls() {
   const [cbPriority, setCbPriority] = useState<Priority>("all");
   const [cbLoading, setCbLoading] = useState(true);
 
+  // CareIN log state
+  const [careInCalls, setCareInCalls] = useState<CareInCall[]>([]);
+  const [careInTotal, setCareInTotal] = useState(0);
+  const [careInOffices, setCareInOffices] = useState<string[]>([]);
+  const [careInTags, setCareInTags] = useState<string[]>([]);
+  const [careInLoading, setCareInLoading] = useState(false);
+  const [careInError, setCareInError] = useState<string | null>(null);
+  const [careInSearch, setCareInSearch] = useState("");
+  const [careInOfficeFilter, setCareInOfficeFilter] = useState("all");
+  const [careInTagFilter, setCareInTagFilter] = useState("all");
+  const [careInCommlogFilter, setCareInCommlogFilter] = useState("all");
+
   const loadCalls = () => {
     setLoading(true);
     api.getUnifiedCalls({ limit: 1000, source: source === "all" ? undefined : source, search: search || undefined })
       .then(({ calls: list }) => setCalls(list))
       .catch(() => setCalls([]))
       .finally(() => setLoading(false));
+  };
+
+  const loadCareInCalls = () => {
+    setCareInLoading(true);
+    setCareInError(null);
+    careInApi.getCalls({ limit: 200 })
+      .then(({ calls: list, total, offices, tags }) => {
+        setCareInCalls(list);
+        setCareInTotal(total);
+        setCareInOffices(offices);
+        setCareInTags(tags);
+      })
+      .catch((err: unknown) => {
+        setCareInCalls([]);
+        setCareInError(err instanceof Error ? err.message : "Failed to load CareIN calls");
+      })
+      .finally(() => setCareInLoading(false));
   };
 
   const loadCallbacks = () => {
@@ -104,6 +134,12 @@ export default function Calls() {
 
   useEffect(() => { loadCalls(); }, []);
   useEffect(() => { loadCallbacks(); }, []);
+  // Load CareIN calls on first tab switch
+  useEffect(() => {
+    if (activeTab === "carein" && careInCalls.length === 0 && !careInLoading && !careInError) {
+      loadCareInCalls();
+    }
+  }, [activeTab]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -203,6 +239,7 @@ export default function Calls() {
         {([
           { key: "calls" as const, label: "Call Log", count: calls.length },
           { key: "callbacks" as const, label: "Callbacks", count: cbStats.pending },
+          { key: "carein" as const, label: "CareIN Log", count: careInTotal },
         ]).map((tab) => (
           <button
             key={tab.key}
@@ -217,6 +254,9 @@ export default function Calls() {
             {tab.label}
             {tab.key === "callbacks" && tab.count > 0 && (
               <Badge variant="destructive" className="text-xs px-1.5 py-0">{tab.count}</Badge>
+            )}
+            {tab.key === "carein" && tab.count > 0 && (
+              <Badge className="text-xs px-1.5 py-0 bg-primary/15 text-primary border-0">{tab.count}</Badge>
             )}
           </button>
         ))}
@@ -583,6 +623,310 @@ export default function Calls() {
           </div>
         </>
       )}
+
+      {/* CAREIN LOG TAB */}
+      {activeTab === "carein" && (
+        <CareInLogTab
+          calls={careInCalls}
+          total={careInTotal}
+          offices={careInOffices}
+          tags={careInTags}
+          loading={careInLoading}
+          error={careInError}
+          search={careInSearch}
+          officeFilter={careInOfficeFilter}
+          tagFilter={careInTagFilter}
+          commlogFilter={careInCommlogFilter}
+          onSearch={setCareInSearch}
+          onOffice={setCareInOfficeFilter}
+          onTag={setCareInTagFilter}
+          onCommlog={setCareInCommlogFilter}
+          onRefresh={loadCareInCalls}
+        />
+      )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CareIN Log sub-component
+// ---------------------------------------------------------------------------
+
+const COMMLOG_STYLES: Record<string, { label: string; color: string; bg: string }> = {
+  written:  { label: "Written",  color: "oklch(0.55 0.18 155)", bg: "oklch(0.65 0.18 155 / 0.12)" },
+  pending:  { label: "Pending",  color: "oklch(0.55 0.15 280)", bg: "oklch(0.55 0.15 280 / 0.12)" },
+  failed:   { label: "Failed",   color: "oklch(0.62 0.22 25)",  bg: "oklch(0.62 0.22 25  / 0.12)" },
+};
+
+const TAG_LABELS: Record<string, string> = {
+  appointment_scheduled:   "Scheduled",
+  appointment_cancelled:   "Cancelled",
+  appointment_rescheduled: "Rescheduled",
+  new_patient_inquiry:     "New Patient",
+  billing_inquiry:         "Billing",
+  insurance_inquiry:       "Insurance",
+  emergency:               "Emergency",
+  voicemail:               "Voicemail",
+  transferred:             "Transferred",
+  completed:               "Completed",
+  unresolved:              "Unresolved",
+};
+
+interface CareInLogTabProps {
+  calls: CareInCall[];
+  total: number;
+  offices: string[];
+  tags: string[];
+  loading: boolean;
+  error: string | null;
+  search: string;
+  officeFilter: string;
+  tagFilter: string;
+  commlogFilter: string;
+  onSearch: (v: string) => void;
+  onOffice: (v: string) => void;
+  onTag: (v: string) => void;
+  onCommlog: (v: string) => void;
+  onRefresh: () => void;
+}
+
+function CareInLogTab({
+  calls, total, offices, tags, loading, error,
+  search, officeFilter, tagFilter, commlogFilter,
+  onSearch, onOffice, onTag, onCommlog, onRefresh,
+}: CareInLogTabProps) {
+
+  // Client-side filter on top of fetched data
+  const filtered = calls.filter((c) => {
+    if (officeFilter !== "all" && c.office !== officeFilter) return false;
+    if (tagFilter !== "all" && c.tag !== tagFilter) return false;
+    if (commlogFilter !== "all" && c.commlogStatus !== commlogFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const hay = [c.callerName, c.callerNumber, c.office, c.tag, c.summary, c.routedTo].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const commlogCounts = {
+    written: calls.filter((c) => c.commlogStatus === "written").length,
+    pending: calls.filter((c) => c.commlogStatus === "pending").length,
+    failed:  calls.filter((c) => c.commlogStatus === "failed").length,
+  };
+
+  return (
+    <>
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: "Total Calls", value: total, sub: "Ingested" },
+          { label: "Commlog Written", value: commlogCounts.written, sub: "Open Dental", color: COMMLOG_STYLES.written.color },
+          { label: "Commlog Pending", value: commlogCounts.pending, sub: "Awaiting write", color: COMMLOG_STYLES.pending.color },
+          { label: "Commlog Failed",  value: commlogCounts.failed,  sub: "Write errors", color: commlogCounts.failed > 0 ? COMMLOG_STYLES.failed.color : undefined },
+        ].map((s) => (
+          <Card key={s.label}>
+            <CardContent className="p-4">
+              <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+                {s.value}
+              </div>
+              <div className="text-sm font-medium text-foreground mt-0.5">{s.label}</div>
+              <div className="text-xs text-muted-foreground">{s.sub}</div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap gap-3 items-center">
+            <div className="relative flex-1 min-w-48">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                aria-label="Search CareIN calls"
+                placeholder="Search name, number, office, tag…"
+                value={search}
+                onChange={(e) => onSearch(e.target.value)}
+                className="pl-9 h-9 text-sm w-full border border-input bg-background rounded-md px-3 focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+
+            {/* Office filter */}
+            {offices.length > 0 && (
+              <div className="flex items-center gap-1 bg-muted rounded-md p-1 flex-wrap">
+                {["all", ...offices].map((o) => (
+                  <button
+                    key={o}
+                    aria-pressed={officeFilter === o}
+                    onClick={() => onOffice(o)}
+                    className="px-3 py-1 rounded text-xs font-medium transition-all"
+                    style={{
+                      backgroundColor: officeFilter === o ? "white" : "transparent",
+                      color: officeFilter === o ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                      boxShadow: officeFilter === o ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+                    }}
+                  >
+                    {o === "all" ? "All Offices" : o}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Commlog status filter */}
+            <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+              {(["all", "written", "pending", "failed"] as const).map((s) => (
+                <button
+                  key={s}
+                  aria-pressed={commlogFilter === s}
+                  onClick={() => onCommlog(s)}
+                  className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
+                  style={{
+                    backgroundColor: commlogFilter === s ? "white" : "transparent",
+                    color: commlogFilter === s ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                    boxShadow: commlogFilter === s ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+                  }}
+                >
+                  {s === "all" ? "All Commlog" : s}
+                </button>
+              ))}
+            </div>
+
+            {/* Tag filter */}
+            {tags.length > 0 && (
+              <select
+                aria-label="Filter by tag"
+                value={tagFilter}
+                onChange={(e) => onTag(e.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="all">All Tags</option>
+                {tags.map((t) => (
+                  <option key={t} value={t}>{TAG_LABELS[t] ?? t}</option>
+                ))}
+              </select>
+            )}
+
+            <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading} aria-label="Refresh CareIN calls">
+              <RefreshCw size={14} className={`mr-1.5 ${loading ? "animate-spin" : ""}`} />
+              {loading ? "Loading…" : "Refresh"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Call list */}
+      <Card>
+        <CardHeader className="pb-3 border-b">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base font-semibold">
+              {filtered.length} of {total} calls
+            </CardTitle>
+            <span className="text-xs text-muted-foreground">Click a row for details</span>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {/* Column headers */}
+          <div
+            className="grid gap-3 px-4 py-2.5 border-b bg-muted/30 text-xs font-semibold text-muted-foreground uppercase tracking-wide"
+            style={{ gridTemplateColumns: "2fr 1.5fr 1fr 1.5fr 1fr 1fr 0.8fr" }}
+          >
+            <div>Caller / Number</div>
+            <div>Office</div>
+            <div>Tag</div>
+            <div>Routed To</div>
+            <div>Sentiment</div>
+            <div>Commlog</div>
+            <div>Time</div>
+          </div>
+
+          {loading ? (
+            <div role="status" className="text-center py-12 text-muted-foreground text-sm">
+              Loading CareIN calls…
+            </div>
+          ) : error ? (
+            <div role="alert" className="text-center py-12 space-y-2">
+              <AlertTriangle size={32} className="mx-auto text-destructive/50" />
+              <p className="text-sm text-destructive">{error}</p>
+              <p className="text-xs text-muted-foreground">
+                Make sure the CareIN server is running on port 3000.
+              </p>
+              <Button variant="outline" size="sm" onClick={onRefresh}>Retry</Button>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <Search size={32} className="mx-auto mb-2 opacity-30" aria-hidden />
+              <p className="text-sm">No CareIN calls match the current filters.</p>
+            </div>
+          ) : (
+            filtered.map((call) => {
+              const cs = COMMLOG_STYLES[call.commlogStatus] ?? COMMLOG_STYLES.pending;
+              const sentimentColor =
+                call.sentiment === "positive" ? "oklch(0.55 0.18 155)"
+                : call.sentiment === "negative" ? "oklch(0.62 0.22 25)"
+                : "oklch(0.52 0.015 240)";
+
+              return (
+                <Link key={call.id} href={`/carein-calls/${call.id}`}>
+                  <div
+                    className="grid gap-3 px-4 py-3 border-b border-border/50 hover:bg-muted/30 transition-colors cursor-pointer items-center"
+                    style={{ gridTemplateColumns: "2fr 1.5fr 1fr 1.5fr 1fr 1fr 0.8fr" }}
+                    role="row"
+                  >
+                    {/* Caller */}
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-foreground truncate flex items-center gap-1">
+                        {call.isEmergency && <AlertTriangle size={11} className="text-destructive flex-shrink-0" aria-label="Emergency" />}
+                        {call.callerName}
+                      </div>
+                      <div className="text-xs font-mono text-muted-foreground">{call.callerNumber}</div>
+                    </div>
+
+                    {/* Office */}
+                    <div className="text-sm text-muted-foreground truncate">{call.office}</div>
+
+                    {/* Tag */}
+                    <div>
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-primary/8 text-primary">
+                        {TAG_LABELS[call.tag] ?? call.tag}
+                      </span>
+                    </div>
+
+                    {/* Routed to */}
+                    <div className="text-sm text-muted-foreground truncate">{call.routedTo}</div>
+
+                    {/* Sentiment */}
+                    <div className="flex items-center gap-1.5">
+                      <div
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: sentimentColor }}
+                        aria-label={`Sentiment: ${call.sentiment}`}
+                      />
+                      <span className="text-xs text-muted-foreground capitalize">{call.sentiment}</span>
+                    </div>
+
+                    {/* Commlog status */}
+                    <div>
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-full"
+                        style={{ color: cs.color, backgroundColor: cs.bg }}
+                        aria-label={`Commlog: ${cs.label}`}
+                      >
+                        {cs.label}
+                      </span>
+                    </div>
+
+                    {/* Time */}
+                    <div className="text-xs text-muted-foreground">
+                      {formatTimeAgo(call.startedAt)}
+                    </div>
+                  </div>
+                </Link>
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }
