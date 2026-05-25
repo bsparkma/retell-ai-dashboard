@@ -724,9 +724,15 @@ export default api;
 // new-dashboard directory. In production both are served from the same origin.
 // ---------------------------------------------------------------------------
 
+// In dev: CareIN server runs on port 3000 alongside Vite (3005).
+// In prod: the built dashboard is served by the CareIN Express server itself,
+// so /api is same-origin. Use window.location.origin to avoid baking a host
+// into the bundle (lets the team hit it by LAN IP or hostname).
 const CAREIN_BASE =
   (import.meta.env.VITE_CAREIN_API_URL as string | undefined) ??
-  "http://localhost:3000/api";
+  (import.meta.env.PROD
+    ? `${window.location.origin}/api`
+    : "http://localhost:3000/api");
 
 async function careInRequest<T>(
   path: string,
