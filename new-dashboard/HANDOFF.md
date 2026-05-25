@@ -1,7 +1,50 @@
 # HANDOFF — CareIN AI Call Dashboard
 
-**Date:** 2026-05-24 (updated)  
-**Branch:** `main` (commits `ea03403` → `ea88b72`)
+**Date:** 2026-05-24 (production cutover)
+**Branch:** `main`
+
+---
+
+## Session 4 — Production Cutover (2026-05-24, evening)
+
+Three concrete deployment improvements landed:
+
+1. **PM2 now serves the built bundle, not `vite dev`.**
+   `ecosystem.config.cjs` was updated so `carein-dashboard` runs
+   `new-dashboard/dist/index.js` on port 3005 with `NODE_ENV=production`.
+   That single Node process serves the built SPA AND handles the CareIN
+   API + Retell webhook ingestion. Build command:
+   `cd new-dashboard && pnpm build && pm2 reload carein-dashboard`.
+
+2. **CareIN client base URL is now origin-agnostic in production.**
+   `api.ts` falls back to `${window.location.origin}/api` when built for
+   production — no `localhost:3000` baked into assets. Same bundle works
+   for LAN IP, hostname, or future HTTPS reverse-proxy access without a
+   rebuild.
+
+3. **Store path bug fixed; production never auto-seeds.**
+   `server/lib/store.ts` now resolves the data dir from `process.cwd()`
+   (overridable via `CAREIN_DATA_DIR`) — fixes a quirk where `dist/index.js`
+   resolved `__dirname/../../data` to the project root instead of
+   `new-dashboard/data`. `server/index.ts` now only auto-seeds in
+   non-production; an empty store stays empty in prod so synthetic seed
+   calls don't show up as real data. Orphan project-root `data/calls.json`
+   moved to `data/calls.json.orphan-bak` (safe to delete once verified).
+
+**Step 3 (unifying the two Call Log tabs) is deliberately deferred** until
+Retell is repointed at the new webhook URL and real CareIN data accumulates
+on both sides. See NOTES.md "Step 3" for the cutover checklist.
+
+### Production state right now
+
+| Component | Status |
+|---|---|
+| `carein-backend` (port 5003) | ✅ unchanged, running |
+| `carein-dashboard` (port 3005) | ✅ built bundle, NODE_ENV=production |
+| Team URL `http://10.20.30.160:3005` | ✅ HTTP 200 |
+| CareIN store | empty (0 calls) — awaits webhook repoint |
+| Retell webhook target | still pointed at port 5003 (no traffic to new server yet) |
+| `RETELL_API_KEY` in `.env` | not yet set (signature verification disabled) |
 
 ---
 

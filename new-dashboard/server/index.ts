@@ -36,13 +36,18 @@ if (USE_SEED_DATA) {
 }
 
 async function startServer() {
-  // Load data: force seed when USE_SEED_DATA=true; otherwise prefer live data
-  // and fall back to seed only when the store is completely empty.
+  // Load data:
+  // - USE_SEED_DATA=true                        → always load seed fixtures (dev/demo).
+  // - Otherwise, dev (NODE_ENV !== "production") → load persisted store; seed if empty
+  //                                                so a fresh clone has something to show.
+  // - Otherwise, production                     → load persisted store; an empty store
+  //                                                STAYS empty (we don't want synthetic
+  //                                                seed calls appearing as real data).
   if (USE_SEED_DATA) {
     seedStore(SEED_CALLS);
   } else {
     loadStore();
-    if (getAllCalls().length === 0) {
+    if (getAllCalls().length === 0 && process.env["NODE_ENV"] !== "production") {
       seedStore(SEED_CALLS);
     }
   }

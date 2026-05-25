@@ -9,13 +9,18 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { writeFile } from "fs/promises";
 import path from "path";
-import { fileURLToPath } from "url";
 import type { Call, CallFilters } from "./types.js";
 import { filterCalls } from "./analytics.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const DATA_DIR = path.resolve(__dirname, "..", "..", "data");
+// Anchor the data dir to the current working directory (new-dashboard/).
+// Resolving via __dirname is unsafe because esbuild bundles this file into
+// new-dashboard/dist/index.js — "../../data" then resolves to the project
+// root instead of new-dashboard/data. PM2 sets cwd=new-dashboard and
+// `npx tsx server/index.ts` is also run from there, so process.cwd() is
+// stable across dev and prod. The CAREIN_DATA_DIR env var can override.
+const DATA_DIR = path.resolve(
+  process.env["CAREIN_DATA_DIR"] || path.join(process.cwd(), "data")
+);
 const STORE_FILE = path.resolve(DATA_DIR, "calls.json");
 
 // ---------------------------------------------------------------------------
