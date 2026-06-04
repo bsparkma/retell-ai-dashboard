@@ -1,0 +1,38 @@
+# Caddyfile — LOCAL container parity front for the CareIN stack.
+#
+# Mirrors deploy/Caddyfile (the team-facing prod front) but for the docker
+# compose network: plain HTTP on :8088 (no TLS locally), and it reverse-proxies
+# to the backend by its COMPOSE SERVICE NAME (`backend`) instead of 127.0.0.1.
+#
+# One origin (http://localhost:8088) serves BOTH the built SPA and the API:
+# Caddy file-serves the static dist for page routes and proxies /api/*, /auth/*
+# and /socket.io/* to the backend container. Single origin => no CORS, and the
+# SPA's relative "/api" base (VITE_API_URL=/api) just works.
+#
+# This is the local stand-in for Azure Front Door (which will serve the static
+# SPA from Blob/CDN and route /api,/auth to the backend Container App).
+
+:8088 {
+	# API routes -> backend container (compose service name, container port).
+	handle /api/* {
+		reverse_proxy backend:5403
+	}
+
+	# Entra SSO routes (login / callback / logout / me) -> same backend.
+	handle /auth/* {
+		reverse_proxy backend:5403
+	}
+
+	# Socket.IO (live calls / transcripts). Caddy upgrades WebSockets itself.
+	handle /socket.io/* {
+		reverse_proxy backend:5403
+	}
+
+	# Everything else: the built SPA with history-API (client-route) fallback.
+	handle {
+		root * /srv
+		encode zstd gzip
+		try_files {path} /index.html
+		file_server
+	}
+}

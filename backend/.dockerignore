@@ -1,0 +1,24 @@
+# Keep the build context lean and secret-free.
+node_modules
+npm-debug.log*
+
+# Never bake secrets or local runtime state into the image.
+.env
+.env.*
+.local
+
+# Runtime data / logs (mounted as a volume at /data instead).
+data
+recordings
+logs
+*.log
+
+# VCS / editor noise
+.git
+.gitignore
+.vscode
+.idea
+
+# Tests & coverage (not needed at runtime)
+coverage
+**/*.test.js

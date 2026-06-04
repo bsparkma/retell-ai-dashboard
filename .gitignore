@@ -87,3 +87,19 @@ logs/
 
 # Local-only dev artifacts and session notes
 *.local.md
+
+# Local-only identifiers and Entra app metadata (non-secret IDs, but keep out of git)
+.local/
+
+# Certificates / private keys — NEVER commit (real keys live outside the repo)
+*.pfx
+*.cer
+*.crt
+*.pem
+*.key
+*.p12
+secrets/
+**/secrets/
+
+# Container-parity working env (DEV throwaway values; commit the .example only)
+deploy/container/.env.container

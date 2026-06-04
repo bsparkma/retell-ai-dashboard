@@ -1,0 +1,72 @@
+# LOCAL container-parity stack for CareIN — Phase 3 Step 1.
+#
+# Goal: prove the app runs identically when containerized, WITHOUT touching the
+# running prod (PM2 :5003), dev (:5103), Caddy, or the live DBs.
+#
+# Topology (local stand-in for the Azure target):
+#   browser -> caddy (:8088, single origin)
+#               ├── /api,/auth,/socket.io  -> backend container (:5403)
+#               └── everything else        -> built SPA static (new-dashboard/dist/public)
+#   backend  -> Postgres on the HOST (the existing `carein-local-pg`, :55433)
+#               reached via host.docker.internal (see the env file).
+#
+# DATABASE: we REUSE the already-running `carein-local-pg` (control plane
+# `carein_control` + tenant DB `carein_t_carein`, already migrated + seeded)
+# rather than standing up a throwaway Postgres here. The backend only READS the
+# registry and lazily opens the tenant pool, so this is non-destructive. To run
+# a fully self-contained Postgres instead, see docs/CONTAINER.md.
+#
+# Ports are deliberately OFF the busy set (5003 / 5103 / 3005 / 3006 / 80 / 443):
+#   8088 -> Caddy front (the URL you open)
+#   5403 -> backend API (direct, for debugging; normally reached via Caddy)
+#
+# Run from this directory:
+#   docker compose --env-file .env.container up --build
+# (build the SPA first — see docs/CONTAINER.md.)
+
+name: carein-parity
+
+services:
+  backend:
+    build:
+      # Backend image is built from the backend/ folder (its own Dockerfile).
+      context: ../../backend
+      dockerfile: Dockerfile
+    image: carein-backend:parity
+    container_name: carein-parity-backend
+    env_file:
+      - .env.container
+    environment:
+      # Bind inside the container; published on the host below.
+      PORT: "5403"
+    ports:
+      # host:container — direct API access for debugging/health checks.
+      - "5403:5403"
+    extra_hosts:
+      # Make `host.docker.internal` resolve to the Docker host on every
+      # platform (Linux included), so CONTROL_DB_URL / TENANT_*_DB_URL in the
+      # env file can point at the host-published carein-local-pg (:55433).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Writable runtime dir for the append-only access log + unified-call store
+      # (server.js writes to /data). A named volume keeps it off the image and
+      # out of the bind-mounted source.
+      - backend_data:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: carein-parity-caddy
+    depends_on:
+      - backend
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Built SPA (vite outDir). Build it on the host first:
+      #   cd new-dashboard && pnpm build   (or: pnpm exec vite build)
+      - ../../new-dashboard/dist/public:/srv:ro
+    restart: unless-stopped
+
+volumes:
+  backend_data:
