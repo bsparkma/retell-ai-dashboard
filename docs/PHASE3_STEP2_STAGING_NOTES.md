@@ -44,8 +44,9 @@ wrapper is broken in this shell, see Gotchas):
 
 ## Endpoints
 
-- **Working staging URL (now):** `https://ca-carein-caddy.redriver-8e85ebf8.southcentralus.azurecontainerapps.io`
-  (HTTPS via the env's wildcard managed cert; IP-allowlisted to the admin workstation).
+- **Working staging URL:** `https://staging.carein.ai` (custom domain **bound** with an
+  Azure-managed DigiCert cert; IP-allowlisted to the admin workstation).
+- Default ingress FQDN (still valid): `https://ca-carein-caddy.redriver-8e85ebf8.southcentralus.azurecontainerapps.io`
 - Backend internal FQDN: `https://ca-carein-backend.internal.redriver-8e85ebf8.southcentralus.azurecontainerapps.io`
 
 ## Secrets (Key Vault `kv-carein-staging`, NAMES only)
@@ -87,27 +88,29 @@ Postgres public access is **Enabled** with a firewall allowlist:
 so the Container Apps reach it). **§6 replaces this with VNet + private endpoints**
 and disables public access; re-verify §5 over the private path afterward.
 
-## Custom domain `staging.carein.ai` — DNS hand-off (manual, GoDaddy)
+## Custom domain `staging.carein.ai` — BOUND
 
-Not bound yet (requires DNS on the `carein.ai` zone, which is manual GoDaddy).
-Add these records, then bind + auto-provision the managed cert:
+DNS (GoDaddy `carein.ai` zone) verified propagated and the hostname is bound with
+an Azure-managed certificate:
 
 ```
 CNAME  staging              ca-carein-caddy.redriver-8e85ebf8.southcentralus.azurecontainerapps.io
 TXT    asuid.staging        1CA6D6C4B719F29F8781888441CF6AC6905CD268B88AECB1F985EB97A470A901
 ```
 
-Then (from a shell with `MSYS_NO_PATHCONV=1` if on Git-Bash):
+- Binding: `SniEnabled` on `ca-carein-caddy`.
+- Managed cert: `mc-cae-carein-sta-staging-carein-a-9435` — provisioningState
+  **Succeeded**, subject `staging.carein.ai`, issuer DigiCert (GeoTrust TLS RSA CA
+  G1), valid **2026-06-04 → 2026-12-04** (Azure auto-renews).
+- SSO redirect URI `https://staging.carein.ai/auth/callback` is registered on
+  `CareIN-Dashboard-SSO`; `/auth/login` 302s to Microsoft with that redirect_uri.
 
+Bind was done with (Git-Bash `MSYS_NO_PATHCONV=1`):
 ```
 az containerapp hostname add  -g rg-carein-staging -n ca-carein-caddy --hostname staging.carein.ai
 az containerapp hostname bind -g rg-carein-staging -n ca-carein-caddy --hostname staging.carein.ai \
   --environment cae-carein-staging --validation-method CNAME
 ```
-
-The SSO redirect URI `https://staging.carein.ai/auth/callback` is **already added**
-(additively) to the `CareIN-Dashboard-SSO` app reg, so interactive login works
-once the hostname is bound.
 
 ## Acceptance checklist (§5) results
 
