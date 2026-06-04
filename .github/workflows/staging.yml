@@ -160,15 +160,23 @@ jobs:
         run: az containerapp update -n "$BACKEND_APP" -g "$AZ_RG" --image "$ACR_LOGIN/carein-backend:${{ needs.publish.outputs.sha }}"
       - name: Deploy caddy
         run: az containerapp update -n "$CADDY_APP" -g "$AZ_RG" --image "$ACR_LOGIN/carein-caddy:${{ needs.publish.outputs.sha }}"
-      - name: Smoke check staging
+      - name: Verify new revision is provisioned and serving the built image
+        # Allowlist-independent: the caddy ingress is IP-restricted to the admin
+        # workstation, so a runner curl would (correctly) get 403. Verify via the
+        # Azure management plane instead — the latest revision is Provisioned and
+        # its image is the SHA we just published.
         run: |
-          for i in $(seq 1 10); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://staging.carein.ai/api/health || true)
-            echo "  health: $code"
-            [ "$code" = "200" ] && exit 0
-            sleep 8
+          set -euo pipefail
+          SHA="${{ needs.publish.outputs.sha }}"
+          for app in "$BACKEND_APP" "$CADDY_APP"; do
+            rev=$(az containerapp show -n "$app" -g "$AZ_RG" --query properties.latestRevisionName -o tsv)
+            state=$(az containerapp revision show -n "$app" -g "$AZ_RG" --revision "$rev" --query properties.provisioningState -o tsv)
+            img=$(az containerapp revision show -n "$app" -g "$AZ_RG" --revision "$rev" --query "properties.template.containers[0].image" -o tsv)
+            echo "$app -> rev=$rev state=$state img=$img"
+            [ "$state" = "Provisioned" ] || { echo "::error::$app revision $rev not Provisioned ($state)"; exit 1; }
+            case "$img" in *":$SHA") ;; *) echo "::error::$app serving $img, expected tag :$SHA"; exit 1 ;; esac
           done
-          echo "::error::staging health check did not return 200"; exit 1
+          echo "Both apps provisioned on :$SHA"
 
   # 5) PROD — DISABLED placeholder (Step 5). Wired to NOTHING. Never the LAN box.
   deploy-prod:
