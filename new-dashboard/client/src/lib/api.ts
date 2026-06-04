@@ -18,7 +18,13 @@ async function request<T>(
   options?: RequestInit & { params?: Record<string, string | number | boolean | undefined> }
 ): Promise<T> {
   const { params, ...init } = options ?? {};
-  const url = new URL(path.startsWith("http") ? path : `${BASE}${path.startsWith("/") ? "" : "/"}${path}`);
+  // Resolve relative bases (e.g. VITE_API_URL="/api" for same-origin prod)
+  // against the current origin; absolute URLs ignore the base. Lets the team hit
+  // it by LAN IP or hostname without baking a host into the bundle.
+  const url = new URL(
+    path.startsWith("http") ? path : `${BASE}${path.startsWith("/") ? "" : "/"}${path}`,
+    window.location.origin,
+  );
   if (params) {
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== "") url.searchParams.set(k, String(v));
@@ -29,6 +35,8 @@ async function request<T>(
     : {};
   const res = await fetch(url.toString(), {
     ...init,
+    // Send the Entra SSO session cookie (HttpOnly) alongside any bearer token.
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...authHeaders, ...init.headers },
   });
   if (!res.ok) {

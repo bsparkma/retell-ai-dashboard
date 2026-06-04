@@ -25,6 +25,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
@@ -50,6 +51,9 @@ interface DashboardLayoutProps {
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [location] = useLocation();
   const { theme, toggleTheme } = useTheme();
+  const auth = useAuth();
+  // Practice (tenant) name from /auth/me — single tenant today, so no selector.
+  const practiceName = auth.status === "authenticated" ? auth.user.tenant?.displayName : undefined;
   const [selectedOffice, setSelectedOffice] = useState(offices[0]);
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -226,7 +230,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <Menu size={20} />
           </button>
 
-          <div className="flex-1" />
+          <div className="flex-1 flex items-center">
+            {practiceName && (
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
+                <Building2 size={14} className="flex-shrink-0 text-muted-foreground" />
+                {practiceName}
+              </span>
+            )}
+          </div>
 
           <div className="flex items-center gap-2 ml-auto">
             {/* Theme toggle */}

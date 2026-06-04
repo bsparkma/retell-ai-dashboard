@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
-
-const CONNECTOR_BASE = process.env.OD_CONNECTOR_URL || 'http://localhost:8444';
-const CONNECTOR_API_KEY = process.env.OD_CONNECTOR_API_KEY || '';
+const odAccess = require('../platform/odAccess');
 
 // GET /api/slot-markers
+//
+// The connector base URL + API key are no longer read from the environment
+// (the old `OD_CONNECTOR_URL || 'http://localhost:8444'` fallback is gone).
+// odAccess resolves the calling tenant's connector from the registry, enforces
+// the ClinicNum entitlement check, and forwards to that tenant's connector.
 router.get('/', async (req, res) => {
   const { startDate, endDate, clinicNum, category } = req.query;
 
@@ -13,27 +16,15 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const url = new URL('/api/slot-markers', CONNECTOR_BASE);
-    url.searchParams.set('startDate', startDate);
-    url.searchParams.set('endDate', endDate);
-    url.searchParams.set('clinicNum', clinicNum);
-    if (category) url.searchParams.set('category', category);
-
-    const upstream = await fetch(url.toString(), {
-      headers: { 'Authorization': `Bearer ${CONNECTOR_API_KEY}` },
-    });
-
-    if (!upstream.ok) {
-      const text = await upstream.text();
-      console.error('[slot-markers] Connector error:', upstream.status, text);
-      return res.status(502).json({ success: false, error: 'Connector returned an error' });
-    }
-
-    const json = await upstream.json();
-    return res.json(Array.isArray(json.data) ? json.data : []);
+    const data = await odAccess.getSlotMarkers(req, { startDate, endDate, clinicNum, category });
+    return res.json(data);
   } catch (err) {
-    console.error('[slot-markers] Failed to reach connector:', err.message);
-    return res.status(503).json({ success: false, error: 'Could not reach OD connector' });
+    const status = odAccess.httpStatusFor(err);
+    return res.status(status).json({
+      success: false,
+      error: err && err.publicMessage ? err.publicMessage : 'OD connector error',
+      code: err && err.code ? err.code : undefined,
+    });
   }
 });
 

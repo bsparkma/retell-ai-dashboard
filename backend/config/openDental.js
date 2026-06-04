@@ -7,6 +7,9 @@ class OpenDentalService extends EventEmitter {
     super();
     // Support both database and API connections
     // Also support alternative variable names
+    // Non-secret OD config (from .env/process.env in dev and prod alike).
+    this.integrationMode = (process.env.OPENDENTAL_INTEGRATION_MODE || '').trim().toLowerCase();
+    this.imagesPath = process.env.OPENDENTAL_IMAGES_PATH || '';
     this.dbUrl = process.env.OPENDENTAL_DB_URL;
     this.apiUrl = process.env.OD_API_URL || process.env.OPENDENTAL_API_BASE_URL;
     this.apiKey = process.env.OD_API_KEY;
@@ -15,10 +18,24 @@ class OpenDentalService extends EventEmitter {
     this.developerKey = process.env.OPENDENTAL_DEVELOPER_KEY;
     this.customerKey = process.env.OPENDENTAL_CUSTOMER_KEY;
     
-    // Prefer database connection if available, fallback to API
-    this.useDatabase = !!this.dbUrl;
-    // Enable if we have DB URL, or API URL with either single key or developer+customer keys
-    this.enabled = !!(this.dbUrl || (this.apiUrl && (this.apiKey || (this.developerKey && this.customerKey))));
+    // Connection mode. CareIN runs in 'api' mode (HTTP REST), never direct
+    // MySQL. The MySQL-parsing path (setupDatabaseConnection -> new URL(dbUrl))
+    // only runs when a direct-DB mode is EXPLICITLY configured, so the API base
+    // URL is never mistaken for a mysql:// connection string.
+    const DIRECT_DB_MODES = ['db', 'database', 'mysql', 'direct'];
+    if (this.integrationMode === 'api') {
+      this.useDatabase = false;
+    } else if (DIRECT_DB_MODES.includes(this.integrationMode)) {
+      this.useDatabase = !!this.dbUrl;
+    } else {
+      // No explicit mode set: only use direct DB if a connection URL is present.
+      this.useDatabase = !!this.dbUrl;
+    }
+    // Enabled when the active mode has what it needs: API mode needs a base URL
+    // plus credentials; DB mode needs a connection URL.
+    this.enabled = this.useDatabase
+      ? !!this.dbUrl
+      : !!(this.apiUrl && (this.apiKey || (this.developerKey && this.customerKey)));
     
     this.syncInterval = null;
     this.lastSyncTime = null;

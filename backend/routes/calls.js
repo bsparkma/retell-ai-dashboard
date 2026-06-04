@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
-const openDentalService = require('../config/openDental');
+const odAccess = require('../platform/odAccess');
 const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
 
 // Enhanced AI-powered name extraction function
@@ -130,29 +130,29 @@ const extractNameAdvanced = (transcript, summary) => {
 };
 
 // Check if caller is new or existing patient using OpenDental
-const determinePatientStatus = async (callerName, callerNumber) => {
+const determinePatientStatus = async (req, callerName, callerNumber) => {
   try {
     // First try to find patient by phone number
     let patients = [];
-    
+
     if (callerNumber && callerNumber !== 'Unknown') {
       const cleanPhone = callerNumber.replace(/\D/g, '');
       if (cleanPhone.length >= 10) {
-        patients = await openDentalService.searchPatients(cleanPhone);
+        patients = await odAccess.searchPatients(req, cleanPhone);
       }
     }
 
     // If no match by phone, try by name
     if (patients.length === 0 && callerName && callerName !== callerNumber) {
-      patients = await openDentalService.searchPatients(callerName);
+      patients = await odAccess.searchPatients(req, callerName);
     }
 
     if (patients.length > 0) {
       // Found matching patient(s) - they're existing
       const patient = patients[0]; // Take the first match
-      
+
       // Get appointment history to confirm they're really existing
-      const appointmentHistory = await openDentalService.verifyPatientAppointments(patient.id);
+      const appointmentHistory = await odAccess.verifyPatientAppointments(req, patient.id);
       
       return {
         isNewPatient: false,
@@ -354,7 +354,7 @@ router.get('/', async (req, res) => {
         );
         
         // Determine patient status using OpenDental
-        patientInfo = await determinePatientStatus(extractedName, call.from_number);
+        patientInfo = await determinePatientStatus(req, extractedName, call.from_number);
         
         callerName = patientInfo.patientName || extractedName;
         isNewPatient = patientInfo.isNewPatient;
@@ -612,7 +612,7 @@ router.post('/search', async (req, res) => {
           call.from_number || 'Unknown'
         );
         
-        patientInfo = await determinePatientStatus(extractedName, call.from_number);
+        patientInfo = await determinePatientStatus(req, extractedName, call.from_number);
         callerName = patientInfo.patientName || extractedName;
         isNewPatient = patientInfo.isNewPatient;
       }
@@ -665,7 +665,7 @@ router.post('/test-patient-lookup', async (req, res) => {
     );
 
     // Test patient status determination
-    const patientInfo = await determinePatientStatus(extractedName, callerNumber);
+    const patientInfo = await determinePatientStatus(req, extractedName, callerNumber);
 
     res.json({
       success: true,
@@ -698,8 +698,8 @@ router.get('/patient-suggestions/:query', async (req, res) => {
       return res.json({ suggestions: [] });
     }
 
-    const patients = await openDentalService.searchPatients(query);
-    
+    const patients = await odAccess.searchPatients(req, query);
+
     res.json({
       suggestions: patients.map(patient => ({
         id: patient.id,

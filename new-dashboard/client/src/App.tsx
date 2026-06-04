@@ -4,6 +4,8 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { AuthProvider } from "./contexts/AuthContext";
+import RequireAuth from "./components/RequireAuth";
 import DashboardLayout from "./components/DashboardLayout";
 import Dashboard from "./pages/Dashboard";
 import Calls from "./pages/Calls";
@@ -41,10 +43,14 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider defaultTheme="light" switchable>
         <TooltipProvider>
-          <SlotMarkersProvider>
-            <Toaster position="top-right" />
-            <Router />
-          </SlotMarkersProvider>
+          <AuthProvider>
+            <RequireAuth>
+              <SlotMarkersProvider>
+                <Toaster position="top-right" />
+                <Router />
+              </SlotMarkersProvider>
+            </RequireAuth>
+          </AuthProvider>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

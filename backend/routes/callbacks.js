@@ -16,6 +16,7 @@ const express = require('express');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const path = require('path');
+const audit = require('../platform/audit');
 
 const router = express.Router();
 
@@ -104,7 +105,7 @@ loadFromDisk();
  * GET /api/callbacks
  * List callbacks, optionally filtered by status / priority.
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { status, priority } = req.query;
     let filtered = [...callbacks];
@@ -118,6 +119,10 @@ router.get('/', (req, res) => {
       if (diff !== 0) return diff;
       return new Date(a.due_at) - new Date(b.due_at);
     });
+
+    // HIPAA audit: callbacks carry patient names. Audited before responding;
+    // a failed audit write fails closed (caught below → 500, no PHI returned).
+    await audit.audit(req, { action: 'READ', resourceType: 'callback', resourceId: null, result: 'SUCCESS' });
 
     res.json({ success: true, count: filtered.length, callbacks: filtered });
   } catch (error) {
@@ -155,7 +160,7 @@ router.get('/stats', (req, res) => {
 /**
  * GET /api/callbacks/:id
  */
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const callback = callbacks.find(cb => cb.id === req.params.id);
     if (!callback) {
@@ -163,6 +168,7 @@ router.get('/:id', (req, res) => {
         .status(404)
         .json({ success: false, error: 'Callback not found' });
     }
+    await audit.audit(req, { action: 'READ', resourceType: 'callback', resourceId: req.params.id, result: 'SUCCESS' });
     res.json({ success: true, callback });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

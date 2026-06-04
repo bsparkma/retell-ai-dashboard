@@ -34,7 +34,19 @@ module.exports = {
       merge_logs: true,
       time: true,
       env: {
-        NODE_ENV: 'production',
+        // INTERIM team-facing config (2026-06-03): backend sits behind Caddy at
+        // https://dashboard.carein.ai (same-origin). Intentionally NOT
+        // NODE_ENV=production tonight — that keeps secrets coming from
+        // backend/.env (no Key Vault cert dependency) and cookie Secure=false,
+        // which is safe because Caddy terminates TLS and is the only ingress.
+        // PM2 injects these BEFORE server.js runs dotenv.config(), so they
+        // OVERRIDE backend/.env (dotenv never overwrites an already-set env key).
+        // Harden later: set NODE_ENV:'production' for Key Vault secrets, the
+        // per-tenant audit gate, and Secure=true cookies.
+        NODE_ENV: 'development',
+        PORT: 5003,
+        DASHBOARD_SSO_REDIRECT_URI: 'https://dashboard.carein.ai/auth/callback',
+        DASHBOARD_POST_LOGIN_URL: 'https://dashboard.carein.ai',
       },
     },
     {

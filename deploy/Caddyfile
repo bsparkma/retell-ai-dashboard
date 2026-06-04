@@ -1,0 +1,56 @@
+# Caddyfile — CareIN dashboard, single HTTPS origin for office LAN access.
+#
+# One origin (https://dashboard.carein.ai) serves BOTH the built SPA and the
+# backend: Caddy serves the static dist for page routes and reverse-proxies
+# /api/* and /auth/* to the backend. Because the browser only ever talks to one
+# origin, there is NO CORS and the SSO session cookie's Secure flag is valid.
+#
+# This file is config only. Running Caddy, issuing the cert, choosing the TLS
+# directive, and starting the backend are SEPARATE steps (do them next).
+#   Run later with:  caddy run --config deploy/Caddyfile
+#
+# Prereqs (later steps): DNS A dashboard.carein.ai -> 10.20.30.160, the backend
+# listening on the port below, and a TLS choice made (see placeholder).
+
+dashboard.carein.ai {
+
+	# --- TLS: publicly-trusted Let's Encrypt cert (issued via Posh-ACME, -----
+	#     DNS-01 manual). Caddy LOADS these externally-managed PEM files and does
+	#     NOT run ACME itself, so no public port 80/443 challenge is attempted.
+	#     Renewal is handled by Posh-ACME (manual DNS-01 — re-add the TXT record;
+	#     see runbook). Paths point straight at the Posh-ACME store, so a renewal
+	#     rewrites them in place and a `caddy reload` picks up the new cert with
+	#     no path change. Cert valid 2026-06-03 .. 2026-09-01.
+	tls "C:/Users/beau/AppData/Local/Posh-ACME/LE_PROD/3401949526/dashboard.carein.ai/fullchain.cer" "C:/Users/beau/AppData/Local/Posh-ACME/LE_PROD/3401949526/dashboard.carein.ai/cert.key"
+	# ------------------------------------------------------------------------
+
+	# Backend API routes -> CareIN backend (team-facing instance).
+	# Recommended port: 5003 — the backend's NODE_ENV=production default
+	# (backend/server.js), so no PORT override is needed. Change here if you
+	# run the team-facing backend on a different port.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:5003
+	}
+
+	# Entra SSO routes (login / callback / logout / me) -> same backend.
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:5003
+	}
+
+	# Optional: enable only if a live/realtime feature starts using Socket.IO.
+	# Caddy upgrades WebSocket connections automatically.
+	# handle /socket.io/* {
+	#	reverse_proxy 127.0.0.1:5003
+	# }
+
+	# Everything else: the built SPA with history-API (client-route) fallback.
+	handle {
+		# Built output from `npm run build` in new-dashboard (vite outDir).
+		# Quoted because the path contains spaces. You may copy this dist
+		# elsewhere (e.g. C:/srv/carein-dashboard) and update this root.
+		root * "C:/Users/beau/carein cursor dashboard/new-dashboard/dist/public"
+		encode zstd gzip
+		try_files {path} /index.html
+		file_server
+	}
+}

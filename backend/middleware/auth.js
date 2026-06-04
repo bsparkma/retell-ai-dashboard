@@ -106,12 +106,88 @@ function requireDashboardToken({ exempt = [] } = {}) {
 }
 
 /**
- * Socket.IO middleware: require the same bearer token on connect.
+ * Express middleware: allow a request through if it carries EITHER a valid
+ * Entra SSO session cookie OR the shared dashboard bearer token. This lets the
+ * browser dashboard authenticate via SSO cookies while existing token-based
+ * integrations (and dev tooling) keep working unchanged.
  *
- * Clients pass it via:
- *   io(URL, { auth: { token: '<DASHBOARD_API_TOKEN>' } })
+ * Exempt paths bypass auth entirely (same semantics as requireDashboardToken).
+ */
+function requireDashboardAuth({ exempt = [] } = {}) {
+  const tokenGate = requireDashboardToken({ exempt });
+  return function (req, res, next) {
+    const subPath = req.path || '';
+    for (const rx of exempt) {
+      if (rx.test(subPath)) return next();
+    }
+
+    // 1) Entra SSO session cookie (set by /auth/callback).
+    try {
+      // Lazy require so this file has no hard dependency on SSO config.
+      const sso = require('../config/sso');
+      const token = req.cookies && req.cookies[sso.cookieName];
+      if (token) {
+        const claims = sso.verifySession(token);
+        if (claims) {
+          req.user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+          return next();
+        }
+      }
+    } catch (_err) {
+      // SSO not available/misconfigured — fall through to the bearer token.
+    }
+
+    // 2) Shared dashboard bearer token (backward compatible).
+    return tokenGate(req, res, next);
+  };
+}
+
+/** Extract a single cookie value from the Socket.IO handshake headers. */
+function readHandshakeCookie(socket, name) {
+  const raw =
+    socket && socket.handshake && socket.handshake.headers && socket.handshake.headers.cookie;
+  if (!raw || typeof raw !== 'string') return '';
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === name) {
+      try {
+        return decodeURIComponent(part.slice(idx + 1).trim());
+      } catch (_err) {
+        return part.slice(idx + 1).trim();
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Socket.IO middleware: authenticate connections the same way as /api/* —
+ * a valid Entra SSO session cookie (`carein_sso`) OR the shared dashboard
+ * bearer token. This keeps the whole surface on one auth model so dropping
+ * DASHBOARD_API_TOKEN later won't silently break live-call sockets.
+ *
+ * Browser clients get the cookie automatically once signed in (connect with
+ * `io(URL, { withCredentials: true })`); token clients still pass
+ * `io(URL, { auth: { token: '<DASHBOARD_API_TOKEN>' } })`.
  */
 function socketAuth(socket, next) {
+  // 1) Entra SSO session cookie from the handshake.
+  try {
+    const sso = require('../config/sso');
+    const sessionToken = readHandshakeCookie(socket, sso.cookieName);
+    if (sessionToken) {
+      const claims = sso.verifySession(sessionToken);
+      if (claims) {
+        socket.user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+        return next();
+      }
+    }
+  } catch (_err) {
+    // SSO not available/misconfigured — fall through to the bearer token.
+  }
+
+  // 2) Shared dashboard bearer token (backward compatible).
   const expected = getExpectedToken();
   if (!expected) {
     if (process.env.NODE_ENV === 'production') {
@@ -129,4 +205,4 @@ function socketAuth(socket, next) {
   return next();
 }
 
-module.exports = { requireDashboardToken, socketAuth };
+module.exports = { requireDashboardToken, requireDashboardAuth, socketAuth };

@@ -9,6 +9,7 @@ const express = require('express');
 const router = express.Router();
 const unifiedCallStore = require('../services/unifiedCallStore');
 const retellService = require('../config/retell');
+const audit = require('../platform/audit');
 const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
 
 // --- Caller Name Extraction Utilities (copied from calls.js) ---
@@ -260,6 +261,9 @@ router.get('/', async (req, res) => {
     // Add store stats
     const stats = unifiedCallStore.getStats();
 
+    // HIPAA audit: the list returns call records (caller names/transcripts = PHI).
+    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: null, result: 'SUCCESS' });
+
     res.json({
       calls: result.calls,
       total: result.total,
@@ -307,6 +311,10 @@ router.get('/:id', async (req, res) => {
     // Apply caller name extraction if name is missing
     enrichCallerName(call);
 
+    // HIPAA audit: this returns a full call record (transcript = PHI). Audited
+    // before responding; a failed audit write fails closed (no PHI returned).
+    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
     res.json(call);
   } catch (error) {
     console.error('Error fetching call:', error);
@@ -322,6 +330,10 @@ router.get('/phone/:phoneNumber', async (req, res) => {
   try {
     const { phoneNumber } = req.params;
     const calls = unifiedCallStore.getCallsByPhone(phoneNumber);
+
+    // HIPAA audit: phone lookup returns patient call data. resource_id is null —
+    // the phone number itself is PHI and must not be stored in the audit log.
+    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: null, result: 'SUCCESS' });
 
     res.json({
       phone: phoneNumber,

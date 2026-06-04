@@ -8,7 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const openDentalSync = require('../services/openDentalSync');
-const openDentalService = require('../config/openDental');
+const odAccess = require('../platform/odAccess');
 const unifiedCallStore = require('../services/unifiedCallStore');
 
 // ============================================================================
@@ -23,13 +23,14 @@ router.get('/status', async (req, res) => {
     const overview = openDentalSync.getSyncOverview();
     const stats = openDentalSync.getStats();
     const history = openDentalSync.getHistory(10);
-    
+    const odStatus = await odAccess.getStatus(req);
+
     res.json({
       success: true,
       overview,
       stats,
       recentHistory: history,
-      openDentalEnabled: openDentalService.isEnabled(),
+      openDentalEnabled: odStatus.enabled,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -57,14 +58,15 @@ router.get('/pending-links', async (req, res) => {
         try {
           // Try to find matching patients
           if (call.caller_number) {
-            const phoneMatches = await openDentalService.searchPatients(
+            const phoneMatches = await odAccess.searchPatients(
+              req,
               openDentalSync.cleanPhoneNumber(call.caller_number)
             );
             suggestions.push(...phoneMatches.map(p => ({ ...p, matchType: 'phone' })));
           }
-          
+
           if (call.caller_name && suggestions.length < 5) {
-            const nameMatches = await openDentalService.searchPatients(call.caller_name);
+            const nameMatches = await odAccess.searchPatients(req, call.caller_name);
             const newMatches = nameMatches.filter(
               nm => !suggestions.find(s => s.id === nm.id)
             );
@@ -238,8 +240,8 @@ router.get('/patients/search', async (req, res) => {
       });
     }
     
-    const patients = await openDentalService.searchPatients(q);
-    
+    const patients = await odAccess.searchPatients(req, q);
+
     res.json({
       success: true,
       patients,

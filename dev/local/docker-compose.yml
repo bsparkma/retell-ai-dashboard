@@ -1,0 +1,41 @@
+# Local-only Postgres 16 for the CareIN Phase 1 DEV switch-on.
+#
+# $0 — runs entirely on localhost. NOT for anything holding real PHI.
+# One Postgres 16 server hosting BOTH Phase 1 databases:
+#   - carein_control     control plane / tenant registry      (owner: carein_owner)
+#   - carein_t_carein    CareIN's per-tenant data-plane DB     (owner: carein_owner)
+# plus the least-privilege LOGIN role `carein_app` the app runtime connects as
+# (so the append-only audit_log posture is exercised even in dev).
+#
+# Passwords default to obvious DEV throwaways and may be overridden via a
+# gitignored dev/local/.env (see .env.example). These are LOCAL-ONLY creds —
+# never reused in prod, where the same strings live in Key Vault.
+services:
+  carein-postgres:
+    image: postgres:16
+    container_name: carein-local-pg
+    # Auto-start when the Docker engine starts (e.g. after the nightly 3am
+    # reboot, once Docker Desktop launches on login). Keeps the dev DB up
+    # without a manual `compose up`.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: carein_owner
+      POSTGRES_PASSWORD: ${CAREIN_OWNER_PASSWORD:-carein_owner_devpw}
+      POSTGRES_DB: carein_control
+      # Consumed by the init script to create the carein_app login role.
+      CAREIN_APP_PASSWORD: ${CAREIN_APP_PASSWORD:-carein_app_devpw}
+    ports:
+      # host:container — host port overridable so it won't clash with a local PG.
+      - "${CAREIN_PG_HOST_PORT:-55433}:5432"
+    volumes:
+      - carein-pg-data:/var/lib/postgresql/data
+      # Init scripts run ONCE, on first cluster init (empty volume only).
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carein_owner -d carein_control"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  carein-pg-data:

@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const openDentalService = require('../config/openDental');
+const odAccess = require('../platform/odAccess');
 const { requireOdWriteEnabled } = require('../middleware/envGuards');
+
+// All Open Dental access in this router goes through odAccess(req, ...), which
+// resolves the caller's tenant (req.tenant, set by tenantContext) to the right
+// OD backend. No handler references the OD cloud client directly.
 
 // ============================================================================
 // HEALTH AND STATUS ENDPOINTS
@@ -10,52 +14,66 @@ const { requireOdWriteEnabled } = require('../middleware/envGuards');
 // Health check for Open Dental integration
 router.get('/health', async (req, res) => {
   try {
-    const connectionTest = await openDentalService.testConnection();
-    
+    const [status, connectionTest] = await Promise.all([
+      odAccess.getStatus(req),
+      odAccess.testConnection(req),
+    ]);
+
     res.json({
-      enabled: openDentalService.isEnabled(),
+      enabled: status.enabled,
       status: connectionTest.success ? 'connected' : 'error',
       connectionType: connectionTest.connectionType || 'unknown',
       message: connectionTest.message,
-      lastSync: openDentalService.lastSyncTime,
+      lastSync: status.lastSyncTime,
       lastCheck: new Date().toISOString(),
-      useDatabase: openDentalService.useDatabase || false,
+      useDatabase: status.useDatabase,
       patientCount: connectionTest.patientCount
     });
   } catch (error) {
+    // Health stays 200 with a degraded payload (existing contract).
     res.json({
-      enabled: openDentalService.isEnabled(),
+      enabled: false,
       status: 'error',
-      message: error.message,
+      message: error.publicMessage || error.message,
       lastCheck: new Date().toISOString(),
-      useDatabase: openDentalService.useDatabase || false
+      useDatabase: false
     });
   }
 });
 
 // Get sync status and data
-router.get('/sync/status', (req, res) => {
-  res.json({
-    enabled: openDentalService.isEnabled(),
-    lastSync: openDentalService.lastSyncTime,
-    isActive: !!openDentalService.syncInterval,
-    conflicts: Array.from(openDentalService.conflicts.entries()),
-    timestamp: new Date().toISOString()
-  });
+router.get('/sync/status', async (req, res) => {
+  try {
+    const status = await odAccess.getStatus(req);
+    res.json({
+      enabled: status.enabled,
+      lastSync: status.lastSyncTime,
+      isActive: status.syncActive,
+      conflicts: status.conflicts,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(odAccess.httpStatusFor(error)).json({
+      success: false,
+      error: 'Failed to get sync status',
+      message: error.publicMessage || error.message
+    });
+  }
 });
 
 // Force immediate sync
 router.post('/sync/trigger', async (req, res) => {
   try {
-    if (!openDentalService.isEnabled()) {
+    const status = await odAccess.getStatus(req);
+    if (!status.enabled) {
       return res.status(503).json({
         success: false,
         message: 'Open Dental integration not configured'
       });
     }
 
-    await openDentalService.performSync();
-    
+    await odAccess.performSync(req);
+
     res.json({
       success: true,
       message: 'Sync triggered successfully',
@@ -64,7 +82,7 @@ router.post('/sync/trigger', async (req, res) => {
 
   } catch (error) {
     console.error('Manual sync error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       message: 'Sync failed',
       error: error.message
@@ -83,18 +101,17 @@ router.get('/calendar', async (req, res) => {
     const targetDate = date || new Date().toISOString().split('T')[0];
     const viewMode = view || 'provider';
 
-    // Get appointments for the specified date
-    const appointments = await openDentalService.getCalendarAppointments({
-      date: targetDate,
-      view: viewMode,
-      providerIds: providerIds ? providerIds.split(',').map(id => parseInt(id)) : undefined,
-      operatoryIds: operatoryIds ? operatoryIds.split(',').map(id => parseInt(id)) : undefined
-    });
-
-    // Get providers and operatories
-    const [providers, operatories] = await Promise.all([
-      openDentalService.getProviders(),
-      openDentalService.getOperatories()
+    // Get appointments, providers, operatories, and last-sync metadata.
+    const [appointments, providers, operatories, status] = await Promise.all([
+      odAccess.getCalendarAppointments(req, {
+        date: targetDate,
+        view: viewMode,
+        providerIds: providerIds ? providerIds.split(',').map(id => parseInt(id)) : undefined,
+        operatoryIds: operatoryIds ? operatoryIds.split(',').map(id => parseInt(id)) : undefined
+      }),
+      odAccess.getProviders(req),
+      odAccess.getOperatories(req),
+      odAccess.getStatus(req)
     ]);
 
     res.json({
@@ -105,12 +122,12 @@ router.get('/calendar', async (req, res) => {
       providers: providers || [],
       operatories: operatories || [],
       totalAppointments: appointments ? appointments.length : 0,
-      lastSync: openDentalService.lastSyncTime
+      lastSync: status.lastSyncTime
     });
 
   } catch (error) {
     console.error('Calendar API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch calendar data',
       message: error.message
@@ -133,7 +150,7 @@ router.get('/appointments/range', async (req, res) => {
     const start = new Date(startDate);
     const end = endDate ? new Date(endDate) : new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
-    const appointments = await openDentalService.getAppointmentsForDateRange(start, end);
+    const appointments = await odAccess.getAppointmentsForDateRange(req, start, end);
 
     // Filter by provider, operatory, or patient if specified
     let filteredAppointments = appointments;
@@ -156,7 +173,7 @@ router.get('/appointments/range', async (req, res) => {
 
   } catch (error) {
     console.error('Date range API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch appointments for date range',
       message: error.message
@@ -168,8 +185,8 @@ router.get('/appointments/range', async (req, res) => {
 router.get('/appointments/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const appointment = await openDentalService.getAppointmentDetails(id);
-    
+    const appointment = await odAccess.getAppointmentDetails(req, id);
+
     if (!appointment) {
       return res.status(404).json({
         success: false,
@@ -184,7 +201,7 @@ router.get('/appointments/:id', async (req, res) => {
 
   } catch (error) {
     console.error('Get appointment API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch appointment details',
       message: error.message
@@ -200,11 +217,11 @@ router.get('/appointments/:id', async (req, res) => {
 router.post('/appointments/check-conflicts', async (req, res) => {
   try {
     const appointmentData = req.body;
-    
+
     // Validate required fields
     const requiredFields = ['dateTime', 'duration', 'providerId', 'operatoryId'];
     const missingFields = requiredFields.filter(field => !appointmentData[field]);
-    
+
     if (missingFields.length > 0) {
       return res.status(400).json({
         success: false,
@@ -213,12 +230,12 @@ router.post('/appointments/check-conflicts', async (req, res) => {
       });
     }
 
-    const conflicts = await openDentalService.checkSchedulingConflicts(appointmentData);
+    const conflicts = await odAccess.checkSchedulingConflicts(req, appointmentData);
     const hasConflicts = conflicts.length > 0;
 
     let alternatives = [];
     if (hasConflicts) {
-      alternatives = await openDentalService.findAlternativeTimeSlots(appointmentData, conflicts);
+      alternatives = await odAccess.findAlternativeTimeSlots(req, appointmentData, conflicts);
     }
 
     res.json({
@@ -236,7 +253,7 @@ router.post('/appointments/check-conflicts', async (req, res) => {
 
   } catch (error) {
     console.error('Conflict check API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to check conflicts',
       message: error.message
@@ -247,7 +264,7 @@ router.post('/appointments/check-conflicts', async (req, res) => {
 // Find available time slots
 router.post('/appointments/find-slots', async (req, res) => {
   try {
-    const { 
+    const {
       appointmentData,
       startDate,
       endDate,
@@ -266,11 +283,11 @@ router.post('/appointments/find-slots', async (req, res) => {
     const end = endDate ? new Date(endDate) : new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
     const availableSlots = [];
-    
+
     // Search through each day in the range
     for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
-      const daySlots = await openDentalService.findAvailableSlotsForDay(appointmentData, new Date(date));
-      
+      const daySlots = await odAccess.findAvailableSlotsForDay(req, appointmentData, new Date(date));
+
       // Filter by preferred times if specified
       let filteredSlots = daySlots;
       if (preferredTimes && preferredTimes.length > 0) {
@@ -282,9 +299,9 @@ router.post('/appointments/find-slots', async (req, res) => {
           });
         });
       }
-      
+
       availableSlots.push(...filteredSlots);
-      
+
       if (availableSlots.length >= maxResults) break;
     }
 
@@ -304,7 +321,7 @@ router.post('/appointments/find-slots', async (req, res) => {
 
   } catch (error) {
     console.error('Find slots API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to find available slots',
       message: error.message
@@ -320,11 +337,11 @@ router.post('/appointments/find-slots', async (req, res) => {
 router.post('/appointments', requireOdWriteEnabled, async (req, res) => {
   try {
     const appointmentData = req.body;
-    
+
     // Validate required fields
     const requiredFields = ['patientId', 'providerId', 'operatoryId', 'dateTime', 'duration'];
     const missingFields = requiredFields.filter(field => !appointmentData[field]);
-    
+
     if (missingFields.length > 0) {
       return res.status(400).json({
         success: false,
@@ -334,8 +351,8 @@ router.post('/appointments', requireOdWriteEnabled, async (req, res) => {
       });
     }
 
-    const result = await openDentalService.bookAppointment(appointmentData);
-    
+    const result = await odAccess.bookAppointment(req, appointmentData);
+
     if (result.success) {
       res.status(201).json({
         success: true,
@@ -354,7 +371,7 @@ router.post('/appointments', requireOdWriteEnabled, async (req, res) => {
 
   } catch (error) {
     console.error('Booking API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to book appointment',
       message: error.message
@@ -368,8 +385,8 @@ router.put('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
 
-    const result = await openDentalService.updateAppointment(id, updateData);
-    
+    const result = await odAccess.updateAppointment(req, id, updateData);
+
     if (result.success) {
       res.json({
         success: true,
@@ -386,7 +403,7 @@ router.put('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
 
   } catch (error) {
     console.error('Update appointment API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to update appointment',
       message: error.message
@@ -410,8 +427,8 @@ router.patch('/appointments/:id/status', requireOdWriteEnabled, async (req, res)
     const updateData = { status };
     if (notes) updateData.notes = notes;
 
-    const result = await openDentalService.updateAppointment(id, updateData);
-    
+    const result = await odAccess.updateAppointment(req, id, updateData);
+
     if (result.success) {
       res.json({
         success: true,
@@ -428,7 +445,7 @@ router.patch('/appointments/:id/status', requireOdWriteEnabled, async (req, res)
 
   } catch (error) {
     console.error('Update status API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to update appointment status',
       message: error.message
@@ -436,14 +453,14 @@ router.patch('/appointments/:id/status', requireOdWriteEnabled, async (req, res)
   }
 });
 
-// Cancel an appointment
+// Cancel an appointment (sets AptStatus to cancelled — never deletes the OD row)
 router.delete('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
 
-    const result = await openDentalService.cancelAppointment(id, reason);
-    
+    const result = await odAccess.cancelAppointment(req, id, reason);
+
     if (result.success) {
       res.json({
         success: true,
@@ -459,7 +476,7 @@ router.delete('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
 
   } catch (error) {
     console.error('Cancel appointment API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to cancel appointment',
       message: error.message
@@ -475,7 +492,7 @@ router.delete('/appointments/:id', requireOdWriteEnabled, async (req, res) => {
 router.get('/patients/search', async (req, res) => {
   try {
     const { q, type } = req.query;
-    
+
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
         success: false,
@@ -483,8 +500,8 @@ router.get('/patients/search', async (req, res) => {
       });
     }
 
-    const patients = await openDentalService.searchPatients(q.trim());
-    
+    const patients = await odAccess.searchPatients(req, q.trim());
+
     res.json({
       success: true,
       patients: patients || [],
@@ -494,7 +511,7 @@ router.get('/patients/search', async (req, res) => {
 
   } catch (error) {
     console.error('Patient search API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to search patients',
       message: error.message
@@ -508,8 +525,9 @@ router.get('/patients/:id/appointments', async (req, res) => {
     const { id } = req.params;
     const { includeHistory = 'true' } = req.query;
 
-    const verification = await openDentalService.verifyPatientAppointments(
-      id, 
+    const verification = await odAccess.verifyPatientAppointments(
+      req,
+      id,
       includeHistory === 'true'
     );
 
@@ -527,7 +545,7 @@ router.get('/patients/:id/appointments', async (req, res) => {
 
   } catch (error) {
     console.error('Patient verification API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to verify patient appointments',
       message: error.message
@@ -539,8 +557,8 @@ router.get('/patients/:id/appointments', async (req, res) => {
 router.get('/patients/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const patient = await openDentalService.getPatientDetails(id);
-    
+    const patient = await odAccess.getPatientDetails(req, id);
+
     if (!patient) {
       return res.status(404).json({
         success: false,
@@ -555,7 +573,7 @@ router.get('/patients/:id', async (req, res) => {
 
   } catch (error) {
     console.error('Get patient API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch patient details',
       message: error.message
@@ -570,8 +588,8 @@ router.get('/patients/:id', async (req, res) => {
 // Get providers list
 router.get('/providers', async (req, res) => {
   try {
-    const providers = await openDentalService.getProviders();
-    
+    const providers = await odAccess.getProviders(req);
+
     res.json({
       success: true,
       providers: providers || [],
@@ -580,7 +598,7 @@ router.get('/providers', async (req, res) => {
 
   } catch (error) {
     console.error('Providers API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch providers',
       message: error.message
@@ -591,8 +609,8 @@ router.get('/providers', async (req, res) => {
 // Get operatories list
 router.get('/operatories', async (req, res) => {
   try {
-    const operatories = await openDentalService.getOperatories();
-    
+    const operatories = await odAccess.getOperatories(req);
+
     res.json({
       success: true,
       operatories: operatories || [],
@@ -601,7 +619,7 @@ router.get('/operatories', async (req, res) => {
 
   } catch (error) {
     console.error('Operatories API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch operatories',
       message: error.message
@@ -614,10 +632,10 @@ router.get('/providers/:id/schedule', async (req, res) => {
   try {
     const { id } = req.params;
     const { date } = req.query;
-    
+
     const targetDate = date || new Date().toISOString().split('T')[0];
-    const workingHours = await openDentalService.getProviderWorkingHours(id, targetDate);
-    
+    const workingHours = await odAccess.getProviderWorkingHours(req, id, targetDate);
+
     res.json({
       success: true,
       providerId: id,
@@ -627,7 +645,7 @@ router.get('/providers/:id/schedule', async (req, res) => {
 
   } catch (error) {
     console.error('Provider schedule API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to fetch provider schedule',
       message: error.message
@@ -642,7 +660,7 @@ router.get('/providers/:id/schedule', async (req, res) => {
 // Smart booking for AI agents with comprehensive conflict handling
 router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
   try {
-    const { 
+    const {
       patientInfo,
       appointmentPreferences,
       callId,
@@ -661,8 +679,8 @@ router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
     let patient = null;
     if (patientInfo.phone || patientInfo.email || patientInfo.name) {
       const searchQuery = patientInfo.phone || patientInfo.email || patientInfo.name;
-      const searchResults = await openDentalService.searchPatients(searchQuery);
-      
+      const searchResults = await odAccess.searchPatients(req, searchQuery);
+
       if (searchResults.length > 0) {
         // Use first match or let AI decide which patient
         patient = searchResults[0];
@@ -672,7 +690,7 @@ router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
     // Step 2: Verify existing appointments if patient found
     let existingAppointments = [];
     if (patient) {
-      const verification = await openDentalService.verifyPatientAppointments(patient.id);
+      const verification = await odAccess.verifyPatientAppointments(req, patient.id);
       existingAppointments = verification.upcomingAppointments;
     }
 
@@ -687,7 +705,8 @@ router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
       isNew: !patient
     };
 
-    const slotsResult = await openDentalService.findAvailableSlotsForDay(
+    const slotsResult = await odAccess.findAvailableSlotsForDay(
+      req,
       appointmentData,
       new Date(appointmentPreferences.preferredDate || new Date())
     );
@@ -709,7 +728,7 @@ router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
 
   } catch (error) {
     console.error('AI smart booking API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Smart booking failed',
       message: error.message
@@ -721,7 +740,7 @@ router.post('/ai/smart-book', requireOdWriteEnabled, async (req, res) => {
 router.get('/ai/verify-appointment', async (req, res) => {
   try {
     const { phone, name, dateOfBirth } = req.query;
-    
+
     if (!phone && !name && !dateOfBirth) {
       return res.status(400).json({
         success: false,
@@ -730,8 +749,8 @@ router.get('/ai/verify-appointment', async (req, res) => {
     }
 
     const searchQuery = phone || name || dateOfBirth;
-    const patients = await openDentalService.searchPatients(searchQuery);
-    
+    const patients = await odAccess.searchPatients(req, searchQuery);
+
     let result = {
       patientFound: false,
       hasUpcomingAppointments: false,
@@ -744,7 +763,7 @@ router.get('/ai/verify-appointment', async (req, res) => {
       result.patients = patients;
 
       // Check appointments for first matching patient
-      const verification = await openDentalService.verifyPatientAppointments(patients[0].id);
+      const verification = await odAccess.verifyPatientAppointments(req, patients[0].id);
       result.hasUpcomingAppointments = verification.hasUpcoming;
       result.appointments = verification.upcomingAppointments;
     }
@@ -758,7 +777,7 @@ router.get('/ai/verify-appointment', async (req, res) => {
 
   } catch (error) {
     console.error('AI verification API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Appointment verification failed',
       message: error.message
@@ -772,13 +791,15 @@ router.get('/ai/schedule-overview', async (req, res) => {
     const { date, providerId } = req.query;
     const targetDate = date || new Date().toISOString().split('T')[0];
 
-    const appointments = await openDentalService.getCalendarAppointments({
-      date: targetDate,
-      providerIds: providerId ? [parseInt(providerId)] : undefined
-    });
-
-    const providers = await openDentalService.getProviders();
-    const operatories = await openDentalService.getOperatories();
+    const [appointments, providers, operatories, status] = await Promise.all([
+      odAccess.getCalendarAppointments(req, {
+        date: targetDate,
+        providerIds: providerId ? [parseInt(providerId)] : undefined
+      }),
+      odAccess.getProviders(req),
+      odAccess.getOperatories(req),
+      odAccess.getStatus(req)
+    ]);
 
     // Calculate availability metrics
     const totalSlots = 16; // 8 hours * 2 slots per hour (rough estimate)
@@ -798,12 +819,12 @@ router.get('/ai/schedule-overview', async (req, res) => {
         availabilityPercentage: Math.round(availabilityPercentage),
         hasAvailability: availabilityPercentage > 0
       },
-      lastSync: openDentalService.lastSyncTime
+      lastSync: status.lastSyncTime
     });
 
   } catch (error) {
     console.error('AI schedule overview API error:', error);
-    res.status(500).json({
+    res.status(odAccess.httpStatusFor(error)).json({
       success: false,
       error: 'Failed to get schedule overview',
       message: error.message
@@ -827,7 +848,7 @@ router.use('*', (req, res) => {
 // Global error handler for this router
 router.use((error, req, res, next) => {
   console.error('Open Dental Router Error:', error);
-  
+
   res.status(500).json({
     success: false,
     error: 'Internal server error',
@@ -836,4 +857,4 @@ router.use((error, req, res, next) => {
   });
 });
 
-module.exports = router; 
+module.exports = router;
