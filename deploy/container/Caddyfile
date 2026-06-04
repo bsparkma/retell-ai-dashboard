@@ -1,31 +1,33 @@
-# Caddyfile — LOCAL container parity front for the CareIN stack.
+# Caddyfile — single-origin front for the CareIN stack (local compose + Azure).
 #
-# Mirrors deploy/Caddyfile (the team-facing prod front) but for the docker
-# compose network: plain HTTP on :8088 (no TLS locally), and it reverse-proxies
-# to the backend by its COMPOSE SERVICE NAME (`backend`) instead of 127.0.0.1.
+# One origin serves BOTH the built SPA and the API: Caddy file-serves the static
+# dist for page routes and reverse-proxies /api/*, /auth/* and /socket.io/* to
+# the backend. Single origin => no CORS, and the SPA's relative "/api" base
+# (VITE_API_URL=/api) just works.
 #
-# One origin (http://localhost:8088) serves BOTH the built SPA and the API:
-# Caddy file-serves the static dist for page routes and proxies /api/*, /auth/*
-# and /socket.io/* to the backend container. Single origin => no CORS, and the
-# SPA's relative "/api" base (VITE_API_URL=/api) just works.
+# The upstream is parameterized so the SAME file works in both environments:
+#   - LOCAL docker compose: default `backend:5403` (the compose service, plain HTTP)
+#   - AZURE Container Apps:  BACKEND_ORIGIN set to the backend's INTERNAL ingress
+#                            FQDN, e.g. https://ca-carein-backend.internal.<env-domain>
 #
-# This is the local stand-in for Azure Front Door (which will serve the static
-# SPA from Blob/CDN and route /api,/auth to the backend Container App).
+# Caddy listens on :8088 over plain HTTP in both cases; TLS is terminated by the
+# platform in front of it (Caddy locally is the dev edge; Azure Container Apps
+# external ingress + managed cert terminates TLS for staging.carein.ai).
 
 :8088 {
-	# API routes -> backend container (compose service name, container port).
+	# API routes -> backend.
 	handle /api/* {
-		reverse_proxy backend:5403
+		reverse_proxy {$BACKEND_ORIGIN:backend:5403}
 	}
 
 	# Entra SSO routes (login / callback / logout / me) -> same backend.
 	handle /auth/* {
-		reverse_proxy backend:5403
+		reverse_proxy {$BACKEND_ORIGIN:backend:5403}
 	}
 
 	# Socket.IO (live calls / transcripts). Caddy upgrades WebSockets itself.
 	handle /socket.io/* {
-		reverse_proxy backend:5403
+		reverse_proxy {$BACKEND_ORIGIN:backend:5403}
 	}
 
 	# Everything else: the built SPA with history-API (client-route) fallback.

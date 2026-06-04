@@ -1,0 +1,24 @@
+# carein-caddy — single-origin front IMAGE for Azure Container Apps.
+#
+# Unlike the local compose (which bind-mounts the Caddyfile and the built SPA),
+# a Container App needs everything baked into the image. This image bundles:
+#   - the Caddyfile (deploy/container/Caddyfile, BACKEND_ORIGIN-parameterized)
+#   - the built SPA static (new-dashboard/dist/public), served from /srv
+#
+# Build context is assembled by deploy/container/azure/build-caddy-image.sh so
+# the ACR upload stays tiny (just the SPA + 2 small files) — the context dir is
+# expected to contain ./Caddyfile and ./srv next to this Dockerfile.
+#
+# At runtime, Container Apps injects BACKEND_ORIGIN (the backend app's internal
+# ingress FQDN). Caddy listens on :8088; the external ingress + managed cert
+# terminate TLS for staging.carein.ai in front of it.
+
+FROM caddy:2-alpine
+
+# Caddy config (single origin: SPA + /api,/auth,/socket.io proxy).
+COPY Caddyfile /etc/caddy/Caddyfile
+
+# Built SPA (vite outDir new-dashboard/dist/public), staged into ./srv.
+COPY srv /srv
+
+EXPOSE 8088
