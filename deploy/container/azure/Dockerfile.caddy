@@ -18,10 +18,11 @@ WORKDIR /build
 RUN corepack enable
 # Same-origin API base baked into the bundle (Caddy proxies /api to the backend).
 ENV VITE_API_URL=/api
-# Install deps first (better layer caching), then build.
-COPY new-dashboard/package.json new-dashboard/pnpm-lock.yaml ./new-dashboard/
-RUN cd new-dashboard && pnpm install --frozen-lockfile
+# Copy the whole project before install: package.json declares
+# pnpm.patchedDependencies (patches/wouter@*.patch), which pnpm must read during
+# install — a package.json+lockfile-only copy fails with ENOENT on the patch.
 COPY new-dashboard ./new-dashboard
+RUN cd new-dashboard && pnpm install --frozen-lockfile
 RUN cd new-dashboard && pnpm exec vite build   # -> new-dashboard/dist/public
 
 # ---- stage 2: caddy + static SPA --------------------------------------------
