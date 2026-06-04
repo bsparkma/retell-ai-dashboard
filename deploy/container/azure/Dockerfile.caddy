@@ -1,24 +1,31 @@
 # carein-caddy — single-origin front IMAGE for Azure Container Apps.
 #
-# Unlike the local compose (which bind-mounts the Caddyfile and the built SPA),
-# a Container App needs everything baked into the image. This image bundles:
-#   - the Caddyfile (deploy/container/Caddyfile, BACKEND_ORIGIN-parameterized)
-#   - the built SPA static (new-dashboard/dist/public), served from /srv
-#
-# Build context is assembled by deploy/container/azure/build-caddy-image.sh so
-# the ACR upload stays tiny (just the SPA + 2 small files) — the context dir is
-# expected to contain ./Caddyfile and ./srv next to this Dockerfile.
+# Self-contained multi-stage build (used by `az acr build` from the REPO ROOT,
+# both in CI and locally) so it needs no pre-built artifacts:
+#   stage 1  builds the SPA from new-dashboard with VITE_API_URL=/api
+#   stage 2  caddy:2-alpine + the built SPA (/srv) + the parameterized Caddyfile
 #
 # At runtime, Container Apps injects BACKEND_ORIGIN (the backend app's internal
 # ingress FQDN). Caddy listens on :8088; the external ingress + managed cert
 # terminate TLS for staging.carein.ai in front of it.
+#
+# Build (from repo root):
+#   az acr build -r acrcareincore -t carein-caddy:<tag> -f deploy/container/azure/Dockerfile.caddy .
 
+# ---- stage 1: build the SPA --------------------------------------------------
+FROM node:22-alpine AS spa
+WORKDIR /build
+RUN corepack enable
+# Same-origin API base baked into the bundle (Caddy proxies /api to the backend).
+ENV VITE_API_URL=/api
+# Install deps first (better layer caching), then build.
+COPY new-dashboard/package.json new-dashboard/pnpm-lock.yaml ./new-dashboard/
+RUN cd new-dashboard && pnpm install --frozen-lockfile
+COPY new-dashboard ./new-dashboard
+RUN cd new-dashboard && pnpm exec vite build   # -> new-dashboard/dist/public
+
+# ---- stage 2: caddy + static SPA --------------------------------------------
 FROM caddy:2-alpine
-
-# Caddy config (single origin: SPA + /api,/auth,/socket.io proxy).
-COPY Caddyfile /etc/caddy/Caddyfile
-
-# Built SPA (vite outDir new-dashboard/dist/public), staged into ./srv.
-COPY srv /srv
-
+COPY deploy/container/Caddyfile /etc/caddy/Caddyfile
+COPY --from=spa /build/new-dashboard/dist/public /srv
 EXPOSE 8088

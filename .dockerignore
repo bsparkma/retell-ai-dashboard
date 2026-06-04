@@ -1,0 +1,16 @@
+# Root build context (used by the carein-caddy multi-stage image, which builds
+# the SPA from new-dashboard). Keep the ACR upload lean and secret-free.
+**/node_modules
+**/dist
+.git
+.github
+**/.env
+**/.env.*
+**/.local
+**/coverage
+**/*.log
+backend/data
+backend/recordings
+new-dashboard/coverage
+# The caddy image only needs new-dashboard/ + deploy/container/Caddyfile; the
+# backend image is built separately from the backend/ context (backend/.dockerignore).
