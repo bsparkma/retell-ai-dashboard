@@ -53,9 +53,9 @@ the call (or returns nothing usable); **derived** = computed on top of other rea
 | Conflict check | `checkSchedulingConflicts` | `POST /opendental/appointments/check-conflicts` | **derived** | no | computed on `getAppointmentsForDateRange` (partial) → unreliable until range reads fixed |
 | Alt slots / day slots | `findAlternativeTimeSlots`, `findAvailableSlotsForDay` | `POST /opendental/appointments/find-slots` | **derived** | no | loops `checkSchedulingConflicts` |
 | Slot markers | `getSlotMarkers` | `GET /api/slot-markers` | **none (API)** | **YES — connector-only** | `connectorRequest` → `{connector_url}/api/slot-markers`; staging connector_url is placeholder → 503 |
-| Book appointment | `bookAppointment` | `POST /opendental/appointments` | **Phase C (not run)** | no | `POST /appointments` |
-| Update appointment | `updateAppointment` | `PUT /opendental/appointments/:id` | **Phase C (not run)** | no | `PUT /appointments/:id` |
-| Cancel appointment | `cancelAppointment` | `PATCH /opendental/appointments/:id/status` | **Phase C (not run)** | no | `PUT /appointments/:id {AptStatus:8}` — status change, never a delete |
+| Book appointment | `bookAppointment` | `POST /opendental/appointments` | **none (blocked)** | no | OD **400 `AptStatus is invalid`** — client sends integer `AptStatus:1`; real OD API expects a **string enum** (`"Scheduled"`). Conflict pre-check passed (far-future slot); POST rejected → **no appt created** |
+| Update appointment | `updateAppointment` | `PUT /opendental/appointments/:id` | **untested (blocked by book)** | no | a notes-only update omits `AptStatus` so it may work, but there was no appt to update this phase |
+| Cancel appointment | `cancelAppointment` | `DELETE /opendental/appointments/:id` | **none (blocked, same root cause)** | no | sends `AptStatus:8` (int) → same `AptStatus is invalid`; also OD API has no "Cancelled" status (would need e.g. `"Broken"`). Never a row delete |
 
 ### Multi-OD-database finding (first-class)
 | Concern | Status | Detail |
@@ -71,10 +71,30 @@ the call (or returns nothing usable); **derived** = computed on top of other rea
   attempts audited as ERROR. Non-PHI reference reads (providers/operatories/schedule/sync/test)
   are intentionally not audited.
 
+## Phase C — controlled write test (2026-06-05)
+One controlled write was attempted on live Roland OD, then designed to be reversed:
+- **Target:** PatNum `1` (`*Patient Test`, OD demo patient) · Op `9` (Phone Consult) ·
+  ProvNum `1` (Beau Sparkman) · `2026-12-13 14:00` (far-future Sunday) · note exactly
+  `CAREIN STEP4 TEST — DELETE`.
+- **Result:** `bookAppointment` → conflict pre-check passed → `POST /appointments` →
+  OD **400 `AptStatus is invalid`**. The client posts integer `AptStatus:1`; the real OD
+  API expects a **string enum** (`"Scheduled"`). **No appointment was created** —
+  confirmed by re-reading PatNum 1's appointments (0 `CAREIN STEP4` matches). **Nothing
+  active was left in the live schedule.**
+- **Update/cancel** could not be exercised (no AptNum). `cancelAppointment` would hit the
+  **same** `AptStatus is invalid` (it posts `AptStatus:8`), and OD has no "Cancelled"
+  status enum — so the write path is blocked end-to-end until remediated.
+- **Conclusion:** OD **writes are non-functional** with the current client due to the
+  integer-vs-string `AptStatus` field mismatch (same class of bug as the read param
+  mismatches). Reads-by-id work; writes need the enum fix before any booking flow is usable.
+
 ## Recommended follow-ups (out of scope for Step 4)
-1. **Fix OD client param names** to the real `api.opendental.com/api/v1` contract
-   (appointments `dateStart`/`dateEnd`; patient search fields; drop/replace `updatedSince`,
-   `search`, `searchType`). This converts the four **partial** + one **none** read into full.
+1. **Fix OD client field/param mismatches** to the real `api.opendental.com/api/v1` contract:
+   reads — appointments `dateStart`/`dateEnd`, patient search fields, drop/replace
+   `updatedSince`/`search`/`searchType`; **writes — `AptStatus` must be the string enum
+   (`"Scheduled"` on book; a valid status such as `"Broken"` for cancel, since OD has no
+   "Cancelled")**. This converts the four **partial** + one **none** read and the **blocked
+   writes** into full.
 2. **Surface mock fallback** — `getProviders/getOperatories/getCalendarAppointments` silently
    return mock on API error; that masks outages. Make failures explicit in non-dev.
 3. **Per-location OD credentials** for the Roland+Valley split (multi-OD-database row).
