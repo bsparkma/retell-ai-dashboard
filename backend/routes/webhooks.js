@@ -296,18 +296,21 @@ ${transcript}`;
     if (matchResult.patient && matchResult.confidence >= 0.7) {
       const patient = matchResult.patient;
       
-      // Write commlog using the insertCommLogToDatabase method directly
+      // Write the commlog via createCommLog so it works in BOTH modes: direct-DB
+      // (integer INSERT) and api mode (POST /commlogs with string enums). Calling
+      // insertCommLogToDatabase directly used to silently no-op in api mode. The
+      // DB-shaped fields below are translated to the API contract by createCommLog.
       const commLogEntry = {
         CommDateTime: callData.end_timestamp || new Date().toISOString(),
-        Mode_: 3, // Phone
-        SentOrReceived: 1, // Received
+        Mode_: 3, // Phone (DB int; mapped to "Phone" for the API)
+        SentOrReceived: 1, // Received (DB int; api sends "Received")
         Note: commlogNote,
         CommType: emergency === 'yes' ? 4 : (appointmentBooked === 'yes' ? 2 : 1),
         UserNum: 0,
         DateTimeEnd: callData.end_timestamp || new Date().toISOString()
       };
 
-      const result = await openDentalSyncService.insertCommLogToDatabase(patient.id, commLogEntry);
+      const result = await openDentalSyncService.createCommLog(patient.id, commLogEntry);
       
       if (result.success) {
         console.log(`✅ [Webhook] Open Dental commlog written for call ${callData.call_id}, patient: ${patient.lastName}, ${patient.firstName}`);

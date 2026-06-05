@@ -225,14 +225,40 @@ the exact `/schedules` param/field names against the OD schedules doc during STE
 
 ---
 
-## 10. Retell tools commlog write — to locate & validate (STEP 1)
+## 10. Commlog write — located, contract captured, gap fixed (STEP 1)
 
-The PRD calls for validating the retell-tools **commlog-write** path against the **real OD commlog
-endpoint**. [docs/retell-tools.md](retell-tools.md) documents `lookup_patient`,
-`find_available_slots`, `book_appointment`, `create_callback` but **not** a commlog write — the
-commlog path must be located in code (likely the booking/callback handler) and validated against
-OD's `POST /commlogs` contract (CommType DefNum **486** per global OD conventions). **Action:**
-find the write call, capture the real `/commlogs` field shape into this doc before editing.
+**Where it lives:** the call-summary commlog write is in
+`backend/services/openDentalSync.js` (`syncCallToCommLog` / `formatCommLogEntry` /
+`insertCommLogToDatabase`) and is triggered by the post-call webhook
+`backend/routes/webhooks.js` (`call_analyzed`). (`docs/retell-tools.md` documents the
+live-call tools but not this path — it's webhook-driven.)
+
+**Real `POST /commlogs` contract** (https://www.opendental.com/site/apicommlogs.html):
+- **Required:** `PatNum` (int), `Note` (string).
+- **Optional:** `CommDateTime` (`yyyy-MM-dd HH:mm:ss`, defaults now), `CommType`
+  (**integer `definition.DefNum` where `Category=27`**, defaults to Misc; or string
+  `commType` = the definition's `ItemName`), `Mode_` (**string enum**), `SentOrReceived`
+  (**string enum**), plus `CommSource`/`ProgramNum` in responses.
+- **`Mode_` enum:** `"None"|"Email"|"Mail"|"Phone"|"In Person"|"Text"|"Email and Text"|"Phone and Text"`.
+- **`SentOrReceived` enum:** `"Neither"|"Sent"|"Received"`.
+- Returns **201**; full commlog object in response on 23.3.7+ / 25.2.21+.
+
+**The gap (now fixed):**
+1. **api-mode commlog never wrote.** `webhooks.js` called `insertCommLogToDatabase`
+   **directly** — a DB-only path. In api mode (`pool === null`) it returned
+   `{success:false,'Database pool not available'}` and the summary was dropped. Fixed by
+   routing through a new `createCommLog(patientId, entry)` that branches DB vs API.
+2. **Integer enums on the API path.** The old API branch posted the DB-shaped integers
+   (`Mode_:3`, `SentOrReceived:1`) → wrong types (same class as `AptStatus`). Fixed by
+   `buildCommLogApiPayload` → `Mode_:"Phone"`, `SentOrReceived:"Received"`,
+   `CommDateTime` formatted, `CommType` = configured DefNum.
+3. **CommType DefNum is practice-specific.** `CommType` is a `Category=27` `definition.DefNum`
+   that differs per OD database. Set via `OPENDENTAL_CAREIN_COMMTYPE_DEFNUM` (default **486**,
+   the CareIN convention). **⚠️ Must be verified to exist in Roland's DB during STEP 2**, and a
+   distinct value resolved for Valley when that location is wired (ties into per-location work).
+
+**DB-mode untouched:** `insertCommLogToDatabase` and `formatCommLogEntry`'s integer shape are
+unchanged, so direct-DB tenants behave exactly as before; only the api-mode path is new.
 
 ---
 

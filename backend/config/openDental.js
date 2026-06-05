@@ -230,7 +230,8 @@ class OpenDentalService extends EventEmitter {
 
   async getCalendarAppointments(params = {}) {
     if (!this.enabled) {
-      return this.getMockCalendarData(params);
+      if (this.allowMock()) return this.getMockCalendarData(params);
+      throw new Error('Open Dental is not configured (set OPENDENTAL_ALLOW_MOCK=true for dev mock data)');
     }
 
     if (this.useDatabase) {
@@ -238,41 +239,42 @@ class OpenDentalService extends EventEmitter {
     }
 
     try {
-      const targetDate = params.date || new Date().toISOString().split('T')[0];
-      // Open Dental API expects dateStart/dateEnd for calendar; single-day range so we get only that day's appointments (not all patients/users)
-      const queryParams = {
-        dateStart: targetDate,
-        dateEnd: targetDate,
-        includePatientInfo: true,
-        includeProviderInfo: true,
-        includeOperatoryInfo: true
-      };
-
-      if (params.providerIds?.length) {
-        queryParams.providerIds = params.providerIds.join(',');
-      }
-
-      if (params.operatoryIds?.length) {
-        queryParams.operatoryIds = params.operatoryIds.join(',');
-      }
+      const targetDate = params.date || moment().format('YYYY-MM-DD');
+      // Single-day load via the real date filter params (yyyy-MM-dd). Provider filtering
+      // is NOT a GET param on OD — only Op/ClinicNum are — so providers are filtered
+      // client-side below. No fabricated include*/providerIds params. See OD_API_CONTRACT §2.
+      const queryParams = { dateStart: targetDate, dateEnd: targetDate };
+      if (params.operatoryIds?.length === 1) queryParams.Op = params.operatoryIds[0];
+      if (params.clinicNum !== undefined) queryParams.ClinicNum = params.clinicNum;
 
       const response = await this.client.get('/appointments', { params: queryParams });
-      const raw = response.data;
-      // API may return array or { value: { data: [...] } }; only use appointment records, never patient lists
-      const list = Array.isArray(raw) ? raw : (raw?.value?.data ?? raw?.data ?? []);
-      if (!Array.isArray(list)) return this.getMockCalendarData(params);
-      const transformed = this.transformAppointmentData(list);
-      // Only return appointment records for this date (never patient lists or other records)
-      return transformed.filter(apt => {
-        if (!apt.id) return false;
+      const list = this.extractAppointmentList(response.data);
+      let transformed = this.transformAppointmentData(list);
+
+      // Belt-and-suspenders: keep only records actually on the target date.
+      transformed = transformed.filter((apt) => {
+        if (!apt.id || !apt.dateTime) return false;
         const dt = apt.dateTime;
-        if (!dt) return false;
         const aptDate = (typeof dt === 'string' ? dt : (dt.toISOString && dt.toISOString()))?.split('T')[0];
         return aptDate === targetDate;
       });
+
+      // Client-side provider/operatory filtering (OD GET has no provider filter).
+      if (params.providerIds?.length) {
+        const want = new Set(params.providerIds.map(String));
+        transformed = transformed.filter((apt) => want.has(String(apt.providerId)));
+      }
+      if (params.operatoryIds?.length) {
+        const want = new Set(params.operatoryIds.map(String));
+        transformed = transformed.filter((apt) => want.has(String(apt.operatoryId)));
+      }
+
+      return await this.enrichAppointmentPatients(transformed);
     } catch (error) {
       console.error('[OD API] Calendar fetch failed:', error.message);
-      return this.getMockCalendarData(params);
+      // In api mode against a real practice, surface the error — never phantom mock data.
+      if (this.allowMock()) return this.getMockCalendarData(params);
+      throw error;
     }
   }
 
@@ -362,20 +364,65 @@ class OpenDentalService extends EventEmitter {
     }
 
     try {
+      // Real OD filter params are dateStart/dateEnd (yyyy-MM-dd). The old startDate/
+      // endDate were silently ignored → unfiltered (2012) data. See OD_API_CONTRACT §2.
       const response = await this.client.get('/appointments', {
         params: {
-          startDate: startDate.toISOString().split('T')[0],
-          endDate: endDate.toISOString().split('T')[0],
-          includePatientInfo: true,
-          includeProviderInfo: true
+          dateStart: moment(startDate).format('YYYY-MM-DD'),
+          dateEnd: moment(endDate).format('YYYY-MM-DD')
         }
       });
 
-      return this.transformAppointmentData(response.data);
+      const list = this.extractAppointmentList(response.data);
+      return await this.enrichAppointmentPatients(this.transformAppointmentData(list));
     } catch (error) {
       console.error('[OD API] Date range fetch failed:', error.message);
-      return [];
+      // Surface in api mode — a silent [] could hide an outage and let a double-book
+      // through during a conflict check. Empty results are only OK in dev/mock.
+      if (this.allowMock()) return [];
+      throw error;
     }
+  }
+
+  // GET /appointments may return a bare array or a wrapped { value: { data: [...] } }
+  // / { data: [...] } envelope. Only ever return appointment records.
+  extractAppointmentList(raw) {
+    if (Array.isArray(raw)) return raw;
+    const list = raw?.value?.data ?? raw?.data ?? [];
+    return Array.isArray(list) ? list : [];
+  }
+
+  // GET /appointments returns PatNum but not patient name fields (there is no
+  // includePatientInfo param), so list payloads render "Unknown Patient". Resolve the
+  // real names by batch-looking-up each unique PatNum (best-effort; a failed lookup
+  // leaves that row as-is rather than failing the whole list). See OD_API_CONTRACT §2.
+  async enrichAppointmentPatients(appointments) {
+    if (!Array.isArray(appointments) || !appointments.length) return appointments;
+    const needIds = [...new Set(
+      appointments
+        .filter(a => a && a.patientId && (!a.patient || a.patient === 'Unknown Patient'))
+        .map(a => a.patientId)
+    )];
+    if (!needIds.length) return appointments;
+
+    const byId = {};
+    await Promise.all(needIds.map(async (id) => {
+      try {
+        const p = await this.getPatientDetails(id);
+        if (p) byId[id] = p;
+      } catch (_) { /* best-effort; leave row unenriched */ }
+    }));
+
+    return appointments.map((a) => {
+      const p = a && byId[a.patientId];
+      if (!p) return a;
+      return {
+        ...a,
+        patient: p.fullName || a.patient,
+        phone: a.phone || p.phone,
+        email: a.email || p.email
+      };
+    });
   }
 
   transformAppointmentData(rawData) {
@@ -731,18 +778,30 @@ class OpenDentalService extends EventEmitter {
   }
 
   prepareAppointmentForOD(appointmentData) {
-    return {
+    // Required by OD POST /appointments: PatNum, Op, AptDateTime. AptStatus is the
+    // string enum ("Scheduled"), AptDateTime is "yyyy-MM-dd HH:mm:ss", and booleans
+    // are sent as the strings "true"/"false". See OD_API_CONTRACT §3.
+    const payload = {
       PatNum: appointmentData.patientId,
-      AptDateTime: appointmentData.dateTime,
+      AptDateTime: this.formatODDateTime(appointmentData.dateTime),
       Op: appointmentData.operatoryId,
       ProvNum: appointmentData.providerId,
       Pattern: this.generateTimePattern(appointmentData.duration),
       ProcDescript: appointmentData.type || appointmentData.appointmentType,
       Note: appointmentData.notes || '',
-      AptStatus: 1, // Scheduled
-      IsNewPatient: appointmentData.isNew || false,
-      Confirmed: appointmentData.confirmed || false
+      AptStatus: this.mapStatusToOD(appointmentData.status || 'scheduled'),
+      IsNewPatient: appointmentData.isNew ? 'true' : 'false'
     };
+
+    // `Confirmed` is a practice-specific definition.DefNum (ApptConfirmed category),
+    // NOT a boolean — and it differs per OD database (Roland vs Valley), so it must be
+    // resolved per-connected-database, never hardcoded. Only send it when a real DefNum
+    // is supplied; never send a boolean. See OD_API_CONTRACT §3 + the per-DB DefNum note.
+    if (Number.isInteger(appointmentData.confirmedDefNum)) {
+      payload.Confirmed = appointmentData.confirmedDefNum;
+    }
+
+    return payload;
   }
 
   generateTimePattern(duration) {
@@ -812,14 +871,16 @@ class OpenDentalService extends EventEmitter {
   prepareUpdateForOD(updateData) {
     const odData = {};
     
-    if (updateData.dateTime) odData.AptDateTime = updateData.dateTime;
+    if (updateData.dateTime) odData.AptDateTime = this.formatODDateTime(updateData.dateTime);
     if (updateData.duration) odData.Pattern = this.generateTimePattern(updateData.duration);
     if (updateData.operatoryId) odData.Op = updateData.operatoryId;
     if (updateData.providerId) odData.ProvNum = updateData.providerId;
     if (updateData.notes !== undefined) odData.Note = updateData.notes;
     if (updateData.status !== undefined) odData.AptStatus = this.mapStatusToOD(updateData.status);
-    if (updateData.confirmed !== undefined) odData.Confirmed = updateData.confirmed;
-    
+    // Confirmed is a definition.DefNum, not a boolean — only set it when a real DefNum
+    // is supplied (per-database; see OD_API_CONTRACT §3). Never write a boolean.
+    if (Number.isInteger(updateData.confirmedDefNum)) odData.Confirmed = updateData.confirmedDefNum;
+
     return odData;
   }
 
@@ -832,9 +893,12 @@ class OpenDentalService extends EventEmitter {
     }
 
     try {
-      // Set appointment status to cancelled
+      // Cancel = set AptStatus to the "Broken" string enum via PUT. This is a status
+      // UPDATE, never a delete — OD has no "Cancelled" status and no API row-delete for
+      // appointments. (A later slice may switch to PUT /appointments/{id}/Break to also
+      // record D9986/D9987.) See OD_API_CONTRACT §1/§4.2.
       const response = await this.client.put(`/appointments/${appointmentId}`, {
-        AptStatus: 8, // Cancelled status in Open Dental
+        AptStatus: this.mapStatusToOD('cancelled'), // -> "Broken"
         Note: reason ? `Cancelled: ${reason}` : 'Cancelled'
       });
 
@@ -872,7 +936,8 @@ class OpenDentalService extends EventEmitter {
 
   async searchPatients(query) {
     if (!this.enabled) {
-      return this.getMockPatients(query);
+      if (this.allowMock()) return this.getMockPatients(query);
+      throw new Error('Open Dental is not configured (set OPENDENTAL_ALLOW_MOCK=true for dev mock data)');
     }
 
     if (this.useDatabase) {
@@ -880,56 +945,57 @@ class OpenDentalService extends EventEmitter {
     }
 
     try {
-      // Try multiple search methods
-      const searchPromises = [];
-      
-      // Search by name
-      if (query.length >= 2) {
-        searchPromises.push(
-          this.client.get('/patients', {
-            params: { search: query, searchType: 'name' }
-          })
-        );
-      }
-
-      // Search by phone (if query looks like a phone number)
-      const phonePattern = /\d{3}[\-.\s]?\d{3}[\-.\s]?\d{4}/;
-      if (phonePattern.test(query)) {
-        const cleanPhone = query.replace(/\D/g, '');
-        searchPromises.push(
-          this.client.get('/patients', {
-            params: { phone: cleanPhone }
-          })
-        );
-      }
-
-      // Search by DOB (if query looks like a date)
-      const datePattern = /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/;
-      if (datePattern.test(query)) {
-        searchPromises.push(
-          this.client.get('/patients', {
-            params: { birthdate: query }
-          })
-        );
-      }
-
-      const results = await Promise.allSettled(searchPromises);
-      const patients = [];
-      
-      results.forEach(result => {
-        if (result.status === 'fulfilled' && result.value.data) {
-          patients.push(...result.value.data);
-        }
-      });
-
-      // Remove duplicates and transform data
-      const uniquePatients = this.removeDuplicatePatients(patients);
+      // Real OD patient search uses explicit field params (LName/FName/Phone/Birthdate)
+      // on GET /patients — there is no generic `search`/`searchType`. Route the single
+      // query string to the right field. See OD_API_CONTRACT §7.
+      const params = this.buildPatientSearchParams(query);
+      const response = await this.client.get('/patients', { params });
+      const list = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.value?.data ?? response.data?.data ?? []);
+      const uniquePatients = this.removeDuplicatePatients(Array.isArray(list) ? list : []);
       return this.transformPatientData(uniquePatients);
-
     } catch (error) {
       console.error('[OD Search] Patient search failed:', error.message);
-      return this.getMockPatients(query);
+      // Surface in api mode — an empty/mock result would mask a broken search.
+      if (this.allowMock()) return this.getMockPatients(query);
+      throw error;
     }
+  }
+
+  // Route a single free-text query to OD patient-search field params:
+  //   all digits / phone-shaped -> Phone; date-like -> Birthdate (yyyy-MM-dd);
+  //   "Last, First" or "First Last" -> LName/FName; otherwise -> LName.
+  buildPatientSearchParams(query) {
+    const q = (query || '').trim();
+    const digits = q.replace(/\D/g, '');
+
+    // Date-like (MM/DD/YYYY, M-D-YY, or yyyy-MM-dd) -> Birthdate.
+    const dateMatch = q.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (dateMatch) {
+      let [, m, d, y] = dateMatch;
+      if (y.length === 2) y = (parseInt(y, 10) > 30 ? '19' : '20') + y;
+      const pad = (n) => String(n).padStart(2, '0');
+      return { Birthdate: `${y}-${pad(m)}-${pad(d)}` };
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(q)) return { Birthdate: q };
+
+    // Phone-shaped (7+ digits and no letters) -> Phone.
+    if (digits.length >= 7 && !/[a-zA-Z]/.test(q)) return { Phone: digits };
+
+    // Name: "Last, First" or "First Last".
+    if (q.includes(',')) {
+      const [last, first] = q.split(',').map((s) => s.trim());
+      const out = {};
+      if (last) out.LName = last;
+      if (first) out.FName = first;
+      return out;
+    }
+    const parts = q.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return { FName: parts[0], LName: parts.slice(1).join(' ') };
+    }
+    return { LName: q };
   }
 
   async searchPatientsFromDB(query) {
@@ -1016,13 +1082,14 @@ class OpenDentalService extends EventEmitter {
       const pastDate = new Date();
       pastDate.setMonth(pastDate.getMonth() - 3); // 3 months back
 
-      // Get upcoming appointments
+      // Real OD filter params: PatNum + dateStart/dateEnd (yyyy-MM-dd). The old
+      // patientId/startDate/endDate/status params were ignored → a 2012 appt showed as
+      // "upcoming". Server-side date filtering now applies. See OD_API_CONTRACT §2.
       const upcomingResponse = await this.client.get('/appointments', {
         params: {
-          patientId,
-          startDate: today.toISOString().split('T')[0],
-          endDate: futureDate.toISOString().split('T')[0],
-          status: 'active'
+          PatNum: patientId,
+          dateStart: moment(today).format('YYYY-MM-DD'),
+          dateEnd: moment(futureDate).format('YYYY-MM-DD')
         }
       });
 
@@ -1031,15 +1098,19 @@ class OpenDentalService extends EventEmitter {
         // Get recent past appointments
         const recentResponse = await this.client.get('/appointments', {
           params: {
-            patientId,
-            startDate: pastDate.toISOString().split('T')[0],
-            endDate: today.toISOString().split('T')[0]
+            PatNum: patientId,
+            dateStart: moment(pastDate).format('YYYY-MM-DD'),
+            dateEnd: moment(today).format('YYYY-MM-DD')
           }
         });
-        recentAppointments = this.transformAppointmentData(recentResponse.data || []);
+        recentAppointments = await this.enrichAppointmentPatients(
+          this.transformAppointmentData(this.extractAppointmentList(recentResponse.data))
+        );
       }
 
-      const upcomingAppointments = this.transformAppointmentData(upcomingResponse.data || []);
+      const upcomingAppointments = await this.enrichAppointmentPatients(
+        this.transformAppointmentData(this.extractAppointmentList(upcomingResponse.data))
+      );
 
       return {
         hasUpcoming: upcomingAppointments.length > 0,
@@ -1115,7 +1186,8 @@ class OpenDentalService extends EventEmitter {
 
   async getProviders() {
     if (!this.enabled) {
-      return this.getMockProviders();
+      if (this.allowMock()) return this.getMockProviders();
+      throw new Error('Open Dental is not configured (set OPENDENTAL_ALLOW_MOCK=true for dev mock data)');
     }
 
     if (this.useDatabase) {
@@ -1124,7 +1196,7 @@ class OpenDentalService extends EventEmitter {
 
     try {
       const response = await this.client.get('/providers');
-      
+
       return response.data?.map((provider, index) => ({
         id: provider.ProvNum || provider.id || index + 1,
         name: `${provider.FName || provider.firstName || ''} ${provider.LName || provider.lastName || ''}`.trim() || `Provider ${index + 1}`,
@@ -1137,7 +1209,8 @@ class OpenDentalService extends EventEmitter {
       }));
     } catch (error) {
       console.error('[OD Providers] Provider fetch failed:', error.message);
-      return this.getMockProviders();
+      if (this.allowMock()) return this.getMockProviders();
+      throw error;
     }
   }
 
@@ -1179,7 +1252,8 @@ class OpenDentalService extends EventEmitter {
 
   async getOperatories() {
     if (!this.enabled) {
-      return this.getMockOperatories();
+      if (this.allowMock()) return this.getMockOperatories();
+      throw new Error('Open Dental is not configured (set OPENDENTAL_ALLOW_MOCK=true for dev mock data)');
     }
 
     if (this.useDatabase) {
@@ -1188,7 +1262,7 @@ class OpenDentalService extends EventEmitter {
 
     try {
       const response = await this.client.get('/operatories');
-      
+
       return response.data?.map((op, index) => ({
         id: op.OperatoryNum || op.id || index + 1,
         name: op.OpName || op.name || `Op ${index + 1}`,
@@ -1201,7 +1275,8 @@ class OpenDentalService extends EventEmitter {
       }));
     } catch (error) {
       console.error('[OD Operatories] Operatory fetch failed:', error.message);
-      return this.getMockOperatories();
+      if (this.allowMock()) return this.getMockOperatories();
+      throw error;
     }
   }
 
@@ -1244,10 +1319,14 @@ class OpenDentalService extends EventEmitter {
 
   async getProviderWorkingHours(providerId, date) {
     try {
+      // Format the date locally (moment) so a UTC toISOString() can't roll it to the
+      // previous/next day. NOTE: the /schedules param/field names (StartTime/StopTime/
+      // IsHoliday) should be re-confirmed against live OD in STEP 2; this slice only
+      // hardens the date param, not the field mapping. See OD_API_CONTRACT §9.
       const response = await this.client.get(`/schedules`, {
         params: {
           providerId,
-          date: new Date(date).toISOString().split('T')[0]
+          date: moment(date).format('YYYY-MM-DD')
         }
       });
 
@@ -1312,10 +1391,34 @@ class OpenDentalService extends EventEmitter {
     }
   }
 
+  // Reads: map an OD AptStatus back to our internal vocabulary. The real OD cloud
+  // API returns a STRING enum; direct-DB mode returns the legacy integer. Handle
+  // strings first (API), then fall back to the integer map (DB) — see
+  // docs/OD_API_CONTRACT.md §1/§5.
+  // NOTE: OD has no distinct "Cancelled"/"NoShow" status — both cancellations and
+  // no-shows read back as "Broken", so this mapping intentionally collapses them to
+  // `cancelled`. Nothing downstream may assume a Broken row was a cancel vs a missed
+  // appointment; that distinction only exists via the /Break endpoint (out of scope,
+  // a later slice). Reverse-mapping is therefore lossy by design.
   mapAppointmentStatus(odStatus) {
-    const statusMap = {
+    if (typeof odStatus === 'string') {
+      const stringMap = {
+        Scheduled: 'scheduled',
+        Complete: 'completed',
+        UnschedList: 'unscheduled',
+        ASAP: 'scheduled',
+        Broken: 'cancelled',
+        Planned: 'scheduled',
+        PtNote: 'scheduled',
+        PtNoteCompleted: 'completed'
+      };
+      if (stringMap[odStatus]) return stringMap[odStatus];
+    }
+
+    // Legacy direct-DB integer AptStatus (unchanged — DB-mode paths are not retargeted).
+    const intMap = {
       1: 'scheduled',
-      2: 'scheduled', 
+      2: 'scheduled',
       3: 'scheduled',
       4: 'scheduled',
       5: 'confirmed',
@@ -1325,22 +1428,49 @@ class OpenDentalService extends EventEmitter {
       9: 'no_show',
       10: 'broken'
     };
-    
-    return statusMap[odStatus] || 'scheduled';
+    return intMap[odStatus] || 'scheduled';
   }
 
+  // Writes: map our internal vocabulary to the real OD API string AptStatus enum.
+  // OD has NO Confirmed/Arrived/NoShow status — confirmation is a Confirmed DefNum,
+  // arrival is DateTimeArrived, and cancel/no-show both become "Broken" (a status
+  // UPDATE, never a delete). This is the single source of int->string truth; no
+  // raw integer AptStatus literals should exist anywhere else. See OD_API_CONTRACT §5.
   mapStatusToOD(status) {
     const statusMap = {
-      'scheduled': 1,
-      'confirmed': 5,
-      'arrived': 6,
-      'completed': 7,
-      'cancelled': 8,
-      'no_show': 9,
-      'broken': 10
+      scheduled: 'Scheduled',
+      confirmed: 'Scheduled',   // confirmation tracked via Confirmed DefNum, not AptStatus
+      arrived: 'Scheduled',     // arrival tracked via DateTimeArrived, not AptStatus
+      completed: 'Complete',
+      cancelled: 'Broken',      // OD has no "Cancelled"; cancel = Broken status update
+      no_show: 'Broken',        // OD can't distinguish no-show from cancel on read
+      broken: 'Broken',
+      unscheduled: 'UnschedList',
+      asap: 'ASAP',
+      planned: 'Planned'
     };
-    
-    return statusMap[status] || 1;
+    return statusMap[status] || 'Scheduled';
+  }
+
+  // Format a datetime for OD writes: "yyyy-MM-dd HH:mm:ss" (no 'T'/'Z'). OD treats the
+  // value as practice-local wall-clock, so we preserve the wall-clock portion of an ISO
+  // string verbatim rather than shifting it through UTC. See OD_API_CONTRACT §3.
+  formatODDateTime(value) {
+    if (!value) return value;
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) return `${value}:00`;
+      const iso = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+      if (iso) return `${iso[1]} ${iso[2]}`;
+    }
+    return moment(value).format('YYYY-MM-DD HH:mm:ss');
+  }
+
+  // Mock data is permissible ONLY when OD is not configured or an explicit dev flag is
+  // set — never as a silent fallback on an API error in api mode against a real practice
+  // (that would show phantom providers/appointments/patients). See OD_API_CONTRACT §8.
+  allowMock() {
+    return process.env.OPENDENTAL_ALLOW_MOCK === 'true' && process.env.NODE_ENV !== 'production';
   }
 
   getProviderColor(providerId) {
@@ -1471,16 +1601,22 @@ class OpenDentalService extends EventEmitter {
     if (!this.enabled) return [];
     
     try {
-      const since = this.lastSyncTime || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const response = await this.client.get('/patients', {
-        params: { 
-          updatedSince: since,
-          limit: 100
-        }
+      // OD has no `updatedSince` param (it 400s). The changed-since mechanism is the
+      // DateTStamp filter ("yyyy-MM-dd HH:mm:ss") on GET /patients/Simple, paired with
+      // the serverDateTime cursor returned by OD. See OD_API_CONTRACT §6/§7.
+      const since = moment(this.lastSyncTime || Date.now() - 24 * 60 * 60 * 1000)
+        .format('YYYY-MM-DD HH:mm:ss');
+      const response = await this.client.get('/patients/Simple', {
+        params: { DateTStamp: since }
       });
-      
-      return this.transformPatientData(response.data || []);
+
+      const list = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.value?.data ?? response.data?.data ?? []);
+      return this.transformPatientData(Array.isArray(list) ? list : []);
     } catch (error) {
+      // Background sync read — log and degrade to empty (no longer a guaranteed 400),
+      // rather than aborting the whole sync cycle.
       console.error('[OD Patients] Recent patient updates failed:', error.message);
       return [];
     }
@@ -1679,4 +1815,9 @@ class OpenDentalService extends EventEmitter {
   }
 }
 
-module.exports = new OpenDentalService(); 
+// Export the singleton (app uses this) and the class (unit tests construct fresh,
+// disabled instances and stub `this.client` to assert param/enum construction).
+const openDentalServiceSingleton = new OpenDentalService();
+openDentalServiceSingleton.OpenDentalService = OpenDentalService;
+module.exports = openDentalServiceSingleton;
+module.exports.OpenDentalService = OpenDentalService; 

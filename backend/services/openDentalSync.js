@@ -22,6 +22,13 @@ class OpenDentalSyncService {
       lastSyncTime: null,
       lastError: null
     };
+
+    // CommType for CareIN automated commlog entries is an OD definition.DefNum
+    // (Category=27) and is PRACTICE-SPECIFIC — it differs per OD database (Roland vs
+    // Valley), so it must be resolved per-connected-database and never hardcoded blindly.
+    // Defaults to the CareIN convention DefNum 486; override per tenant via env.
+    // See docs/OD_API_CONTRACT.md §10.
+    this.careinCommType = parseInt(process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM || '486', 10);
   }
 
   // ============================================================================
@@ -212,63 +219,42 @@ class OpenDentalSyncService {
       };
     }
 
-    // Create CommLog entry
+    // Create CommLog entry — createCommLog branches DB vs API and builds the correct
+    // payload for each (the API path needs string enums + a formatted date, not the
+    // DB-shaped integers). See createCommLog / OD_API_CONTRACT.md §10.
     try {
       const commLogEntry = this.formatCommLogEntry(call, options);
-      
-      if (openDentalService.useDatabase && openDentalService.pool) {
-        // Direct database insert
-        const result = await this.insertCommLogToDatabase(patientId, commLogEntry);
-        
-        if (result.success) {
-          // Update call with sync status
-          unifiedCallStore.updateCall(callId, {
-            od_sync_status: 'synced',
-            od_patient_id: patientId,
-            od_commlog_num: result.commLogNum,
-            od_synced_at: new Date().toISOString(),
-            od_match_confidence: matchResult?.confidence
-          });
+      const result = await this.createCommLog(patientId, commLogEntry);
 
-          this.stats.totalSynced++;
-          this.stats.lastSyncTime = new Date().toISOString();
-          
-          this.addToHistory({
-            type: 'sync_success',
-            callId,
-            patientId,
-            commLogNum: result.commLogNum,
-            timestamp: new Date().toISOString()
-          });
-
-          return { 
-            success: true, 
-            message: 'Synced to CommLog',
-            commLogNum: result.commLogNum,
-            patientId
-          };
-        } else {
-          throw new Error(result.error || 'Database insert failed');
-        }
-      } else if (openDentalService.client) {
-        // API-based sync (if available)
-        const response = await openDentalService.client.post('/commlogs', {
-          PatNum: patientId,
-          ...commLogEntry
-        });
-
-        unifiedCallStore.updateCall(callId, {
-          od_sync_status: 'synced',
-          od_patient_id: patientId,
-          od_commlog_num: response.data?.CommlogNum,
-          od_synced_at: new Date().toISOString()
-        });
-
-        this.stats.totalSynced++;
-        return { success: true, message: 'Synced via API' };
-      } else {
-        throw new Error('No Open Dental connection available');
+      if (!result.success) {
+        throw new Error(result.error || 'CommLog create failed');
       }
+
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'synced',
+        od_patient_id: patientId,
+        od_commlog_num: result.commLogNum,
+        od_synced_at: new Date().toISOString(),
+        od_match_confidence: matchResult?.confidence
+      });
+
+      this.stats.totalSynced++;
+      this.stats.lastSyncTime = new Date().toISOString();
+
+      this.addToHistory({
+        type: 'sync_success',
+        callId,
+        patientId,
+        commLogNum: result.commLogNum,
+        timestamp: new Date().toISOString()
+      });
+
+      return {
+        success: true,
+        message: 'Synced to CommLog',
+        commLogNum: result.commLogNum,
+        patientId
+      };
     } catch (error) {
       console.error('[OD Sync] CommLog sync failed:', error.message);
       
@@ -409,6 +395,62 @@ Callback Required: ${call.callback_required ? 'Yes' : 'No'}
     }
     
     return 1; // Misc
+  }
+
+  /**
+   * Create a CommLog in Open Dental, choosing the right transport for the active mode:
+   *   - direct-DB mode  -> insertCommLogToDatabase (unchanged integer-column INSERT)
+   *   - api mode        -> POST /commlogs with the real API payload (string enums)
+   *
+   * This is the single entry point for writing a commlog. The previous webhook path
+   * called insertCommLogToDatabase directly, which silently failed in api mode
+   * ("Database pool not available") so call summaries never reached OD on api-mode
+   * tenants. See docs/OD_API_CONTRACT.md §10.
+   */
+  async createCommLog(patientId, commLogEntry) {
+    if (openDentalService.useDatabase && openDentalService.pool) {
+      return this.insertCommLogToDatabase(patientId, commLogEntry);
+    }
+
+    if (openDentalService.client) {
+      try {
+        const payload = this.buildCommLogApiPayload(patientId, commLogEntry);
+        const response = await openDentalService.client.post('/commlogs', payload);
+        return {
+          success: true,
+          commLogNum: response.data?.CommlogNum,
+          message: 'CommLog entry created via API'
+        };
+      } catch (error) {
+        console.error('[OD Sync] CommLog API create error:', error.response?.data || error.message);
+        return { success: false, error: error.response?.data?.message || error.message };
+      }
+    }
+
+    return { success: false, error: 'No Open Dental connection available' };
+  }
+
+  /**
+   * Translate a DB-shaped commlog entry into the real OD POST /commlogs payload.
+   * OD requires PatNum + Note; Mode_ and SentOrReceived are STRING enums (not the DB
+   * integers); CommDateTime is "yyyy-MM-dd HH:mm:ss"; CommType is a definition.DefNum
+   * (Category=27). These are CareIN inbound call summaries, so Mode_="Phone" and
+   * SentOrReceived="Received" by intent. See docs/OD_API_CONTRACT.md §10.
+   */
+  buildCommLogApiPayload(patientId, commLogEntry) {
+    const modeEnum = { 0: 'None', 1: 'Email', 2: 'Text', 3: 'Phone', 4: 'In Person', 5: 'Mail' };
+    const Mode_ = typeof commLogEntry.Mode_ === 'string'
+      ? commLogEntry.Mode_
+      : (modeEnum[commLogEntry.Mode_] || 'Phone');
+
+    return {
+      PatNum: patientId,
+      Note: commLogEntry.Note,
+      CommDateTime: openDentalService.formatODDateTime(commLogEntry.CommDateTime),
+      Mode_,
+      SentOrReceived: 'Received', // inbound call summaries are always received
+      CommType: this.careinCommType
+    };
   }
 
   /**
