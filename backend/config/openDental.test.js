@@ -138,6 +138,19 @@ test('getAppointmentsForDateRange uses dateStart/dateEnd (not startDate/endDate)
   assert.ok(!('includePatientInfo' in arg.params), 'fabricated include* params must be gone');
 });
 
+test('getCalendarAppointments keeps space-separated OD datetimes for the target date (regression)', async () => {
+  // OD returns "yyyy-MM-dd HH:mm:ss" (space, not 'T'). The day filter must not drop them.
+  const client = recordingClient({ data: [
+    { AptNum: 1, PatNum: 5, FName: 'A', LName: 'B', AptDateTime: '2026-06-04 08:00:00', AptStatus: 'Scheduled', ProvNum: 1, Op: 2 },
+    { AptNum: 2, PatNum: 6, FName: 'C', LName: 'D', AptDateTime: '2026-06-05 09:00:00', AptStatus: 'Scheduled', ProvNum: 1, Op: 2 }
+  ]});
+  const s = makeService({ client });
+  const out = await s.getCalendarAppointments({ date: '2026-06-04' });
+  assert.equal(out.length, 1, 'space-separated same-day appt must be kept');
+  assert.equal(out[0].id, 1);
+  assert.equal(out[0].dateTime, '2026-06-04 08:00:00');
+});
+
 test('buildPatientSearchParams routes the query to real OD fields (no search/searchType)', () => {
   const s = makeService();
   assert.deepEqual(s.buildPatientSearchParams('5551234567'), { Phone: '5551234567' });

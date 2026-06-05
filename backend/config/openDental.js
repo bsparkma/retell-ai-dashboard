@@ -252,10 +252,14 @@ class OpenDentalService extends EventEmitter {
       let transformed = this.transformAppointmentData(list);
 
       // Belt-and-suspenders: keep only records actually on the target date.
+      // OD returns space-separated datetimes ("2026-06-04 08:00:00"), so take the
+      // leading 10 chars (the yyyy-MM-dd) — split('T') would NOT trim a space-separated
+      // value and would drop every row (the Step-4 "calendar = 0" symptom).
       transformed = transformed.filter((apt) => {
         if (!apt.id || !apt.dateTime) return false;
         const dt = apt.dateTime;
-        const aptDate = (typeof dt === 'string' ? dt : (dt.toISOString && dt.toISOString()))?.split('T')[0];
+        const dtStr = typeof dt === 'string' ? dt : (dt.toISOString && dt.toISOString());
+        const aptDate = dtStr ? String(dtStr).slice(0, 10) : '';
         return aptDate === targetDate;
       });
 
