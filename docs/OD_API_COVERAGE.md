@@ -4,6 +4,21 @@ Validation of the CareIN staging tenant against the **live Open Dental cloud API
 (`https://api.opendental.com/api/v1`), **Roland location only**. Read-only Phase B
 (2026-06-05). Writes (book/update/cancel) are Phase C — not yet run.
 
+> **✅ REMEDIATED (2026-06-04, slice `feature/od-client-port`).** The OD client was
+> ported to the real api.opendental.com contract (`docs/OD_API_CONTRACT.md`) and the
+> fixes were **re-validated live against Roland OD on staging** (image `93fcc9f`). Every
+> row Step 4 flagged as **partial/none/blocked** below is now **full** — see the
+> per-row "Remediated (STEP 2…)" evidence. Summary of the live re-validation:
+> - Patient search `q=Test` → **6 real Roland matches** (was 400 `'search'…`).
+> - Range/calendar for a current date → **real 2026 appts, names resolved** (was 2012/empty).
+> - Write cycle on PatNum 1 (*Patient Test): **booked AptNum 108131 → updated → cancelled**
+>   (`AptStatus` string enums; cancel = `"Broken"` status update, row never deleted).
+> - Commlog (§4): **CommlogNum 344625** written on PatNum 1 via CommType **486** ("CareIN AI Call").
+> - Induced OD error **surfaced** (HTTP 500) instead of silent mock.
+>
+> Still open (separate slices): per-location/Valley key (multi-OD-database row),
+> slot-markers connector, and `getAppointmentDetails` by-id name enrichment (cosmetic).
+
 ## How it's wired
 - `od_primary_mode = 'api'`; `odAccess` → `config/openDental.js` cloud client.
 - Auth: `Authorization: ODFHIR {developerKey}/{customerKey}` — keys loaded by the
@@ -16,14 +31,15 @@ Validation of the CareIN staging tenant against the **live Open Dental cloud API
 ## Bottom line — how much of CareIN is API-covered
 - **Entity-by-id reads and unparameterised reference lists work against real Roland OD**
   (providers, operatories, patient-by-id, appointment-by-id, provider schedule).
-- **Everything that relies on query-param filtering is broken** because the client's
-  param names don't match the real OD API contract — proven by OD's own 400s
-  (`'search' is not a valid parameter`, `'updatedSince' is not a valid parameter`)
-  and by date-range params being silently ignored (returns 2012 records). This hits
-  patient search, calendar-by-date, appointments-by-range, patient appt verification,
-  and sync. **These need client remediation to the real OD param names** (e.g.
-  `dateStart`/`dateEnd`, OD patient search fields) before CareIN's scheduling/lookup
-  flows are trustworthy on live OD.
+- ~~**Everything that relies on query-param filtering is broken**~~ **(STEP 4 finding —
+  now REMEDIATED, see banner.)** The client's param names didn't match the real OD API
+  contract — proven by OD's own 400s (`'search' is not a valid parameter`,
+  `'updatedSince' is not a valid parameter`) and by date-range params being silently
+  ignored (2012 records). This hit patient search, calendar-by-date, appointments-by-range,
+  patient appt verification, and sync. **Fixed in `feature/od-client-port`** (real OD param
+  names: `dateStart`/`dateEnd`, `LName`/`FName`/`Phone`/`Birthdate`, `DateTStamp`) and
+  re-validated live — all now **full**. Writes (book/update/cancel) and the §4 commlog path
+  were likewise blocked and are now full.
 - **slot-markers is connector-only** (no API path) and needs a real on-prem connector.
 - **The tenant spans two separate OD databases (Roland + Valley)**; the single-key
   cloud client can only serve one → see the multi-OD-database row.
@@ -44,18 +60,19 @@ the call (or returns nothing usable); **derived** = computed on top of other rea
 | Patient by id | `getPatientDetails` | `GET /opendental/patients/:id` | **full** | no | 200 `/patients/1001` → real (Cara Davenport, DOB 1962-08-21, Roland OK) |
 | Appointment by id | `getAppointmentDetails` | `GET /opendental/appointments/:id` | **full** | no | 200 `/appointments/3` → real appt; ⚠️ `patient` name empty (single-appt payload lacks name fields) |
 | Provider working hours | `getProviderWorkingHours` | `GET /opendental/providers/:id/schedule` | **full** | no | 200 `/schedules` → `{startHour:5,endHour:16}` (not the 8–17 default) ⚠️ hour parse may be TZ-affected |
-| Patient appt history | `verifyPatientAppointments` | `GET /opendental/patients/:id/appointments` | **partial** | no | 200 + real appts, but a 2012 appt labeled "upcoming" → today/future date filter ignored |
-| Calendar (by day) | `getCalendarAppointments` | `GET /opendental/calendar` | **partial** | no | providers/operatories real & 200; **appointments = 0** (records come back dated 2012 → day filter drops them) |
-| Appointments by range | `getAppointmentsForDateRange` | `GET /opendental/appointments/range` | **partial** | no | 200 + 100 **real** records, but `startDate`/`endDate` **ignored** → returns 2012 data; `patient` = "Unknown Patient" (includePatientInfo ignored) |
-| Patient search | `searchPatients` | `GET /opendental/patients/search` | **none** | no | OD **400 `'search' is not a valid parameter`** → returns empty (not mock; `allSettled` swallows). Search non-functional vs real OD |
-| Sync | `performSync` | `POST /opendental/sync/trigger` | **partial** | no | appts/providers/operatories 200; `getRecentPatientUpdates` → OD **400 `'updatedSince' is not a valid parameter`** |
+| Patient appt history | `verifyPatientAppointments` | `GET /opendental/patients/:id/appointments` | **full** | no | **Remediated (STEP 2, 2026-06-04):** `PatNum`+`dateStart`/`dateEnd`. Clean filtered 200 (PatNum 1 → 0 in-window, **no 2012 row**). Was: 2012 appt labeled "upcoming" |
+| Calendar (by day) | `getCalendarAppointments` | `GET /opendental/calendar` | **full** | no | **Remediated:** `dateStart`/`dateEnd` + day-filter fixed (`slice(0,10)` for space-separated datetimes, was `split('T')`). `?date=2026-06-04` → **48 real 2026 appts**, names resolved. Was: appointments = 0 |
+| Appointments by range | `getAppointmentsForDateRange` | `GET /opendental/appointments/range` | **full** | no | **Remediated:** `dateStart`/`dateEnd`; 100 records **all 2026** (histogram `{2026:100}`), `patient` **names resolved** (Copper Herren…) via batch PatNum lookup. Was: 2012 data + "Unknown Patient" |
+| Patient search | `searchPatients` | `GET /opendental/patients/search` | **full** | no | **Remediated:** `LName`/`FName`/`Phone`/`Birthdate` routing. `q=Test` → **6 real Roland matches** (PatNum 1 *Patient Test, Stedi Test…). Was: 400 `'search' is not a valid parameter` |
+| Sync | `performSync` | `POST /opendental/sync/trigger` | **full** | no | **Remediated:** `getRecentPatientUpdates` → `DateTStamp` on `/patients/Simple` (no more `updatedSince` 400). appts/providers/operatories already 200 |
 | Scheduling rules | `getSchedulingRules` | *(via conflict check)* | **none (expected)** | no | `GET /preferences` — not isolated this phase; falls back to hardcoded defaults |
-| Conflict check | `checkSchedulingConflicts` | `POST /opendental/appointments/check-conflicts` | **derived** | no | computed on `getAppointmentsForDateRange` (partial) → unreliable until range reads fixed |
-| Alt slots / day slots | `findAlternativeTimeSlots`, `findAvailableSlotsForDay` | `POST /opendental/appointments/find-slots` | **derived** | no | loops `checkSchedulingConflicts` |
+| Conflict check | `checkSchedulingConflicts` | `POST /opendental/appointments/check-conflicts` | **derived (now reliable)** | no | built on `getAppointmentsForDateRange` (now **full**); the STEP-2 book cycle's pre-check passed correctly |
+| Alt slots / day slots | `findAlternativeTimeSlots`, `findAvailableSlotsForDay` | `POST /opendental/appointments/find-slots` | **derived** | no | loops `checkSchedulingConflicts` (now reliable) |
 | Slot markers | `getSlotMarkers` | `GET /api/slot-markers` | **none (API)** | **YES — connector-only** | `connectorRequest` → `{connector_url}/api/slot-markers`; staging connector_url is placeholder → 503 |
-| Book appointment | `bookAppointment` | `POST /opendental/appointments` | **none (blocked)** | no | OD **400 `AptStatus is invalid`** — client sends integer `AptStatus:1`; real OD API expects a **string enum** (`"Scheduled"`). Conflict pre-check passed (far-future slot); POST rejected → **no appt created** |
-| Update appointment | `updateAppointment` | `PUT /opendental/appointments/:id` | **untested (blocked by book)** | no | a notes-only update omits `AptStatus` so it may work, but there was no appt to update this phase |
-| Cancel appointment | `cancelAppointment` | `DELETE /opendental/appointments/:id` | **none (blocked, same root cause)** | no | sends `AptStatus:8` (int) → same `AptStatus is invalid`; also OD API has no "Cancelled" status (would need e.g. `"Broken"`). Never a row delete |
+| Book appointment | `bookAppointment` | `POST /opendental/appointments` | **full** | no | **Remediated (STEP 2 write test, 2026-06-04):** `AptStatus:"Scheduled"` string + `AptDateTime` "yyyy-MM-dd HH:mm:ss". Booked **AptNum 108131** (PatNum 1/Op 9/Prov 1/2026-12-13 14:00). Was: 400 `AptStatus is invalid` |
+| Update appointment | `updateAppointment` | `PUT /opendental/appointments/:id` | **full** | no | **Remediated:** note-only PUT on 108131 → 200, note changed, `AptStatus` untouched |
+| Cancel appointment | `cancelAppointment` | `DELETE /opendental/appointments/:id` | **full** | no | **Remediated:** `AptStatus:"Broken"` status PUT (string, **never deletes the row**). 108131 → `cancelled`, row intact (108131), nothing active left. Was: int `AptStatus:8` → 400 |
+| Commlog write (call summary) | `createCommLog` / `syncCallToCommLog` | webhook `call_analyzed` → `POST /commlogs` | **full** | no | **Remediated (§4, STEP 2):** api-mode write was a silent no-op (DB-only `insertCommLogToDatabase`); now `POST /commlogs` with string `Mode_`/`SentOrReceived` + CommType **486** ("CareIN AI Call"). Wrote+verified **CommlogNum 344625** on PatNum 1 |
 
 ### Multi-OD-database finding (first-class)
 | Concern | Status | Detail |
@@ -88,14 +105,25 @@ One controlled write was attempted on live Roland OD, then designed to be revers
   integer-vs-string `AptStatus` field mismatch (same class of bug as the read param
   mismatches). Reads-by-id work; writes need the enum fix before any booking flow is usable.
 
-## Recommended follow-ups (out of scope for Step 4)
-1. **Fix OD client field/param mismatches** to the real `api.opendental.com/api/v1` contract:
-   reads — appointments `dateStart`/`dateEnd`, patient search fields, drop/replace
-   `updatedSince`/`search`/`searchType`; **writes — `AptStatus` must be the string enum
-   (`"Scheduled"` on book; a valid status such as `"Broken"` for cancel, since OD has no
-   "Cancelled")**. This converts the four **partial** + one **none** read and the **blocked
-   writes** into full.
-2. **Surface mock fallback** — `getProviders/getOperatories/getCalendarAppointments` silently
-   return mock on API error; that masks outages. Make failures explicit in non-dev.
-3. **Per-location OD credentials** for the Roland+Valley split (multi-OD-database row).
-4. **Real connector** for slot-markers (replace placeholder `connector_url`).
+## STEP 2 — write re-validation (2026-06-04, after remediation) ✅
+Re-ran the Phase C protocol on staging image `93fcc9f` (same target: PatNum 1, Op 9,
+ProvNum 1, 2026-12-13 14:00). **All green now:**
+- **Book** → 201, **AptNum 108131**, `AptStatus:"Scheduled"`, `AptDateTime 2026-12-13 14:00:00`.
+- **Update** (note-only) → 200, note changed, `AptStatus` untouched.
+- **Cancel** → 200 → re-verify `status:"cancelled"` (`AptStatus:"Broken"`); **row 108131 still
+  exists (never deleted), nothing active left**.
+- **Commlog** (§4) → `POST /commlogs` wrote **CommlogNum 344625** on PatNum 1, CommType **486**
+  ("CareIN AI Call"), `Mode_:"Phone"`, `SentOrReceived:"Received"` — verified by id.
+- **Induced error** → malformed date → HTTP 500 surfaced (no silent mock).
+
+## Recommended follow-ups (from Step 4)
+1. ✅ **DONE** — **Fixed OD client field/param mismatches** to the real contract (reads
+   `dateStart`/`dateEnd` + patient-search fields + `DateTStamp`; writes `AptStatus` string
+   enum, cancel = `"Broken"`). The four **partial** + one **none** reads and the blocked
+   writes are now **full** (re-validated above).
+2. ✅ **DONE** — **Surfaced mock fallback** — `allowMock()` gate; api-mode errors now throw
+   instead of returning mock (proven by the induced-error check).
+3. **Per-location OD credentials** for the Roland+Valley split (multi-OD-database row) — open.
+4. **Real connector** for slot-markers (replace placeholder `connector_url`) — open.
+5. *(minor)* `getAppointmentDetails` by-id still shows "Unknown Patient" (single-appt payload
+   lacks name fields; list/range/calendar paths resolve names) — cosmetic, open.
