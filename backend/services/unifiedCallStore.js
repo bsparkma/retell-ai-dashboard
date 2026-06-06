@@ -86,7 +86,10 @@ function extractCallerNameFromCall(call) {
     if (name) return name;
   }
 
-  const transcript = call.transcript || '';
+  // Guard: a non-string transcript (e.g. Retell's transcript_object array) must not throw
+  // "transcript.match is not a function" here — this runs on every addRetellCall via
+  // normalizeCall, i.e. the call_started/call_ended persist path.
+  const transcript = typeof call.transcript === 'string' ? call.transcript : '';
   const thanksMatch = transcript.match(/(?:thanks|thank you),?\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/);
   const thanksName = cleanCallerName(thanksMatch?.[1]);
   if (thanksName) return thanksName;
@@ -286,12 +289,27 @@ class UnifiedCallStore {
       // QA
       qa_score: call.qa_score || null,
       qa_evaluated_at: call.qa_evaluated_at || null,
-      
+
+      // Open Dental commlog sync state — MUST survive re-normalization. normalizeCall
+      // rebuilds the record from scratch and addCallInternal replaces the stored call,
+      // so without carrying these through, every addRetellCall (webhook re-delivery AND
+      // the 15-min poller) would wipe od_sync_status and defeat commlog dedup (both the
+      // webhook guard below and the existing /sync-all guard). See
+      // docs/SLICE_WEBHOOK_COMMLOG_HARDENING_PRD.md.
+      od_sync_status: call.od_sync_status ?? null,
+      od_patient_id: call.od_patient_id ?? null,
+      od_commlog_num: call.od_commlog_num ?? null,
+      od_synced_at: call.od_synced_at ?? null,
+      od_match_confidence: call.od_match_confidence ?? null,
+      od_match_candidates: call.od_match_candidates ?? null,
+      od_sync_attempted_at: call.od_sync_attempted_at ?? null,
+      od_sync_error: call.od_sync_error ?? null,
+
       // Timestamps
       created_at: call.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    
+
     return normalized;
   }
 
@@ -315,6 +333,18 @@ class UnifiedCallStore {
       // Map Retell-specific fields to our unified schema
       caller_number: call.caller_number || call.from_number || 'Unknown',
       call_date: call.call_date || call.start_timestamp || new Date().toISOString(),
+      // Preserve OD commlog sync state across re-adds: a raw webhook re-delivery or the
+      // 15-min poller payload has no od_* fields, so carry them from the existing record
+      // (the incoming value wins only when explicitly set). This is what keeps the
+      // commlog dedup guard honest across Retell retries.
+      od_sync_status: call.od_sync_status ?? existing?.od_sync_status ?? null,
+      od_patient_id: call.od_patient_id ?? existing?.od_patient_id ?? null,
+      od_commlog_num: call.od_commlog_num ?? existing?.od_commlog_num ?? null,
+      od_synced_at: call.od_synced_at ?? existing?.od_synced_at ?? null,
+      od_match_confidence: call.od_match_confidence ?? existing?.od_match_confidence ?? null,
+      od_match_candidates: call.od_match_candidates ?? existing?.od_match_candidates ?? null,
+      od_sync_attempted_at: call.od_sync_attempted_at ?? existing?.od_sync_attempted_at ?? null,
+      od_sync_error: call.od_sync_error ?? existing?.od_sync_error ?? null,
     };
 
     const stored = this.addCallInternal(normalizedCall);
