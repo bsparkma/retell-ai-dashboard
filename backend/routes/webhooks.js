@@ -219,21 +219,58 @@ async function handleCallEnded(event) {
   }
 }
 
+// ── call_analyzed → Open Dental commlog (hardened) ───────────────────────────
+// See docs/SLICE_WEBHOOK_COMMLOG_HARDENING_PRD.md. These writes hit LIVE patient
+// charts, so the path must be idempotent (no double-write on a Retell retry),
+// must NEVER auto-write to a guessed chart on an ambiguous match, and must ack
+// Retell before the OD write so the 200 doesn't wait on OD latency.
+
+// Auto-write only on a confident, UNAMBIGUOUS match. Everything else -> needs_review.
+const CONFIDENT_WRITE_MIN = 0.85;
+
+// call_ids whose commlog write is currently in-flight. Fix 2 makes the write async,
+// so two near-simultaneous retries could both pass the persisted-status check before
+// either finishes; this guards that window. The persisted od_sync_status guards the
+// sequential-retry case after completion.
+const commlogInFlight = new Set();
+
+function isConfidentUnambiguousMatch(matchResult) {
+  if (!matchResult || !matchResult.patient) return false;
+  // A number on more than one record (matchByPhone returns `alternatives`) is ambiguous.
+  if (Array.isArray(matchResult.alternatives) && matchResult.alternatives.length > 0) return false;
+  return (matchResult.confidence || 0) >= CONFIDENT_WRITE_MIN;
+}
+
+function patientToCandidate(p) {
+  if (!p || p.id == null) return null;
+  const name = p.fullName
+    || [p.firstName, p.lastName].filter(Boolean).join(' ').trim()
+    || `Patient ${p.id}`;
+  return { id: p.id, name };
+}
+
+// The top guess + alternatives, as {id, name}, de-duped by id — for the Slice-B review UI.
+function buildMatchCandidates(matchResult) {
+  if (!matchResult) return [];
+  const seen = new Set();
+  return [matchResult.patient, ...(matchResult.alternatives || [])]
+    .map(patientToCandidate)
+    .filter(Boolean)
+    .filter(c => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+}
+
 /**
- * Handle call_analyzed event
- * This comes after call ends with full analysis
+ * Handle call_analyzed event (comes after the call ends, with full analysis).
+ *
+ * Acks fast: persists the analysis to the unified store synchronously, then schedules
+ * the OD match + commlog write to run AFTER the webhook response (Fix 2). The write
+ * itself is idempotent (Fix 1) so a Retell retry is harmless.
  */
 async function handleCallAnalyzed(event) {
   const callData = event.call || event.data || event;
-  
+
   console.log(`📊 [Webhook] Call analyzed: ${callData.call_id}`);
-  
-  // The call has already ended, so this is for updating stored data
-  // For now, we'll just log it. In a full implementation:
-  // - Update database with analysis
-  // - Trigger QA evaluation
-  // - Update Open Dental if needed
-  
+
   // Emit the analysis to any listening clients
   if (liveCallManager.io) {
     liveCallManager.io.emit('call:analyzed', {
@@ -245,7 +282,8 @@ async function handleCallAnalyzed(event) {
     });
   }
 
-  // Persist analysis updates into unified store
+  // Persist analysis updates into unified store (fast, in-memory; od_* sync state is
+  // preserved across this re-add by unifiedCallStore so the dedup guard below holds).
   try {
     unifiedCallStore.addRetellCall({
       ...callData,
@@ -261,26 +299,81 @@ async function handleCallAnalyzed(event) {
     console.warn('⚠️ Failed to persist call_analyzed to unified store:', e.message);
   }
 
-  // Write Open Dental commlog entry
+  // Fix 2: ack the webhook FIRST. setImmediate defers the OD work until after the
+  // response has been sent, so Retell's 200 never waits on OD latency. A failure in
+  // the async task is caught here and must never crash the process.
+  setImmediate(() => {
+    writeCommlogForAnalyzedCall(callData).catch(err =>
+      console.error(`❌ [Webhook] async commlog task crashed for ${callData.call_id}:`, err && err.message)
+    );
+  });
+}
+
+/**
+ * Match the analyzed call to a patient and write the Open Dental commlog — idempotently,
+ * and only when the match is confident + unambiguous. Safe to call more than once for the
+ * same call_id (dedup by persisted od_sync_status + an in-flight guard).
+ *
+ * Returns a small result object (used by unit tests); never throws.
+ */
+async function writeCommlogForAnalyzedCall(callData) {
+  const callId = callData && callData.call_id;
+  if (!callId) {
+    console.warn('⚠️ [Webhook] call_analyzed without call_id; skipping commlog');
+    return { skipped: true, reason: 'no_call_id' };
+  }
+
+  // Dedup #1 (persisted): a prior delivery already wrote the commlog. This also makes a
+  // later manual /sync-all a no-op for this call.
+  const existing = unifiedCallStore.getCall(callId);
+  if (existing && existing.od_sync_status === 'synced') {
+    console.log(`↩️ [Webhook] commlog already written for ${callId} (synced) — dedup skip`);
+    return { skipped: true, reason: 'already_synced' };
+  }
+
+  // Dedup #2 (in-flight): a concurrent retry is mid-write (the OD write is async).
+  if (commlogInFlight.has(callId)) {
+    console.log(`↩️ [Webhook] commlog write already in flight for ${callId} — dedup skip`);
+    return { skipped: true, reason: 'in_flight' };
+  }
+  commlogInFlight.add(callId);
+
   try {
-    // Match call to patient by phone number
     const matchResult = await openDentalSyncService.matchCallToPatient({
       caller_number: callData.from_number,
       caller_name: callData.call_analysis?.caller_name || 'Unknown'
     });
 
-    // Calculate call duration in seconds
+    // Fix 3: ambiguous / low-confidence / no match -> needs_review. NEVER auto-write to a
+    // guessed chart (e.g. when the caller's number is on more than one patient record).
+    if (!isConfidentUnambiguousMatch(matchResult)) {
+      const candidates = buildMatchCandidates(matchResult);
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'needs_review',
+        od_match_candidates: candidates,
+        od_match_confidence: matchResult ? (matchResult.confidence || 0) : 0,
+        od_sync_attempted_at: new Date().toISOString(),
+      });
+      console.warn(
+        `🟡 [Webhook] ${callId} needs_review (confidence=${matchResult ? (matchResult.confidence || 0) : 0}, ` +
+        `candidates=${candidates.length}) — no commlog written`
+      );
+      return { needsReview: true, candidates };
+    }
+
+    // Confident, unambiguous single match -> write the commlog (preserving the
+    // [CareIN AI — Inbound Call] note format). createCommLog branches DB vs API mode.
+    const patient = matchResult.patient;
     const startTime = callData.start_timestamp ? new Date(callData.start_timestamp).getTime() : 0;
     const endTime = callData.end_timestamp ? new Date(callData.end_timestamp).getTime() : 0;
     const durationSeconds = startTime && endTime ? Math.round((endTime - startTime) / 1000) : 0;
 
-    // Build formatted commlog note
     const patientType = callData.call_analysis?.["new_patient or existing_patient"] || 'unknown';
     const appointmentBooked = callData.call_analysis?.appointment_booked ? 'yes' : 'no';
     const emergency = callData.call_analysis?.emergency_caller ? 'yes' : 'no';
     const insurance = callData.call_analysis?.dental_insurance || 'not provided';
     const summary = callData.call_analysis?.detailed_call_summary || callData.call_analysis?.call_summary || 'No summary available';
-    const transcript = callData.transcript || 'No transcript available';
+    const transcript = typeof callData.transcript === 'string' ? callData.transcript : 'No transcript available';
 
     const commlogNote = `[CareIN AI — Inbound Call] Duration: ${durationSeconds}s
 Summary: ${summary}
@@ -292,39 +385,52 @@ Insurance: ${insurance}
 --- Full Transcript ---
 ${transcript}`;
 
-    // If patient match found with high confidence, write the commlog
-    if (matchResult.patient && matchResult.confidence >= 0.7) {
-      const patient = matchResult.patient;
-      
-      // Write the commlog via createCommLog so it works in BOTH modes: direct-DB
-      // (integer INSERT) and api mode (POST /commlogs with string enums). Calling
-      // insertCommLogToDatabase directly used to silently no-op in api mode. The
-      // DB-shaped fields below are translated to the API contract by createCommLog.
-      const commLogEntry = {
-        CommDateTime: callData.end_timestamp || new Date().toISOString(),
-        Mode_: 3, // Phone (DB int; mapped to "Phone" for the API)
-        SentOrReceived: 1, // Received (DB int; api sends "Received")
-        Note: commlogNote,
-        CommType: emergency === 'yes' ? 4 : (appointmentBooked === 'yes' ? 2 : 1),
-        UserNum: 0,
-        DateTimeEnd: callData.end_timestamp || new Date().toISOString()
-      };
+    const commLogEntry = {
+      CommDateTime: callData.end_timestamp || new Date().toISOString(),
+      Mode_: 3, // Phone (DB int; mapped to "Phone" for the API)
+      SentOrReceived: 1, // Received (DB int; api sends "Received")
+      Note: commlogNote,
+      CommType: emergency === 'yes' ? 4 : (appointmentBooked === 'yes' ? 2 : 1),
+      UserNum: 0,
+      DateTimeEnd: callData.end_timestamp || new Date().toISOString()
+    };
 
-      const result = await openDentalSyncService.createCommLog(patient.id, commLogEntry);
-      
-      if (result.success) {
-        console.log(`✅ [Webhook] Open Dental commlog written for call ${callData.call_id}, patient: ${patient.lastName}, ${patient.firstName}`);
-      } else {
-        console.warn(`⚠️ [Webhook] Failed to write Open Dental commlog: ${result.error}`);
-      }
-    } else {
-      // No patient match or low confidence - log warning for manual review
-      console.warn(`⚠️ [Webhook] No patient match found for call ${callData.call_id}, caller: ${callData.from_number} (confidence: ${matchResult.confidence})`);
-      console.warn(`   Match method: ${matchResult.method}, requires manual review`);
+    const result = await openDentalSyncService.createCommLog(patient.id, commLogEntry);
+
+    if (result.success) {
+      // Persist synced state so a Retell retry AND a later /sync-all both no-op (Fix 1).
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'synced',
+        od_patient_id: patient.id,
+        od_commlog_num: result.commLogNum,
+        od_synced_at: new Date().toISOString(),
+        od_match_confidence: matchResult.confidence,
+      });
+      console.log(`✅ [Webhook] Open Dental commlog written for call ${callId}, patient: ${patient.lastName}, ${patient.firstName}`);
+      return { written: true, commLogNum: result.commLogNum, patientId: patient.id };
     }
+
+    // Write attempted but failed — record the error (NOT synced) so a retry can try again.
+    unifiedCallStore.updateCall(callId, {
+      od_sync_status: 'error',
+      od_sync_error: result.error || 'CommLog create failed',
+      od_sync_attempted_at: new Date().toISOString(),
+    });
+    console.warn(`⚠️ [Webhook] Failed to write Open Dental commlog for ${callId}: ${result.error}`);
+    return { written: false, error: result.error };
   } catch (odError) {
-    // Never break the webhook response due to commlog failure
-    console.error(`❌ [Webhook] Open Dental commlog sync failed for call ${callData.call_id}:`, odError.message);
+    // Never crash the process on an async commlog failure.
+    try {
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'error',
+        od_sync_error: odError.message,
+        od_sync_attempted_at: new Date().toISOString(),
+      });
+    } catch (_) { /* store update is best-effort */ }
+    console.error(`❌ [Webhook] Open Dental commlog sync failed for call ${callId}:`, odError.message);
+    return { written: false, error: odError.message };
+  } finally {
+    commlogInFlight.delete(callId);
   }
 }
 
@@ -440,6 +546,13 @@ router.post('/test', (req, res) => {
     active_calls: liveCallManager.getActiveCount()
   });
 });
+
+// Expose the call_analyzed pipeline for unit tests (the router itself is the default export).
+router.handleCallAnalyzed = handleCallAnalyzed;
+router.writeCommlogForAnalyzedCall = writeCommlogForAnalyzedCall;
+router.isConfidentUnambiguousMatch = isConfidentUnambiguousMatch;
+router.buildMatchCandidates = buildMatchCandidates;
+router._commlogInFlight = commlogInFlight;
 
 module.exports = router;
 

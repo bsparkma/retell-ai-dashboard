@@ -29,8 +29,10 @@ const extractCallerNameAdvanced = async (transcript, summary, callerNumber) => {
 
 // Basic regex-based name extraction (existing logic)
 const extractCallerNameBasic = (transcript, callerNumber) => {
-  if (!transcript) return callerNumber;
-  
+  // Guard against a non-string transcript (e.g. Retell's transcript_object array): the
+  // regex `.match()` calls below would otherwise throw "transcript.match is not a function".
+  if (!transcript || typeof transcript !== 'string') return callerNumber;
+
   // Common AI agent names to exclude
   const agentNames = ['karen', 'assistant', 'agent', 'bot', 'ai', 'system', 'operator'];
   

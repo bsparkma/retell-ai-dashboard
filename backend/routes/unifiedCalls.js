@@ -28,7 +28,8 @@ const transcriptJsonToText = (transcriptJson) => {
  * Basic regex-based name extraction from transcript
  */
 const extractCallerNameBasic = (transcript, callerNumber) => {
-  if (!transcript) return callerNumber;
+  // Guard against a non-string transcript (Retell transcript_object array) before `.match()`.
+  if (!transcript || typeof transcript !== 'string') return callerNumber;
 
   const agentNames = ['karen', 'assistant', 'agent', 'bot', 'ai', 'system', 'operator'];
 

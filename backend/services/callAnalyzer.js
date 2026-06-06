@@ -174,8 +174,10 @@ Respond ONLY with valid JSON, no other text.`;
    * Fallback analysis using simple heuristics
    */
   fallbackAnalysis(call) {
-    const transcript = call.transcript || '';
-    
+    // Guard: transcript may arrive as a non-string (e.g. Retell's transcript_object array),
+    // which would throw "transcript.match is not a function" below. Coerce to '' if not a string.
+    const transcript = typeof call.transcript === 'string' ? call.transcript : '';
+
     // Extract caller name using regex
     const namePatterns = [
       /(?:my name is|i'm|this is|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
