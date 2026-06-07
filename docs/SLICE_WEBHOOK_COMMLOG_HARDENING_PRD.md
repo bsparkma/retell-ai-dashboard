@@ -83,10 +83,13 @@ Slice A only records the `needs_review` state + candidates so Slice B can build 
   persisted-status check before either finishes. A module-level in-flight `Set<call_id>` guards that
   window; the persisted `od_sync_status` guards sequential retries after completion.
 - **Confident-write threshold.** Auto-write only when `matchResult.patient` exists, there are **no
-  `alternatives`**, and `confidence >= 0.85` (covers single exact-phone `0.95` and strong name+phone
-  `0.98`/`0.85`). Everything else — multi-record phone (`0.75` + alternatives), phone-without-name
-  (`0.70`), single fuzzy-name (`≤0.80`), or no match — becomes `needs_review` with candidates stored
-  and **no write**. Tunable, but the principle is firm: never auto-write to a guessed chart.
+  `alternatives`**, and `confidence >= 0.80`. The **firm** rule is "no alternatives" — a number/name on
+  more than one record never auto-writes, at any confidence. The threshold then excludes the weak fuzzy
+  band: it writes single exact-phone (`0.95`), name+phone agreement (`0.98`/`0.85`), and a single
+  **strong** name-only match (`matchByNameFuzzy` caps at `0.80`, which keeps the established "Stedi Test"
+  name-match validation protocol writing); it routes phone-matched-but-name-disagreed (`0.70`) and
+  weaker fuzzy names (`<0.80`) to `needs_review`. Tunable, but the principle is firm: never auto-write
+  to a guessed (multi-candidate) chart.
 - **Field name.** Uses `od_commlog_num` (matching the existing `syncCallToCommLog` convention) rather
   than `od_commlog_id`.
 

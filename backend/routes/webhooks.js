@@ -226,7 +226,12 @@ async function handleCallEnded(event) {
 // Retell before the OD write so the 200 doesn't wait on OD latency.
 
 // Auto-write only on a confident, UNAMBIGUOUS match. Everything else -> needs_review.
-const CONFIDENT_WRITE_MIN = 0.85;
+// The FIRM rule is "no alternatives" (a number/name on >1 record never auto-writes). The
+// threshold then excludes the weak fuzzy band: phone_exact single = 0.95, name+phone = 0.98/0.85,
+// a single strong name match (matchByNameFuzzy caps at 0.80) all write; phone-matched-but-name-
+// disagreed (0.70) and weaker fuzzy names fall to needs_review. 0.80 keeps the established
+// "Stedi Test" name-only confident-match protocol writing.
+const CONFIDENT_WRITE_MIN = 0.80;
 
 // call_ids whose commlog write is currently in-flight. Fix 2 makes the write async,
 // so two near-simultaneous retries could both pass the persisted-status check before
