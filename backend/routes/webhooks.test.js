@@ -136,12 +136,15 @@ test('no match -> needs_review, no write', async () => {
 });
 
 test('isConfidentUnambiguousMatch: confident+unambiguous only', () => {
-  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.95 }), true);
-  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.85 }), true);
-  // ambiguous: number on multiple records
+  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.95 }), true); // phone single
+  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.85 }), true); // name+phone
+  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.80 }), true); // strong name-only (Stedi Test protocol)
+  // ambiguous: number/name on multiple records -> never auto-write, regardless of confidence
+  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.95, alternatives: [{ id: 2 }] }), false);
   assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.75, alternatives: [{ id: 2 }] }), false);
-  // fuzzy band: phone matched, name didn't
+  // fuzzy band, no alternatives: phone matched but name didn't (0.70), weak fuzzy name (<0.80)
   assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.70 }), false);
+  assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: { id: 1 }, confidence: 0.79 }), false);
   // no patient
   assert.equal(webhooks.isConfidentUnambiguousMatch({ patient: null, confidence: 0 }), false);
 });
