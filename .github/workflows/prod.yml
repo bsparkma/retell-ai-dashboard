@@ -1,0 +1,182 @@
+name: prod-cd
+
+# Phase 3 Step 5 — main -> Azure PROD (dashboard.carein.ai, the live office).
+# Secretless (OIDC federated credentials). GATED: the `migrate` job targets the
+# `production` GitHub Environment, which has a REQUIRED REVIEWER — so nothing
+# touches the prod DB or the running apps until a human approves. `publish` only
+# builds images in the shared ACR (no prod mutation), so it runs pre-gate.
+# Order: build-test gate -> publish images -> [APPROVAL] migrate Job -> deploy.
+# Mirrors staging.yml. Rollback = reactivate the prior revision / redeploy :ebf1883.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: prod-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a half-done prod rollout
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC
+
+env:
+  AZ_RG: rg-carein-prod
+  ACR_NAME: acrcareincore
+  ACR_LOGIN: acrcareincore.azurecr.io
+  BACKEND_APP: ca-carein-prod-backend
+  CADDY_APP: ca-carein-prod-caddy
+  MIGRATE_JOB: caj-carein-prod-migrate
+
+jobs:
+  # 1) GATE — same checks as staging. Red here stops everything before any Azure step.
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: carein_owner
+          POSTGRES_PASSWORD: carein_owner_devpw
+          POSTGRES_DB: carein_control
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U carein_owner -d carein_control"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: corepack enable
+
+      # --- new-dashboard: tsc + vitest ---
+      - name: new-dashboard install
+        working-directory: new-dashboard
+        run: pnpm install --frozen-lockfile
+      - name: new-dashboard typecheck (tsc)
+        working-directory: new-dashboard
+        run: pnpm run check
+      - name: new-dashboard tests (vitest)
+        working-directory: new-dashboard
+        run: pnpm run test
+
+      # --- backend: install + syntax + unit tests ---
+      - name: backend install
+        working-directory: backend
+        run: npm ci
+      - name: backend syntax check
+        working-directory: backend
+        run: node --check server.js
+      - name: backend unit tests
+        working-directory: backend
+        run: node --test
+
+      # --- spine smoke test (12/12) against an ephemeral Postgres ---
+      - name: prepare ephemeral DB (carein_app role + tenant DB)
+        env: { PGPASSWORD: carein_owner_devpw }
+        run: |
+          psql -h localhost -U carein_owner -d carein_control -v ON_ERROR_STOP=1 \
+            -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='carein_app') THEN CREATE ROLE carein_app LOGIN PASSWORD 'carein_app_devpw'; END IF; END \$\$;"
+          psql -h localhost -U carein_owner -d carein_control -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE carein_t_carein OWNER carein_owner;"
+          psql -h localhost -U carein_owner -d carein_t_carein -v ON_ERROR_STOP=1 \
+            -c "GRANT USAGE ON SCHEMA public TO carein_app;"
+      - name: migrate control + tenant (ephemeral, as owner)
+        working-directory: backend
+        env:
+          CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+          CAREIN_SEED_CONNECTOR_URL: https://connector-placeholder.ci.local
+        run: |
+          node scripts/migrate.js up
+          node scripts/migrate-tenant.js up --tenant carein
+      - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
+        working-directory: backend
+        env:
+          CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
+          TENANT_CAREIN_DB_URL: postgres://carein_app:carein_app_devpw@localhost:5432/carein_t_carein
+        run: node scripts/smoke-spine.js
+
+  # 2) PUBLISH — build BOTH images in the shared ACR (OIDC via the branch fed cred).
+  #    Only touches the registry, never prod runtime/DB, so it runs BEFORE the gate.
+  publish:
+    needs: build-test
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.vars.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: vars
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build backend image (ACR)
+        run: az acr build -r "$ACR_NAME" -t "carein-backend:${{ steps.vars.outputs.sha }}" -t "carein-backend:prod" backend
+      - name: Build caddy image (ACR, multi-stage builds the SPA)
+        run: az acr build -r "$ACR_NAME" -t "carein-caddy:${{ steps.vars.outputs.sha }}" -t "carein-caddy:prod" -f deploy/container/azure/Dockerfile.caddy .
+
+  # 3) MIGRATE — THE APPROVAL GATE. `environment: production` has a required
+  #    reviewer, so this job (and everything after it) waits for a human. Runs the
+  #    in-Azure Container Apps Job (id-carein-prod owner identity) and polls.
+  #    No-op when the release carries no new migration files (Slice A has none).
+  migrate:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production   # <-- REQUIRED REVIEWER gate; nothing hits prod before approval
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Start migrate job and wait
+        run: |
+          set -euo pipefail
+          EXEC=$(az containerapp job start -n "$MIGRATE_JOB" -g "$AZ_RG" --query name -o tsv)
+          echo "Started execution: $EXEC"
+          for i in $(seq 1 60); do
+            STATUS=$(az containerapp job execution show -n "$MIGRATE_JOB" -g "$AZ_RG" \
+              --job-execution-name "$EXEC" --query properties.status -o tsv 2>/dev/null || echo "Unknown")
+            echo "  [$i] status=$STATUS"
+            case "$STATUS" in
+              Succeeded) echo "migrations OK"; exit 0 ;;
+              Failed|Degraded|Canceled) echo "::error::migration job $STATUS"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::migration job timed out"; exit 1
+
+  # 4) DEPLOY — roll both apps to the new image. No `environment:` here, so it auths
+  #    via the branch (main) fed cred and does NOT re-prompt: the single approval on
+  #    `migrate` already gated the whole prod-mutating sequence. New revision goes live.
+  deploy:
+    needs: [publish, migrate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy backend
+        run: az containerapp update -n "$BACKEND_APP" -g "$AZ_RG" --image "$ACR_LOGIN/carein-backend:${{ needs.publish.outputs.sha }}"
+      - name: Deploy caddy
+        run: az containerapp update -n "$CADDY_APP" -g "$AZ_RG" --image "$ACR_LOGIN/carein-caddy:${{ needs.publish.outputs.sha }}"
+      - name: Verify new revision is provisioned and serving the built image
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.publish.outputs.sha }}"
+          for app in "$BACKEND_APP" "$CADDY_APP"; do
+            rev=$(az containerapp show -n "$app" -g "$AZ_RG" --query properties.latestRevisionName -o tsv)
+            state=$(az containerapp revision show -n "$app" -g "$AZ_RG" --revision "$rev" --query properties.provisioningState -o tsv)
+            img=$(az containerapp revision show -n "$app" -g "$AZ_RG" --revision "$rev" --query "properties.template.containers[0].image" -o tsv)
+            echo "$app -> rev=$rev state=$state img=$img"
+            [ "$state" = "Provisioned" ] || { echo "::error::$app revision $rev not Provisioned ($state)"; exit 1; }
+            case "$img" in *":$SHA") ;; *) echo "::error::$app serving $img, expected tag :$SHA"; exit 1 ;; esac
+          done
+          echo "Both prod apps provisioned on :$SHA"
