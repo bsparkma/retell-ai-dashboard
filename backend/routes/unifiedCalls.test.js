@@ -1,0 +1,208 @@
+'use strict';
+
+// Unit tests for Slice B — triage worklist + patient review queue endpoints.
+// Runner: `node --test`. Covers:
+//   - PATCH /:id/triage validation (status enum, outcome-required-when-done,
+//     outcome-only-when-done) + attribution stamping from the session user;
+//   - POST /:id/resolve-patient idempotency: a second resolve of an already
+//     'synced' call writes NO second commlog;
+//   - POST /:id/resolve-patient "not a patient" close-out (no OD write).
+//
+// The router sits behind auth + tenantContext in server.js, so here we inject a
+// fake req.user/req.tenant and stub the fail-closed audit writer + the OD sync
+// singleton — mirroring routes/webhooks.test.js.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { beforeEach, afterEach } = test;
+const http = require('node:http');
+const express = require('express');
+
+const router = require('./unifiedCalls');
+const unifiedCallStore = require('../services/unifiedCallStore');
+const openDentalSync = require('../services/openDentalSync');
+const audit = require('../platform/audit');
+
+const SESSION_USER = { name: 'Sarah Front', email: 'sarah@carein.ai' };
+
+let server;
+let baseUrl;
+let originalRequestPersist;
+let original;
+let commlogWrites;
+
+function clearStore() {
+  unifiedCallStore.calls.clear();
+  unifiedCallStore.bySource.retell.clear();
+  unifiedCallStore.bySource.mango.clear();
+  unifiedCallStore.byDate.clear();
+  unifiedCallStore.byCallerNumber.clear();
+}
+
+beforeEach(async () => {
+  originalRequestPersist = unifiedCallStore.requestPersist;
+  unifiedCallStore.requestPersist = () => {};
+  clearStore();
+
+  original = {
+    audit: audit.audit,
+    linkCallToPatient: openDentalSync.linkCallToPatient,
+    syncCallToCommLog: openDentalSync.syncCallToCommLog,
+  };
+
+  // Fail-closed audit needs a tenant Postgres — no-op it here.
+  audit.audit = async () => {};
+
+  // Stub the OD write path. link just sets od_patient_id; sync writes ONE commlog
+  // and marks the call synced, honoring the 'synced' dedup guard like the real one.
+  commlogWrites = 0;
+  openDentalSync.linkCallToPatient = async (callId, patientId) => {
+    if (!unifiedCallStore.getCall(callId)) return { success: false, error: 'Call not found' };
+    unifiedCallStore.updateCall(callId, { od_patient_id: patientId });
+    return { success: true, patient: { id: patientId, fullName: 'Stedi Test 2' } };
+  };
+  openDentalSync.syncCallToCommLog = async (callId) => {
+    const call = unifiedCallStore.getCall(callId);
+    if (call.od_sync_status === 'synced') return { success: true, skipped: true, message: 'Already synced' };
+    commlogWrites += 1;
+    const commLogNum = 9000 + commlogWrites;
+    unifiedCallStore.updateCall(callId, { od_sync_status: 'synced', od_commlog_num: commLogNum });
+    return { success: true, commLogNum };
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.user = SESSION_USER;
+    req.tenant = { id: 'tenant-test' };
+    next();
+  });
+  app.use('/api/unified-calls', router);
+
+  await new Promise((resolve) => {
+    server = app.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${server.address().port}`;
+      resolve();
+    });
+  });
+});
+
+afterEach(async () => {
+  unifiedCallStore.requestPersist = originalRequestPersist;
+  audit.audit = original.audit;
+  openDentalSync.linkCallToPatient = original.linkCallToPatient;
+  openDentalSync.syncCallToCommLog = original.syncCallToCommLog;
+  await new Promise((resolve) => server.close(resolve));
+});
+
+function seedCall(id, extra = {}) {
+  unifiedCallStore.addRetellCall({
+    call_id: id,
+    from_number: '+15551234567',
+    start_timestamp: '2026-06-06T20:00:00.000Z',
+    ...extra,
+  });
+}
+
+const patch = (id, body) =>
+  fetch(`${baseUrl}/api/unified-calls/${id}/triage`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const resolve = (id, body) =>
+  fetch(`${baseUrl}/api/unified-calls/${id}/resolve-patient`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+// --- triage validation -----------------------------------------------------
+
+test('triage rejects an invalid status', async () => {
+  seedCall('c1');
+  const res = await patch('c1', { triage_status: 'bogus' });
+  assert.equal(res.status, 400);
+});
+
+test("triage 'done' requires an outcome", async () => {
+  seedCall('c2');
+  const res = await patch('c2', { triage_status: 'done' });
+  assert.equal(res.status, 400);
+});
+
+test('triage rejects an outcome when status is not done', async () => {
+  seedCall('c3');
+  const res = await patch('c3', { triage_status: 'needs_action', triage_outcome: 'scheduled' });
+  assert.equal(res.status, 400);
+});
+
+test('triage 404s for an unknown call', async () => {
+  const res = await patch('nope', { triage_status: 'needs_action' });
+  assert.equal(res.status, 404);
+});
+
+test('triage done+scheduled stamps outcome + actor attribution', async () => {
+  seedCall('c4');
+  const res = await patch('c4', { triage_status: 'done', triage_outcome: 'scheduled', triage_note: 'Booked hygiene' });
+  assert.equal(res.status, 200);
+  const call = await res.json();
+  assert.equal(call.triage_status, 'done');
+  assert.equal(call.triage_outcome, 'scheduled');
+  assert.equal(call.triage_note, 'Booked hygiene');
+  assert.deepEqual(call.triage_by, SESSION_USER);
+  assert.ok(call.triage_at, 'triage_at is stamped');
+});
+
+// --- resolve-patient idempotency + not-a-patient ---------------------------
+
+test('resolve-patient requires a patientId (or notAPatient)', async () => {
+  seedCall('c5');
+  const res = await resolve('c5', {});
+  assert.equal(res.status, 400);
+});
+
+test('resolve-patient writes ONE commlog; a second resolve writes none', async () => {
+  seedCall('c6');
+
+  const first = await resolve('c6', { patientId: 12827 });
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  assert.equal(firstBody.success, true);
+  assert.equal(firstBody.commLogNum, 9001);
+  assert.equal(commlogWrites, 1);
+
+  const second = await resolve('c6', { patientId: 12827 });
+  assert.equal(second.status, 200);
+  const secondBody = await second.json();
+  assert.equal(secondBody.alreadySynced, true);
+  assert.equal(commlogWrites, 1, 'no second commlog was written');
+});
+
+test('resolve-patient stamps resolve attribution', async () => {
+  seedCall('c7');
+  const res = await resolve('c7', { patientId: 12827 });
+  const body = await res.json();
+  assert.deepEqual(body.call.resolved_by, SESSION_USER);
+  assert.ok(body.call.resolved_at);
+  assert.equal(body.call.od_patient_id, 12827);
+});
+
+test('resolve-patient not-a-patient close-out writes no commlog', async () => {
+  seedCall('c8');
+  const res = await resolve('c8', { notAPatient: true, reason: 'spam' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.notAPatient, true);
+  assert.equal(body.call.not_a_patient, true);
+  assert.equal(body.call.not_a_patient_reason, 'spam');
+  assert.deepEqual(body.call.resolved_by, SESSION_USER);
+  assert.equal(commlogWrites, 0);
+});
+
+test('resolve-patient rejects an invalid not-a-patient reason', async () => {
+  seedCall('c9');
+  const res = await resolve('c9', { notAPatient: true, reason: 'nonsense' });
+  assert.equal(res.status, 400);
+});
