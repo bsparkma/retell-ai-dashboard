@@ -9,8 +9,33 @@ const express = require('express');
 const router = express.Router();
 const unifiedCallStore = require('../services/unifiedCallStore');
 const retellService = require('../config/retell');
+const openDentalSync = require('../services/openDentalSync');
 const audit = require('../platform/audit');
-const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
+const { filterCallsForOffice, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
+
+// --- Slice B: triage worklist + patient review queue -----------------------
+
+/** Allowed triage_status values (see Slice B PRD §1). */
+const TRIAGE_STATUSES = new Set(['new', 'needs_action', 'done']);
+/** Allowed triage_outcome values — required when triage_status === 'done'. */
+const TRIAGE_OUTCOMES = new Set([
+  'called_back', 'scheduled', 'left_voicemail', 'no_answer', 'no_action_needed',
+]);
+/** Allowed not_a_patient reasons (review-queue close-out without an OD write). */
+const NOT_A_PATIENT_REASONS = new Set(['spam', 'solicitor', 'wrong_number', 'other']);
+
+/** Max length for the optional free-text triage note. */
+const TRIAGE_NOTE_MAX = 280;
+
+/**
+ * The acting user, from the SSO session attached by the auth middleware. Used
+ * for per-action attribution on triage/resolve. Returns null in the (dev-only)
+ * case where no session user is present.
+ * @param {import('express').Request} req
+ * @returns {{ name: string|null, email: string|null } | null}
+ */
+const actorFrom = (req) =>
+  req.user ? { name: req.user.name ?? null, email: req.user.email ?? null } : null;
 
 // --- Caller Name Extraction Utilities (copied from calls.js) ---
 
@@ -274,6 +299,9 @@ router.get('/', async (req, res) => {
         byHandler: stats.byHandler,
         lastSync: stats.lastSync,
       },
+      // Full office roster for the worklist selector (includes odConnected so the
+      // UI can render Valley's "OD not connected for this office yet" state).
+      offices: getAllOfficeConfigs(),
       office_config: office_id ? getOfficeConfig(office_id) : null,
     });
   } catch (error) {
@@ -423,6 +451,195 @@ router.patch('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error updating call:', error);
     res.status(500).json({ error: 'Failed to update call' });
+  }
+});
+
+/**
+ * PATCH /api/unified-calls/:id/triage
+ *
+ * Set the per-call triage state from the worklist. Validates the enums, stamps
+ * the acting user + timestamp, and persists. This is workflow metadata (NOT a
+ * PHI write) — the "not a patient" close-out and patient resolution live on
+ * POST /resolve-patient instead.
+ *
+ * Body: { triage_status, triage_outcome?, triage_note? }
+ *  - triage_status: 'new' | 'needs_action' | 'done'
+ *  - triage_outcome: required iff triage_status === 'done'; one of
+ *      called_back | scheduled | left_voicemail | no_answer | no_action_needed
+ *  - triage_note: optional short free text (<= 280 chars)
+ */
+router.patch('/:id/triage', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { triage_status, triage_outcome, triage_note } = req.body || {};
+
+    if (!TRIAGE_STATUSES.has(triage_status)) {
+      return res.status(400).json({
+        error: `triage_status must be one of: ${[...TRIAGE_STATUSES].join(', ')}`,
+      });
+    }
+
+    // Outcome is required for 'done' and not accepted otherwise (it is cleared
+    // when moving a call back to new/needs_action).
+    let outcome = null;
+    if (triage_status === 'done') {
+      if (!TRIAGE_OUTCOMES.has(triage_outcome)) {
+        return res.status(400).json({
+          error: `triage_outcome is required when triage_status is 'done' and must be one of: ${[...TRIAGE_OUTCOMES].join(', ')}`,
+        });
+      }
+      outcome = triage_outcome;
+    } else if (triage_outcome !== undefined && triage_outcome !== null) {
+      return res.status(400).json({
+        error: "triage_outcome is only valid when triage_status is 'done'",
+      });
+    }
+
+    let note = null;
+    if (triage_note !== undefined && triage_note !== null) {
+      if (typeof triage_note !== 'string') {
+        return res.status(400).json({ error: 'triage_note must be a string' });
+      }
+      if (triage_note.length > TRIAGE_NOTE_MAX) {
+        return res.status(400).json({ error: `triage_note must be <= ${TRIAGE_NOTE_MAX} characters` });
+      }
+      note = triage_note.trim() || null;
+    }
+
+    if (!unifiedCallStore.getCall(id)) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    const updatedCall = unifiedCallStore.updateCall(id, {
+      triage_status,
+      triage_outcome: outcome,
+      triage_note: note,
+      triage_by: actorFrom(req),
+      triage_at: new Date().toISOString(),
+    });
+
+    // Audit the workflow mutation (fail-closed, consistent with the read paths).
+    await audit.audit(req, { action: 'UPDATE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
+    res.json(updatedCall);
+  } catch (error) {
+    console.error('Error updating triage:', error);
+    res.status(500).json({ error: 'Failed to update triage' });
+  }
+});
+
+/**
+ * POST /api/unified-calls/:id/resolve-patient
+ *
+ * The review-queue action. Two shapes:
+ *
+ *  A) { patientId }        — link the call to an OD patient and write the CareIN
+ *                            inbound-call commlog via the SAME idempotent path
+ *                            Slice A hardened (skips if already 'synced', so a
+ *                            second resolve does NOT create a second commlog).
+ *                            This is a user-initiated PHI write → audited CREATE.
+ *
+ *  B) { notAPatient: true, reason } — close the call out of the review pile with
+ *                            no OD write (spam / solicitor / wrong number / other).
+ *                            Audited UPDATE.
+ *
+ * Both stamp resolve attribution (resolved_by / resolved_at) from the session.
+ */
+router.post('/:id/resolve-patient', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const actor = actorFrom(req);
+    const nowIso = new Date().toISOString();
+
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    // ---- Shape B: "not a patient" close-out (no OD write) ------------------
+    if (body.notAPatient === true) {
+      if (!NOT_A_PATIENT_REASONS.has(body.reason)) {
+        return res.status(400).json({
+          error: `reason must be one of: ${[...NOT_A_PATIENT_REASONS].join(', ')}`,
+        });
+      }
+
+      const updatedCall = unifiedCallStore.updateCall(id, {
+        not_a_patient: true,
+        not_a_patient_reason: body.reason,
+        resolved_by: actor,
+        resolved_at: nowIso,
+      });
+
+      await audit.audit(req, { action: 'UPDATE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
+      return res.json({ success: true, notAPatient: true, call: updatedCall });
+    }
+
+    // ---- Shape A: resolve to an OD patient (idempotent PHI write) ----------
+    const patientId = body.patientId;
+    if (patientId === undefined || patientId === null || patientId === '') {
+      return res.status(400).json({ error: 'patientId is required' });
+    }
+
+    // Idempotency guard: if this call is already synced, do not write a second
+    // commlog. Return the existing linkage as a success no-op.
+    if (call.od_sync_status === 'synced') {
+      return res.json({
+        success: true,
+        alreadySynced: true,
+        commLogNum: call.od_commlog_num ?? null,
+        patientId: call.od_patient_id ?? null,
+        call,
+      });
+    }
+
+    // Link the call to the patient (validates the patient exists in OD). We pass
+    // syncNow:false so we can drive the idempotent, NON-forced commlog write
+    // ourselves — linkCallToPatient's own syncNow path forces the write and would
+    // bypass the 'synced' dedup guard.
+    const linkResult = await openDentalSync.linkCallToPatient(id, patientId, {
+      syncNow: false,
+      userId: actor?.email || 'system',
+    });
+    if (!linkResult.success) {
+      const status = linkResult.error === 'Patient not found in Open Dental' ? 404 : 400;
+      return res.status(status).json({ success: false, error: linkResult.error });
+    }
+
+    // Write the commlog via the hardened, non-forced path (skips if already synced).
+    const syncResult = await openDentalSync.syncCallToCommLog(id, {});
+    if (!syncResult.success) {
+      return res.status(422).json({
+        success: false,
+        error: syncResult.error || 'CommLog write failed',
+        requiresManualLink: syncResult.requiresManualLink || false,
+      });
+    }
+
+    const updatedCall = unifiedCallStore.updateCall(id, {
+      resolved_by: actor,
+      resolved_at: nowIso,
+    });
+
+    // User-initiated PHI write (a commlog was created against a patient) → audit CREATE.
+    await audit.audit(req, {
+      action: 'CREATE',
+      resourceType: 'commlog',
+      resourceId: syncResult.commLogNum ?? id,
+      result: 'SUCCESS',
+    });
+
+    res.json({
+      success: true,
+      commLogNum: syncResult.commLogNum ?? null,
+      patientId: updatedCall.od_patient_id ?? patientId,
+      call: updatedCall,
+    });
+  } catch (error) {
+    console.error('Error resolving patient:', error);
+    res.status(500).json({ error: 'Failed to resolve patient' });
   }
 });
 

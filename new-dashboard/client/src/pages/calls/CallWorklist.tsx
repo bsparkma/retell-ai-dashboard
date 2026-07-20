@@ -1,0 +1,511 @@
+/**
+ * Call Worklist (Slice B) — turns the call log into a worklist you work.
+ *
+ * Default "Needs attention" view (triage != done AND not a spam/close-out),
+ * office scoping (real agent→office config, remembered in localStorage), a
+ * patient-identity cell that surfaces Slice-A od_sync_status + the Pick Patient
+ * modal, per-row triage with outcome flavors + SSO attribution, and disposition
+ * chips that double as filters.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
+  CheckCircle2, PhoneForwarded, UserSearch, CircleSlash, ChevronDown, Loader2, PlugZap,
+} from "lucide-react";
+import {
+  api, type UnifiedCall, type OfficeConfig, type TriageOutcome, type NotAPatientReason,
+} from "@/lib/api";
+import { formatDuration, formatTimeAgo } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "sonner";
+import { PickPatientModal } from "./PickPatientModal";
+
+const OFFICE_STORAGE_KEY = "carein.worklist.office";
+
+const OUTCOMES: { value: TriageOutcome; label: string }[] = [
+  { value: "scheduled", label: "Scheduled" },
+  { value: "called_back", label: "Called back" },
+  { value: "left_voicemail", label: "Left voicemail" },
+  { value: "no_answer", label: "No answer" },
+  { value: "no_action_needed", label: "No action needed" },
+];
+const OUTCOME_LABEL: Record<TriageOutcome, string> = Object.fromEntries(
+  OUTCOMES.map((o) => [o.value, o.label])
+) as Record<TriageOutcome, string>;
+
+interface Chip {
+  key: string;
+  label: string;
+  icon: React.ElementType;
+  color: string;
+  bg: string;
+  match: (c: UnifiedCall) => boolean;
+}
+const CHIPS: Chip[] = [
+  { key: "emergency", label: "Emergency", icon: AlertTriangle, color: "oklch(0.55 0.20 25)", bg: "oklch(0.62 0.22 25 / 0.12)", match: (c) => c.isEmergency },
+  { key: "booked", label: "Booked", icon: CalendarCheck, color: "oklch(0.48 0.16 155)", bg: "oklch(0.65 0.18 155 / 0.12)", match: (c) => c.appointmentBooked },
+  { key: "new", label: "New patient", icon: UserPlus, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: (c) => c.isNewPatient },
+  { key: "insurance", label: "Insurance", icon: Shield, color: "oklch(0.48 0.13 210)", bg: "oklch(0.55 0.18 210 / 0.12)", match: (c) => c.insuranceMentioned },
+];
+
+/** Short first-name + clock attribution, e.g. "Sarah, 9:14a". */
+function formatAttribution(name: string | null | undefined, iso: string | null | undefined): string {
+  const first = (name ?? "").trim().split(/\s+/)[0] || "Someone";
+  if (!iso) return first;
+  const d = new Date(iso);
+  let h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2, "0");
+  const ap = h < 12 ? "a" : "p";
+  h = h % 12 || 12;
+  return `${first}, ${h}:${m}${ap}`;
+}
+
+interface CallWorklistProps {
+  /** Reports the current "needs attention" count so the parent can badge the tab. */
+  onNeedsAttentionCount?: (n: number) => void;
+}
+
+export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
+  const auth = useAuth();
+  const [calls, setCalls] = useState<UnifiedCall[]>([]);
+  const [offices, setOffices] = useState<OfficeConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+
+  const [view, setView] = useState<"needs" | "all">("needs");
+  const [search, setSearch] = useState("");
+  const [activeChips, setActiveChips] = useState<Set<string>>(new Set());
+  const [office, setOffice] = useState<string>(() => {
+    try { return localStorage.getItem(OFFICE_STORAGE_KEY) || "all"; } catch { return "all"; }
+  });
+
+  const [pickCall, setPickCall] = useState<UnifiedCall | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getUnifiedCalls({ limit: 1000, office_id: office === "all" ? undefined : office })
+      .then(({ calls: list, offices: roster }) => {
+        setCalls(list);
+        if (roster.length) setOffices(roster);
+      })
+      .catch(() => setCalls([]))
+      .finally(() => setLoading(false));
+  }, [office]);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    try { localStorage.setItem(OFFICE_STORAGE_KEY, office); } catch { /* ignore */ }
+  }, [office]);
+
+  const selectedOffice = offices.find((o) => o.officeId === office) ?? null;
+  const officeOdConnected = office === "all" ? true : (selectedOffice?.odConnected ?? true);
+
+  const patchCall = useCallback((id: string, patch: Partial<UnifiedCall>) => {
+    setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }, []);
+
+  const applyTriage = async (
+    call: UnifiedCall,
+    status: "needs_action" | "done",
+    outcome?: TriageOutcome,
+    note?: string,
+  ) => {
+    const actor = auth.status === "authenticated"
+      ? { name: auth.user.name, email: auth.user.email }
+      : null;
+    // Optimistic update.
+    patchCall(call.id, {
+      triageStatus: status,
+      triageOutcome: outcome ?? null,
+      triageBy: actor,
+      triageAt: new Date().toISOString(),
+      triageNote: note ?? null,
+    });
+    try {
+      await api.triageCall(call.id, {
+        triage_status: status,
+        ...(outcome ? { triage_outcome: outcome } : {}),
+        ...(note ? { triage_note: note } : {}),
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save triage");
+      load(); // reconcile with the server on failure
+    }
+  };
+
+  const reopen = (call: UnifiedCall) => applyTriage(call, "needs_action");
+
+  const onResolved = (
+    call: UnifiedCall,
+    result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason },
+  ) => {
+    if (result.kind === "patient") {
+      patchCall(call.id, { odSyncStatus: "synced", odPatientId: result.patientId });
+    } else {
+      patchCall(call.id, { notAPatient: true, notAPatientReason: result.reason });
+    }
+  };
+
+  // ---- filtering ----------------------------------------------------------
+  const needsAttention = (c: UnifiedCall) => c.triageStatus !== "done" && !c.notAPatient;
+  const needsAttentionCount = useMemo(() => calls.filter(needsAttention).length, [calls]);
+
+  useEffect(() => { onNeedsAttentionCount?.(needsAttentionCount); }, [needsAttentionCount, onNeedsAttentionCount]);
+
+  const visibleCalls = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = view === "needs" ? calls.filter(needsAttention) : calls;
+    if (q) {
+      list = list.filter((c) =>
+        c.patientName.toLowerCase().includes(q) ||
+        c.fromNumber.includes(search) ||
+        c.summary.toLowerCase().includes(q)
+      );
+    }
+    if (activeChips.size > 0) {
+      const keys = Array.from(activeChips);
+      list = list.filter((c) => keys.every((k) => CHIPS.find((chip) => chip.key === k)?.match(c)));
+    }
+    // Needs-attention worklist is oldest-first (work the backlog); All is newest-first.
+    return [...list].sort((a, b) =>
+      view === "needs"
+        ? new Date(a.date).getTime() - new Date(b.date).getTime()
+        : new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  }, [calls, view, search, activeChips]);
+
+  const toggleChip = (key: string) =>
+    setActiveChips((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const res = await api.syncRetell({ limit: 1000 });
+      toast.success(res.message ?? "Sync complete");
+      load();
+    } catch {
+      toast.error("Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const GRID = "2.2fr 1.7fr 1.3fr 1.9fr";
+
+  return (
+    <>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-3">
+        {/* View toggle */}
+        <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+          {([
+            { key: "needs" as const, label: "Needs attention", count: needsAttentionCount },
+            { key: "all" as const, label: "All calls", count: null as number | null },
+          ]).map((v) => (
+            <button
+              key={v.key}
+              onClick={() => setView(v.key)}
+              aria-pressed={view === v.key}
+              className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1.5"
+              style={{
+                backgroundColor: view === v.key ? "white" : "transparent",
+                color: view === v.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                boxShadow: view === v.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+              }}
+            >
+              {v.label}
+              {v.count != null && v.count > 0 && (
+                <Badge variant="destructive" className="text-[10px] px-1.5 py-0">{v.count}</Badge>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Office selector */}
+        {offices.length > 0 && (
+          <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+            {[{ officeId: "all", officeName: "All Offices", odConnected: true }, ...offices].map((o) => (
+              <button
+                key={o.officeId}
+                onClick={() => setOffice(o.officeId)}
+                aria-pressed={office === o.officeId}
+                title={o.odConnected ? undefined : "OD not connected for this office yet"}
+                className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1"
+                style={{
+                  backgroundColor: office === o.officeId ? "white" : "transparent",
+                  color: office === o.officeId ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                  boxShadow: office === o.officeId ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+                }}
+              >
+                {o.officeName}
+                {!o.odConnected && <PlugZap size={11} className="opacity-60" />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="relative flex-1 min-w-48">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search name, number, summary…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9 h-9 text-sm"
+          />
+        </div>
+
+        <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
+          <RefreshCw size={14} className={`mr-1.5 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync"}
+        </Button>
+      </div>
+
+      {/* Disposition chips (also filters) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {CHIPS.map((chip) => {
+          const active = activeChips.has(chip.key);
+          const Icon = chip.icon;
+          return (
+            <button
+              key={chip.key}
+              onClick={() => toggleChip(chip.key)}
+              aria-pressed={active}
+              className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border transition-all"
+              style={{
+                color: chip.color,
+                backgroundColor: active ? chip.bg : "transparent",
+                borderColor: active ? chip.color : "oklch(0.85 0.01 240)",
+              }}
+            >
+              <Icon size={12} /> {chip.label}
+            </button>
+          );
+        })}
+        {activeChips.size > 0 && (
+          <button onClick={() => setActiveChips(new Set())} className="text-xs text-muted-foreground underline">
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* List */}
+      <Card>
+        <CardHeader className="pb-3 border-b">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base font-semibold">
+              {visibleCalls.length} {view === "needs" ? "to work" : "calls"}
+            </CardTitle>
+            <span className="text-xs text-muted-foreground">
+              {view === "needs" ? "Oldest first" : "Newest first"}
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div
+            className="grid gap-3 px-4 py-2.5 border-b bg-muted/30 text-xs font-semibold text-muted-foreground uppercase tracking-wide"
+            style={{ gridTemplateColumns: GRID }}
+          >
+            <div>Caller</div>
+            <div>Patient</div>
+            <div>Signals</div>
+            <div>Triage</div>
+          </div>
+
+          {loading ? (
+            <div className="text-center py-12 text-muted-foreground text-sm">Loading calls…</div>
+          ) : !officeOdConnected && visibleCalls.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <PlugZap size={30} className="mx-auto mb-2 opacity-40" />
+              <p className="text-sm">OD not connected for this office yet.</p>
+            </div>
+          ) : visibleCalls.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              <CheckCircle2 size={30} className="mx-auto mb-2 opacity-30" />
+              <p className="text-sm">
+                {view === "needs" ? "Nothing needs attention. Nice." : "No calls match the current filters."}
+              </p>
+            </div>
+          ) : (
+            visibleCalls.map((call) => (
+              <div
+                key={call.id}
+                className="grid gap-3 px-4 py-3 border-b border-border/50 hover:bg-muted/20 transition-colors items-center"
+                style={{ gridTemplateColumns: GRID }}
+              >
+                {/* Caller */}
+                <Link href={`/calls/${call.id}`} className="min-w-0 flex items-center gap-2.5 cursor-pointer">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${call.source === "retell" ? "bg-primary/10" : "bg-amber-500/10"}`}>
+                    {call.source === "retell" ? <Bot size={13} className="text-primary" /> : <Users size={13} className="text-amber-600" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground truncate">{call.patientName}</div>
+                    <div className="text-xs font-mono text-muted-foreground">{call.fromNumber}</div>
+                    <div className="text-[11px] text-muted-foreground/70">
+                      {formatDuration(call.duration)} · {formatTimeAgo(call.date)}
+                    </div>
+                  </div>
+                </Link>
+
+                {/* Patient identity */}
+                <div className="min-w-0">
+                  <PatientIdentityCell
+                    call={call}
+                    officeOdConnected={officeOdConnected}
+                    onPick={() => setPickCall(call)}
+                  />
+                </div>
+
+                {/* Signals (disposition chips) */}
+                <div className="flex flex-wrap gap-1">
+                  {CHIPS.filter((chip) => chip.match(call)).map((chip) => {
+                    const Icon = chip.icon;
+                    return (
+                      <span
+                        key={chip.key}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full"
+                        style={{ color: chip.color, backgroundColor: chip.bg }}
+                        title={chip.label}
+                      >
+                        <Icon size={10} /> {chip.label}
+                      </span>
+                    );
+                  })}
+                </div>
+
+                {/* Triage */}
+                <div>
+                  <TriageCell call={call} onFollowUp={() => applyTriage(call, "needs_action")} onDone={applyTriage} onReopen={() => reopen(call)} />
+                </div>
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
+      {pickCall && (
+        <PickPatientModal
+          open={pickCall !== null}
+          onOpenChange={(o) => { if (!o) setPickCall(null); }}
+          call={pickCall}
+          onResolved={(result) => onResolved(pickCall, result)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function PatientIdentityCell({
+  call, officeOdConnected, onPick,
+}: { call: UnifiedCall; officeOdConnected: boolean; onPick: () => void }) {
+  if (!officeOdConnected) {
+    return <span className="text-xs text-muted-foreground/70 italic">OD not connected for this office yet</span>;
+  }
+  if (call.notAPatient) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+        <CircleSlash size={11} /> Not a patient{call.notAPatientReason ? ` · ${call.notAPatientReason.replace("_", " ")}` : ""}
+      </span>
+    );
+  }
+  if (call.odSyncStatus === "synced") {
+    return (
+      <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline">
+        <CheckCircle2 size={12} className="text-emerald-600" />
+        {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "Linked")}
+      </Link>
+    );
+  }
+  // needs_review / pending_match / unmatched → prompt to match
+  const n = call.odMatchCandidates?.length ?? 0;
+  return (
+    <button
+      onClick={onPick}
+      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md border transition-colors hover:bg-amber-500/10"
+      style={{ color: "oklch(0.52 0.14 75)", borderColor: "oklch(0.75 0.14 75 / 0.5)" }}
+    >
+      <UserSearch size={12} />
+      {n > 0 ? `Needs match (${n})` : "Match patient"}
+    </button>
+  );
+}
+
+function TriageCell({
+  call, onFollowUp, onDone, onReopen,
+}: {
+  call: UnifiedCall;
+  onFollowUp: () => void;
+  onDone: (call: UnifiedCall, status: "done", outcome: TriageOutcome, note?: string) => void;
+  onReopen: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+
+  if (call.triageStatus === "done") {
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 truncate">
+          <CheckCircle2 size={12} className="text-emerald-600 flex-shrink-0" />
+          {call.triageOutcome ? OUTCOME_LABEL[call.triageOutcome] : "Done"}
+          {call.triageBy && <span className="text-muted-foreground font-normal">— {formatAttribution(call.triageBy.name, call.triageAt)}</span>}
+        </span>
+        <button onClick={onReopen} className="text-[11px] text-muted-foreground underline flex-shrink-0">Reopen</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button
+        size="sm"
+        variant={call.triageStatus === "needs_action" ? "secondary" : "outline"}
+        className="h-8 gap-1.5 text-xs"
+        onClick={onFollowUp}
+      >
+        <PhoneForwarded size={12} /> {call.triageStatus === "needs_action" ? "Following up" : "Follow up"}
+      </Button>
+
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button size="sm" className="h-8 gap-1 text-xs">
+            <CheckCircle2 size={12} /> Done <ChevronDown size={12} />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-56 p-2">
+          <div className="text-xs font-semibold text-muted-foreground px-1 pb-1.5">Outcome</div>
+          <div className="space-y-0.5">
+            {OUTCOMES.map((o) => (
+              <button
+                key={o.value}
+                onClick={() => { onDone(call, "done", o.value, note.trim() || undefined); setOpen(false); setNote(""); }}
+                className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted transition-colors"
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <Input
+            placeholder="Optional note…"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={280}
+            className="mt-2 h-8 text-xs"
+          />
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
