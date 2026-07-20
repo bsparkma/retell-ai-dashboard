@@ -10,7 +10,7 @@ const router = express.Router();
 const unifiedCallStore = require('../services/unifiedCallStore');
 const retellService = require('../config/retell');
 const audit = require('../platform/audit');
-const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
+const { filterCallsForOffice, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 
 // --- Caller Name Extraction Utilities (copied from calls.js) ---
 
@@ -274,6 +274,9 @@ router.get('/', async (req, res) => {
         byHandler: stats.byHandler,
         lastSync: stats.lastSync,
       },
+      // Full office roster for the worklist selector (includes odConnected so the
+      // UI can render Valley's "OD not connected for this office yet" state).
+      offices: getAllOfficeConfigs(),
       office_config: office_id ? getOfficeConfig(office_id) : null,
     });
   } catch (error) {
