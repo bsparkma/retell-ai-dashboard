@@ -503,6 +503,12 @@ export const api = {
     });
   },
 
+  /** Office roster for the global office selector (agent→office config + odConnected). */
+  async getOffices(): Promise<OfficeConfig[]> {
+    const data = await request<{ offices?: OfficeConfig[] }>("/unified-calls/offices");
+    return data.offices ?? [];
+  },
+
   /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */
   async searchPatients(q: string): Promise<OdPatient[]> {
     if (!q || q.trim().length < 2) return [];

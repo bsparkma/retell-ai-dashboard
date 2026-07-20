@@ -325,6 +325,16 @@ router.get('/stats', async (req, res) => {
 });
 
 /**
+ * GET /api/unified-calls/offices
+ * The office roster for the global office selector (agent→office config, with
+ * odConnected). Non-PHI config — no audit. Registered before /:id so "offices"
+ * isn't captured as an id.
+ */
+router.get('/offices', (req, res) => {
+  res.json({ offices: getAllOfficeConfigs() });
+});
+
+/**
  * GET /api/unified-calls/:id
  * Get a specific call by ID
  */
