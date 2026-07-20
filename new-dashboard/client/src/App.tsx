@@ -5,6 +5,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/AuthContext";
+import { OfficeProvider } from "./contexts/OfficeContext";
 import RequireAuth from "./components/RequireAuth";
 import DashboardLayout from "./components/DashboardLayout";
 import Dashboard from "./pages/Dashboard";
@@ -45,10 +46,12 @@ function App() {
         <TooltipProvider>
           <AuthProvider>
             <RequireAuth>
-              <SlotMarkersProvider>
-                <Toaster position="top-right" />
-                <Router />
-              </SlotMarkersProvider>
+              <OfficeProvider>
+                <SlotMarkersProvider>
+                  <Toaster position="top-right" />
+                  <Router />
+                </SlotMarkersProvider>
+              </OfficeProvider>
             </RequireAuth>
           </AuthProvider>
         </TooltipProvider>

@@ -21,14 +21,13 @@ import {
   CheckCircle2, PhoneForwarded, UserSearch, CircleSlash, ChevronDown, Loader2, PlugZap,
 } from "lucide-react";
 import {
-  api, type UnifiedCall, type OfficeConfig, type TriageOutcome, type NotAPatientReason,
+  api, type UnifiedCall, type TriageOutcome, type NotAPatientReason,
 } from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { toast } from "sonner";
 import { PickPatientModal } from "./PickPatientModal";
-
-const OFFICE_STORAGE_KEY = "carein.worklist.office";
 
 const OUTCOMES: { value: TriageOutcome; label: string }[] = [
   { value: "scheduled", label: "Scheduled" },
@@ -75,39 +74,29 @@ interface CallWorklistProps {
 
 export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const auth = useAuth();
+  // Office scope comes from the global app-shell selector (sidebar), not this page.
+  const { office, selected: selectedOffice } = useOffice();
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
-  const [offices, setOffices] = useState<OfficeConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
   const [view, setView] = useState<"needs" | "all">("needs");
   const [search, setSearch] = useState("");
   const [activeChips, setActiveChips] = useState<Set<string>>(new Set());
-  const [office, setOffice] = useState<string>(() => {
-    try { return localStorage.getItem(OFFICE_STORAGE_KEY) || "all"; } catch { return "all"; }
-  });
 
   const [pickCall, setPickCall] = useState<UnifiedCall | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.getUnifiedCalls({ limit: 1000, office_id: office === "all" ? undefined : office })
-      .then(({ calls: list, offices: roster }) => {
-        setCalls(list);
-        if (roster.length) setOffices(roster);
-      })
+    api.getUnifiedCalls({ limit: 1000, office_id: office === ALL_OFFICES ? undefined : office })
+      .then(({ calls: list }) => setCalls(list))
       .catch(() => setCalls([]))
       .finally(() => setLoading(false));
   }, [office]);
 
   useEffect(() => { load(); }, [load]);
 
-  useEffect(() => {
-    try { localStorage.setItem(OFFICE_STORAGE_KEY, office); } catch { /* ignore */ }
-  }, [office]);
-
-  const selectedOffice = offices.find((o) => o.officeId === office) ?? null;
-  const officeOdConnected = office === "all" ? true : (selectedOffice?.odConnected ?? true);
+  const officeOdConnected = office === ALL_OFFICES ? true : (selectedOffice?.odConnected ?? true);
 
   const patchCall = useCallback((id: string, patch: Partial<UnifiedCall>) => {
     setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -233,29 +222,6 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
             </button>
           ))}
         </div>
-
-        {/* Office selector */}
-        {offices.length > 0 && (
-          <div className="flex items-center gap-1 bg-muted rounded-md p-1">
-            {[{ officeId: "all", officeName: "All Offices", odConnected: true }, ...offices].map((o) => (
-              <button
-                key={o.officeId}
-                onClick={() => setOffice(o.officeId)}
-                aria-pressed={office === o.officeId}
-                title={o.odConnected ? undefined : "OD not connected for this office yet"}
-                className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1"
-                style={{
-                  backgroundColor: office === o.officeId ? "white" : "transparent",
-                  color: office === o.officeId ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
-                  boxShadow: office === o.officeId ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
-                }}
-              >
-                {o.officeName}
-                {!o.odConnected && <PlugZap size={11} className="opacity-60" />}
-              </button>
-            ))}
-          </div>
-        )}
 
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
