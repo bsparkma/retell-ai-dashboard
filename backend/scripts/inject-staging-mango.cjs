@@ -11,11 +11,13 @@
  * deploy to repopulate the Mango side of the worklist. Run from the admin workstation
  * (staging ingress is IP-allowlisted):
  *
- *   STAGING_URL=https://staging.carein.ai node backend/scripts/inject-staging-mango.cjs
+ *   MANGO_SEED_CONFIRM_PHONE=<PatNum 11373 unique phone> \
+ *     STAGING_URL=https://staging.carein.ai node backend/scripts/inject-staging-mango.cjs
  *
  * Exercises the four cases the Mango slice must handle:
- *   1) confident-match  → od_sync_status 'matched'  (name that resolves to one patient)
- *   2) ambiguous        → od_sync_status 'needs_review' + candidates (shared phone)
+ *   1) confident-match  → od_sync_status 'matched'  (PatNum 11373 "Test" via its UNIQUE phone)
+ *   2) ambiguous        → od_sync_status 'needs_review' + candidates ("Stedi Test 2" shares a
+ *                         phone with "Stedi Test" → always >1 candidate, never confident)
  *   3) short call <20s   → transcript-less, no summary (D4); still matched by phone
  *   4) no-recording      → missed/voicemail, no transcript; still ingests + phone-matches
  */
@@ -30,25 +32,32 @@ const isoAgo = (mins) => new Date(Date.now() - mins * 60 * 1000).toISOString();
 // intended current behaviour and this exercises the fallback path.
 const ROLAND_DID = process.env.MANGO_SEED_ROLAND_DID || '+14795550000'; // placeholder DID
 
+// PatNum 11373 ("Test") UNIQUE phone — the only value that produces a confident single
+// phone match (→ 'matched'). Beau supplies it (never invented). If unset, a placeholder
+// that matches no one is used, so the confident synthetic lands as needs_review/unmatched
+// until the real number is provided.
+const CONFIRM_PHONE = process.env.MANGO_SEED_CONFIRM_PHONE || '+15550111373'; // placeholder — set env for a real confident match
+
 const calls = [
   {
-    // 1) Confident single match — "Stedi Test 2" is the documented confident name-match
-    //    protocol (resolves to one patient). matchAndSetStatus → 'matched' (NO OD write).
+    // 1) Confident single match — PatNum 11373 "Test" via its unique phone.
+    //    matchByPhoneExact → single patient (0.95) → matchAndSetStatus → 'matched' (NO OD write).
     source: 'mango',
     external_id: 'mango_call_seed_confident',
     mango_call_id: 'seed_confident',
     mango_detail_url: 'https://app.mangovoice.com/calls/seed_confident',
     call_date: isoAgo(9),
-    caller_number: '+14795551201',
+    caller_number: CONFIRM_PHONE,
     called_number: ROLAND_DID,
     duration_seconds: 185,
     outcome: 'answered',
-    caller_name: 'Stedi Test 2',
-    summary: 'Staff took a call from Stedi Test 2 about a balance question. [SYNTHETIC mango confident-match]',
-    transcript: 'Staff: Front desk, how can I help? Caller: Hi, this is Stedi Test 2, I have a question about my balance.',
+    caller_name: 'Test',
+    summary: 'Staff took a call from patient Test about a balance question. [SYNTHETIC mango confident-match → PatNum 11373]',
+    transcript: 'Staff: Front desk, how can I help? Caller: Hi, this is Test, I have a question about my balance.',
   },
   {
-    // 2) Ambiguous — shared phone on >1 patient → needs_review + stored candidates.
+    // 2) Ambiguous — "Stedi Test 2" shares a phone with "Stedi Test" → >1 candidate →
+    //    needs_review + stored candidates. Also the designated resolve target.
     source: 'mango',
     external_id: 'mango_call_seed_ambiguous',
     mango_call_id: 'seed_ambiguous',
@@ -58,9 +67,9 @@ const calls = [
     called_number: ROLAND_DID,
     duration_seconds: 140,
     outcome: 'answered',
-    caller_name: '',
-    summary: 'Caller asked to move a cleaning to next week. [SYNTHETIC mango needs_review]',
-    transcript: 'Staff: Thanks for calling. Caller: I need to move my cleaning to next week.',
+    caller_name: 'Stedi Test 2',
+    summary: 'Caller Stedi Test 2 asked to move a cleaning to next week. [SYNTHETIC mango needs_review]',
+    transcript: 'Staff: Thanks for calling. Caller: This is Stedi Test 2, I need to move my cleaning to next week.',
   },
   {
     // 3) Short call under MANGO_SUMMARY_MIN_SECONDS (20s): transcript-less, no summary

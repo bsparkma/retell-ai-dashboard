@@ -98,15 +98,21 @@ router.post('/fetch/:mangoCallId', async (req, res) => {
 });
 
 /**
- * POST /api/mango/dev/seed  — STAGING ONLY (disabled in production, mirroring
- * /api/webhooks/test). Injects synthetic Mango-source calls through the REAL path
- * (addMangoCalls upsert → matchAndSetStatus) so staging's ephemeral store can be
- * re-seeded after a cold start. No OD write happens (matchAndSetStatus only sets
- * review-then-send status). Body: { calls: [ <raw mango call>, ... ] }.
+ * POST /api/mango/dev/seed  — synthetic Mango-call seeder for STAGING.
+ *
+ * Gated by an EXPLICIT opt-in flag (ALLOW_MANGO_DEV_SEED=true), NOT by NODE_ENV: staging
+ * runs NODE_ENV=production so it loads Key Vault, so a NODE_ENV guard would wrongly block
+ * staging. Prod never sets the flag → always 403. Injects synthetic Mango calls through
+ * the REAL path (addMangoCalls upsert → matchAndSetStatus) so staging's ephemeral store
+ * can be re-seeded after a cold start. No OD write happens (review-then-send status only).
+ * Body: { calls: [ <raw mango call>, ... ] }.
  */
 router.post('/dev/seed', async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ success: false, error: 'Seed endpoint disabled in production' });
+  if (process.env.ALLOW_MANGO_DEV_SEED !== 'true') {
+    return res.status(403).json({
+      success: false,
+      error: 'Seed endpoint disabled (set ALLOW_MANGO_DEV_SEED=true on staging; never on prod)',
+    });
   }
   const calls = Array.isArray(req.body && req.body.calls) ? req.body.calls : [];
   if (calls.length === 0) {

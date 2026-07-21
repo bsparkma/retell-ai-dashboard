@@ -46,11 +46,11 @@ class CallAnalyzer {
     if (endpoint && deployment) {
       try {
         const { AzureOpenAI } = require('openai');
-        // Managed identity is preferred (PRD D2). Only use the api-key path when auth mode
-        // is explicitly 'api_key' (or unset AND a key is present) — so loading the KV key
-        // fallback never silently overrides MI when AZURE_OPENAI_AUTH_MODE=managed_identity.
-        const authMode = process.env.AZURE_OPENAI_AUTH_MODE
-          || (process.env.AZURE_OPENAI_API_KEY ? 'api_key' : 'managed_identity');
+        // Managed identity is the DEFAULT and preferred path (PRD D2). Key-auth engages
+        // ONLY when AZURE_OPENAI_AUTH_MODE is explicitly 'api_key' — it is never a silent
+        // fallback (loading the KV key never flips us off MI, and a failed MI token
+        // acquisition throws → regex fallback, it does NOT retry with the key).
+        const authMode = process.env.AZURE_OPENAI_AUTH_MODE || 'managed_identity';
         const useKey = authMode === 'api_key' && !!process.env.AZURE_OPENAI_API_KEY;
         if (useKey) {
           // Key fallback (from Key Vault as azure-openai-key).
