@@ -298,12 +298,20 @@ class UnifiedCallStore {
       // docs/SLICE_WEBHOOK_COMMLOG_HARDENING_PRD.md.
       od_sync_status: call.od_sync_status ?? null,
       od_patient_id: call.od_patient_id ?? null,
+      // od_patient_name backs the "Matched: <name>" / "Sent" worklist label (Slice B.1);
+      // preserve it like the other od_* fields so a re-add doesn't drop the matched name.
+      od_patient_name: call.od_patient_name ?? null,
       od_commlog_num: call.od_commlog_num ?? null,
       od_synced_at: call.od_synced_at ?? null,
       od_match_confidence: call.od_match_confidence ?? null,
       od_match_candidates: call.od_match_candidates ?? null,
       od_sync_attempted_at: call.od_sync_attempted_at ?? null,
       od_sync_error: call.od_sync_error ?? null,
+      // Who sent the chart note + when + the what-was-sent record (Slice B.1).
+      sent_by: call.sent_by ?? null,
+      sent_at: call.sent_at ?? null,
+      sent_note: call.sent_note ?? null,
+      note_edited: call.note_edited ?? null,
 
       // CareIN triage / review-queue state (Slice B) — MUST survive re-normalization
       // for the same reason as od_* above: addRetellCall rebuilds the record on every
@@ -354,12 +362,17 @@ class UnifiedCallStore {
       // commlog dedup guard honest across Retell retries.
       od_sync_status: call.od_sync_status ?? existing?.od_sync_status ?? null,
       od_patient_id: call.od_patient_id ?? existing?.od_patient_id ?? null,
+      od_patient_name: call.od_patient_name ?? existing?.od_patient_name ?? null,
       od_commlog_num: call.od_commlog_num ?? existing?.od_commlog_num ?? null,
       od_synced_at: call.od_synced_at ?? existing?.od_synced_at ?? null,
       od_match_confidence: call.od_match_confidence ?? existing?.od_match_confidence ?? null,
       od_match_candidates: call.od_match_candidates ?? existing?.od_match_candidates ?? null,
       od_sync_attempted_at: call.od_sync_attempted_at ?? existing?.od_sync_attempted_at ?? null,
       od_sync_error: call.od_sync_error ?? existing?.od_sync_error ?? null,
+      sent_by: call.sent_by ?? existing?.sent_by ?? null,
+      sent_at: call.sent_at ?? existing?.sent_at ?? null,
+      sent_note: call.sent_note ?? existing?.sent_note ?? null,
+      note_edited: call.note_edited ?? existing?.note_edited ?? null,
       // Preserve Slice-B triage/review state across re-adds too (same rationale as od_*
       // above): the poller/webhook payload never carries these, so a re-add must inherit
       // them from the existing record or a worked call silently reverts to untriaged.

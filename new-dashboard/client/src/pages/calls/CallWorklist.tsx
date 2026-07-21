@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/popover";
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
-  CheckCircle2, PhoneForwarded, UserSearch, CircleSlash, ChevronDown, Loader2, PlugZap, Clock,
+  CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, ChevronDown, Loader2, PlugZap, Clock, Send,
 } from "lucide-react";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason,
@@ -28,6 +28,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { toast } from "sonner";
 import { PickPatientModal } from "./PickPatientModal";
+import { SendToChartDialog } from "./SendToChartDialog";
 
 const OUTCOMES: { value: TriageOutcome; label: string }[] = [
   { value: "scheduled", label: "Scheduled" },
@@ -93,6 +94,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   });
 
   const [pickCall, setPickCall] = useState<UnifiedCall | null>(null);
+  const [sendTarget, setSendTarget] = useState<{ call: UnifiedCall; patientId: number; patientName: string } | null>(null);
 
   const setSort = (dir: "newest" | "oldest") => {
     setSortDir(dir);
@@ -146,15 +148,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
   const reopen = (call: UnifiedCall) => applyTriage(call, "needs_action");
 
-  const onResolved = (
-    call: UnifiedCall,
-    result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason },
-  ) => {
-    if (result.kind === "patient") {
-      patchCall(call.id, { odSyncStatus: "synced", odPatientId: result.patientId });
-    } else {
-      patchCall(call.id, { notAPatient: true, notAPatientReason: result.reason });
-    }
+  const onNotPatient = (call: UnifiedCall, reason: NotAPatientReason) => {
+    patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
+  };
+
+  const onSent = (call: UnifiedCall, patientId: number) => {
+    const actor = auth.status === "authenticated" ? { name: auth.user.name, email: auth.user.email } : null;
+    patchCall(call.id, { odSyncStatus: "synced", odPatientId: patientId, sentBy: actor, sentAt: new Date().toISOString() });
+  };
+
+  // A patient was chosen in the picker → hand off to the review/edit → send dialog.
+  const chooseThenSend = (call: UnifiedCall, patientId: number, patientName: string) => {
+    setPickCall(null);
+    setSendTarget({ call, patientId, patientName });
   };
 
   // ---- filtering ----------------------------------------------------------
@@ -385,6 +391,11 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                     call={call}
                     officeOdConnected={officeOdConnected}
                     onPick={() => setPickCall(call)}
+                    onSend={() => setSendTarget({
+                      call,
+                      patientId: Number(call.odPatientId),
+                      patientName: call.odPatientName || `PatNum ${call.odPatientId}`,
+                    })}
                   />
                 </div>
 
@@ -420,7 +431,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           open={pickCall !== null}
           onOpenChange={(o) => { if (!o) setPickCall(null); }}
           call={pickCall}
-          onResolved={(result) => onResolved(pickCall, result)}
+          onChoosePatient={(patientId, patientName) => chooseThenSend(pickCall, patientId, patientName)}
+          onNotPatient={(reason) => onNotPatient(pickCall, reason)}
+        />
+      )}
+
+      {sendTarget && (
+        <SendToChartDialog
+          open={sendTarget !== null}
+          onOpenChange={(o) => { if (!o) setSendTarget(null); }}
+          call={sendTarget.call}
+          patientId={sendTarget.patientId}
+          patientName={sendTarget.patientName}
+          onSent={() => onSent(sendTarget.call, sendTarget.patientId)}
         />
       )}
     </>
@@ -430,8 +453,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 // ---------------------------------------------------------------------------
 
 function PatientIdentityCell({
-  call, officeOdConnected, onPick,
-}: { call: UnifiedCall; officeOdConnected: boolean; onPick: () => void }) {
+  call, officeOdConnected, onPick, onSend,
+}: { call: UnifiedCall; officeOdConnected: boolean; onPick: () => void; onSend: () => void }) {
   if (!officeOdConnected) {
     return <span className="text-xs text-muted-foreground/70 italic">OD not connected for this office yet</span>;
   }
@@ -442,21 +465,34 @@ function PatientIdentityCell({
       </span>
     );
   }
-  // Resolved = a patient is actually linked (od_patient_id). Gate on that, NOT on
-  // od_sync_status: pull-synced calls carry no status but are still unmatched and
-  // must stay actionable.
-  if (call.odPatientId) {
+  // Sent = the chart note was written (od_sync_status 'synced').
+  if (call.odSyncStatus === "synced") {
     return (
       <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline">
         <CheckCircle2 size={12} className="text-emerald-600" />
-        {call.odPatientName || `PatNum ${call.odPatientId}`}
+        Sent · {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "chart")}
       </Link>
     );
   }
-  // Any call without a resolved patient → actionable. Stored candidates (Slice-A
-  // needs_review) label as "Needs match (N)"; everything else (incl. pull-synced
-  // calls with no od_sync_status) is "Unmatched". The button opens the modal,
-  // which offers BOTH Pick Patient and the not-a-patient close-out.
+  // Matched but NOT sent (review-then-send): a patient is linked (od_patient_id) but
+  // no chart note has been written. Surface the match + a Send button (opens the
+  // confirm-preview dialog). Nothing is written until the human confirms.
+  if (call.odPatientId) {
+    return (
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-sky-700 truncate" title="Auto-matched — review before sending">
+          <UserCheck size={12} className="text-sky-600 flex-shrink-0" />
+          Matched: {call.odPatientName || `PatNum ${call.odPatientId}`}
+        </span>
+        <Button size="sm" className="h-7 gap-1 text-[11px] px-2 flex-shrink-0" onClick={onSend}>
+          <Send size={11} /> Send to chart
+        </Button>
+      </div>
+    );
+  }
+  // No linked patient → actionable. Stored candidates (Slice-A needs_review) label as
+  // "Needs match (N)"; everything else (incl. pull-synced calls) is "Unmatched". The
+  // button opens the modal, which offers BOTH Pick Patient and the not-a-patient close-out.
   const n = call.odMatchCandidates?.length ?? 0;
   return (
     <button

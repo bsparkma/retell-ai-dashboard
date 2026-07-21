@@ -63,9 +63,9 @@ export type TriageOutcome =
   | "called_back" | "scheduled" | "left_voicemail" | "no_answer" | "no_action_needed";
 export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong_number" | "other";
 
-/** Open Dental commlog sync state written by Slice A. */
+/** Open Dental commlog sync state. 'matched' = auto-matched, ready for a human to send (Slice B.1). */
 export type OdSyncStatus =
-  | "synced" | "needs_review" | "pending_match" | "pending" | "error" | "unlinked" | null;
+  | "synced" | "matched" | "needs_review" | "pending_match" | "pending" | "error" | "unlinked" | null;
 
 /** A stored patient match candidate for the Pick Patient modal ({ id, name }). */
 export interface OdMatchCandidate {
@@ -118,6 +118,9 @@ export interface BackendUnifiedCall {
   not_a_patient_reason?: NotAPatientReason | null;
   resolved_by?: CallActor | null;
   resolved_at?: string | null;
+  // Slice B.1 — who sent the chart note + when
+  sent_by?: CallActor | null;
+  sent_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -396,6 +399,8 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     notAPatientReason: (c.not_a_patient_reason ?? null) as NotAPatientReason | null,
     resolvedBy: (c.resolved_by ?? null) as CallActor | null,
     resolvedAt: c.resolved_at ?? null,
+    sentBy: (c.sent_by ?? null) as CallActor | null,
+    sentAt: c.sent_at ?? null,
   };
 }
 
@@ -495,7 +500,7 @@ export const api = {
    */
   async resolvePatient(
     id: string,
-    body: { patientId: number } | { notAPatient: true; reason: NotAPatientReason }
+    body: { patientId: number; note?: string } | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
@@ -507,6 +512,14 @@ export const api = {
   async getOffices(): Promise<OfficeConfig[]> {
     const data = await request<{ offices?: OfficeConfig[] }>("/unified-calls/offices");
     return data.offices ?? [];
+  },
+
+  /**
+   * The exact chart note "Send to chart" will write, for the confirm-preview dialog.
+   * Same formatter/options as the send path, so preview === what gets written.
+   */
+  async getCommlogPreview(id: string): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
+    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview`);
   },
 
   /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */
