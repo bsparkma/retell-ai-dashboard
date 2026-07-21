@@ -48,7 +48,7 @@ function App() {
             <RequireAuth>
               <OfficeProvider>
                 <SlotMarkersProvider>
-                  <Toaster position="top-right" />
+                  <Toaster position="top-right" duration={4000} closeButton />
                   <Router />
                 </SlotMarkersProvider>
               </OfficeProvider>
