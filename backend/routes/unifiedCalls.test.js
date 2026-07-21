@@ -180,13 +180,48 @@ test('resolve-patient writes ONE commlog; a second resolve writes none', async (
   assert.equal(commlogWrites, 1, 'no second commlog was written');
 });
 
-test('resolve-patient stamps resolve attribution', async () => {
+test('resolve-patient stamps resolve + send attribution', async () => {
   seedCall('c7');
   const res = await resolve('c7', { patientId: 12827 });
   const body = await res.json();
   assert.deepEqual(body.call.resolved_by, SESSION_USER);
   assert.ok(body.call.resolved_at);
+  // Writing the commlog IS "send to chart" → sent_by/sent_at stamped (Slice B.1).
+  assert.deepEqual(body.call.sent_by, SESSION_USER);
+  assert.ok(body.call.sent_at);
   assert.equal(body.call.od_patient_id, 12827);
+});
+
+test('send a matched call → one commlog, sent attribution (review-then-send)', async () => {
+  // A call already auto-matched (flag off) carries od_patient_id + status 'matched'.
+  seedCall('c-matched', { call_analysis: {} });
+  unifiedCallStore.updateCall('c-matched', {
+    od_sync_status: 'matched', od_patient_id: 12827, od_patient_name: 'Stedi Test 2',
+  });
+  const res = await resolve('c-matched', { patientId: 12827 });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.success, true);
+  assert.equal(commlogWrites, 1, 'send writes exactly one commlog');
+  assert.deepEqual(body.call.sent_by, SESSION_USER);
+  assert.equal(body.call.od_sync_status, 'synced');
+});
+
+test('commlog-preview returns the exact note the send will write', async () => {
+  seedCall('c-preview', {
+    call_analysis: { call_summary: 'Caller asked to reschedule a cleaning.' },
+  });
+  unifiedCallStore.updateCall('c-preview', { od_patient_id: 12827, od_patient_name: 'Stedi Test 2', summary: 'Caller asked to reschedule a cleaning.' });
+  const res = await fetch(`${baseUrl}/api/unified-calls/c-preview/commlog-preview`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  // Matches the real formatter (formatCommLogEntry) — same note the send path writes.
+  const expected = openDentalSync.formatCommLogEntry(unifiedCallStore.getCall('c-preview'), {});
+  assert.equal(body.note, expected.Note);
+  assert.match(body.note, /CALL SUMMARY/);
+  assert.match(body.note, /Caller asked to reschedule a cleaning\./);
+  assert.equal(body.patientId, 12827);
+  assert.equal(body.patientName, 'Stedi Test 2');
 });
 
 test('resolve-patient not-a-patient close-out writes no commlog', async () => {
