@@ -80,10 +80,10 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
         onResolved({ kind: "patient", patientId });
         onOpenChange(false);
       } else {
-        toast.error("Could not link patient");
+        toast.error("Could not link patient", { duration: 8000 });
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to link patient");
+      toast.error(err instanceof Error ? err.message : "Failed to link patient", { duration: 8000 });
     } finally {
       setSubmittingId(null);
     }
@@ -98,10 +98,10 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
         onResolved({ kind: "not_patient", reason });
         onOpenChange(false);
       } else {
-        toast.error("Could not close out call");
+        toast.error("Could not close out call", { duration: 8000 });
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to close out call");
+      toast.error(err instanceof Error ? err.message : "Failed to close out call", { duration: 8000 });
     } finally {
       setSubmittingId(null);
     }
