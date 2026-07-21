@@ -21,8 +21,9 @@ import {
   CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, ChevronDown, Loader2, PlugZap, Clock, Send,
 } from "lucide-react";
 import {
-  api, type UnifiedCall, type TriageOutcome, type NotAPatientReason,
+  api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
 } from "@/lib/api";
+import { callNeedsAttention } from "@/lib/worklist";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
@@ -88,6 +89,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const [view, setView] = useState<"needs" | "all">("needs");
   const [search, setSearch] = useState("");
   const [activeChips, setActiveChips] = useState<Set<string>>(new Set());
+  // Source filter (All / CareIN AI / Staff·Mango). Mango calls arrived with the slice.
+  const [sourceFilter, setSourceFilter] = useState<"all" | "retell" | "mango">("all");
+  // Backend-owned worklist behaviour for Mango calls (PRD D1); default 'all'.
+  const [mangoWorklistMode, setMangoWorklistMode] = useState<MangoWorklistMode>("all");
   // Front-desk mental model: newest-first by default; toggle persists per browser.
   const [sortDir, setSortDir] = useState<"newest" | "oldest">(() => {
     try { return localStorage.getItem(SORT_STORAGE_KEY) === "oldest" ? "oldest" : "newest"; } catch { return "newest"; }
@@ -104,7 +109,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const load = useCallback(() => {
     setLoading(true);
     api.getUnifiedCalls({ limit: 1000, office_id: office === ALL_OFFICES ? undefined : office })
-      .then(({ calls: list }) => setCalls(list))
+      .then(({ calls: list, mangoWorklistMode: mode }) => {
+        setCalls(list);
+        setMangoWorklistMode(mode);
+      })
       .catch(() => setCalls([]))
       .finally(() => setLoading(false));
   }, [office]);
@@ -164,8 +172,15 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   };
 
   // ---- filtering ----------------------------------------------------------
-  const needsAttention = (c: UnifiedCall) => c.triageStatus !== "done" && !c.notAPatient;
-  const needsAttentionCount = useMemo(() => calls.filter(needsAttention).length, [calls]);
+  // Base rule: not resolved and not a spam/close-out. PRD D1: in 'flagged' mode a Mango
+  // staff call only demands attention if it's an emergency / requested an appointment /
+  // needs a callback — otherwise it stays in "All calls" (still sendable) but drops out
+  // of the attention count + default view. Retell calls are unaffected by the mode.
+  const needsAttention = useCallback(
+    (c: UnifiedCall) => callNeedsAttention(c, mangoWorklistMode),
+    [mangoWorklistMode],
+  );
+  const needsAttentionCount = useMemo(() => calls.filter(needsAttention).length, [calls, needsAttention]);
 
   useEffect(() => { onNeedsAttentionCount?.(needsAttentionCount); }, [needsAttentionCount, onNeedsAttentionCount]);
 
@@ -176,11 +191,14 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     if (pending.length === 0) return 0;
     const oldest = Math.min(...pending.map((c) => new Date(c.date).getTime()));
     return Math.floor((Date.now() - oldest) / 86_400_000);
-  }, [calls]);
+  }, [calls, needsAttention]);
 
   const visibleCalls = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = view === "needs" ? calls.filter(needsAttention) : calls;
+    if (sourceFilter !== "all") {
+      list = list.filter((c) => c.source === sourceFilter);
+    }
     if (q) {
       list = list.filter((c) =>
         c.patientName.toLowerCase().includes(q) ||
@@ -197,7 +215,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
         ? new Date(a.date).getTime() - new Date(b.date).getTime()
         : new Date(b.date).getTime() - new Date(a.date).getTime()
     );
-  }, [calls, view, search, activeChips, sortDir]);
+  }, [calls, view, search, activeChips, sortDir, sourceFilter, needsAttention]);
 
   const toggleChip = (key: string) =>
     setActiveChips((prev) => {
@@ -294,6 +312,31 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           ))}
         </div>
 
+        {/* Source filter — AI (Retell) vs Staff (Mango). Both flow the same worklist. */}
+        <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+          {([
+            { key: "all" as const, label: "All", icon: null },
+            { key: "retell" as const, label: "CareIN AI", icon: Bot },
+            { key: "mango" as const, label: "Staff", icon: Users },
+          ]).map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setSourceFilter(s.key)}
+              aria-pressed={sourceFilter === s.key}
+              title={s.key === "mango" ? "Staff-answered calls (Mango)" : s.key === "retell" ? "CareIN AI calls (Retell)" : "All sources"}
+              className="px-2.5 py-1.5 rounded text-xs font-medium transition-all inline-flex items-center gap-1"
+              style={{
+                backgroundColor: sourceFilter === s.key ? "white" : "transparent",
+                color: sourceFilter === s.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                boxShadow: sourceFilter === s.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+              }}
+            >
+              {s.icon ? <s.icon size={12} /> : null}
+              {s.label}
+            </button>
+          ))}
+        </div>
+
         <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
           <RefreshCw size={14} className={`mr-1.5 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync"}
         </Button>
@@ -377,7 +420,15 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                     {call.source === "retell" ? <Bot size={13} className="text-primary" /> : <Users size={13} className="text-amber-600" />}
                   </div>
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-foreground truncate">{call.patientName}</div>
+                    <div className="text-sm font-medium text-foreground truncate flex items-center gap-1.5">
+                      <span className="truncate">{call.patientName}</span>
+                      <span
+                        className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0 ${call.source === "retell" ? "text-primary bg-primary/10" : "text-amber-700 bg-amber-500/10"}`}
+                        title={call.source === "retell" ? "CareIN AI (Retell)" : "Staff-answered (Mango)"}
+                      >
+                        {call.source === "retell" ? "CareIN AI" : "Staff · Mango"}
+                      </span>
+                    </div>
                     <div className="text-xs font-mono text-muted-foreground">{call.fromNumber}</div>
                     <div className="text-[11px] text-muted-foreground/70">
                       {formatDuration(call.duration)} · {formatTimeAgo(call.date)}

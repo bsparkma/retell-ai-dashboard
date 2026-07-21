@@ -261,6 +261,9 @@ class UnifiedCallStore {
       outcome: call.outcome || call.success_status || 'unknown',
       call_reason: call.call_reason || call.reason || null,
       is_emergency: call.is_emergency || false,
+      // Disposition signal for MANGO_WORKLIST_MODE='flagged' (PRD D1). Set from the
+      // human-call analyzer; defaults false. callback is tracked by callback_required below.
+      appointment_requested: call.appointment_requested || false,
       sentiment: call.sentiment || 'neutral',
       
       // Transfer tracking

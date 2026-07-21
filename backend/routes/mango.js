@@ -13,6 +13,7 @@ const router = express.Router();
 const mangoScraper = require('../services/mangoScraper');
 const transcriptionService = require('../services/transcriptionService');
 const unifiedCallStore = require('../services/unifiedCallStore');
+const openDentalSyncService = require('../services/openDentalSync');
 
 router.post('/fetch/:mangoCallId', async (req, res) => {
   try {
@@ -63,6 +64,8 @@ router.post('/fetch/:mangoCallId', async (req, res) => {
         transcript: transcriptText,
         transcript_json: transcriptJson,
       });
+      // Enter the source-agnostic path so it appears in the Slice B worklist. Skips synced.
+      await matchIfNeeded(existing.id);
       await unifiedCallStore.persist();
       return res.json({ success: true, call: unifiedCallStore.getCall(existing.id) });
     }
@@ -84,6 +87,7 @@ router.post('/fetch/:mangoCallId', async (req, res) => {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }]);
+    await matchIfNeeded(externalId);
     await unifiedCallStore.persist();
 
     return res.json({ success: true, call: unifiedCallStore.getCall(externalId) });
@@ -92,6 +96,67 @@ router.post('/fetch/:mangoCallId', async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
+/**
+ * POST /api/mango/dev/seed  — STAGING ONLY (disabled in production, mirroring
+ * /api/webhooks/test). Injects synthetic Mango-source calls through the REAL path
+ * (addMangoCalls upsert → matchAndSetStatus) so staging's ephemeral store can be
+ * re-seeded after a cold start. No OD write happens (matchAndSetStatus only sets
+ * review-then-send status). Body: { calls: [ <raw mango call>, ... ] }.
+ */
+router.post('/dev/seed', async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ success: false, error: 'Seed endpoint disabled in production' });
+  }
+  const calls = Array.isArray(req.body && req.body.calls) ? req.body.calls : [];
+  if (calls.length === 0) {
+    return res.status(400).json({ success: false, error: 'Provide a non-empty { calls: [...] } array' });
+  }
+
+  try {
+    // Upsert (dedup by external_id), then run each through the source-agnostic matcher.
+    unifiedCallStore.addMangoCalls(calls);
+
+    const out = [];
+    const stored = unifiedCallStore.getCalls({ source: 'mango', limit: 5000, offset: 0 }).calls;
+    for (const c of calls) {
+      const rec = stored.find((x) => x.external_id === c.external_id);
+      if (!rec) continue;
+      await matchIfNeeded(rec.id);
+      const after = unifiedCallStore.getCall(rec.id);
+      out.push({
+        id: after.id,
+        external_id: after.external_id,
+        od_sync_status: after.od_sync_status,
+        candidates: (after.od_match_candidates || []).length,
+        has_transcript: Boolean(after.transcript),
+      });
+    }
+    await unifiedCallStore.persist();
+    return res.json({ success: true, seeded: out.length, calls: out });
+  } catch (error) {
+    console.error('Mango dev seed failed:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Run the source-agnostic match → status transition for a Mango call so it enters the
+ * Slice B worklist (openDentalSync.matchAndSetStatus). Skips 'synced' calls (a human
+ * Send-to-chart is terminal). Best-effort — never throws out of the request handler.
+ */
+async function matchIfNeeded(callId) {
+  try {
+    const call = unifiedCallStore.getCall(callId);
+    if (!call || call.od_sync_status === 'synced') return;
+    await openDentalSyncService.matchAndSetStatus(callId, {
+      caller_number: call.caller_number,
+      caller_name: call.caller_name,
+    });
+  } catch (e) {
+    console.error(`[Mango fetch] matchAndSetStatus failed for ${callId}: ${e.message}`);
+  }
+}
 
 module.exports = router;
 

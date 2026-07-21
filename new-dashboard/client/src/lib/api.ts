@@ -63,6 +63,13 @@ export type TriageOutcome =
   | "called_back" | "scheduled" | "left_voicemail" | "no_answer" | "no_action_needed";
 export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong_number" | "other";
 
+/**
+ * Worklist behaviour for Mango staff calls (PRD D1, backend-owned via MANGO_WORKLIST_MODE).
+ * 'all' = every Mango call demands attention like a Retell call; 'flagged' = only
+ * emergency / appointment-requested / callback-needed Mango calls demand attention.
+ */
+export type MangoWorklistMode = "all" | "flagged";
+
 /** Open Dental commlog sync state. 'matched' = auto-matched, ready for a human to send (Slice B.1). */
 export type OdSyncStatus =
   | "synced" | "matched" | "needs_review" | "pending_match" | "pending" | "error" | "unlinked" | null;
@@ -100,6 +107,8 @@ export interface BackendUnifiedCall {
   is_emergency?: boolean;
   is_new_patient?: boolean | null;
   appointment_booked?: boolean | null;
+  appointment_requested?: boolean | null;
+  callback_required?: boolean | null;
   dental_insurance?: boolean | null;
   // Slice A — Open Dental sync state
   od_sync_status?: OdSyncStatus;
@@ -401,6 +410,11 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     resolvedAt: c.resolved_at ?? null,
     sentBy: (c.sent_by ?? null) as CallActor | null,
     sentAt: c.sent_at ?? null,
+
+    // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1). On Retell calls
+    // these are usually absent (defaults false) — Retell attention is unaffected by mode.
+    appointmentRequested: c.appointment_requested ?? false,
+    callbackRequested: c.callback_required ?? false,
   };
 }
 
@@ -471,12 +485,14 @@ export const api = {
       total?: number;
       stats?: unknown;
       offices?: OfficeConfig[];
+      mango_worklist_mode?: MangoWorklistMode;
     }>("/unified-calls", { params: params as Record<string, string | number | boolean | undefined> });
     return {
       calls: (data.calls ?? []).map(normalizeUnifiedCall),
       total: data.total ?? data.calls?.length ?? 0,
       stats: data.stats,
       offices: data.offices ?? [],
+      mangoWorklistMode: (data.mango_worklist_mode ?? "all") as MangoWorklistMode,
     };
   },
 

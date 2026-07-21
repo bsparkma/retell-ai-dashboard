@@ -13,6 +13,7 @@ const openDentalSync = require('../services/openDentalSync');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const audit = require('../platform/audit');
 const { filterCallsForOffice, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
+const mangoConfig = require('../config/mango');
 
 // --- Slice B: triage worklist + patient review queue -----------------------
 
@@ -304,6 +305,9 @@ router.get('/', async (req, res) => {
       // UI can render Valley's "OD not connected for this office yet" state).
       offices: getAllOfficeConfigs(),
       office_config: office_id ? getOfficeConfig(office_id) : null,
+      // PRD D1: tells the worklist whether ALL Mango calls demand attention ('all') or
+      // only flagged ones ('flagged'). Backend-owned config so a flip is an env change.
+      mango_worklist_mode: mangoConfig.worklistMode,
     });
   } catch (error) {
     console.error('Error fetching unified calls:', error);

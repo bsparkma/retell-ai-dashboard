@@ -104,3 +104,47 @@ test('Slice-B triage/resolve state survives a Retell re-add (regression)', () =>
   assert.deepEqual(readded.resolved_by, { name: 'Sarah Front', email: 'sarah@carein.ai' });
   assert.equal(readded.resolved_at, '2026-07-20T15:14:05.000Z');
 });
+
+test('Mango match/triage state survives an addMangoCalls re-scrape upsert (regression)', () => {
+  // 1. A Mango call is ingested by the scraper (raw shape — no od_*/triage fields).
+  const rawMango = {
+    source: 'mango',
+    external_id: 'mango_call_4637427643',
+    mango_call_id: '4637427643',
+    mango_detail_url: 'https://app.mangovoice.com/calls/4637427643',
+    call_date: '2026-07-20T15:00:00.000Z',
+    caller_number: '+14795551414',
+    called_number: '+14795550000',
+    duration_seconds: 185,
+    outcome: 'answered',
+  };
+  const [added] = unifiedCallStore.addMangoCalls([rawMango]);
+  const id = added.id;
+
+  // 2. It flows through matchAndSetStatus + a human works it (what updateCall persists).
+  unifiedCallStore.updateCall(id, {
+    od_sync_status: 'matched',
+    od_patient_id: 11373,
+    od_patient_name: 'Test Patient',
+    od_match_confidence: 0.95,
+    triage_status: 'done',
+    triage_outcome: 'scheduled',
+    triage_by: { name: 'Sarah Front', email: 'sarah@carein.ai' },
+  });
+
+  // 3. The next ~15-min Mango sync re-scrapes the SAME call (bare raw payload again).
+  unifiedCallStore.addMangoCalls([rawMango]);
+  const stored = unifiedCallStore.getCall(id);
+
+  // Match + triage state must NOT be wiped by the re-scrape upsert.
+  assert.equal(stored.od_sync_status, 'matched');
+  assert.equal(stored.od_patient_id, 11373);
+  assert.equal(stored.od_patient_name, 'Test Patient');
+  assert.equal(stored.od_match_confidence, 0.95);
+  assert.equal(stored.triage_status, 'done');
+  assert.equal(stored.triage_outcome, 'scheduled');
+  assert.deepEqual(stored.triage_by, { name: 'Sarah Front', email: 'sarah@carein.ai' });
+  // And the newly-scraped fields are still applied.
+  assert.equal(stored.source, 'mango');
+  assert.equal(stored.duration_seconds, 185);
+});

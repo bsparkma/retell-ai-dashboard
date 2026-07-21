@@ -51,9 +51,45 @@ const AGENT_OFFICE = {
   // connection lands (per-location slice), change its mapping to 'valley'.
 };
 
-// Remember which unmapped agent ids we've already warned about, so the fallback
-// warning fires once per agent id per process instead of on every call.
+// ── Mango (staff) line → office ──────────────────────────────────────────────
+// Mango staff calls carry NO Retell agent id, so they can't be attributed by
+// AGENT_OFFICE. Instead they're attributed by the office phone LINE that was
+// called — the Mango `called_number` (DID), later also `pbx_uuid`. Keyed on the
+// E.164-normalized number so formatting differences ((479) 555-0000 vs
+// +14795550000) don't matter.
+//
+// PLACEHOLDER: the real Roland/Valley DIDs are supplied by Beau (PRD M0.4). Until
+// then this map is intentionally empty of real numbers and every Mango call falls
+// back to Roland (FALLBACK_OFFICE) — which is correct in the current single-office
+// reality. Replace the placeholder below with the real DID(s) when provided;
+// adding Valley later is ONE line here, exactly like AGENT_OFFICE.
+/** @type {Record<string, string>} E.164 DID → officeId */
+const MANGO_LINE_OFFICE = {
+  // TODO(beau): replace with the REAL Roland Mango DID(s), e.g. '+14795551234': 'roland'.
+  // '+15550000000': 'roland',  // <-- placeholder, matches nothing real
+  // '+14790000000': 'valley',  // <-- add Valley DID(s) when its OD connection lands
+};
+
+/**
+ * Normalize a phone number to canonical E.164 (+1XXXXXXXXXX for NANP). Best-effort:
+ * 10 digits → +1XXXXXXXXXX; 11 digits starting with 1 → +1XXXXXXXXXX; already-+ →
+ * digits re-wrapped. Returns null when there aren't enough digits to be a real line.
+ * @param {string|number|null|undefined} number
+ * @returns {string|null}
+ */
+const normalizeE164 = (number) => {
+  if (number == null) return null;
+  const digits = String(number).replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length > 11) return `+${digits}`; // already includes a country code
+  return null; // too short to be a usable line
+};
+
+// Remember which unmapped agent ids / Mango lines we've already warned about, so the
+// fallback warning fires once per id per process instead of on every call.
 const warnedUnmappedAgents = new Set();
+const warnedUnmappedLines = new Set();
 
 /**
  * Read the handling agent id off a call, tolerating both stored (`handler_id`)
@@ -67,12 +103,33 @@ const getAgentId = (call) => {
 };
 
 /**
- * Resolve the office a call belongs to. Unmapped agents (and agent-less calls)
- * fall back to Roland and warn once.
- * @param {{ handler_id?: string, agent_id?: string|number }} call
+ * Resolve the office a call belongs to.
+ *   - Mango (staff) calls: attributed by the office LINE that was called
+ *     (E.164-normalized `called_number` → MANGO_LINE_OFFICE). Unmapped line →
+ *     fallback office + warn once.
+ *   - Retell (AI) calls: attributed by the handling agent (AGENT_OFFICE).
+ *     Unmapped agent / agent-less → fallback office + warn once.
+ * @param {{ source?: string, called_number?: string, handler_id?: string, agent_id?: string|number }} call
  * @returns {string} officeId
  */
 const getOfficeForCall = (call) => {
+  // Mango staff calls have no Retell agent id — attribute by the called line.
+  if (call && call.source === 'mango') {
+    const line = normalizeE164(call.called_number);
+    if (line && MANGO_LINE_OFFICE[line]) {
+      return MANGO_LINE_OFFICE[line];
+    }
+    const warnKey = line || '(no-line)';
+    if (!warnedUnmappedLines.has(warnKey)) {
+      warnedUnmappedLines.add(warnKey);
+      console.warn(
+        `[officeAgents] Unmapped Mango line '${warnKey}' — routing to fallback office ` +
+        `'${FALLBACK_OFFICE}'. Add its DID to MANGO_LINE_OFFICE to assign it explicitly.`
+      );
+    }
+    return FALLBACK_OFFICE;
+  }
+
   const agentId = getAgentId(call);
   if (agentId && AGENT_OFFICE[agentId]) {
     return AGENT_OFFICE[agentId];
@@ -145,6 +202,8 @@ module.exports = {
   OFFICES,
   FALLBACK_OFFICE,
   AGENT_OFFICE,
+  MANGO_LINE_OFFICE,
+  normalizeE164,
   getAgentId,
   getOfficeForCall,
   getOfficeConfig,

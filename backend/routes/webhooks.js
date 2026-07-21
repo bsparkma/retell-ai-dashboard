@@ -225,44 +225,16 @@ async function handleCallEnded(event) {
 // must NEVER auto-write to a guessed chart on an ambiguous match, and must ack
 // Retell before the OD write so the 200 doesn't wait on OD latency.
 
-// Auto-write only on a confident, UNAMBIGUOUS match. Everything else -> needs_review.
-// The FIRM rule is "no alternatives" (a number/name on >1 record never auto-writes). The
-// threshold then excludes the weak fuzzy band: phone_exact single = 0.95, name+phone = 0.98/0.85,
-// a single strong name match (matchByNameFuzzy caps at 0.80) all write; phone-matched-but-name-
-// disagreed (0.70) and weaker fuzzy names fall to needs_review. 0.80 keeps the established
-// "Stedi Test" name-only confident-match protocol writing.
-const CONFIDENT_WRITE_MIN = 0.80;
+// The confident-match logic now lives in openDentalSync (matchAndSetStatus) so the Retell
+// and Mango paths stay byte-for-byte identical. Re-exposed here for the existing unit tests
+// + the router export surface. These are plain functions (no `this`), safe to destructure.
+const { isConfidentUnambiguousMatch, buildMatchCandidates, CONFIDENT_WRITE_MIN } = openDentalSyncService;
 
 // call_ids whose commlog write is currently in-flight. Fix 2 makes the write async,
 // so two near-simultaneous retries could both pass the persisted-status check before
 // either finishes; this guards that window. The persisted od_sync_status guards the
 // sequential-retry case after completion.
 const commlogInFlight = new Set();
-
-function isConfidentUnambiguousMatch(matchResult) {
-  if (!matchResult || !matchResult.patient) return false;
-  // A number on more than one record (matchByPhone returns `alternatives`) is ambiguous.
-  if (Array.isArray(matchResult.alternatives) && matchResult.alternatives.length > 0) return false;
-  return (matchResult.confidence || 0) >= CONFIDENT_WRITE_MIN;
-}
-
-function patientToCandidate(p) {
-  if (!p || p.id == null) return null;
-  const name = p.fullName
-    || [p.firstName, p.lastName].filter(Boolean).join(' ').trim()
-    || `Patient ${p.id}`;
-  return { id: p.id, name };
-}
-
-// The top guess + alternatives, as {id, name}, de-duped by id — for the Slice-B review UI.
-function buildMatchCandidates(matchResult) {
-  if (!matchResult) return [];
-  const seen = new Set();
-  return [matchResult.patient, ...(matchResult.alternatives || [])]
-    .map(patientToCandidate)
-    .filter(Boolean)
-    .filter(c => (seen.has(c.id) ? false : (seen.add(c.id), true)));
-}
 
 /**
  * Handle call_analyzed event (comes after the call ends, with full analysis).
@@ -344,46 +316,34 @@ async function writeCommlogForAnalyzedCall(callData) {
   commlogInFlight.add(callId);
 
   try {
-    const matchResult = await openDentalSyncService.matchCallToPatient({
+    // Shared match → status transition (identical for Retell + Mango). Persists
+    // od_sync_status = 'matched' | 'needs_review' + candidates/od_patient_*. No OD write.
+    const outcome = await openDentalSyncService.matchAndSetStatus(callId, {
       caller_number: callData.from_number,
-      caller_name: callData.call_analysis?.caller_name || 'Unknown'
+      caller_name: callData.call_analysis?.caller_name || 'Unknown',
     });
 
     // Fix 3: ambiguous / low-confidence / no match -> needs_review. NEVER auto-write to a
     // guessed chart (e.g. when the caller's number is on more than one patient record).
-    if (!isConfidentUnambiguousMatch(matchResult)) {
-      const candidates = buildMatchCandidates(matchResult);
-      unifiedCallStore.updateCall(callId, {
-        od_sync_status: 'needs_review',
-        od_match_candidates: candidates,
-        od_match_confidence: matchResult ? (matchResult.confidence || 0) : 0,
-        od_sync_attempted_at: new Date().toISOString(),
-      });
+    if (outcome.status === 'needs_review') {
+      const conf = outcome.matchResult ? (outcome.matchResult.confidence || 0) : 0;
       console.warn(
-        `🟡 [Webhook] ${callId} needs_review (confidence=${matchResult ? (matchResult.confidence || 0) : 0}, ` +
-        `candidates=${candidates.length}) — no commlog written`
+        `🟡 [Webhook] ${callId} needs_review (confidence=${conf}, ` +
+        `candidates=${outcome.candidates.length}) — no commlog written`
       );
-      return { needsReview: true, candidates };
+      return { needsReview: true, candidates: outcome.candidates };
     }
 
-    // Confident, unambiguous single match.
-    const patient = matchResult.patient;
+    // Confident, unambiguous single match (already persisted as 'matched').
+    const patient = outcome.patient;
+    const matchResult = outcome.matchResult;
 
     // Slice B.1 — review-then-send. Unless COMMLOG_AUTO_WRITE is explicitly enabled,
-    // CareIN NEVER auto-writes a chart note: we store the matched patient in a
+    // CareIN NEVER auto-writes a chart note: the matched patient is held in the
     // 'matched' (ready-to-send) state and a human sends it from the worklist / call
     // detail via the confirm-preview flow. COMMLOG_AUTO_WRITE=true restores the
     // legacy Slice-A auto-write (future per-tenant setting).
     if (process.env.COMMLOG_AUTO_WRITE !== 'true') {
-      const matchedName =
-        patient.fullName || [patient.firstName, patient.lastName].filter(Boolean).join(' ').trim() || null;
-      unifiedCallStore.updateCall(callId, {
-        od_sync_status: 'matched',
-        od_patient_id: patient.id,
-        od_patient_name: matchedName,
-        od_match_confidence: matchResult.confidence,
-        od_sync_attempted_at: new Date().toISOString(),
-      });
       console.log(
         `🔵 [Webhook] ${callId} matched (patient=${patient.id}, confidence=${matchResult.confidence}) — ` +
         `held for review-then-send (COMMLOG_AUTO_WRITE off)`
