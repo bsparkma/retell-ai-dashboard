@@ -11,6 +11,11 @@
  * deploy to repopulate the Mango side of the worklist. Run from the admin workstation
  * (staging ingress is IP-allowlisted):
  *
+ * The /api/mango/* surface is behind the dashboard auth middleware, so this presents the
+ * shared bearer token (DASHBOARD_API_TOKEN), injected from Key Vault and never printed:
+ *
+ *   DASHBOARD_API_TOKEN=$(az keyvault secret show --vault-name kv-carein-staging \
+ *     --name dashboard-api-token --query value -o tsv) \
  *   MANGO_SEED_CONFIRM_PHONE=<PatNum 11373 unique phone> \
  *     STAGING_URL=https://staging.carein.ai node backend/scripts/inject-staging-mango.cjs
  *
@@ -24,13 +29,17 @@
 'use strict';
 
 const BASE = process.env.STAGING_URL || 'https://staging.carein.ai';
+const TOKEN = process.env.DASHBOARD_API_TOKEN;
+if (!TOKEN) {
+  console.error('DASHBOARD_API_TOKEN not set (inject it from kv-carein-staging — see header).');
+  process.exit(1);
+}
 const nowIso = new Date().toISOString();
 const isoAgo = (mins) => new Date(Date.now() - mins * 60 * 1000).toISOString();
 
-// called_number is the office DID (office attribution key). MANGO_LINE_OFFICE is empty
-// until Beau supplies real DIDs, so these all fall back to Roland today — that's the
-// intended current behaviour and this exercises the fallback path.
-const ROLAND_DID = process.env.MANGO_SEED_ROLAND_DID || '+14795550000'; // placeholder DID
+// called_number is the office DID (office attribution key). Defaults to Roland's real
+// line so the synthetics attribute to Roland via MANGO_LINE_OFFICE (not the fallback).
+const ROLAND_DID = process.env.MANGO_SEED_ROLAND_DID || '+19185036262'; // Roland Family Dental
 
 // PatNum 11373 ("Test") UNIQUE phone — the only value that produces a confident single
 // phone match (→ 'matched'). Beau supplies it (never invented). If unset, a placeholder
@@ -105,7 +114,10 @@ const calls = [
   try {
     const res = await fetch(`${BASE}/api/mango/dev/seed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${TOKEN}`,
+      },
       body,
     });
     const text = await res.text();
