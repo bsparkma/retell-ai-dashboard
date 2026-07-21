@@ -95,6 +95,14 @@ module.exports = {
     recordingsPath: process.env.MANGO_RECORDINGS_PATH || './recordings/mango',
   },
 
+  // Worklist behaviour (PRD D1). 'all' (default): every Mango staff call enters the
+  // "Needs attention" view like a Retell call. 'flagged': only Mango calls that are an
+  // emergency / requested an appointment / need a callback demand attention; the rest
+  // stay visible in "All calls" and are sendable, but drop out of the attention count
+  // and default view. Flip = env change, not a rebuild.
+  worklistMode: process.env.MANGO_WORKLIST_MODE === 'flagged' ? 'flagged' : 'all',
+  summaryMinSeconds: parseInt(process.env.MANGO_SUMMARY_MIN_SECONDS || '20', 10),
+
   // CSS Selectors for the Mango portal (admin.mangovoice.com)
   // Update these if the portal UI changes
   selectors: {

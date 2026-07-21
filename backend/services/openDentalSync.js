@@ -9,6 +9,47 @@ const openDentalService = require('../config/openDental');
 const unifiedCallStore = require('./unifiedCallStore');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
 
+// ── Shared match → status logic (source-agnostic) ────────────────────────────
+// Extracted from the Retell webhook path so BOTH Retell (call_analyzed) and Mango
+// (post-analysis) drive the SAME review-then-send status transitions:
+//   confident + unambiguous  -> od_sync_status = 'matched'   (+ od_patient_*)
+//   everything else          -> od_sync_status = 'needs_review' (+ candidates)
+// No auto-write ever happens here — that stays in the Retell-legacy branch behind
+// COMMLOG_AUTO_WRITE. See docs/SLICE_WEBHOOK_COMMLOG_HARDENING_PRD.md and the Mango PRD.
+
+// Auto-/matched-write only on a confident, UNAMBIGUOUS match. Everything else -> needs_review.
+// The FIRM rule is "no alternatives" (a number/name on >1 record is never confident). The
+// threshold then excludes the weak fuzzy band: phone_exact single = 0.95, name+phone = 0.98/0.85,
+// a single strong name match (matchByNameFuzzy caps at 0.80) all pass; phone-matched-but-name-
+// disagreed (0.70) and weaker fuzzy names fall to needs_review. 0.80 keeps the established
+// "Stedi Test" name-only confident-match protocol matching.
+const CONFIDENT_WRITE_MIN = 0.80;
+
+function isConfidentUnambiguousMatch(matchResult) {
+  if (!matchResult || !matchResult.patient) return false;
+  // A number on more than one record (matchByPhone returns `alternatives`) is ambiguous.
+  if (Array.isArray(matchResult.alternatives) && matchResult.alternatives.length > 0) return false;
+  return (matchResult.confidence || 0) >= CONFIDENT_WRITE_MIN;
+}
+
+function patientToCandidate(p) {
+  if (!p || p.id == null) return null;
+  const name = p.fullName
+    || [p.firstName, p.lastName].filter(Boolean).join(' ').trim()
+    || `Patient ${p.id}`;
+  return { id: p.id, name };
+}
+
+// The top guess + alternatives, as {id, name}, de-duped by id — for the Slice-B review UI.
+function buildMatchCandidates(matchResult) {
+  if (!matchResult) return [];
+  const seen = new Set();
+  return [matchResult.patient, ...(matchResult.alternatives || [])]
+    .map(patientToCandidate)
+    .filter(Boolean)
+    .filter(c => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+}
+
 class OpenDentalSyncService {
   constructor() {
     this.syncQueue = [];
@@ -831,12 +872,69 @@ Callback Required: ${call.callback_required ? 'Yes' : 'No'}
    */
   getCallsNeedingManualLink() {
     const allCalls = unifiedCallStore.getAllCalls();
-    return allCalls.filter(call => 
-      call.od_sync_status === 'pending_match' || 
+    return allCalls.filter(call =>
+      call.od_sync_status === 'pending_match' ||
       (!call.od_patient_id && !call.od_sync_status)
     );
   }
+
+  // ==========================================================================
+  // SOURCE-AGNOSTIC MATCH → STATUS (review-then-send)
+  // ==========================================================================
+
+  /**
+   * Match a call to a patient and persist the resulting review-then-send status onto
+   * the unified call — WITHOUT writing to Open Dental. Used by BOTH the Retell
+   * (call_analyzed) and Mango (post-analysis) paths so a Mango call lands in the Slice B
+   * worklist with exactly the same shape Retell produces.
+   *
+   *   confident + unambiguous  -> od_sync_status = 'matched'   + od_patient_id/name/confidence
+   *   ambiguous / weak / none  -> od_sync_status = 'needs_review' + od_match_candidates
+   *
+   * Idempotent-safe callers should skip already-'synced' calls before invoking (a human
+   * Send-to-chart is terminal). Never throws for a missing patient; surfaces OD errors.
+   *
+   * @param {string} callId  unified-store id
+   * @param {{caller_number?: string, caller_name?: string}} matchInput
+   * @returns {Promise<{status:'matched'|'needs_review', patient?:object, matchResult:object, candidates?:Array}>}
+   */
+  async matchAndSetStatus(callId, matchInput = {}) {
+    const matchResult = await this.matchCallToPatient({
+      caller_number: matchInput.caller_number,
+      caller_name: matchInput.caller_name || 'Unknown',
+    });
+
+    if (!isConfidentUnambiguousMatch(matchResult)) {
+      const candidates = buildMatchCandidates(matchResult);
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'needs_review',
+        od_match_candidates: candidates,
+        od_match_confidence: matchResult ? (matchResult.confidence || 0) : 0,
+        od_sync_attempted_at: new Date().toISOString(),
+      });
+      return { status: 'needs_review', needsReview: true, candidates, matchResult };
+    }
+
+    const patient = matchResult.patient;
+    const matchedName =
+      patient.fullName || [patient.firstName, patient.lastName].filter(Boolean).join(' ').trim() || null;
+    unifiedCallStore.updateCall(callId, {
+      od_sync_status: 'matched',
+      od_patient_id: patient.id,
+      od_patient_name: matchedName,
+      od_match_confidence: matchResult.confidence,
+      od_sync_attempted_at: new Date().toISOString(),
+    });
+    return { status: 'matched', matched: true, patient, matchResult };
+  }
 }
 
-module.exports = new OpenDentalSyncService();
+const openDentalSyncService = new OpenDentalSyncService();
+
+// Expose the shared match helpers (used by the Retell webhook path + unit tests).
+openDentalSyncService.isConfidentUnambiguousMatch = isConfidentUnambiguousMatch;
+openDentalSyncService.buildMatchCandidates = buildMatchCandidates;
+openDentalSyncService.CONFIDENT_WRITE_MIN = CONFIDENT_WRITE_MIN;
+
+module.exports = openDentalSyncService;
 

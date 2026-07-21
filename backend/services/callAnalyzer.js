@@ -1,15 +1,29 @@
 /**
  * Call Analyzer Service
- * 
- * Uses AI (OpenAI GPT) to analyze call transcripts.
- * Extracts caller name, call reason, sentiment, and generates summaries.
+ *
+ * Summarizes call transcripts behind a thin provider seam.
+ *
+ * PROVIDER (PRD D2/D7 — HIPAA): summaries run on **Azure OpenAI**, covered by
+ * Microsoft's BAA in the Azure Product Terms. Managed-identity auth is preferred (the
+ * container apps already run with a user-assigned MI); an API key from Key Vault is the
+ * fallback. Config comes from AZURE_OPENAI_* env (endpoint/deployment/api-version),
+ * provisioned separately.
+ *
+ * The legacy OpenAI-direct (gpt-3.5) path is BAA-LESS and must NOT touch real patient
+ * audio — it's kept only behind an explicit ALLOW_OPENAI_DIRECT=true opt-in for local
+ * dev. When no LLM provider is configured, summaries degrade to the regex fallback.
  */
 
 const OpenAI = require('openai');
 
+// Cognitive Services token audience for Entra/MI auth against Azure OpenAI.
+const AZURE_OPENAI_SCOPE = 'https://cognitiveservices.azure.com/.default';
+
 class CallAnalyzer {
   constructor() {
     this.client = null;
+    this.provider = null; // 'azure' | 'openai-direct' | null
+    this.model = null;    // Azure deployment name, or the OpenAI model id
     this.isInitialized = false;
     this.stats = {
       totalAnalyses: 0,
@@ -19,25 +33,68 @@ class CallAnalyzer {
   }
 
   /**
-   * Initialize the OpenAI client
+   * Initialize the summarization client. Order:
+   *   1. Azure OpenAI (BAA-covered) via MI, else Azure OpenAI via KV api-key.
+   *   2. OpenAI-direct ONLY if ALLOW_OPENAI_DIRECT=true (BAA-less; local dev only).
+   *   3. Otherwise unconfigured → callers fall back to regex analysis.
    */
   initialize() {
-    const apiKey = process.env.OPENAI_API_KEY;
-    
-    if (!apiKey) {
-      console.warn('⚠️ OPENAI_API_KEY not set. Call analysis unavailable.');
-      return false;
+    const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT;
+    const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-10-21';
+
+    if (endpoint && deployment) {
+      try {
+        const { AzureOpenAI } = require('openai');
+        // Managed identity is the DEFAULT and preferred path (PRD D2). Key-auth engages
+        // ONLY when AZURE_OPENAI_AUTH_MODE is explicitly 'api_key' — it is never a silent
+        // fallback (loading the KV key never flips us off MI, and a failed MI token
+        // acquisition throws → regex fallback, it does NOT retry with the key).
+        const authMode = process.env.AZURE_OPENAI_AUTH_MODE || 'managed_identity';
+        const useKey = authMode === 'api_key' && !!process.env.AZURE_OPENAI_API_KEY;
+        if (useKey) {
+          // Key fallback (from Key Vault as azure-openai-key).
+          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, apiKey: process.env.AZURE_OPENAI_API_KEY });
+          console.log('✅ Call analyzer initialized (Azure OpenAI, api-key)');
+        } else {
+          // Preferred: managed identity — no secret. Reuses the container app's MI.
+          const { ManagedIdentityCredential, getBearerTokenProvider } = require('@azure/identity');
+          const clientId = process.env.AZURE_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID;
+          const credential = new ManagedIdentityCredential(clientId ? { clientId } : {});
+          const azureADTokenProvider = getBearerTokenProvider(credential, AZURE_OPENAI_SCOPE);
+          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, azureADTokenProvider });
+          console.log('✅ Call analyzer initialized (Azure OpenAI, managed identity)');
+        }
+        this.provider = 'azure';
+        this.model = deployment;
+        this.isInitialized = true;
+        return true;
+      } catch (error) {
+        console.error('❌ Failed to initialize Azure OpenAI:', error.message);
+        return false;
+      }
     }
 
-    try {
-      this.client = new OpenAI({ apiKey });
-      this.isInitialized = true;
-      console.log('✅ Call analyzer initialized (OpenAI)');
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to initialize OpenAI:', error.message);
-      return false;
+    // Legacy OpenAI-direct — BAA-less. Disabled unless explicitly opted in (local dev).
+    if (process.env.OPENAI_API_KEY && process.env.ALLOW_OPENAI_DIRECT === 'true') {
+      try {
+        this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        this.provider = 'openai-direct';
+        this.model = 'gpt-3.5-turbo';
+        this.isInitialized = true;
+        console.warn('⚠️ Call analyzer initialized (OpenAI-direct, BAA-LESS — dev only, ALLOW_OPENAI_DIRECT=true)');
+        return true;
+      } catch (error) {
+        console.error('❌ Failed to initialize OpenAI-direct:', error.message);
+        return false;
+      }
     }
+
+    console.warn(
+      '⚠️ No BAA-covered LLM configured (AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_DEPLOYMENT missing). ' +
+      'Call summaries will use the regex fallback.'
+    );
+    return false;
   }
 
   /**
@@ -59,39 +116,49 @@ class CallAnalyzer {
       return this.fallbackAnalysis(call);
     }
 
-    console.log(`🧠 Analyzing call ${call.external_id || 'unknown'}...`);
+    console.log(`🧠 Analyzing ${call.source === 'mango' ? 'staff' : 'AI'} call ${call.external_id || 'unknown'} (${this.provider})...`);
 
     try {
-      const prompt = this.buildAnalysisPrompt(transcript, call);
-      
-      const response = await this.client.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+      // Route by source: Mango = human staff↔patient call; Retell = AI-agent call.
+      const isHumanCall = call.source === 'mango';
+      const systemPrompt = isHumanCall
+        ? `You analyze recordings of phone calls that a dental office's front-desk STAFF answered while talking with a patient (or prospective patient). Extract structured information. Always respond with valid JSON only.`
+        : `You are a dental office call analyzer. Analyze call transcripts and extract structured information. Always respond with valid JSON.`;
+      const prompt = isHumanCall
+        ? this.buildHumanCallPrompt(transcript, call)
+        : this.buildAnalysisPrompt(transcript, call);
+
+      // Provider-specific params: GPT-5-class Azure minis require max_completion_tokens and
+      // only support the default temperature; OpenAI-direct (dev) uses the classic params.
+      const params = {
+        model: this.model,
         messages: [
-          {
-            role: 'system',
-            content: `You are a dental office call analyzer. Analyze call transcripts and extract structured information. Always respond with valid JSON.`
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt },
         ],
-        temperature: 0.3,
-        max_tokens: 500,
-      });
+      };
+      if (this.provider === 'azure') {
+        params.max_completion_tokens = 600;
+        params.response_format = { type: 'json_object' };
+      } else {
+        params.temperature = 0.3;
+        params.max_tokens = 500;
+      }
+
+      const response = await this.client.chat.completions.create(params);
 
       const content = response.choices[0]?.message?.content || '{}';
-      
-      // Track usage
+
+      // Track usage (cost is an estimate; Azure mini ≈ $0.003/call).
       const usage = response.usage;
       this.stats.totalAnalyses++;
       this.stats.totalTokens += usage?.total_tokens || 0;
-      // GPT-3.5-turbo costs ~$0.002/1K tokens
-      this.stats.estimatedCost += ((usage?.total_tokens || 0) / 1000) * 0.002;
+      const perThousand = this.provider === 'azure' ? 0.0006 : 0.002;
+      this.stats.estimatedCost += ((usage?.total_tokens || 0) / 1000) * perThousand;
 
       // Parse JSON response
       const analysis = this.parseAnalysisResponse(content);
-      
+
       console.log(`✅ Call analyzed: ${analysis.caller_name || 'Unknown'}, Sentiment: ${analysis.sentiment}`);
       return analysis;
 
@@ -99,6 +166,37 @@ class CallAnalyzer {
       console.error('❌ Call analysis failed:', error.message);
       return this.fallbackAnalysis(call);
     }
+  }
+
+  /**
+   * Prompt for a HUMAN staff↔patient call (Mango). Same output schema as the AI-agent
+   * prompt so downstream consumers (worklist chips, commlog) are untouched.
+   */
+  buildHumanCallPrompt(transcript, call) {
+    return `A front-desk STAFF member at a dental office answered this phone call. Read the transcript and summarize it from the office's point of view.
+
+TRANSCRIPT:
+"""
+${String(transcript).substring(0, 2000)}
+"""
+
+CALLER PHONE NUMBER: ${call.caller_number || 'Unknown'}
+
+Focus on: who called and for whom, why they called, what the staff member did or promised, whether any follow-up is needed and by whom, and any emergency indicators.
+
+Respond with ONLY valid JSON with these fields:
+{
+  "caller_name": "The caller's name if stated, else null",
+  "call_reason": "Brief reason (e.g., 'appointment scheduling', 'billing question', 'dental emergency', 'insurance question', 'general inquiry')",
+  "sentiment": "positive | neutral | negative (the caller's tone)",
+  "is_emergency": true or false (is this a dental emergency?),
+  "summary": "2-3 sentence summary of the call and what was done or promised",
+  "appointment_requested": true or false (did the caller want to book/change an appointment?),
+  "callback_needed": true or false (does the office need to call this person back?),
+  "key_details": ["short", "list", "of", "important", "details"]
+}
+
+Respond ONLY with valid JSON, no other text.`;
   }
 
   /**
