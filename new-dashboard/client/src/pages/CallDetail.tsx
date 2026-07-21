@@ -9,12 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
-  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock
+  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck
 } from "lucide-react";
-import { api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason } from "@/lib/api";
+import {
+  api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
+  type CallActor, type OdSyncStatus,
+} from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
+import { SendToChartDialog } from "./calls/SendToChartDialog";
 
 type PatientMatchSource = "id" | "phone" | "none";
 
@@ -102,9 +106,21 @@ interface CallPatientPanelProps {
   notAPatient: boolean;
   notAPatientReason: NotAPatientReason | null;
   onLinkPatient: () => void;
+  /** Slice B.1 chart-note state, driven by od_* (independent of the phone/id lookup). */
+  syncStatus: OdSyncStatus;
+  odPatientId: number | string | null;
+  odPatientName: string | null;
+  sentBy: CallActor | null;
+  onSend: () => void;
 }
 
-function CallPatientPanel({ patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient }: CallPatientPanelProps) {
+function CallPatientPanel({
+  patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
+  syncStatus, odPatientId, odPatientName, sentBy, onSend,
+}: CallPatientPanelProps) {
+  const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
+  const sent = syncStatus === "synced";
+  const matchedUnsent = !sent && odPatientId != null;
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -113,6 +129,27 @@ function CallPatientPanel({ patient, loading, source, callerName, callerPhone, n
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Chart-note status / send action (review-then-send) */}
+        {sent && (
+          <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700">
+            <div className="flex items-center gap-1.5 font-medium">
+              <CheckCircle2 size={13} /> Sent to chart · {matchedName}
+            </div>
+            {sentBy?.name && <div className="text-emerald-700/70 mt-0.5">by {sentBy.name}</div>}
+          </div>
+        )}
+        {matchedUnsent && (
+          <div className="rounded-lg bg-sky-500/10 px-3 py-2 space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-sky-700">
+              <UserCheck size={13} /> Matched: {matchedName}
+            </div>
+            <p className="text-[11px] text-sky-700/80">Auto-matched — review the note before it's written to the chart.</p>
+            <Button size="sm" className="w-full gap-1.5 text-xs" onClick={onSend}>
+              <Send size={12} /> Send to chart
+            </Button>
+          </div>
+        )}
+
         {loading ? (
           <div className="space-y-2" aria-label="Loading patient record">
             <div className="flex items-center gap-3">
@@ -127,7 +164,7 @@ function CallPatientPanel({ patient, loading, source, callerName, callerPhone, n
           </div>
         ) : patient ? (
           <PatientFoundView patient={patient} source={source} />
-        ) : (
+        ) : odPatientId == null ? (
           <PatientNoMatchView
             callerName={callerName}
             callerPhone={callerPhone}
@@ -135,7 +172,7 @@ function CallPatientPanel({ patient, loading, source, callerName, callerPhone, n
             notAPatientReason={notAPatientReason}
             onLinkPatient={onLinkPatient}
           />
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -285,6 +322,12 @@ export default function CallDetail() {
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientSource, setPatientSource] = useState<PatientMatchSource>("none");
   const [pickOpen, setPickOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
+
+  // After a matched call is sent to chart, reflect the synced state in the panel.
+  const handleSent = useCallback(() => {
+    setCall((prev) => (prev && prev !== "loading" ? { ...prev, odSyncStatus: "synced", sentAt: new Date().toISOString() } : prev));
+  }, []);
 
   // After the shared Pick Patient modal resolves, reflect it in the panel.
   const handleResolved = useCallback(
@@ -414,6 +457,14 @@ export default function CallDetail() {
         onOpenChange={setPickOpen}
         call={displayCall}
         onResolved={handleResolved}
+      />
+
+      {/* Review-then-send confirm dialog for auto-matched calls. */}
+      <SendToChartDialog
+        open={sendOpen}
+        onOpenChange={setSendOpen}
+        call={displayCall}
+        onSent={handleSent}
       />
 
       {/* Back + header */}
@@ -634,6 +685,11 @@ export default function CallDetail() {
             notAPatient={displayCall.notAPatient}
             notAPatientReason={displayCall.notAPatientReason}
             onLinkPatient={() => setPickOpen(true)}
+            syncStatus={displayCall.odSyncStatus}
+            odPatientId={displayCall.odPatientId}
+            odPatientName={displayCall.odPatientName}
+            sentBy={displayCall.sentBy}
+            onSend={() => setSendOpen(true)}
           />
 
           {/* Call metadata */}

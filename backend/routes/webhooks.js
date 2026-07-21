@@ -366,9 +366,33 @@ async function writeCommlogForAnalyzedCall(callData) {
       return { needsReview: true, candidates };
     }
 
-    // Confident, unambiguous single match -> write the commlog (preserving the
-    // [CareIN AI — Inbound Call] note format). createCommLog branches DB vs API mode.
+    // Confident, unambiguous single match.
     const patient = matchResult.patient;
+
+    // Slice B.1 — review-then-send. Unless COMMLOG_AUTO_WRITE is explicitly enabled,
+    // CareIN NEVER auto-writes a chart note: we store the matched patient in a
+    // 'matched' (ready-to-send) state and a human sends it from the worklist / call
+    // detail via the confirm-preview flow. COMMLOG_AUTO_WRITE=true restores the
+    // legacy Slice-A auto-write (future per-tenant setting).
+    if (process.env.COMMLOG_AUTO_WRITE !== 'true') {
+      const matchedName =
+        patient.fullName || [patient.firstName, patient.lastName].filter(Boolean).join(' ').trim() || null;
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'matched',
+        od_patient_id: patient.id,
+        od_patient_name: matchedName,
+        od_match_confidence: matchResult.confidence,
+        od_sync_attempted_at: new Date().toISOString(),
+      });
+      console.log(
+        `🔵 [Webhook] ${callId} matched (patient=${patient.id}, confidence=${matchResult.confidence}) — ` +
+        `held for review-then-send (COMMLOG_AUTO_WRITE off)`
+      );
+      return { matched: true, autoWrite: false, patientId: patient.id };
+    }
+
+    // COMMLOG_AUTO_WRITE=true → legacy auto-write (preserving the
+    // [CareIN AI — Inbound Call] note format). createCommLog branches DB vs API mode.
     const startTime = callData.start_timestamp ? new Date(callData.start_timestamp).getTime() : 0;
     const endTime = callData.end_timestamp ? new Date(callData.end_timestamp).getTime() : 0;
     const durationSeconds = startTime && endTime ? Math.round((endTime - startTime) / 1000) : 0;

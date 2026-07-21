@@ -33,6 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unifiedCallStore.requestPersist = originalRequestPersist;
+  delete process.env.COMMLOG_AUTO_WRITE; // back to the review-then-send default (off)
 });
 
 // Swap the OD singleton's match + write for stubs; returns a record of createCommLog calls.
@@ -65,7 +66,38 @@ const confidentMatch = {
   method: 'phone_exact',
 };
 
-test('confident single match writes the commlog and marks the call synced', async () => {
+test('flag OFF (default): confident match holds as "matched" — NO auto-write', async () => {
+  const id = 'wh-matched-1';
+  unifiedCallStore.addRetellCall(baseCall(id));
+  const od = stubOD({ match: confidentMatch });
+  try {
+    const r = await webhooks.writeCommlogForAnalyzedCall(baseCall(id));
+    assert.equal(r.matched, true);
+    assert.equal(r.autoWrite, false);
+    assert.equal(od.createCalls.length, 0, 'review-then-send must NOT write a commlog');
+    const stored = unifiedCallStore.getCall(id);
+    assert.equal(stored.od_sync_status, 'matched');
+    assert.equal(stored.od_patient_id, 555);
+    assert.equal(stored.od_patient_name, 'Stedi Test');
+    assert.equal(stored.od_commlog_num ?? null, null);
+  } finally { od.restore(); }
+});
+
+test('matched state survives a Retell re-add (regression)', () => {
+  const id = 'wh-matched-preserve';
+  unifiedCallStore.addRetellCall(baseCall(id));
+  unifiedCallStore.updateCall(id, {
+    od_sync_status: 'matched', od_patient_id: 555, od_patient_name: 'Stedi Test', od_match_confidence: 0.95,
+  });
+  unifiedCallStore.addRetellCall(baseCall(id)); // bare re-add, no od_* fields
+  const stored = unifiedCallStore.getCall(id);
+  assert.equal(stored.od_sync_status, 'matched');
+  assert.equal(stored.od_patient_id, 555);
+  assert.equal(stored.od_patient_name, 'Stedi Test');
+});
+
+test('flag ON: confident match auto-writes the commlog and marks synced (legacy)', async () => {
+  process.env.COMMLOG_AUTO_WRITE = 'true';
   const id = 'wh-confident-1';
   unifiedCallStore.addRetellCall(baseCall(id));
   const od = stubOD({ match: confidentMatch });
@@ -82,7 +114,8 @@ test('confident single match writes the commlog and marks the call synced', asyn
   } finally { od.restore(); }
 });
 
-test('dedup: a re-sent identical call_analyzed writes only ONE commlog', async () => {
+test('flag ON dedup: a re-sent identical call_analyzed writes only ONE commlog', async () => {
+  process.env.COMMLOG_AUTO_WRITE = 'true';
   const id = 'wh-dedup-1';
   unifiedCallStore.addRetellCall(baseCall(id));
   const od = stubOD({ match: confidentMatch });

@@ -335,6 +335,35 @@ router.get('/offices', (req, res) => {
 });
 
 /**
+ * GET /api/unified-calls/:id/commlog-preview
+ *
+ * Returns the EXACT chart note that "Send to chart" will write, so the confirm
+ * dialog shows a faithful preview. Built with the same formatter + options the
+ * send path uses (openDentalSync.syncCallToCommLog → formatCommLogEntry, no
+ * transcript). The note is call-derived PHI → audited READ. Registered before
+ * /:id so "commlog-preview" isn't captured as an id (distinct path depth anyway).
+ */
+router.get('/:id/commlog-preview', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+    const entry = openDentalSync.formatCommLogEntry(call, {});
+    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+    res.json({
+      note: entry.Note,
+      patientId: call.od_patient_id ?? null,
+      patientName: call.od_patient_name ?? null,
+    });
+  } catch (error) {
+    console.error('Error building commlog preview:', error);
+    res.status(500).json({ error: 'Failed to build commlog preview' });
+  }
+});
+
+/**
  * GET /api/unified-calls/:id
  * Get a specific call by ID
  */
@@ -628,9 +657,14 @@ router.post('/:id/resolve-patient', async (req, res) => {
       });
     }
 
+    // Writing the commlog IS "send to chart" — stamp sent_by/sent_at (Slice B.1).
+    // resolved_by/resolved_at stay for continuity (who resolved the match); for a
+    // pre-matched call they're the same actor as the sender.
     const updatedCall = unifiedCallStore.updateCall(id, {
       resolved_by: actor,
       resolved_at: nowIso,
+      sent_by: actor,
+      sent_at: nowIso,
     });
 
     // User-initiated PHI write (a commlog was created against a patient) → audit CREATE.
