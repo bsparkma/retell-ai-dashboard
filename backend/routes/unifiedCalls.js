@@ -10,6 +10,7 @@ const router = express.Router();
 const unifiedCallStore = require('../services/unifiedCallStore');
 const retellService = require('../config/retell');
 const openDentalSync = require('../services/openDentalSync');
+const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const audit = require('../platform/audit');
 const { filterCallsForOffice, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 
@@ -647,8 +648,16 @@ router.post('/:id/resolve-patient', async (req, res) => {
       return res.status(status).json({ success: false, error: linkResult.error });
     }
 
+    // Determine the note to send. The generated note is the baseline; a human-edited
+    // note (from the review/edit dialog) wins. Both are OD-sanitized so what we persist,
+    // preview, and write all match. note_edited records whether the human changed it.
+    const generatedNote = sanitizeForOd(openDentalSync.formatCommLogEntry(call, {}).Note);
+    const hasEdit = typeof body.note === 'string' && body.note.trim().length > 0;
+    const sentNote = hasEdit ? sanitizeForOd(body.note) : generatedNote;
+    const noteEdited = sentNote.trim() !== generatedNote.trim();
+
     // Write the commlog via the hardened, non-forced path (skips if already synced).
-    const syncResult = await openDentalSync.syncCallToCommLog(id, {});
+    const syncResult = await openDentalSync.syncCallToCommLog(id, { noteOverride: sentNote });
     if (!syncResult.success) {
       return res.status(422).json({
         success: false,
@@ -657,14 +666,16 @@ router.post('/:id/resolve-patient', async (req, res) => {
       });
     }
 
-    // Writing the commlog IS "send to chart" — stamp sent_by/sent_at (Slice B.1).
-    // resolved_by/resolved_at stay for continuity (who resolved the match); for a
-    // pre-matched call they're the same actor as the sender.
+    // Writing the commlog IS "send to chart" — stamp sent_by/sent_at (Slice B.1) and
+    // persist the what-was-sent record (sent_note + note_edited). resolved_by/at stay
+    // for continuity (who resolved the match); for a pre-matched call they equal the sender.
     const updatedCall = unifiedCallStore.updateCall(id, {
       resolved_by: actor,
       resolved_at: nowIso,
       sent_by: actor,
       sent_at: nowIso,
+      sent_note: sentNote,
+      note_edited: noteEdited,
     });
 
     // User-initiated PHI write (a commlog was created against a patient) → audit CREATE.

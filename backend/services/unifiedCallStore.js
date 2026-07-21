@@ -307,9 +307,11 @@ class UnifiedCallStore {
       od_match_candidates: call.od_match_candidates ?? null,
       od_sync_attempted_at: call.od_sync_attempted_at ?? null,
       od_sync_error: call.od_sync_error ?? null,
-      // Who sent the chart note + when (Slice B.1 review-then-send attribution).
+      // Who sent the chart note + when + the what-was-sent record (Slice B.1).
       sent_by: call.sent_by ?? null,
       sent_at: call.sent_at ?? null,
+      sent_note: call.sent_note ?? null,
+      note_edited: call.note_edited ?? null,
 
       // CareIN triage / review-queue state (Slice B) — MUST survive re-normalization
       // for the same reason as od_* above: addRetellCall rebuilds the record on every
@@ -369,6 +371,8 @@ class UnifiedCallStore {
       od_sync_error: call.od_sync_error ?? existing?.od_sync_error ?? null,
       sent_by: call.sent_by ?? existing?.sent_by ?? null,
       sent_at: call.sent_at ?? existing?.sent_at ?? null,
+      sent_note: call.sent_note ?? existing?.sent_note ?? null,
+      note_edited: call.note_edited ?? existing?.note_edited ?? null,
       // Preserve Slice-B triage/review state across re-adds too (same rationale as od_*
       // above): the poller/webhook payload never carries these, so a re-add must inherit
       // them from the existing record or a worked call silently reverts to untriaged.
