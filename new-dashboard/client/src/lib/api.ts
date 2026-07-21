@@ -50,6 +50,36 @@ async function request<T>(
 // Backend response types (minimal)
 // ---------------------------------------------------------------------------
 
+// --- Slice B: triage worklist + patient review queue ------------------------
+
+/** Who performed a triage/resolve action (from the SSO session). */
+export interface CallActor {
+  name: string | null;
+  email: string | null;
+}
+
+export type TriageStatus = "new" | "needs_action" | "done";
+export type TriageOutcome =
+  | "called_back" | "scheduled" | "left_voicemail" | "no_answer" | "no_action_needed";
+export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong_number" | "other";
+
+/** Open Dental commlog sync state written by Slice A. */
+export type OdSyncStatus =
+  | "synced" | "needs_review" | "pending_match" | "pending" | "error" | "unlinked" | null;
+
+/** A stored patient match candidate for the Pick Patient modal ({ id, name }). */
+export interface OdMatchCandidate {
+  id: number;
+  name: string;
+}
+
+/** One office in the worklist selector (from the real agent→office config). */
+export interface OfficeConfig {
+  officeId: string;
+  officeName: string;
+  odConnected: boolean;
+}
+
 export interface BackendUnifiedCall {
   id: string;
   source?: "retell" | "mango";
@@ -67,6 +97,27 @@ export interface BackendUnifiedCall {
   sentiment?: string;
   metadata?: Record<string, unknown>;
   handler_type?: string;
+  is_emergency?: boolean;
+  is_new_patient?: boolean | null;
+  appointment_booked?: boolean | null;
+  dental_insurance?: boolean | null;
+  // Slice A — Open Dental sync state
+  od_sync_status?: OdSyncStatus;
+  od_patient_id?: number | string | null;
+  od_patient_name?: string | null;
+  od_commlog_num?: number | null;
+  od_match_confidence?: number | null;
+  od_match_candidates?: OdMatchCandidate[] | null;
+  // Slice B — triage / review-queue state
+  triage_status?: TriageStatus | null;
+  triage_outcome?: TriageOutcome | null;
+  triage_by?: CallActor | null;
+  triage_at?: string | null;
+  triage_note?: string | null;
+  not_a_patient?: boolean | null;
+  not_a_patient_reason?: NotAPatientReason | null;
+  resolved_by?: CallActor | null;
+  resolved_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -317,10 +368,34 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     hasRecording: Boolean(c.recording_url),
     hasTranscript: Boolean(c.transcript || (c.transcript_object && c.transcript_object.length > 0)),
     summary,
-    isEmergency: (c.metadata as Record<string, boolean> | undefined)?.is_emergency ?? false,
+    isEmergency: c.is_emergency ?? (c.metadata as Record<string, boolean> | undefined)?.is_emergency ?? false,
     transcript: c.transcript,
     transcript_object: c.transcript_object,
     recording_url: c.recording_url,
+
+    // Disposition signals for the worklist chips (from call analysis; absent → false).
+    isNewPatient: c.is_new_patient ?? false,
+    appointmentBooked: c.appointment_booked ?? false,
+    insuranceMentioned: c.dental_insurance ?? false,
+
+    // Slice A — Open Dental patient linkage / review state
+    odSyncStatus: (c.od_sync_status ?? null) as OdSyncStatus,
+    odPatientId: c.od_patient_id ?? null,
+    odPatientName: c.od_patient_name ?? null,
+    odCommlogNum: c.od_commlog_num ?? null,
+    odMatchConfidence: c.od_match_confidence ?? null,
+    odMatchCandidates: (c.od_match_candidates ?? []) as OdMatchCandidate[],
+
+    // Slice B — triage / review-queue state (triage_status defaults to "new")
+    triageStatus: (c.triage_status ?? "new") as TriageStatus,
+    triageOutcome: (c.triage_outcome ?? null) as TriageOutcome | null,
+    triageBy: (c.triage_by ?? null) as CallActor | null,
+    triageAt: c.triage_at ?? null,
+    triageNote: c.triage_note ?? null,
+    notAPatient: Boolean(c.not_a_patient),
+    notAPatientReason: (c.not_a_patient_reason ?? null) as NotAPatientReason | null,
+    resolvedBy: (c.resolved_by ?? null) as CallActor | null,
+    resolvedAt: c.resolved_at ?? null,
   };
 }
 
@@ -384,16 +459,67 @@ export const api = {
     start_date?: string;
     end_date?: string;
     search?: string;
+    office_id?: string;
   }) {
-    const data = await request<{ calls: BackendUnifiedCall[]; total?: number; stats?: unknown }>(
-      "/unified-calls",
-      { params: params as Record<string, string | number | boolean | undefined> }
-    );
+    const data = await request<{
+      calls: BackendUnifiedCall[];
+      total?: number;
+      stats?: unknown;
+      offices?: OfficeConfig[];
+    }>("/unified-calls", { params: params as Record<string, string | number | boolean | undefined> });
     return {
       calls: (data.calls ?? []).map(normalizeUnifiedCall),
       total: data.total ?? data.calls?.length ?? 0,
       stats: data.stats,
+      offices: data.offices ?? [],
     };
+  },
+
+  /**
+   * Set a call's triage state (worklist). `triage_outcome` is required when
+   * `triage_status === 'done'`. Returns the updated raw call record.
+   */
+  async triageCall(
+    id: string,
+    body: { triage_status: TriageStatus; triage_outcome?: TriageOutcome; triage_note?: string }
+  ): Promise<BackendUnifiedCall> {
+    return request<BackendUnifiedCall>(`/unified-calls/${encodeURIComponent(id)}/triage`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Resolve a needs-review call to a patient (writes the CareIN commlog via the
+   * idempotent Slice-A path) OR close it out as "not a patient" (no OD write).
+   */
+  async resolvePatient(
+    id: string,
+    body: { patientId: number } | { notAPatient: true; reason: NotAPatientReason }
+  ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
+    return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Office roster for the global office selector (agent→office config + odConnected). */
+  async getOffices(): Promise<OfficeConfig[]> {
+    const data = await request<{ offices?: OfficeConfig[] }>("/unified-calls/offices");
+    return data.offices ?? [];
+  },
+
+  /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */
+  async searchPatients(q: string): Promise<OdPatient[]> {
+    if (!q || q.trim().length < 2) return [];
+    try {
+      const res = await request<{ success: boolean; patients: OdPatient[]; count: number }>(
+        `/opendental/patients/search?q=${encodeURIComponent(q.trim())}`
+      );
+      return res.patients ?? [];
+    } catch {
+      return [];
+    }
   },
 
   async getUnifiedCall(id: string) {

@@ -48,3 +48,59 @@ test('addRetellCall extracts caller name from Retell summary', () => {
 
   assert.equal(stored.caller_name, 'Sarah Cuedo');
 });
+
+test('new Retell call defaults to triage_status "new" with clean triage state', () => {
+  const stored = unifiedCallStore.addRetellCall({
+    call_id: 'call_triage_defaults',
+    from_number: '+14795550000',
+    start_timestamp: 1777908187899,
+  });
+
+  assert.equal(stored.triage_status, 'new');
+  assert.equal(stored.not_a_patient, false);
+  assert.equal(stored.triage_outcome, null);
+  assert.equal(stored.triage_by, null);
+  assert.equal(stored.resolved_by, null);
+});
+
+test('Slice-B triage/resolve state survives a Retell re-add (regression)', () => {
+  // 1. Call arrives.
+  unifiedCallStore.addRetellCall({
+    call_id: 'call_triage_preserve',
+    from_number: '+14795551313',
+    start_timestamp: 1777908187899,
+  });
+
+  // 2. Front desk triages it + it gets resolved to a patient (what the new
+  //    /triage and /resolve-patient endpoints persist via updateCall).
+  unifiedCallStore.updateCall('call_triage_preserve', {
+    triage_status: 'done',
+    triage_outcome: 'scheduled',
+    triage_by: { name: 'Sarah Front', email: 'sarah@carein.ai' },
+    triage_at: '2026-07-20T15:14:00.000Z',
+    triage_note: 'Booked hygiene',
+    od_sync_status: 'synced',
+    od_patient_id: 12827,
+    resolved_by: { name: 'Sarah Front', email: 'sarah@carein.ai' },
+    resolved_at: '2026-07-20T15:14:05.000Z',
+  });
+
+  // 3. The 15-min poller re-adds the same call with a bare Retell payload
+  //    (no triage_* / od_* fields).
+  const readded = unifiedCallStore.addRetellCall({
+    call_id: 'call_triage_preserve',
+    from_number: '+14795551313',
+    start_timestamp: 1777908187899,
+  });
+
+  // Triage + resolve state must be intact, not reset to "new".
+  assert.equal(readded.triage_status, 'done');
+  assert.equal(readded.triage_outcome, 'scheduled');
+  assert.deepEqual(readded.triage_by, { name: 'Sarah Front', email: 'sarah@carein.ai' });
+  assert.equal(readded.triage_at, '2026-07-20T15:14:00.000Z');
+  assert.equal(readded.triage_note, 'Booked hygiene');
+  assert.equal(readded.od_sync_status, 'synced');
+  assert.equal(readded.od_patient_id, 12827);
+  assert.deepEqual(readded.resolved_by, { name: 'Sarah Front', email: 'sarah@carein.ai' });
+  assert.equal(readded.resolved_at, '2026-07-20T15:14:05.000Z');
+});

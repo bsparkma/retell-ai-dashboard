@@ -23,9 +23,11 @@ import {
   X,
   Wifi,
   WifiOff,
+  PlugZap,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
@@ -39,11 +41,6 @@ const navItems = [
   { path: "/admin", label: "Admin", icon: Settings },
 ];
 
-const offices = [
-  "Valley Family Dental",
-  "Roland Family Dental",
-];
-
 interface DashboardLayoutProps {
   children: React.ReactNode;
 }
@@ -54,7 +51,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const auth = useAuth();
   // Practice (tenant) name from /auth/me — single tenant today, so no selector.
   const practiceName = auth.status === "authenticated" ? auth.user.tenant?.displayName : undefined;
-  const [selectedOffice, setSelectedOffice] = useState(offices[0]);
+  // Global office selection (shared across pages) — the real agent→office roster.
+  const { offices, office, setOffice, selected } = useOffice();
+  const selectedOfficeName = office === ALL_OFFICES ? "All Offices" : (selected?.officeName ?? "All Offices");
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -123,19 +122,21 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             style={{ color: "oklch(0.80 0.01 240)" }}
           >
             <Building2 size={14} className="flex-shrink-0" style={{ color: "oklch(0.60 0.08 210)" }} />
-            <span className="truncate flex-1 text-left text-xs font-medium">{selectedOffice}</span>
+            <span className="truncate flex-1 text-left text-xs font-medium">{selectedOfficeName}</span>
             <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${officeDropOpen ? "rotate-180" : ""}`} />
           </button>
           {officeDropOpen && (
             <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.12 0.04 245)" }}>
-              {offices.map((office) => (
+              {[{ officeId: ALL_OFFICES, officeName: "All Offices", odConnected: true }, ...offices].map((o) => (
                 <button
-                  key={office}
-                  onClick={() => { setSelectedOffice(office); setOfficeDropOpen(false); }}
-                  className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
-                  style={{ color: office === selectedOffice ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
+                  key={o.officeId}
+                  onClick={() => { setOffice(o.officeId); setOfficeDropOpen(false); }}
+                  title={o.odConnected ? undefined : "OD not connected for this office yet"}
+                  className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
+                  style={{ color: o.officeId === office ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
                 >
-                  {office}
+                  <span className="flex-1 truncate">{o.officeName}</span>
+                  {!o.odConnected && <PlugZap size={11} className="opacity-60 flex-shrink-0" />}
                 </button>
               ))}
             </div>
@@ -213,7 +214,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium truncate" style={{ color: "oklch(0.80 0.01 240)" }}>Front Desk</div>
-              <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>{selectedOffice}</div>
+              <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>{selectedOfficeName}</div>
             </div>
           </div>
         </div>

@@ -305,6 +305,21 @@ class UnifiedCallStore {
       od_sync_attempted_at: call.od_sync_attempted_at ?? null,
       od_sync_error: call.od_sync_error ?? null,
 
+      // CareIN triage / review-queue state (Slice B) — MUST survive re-normalization
+      // for the same reason as od_* above: addRetellCall rebuilds the record on every
+      // Retell webhook re-delivery / 15-min poll, and the triage + resolve endpoints
+      // write these via updateCall. Without carrying them through, a re-add would reset
+      // a triaged/resolved call back to "new" and lose its attribution. See Slice B PRD.
+      triage_status: call.triage_status ?? 'new',
+      triage_outcome: call.triage_outcome ?? null,
+      triage_by: call.triage_by ?? null,
+      triage_at: call.triage_at ?? null,
+      triage_note: call.triage_note ?? null,
+      not_a_patient: call.not_a_patient ?? false,
+      not_a_patient_reason: call.not_a_patient_reason ?? null,
+      resolved_by: call.resolved_by ?? null,
+      resolved_at: call.resolved_at ?? null,
+
       // Timestamps
       created_at: call.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -345,6 +360,18 @@ class UnifiedCallStore {
       od_match_candidates: call.od_match_candidates ?? existing?.od_match_candidates ?? null,
       od_sync_attempted_at: call.od_sync_attempted_at ?? existing?.od_sync_attempted_at ?? null,
       od_sync_error: call.od_sync_error ?? existing?.od_sync_error ?? null,
+      // Preserve Slice-B triage/review state across re-adds too (same rationale as od_*
+      // above): the poller/webhook payload never carries these, so a re-add must inherit
+      // them from the existing record or a worked call silently reverts to untriaged.
+      triage_status: call.triage_status ?? existing?.triage_status ?? null,
+      triage_outcome: call.triage_outcome ?? existing?.triage_outcome ?? null,
+      triage_by: call.triage_by ?? existing?.triage_by ?? null,
+      triage_at: call.triage_at ?? existing?.triage_at ?? null,
+      triage_note: call.triage_note ?? existing?.triage_note ?? null,
+      not_a_patient: call.not_a_patient ?? existing?.not_a_patient ?? null,
+      not_a_patient_reason: call.not_a_patient_reason ?? existing?.not_a_patient_reason ?? null,
+      resolved_by: call.resolved_by ?? existing?.resolved_by ?? null,
+      resolved_at: call.resolved_at ?? existing?.resolved_at ?? null,
     };
 
     const stored = this.addCallInternal(normalizedCall);

@@ -11,9 +11,10 @@ import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
   User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock
 } from "lucide-react";
-import { api, type UnifiedCall, type OdPatient, type OdPatientAddress } from "@/lib/api";
+import { api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason } from "@/lib/api";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
+import { PickPatientModal } from "./calls/PickPatientModal";
 
 type PatientMatchSource = "id" | "phone" | "none";
 
@@ -98,9 +99,12 @@ interface CallPatientPanelProps {
   source: PatientMatchSource;
   callerName: string;
   callerPhone: string;
+  notAPatient: boolean;
+  notAPatientReason: NotAPatientReason | null;
+  onLinkPatient: () => void;
 }
 
-function CallPatientPanel({ patient, loading, source, callerName, callerPhone }: CallPatientPanelProps) {
+function CallPatientPanel({ patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient }: CallPatientPanelProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -124,14 +128,28 @@ function CallPatientPanel({ patient, loading, source, callerName, callerPhone }:
         ) : patient ? (
           <PatientFoundView patient={patient} source={source} />
         ) : (
-          <PatientNoMatchView callerName={callerName} callerPhone={callerPhone} />
+          <PatientNoMatchView
+            callerName={callerName}
+            callerPhone={callerPhone}
+            notAPatient={notAPatient}
+            notAPatientReason={notAPatientReason}
+            onLinkPatient={onLinkPatient}
+          />
         )}
       </CardContent>
     </Card>
   );
 }
 
-function PatientNoMatchView({ callerName, callerPhone }: { callerName: string; callerPhone: string }) {
+function PatientNoMatchView({
+  callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
+}: {
+  callerName: string;
+  callerPhone: string;
+  notAPatient: boolean;
+  notAPatientReason: NotAPatientReason | null;
+  onLinkPatient: () => void;
+}) {
   const initials = initialsOf(callerName) || "?";
   return (
     <div className="space-y-3">
@@ -144,14 +162,18 @@ function PatientNoMatchView({ callerName, callerPhone }: { callerName: string; c
           <div className="text-xs text-muted-foreground font-mono">{callerPhone || "—"}</div>
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">No matching Open Dental patient found</p>
-      <Button
-        size="sm"
-        className="w-full text-xs"
-        onClick={() => toast.info("Patient search opening...")}
-      >
-        Link to Patient
-      </Button>
+      {notAPatient ? (
+        <p className="text-xs text-muted-foreground">
+          Marked not a patient{notAPatientReason ? ` · ${notAPatientReason.replace("_", " ")}` : ""}
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">No matching Open Dental patient found</p>
+          <Button size="sm" className="w-full text-xs" onClick={onLinkPatient}>
+            Link to Patient
+          </Button>
+        </>
+      )}
     </div>
   );
 }
@@ -262,6 +284,26 @@ export default function CallDetail() {
   const [patient, setPatient] = useState<OdPatient | null>(null);
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientSource, setPatientSource] = useState<PatientMatchSource>("none");
+  const [pickOpen, setPickOpen] = useState(false);
+
+  // After the shared Pick Patient modal resolves, reflect it in the panel.
+  const handleResolved = useCallback(
+    (result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason }) => {
+      if (result.kind === "patient") {
+        setCall((prev) => (prev && prev !== "loading" ? { ...prev, odPatientId: result.patientId, odSyncStatus: "synced" } : prev));
+        setPatientLoading(true);
+        api.getOpenDentalPatient(result.patientId)
+          .then((p) => { setPatient(p); setPatientSource("id"); })
+          .catch(() => { /* keep prior view; toast already fired in the modal */ })
+          .finally(() => setPatientLoading(false));
+      } else {
+        setCall((prev) => (prev && prev !== "loading"
+          ? { ...prev, notAPatient: true, notAPatientReason: result.reason }
+          : prev));
+      }
+    },
+    [],
+  );
 
   // Audio player state
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -365,6 +407,15 @@ export default function CallDetail() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Shared Pick Patient modal — same candidates-first / OD-search / idempotent
+          resolve flow as the worklist. */}
+      <PickPatientModal
+        open={pickOpen}
+        onOpenChange={setPickOpen}
+        call={displayCall}
+        onResolved={handleResolved}
+      />
+
       {/* Back + header */}
       <div className="flex items-start gap-4">
         <Link href="/calls">
@@ -580,6 +631,9 @@ export default function CallDetail() {
             source={patientSource}
             callerName={displayCall.patientName ?? "Unknown"}
             callerPhone={displayCall.fromNumber ?? ""}
+            notAPatient={displayCall.notAPatient}
+            notAPatientReason={displayCall.notAPatientReason}
+            onLinkPatient={() => setPickOpen(true)}
           />
 
           {/* Call metadata */}
