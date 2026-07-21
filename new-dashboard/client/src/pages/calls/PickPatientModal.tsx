@@ -19,6 +19,8 @@ import { toast } from "sonner";
 const NOT_A_PATIENT_REASONS: { value: NotAPatientReason; label: string }[] = [
   { value: "spam", label: "Spam" },
   { value: "solicitor", label: "Solicitor" },
+  { value: "vendor", label: "Vendor" },
+  { value: "lab", label: "Lab" },
   { value: "wrong_number", label: "Wrong number" },
   { value: "other", label: "Other" },
 ];

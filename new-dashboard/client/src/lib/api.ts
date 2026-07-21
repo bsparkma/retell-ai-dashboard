@@ -61,7 +61,7 @@ export interface CallActor {
 export type TriageStatus = "new" | "needs_action" | "done";
 export type TriageOutcome =
   | "called_back" | "scheduled" | "left_voicemail" | "no_answer" | "no_action_needed";
-export type NotAPatientReason = "spam" | "solicitor" | "wrong_number" | "other";
+export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong_number" | "other";
 
 /** Open Dental commlog sync state written by Slice A. */
 export type OdSyncStatus =

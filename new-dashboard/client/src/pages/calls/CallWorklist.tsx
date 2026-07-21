@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/popover";
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
-  CheckCircle2, PhoneForwarded, UserSearch, CircleSlash, ChevronDown, Loader2, PlugZap,
+  CheckCircle2, PhoneForwarded, UserSearch, CircleSlash, ChevronDown, Loader2, PlugZap, Clock,
 } from "lucide-react";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason,
@@ -39,6 +39,10 @@ const OUTCOMES: { value: TriageOutcome; label: string }[] = [
 const OUTCOME_LABEL: Record<TriageOutcome, string> = Object.fromEntries(
   OUTCOMES.map((o) => [o.value, o.label])
 ) as Record<TriageOutcome, string>;
+
+const SORT_STORAGE_KEY = "carein.worklist.sort";
+/** Surface the "oldest unhandled" hint once the backlog age crosses this. */
+const OLDEST_UNHANDLED_HINT_DAYS = 2; // ~48h
 
 interface Chip {
   key: string;
@@ -83,8 +87,17 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const [view, setView] = useState<"needs" | "all">("needs");
   const [search, setSearch] = useState("");
   const [activeChips, setActiveChips] = useState<Set<string>>(new Set());
+  // Front-desk mental model: newest-first by default; toggle persists per browser.
+  const [sortDir, setSortDir] = useState<"newest" | "oldest">(() => {
+    try { return localStorage.getItem(SORT_STORAGE_KEY) === "oldest" ? "oldest" : "newest"; } catch { return "newest"; }
+  });
 
   const [pickCall, setPickCall] = useState<UnifiedCall | null>(null);
+
+  const setSort = (dir: "newest" | "oldest") => {
+    setSortDir(dir);
+    try { localStorage.setItem(SORT_STORAGE_KEY, dir); } catch { /* ignore */ }
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -150,6 +163,15 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
   useEffect(() => { onNeedsAttentionCount?.(needsAttentionCount); }, [needsAttentionCount, onNeedsAttentionCount]);
 
+  // Age (in days) of the oldest un-triaged call — powers the "nothing slips" hint
+  // so a newest-first default can't bury an aging backlog item.
+  const oldestUnhandledDays = useMemo(() => {
+    const pending = calls.filter(needsAttention);
+    if (pending.length === 0) return 0;
+    const oldest = Math.min(...pending.map((c) => new Date(c.date).getTime()));
+    return Math.floor((Date.now() - oldest) / 86_400_000);
+  }, [calls]);
+
   const visibleCalls = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = view === "needs" ? calls.filter(needsAttention) : calls;
@@ -164,13 +186,12 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
       const keys = Array.from(activeChips);
       list = list.filter((c) => keys.every((k) => CHIPS.find((chip) => chip.key === k)?.match(c)));
     }
-    // Needs-attention worklist is oldest-first (work the backlog); All is newest-first.
     return [...list].sort((a, b) =>
-      view === "needs"
+      sortDir === "oldest"
         ? new Date(a.date).getTime() - new Date(b.date).getTime()
         : new Date(b.date).getTime() - new Date(a.date).getTime()
     );
-  }, [calls, view, search, activeChips]);
+  }, [calls, view, search, activeChips, sortDir]);
 
   const toggleChip = (key: string) =>
     setActiveChips((prev) => {
@@ -223,6 +244,18 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           ))}
         </div>
 
+        {/* Oldest-unhandled hint — so newest-first can't bury an aging backlog item */}
+        {oldestUnhandledDays >= OLDEST_UNHANDLED_HINT_DAYS && (
+          <button
+            onClick={() => { setView("needs"); setSort("oldest"); }}
+            title="Show the oldest un-triaged calls first"
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full"
+            style={{ color: "oklch(0.50 0.16 45)", backgroundColor: "oklch(0.75 0.16 60 / 0.15)" }}
+          >
+            <Clock size={12} /> Oldest unhandled: {oldestUnhandledDays}d
+          </button>
+        )}
+
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -231,6 +264,28 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9 h-9 text-sm"
           />
+        </div>
+
+        {/* Sort toggle */}
+        <div className="flex items-center gap-1 bg-muted rounded-md p-1">
+          {([
+            { key: "newest" as const, label: "Newest" },
+            { key: "oldest" as const, label: "Oldest" },
+          ]).map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setSort(s.key)}
+              aria-pressed={sortDir === s.key}
+              className="px-2.5 py-1.5 rounded text-xs font-medium transition-all"
+              style={{
+                backgroundColor: sortDir === s.key ? "white" : "transparent",
+                color: sortDir === s.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                boxShadow: sortDir === s.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
         </div>
 
         <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
@@ -274,7 +329,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
               {visibleCalls.length} {view === "needs" ? "to work" : "calls"}
             </CardTitle>
             <span className="text-xs text-muted-foreground">
-              {view === "needs" ? "Oldest first" : "Newest first"}
+              {sortDir === "oldest" ? "Oldest first" : "Newest first"}
             </span>
           </div>
         </CardHeader>
@@ -387,24 +442,31 @@ function PatientIdentityCell({
       </span>
     );
   }
-  if (call.odSyncStatus === "synced") {
+  // Resolved = a patient is actually linked (od_patient_id). Gate on that, NOT on
+  // od_sync_status: pull-synced calls carry no status but are still unmatched and
+  // must stay actionable.
+  if (call.odPatientId) {
     return (
       <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline">
         <CheckCircle2 size={12} className="text-emerald-600" />
-        {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "Linked")}
+        {call.odPatientName || `PatNum ${call.odPatientId}`}
       </Link>
     );
   }
-  // needs_review / pending_match / unmatched → prompt to match
+  // Any call without a resolved patient → actionable. Stored candidates (Slice-A
+  // needs_review) label as "Needs match (N)"; everything else (incl. pull-synced
+  // calls with no od_sync_status) is "Unmatched". The button opens the modal,
+  // which offers BOTH Pick Patient and the not-a-patient close-out.
   const n = call.odMatchCandidates?.length ?? 0;
   return (
     <button
       onClick={onPick}
+      title="Match to a patient or mark not a patient"
       className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md border transition-colors hover:bg-amber-500/10"
       style={{ color: "oklch(0.52 0.14 75)", borderColor: "oklch(0.75 0.14 75 / 0.5)" }}
     >
       <UserSearch size={12} />
-      {n > 0 ? `Needs match (${n})` : "Match patient"}
+      {n > 0 ? `Needs match (${n})` : "Unmatched"}
     </button>
   );
 }

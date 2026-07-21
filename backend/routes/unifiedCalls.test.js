@@ -206,3 +206,13 @@ test('resolve-patient rejects an invalid not-a-patient reason', async () => {
   const res = await resolve('c9', { notAPatient: true, reason: 'nonsense' });
   assert.equal(res.status, 400);
 });
+
+test('resolve-patient accepts the vendor + lab close-out reasons', async () => {
+  for (const [id, reason] of [['c10', 'vendor'], ['c11', 'lab']]) {
+    seedCall(id);
+    const res = await resolve(id, { notAPatient: true, reason });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.call.not_a_patient_reason, reason);
+  }
+});

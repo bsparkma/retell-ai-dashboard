@@ -22,7 +22,7 @@ const TRIAGE_OUTCOMES = new Set([
   'called_back', 'scheduled', 'left_voicemail', 'no_answer', 'no_action_needed',
 ]);
 /** Allowed not_a_patient reasons (review-queue close-out without an OD write). */
-const NOT_A_PATIENT_REASONS = new Set(['spam', 'solicitor', 'wrong_number', 'other']);
+const NOT_A_PATIENT_REASONS = new Set(['spam', 'solicitor', 'vendor', 'lab', 'wrong_number', 'other']);
 
 /** Max length for the optional free-text triage note. */
 const TRIAGE_NOTE_MAX = 280;
