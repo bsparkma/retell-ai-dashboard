@@ -322,31 +322,29 @@ export default function CallDetail() {
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientSource, setPatientSource] = useState<PatientMatchSource>("none");
   const [pickOpen, setPickOpen] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
+  const [sendTarget, setSendTarget] = useState<{ patientId: number; patientName: string } | null>(null);
 
-  // After a matched call is sent to chart, reflect the synced state in the panel.
-  const handleSent = useCallback(() => {
-    setCall((prev) => (prev && prev !== "loading" ? { ...prev, odSyncStatus: "synced", sentAt: new Date().toISOString() } : prev));
+  // After the chart note is sent, reflect synced + refresh the panel to the patient.
+  const handleSent = useCallback((patientId: number) => {
+    setCall((prev) => (prev && prev !== "loading"
+      ? { ...prev, odPatientId: patientId, odSyncStatus: "synced", sentAt: new Date().toISOString() }
+      : prev));
+    setPatientLoading(true);
+    api.getOpenDentalPatient(patientId)
+      .then((p) => { setPatient(p); setPatientSource("id"); })
+      .catch(() => { /* keep prior view; toast already fired */ })
+      .finally(() => setPatientLoading(false));
   }, []);
 
-  // After the shared Pick Patient modal resolves, reflect it in the panel.
-  const handleResolved = useCallback(
-    (result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason }) => {
-      if (result.kind === "patient") {
-        setCall((prev) => (prev && prev !== "loading" ? { ...prev, odPatientId: result.patientId, odSyncStatus: "synced" } : prev));
-        setPatientLoading(true);
-        api.getOpenDentalPatient(result.patientId)
-          .then((p) => { setPatient(p); setPatientSource("id"); })
-          .catch(() => { /* keep prior view; toast already fired in the modal */ })
-          .finally(() => setPatientLoading(false));
-      } else {
-        setCall((prev) => (prev && prev !== "loading"
-          ? { ...prev, notAPatient: true, notAPatientReason: result.reason }
-          : prev));
-      }
-    },
-    [],
-  );
+  // Picker chose a patient → hand off to the review/edit → send dialog.
+  const handleChoosePatient = useCallback((patientId: number, patientName: string) => {
+    setPickOpen(false);
+    setSendTarget({ patientId, patientName });
+  }, []);
+
+  const handleNotPatient = useCallback((reason: NotAPatientReason) => {
+    setCall((prev) => (prev && prev !== "loading" ? { ...prev, notAPatient: true, notAPatientReason: reason } : prev));
+  }, []);
 
   // Audio player state
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -450,22 +448,27 @@ export default function CallDetail() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Shared Pick Patient modal — same candidates-first / OD-search / idempotent
-          resolve flow as the worklist. */}
+      {/* Shared Pick Patient modal — candidates-first / OD search, then hands off
+          to the review/edit → send dialog (same flow as the worklist). */}
       <PickPatientModal
         open={pickOpen}
         onOpenChange={setPickOpen}
         call={displayCall}
-        onResolved={handleResolved}
+        onChoosePatient={handleChoosePatient}
+        onNotPatient={handleNotPatient}
       />
 
-      {/* Review-then-send confirm dialog for auto-matched calls. */}
-      <SendToChartDialog
-        open={sendOpen}
-        onOpenChange={setSendOpen}
-        call={displayCall}
-        onSent={handleSent}
-      />
+      {/* Review/edit → send confirm dialog (matched calls and picked patients). */}
+      {sendTarget && (
+        <SendToChartDialog
+          open={sendTarget !== null}
+          onOpenChange={(o) => { if (!o) setSendTarget(null); }}
+          call={displayCall}
+          patientId={sendTarget.patientId}
+          patientName={sendTarget.patientName}
+          onSent={() => handleSent(sendTarget.patientId)}
+        />
+      )}
 
       {/* Back + header */}
       <div className="flex items-start gap-4">
@@ -689,7 +692,10 @@ export default function CallDetail() {
             odPatientId={displayCall.odPatientId}
             odPatientName={displayCall.odPatientName}
             sentBy={displayCall.sentBy}
-            onSend={() => setSendOpen(true)}
+            onSend={() => setSendTarget({
+              patientId: Number(displayCall.odPatientId),
+              patientName: displayCall.odPatientName || `PatNum ${displayCall.odPatientId}`,
+            })}
           />
 
           {/* Call metadata */}

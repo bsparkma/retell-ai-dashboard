@@ -94,7 +94,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   });
 
   const [pickCall, setPickCall] = useState<UnifiedCall | null>(null);
-  const [sendCall, setSendCall] = useState<UnifiedCall | null>(null);
+  const [sendTarget, setSendTarget] = useState<{ call: UnifiedCall; patientId: number; patientName: string } | null>(null);
 
   const setSort = (dir: "newest" | "oldest") => {
     setSortDir(dir);
@@ -148,20 +148,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
   const reopen = (call: UnifiedCall) => applyTriage(call, "needs_action");
 
-  const onResolved = (
-    call: UnifiedCall,
-    result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason },
-  ) => {
-    if (result.kind === "patient") {
-      patchCall(call.id, { odSyncStatus: "synced", odPatientId: result.patientId });
-    } else {
-      patchCall(call.id, { notAPatient: true, notAPatientReason: result.reason });
-    }
+  const onNotPatient = (call: UnifiedCall, reason: NotAPatientReason) => {
+    patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
   };
 
-  const onSent = (call: UnifiedCall) => {
+  const onSent = (call: UnifiedCall, patientId: number) => {
     const actor = auth.status === "authenticated" ? { name: auth.user.name, email: auth.user.email } : null;
-    patchCall(call.id, { odSyncStatus: "synced", sentBy: actor, sentAt: new Date().toISOString() });
+    patchCall(call.id, { odSyncStatus: "synced", odPatientId: patientId, sentBy: actor, sentAt: new Date().toISOString() });
+  };
+
+  // A patient was chosen in the picker → hand off to the review/edit → send dialog.
+  const chooseThenSend = (call: UnifiedCall, patientId: number, patientName: string) => {
+    setPickCall(null);
+    setSendTarget({ call, patientId, patientName });
   };
 
   // ---- filtering ----------------------------------------------------------
@@ -392,7 +391,11 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                     call={call}
                     officeOdConnected={officeOdConnected}
                     onPick={() => setPickCall(call)}
-                    onSend={() => setSendCall(call)}
+                    onSend={() => setSendTarget({
+                      call,
+                      patientId: Number(call.odPatientId),
+                      patientName: call.odPatientName || `PatNum ${call.odPatientId}`,
+                    })}
                   />
                 </div>
 
@@ -428,16 +431,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           open={pickCall !== null}
           onOpenChange={(o) => { if (!o) setPickCall(null); }}
           call={pickCall}
-          onResolved={(result) => onResolved(pickCall, result)}
+          onChoosePatient={(patientId, patientName) => chooseThenSend(pickCall, patientId, patientName)}
+          onNotPatient={(reason) => onNotPatient(pickCall, reason)}
         />
       )}
 
-      {sendCall && (
+      {sendTarget && (
         <SendToChartDialog
-          open={sendCall !== null}
-          onOpenChange={(o) => { if (!o) setSendCall(null); }}
-          call={sendCall}
-          onSent={() => onSent(sendCall)}
+          open={sendTarget !== null}
+          onOpenChange={(o) => { if (!o) setSendTarget(null); }}
+          call={sendTarget.call}
+          patientId={sendTarget.patientId}
+          patientName={sendTarget.patientName}
+          onSent={() => onSent(sendTarget.call, sendTarget.patientId)}
         />
       )}
     </>

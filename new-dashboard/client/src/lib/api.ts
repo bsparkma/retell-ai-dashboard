@@ -500,7 +500,7 @@ export const api = {
    */
   async resolvePatient(
     id: string,
-    body: { patientId: number } | { notAPatient: true; reason: NotAPatientReason }
+    body: { patientId: number; note?: string } | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",

@@ -30,6 +30,7 @@ let baseUrl;
 let originalRequestPersist;
 let original;
 let commlogWrites;
+let lastNoteOverride; // what the endpoint handed the OD write boundary
 
 function clearStore() {
   unifiedCallStore.calls.clear();
@@ -61,9 +62,12 @@ beforeEach(async () => {
     unifiedCallStore.updateCall(callId, { od_patient_id: patientId });
     return { success: true, patient: { id: patientId, fullName: 'Stedi Test 2' } };
   };
-  openDentalSync.syncCallToCommLog = async (callId) => {
+  commlogWrites = 0;
+  lastNoteOverride = undefined;
+  openDentalSync.syncCallToCommLog = async (callId, options = {}) => {
     const call = unifiedCallStore.getCall(callId);
     if (call.od_sync_status === 'synced') return { success: true, skipped: true, message: 'Already synced' };
+    lastNoteOverride = options.noteOverride; // the note that would be written to OD
     commlogWrites += 1;
     const commLogNum = 9000 + commlogWrites;
     unifiedCallStore.updateCall(callId, { od_sync_status: 'synced', od_commlog_num: commLogNum });
@@ -222,6 +226,40 @@ test('commlog-preview returns the exact note the send will write', async () => {
   assert.match(body.note, /Caller asked to reschedule a cleaning\./);
   assert.equal(body.patientId, 12827);
   assert.equal(body.patientName, 'Stedi Test 2');
+});
+
+test('edited note is sanitized and is exactly what lands; note_edited=true', async () => {
+  seedCall('c-edit', { call_analysis: { call_summary: 'Reschedule cleaning.' } });
+  unifiedCallStore.updateCall('c-edit', { od_patient_id: 12827, summary: 'Reschedule cleaning.' });
+  // Smart quotes + em-dash + ellipsis from a copy-paste.
+  const edited = 'Front desk: called back, all set — see ‘chart’…';
+  const res = await resolve('c-edit', { patientId: 12827, note: edited });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  const expected = "Front desk: called back, all set -- see 'chart'...";
+  assert.equal(lastNoteOverride, expected, 'OD receives the sanitized edited text');
+  assert.equal(body.call.sent_note, expected);
+  assert.equal(body.call.note_edited, true);
+});
+
+test('unedited send persists the generated note; note_edited=false', async () => {
+  seedCall('c-unedited', { call_analysis: { call_summary: 'Billing question.' } });
+  unifiedCallStore.updateCall('c-unedited', { od_patient_id: 12827, summary: 'Billing question.' });
+  const res = await resolve('c-unedited', { patientId: 12827 }); // no note field
+  const body = await res.json();
+  const generated = openDentalSync.formatCommLogEntry(unifiedCallStore.getCall('c-unedited'), {}).Note;
+  assert.equal(body.call.sent_note, generated);
+  assert.equal(body.call.note_edited, false);
+  assert.equal(lastNoteOverride, generated);
+});
+
+test('sending the generated note back (reset) is not flagged edited', async () => {
+  seedCall('c-reset', { call_analysis: { call_summary: 'Lost item.' } });
+  unifiedCallStore.updateCall('c-reset', { od_patient_id: 12827, summary: 'Lost item.' });
+  const generated = openDentalSync.formatCommLogEntry(unifiedCallStore.getCall('c-reset'), {}).Note;
+  const res = await resolve('c-reset', { patientId: 12827, note: generated });
+  const body = await res.json();
+  assert.equal(body.call.note_edited, false);
 });
 
 test('resolve-patient not-a-patient close-out writes no commlog', async () => {

@@ -29,11 +29,13 @@ interface PickPatientModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   call: UnifiedCall;
-  /** Called after a successful resolve/close-out so the row can update optimistically. */
-  onResolved: (result: { kind: "patient"; patientId: number } | { kind: "not_patient"; reason: NotAPatientReason }) => void;
+  /** A patient was chosen — hand off to the review/edit → send dialog (no write yet). */
+  onChoosePatient: (patientId: number, patientName: string) => void;
+  /** Closed out as not-a-patient (already persisted; no OD write). */
+  onNotPatient: (reason: NotAPatientReason) => void;
 }
 
-export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickPatientModalProps) {
+export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, onNotPatient }: PickPatientModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
   const [searching, setSearching] = useState(false);
@@ -71,22 +73,10 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
     };
   }, [query]);
 
-  const resolveToPatient = async (patientId: number, label: string) => {
-    setSubmittingId(patientId);
-    try {
-      const res = await api.resolvePatient(call.id, { patientId });
-      if (res.success) {
-        toast.success(res.alreadySynced ? `Already linked to ${label}` : `Linked to ${label} · commlog written`);
-        onResolved({ kind: "patient", patientId });
-        onOpenChange(false);
-      } else {
-        toast.error("Could not link patient", { duration: 8000 });
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to link patient", { duration: 8000 });
-    } finally {
-      setSubmittingId(null);
-    }
+  // Picking a patient does NOT write — it hands off to the review/edit → send dialog.
+  const choosePatient = (patientId: number, label: string) => {
+    onChoosePatient(patientId, label);
+    onOpenChange(false);
   };
 
   const closeAsNotPatient = async () => {
@@ -95,7 +85,7 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
       const res = await api.resolvePatient(call.id, { notAPatient: true, reason });
       if (res.success) {
         toast.success("Closed out — not a patient");
-        onResolved({ kind: "not_patient", reason });
+        onNotPatient(reason);
         onOpenChange(false);
       } else {
         toast.error("Could not close out call", { duration: 8000 });
@@ -140,10 +130,9 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
                       size="sm"
                       className="h-8 gap-1.5 text-xs flex-shrink-0"
                       disabled={submittingId !== null}
-                      onClick={() => resolveToPatient(c.id, c.name)}
+                      onClick={() => choosePatient(c.id, c.name)}
                     >
-                      {submittingId === c.id ? <Loader2 size={12} className="animate-spin" /> : <UserCheck size={12} />}
-                      Use
+                      <UserCheck size={12} /> Use
                     </Button>
                   </div>
                 ))}
@@ -193,10 +182,9 @@ export function PickPatientModal({ open, onOpenChange, call, onResolved }: PickP
                       variant="outline"
                       className="h-8 gap-1.5 text-xs flex-shrink-0"
                       disabled={submittingId !== null}
-                      onClick={() => resolveToPatient(p.id, p.fullName)}
+                      onClick={() => choosePatient(p.id, p.fullName)}
                     >
-                      {submittingId === p.id ? <Loader2 size={12} className="animate-spin" /> : <UserCheck size={12} />}
-                      Use
+                      <UserCheck size={12} /> Use
                     </Button>
                   </div>
                 ))

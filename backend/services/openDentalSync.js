@@ -7,6 +7,7 @@
 
 const openDentalService = require('../config/openDental');
 const unifiedCallStore = require('./unifiedCallStore');
+const { sanitizeForOd } = require('../utils/sanitizeForOd');
 
 class OpenDentalSyncService {
   constructor() {
@@ -224,6 +225,10 @@ class OpenDentalSyncService {
     // DB-shaped integers). See createCommLog / OD_API_CONTRACT.md §10.
     try {
       const commLogEntry = this.formatCommLogEntry(call, options);
+      // Review-then-send: a human-edited note wins over the generated one.
+      if (typeof options.noteOverride === 'string' && options.noteOverride.trim()) {
+        commLogEntry.Note = options.noteOverride;
+      }
       const result = await this.createCommLog(patientId, commLogEntry);
 
       if (!result.success) {
@@ -347,7 +352,8 @@ Callback Required: ${call.callback_required ? 'Yes' : 'No'}
       CommDateTime: call.call_date,
       Mode_: 0, // 0 = None, 1 = Email, 2 = Text, 3 = Phone
       SentOrReceived: 1, // 1 = Received
-      Note: note.trim(),
+      // Sanitize so the preview (this note) === what OD stores, mojibake-free.
+      Note: sanitizeForOd(note.trim()),
       CommType: this.getCommType(call),
       UserNum: 0, // System user
       DateTimeEnd: call.call_date,
@@ -408,6 +414,11 @@ Callback Required: ${call.callback_required ? 'Yes' : 'No'}
    * tenants. See docs/OD_API_CONTRACT.md §10.
    */
   async createCommLog(patientId, commLogEntry) {
+    // Final OD-safety net: sanitize the note at the single write boundary, so every
+    // path (generated, user-edited, legacy auto-write) lands mojibake-free. Idempotent.
+    if (commLogEntry && typeof commLogEntry.Note === 'string') {
+      commLogEntry = { ...commLogEntry, Note: sanitizeForOd(commLogEntry.Note) };
+    }
     if (openDentalService.useDatabase && openDentalService.pool) {
       return this.insertCommLogToDatabase(patientId, commLogEntry);
     }
