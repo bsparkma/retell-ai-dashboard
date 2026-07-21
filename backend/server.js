@@ -185,7 +185,10 @@ async function bootstrap() {
   app.use(
     '/api',
     tenantContext({
-      exempt: [/^\/webhooks(\/|$)/, /^\/health$/, /^\/retell-tools(\/|$)/],
+      // /mango/dev/seed is a staging-only synthetic seeder (ALLOW_MANGO_DEV_SEED-gated,
+      // 403 in prod). It still requires the shared bearer token (auth gate above) but
+      // carries no user identity and needs no tenant, so it's tenant-exempt like webhooks.
+      exempt: [/^\/webhooks(\/|$)/, /^\/health$/, /^\/retell-tools(\/|$)/, /^\/mango\/dev\/seed$/],
     })
   );
 

@@ -91,6 +91,16 @@ test('Mango call: unmapped line falls back to Roland (never attributed by agent 
   assert.equal(oa.getOfficeForCall({ source: 'mango' }), 'roland');
 });
 
+test('Mango call: real office DIDs attribute correctly (Roland + Valley), any formatting', () => {
+  // Roland Family Dental main line.
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+19185036262' }), 'roland');
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 503-6262' }), 'roland');
+  // Valley Family Dental — attribution only (OFFICES.valley is odConnected:false).
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+14792263500' }), 'valley');
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '479-226-3500' }), 'valley');
+  assert.equal(oa.getOfficeConfig('valley').odConnected, false);
+});
+
 test('Mango call: a mapped DID routes to its office, regardless of number formatting', () => {
   // Simulate Beau supplying a Valley DID — one entry, exactly like AGENT_OFFICE.
   oa.MANGO_LINE_OFFICE['+14795551234'] = 'valley';

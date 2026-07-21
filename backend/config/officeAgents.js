@@ -58,16 +58,14 @@ const AGENT_OFFICE = {
 // E.164-normalized number so formatting differences ((479) 555-0000 vs
 // +14795550000) don't matter.
 //
-// PLACEHOLDER: the real Roland/Valley DIDs are supplied by Beau (PRD M0.4). Until
-// then this map is intentionally empty of real numbers and every Mango call falls
-// back to Roland (FALLBACK_OFFICE) — which is correct in the current single-office
-// reality. Replace the placeholder below with the real DID(s) when provided;
-// adding Valley later is ONE line here, exactly like AGENT_OFFICE.
+// Real office DIDs supplied by Beau (2026-07-21). Keys are E.164-normalized. Valley is
+// mapped for ATTRIBUTION only — OFFICES.valley is odConnected:false, so its calls are
+// attributed to Valley but have no OD write path until the per-location slice (mirrors
+// the existing office-config pattern). Any called_number not here → fallback + warn-once.
 /** @type {Record<string, string>} E.164 DID → officeId */
 const MANGO_LINE_OFFICE = {
-  // TODO(beau): replace with the REAL Roland Mango DID(s), e.g. '+14795551234': 'roland'.
-  // '+15550000000': 'roland',  // <-- placeholder, matches nothing real
-  // '+14790000000': 'valley',  // <-- add Valley DID(s) when its OD connection lands
+  '+19185036262': 'roland', // Roland Family Dental main line (918-503-6262)
+  '+14792263500': 'valley', // Valley Family Dental (479-226-3500) — attribution only (odConnected:false)
 };
 
 /**
