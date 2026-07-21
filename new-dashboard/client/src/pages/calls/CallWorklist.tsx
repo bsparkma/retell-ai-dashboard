@@ -139,7 +139,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
         ...(note ? { triage_note: note } : {}),
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save triage");
+      toast.error(err instanceof Error ? err.message : "Failed to save triage", { duration: 8000 });
       load(); // reconcile with the server on failure
     }
   };
@@ -207,7 +207,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
       toast.success(res.message ?? "Sync complete");
       load();
     } catch {
-      toast.error("Sync failed");
+      toast.error("Sync failed", { duration: 8000 });
     } finally {
       setSyncing(false);
     }
