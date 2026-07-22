@@ -24,19 +24,31 @@ const normalizeMangoUrl = (url, fallback) => {
   }
 };
 
-const FALLBACK_BASE = 'https://admin.mangovoice.com';
+// The classic admin.mangovoice.com/user/login is deprecated (now a "use the web app" notice);
+// the live login is the app.mangovoice.com Chakra SPA. (Confirmed empirically 2026-07-22.)
+const FALLBACK_BASE = 'https://app.mangovoice.com';
+const FALLBACK_LOGIN_URL = 'https://app.mangovoice.com/login/';
 const FALLBACK_CALLS_URL = 'https://app.mangovoice.com/calls/?date_range=last_14_days';
 
 module.exports = {
-  // Portal configuration
+  // Portal configuration (used for the Puppeteer login that harvests the API Bearer token)
   portal: {
     baseUrl: normalizeMangoUrl(process.env.MANGO_PORTAL_URL, FALLBACK_BASE),
-    loginUrl: normalizeMangoUrl(process.env.MANGO_LOGIN_URL, `${FALLBACK_BASE}/user/login`),
-    // NOTE: Mango has multiple UIs (admin + web app). If this default doesn't match your account,
-    // set MANGO_CALLLOG_URL in backend/.env to the exact Call Logs page URL you see in the browser.
-    // Default to empty and let the scraper discover the correct Call Logs URL after login.
+    loginUrl: normalizeMangoUrl(process.env.MANGO_LOGIN_URL, FALLBACK_LOGIN_URL),
+    // Legacy scraper field; unused on the API ingest path.
     callLogUrl: normalizeMangoUrl(process.env.MANGO_CALLLOG_URL, FALLBACK_CALLS_URL),
   },
+
+  // Internal REST API (api.mangovoice.com). Bearer-authenticated; the token is harvested
+  // from the SPA login session (see services/mangoApiClient.js). Base is overridable for
+  // the eventual documented Global-API swap.
+  api: {
+    baseUrl: (process.env.MANGO_API_URL || 'https://api.mangovoice.com').replace(/\/+$/, ''),
+  },
+
+  // Ingestion source (PRD). 'off' (default): no Mango ingestion. 'api': pull calls from the
+  // internal REST API. The former DOM 'scraper' mode is retired in favor of 'api'.
+  ingestMode: process.env.MANGO_INGEST_MODE === 'api' ? 'api' : 'off',
 
   // Authentication
   auth: {
