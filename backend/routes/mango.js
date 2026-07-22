@@ -134,6 +134,8 @@ router.post('/dev/seed', async (req, res) => {
         id: after.id,
         external_id: after.external_id,
         od_sync_status: after.od_sync_status,
+        od_patient_id: after.od_patient_id ?? null,
+        od_patient_name: after.od_patient_name ?? null,
         candidates: (after.od_match_candidates || []).length,
         has_transcript: Boolean(after.transcript),
       });
