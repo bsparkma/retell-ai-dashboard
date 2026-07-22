@@ -50,6 +50,10 @@ const SECRET_MAP = Object.freeze([
   { secretName: 'mango-password', envKey: 'MANGO_PASSWORD' },
   { secretName: 'deepgram-api-key', envKey: 'DEEPGRAM_API_KEY' },
   { secretName: 'openai-api-key', envKey: 'OPENAI_API_KEY' },
+  // Azure OpenAI summary provider (PRD D2/D7). Managed identity is preferred, so this
+  // api-key is an OPTIONAL fallback that is only USED when AZURE_OPENAI_AUTH_MODE=api_key.
+  // Absent in the vault -> skipped (like the other optional secrets).
+  { secretName: 'azure-openai-key', envKey: 'AZURE_OPENAI_API_KEY' },
   { secretName: 'od-connector-api-key', envKey: 'OD_CONNECTOR_API_KEY' },
   // Control plane: Postgres connection string for the `carein_control`
   // database (migrations + control-plane data). Dev reads CONTROL_DB_URL from

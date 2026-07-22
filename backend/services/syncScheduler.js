@@ -10,6 +10,7 @@ const mangoScraper = require('./mangoScraper');
 const transcriptionService = require('./transcriptionService');
 const callAnalyzer = require('./callAnalyzer');
 const unifiedCallStore = require('./unifiedCallStore');
+const openDentalSyncService = require('./openDentalSync');
 const retellService = require('../config/retell');
 const mangoConfig = require('../config/mango');
 const { isMangoSyncDisabled } = require('../middleware/envGuards');
@@ -161,7 +162,8 @@ class SyncScheduler {
       // Step 3: Analyze calls with AI
       console.log('🧠 Step 3/4: Analyzing calls with AI...');
       for (const call of calls) {
-        if (call.transcript) {
+        // D4: skip the summary LLM for very short calls (transcript retained, no flags).
+        if (call.transcript && (call.duration_seconds || 0) >= mangoConfig.summaryMinSeconds) {
           try {
             const analysis = await callAnalyzer.analyzeCall(call);
             if (analysis) {
@@ -170,6 +172,9 @@ class SyncScheduler {
               call.sentiment = analysis.sentiment;
               call.summary = analysis.summary;
               call.is_emergency = analysis.is_emergency;
+              // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1).
+              call.appointment_requested = analysis.appointment_requested ?? false;
+              call.callback_required = analysis.callback_needed ?? call.callback_required ?? false;
               syncLog.calls_analyzed++;
             }
           } catch (e) {
@@ -182,6 +187,13 @@ class SyncScheduler {
       console.log('💾 Step 4/4: Storing call data...');
       // Save into unified store (persisted to JSON on disk)
       const newlyAdded = unifiedCallStore.addMangoCalls(calls);
+
+      // Source-agnostic entry: run each NEW Mango call through the same match → status
+      // transition Retell uses, so it lands in the Slice B worklist as 'matched' /
+      // 'needs_review'. Only newly-added calls are matched (re-scrapes upsert instead of
+      // re-adding, so a human's triage is never clobbered). No OD write happens here.
+      syncLog.calls_matched = await this.matchMangoCalls(newlyAdded);
+
       await unifiedCallStore.persist();
 
       // Update imported count to reflect actual newly-added calls
@@ -314,15 +326,21 @@ class SyncScheduler {
             transcript_json: result.utterances || result.words || null,
           };
 
-          // Step 2: AI analysis (if OpenAI is configured)
+          // Step 2: AI analysis (D4: skip the summary LLM for very short calls).
           try {
-            const analysis = await callAnalyzer.analyzeCall({ ...call, transcript: result.text });
+            const longEnough = (call.duration_seconds || 0) >= mangoConfig.summaryMinSeconds;
+            const analysis = longEnough
+              ? await callAnalyzer.analyzeCall({ ...call, transcript: result.text })
+              : null;
             if (analysis) {
               if (analysis.caller_name) updates.caller_name = analysis.caller_name;
               if (analysis.call_reason) updates.call_reason = analysis.call_reason;
               if (analysis.sentiment) updates.sentiment = analysis.sentiment;
               if (analysis.summary) updates.summary = analysis.summary;
               if (analysis.is_emergency !== undefined) updates.is_emergency = analysis.is_emergency;
+              // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1).
+              if (analysis.appointment_requested !== undefined) updates.appointment_requested = analysis.appointment_requested;
+              if (analysis.callback_needed !== undefined) updates.callback_required = analysis.callback_needed;
               analyzed++;
             }
           } catch (e) {
@@ -337,12 +355,46 @@ class SyncScheduler {
       }
     }
 
-    if (transcribed > 0) {
+    // Re-run match → status now that these calls have a transcript + caller_name (a
+    // name can lift a phone-only 'needs_review' to a confident 'matched'). Skips synced.
+    const matched = await this.matchMangoCalls(batch);
+
+    if (transcribed > 0 || matched > 0) {
       await unifiedCallStore.persist();
     }
 
-    console.log(`✅ Mango transcription: ${transcribed} transcribed, ${analyzed} analyzed, ${errors.length} errors`);
-    return { transcribed, analyzed, errors };
+    console.log(`✅ Mango transcription: ${transcribed} transcribed, ${analyzed} analyzed, ${matched} matched, ${errors.length} errors`);
+    return { transcribed, analyzed, matched, errors };
+  }
+
+  /**
+   * Run each Mango call through the source-agnostic match → status transition
+   * (openDentalSync.matchAndSetStatus), so it enters the Slice B worklist exactly like a
+   * Retell call. Re-fetches current state per id (uses the latest caller_name/number) and
+   * skips 'synced' calls — a human Send-to-chart is terminal and must never be re-touched.
+   * No Open Dental write happens here. Returns the count matched/status-set.
+   * @param {Array<{id?: string}>} calls
+   * @returns {Promise<number>}
+   */
+  async matchMangoCalls(calls) {
+    if (!Array.isArray(calls) || calls.length === 0) return 0;
+    let matched = 0;
+    for (const c of calls) {
+      const id = c && c.id;
+      if (!id) continue;
+      const current = unifiedCallStore.getCall(id);
+      if (!current || current.od_sync_status === 'synced') continue;
+      try {
+        await openDentalSyncService.matchAndSetStatus(id, {
+          caller_number: current.caller_number,
+          caller_name: current.caller_name,
+        });
+        matched++;
+      } catch (e) {
+        console.error(`[Mango] matchAndSetStatus failed for ${id}: ${e.message}`);
+      }
+    }
+    return matched;
   }
 
   /**

@@ -73,3 +73,51 @@ test('adding a Valley agent later is one entry: valley would then match it', () 
     delete oa.AGENT_OFFICE.agent_future_valley_test;
   }
 });
+
+// ── Mango (staff) line → office attribution ──────────────────────────────────
+
+test('normalizeE164 canonicalizes NANP numbers and rejects short input', () => {
+  assert.equal(oa.normalizeE164('(479) 555-0000'), '+14795550000');
+  assert.equal(oa.normalizeE164('4795550000'), '+14795550000');
+  assert.equal(oa.normalizeE164('14795550000'), '+14795550000');
+  assert.equal(oa.normalizeE164('+1 479-555-0000'), '+14795550000');
+  assert.equal(oa.normalizeE164('555'), null);
+  assert.equal(oa.normalizeE164(null), null);
+});
+
+test('Mango call: unmapped line falls back to Roland (never attributed by agent id)', () => {
+  // A Mango call carries no Retell agent id; an unmapped/absent DID → fallback office.
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 555-9999' }), 'roland');
+  assert.equal(oa.getOfficeForCall({ source: 'mango' }), 'roland');
+});
+
+test('Mango call: real office DIDs attribute correctly (Roland + Valley), any formatting', () => {
+  // Roland Family Dental main line.
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+19185036262' }), 'roland');
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 503-6262' }), 'roland');
+  // Valley Family Dental — attribution only (OFFICES.valley is odConnected:false).
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+14792263500' }), 'valley');
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '479-226-3500' }), 'valley');
+  assert.equal(oa.getOfficeConfig('valley').odConnected, false);
+});
+
+test('Mango call: a mapped DID routes to its office, regardless of number formatting', () => {
+  // Simulate Beau supplying a Valley DID — one entry, exactly like AGENT_OFFICE.
+  oa.MANGO_LINE_OFFICE['+14795551234'] = 'valley';
+  try {
+    assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '479-555-1234' }), 'valley');
+    assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(479) 555-1234' }), 'valley');
+    assert.equal(
+      oa.filterCallsForOffice(
+        [
+          { id: 'm1', source: 'mango', called_number: '+14795551234' }, // → valley
+          { id: 'm2', source: 'mango', called_number: '+19185550000' }, // unmapped → roland
+        ],
+        'valley'
+      ).length,
+      1
+    );
+  } finally {
+    delete oa.MANGO_LINE_OFFICE['+14795551234'];
+  }
+});
