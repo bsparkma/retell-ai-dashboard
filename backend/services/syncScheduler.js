@@ -7,6 +7,7 @@
 
 const cron = require('node-cron');
 const mangoScraper = require('./mangoScraper');
+const mangoApiClient = require('./mangoApiClient');
 const transcriptionService = require('./transcriptionService');
 const callAnalyzer = require('./callAnalyzer');
 const unifiedCallStore = require('./unifiedCallStore');
@@ -84,6 +85,10 @@ class SyncScheduler {
       console.log('⏸️  Mango sync skipped (MANGO_SYNC_DISABLED=true)');
       return { success: false, message: 'Mango sync disabled in this environment' };
     }
+    if (mangoConfig.ingestMode === 'off') {
+      console.log('⏸️  Mango sync skipped (MANGO_INGEST_MODE=off)');
+      return { success: false, message: 'Mango ingestion is off (MANGO_INGEST_MODE=off)' };
+    }
     if (this.isRunning) {
       console.log('⚠️ Sync already in progress, skipping...');
       return { success: false, message: 'Sync already in progress' };
@@ -119,48 +124,28 @@ class SyncScheduler {
         ? mangoConfig.sync.initialLookbackDays 
         : mangoConfig.sync.regularLookbackDays;
       
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - lookbackDays);
-      
-      // Step 1: Scrape calls from Mango
-      console.log('📞 Step 1/4: Scraping Mango call logs...');
-      const scrapeResult = await mangoScraper.fullSync({
-        startDate,
-        endDate: new Date(),
+      // Step 1: Fetch calls from the configured source (MANGO_INGEST_MODE=api).
+      // The internal REST API path fetches call detail + signed recording_url and
+      // transcribes inline via Azure Speech (the signed URL expires quickly), so there is
+      // no separate step-2/recording-download pass. See services/mangoApiClient.js.
+      console.log('📞 Step 1/3: Fetching Mango calls (api)...');
+      const sourceResult = await mangoApiClient.fullSync({
+        sinceDays: lookbackDays,
         maxCalls: options.maxCalls || mangoConfig.sync.maxCallsPerSync,
       });
-      
-      syncLog.calls_found = scrapeResult.calls_found;
-      syncLog.calls_imported = scrapeResult.calls_processed;
-      
-      if (scrapeResult.errors.length > 0) {
-        syncLog.errors.push(...scrapeResult.errors);
+
+      syncLog.calls_found = sourceResult.calls_found;
+      syncLog.calls_imported = sourceResult.calls_processed;
+      syncLog.calls_transcribed = sourceResult.recordings_transcribed || 0;
+
+      if (sourceResult.errors && sourceResult.errors.length > 0) {
+        syncLog.errors.push(...sourceResult.errors);
       }
 
-      const calls = scrapeResult.calls || [];
-      
-      // Step 2: Transcribe recordings
-      if (calls.length > 0 && mangoConfig.sync.downloadRecordings) {
-        console.log('🎤 Step 2/4: Transcribing recordings...');
-        
-        for (const call of calls) {
-          if (call.recording_path) {
-            try {
-              const transcript = await transcriptionService.transcribeFile(call.recording_path);
-              if (transcript) {
-                call.transcript = transcript.text;
-                call.transcript_json = transcript.words;
-                syncLog.calls_transcribed++;
-              }
-            } catch (e) {
-              syncLog.errors.push(`Transcription failed for ${call.external_id}: ${e.message}`);
-            }
-          }
-        }
-      }
+      const calls = sourceResult.calls || [];
 
-      // Step 3: Analyze calls with AI
-      console.log('🧠 Step 3/4: Analyzing calls with AI...');
+      // Step 2: Analyze calls with AI
+      console.log('🧠 Step 2/3: Analyzing calls with AI...');
       for (const call of calls) {
         // D4: skip the summary LLM for very short calls (transcript retained, no flags).
         if (call.transcript && (call.duration_seconds || 0) >= mangoConfig.summaryMinSeconds) {
@@ -183,8 +168,8 @@ class SyncScheduler {
         }
       }
 
-      // Step 4: Store calls (would save to database in production)
-      console.log('💾 Step 4/4: Storing call data...');
+      // Step 3: Store calls (would save to database in production)
+      console.log('💾 Step 3/3: Storing call data...');
       // Save into unified store (persisted to JSON on disk)
       const newlyAdded = unifiedCallStore.addMangoCalls(calls);
 
@@ -277,14 +262,14 @@ class SyncScheduler {
 
   /**
    * Transcribe Mango calls that have local recordings but no transcript.
-   * Runs through the Deepgram transcription + optional AI analysis pipeline.
+   * Runs through the Azure AI Speech transcription + optional AI analysis pipeline.
    */
   async transcribeUntranscribedMango(options = {}) {
     const maxCalls = options.maxCalls || 10;
     const fs = require('fs').promises;
 
     if (!transcriptionService.isAvailable()) {
-      console.warn('⚠️ Deepgram not configured (DEEPGRAM_API_KEY missing). Skipping Mango transcription.');
+      console.warn('⚠️ Azure AI Speech not configured (AZURE_SPEECH_ENDPOINT missing). Skipping Mango transcription.');
       return { transcribed: 0, analyzed: 0, errors: [] };
     }
 

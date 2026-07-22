@@ -61,7 +61,7 @@ router.get('/health', async (req, res) => {
         },
         transcription: {
           status: transcriptionService.isAvailable() ? 'available' : 'unavailable',
-          provider: 'deepgram',
+          provider: transcriptionService.getStats().provider || 'azure-speech',
           stats: transcriptionService.getStats(),
         },
         callAnalyzer: {
@@ -217,11 +217,11 @@ router.get('/costs', (req, res) => {
       success: true,
       costs: {
         transcription: {
-          provider: 'deepgram',
+          provider: transcriptionStats.provider || 'azure-speech',
           total_minutes: transcriptionStats.totalMinutes,
           total_transcriptions: transcriptionStats.totalTranscriptions,
           estimated_cost: transcriptionStats.totalCost,
-          rate: '$0.0043/min',
+          rate: '$1/audio hour (Azure AI Speech S0)',
         },
         analysis: {
           provider: 'openai',
@@ -308,13 +308,14 @@ router.post('/test-connection', async (req, res) => {
         };
         break;
 
-      case 'deepgram':
+      case 'deepgram': // legacy alias — kept so existing UI buttons don't break
+      case 'azure-speech':
         const transcriptionAvailable = transcriptionService.isAvailable();
         result = {
           success: transcriptionAvailable,
-          message: transcriptionAvailable 
-            ? 'Deepgram API key is configured' 
-            : 'Deepgram API key not set',
+          message: transcriptionAvailable
+            ? 'Azure AI Speech is configured'
+            : 'Azure AI Speech not configured (AZURE_SPEECH_ENDPOINT + MI or key)',
         };
         break;
 
@@ -406,7 +407,7 @@ router.get('/config', (req, res) => {
         api_url: process.env.OD_API_URL || process.env.OPENDENTAL_API_BASE_URL || 'not set',
       },
       transcription: {
-        provider: 'deepgram',
+        provider: transcriptionService.getStats().provider || 'azure-speech',
         configured: transcriptionService.isAvailable(),
       },
       analysis: {

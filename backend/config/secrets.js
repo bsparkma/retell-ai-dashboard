@@ -48,7 +48,10 @@ const SECRET_MAP = Object.freeze([
   { secretName: 'retell-api-key', envKey: 'RETELL_API_KEY' },
   { secretName: 'mango-username', envKey: 'MANGO_USERNAME' },
   { secretName: 'mango-password', envKey: 'MANGO_PASSWORD' },
-  { secretName: 'deepgram-api-key', envKey: 'DEEPGRAM_API_KEY' },
+  // Azure AI Speech transcription (PRD D3, HIPAA/BAA). Managed identity is preferred, so this
+  // api-key is an OPTIONAL fallback used only when AZURE_SPEECH_AUTH_MODE=api_key.
+  // Absent in the vault -> skipped (like the other optional secrets).
+  { secretName: 'azure-speech-key', envKey: 'AZURE_SPEECH_API_KEY' },
   { secretName: 'openai-api-key', envKey: 'OPENAI_API_KEY' },
   // Azure OpenAI summary provider (PRD D2/D7). Managed identity is preferred, so this
   // api-key is an OPTIONAL fallback that is only USED when AZURE_OPENAI_AUTH_MODE=api_key.
