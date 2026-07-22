@@ -1,18 +1,39 @@
 /**
  * Transcription Service
- * 
- * Handles audio transcription using Deepgram.
- * Supports both file-based and URL-based transcription.
+ *
+ * PROVIDER (PRD D3 — HIPAA): audio transcription runs on **Azure AI Speech**
+ * (Fast Transcription API, diarization on), covered by Microsoft's BAA in the Azure
+ * Product Terms. Managed-identity auth is preferred (the container apps run with a
+ * user-assigned MI); an API key from Key Vault is the fallback. Config comes from
+ * AZURE_SPEECH_* env, provisioned separately (spch-carein-staging).
+ *
+ * ⚠️ COMPLIANCE: Deepgram has NO BAA and MUST NOT touch real recording audio. The former
+ * Deepgram path has been removed entirely. When Azure Speech is not configured, this
+ * service degrades to "unavailable" (callers skip transcription) — it never routes audio
+ * to a BAA-less provider.
+ *
+ * Seam is unchanged for callers: transcribeFile / transcribeUrl return
+ * { text, words, utterances, duration_seconds, confidence, paragraphs }.
  */
 
-const { createClient } = require('@deepgram/sdk');
 const fs = require('fs').promises;
 const path = require('path');
 
+// Cognitive Services token audience for Entra/MI auth against Azure AI Speech.
+const AZURE_SPEECH_SCOPE = 'https://cognitiveservices.azure.com/.default';
+// Fast Transcription API version (synchronous, multipart audio, diarization supported).
+const FAST_TRANSCRIPTION_API_VERSION = '2024-11-15';
+
 class TranscriptionService {
   constructor() {
-    this.client = null;
     this.isInitialized = false;
+    this.provider = null;      // 'azure' | null
+    this.authMode = null;      // 'managed_identity' | 'api_key' | null
+    this.endpoint = null;      // https://<name>.cognitiveservices.azure.com
+    this.apiKey = null;        // only when authMode === 'api_key'
+    this.credential = null;    // ManagedIdentityCredential, only when MI
+    this.locales = ['en-US'];
+    this.maxSpeakers = 2;      // front-desk staff + patient
     this.stats = {
       totalTranscriptions: 0,
       totalMinutes: 0,
@@ -21,211 +42,244 @@ class TranscriptionService {
   }
 
   /**
-   * Initialize the Deepgram client
+   * Initialize the Azure AI Speech client config. Order:
+   *   1. Managed identity (preferred, no secret) unless AZURE_SPEECH_AUTH_MODE=api_key.
+   *   2. API key (from Key Vault as azure-speech-key) when AUTH_MODE=api_key and key present.
+   *   3. Otherwise unconfigured → isAvailable() false → callers skip transcription.
+   * Never falls back to a BAA-less provider.
    */
   initialize() {
-    const apiKey = process.env.DEEPGRAM_API_KEY;
-    
-    if (!apiKey) {
-      console.warn('⚠️ DEEPGRAM_API_KEY not set. Transcription service unavailable.');
+    // Endpoint may be given directly, or derived from a region.
+    const rawEndpoint = process.env.AZURE_SPEECH_ENDPOINT;
+    const region = process.env.AZURE_SPEECH_REGION;
+    const endpoint = rawEndpoint
+      ? rawEndpoint.replace(/\/+$/, '')
+      : (region ? `https://${region}.api.cognitive.microsoft.com` : null);
+
+    if (!endpoint) {
+      console.warn(
+        '⚠️ Azure AI Speech not configured (AZURE_SPEECH_ENDPOINT/AZURE_SPEECH_REGION missing). ' +
+        'Transcription unavailable — calls will not be transcribed (Deepgram is never used).'
+      );
       return false;
     }
 
+    if (process.env.AZURE_SPEECH_LOCALES) {
+      this.locales = process.env.AZURE_SPEECH_LOCALES.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (process.env.AZURE_SPEECH_MAX_SPEAKERS) {
+      const n = parseInt(process.env.AZURE_SPEECH_MAX_SPEAKERS, 10);
+      if (Number.isFinite(n) && n >= 1) this.maxSpeakers = n;
+    }
+
     try {
-      this.client = createClient(apiKey);
+      const authMode = process.env.AZURE_SPEECH_AUTH_MODE || 'managed_identity';
+      const useKey = authMode === 'api_key' && !!process.env.AZURE_SPEECH_API_KEY;
+
+      if (useKey) {
+        this.authMode = 'api_key';
+        this.apiKey = process.env.AZURE_SPEECH_API_KEY;
+        console.log('✅ Transcription service initialized (Azure AI Speech, api-key)');
+      } else {
+        // Preferred: managed identity — no secret. Reuses the container app's MI.
+        const { ManagedIdentityCredential } = require('@azure/identity');
+        const clientId = process.env.AZURE_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID;
+        this.credential = new ManagedIdentityCredential(clientId ? { clientId } : {});
+        this.authMode = 'managed_identity';
+        console.log('✅ Transcription service initialized (Azure AI Speech, managed identity)');
+      }
+
+      this.endpoint = endpoint;
+      this.provider = 'azure';
       this.isInitialized = true;
-      console.log('✅ Transcription service initialized (Deepgram)');
       return true;
     } catch (error) {
-      console.error('❌ Failed to initialize Deepgram:', error.message);
+      console.error('❌ Failed to initialize Azure AI Speech:', error.message);
       return false;
     }
   }
 
   /**
-   * Transcribe an audio file
+   * Resolve the auth header for a Fast Transcription request.
+   * @returns {Promise<Record<string,string>>}
+   */
+  async getAuthHeader() {
+    if (this.authMode === 'api_key') {
+      return { 'Ocp-Apim-Subscription-Key': this.apiKey };
+    }
+    // Managed identity — acquire an Entra token for the Cognitive Services audience.
+    const token = await this.credential.getToken(AZURE_SPEECH_SCOPE);
+    if (!token || !token.token) {
+      throw new Error('Failed to acquire managed-identity token for Azure AI Speech');
+    }
+    return { Authorization: `Bearer ${token.token}` };
+  }
+
+  /**
+   * Transcribe an audio file from local disk.
    * @param {string} filePath - Path to the audio file
-   * @param {Object} options - Transcription options
+   * @param {Object} options - { locales?, maxSpeakers? }
    */
   async transcribeFile(filePath, options = {}) {
-    if (!this.isInitialized) {
-      this.initialize();
+    if (!this.isInitialized) this.initialize();
+    if (!this.provider) {
+      throw new Error('Transcription service not available. Configure AZURE_SPEECH_ENDPOINT (+ MI or AZURE_SPEECH_API_KEY).');
     }
-
-    if (!this.client) {
-      throw new Error('Transcription service not available. Set DEEPGRAM_API_KEY.');
-    }
-
-    console.log(`🎤 Transcribing file: ${path.basename(filePath)}`);
-
-    try {
-      // Read the audio file
-      const audioBuffer = await fs.readFile(filePath);
-      
-      // Determine mimetype from extension
-      const ext = path.extname(filePath).toLowerCase();
-      const mimeTypes = {
-        '.mp3': 'audio/mp3',
-        '.wav': 'audio/wav',
-        '.m4a': 'audio/m4a',
-        '.ogg': 'audio/ogg',
-        '.flac': 'audio/flac',
-      };
-      const mimetype = mimeTypes[ext] || 'audio/mp3';
-
-      // Transcription options
-      const transcriptionOptions = {
-        model: options.model || 'nova-2',
-        smart_format: true,
-        punctuate: true,
-        diarize: options.diarize !== false, // Enable speaker diarization by default
-        utterances: true,
-        paragraphs: true,
-        ...options,
-      };
-
-      // Transcribe
-      const startTime = Date.now();
-      const { result } = await this.client.listen.prerecorded.transcribeFile(
-        audioBuffer,
-        transcriptionOptions
-      );
-
-      const duration = (Date.now() - startTime) / 1000;
-      
-      // Extract transcript data
-      const transcript = this.processTranscriptResult(result);
-      
-      // Update stats
-      if (transcript.duration_seconds) {
-        this.stats.totalTranscriptions++;
-        this.stats.totalMinutes += transcript.duration_seconds / 60;
-        // Deepgram Nova-2 costs ~$0.0043/min
-        this.stats.totalCost += (transcript.duration_seconds / 60) * 0.0043;
-      }
-
-      console.log(`✅ Transcription complete in ${duration.toFixed(1)}s`);
-      return transcript;
-
-    } catch (error) {
-      console.error('❌ Transcription failed:', error.message);
-      throw error;
-    }
+    console.log(`🎤 Transcribing file (Azure Speech): ${path.basename(filePath)}`);
+    const audioBuffer = await fs.readFile(filePath);
+    return this.transcribeBuffer(audioBuffer, path.basename(filePath), options);
   }
 
   /**
-   * Transcribe from a URL
+   * Transcribe audio from a URL (e.g. a signed Mango recording_url). Downloads the
+   * bytes then submits them to Fast Transcription. The buffer is not persisted here.
    * @param {string} url - URL of the audio file
-   * @param {Object} options - Transcription options
+   * @param {Object} options - { locales?, maxSpeakers? }
    */
   async transcribeUrl(url, options = {}) {
-    if (!this.isInitialized) {
-      this.initialize();
+    if (!this.isInitialized) this.initialize();
+    if (!this.provider) {
+      throw new Error('Transcription service not available. Configure AZURE_SPEECH_ENDPOINT (+ MI or AZURE_SPEECH_API_KEY).');
     }
-
-    if (!this.client) {
-      throw new Error('Transcription service not available. Set DEEPGRAM_API_KEY.');
+    console.log('🎤 Transcribing from URL (Azure Speech)...');
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (!resp.ok) {
+      throw new Error(`Audio fetch failed: ${resp.status} ${resp.statusText}`);
     }
-
-    console.log(`🎤 Transcribing from URL...`);
-
-    try {
-      const transcriptionOptions = {
-        model: options.model || 'nova-2',
-        smart_format: true,
-        punctuate: true,
-        diarize: options.diarize !== false,
-        utterances: true,
-        paragraphs: true,
-        ...options,
-      };
-
-      const startTime = Date.now();
-      const { result } = await this.client.listen.prerecorded.transcribeUrl(
-        { url },
-        transcriptionOptions
-      );
-
-      const duration = (Date.now() - startTime) / 1000;
-      const transcript = this.processTranscriptResult(result);
-
-      // Update stats
-      if (transcript.duration_seconds) {
-        this.stats.totalTranscriptions++;
-        this.stats.totalMinutes += transcript.duration_seconds / 60;
-        this.stats.totalCost += (transcript.duration_seconds / 60) * 0.0043;
-      }
-
-      console.log(`✅ Transcription complete in ${duration.toFixed(1)}s`);
-      return transcript;
-
-    } catch (error) {
-      console.error('❌ Transcription failed:', error.message);
-      throw error;
-    }
+    const ab = await resp.arrayBuffer();
+    const name = (() => {
+      try { return path.basename(new URL(url).pathname) || 'audio.mp3'; } catch { return 'audio.mp3'; }
+    })();
+    return this.transcribeBuffer(Buffer.from(ab), name, options);
   }
 
   /**
-   * Process Deepgram result into our standard format
+   * Submit an audio buffer to Azure Fast Transcription and normalize the result.
+   * @param {Buffer} audioBuffer
+   * @param {string} filename
+   * @param {Object} options - { locales?, maxSpeakers? }
    */
-  processTranscriptResult(result) {
-    const channel = result?.results?.channels?.[0];
-    const alternative = channel?.alternatives?.[0];
-    
-    if (!alternative) {
-      return {
-        text: '',
-        words: [],
-        utterances: [],
-        duration_seconds: 0,
-      };
+  async transcribeBuffer(audioBuffer, filename = 'audio.mp3', options = {}) {
+    if (!this.isInitialized) this.initialize();
+    if (!this.provider) {
+      throw new Error('Transcription service not available. Configure Azure AI Speech.');
     }
 
-    // Get full transcript text
-    const text = alternative.transcript || '';
-    
-    // Get words with timing
-    const words = (alternative.words || []).map(word => ({
-      word: word.word,
-      start: word.start,
-      end: word.end,
-      confidence: word.confidence,
-      speaker: word.speaker,
+    const locales = options.locales || this.locales;
+    const maxSpeakers = options.maxSpeakers || this.maxSpeakers;
+
+    const definition = {
+      locales,
+      // Diarization separates staff vs patient turns.
+      diarization: { enabled: true, maxSpeakers },
+      profanityFilterMode: 'None',
+    };
+
+    const form = new FormData();
+    // Node 22: global FormData/Blob. The audio part must be a Blob/File.
+    form.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), filename);
+    form.append('definition', JSON.stringify(definition));
+
+    const authHeader = await this.getAuthHeader();
+    const url = `${this.endpoint}/speechtotext/transcriptions:transcribe?api-version=${FAST_TRANSCRIPTION_API_VERSION}`;
+
+    const startTime = Date.now();
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', headers: { ...authHeader }, body: form });
+    } catch (error) {
+      console.error('❌ Azure Speech request failed:', error.message);
+      throw error;
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 500); } catch (_) {}
+      throw new Error(`Azure Speech transcription failed: ${res.status} ${res.statusText} ${detail}`);
+    }
+
+    const result = await res.json();
+    const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+    const transcript = this.processTranscriptResult(result);
+
+    if (transcript.duration_seconds) {
+      this.stats.totalTranscriptions++;
+      this.stats.totalMinutes += transcript.duration_seconds / 60;
+      // Azure AI Speech standard (S0) ≈ $1 / audio hour.
+      this.stats.totalCost += (transcript.duration_seconds / 60) * (1 / 60);
+    }
+
+    console.log(`✅ Azure Speech transcription complete in ${durationSec}s`);
+    return transcript;
+  }
+
+  /**
+   * Normalize a Fast Transcription response into our standard shape.
+   * Azure returns: { durationMilliseconds, combinedPhrases:[{text}], phrases:[{ text,
+   * speaker, offsetMilliseconds, durationMilliseconds, confidence, words:[...] }] }
+   */
+  processTranscriptResult(result) {
+    if (!result || (!result.combinedPhrases && !result.phrases)) {
+      return { text: '', words: [], utterances: [], duration_seconds: 0, confidence: null, paragraphs: [] };
+    }
+
+    const combined = Array.isArray(result.combinedPhrases) ? result.combinedPhrases : [];
+    const text = combined.map((c) => c.text).filter(Boolean).join(' ').trim()
+      || (Array.isArray(result.phrases) ? result.phrases.map((p) => p.text).filter(Boolean).join(' ').trim() : '');
+
+    const phrases = Array.isArray(result.phrases) ? result.phrases : [];
+
+    // Utterances: one per diarized phrase (speaker-separated segments).
+    const utterances = phrases.map((p) => ({
+      speaker: typeof p.speaker === 'number' ? p.speaker : 0,
+      text: p.text || '',
+      start: (p.offsetMilliseconds || 0) / 1000,
+      end: ((p.offsetMilliseconds || 0) + (p.durationMilliseconds || 0)) / 1000,
+      confidence: p.confidence,
     }));
 
-    // Get utterances (speaker-separated segments)
-    const utterances = (result?.results?.utterances || []).map(utt => ({
-      speaker: utt.speaker,
-      text: utt.transcript,
-      start: utt.start,
-      end: utt.end,
-      confidence: utt.confidence,
-    }));
+    // Flatten word-level timing when present.
+    const words = [];
+    for (const p of phrases) {
+      if (Array.isArray(p.words)) {
+        for (const w of p.words) {
+          words.push({
+            word: w.text,
+            start: (w.offsetMilliseconds || 0) / 1000,
+            end: ((w.offsetMilliseconds || 0) + (w.durationMilliseconds || 0)) / 1000,
+            confidence: w.confidence,
+            speaker: typeof p.speaker === 'number' ? p.speaker : undefined,
+          });
+        }
+      }
+    }
 
-    // Get duration from metadata
-    const duration = result?.metadata?.duration || 
-                    (words.length > 0 ? words[words.length - 1].end : 0);
+    const durationMs = result.durationMilliseconds
+      || (phrases.length ? (phrases[phrases.length - 1].offsetMilliseconds || 0) + (phrases[phrases.length - 1].durationMilliseconds || 0) : 0);
+
+    // Average phrase confidence as an overall read.
+    const confVals = phrases.map((p) => p.confidence).filter((c) => typeof c === 'number');
+    const confidence = confVals.length ? confVals.reduce((a, b) => a + b, 0) / confVals.length : null;
 
     return {
       text,
       words,
       utterances,
-      duration_seconds: Math.round(duration),
-      paragraphs: alternative.paragraphs?.paragraphs || [],
-      confidence: alternative.confidence,
+      duration_seconds: Math.round(durationMs / 1000),
+      confidence,
+      paragraphs: [],
     };
   }
 
   /**
-   * Format transcript as chat-style conversation
+   * Format transcript as chat-style conversation (speaker-labeled).
    */
   formatAsConversation(transcript) {
-    if (!transcript.utterances || transcript.utterances.length === 0) {
-      return transcript.text;
+    if (!transcript || !transcript.utterances || transcript.utterances.length === 0) {
+      return transcript ? transcript.text : '';
     }
-
-    return transcript.utterances.map(utt => {
-      const speaker = utt.speaker === 0 ? 'Speaker 1' : `Speaker ${utt.speaker + 1}`;
+    return transcript.utterances.map((utt) => {
+      const speaker = `Speaker ${(typeof utt.speaker === 'number' ? utt.speaker : 0) + 1}`;
       return `${speaker}: ${utt.text}`;
     }).join('\n');
   }
@@ -236,22 +290,21 @@ class TranscriptionService {
   getStats() {
     return {
       ...this.stats,
+      provider: this.provider,
+      authMode: this.authMode,
       isInitialized: this.isInitialized,
-      estimatedCostPerMinute: 0.0043,
+      estimatedCostPerMinute: 1 / 60, // Azure S0 ≈ $1/audio hour
     };
   }
 
   /**
-   * Check if service is available
+   * Check if service is available (Azure Speech configured).
    */
   isAvailable() {
-    if (!this.isInitialized) {
-      this.initialize();
-    }
-    return this.isInitialized && !!this.client;
+    if (!this.isInitialized) this.initialize();
+    return this.isInitialized && this.provider === 'azure';
   }
 }
 
 // Export singleton instance
 module.exports = new TranscriptionService();
-

@@ -277,14 +277,14 @@ class SyncScheduler {
 
   /**
    * Transcribe Mango calls that have local recordings but no transcript.
-   * Runs through the Deepgram transcription + optional AI analysis pipeline.
+   * Runs through the Azure AI Speech transcription + optional AI analysis pipeline.
    */
   async transcribeUntranscribedMango(options = {}) {
     const maxCalls = options.maxCalls || 10;
     const fs = require('fs').promises;
 
     if (!transcriptionService.isAvailable()) {
-      console.warn('⚠️ Deepgram not configured (DEEPGRAM_API_KEY missing). Skipping Mango transcription.');
+      console.warn('⚠️ Azure AI Speech not configured (AZURE_SPEECH_ENDPOINT missing). Skipping Mango transcription.');
       return { transcribed: 0, analyzed: 0, errors: [] };
     }
 
