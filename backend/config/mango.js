@@ -88,14 +88,14 @@ module.exports = {
     // Default: Every hour at minute 15
     schedule: process.env.MANGO_SYNC_SCHEDULE || '15 * * * *',
     
-    // How many days back to look for calls on first sync
-    initialLookbackDays: 7,
-    
+    // How many days back to look for calls on first sync (env-tunable for controlled rollout)
+    initialLookbackDays: parseInt(process.env.MANGO_INITIAL_LOOKBACK_DAYS || '7', 10),
+
     // How many days back to look on regular syncs
-    regularLookbackDays: 1,
-    
-    // Maximum calls to process per sync
-    maxCallsPerSync: 100,
+    regularLookbackDays: parseInt(process.env.MANGO_REGULAR_LOOKBACK_DAYS || '1', 10),
+
+    // Maximum calls to process per sync (env-tunable — set small for a controlled first pull)
+    maxCallsPerSync: parseInt(process.env.MANGO_MAX_CALLS_PER_SYNC || '100', 10),
     
     // Whether to download recordings
     downloadRecordings: true,
