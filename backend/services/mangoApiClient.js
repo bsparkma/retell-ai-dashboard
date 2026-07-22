@@ -2,17 +2,20 @@
  * Mango internal REST API client (interim M3 ingestion path).
  *
  * The Mango web app (app.mangovoice.com) is backed by a clean Django-REST API at
- * api.mangovoice.com, Bearer-authenticated. We drive that directly instead of DOM
- * scraping. The Bearer is minted by the SPA login, so the interim auth provider harvests
- * it from a Puppeteer login session. When the documented "Global API" unblocks, only the
- * auth provider needs swapping — the client + normalization stay.
+ * api.mangovoice.com, Bearer-authenticated with SimpleJWT. We drive that directly instead
+ * of DOM scraping. When the documented "Global API" unblocks, only the auth provider swaps.
+ *
+ * Auth is isolated behind MangoAuthProvider:
+ *   - HttpLoginAuthProvider (DEFAULT): POST /api/token/ {username,password} -> {access,refresh}.
+ *     Pure fetch — no browser — so it runs in the lean API container (no Chromium).
+ *   - BrowserSessionAuthProvider (fallback): harvests the Bearer from a Puppeteer login,
+ *     for environments where the HTTP login is unavailable. Requires Chromium.
  *
  * Compliance (D3): recordings are the signed, EXPIRING S3 `recording_url` from call detail.
  * We fetch → Azure Speech (BAA) → discard; audio is never written to disk here.
  */
 
 const config = require('../config/mango');
-const mangoScraper = require('./mangoScraper'); // reused ONLY for its Puppeteer login/session
 const transcriptionService = require('./transcriptionService');
 const { normalizeMangoCall, isIngestibleCall } = require('./mangoNormalize');
 
@@ -28,13 +31,80 @@ const MIN_TRANSCRIBE_SECONDS = 5;
 class MangoAuthProvider {
   /** @returns {Promise<string>} an "Authorization" header value (e.g. "Bearer …"). */
   async getToken() { throw new Error('MangoAuthProvider.getToken not implemented'); }
-  /** Invalidate any cached token (called on 401 to force a re-harvest). */
+  /** Invalidate any cached token (called on 401 to force a refresh/re-login). */
   invalidate() {}
+  /** Release any resources (e.g. a browser). No-op by default. */
+  async close() {}
 }
 
 /**
- * Interim provider: log in with Puppeteer and harvest the SPA's Bearer token from an
- * outgoing api.mangovoice.com request. Token is cached until invalidated.
+ * DEFAULT provider: SimpleJWT HTTP login. Pure fetch, container-friendly (no browser).
+ *   POST {baseUrl}/api/token/          {username,password} -> {access, refresh}
+ *   POST {baseUrl}/api/token/refresh/  {refresh}           -> {access}
+ */
+class HttpLoginAuthProvider extends MangoAuthProvider {
+  constructor(opts = {}) {
+    super();
+    this.baseUrl = (opts.baseUrl || config.api.baseUrl).replace(/\/+$/, '');
+    this.username = opts.username || config.auth.username;
+    this.password = opts.password || config.auth.password;
+    this._access = null;
+    this._refresh = null;
+    this._inFlight = null;
+  }
+
+  invalidate() { this._access = null; } // keep refresh for a cheap re-mint
+
+  async getToken() {
+    if (this._access) return `Bearer ${this._access}`;
+    if (this._inFlight) return this._inFlight;
+    this._inFlight = this._acquire().finally(() => { this._inFlight = null; });
+    return this._inFlight;
+  }
+
+  async _acquire() {
+    // Prefer a refresh (no password on the wire) when we have one.
+    if (this._refresh) {
+      try {
+        const r = await fetch(`${this.baseUrl}/api/token/refresh/`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ refresh: this._refresh }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          if (j && j.access) { this._access = j.access; return `Bearer ${this._access}`; }
+        }
+      } catch (_) { /* fall through to full login */ }
+      this._refresh = null;
+    }
+
+    if (!this.username || !this.password) {
+      throw new Error('Mango credentials not configured (MANGO_USERNAME / MANGO_PASSWORD).');
+    }
+    const res = await fetch(`${this.baseUrl}/api/token/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ username: this.username, password: this.password }),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 200); } catch (_) {}
+      throw new Error(`Mango login failed: ${res.status} ${detail}`);
+    }
+    const j = await res.json();
+    if (!j || !j.access) throw new Error('Mango login: no access token in response');
+    this._access = j.access;
+    this._refresh = j.refresh || null;
+    return `Bearer ${this._access}`;
+  }
+}
+
+/**
+ * Fallback provider: harvest the SPA's Bearer from a Puppeteer login session. Requires
+ * Chromium — NOT available in the lean API container. Kept for local/diagnostic use and
+ * environments where the HTTP login endpoint is unavailable. mangoScraper is required
+ * lazily so the default (HTTP) path never loads Puppeteer.
  */
 class BrowserSessionAuthProvider extends MangoAuthProvider {
   constructor() {
@@ -45,8 +115,11 @@ class BrowserSessionAuthProvider extends MangoAuthProvider {
 
   invalidate() {
     this._token = null;
-    // Force mangoScraper to re-authenticate on the next login() as well.
-    mangoScraper.isLoggedIn = false;
+    try { require('./mangoScraper').isLoggedIn = false; } catch (_) {}
+  }
+
+  async close() {
+    try { await require('./mangoScraper').close(); } catch (_) {}
   }
 
   async getToken() {
@@ -57,7 +130,8 @@ class BrowserSessionAuthProvider extends MangoAuthProvider {
   }
 
   async _harvest() {
-    await mangoScraper.login(); // handles login-URL, selectors, PBX select (validated)
+    const mangoScraper = require('./mangoScraper');
+    await mangoScraper.login();
     const page = mangoScraper.page;
 
     let bearer = '';
@@ -71,17 +145,13 @@ class BrowserSessionAuthProvider extends MangoAuthProvider {
     };
     page.on('request', listener);
     try {
-      // Landing on the app home fires API XHRs that carry the Bearer.
       await page.goto(`${config.portal.baseUrl}/`, { waitUntil: 'networkidle2' }).catch(() => {});
-      if (page.url().includes('select-pbx')) {
-        await mangoScraper.selectFirstPbxIfNeeded().catch(() => {});
-      }
+      if (page.url().includes('select-pbx')) await mangoScraper.selectFirstPbxIfNeeded().catch(() => {});
       const deadline = Date.now() + 12000;
       while (!bearer && Date.now() < deadline) await sleep(250);
     } finally {
       page.off('request', listener);
     }
-
     if (!bearer) throw new Error('Failed to harvest Mango Bearer token from login session');
     this._token = bearer;
     return this._token;
@@ -94,16 +164,16 @@ class BrowserSessionAuthProvider extends MangoAuthProvider {
 
 class MangoApiClient {
   /**
-   * @param {MangoAuthProvider} [authProvider]
+   * @param {MangoAuthProvider} [authProvider] defaults to HttpLoginAuthProvider
    * @param {{ baseUrl?: string }} [opts]
    */
   constructor(authProvider, opts = {}) {
-    this.auth = authProvider || new BrowserSessionAuthProvider();
+    this.auth = authProvider || new HttpLoginAuthProvider();
     this.baseUrl = (opts.baseUrl || config.api.baseUrl).replace(/\/+$/, '');
   }
 
   /**
-   * Authenticated JSON request. On 401, invalidate + re-harvest the token and retry once.
+   * Authenticated JSON request. On 401, invalidate + re-acquire the token and retry once.
    * @param {string} pathOrUrl
    * @param {{ method?: string, retryOn401?: boolean }} [opts]
    */
@@ -145,9 +215,9 @@ class MangoApiClient {
     return this._fetch(`/calls/${encodeURIComponent(id)}/`);
   }
 
-  /** Close the underlying browser session (auth). */
+  /** Release auth resources (browser, if any). */
   async close() {
-    await mangoScraper.close().catch(() => {});
+    if (this.auth && typeof this.auth.close === 'function') await this.auth.close();
   }
 
   /**
@@ -234,8 +304,9 @@ class MangoApiClient {
   }
 }
 
-// Default singleton (browser-session auth). Exports the classes too for testing / future swap.
+// Default singleton (HTTP-login auth). Exports the classes too for testing / future swap.
 module.exports = new MangoApiClient();
 module.exports.MangoApiClient = MangoApiClient;
 module.exports.MangoAuthProvider = MangoAuthProvider;
+module.exports.HttpLoginAuthProvider = HttpLoginAuthProvider;
 module.exports.BrowserSessionAuthProvider = BrowserSessionAuthProvider;
