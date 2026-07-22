@@ -51,10 +51,19 @@ class CallAnalyzer {
         // fallback (loading the KV key never flips us off MI, and a failed MI token
         // acquisition throws → regex fallback, it does NOT retry with the key).
         const authMode = process.env.AZURE_OPENAI_AUTH_MODE || 'managed_identity';
-        const useKey = authMode === 'api_key' && !!process.env.AZURE_OPENAI_API_KEY;
-        if (useKey) {
-          // Key fallback (from Key Vault as azure-openai-key).
-          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, apiKey: process.env.AZURE_OPENAI_API_KEY });
+        // Enforce credential exclusivity at construction. The openai SDK defaults
+        // `apiKey` to readEnv('AZURE_OPENAI_API_KEY') ONLY when apiKey is `undefined`, and
+        // throws if both apiKey and azureADTokenProvider are set. SECRET_MAP loads
+        // azure-openai-key into that env in production, so on the MI path we MUST pass
+        // apiKey:null to suppress the env default (else: "apiKey and azureADTokenProvider
+        // are mutually exclusive"). AUTH_MODE picks exactly one credential — never both.
+        if (authMode === 'api_key') {
+          const apiKey = process.env.AZURE_OPENAI_API_KEY;
+          if (!apiKey) {
+            console.error('❌ AZURE_OPENAI_AUTH_MODE=api_key but AZURE_OPENAI_API_KEY is not set.');
+            return false;
+          }
+          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, apiKey });
           console.log('✅ Call analyzer initialized (Azure OpenAI, api-key)');
         } else {
           // Preferred: managed identity — no secret. Reuses the container app's MI.
@@ -62,7 +71,7 @@ class CallAnalyzer {
           const clientId = process.env.AZURE_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID;
           const credential = new ManagedIdentityCredential(clientId ? { clientId } : {});
           const azureADTokenProvider = getBearerTokenProvider(credential, AZURE_OPENAI_SCOPE);
-          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, azureADTokenProvider });
+          this.client = new AzureOpenAI({ endpoint, apiVersion, deployment, azureADTokenProvider, apiKey: null });
           console.log('✅ Call analyzer initialized (Azure OpenAI, managed identity)');
         }
         this.provider = 'azure';
@@ -159,7 +168,9 @@ class CallAnalyzer {
       // Parse JSON response
       const analysis = this.parseAnalysisResponse(content);
 
-      console.log(`✅ Call analyzed: ${analysis.caller_name || 'Unknown'}, Sentiment: ${analysis.sentiment}`);
+      // Proof the LLM path actually ran (not the regex fallback): names the provider +
+      // token usage per summarized call. Regex fallback never logs this line.
+      console.log(`✅ Call analyzed via ${this.provider} (${usage?.total_tokens || 0} tokens): ${analysis.caller_name || 'Unknown'}, Sentiment: ${analysis.sentiment}`);
       return analysis;
 
     } catch (error) {
