@@ -25,9 +25,15 @@ interface SendToChartDialogProps {
   patientId: number;
   patientName: string;
   onSent: () => void;
+  /**
+   * What to write (item 4): 'summary' (compact block, default) or 'transcript'
+   * (full transcript — a large note, the user's deliberate choice). The contextual
+   * buttons on the call-detail page set this; the worklist-row Send omits it (summary).
+   */
+  contentType?: "summary" | "transcript";
 }
 
-export function SendToChartDialog({ open, onOpenChange, call, patientId, patientName, onSent }: SendToChartDialogProps) {
+export function SendToChartDialog({ open, onOpenChange, call, patientId, patientName, onSent, contentType = "summary" }: SendToChartDialogProps) {
   const [generated, setGenerated] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -39,12 +45,12 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
     setText("");
     setLoadingPreview(true);
     let cancelled = false;
-    api.getCommlogPreview(call.id)
+    api.getCommlogPreview(call.id, contentType)
       .then((res) => { if (!cancelled) { setGenerated(res.note); setText(res.note); } })
       .catch(() => { if (!cancelled) { setGenerated(null); setText(""); } })
       .finally(() => { if (!cancelled) setLoadingPreview(false); });
     return () => { cancelled = true; };
-  }, [open, call.id]);
+  }, [open, call.id, contentType]);
 
   const edited = generated != null && text.trim() !== generated.trim();
 
@@ -53,7 +59,7 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
     if (!text.trim()) { toast.error("Note is empty", { duration: 8000 }); return; }
     setSending(true);
     try {
-      const res = await api.resolvePatient(call.id, { patientId, note: text });
+      const res = await api.resolvePatient(call.id, { patientId, note: text, content_type: contentType });
       if (res.success) {
         toast.success(res.alreadySynced ? `Already on ${patientName}'s chart` : `Sent to ${patientName}'s chart`);
         onSent();
@@ -72,9 +78,10 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Send to chart</DialogTitle>
+          <DialogTitle>{contentType === "transcript" ? "Send full transcript to chart" : "Send summary to chart"}</DialogTitle>
           <DialogDescription>
-            Writes this note to <span className="font-medium text-foreground">{patientName}</span>'s Open Dental chart.
+            Writes this {contentType === "transcript" ? "full transcript" : "summary"} to{" "}
+            <span className="font-medium text-foreground">{patientName}</span>'s Open Dental chart.
             Review or edit it first — nothing is written until you confirm.
           </DialogDescription>
         </DialogHeader>

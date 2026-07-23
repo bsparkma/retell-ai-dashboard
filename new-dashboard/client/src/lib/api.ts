@@ -524,7 +524,10 @@ export const api = {
    */
   async resolvePatient(
     id: string,
-    body: { patientId: number; note?: string } | { notAPatient: true; reason: NotAPatientReason }
+    body:
+      // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
+      | { patientId: number; note?: string; content_type?: "summary" | "transcript" }
+      | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
@@ -542,8 +545,12 @@ export const api = {
    * The exact chart note "Send to chart" will write, for the confirm-preview dialog.
    * Same formatter/options as the send path, so preview === what gets written.
    */
-  async getCommlogPreview(id: string): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
-    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview`);
+  async getCommlogPreview(
+    id: string,
+    contentType: "summary" | "transcript" = "summary",
+  ): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
+    const q = contentType === "transcript" ? "?content_type=transcript" : "";
+    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q}`);
   },
 
   /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */

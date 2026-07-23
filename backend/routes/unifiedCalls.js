@@ -360,7 +360,9 @@ router.get('/:id/commlog-preview', async (req, res) => {
     if (!call) {
       return res.status(404).json({ error: 'Call not found' });
     }
-    const entry = openDentalSync.formatCommLogEntry(call, {});
+    // content_type (item 4): 'summary' (default, compact block) | 'transcript' (full note).
+    const contentType = req.query.content_type === 'transcript' ? 'transcript' : 'summary';
+    const entry = openDentalSync.formatCommLogEntry(call, { contentType });
     await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
     res.json({
       note: entry.Note,
@@ -660,7 +662,9 @@ router.post('/:id/resolve-patient', async (req, res) => {
     // Determine the note to send. The generated note is the baseline; a human-edited
     // note (from the review/edit dialog) wins. Both are OD-sanitized so what we persist,
     // preview, and write all match. note_edited records whether the human changed it.
-    const generatedNote = sanitizeForOd(openDentalSync.formatCommLogEntry(call, {}).Note);
+    // content_type (item 4): the user chooses summary (compact) or full transcript at send.
+    const contentType = body.content_type === 'transcript' ? 'transcript' : 'summary';
+    const generatedNote = sanitizeForOd(openDentalSync.formatCommLogEntry(call, { contentType }).Note);
     const hasEdit = typeof body.note === 'string' && body.note.trim().length > 0;
     const sentNote = hasEdit ? sanitizeForOd(body.note) : generatedNote;
     const noteEdited = sentNote.trim() !== generatedNote.trim();

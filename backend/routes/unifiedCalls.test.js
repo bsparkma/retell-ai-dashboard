@@ -293,3 +293,21 @@ test('resolve-patient accepts the vendor + lab close-out reasons', async () => {
     assert.equal(body.call.not_a_patient_reason, reason);
   }
 });
+
+test('commlog-preview: content_type=transcript returns the full-transcript note (item 4)', async () => {
+  seedCall('c-ct', { call_analysis: { call_summary: 'Billing question.' } });
+  unifiedCallStore.updateCall('c-ct', {
+    od_patient_id: 12827, summary: 'Billing question.',
+    transcript: 'Hi, I have a question about my statement balance.',
+  });
+  // Default (summary) — compact block, no transcript.
+  const sres = await fetch(`${baseUrl}/api/unified-calls/c-ct/commlog-preview`);
+  const sbody = await sres.json();
+  assert.match(sbody.note, /^Caller: /m);
+  assert.ok(!/Full transcript/.test(sbody.note));
+  // content_type=transcript — appends the full transcript.
+  const tres = await fetch(`${baseUrl}/api/unified-calls/c-ct/commlog-preview?content_type=transcript`);
+  const tbody = await tres.json();
+  assert.match(tbody.note, /--- Full transcript ---/);
+  assert.match(tbody.note, /question about my statement balance/);
+});
