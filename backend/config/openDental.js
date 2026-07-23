@@ -2,6 +2,19 @@ const mysql = require('mysql2/promise');
 const EventEmitter = require('events');
 const moment = require('moment');
 
+/**
+ * Backoff (ms) for an OD API 429 retry (item 7). Honors a numeric Retry-After header
+ * (seconds); otherwise exponential 500·2^(attempt-1) capped at 8s. Pure — jitter is
+ * added by the caller so this stays deterministic and unit-testable.
+ * @param {number} attempt  1-based retry attempt
+ * @param {number} [retryAfterSec]  parsed Retry-After header value in seconds
+ * @returns {number}
+ */
+function computeOdBackoffMs(attempt, retryAfterSec) {
+  if (Number.isFinite(retryAfterSec) && retryAfterSec >= 0) return retryAfterSec * 1000;
+  return Math.min(500 * 2 ** (Math.max(1, attempt) - 1), 8000);
+}
+
 class OpenDentalService extends EventEmitter {
   constructor() {
     super();
@@ -106,9 +119,21 @@ class OpenDentalService extends EventEmitter {
   }
 
   setupInterceptors() {
-    // Request interceptor
+    // Throttle (item 7): the OD API rate-limits bursts (429 "Too many requests"). Space
+    // outgoing requests by a minimum interval so patient-match bursts don't trip it. A
+    // reserved-slot timestamp serializes spacing even under concurrent callers.
+    const MIN_INTERVAL_MS = parseInt(process.env.OD_API_MIN_INTERVAL_MS || '120', 10);
+    this._odNextSlotAt = 0;
+
+    // Request interceptor — space requests, then log.
     this.client.interceptors.request.use(
-      (config) => {
+      async (config) => {
+        if (MIN_INTERVAL_MS > 0) {
+          const now = Date.now();
+          const wait = Math.max(0, this._odNextSlotAt - now);
+          this._odNextSlotAt = Math.max(now, this._odNextSlotAt) + MIN_INTERVAL_MS;
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        }
         console.log(`[OD API] ${config.method?.toUpperCase()} ${config.url}`);
         return config;
       },
@@ -118,13 +143,31 @@ class OpenDentalService extends EventEmitter {
       }
     );
 
-    // Response interceptor  
+    // Response interceptor — exponential-backoff retry on 429 (item 7), else pass through.
+    const MAX_RETRIES = parseInt(process.env.OD_API_MAX_RETRIES || '4', 10);
     this.client.interceptors.response.use(
       (response) => {
         console.log(`[OD API] Response: ${response.status} ${response.config.url}`);
         return response;
       },
-      (error) => {
+      async (error) => {
+        const config = error.config;
+        const status = error.response?.status;
+        // Retry only 429s (rate limit). Never retry 4xx writes/validation or 5xx here —
+        // safe-fail is preserved: after retries are exhausted we reject, and the matcher
+        // treats a failure as "no match → needs_review", never a wrong write.
+        if (status === 429 && config) {
+          config.__odRetry = (config.__odRetry || 0) + 1;
+          if (config.__odRetry <= MAX_RETRIES) {
+            const retryAfterSec = parseInt(error.response.headers?.['retry-after'], 10);
+            const backoffMs = computeOdBackoffMs(config.__odRetry, retryAfterSec);
+            const jitter = Math.floor(Math.random() * 250);
+            console.warn(`[OD API] 429 rate-limited on ${config.url} — retry ${config.__odRetry}/${MAX_RETRIES} in ${backoffMs + jitter}ms`);
+            await new Promise((r) => setTimeout(r, backoffMs + jitter));
+            return this.client(config);
+          }
+          console.error(`[OD API] 429 rate-limited on ${config.url} — retries exhausted (${MAX_RETRIES})`);
+        }
         console.error('[OD API] Response Error:', error.response?.data || error.message);
         this.handleApiError(error);
         return Promise.reject(error);
@@ -1824,4 +1867,5 @@ class OpenDentalService extends EventEmitter {
 const openDentalServiceSingleton = new OpenDentalService();
 openDentalServiceSingleton.OpenDentalService = OpenDentalService;
 module.exports = openDentalServiceSingleton;
-module.exports.OpenDentalService = OpenDentalService; 
+module.exports.OpenDentalService = OpenDentalService;
+module.exports.computeOdBackoffMs = computeOdBackoffMs; 
