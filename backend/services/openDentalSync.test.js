@@ -81,6 +81,7 @@ test('createCommLog reports failure (not a throw) when no OD connection is avail
 test('formatCommLogEntry: compact 4-field summary block (default contentType)', () => {
   const note = sync.formatCommLogEntry({
     id: 'x1', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    transcript: 'Hi, this is Sam, I need to reschedule my cleaning.',
     caller_name: 'Sam Rivera', call_reason: 'Reschedule cleaning',
     action_needed: 'Call back to confirm Tue 2:30', callback_number: '4795551234',
   }, {}).Note;
@@ -97,6 +98,7 @@ test('formatCommLogEntry: emergency marker + callback fallbacks', () => {
   // No explicit callback_number, but callback_required → falls back to caller_number.
   const note = sync.formatCommLogEntry({
     id: 'x2', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    transcript: 'I broke my tooth and it really hurts.',
     caller_name: 'Pat', call_reason: 'Broken tooth', is_emergency: true,
     callback_required: true, caller_number: '9185550000',
   }, {}).Note;
@@ -106,6 +108,7 @@ test('formatCommLogEntry: emergency marker + callback fallbacks', () => {
   // Nothing to call back on → dash.
   const note2 = sync.formatCommLogEntry({
     id: 'x3', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    transcript: 'General question about hours.',
   }, {}).Note;
   assert.match(note2, /^Callback #: -$/m);
   assert.match(note2, /^Caller: Unknown$/m);
@@ -118,4 +121,20 @@ test('formatCommLogEntry: contentType "transcript" appends the full transcript',
   }, { contentType: 'transcript' }).Note;
   assert.match(note, /--- Full transcript ---/);
   assert.match(note, /Hello this is Sam calling about my bill\./);
+});
+
+test('formatCommLogEntry: no-content call writes the minimal stub (item 5)', () => {
+  // Missed/voicemail call — no transcript.
+  const note = sync.formatCommLogEntry({
+    id: 'nc1', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    outcome: 'missed',
+  }, {}).Note;
+  assert.match(note, /^Call received .+, no recording available\.$/);
+  assert.ok(!/Caller:/.test(note), 'no compact block for a no-content call');
+
+  // Empty-string transcript is also "no content".
+  const note2 = sync.formatCommLogEntry({
+    id: 'nc2', source: 'mango', call_date: '2026-07-23T19:30:00.000Z', transcript: '   ',
+  }, {}).Note;
+  assert.match(note2, /no recording available\./);
 });

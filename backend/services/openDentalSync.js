@@ -334,27 +334,39 @@ class OpenDentalSyncService {
     // block was too long for OD notes. Four terse fields + a one-line header. The LLM is
     // instructed (buildHumanCallPrompt) to keep each field to one line.
     const localWhen = this.formatOfficeDateTime(call.call_date);
-    const reason = call.call_reason || call.summary || 'Call';
-    const reasonLine = call.is_emergency ? `${reason} [EMERGENCY]` : reason;
-    // Prefer a callback number the caller explicitly gave; else the caller's own number
-    // when a callback is needed; else nothing. ('-' not em-dash: OD-safe ASCII.)
-    const callbackNum = call.callback_number
-      || (call.callback_required ? call.caller_number : null)
-      || '-';
 
-    // ASCII-only so sanitizeForOd is a no-op and the chart note is clean.
-    let note = [
-      `CareIN call - ${localWhen} - ${source}`,
-      `Caller: ${call.caller_name || 'Unknown'}`,
-      `Reason: ${reasonLine}`,
-      `Action: ${call.action_needed || 'None'}`,
-      `Callback #: ${callbackNum}`,
-    ].join('\n');
+    // No-content calls (item 5): short/missed/voicemail with no recording → no transcript
+    // AND no analyzed summary. Writing the compact block would be all "Unknown/None"; a
+    // minimal stub is clearer and keeps the call fully triageable/closable. Office-TZ ts.
+    const nonEmpty = (v) => typeof v === 'string' && v.trim().length > 0;
+    const hasContent = nonEmpty(call.transcript) || nonEmpty(call.summary) || nonEmpty(call.call_reason);
 
-    // Transcript sends (item 4, contentType 'transcript') append the full transcript —
-    // deliberately a large note. Legacy includeTranscript flag honored for compatibility.
-    if ((options.contentType === 'transcript' || options.includeTranscript) && call.transcript) {
-      note += `\n\n--- Full transcript ---\n${this.formatTranscriptForCommLog(call.transcript, call.transcript_json)}`;
+    let note;
+    if (!hasContent) {
+      note = `Call received ${localWhen}, no recording available.`;
+    } else {
+      const reason = call.call_reason || call.summary || 'Call';
+      const reasonLine = call.is_emergency ? `${reason} [EMERGENCY]` : reason;
+      // Prefer a callback number the caller explicitly gave; else the caller's own number
+      // when a callback is needed; else nothing. ('-' not em-dash: OD-safe ASCII.)
+      const callbackNum = call.callback_number
+        || (call.callback_required ? call.caller_number : null)
+        || '-';
+
+      // ASCII-only so sanitizeForOd is a no-op and the chart note is clean.
+      note = [
+        `CareIN call - ${localWhen} - ${source}`,
+        `Caller: ${call.caller_name || 'Unknown'}`,
+        `Reason: ${reasonLine}`,
+        `Action: ${call.action_needed || 'None'}`,
+        `Callback #: ${callbackNum}`,
+      ].join('\n');
+
+      // Transcript sends (item 4, contentType 'transcript') append the full transcript —
+      // deliberately a large note. Legacy includeTranscript flag honored for compatibility.
+      if ((options.contentType === 'transcript' || options.includeTranscript) && nonEmpty(call.transcript)) {
+        note += `\n\n--- Full transcript ---\n${this.formatTranscriptForCommLog(call.transcript, call.transcript_json)}`;
+      }
     }
 
     return {
