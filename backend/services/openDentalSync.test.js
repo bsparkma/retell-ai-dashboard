@@ -75,3 +75,47 @@ test('createCommLog reports failure (not a throw) when no OD connection is avail
     Object.assign(openDentalService, prev);
   }
 });
+
+// ── Compact summary block (day-1 item 2) ─────────────────────────────────────
+
+test('formatCommLogEntry: compact 4-field summary block (default contentType)', () => {
+  const note = sync.formatCommLogEntry({
+    id: 'x1', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    caller_name: 'Sam Rivera', call_reason: 'Reschedule cleaning',
+    action_needed: 'Call back to confirm Tue 2:30', callback_number: '4795551234',
+  }, {}).Note;
+  assert.match(note, /^CareIN call - .+ - Staff \(Mango\)$/m);
+  assert.match(note, /^Caller: Sam Rivera$/m);
+  assert.match(note, /^Reason: Reschedule cleaning$/m);
+  assert.match(note, /^Action: Call back to confirm Tue 2:30$/m);
+  assert.match(note, /^Callback #: 4795551234$/m);
+  // Compact: no full transcript unless requested.
+  assert.ok(!/Full transcript/.test(note));
+});
+
+test('formatCommLogEntry: emergency marker + callback fallbacks', () => {
+  // No explicit callback_number, but callback_required → falls back to caller_number.
+  const note = sync.formatCommLogEntry({
+    id: 'x2', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    caller_name: 'Pat', call_reason: 'Broken tooth', is_emergency: true,
+    callback_required: true, caller_number: '9185550000',
+  }, {}).Note;
+  assert.match(note, /^Reason: Broken tooth \[EMERGENCY\]$/m);
+  assert.match(note, /^Callback #: 9185550000$/m);
+
+  // Nothing to call back on → dash.
+  const note2 = sync.formatCommLogEntry({
+    id: 'x3', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+  }, {}).Note;
+  assert.match(note2, /^Callback #: -$/m);
+  assert.match(note2, /^Caller: Unknown$/m);
+});
+
+test('formatCommLogEntry: contentType "transcript" appends the full transcript', () => {
+  const note = sync.formatCommLogEntry({
+    id: 'x4', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    caller_name: 'Sam', call_reason: 'Question', transcript: 'Hello this is Sam calling about my bill.',
+  }, { contentType: 'transcript' }).Note;
+  assert.match(note, /--- Full transcript ---/);
+  assert.match(note, /Hello this is Sam calling about my bill\./);
+});

@@ -224,6 +224,9 @@ class SyncScheduler {
               call.sentiment = analysis.sentiment;
               call.summary = analysis.summary;
               call.is_emergency = analysis.is_emergency;
+              // Compact-summary fields (item 2) for the OD note.
+              call.action_needed = analysis.action_needed ?? null;
+              call.callback_number = analysis.callback_number ?? null;
               // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1).
               call.appointment_requested = analysis.appointment_requested ?? false;
               call.callback_required = analysis.callback_needed ?? call.callback_required ?? false;
@@ -390,6 +393,9 @@ class SyncScheduler {
               if (analysis.sentiment) updates.sentiment = analysis.sentiment;
               if (analysis.summary) updates.summary = analysis.summary;
               if (analysis.is_emergency !== undefined) updates.is_emergency = analysis.is_emergency;
+              // Compact-summary fields (item 2) for the OD note.
+              if (analysis.action_needed !== undefined) updates.action_needed = analysis.action_needed;
+              if (analysis.callback_number !== undefined) updates.callback_number = analysis.callback_number;
               // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1).
               if (analysis.appointment_requested !== undefined) updates.appointment_requested = analysis.appointment_requested;
               if (analysis.callback_needed !== undefined) updates.callback_required = analysis.callback_needed;

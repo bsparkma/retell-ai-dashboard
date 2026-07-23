@@ -195,10 +195,14 @@ CALLER PHONE NUMBER: ${call.caller_number || 'Unknown'}
 
 Focus on: who called and for whom, why they called, what the staff member did or promised, whether any follow-up is needed and by whom, and any emergency indicators.
 
+Be TERSE — each field below is one short line (it becomes a compact chart note). No prose.
+
 Respond with ONLY valid JSON with these fields:
 {
   "caller_name": "The caller's name if stated, else null",
-  "call_reason": "Brief reason (e.g., 'appointment scheduling', 'billing question', 'dental emergency', 'insurance question', 'general inquiry')",
+  "call_reason": "ONE short line — the reason (e.g., 'Reschedule cleaning', 'Billing question about statement', 'Broken tooth — emergency')",
+  "action_needed": "ONE short line — what the office must do / what staff promised, or 'None' (e.g., 'Call back to confirm Tue 2:30', 'Send itemized statement')",
+  "callback_number": "The best callback number if the caller gave one, digits only, else null",
   "sentiment": "positive | neutral | negative (the caller's tone)",
   "is_emergency": true or false (is this a dental emergency?),
   "summary": "2-3 sentence summary of the call and what was done or promised",
@@ -250,6 +254,10 @@ Respond ONLY with valid JSON, no other text.`;
         return {
           caller_name: parsed.caller_name || null,
           call_reason: parsed.call_reason || 'Unknown',
+          // Compact-summary fields (item 2). action_needed = one terse line; callback_number
+          // = digits the caller gave, else null. Absent on the AI-agent prompt → null.
+          action_needed: parsed.action_needed || null,
+          callback_number: parsed.callback_number ? String(parsed.callback_number) : null,
           sentiment: this.normalizeSentiment(parsed.sentiment),
           is_emergency: !!parsed.is_emergency,
           summary: parsed.summary || '',
@@ -329,6 +337,8 @@ Respond ONLY with valid JSON, no other text.`;
     return {
       caller_name: callerName,
       call_reason: callReason,
+      action_needed: null,
+      callback_number: null,
       sentiment,
       is_emergency: isEmergency,
       summary: `Call from ${callerName || call.caller_number || 'unknown'} regarding ${callReason}.`,

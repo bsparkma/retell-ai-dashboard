@@ -222,8 +222,12 @@ test('commlog-preview returns the exact note the send will write', async () => {
   // Matches the real formatter (formatCommLogEntry) — same note the send path writes.
   const expected = openDentalSync.formatCommLogEntry(unifiedCallStore.getCall('c-preview'), {});
   assert.equal(body.note, expected.Note);
-  assert.match(body.note, /CALL SUMMARY/);
-  assert.match(body.note, /Caller asked to reschedule a cleaning\./);
+  // Compact 4-field block (item 2): header + Caller/Reason/Action/Callback lines.
+  assert.match(body.note, /^CareIN call - /m);
+  assert.match(body.note, /^Caller: /m);
+  assert.match(body.note, /^Reason: .*Caller asked to reschedule a cleaning\./m);
+  assert.match(body.note, /^Action: /m);
+  assert.match(body.note, /^Callback #: /m);
   assert.equal(body.patientId, 12827);
   assert.equal(body.patientName, 'Stedi Test 2');
 });
