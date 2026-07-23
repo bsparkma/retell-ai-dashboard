@@ -85,10 +85,30 @@ test('normalizeE164 canonicalizes NANP numbers and rejects short input', () => {
   assert.equal(oa.normalizeE164(null), null);
 });
 
-test('Mango call: unmapped line falls back to Roland (never attributed by agent id)', () => {
-  // A Mango call carries no Retell agent id; an unmapped/absent DID → fallback office.
-  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 555-9999' }), 'roland');
-  assert.equal(oa.getOfficeForCall({ source: 'mango' }), 'roland');
+test('Mango call: unmapped line attributes to "unknown" (NEVER Roland)', () => {
+  // A Mango call carries no Retell agent id; an unmapped/absent DID → 'unknown',
+  // so it is never silently miscounted as a Roland call.
+  assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 555-9999' }), 'unknown');
+  assert.equal(oa.getOfficeForCall({ source: 'mango' }), 'unknown');
+  assert.equal(oa.UNMAPPED_OFFICE, 'unknown');
+});
+
+test('unknown bucket: is a valid office config but NOT in the selector', () => {
+  // getOfficeConfig resolves it (for odConnected checks etc.)...
+  assert.equal(oa.getOfficeConfig('unknown').odConnected, false);
+  // ...but it must not appear as a selectable office tab.
+  assert.ok(!oa.getAllOfficeConfigs().some((o) => o.officeId === 'unknown'));
+});
+
+test('unmapped Mango calls are excluded from real office views, land only in "all"', () => {
+  const calls = [
+    { id: 'm1', source: 'mango', called_number: '+19185036262' }, // roland
+    { id: 'm2', source: 'mango', called_number: '+19995550000' }, // unmapped → unknown
+  ];
+  assert.equal(oa.filterCallsForOffice(calls, 'roland').length, 1); // only m1, NOT the unmapped one
+  assert.equal(oa.filterCallsForOffice(calls, 'valley').length, 0);
+  assert.equal(oa.filterCallsForOffice(calls, 'unknown').length, 1); // m2 findable in the bucket
+  assert.equal(oa.filterCallsForOffice(calls, 'all').length, 2); // both visible in all-calls
 });
 
 test('Mango call: real office DIDs attribute correctly (Roland + Valley), any formatting', () => {
@@ -111,7 +131,7 @@ test('Mango call: a mapped DID routes to its office, regardless of number format
       oa.filterCallsForOffice(
         [
           { id: 'm1', source: 'mango', called_number: '+14795551234' }, // → valley
-          { id: 'm2', source: 'mango', called_number: '+19185550000' }, // unmapped → roland
+          { id: 'm2', source: 'mango', called_number: '+19185550000' }, // unmapped → unknown
         ],
         'valley'
       ).length,

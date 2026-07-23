@@ -12,7 +12,7 @@ const retellService = require('../config/retell');
 const openDentalSync = require('../services/openDentalSync');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const audit = require('../platform/audit');
-const { filterCallsForOffice, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
+const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 const mangoConfig = require('../config/mango');
 
 // --- Slice B: triage worklist + patient review queue -----------------------
@@ -285,6 +285,11 @@ router.get('/', async (req, res) => {
       result.calls = filterCallsForOffice(result.calls, office_id);
       result.total = result.calls.length;
     }
+
+    // Stamp each call with its server-resolved office so the UI can (a) trust one
+    // source of truth for office attribution and (b) render the "Unmapped line"
+    // affordance for office_id === 'unknown' (using the call's called_number).
+    result.calls = result.calls.map((c) => ({ ...c, office_id: getOfficeForCall(c) }));
 
     // Add store stats
     const stats = unifiedCallStore.getStats();

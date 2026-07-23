@@ -433,6 +433,16 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                     <div className="text-[11px] text-muted-foreground/70">
                       {formatDuration(call.duration)} · {formatTimeAgo(call.date)}
                     </div>
+                    {/* Unmapped Mango line: never lost — surface the dialed DID so an admin
+                        can see which number to add to MANGO_LINE_OFFICE. */}
+                    {call.source === "mango" && call.officeId === "unknown" && (
+                      <div
+                        className="mt-0.5 inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full text-amber-700 bg-amber-500/10"
+                        title="This office phone line isn't mapped to an office yet — add its number to MANGO_LINE_OFFICE"
+                      >
+                        <AlertTriangle size={10} /> Unmapped line: {call.calledNumber || "unknown"}
+                      </div>
+                    )}
                   </div>
                 </Link>
 

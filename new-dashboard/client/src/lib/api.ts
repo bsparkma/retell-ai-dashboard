@@ -91,6 +91,11 @@ export interface BackendUnifiedCall {
   id: string;
   source?: "retell" | "mango";
   caller_number?: string;
+  // The office line the caller dialed (Mango DID). Present on Mango staff calls.
+  called_number?: string;
+  // Server-resolved office ('roland' | 'valley' | 'unknown'). 'unknown' = the Mango
+  // called line isn't mapped yet; the UI shows an "Unmapped line" affordance.
+  office_id?: string;
   caller_name?: string;
   call_date?: string;
   duration_seconds?: number;
@@ -369,6 +374,9 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     source: (c.source === "mango" ? "mango" : "retell") as "retell" | "mango",
     agentName: c.source === "mango" ? "Staff" : "Rover",
     fromNumber: c.caller_number ?? "Unknown",
+    // Server-resolved office; 'unknown' → the dialed line isn't mapped yet.
+    officeId: (c.office_id as string | undefined) ?? null,
+    calledNumber: (c.called_number as string | undefined) ?? null,
     patientName: (c.caller_name as string) || extractNameFromText(c.transcript, c.call_summary ?? c.call_analysis?.call_summary ?? c.summary) || c.caller_number || "Unknown",
     patientId: (c.metadata as Record<string, string> | undefined)?.patient_id ?? "",
     duration,
