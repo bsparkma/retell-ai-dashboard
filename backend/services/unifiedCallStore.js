@@ -250,6 +250,13 @@ class UnifiedCallStore {
       
       // Caller info
       caller_number: call.caller_number || call.from_number || 'Unknown',
+      // Office line the caller dialed (the DID). REQUIRED for Mango office attribution:
+      // getOfficeForCall reads called_number, and normalizeCall rebuilds the record from
+      // scratch — without carrying this through, the DID is dropped on storage and EVERY
+      // Mango call resolves to office 'unknown' (day-1 office-attribution bug). direction
+      // is preserved alongside it for completeness.
+      called_number: call.called_number || call.to_number || null,
+      direction: call.direction || null,
       caller_name: cleanCallerName(call.caller_name) || extractCallerNameFromCall(call),
       
       // Handler info
@@ -273,6 +280,11 @@ class UnifiedCallStore {
       callback_required: call.callback_required || false,
       callback_reason: call.callback_reason || null,
       
+      // Compact-summary fields for the OD chart note (day-1 item 2). Like the fields above,
+      // these must survive normalizeCall's rebuild or the note's Action/Callback lines reset.
+      action_needed: call.action_needed ?? null,
+      callback_number: call.callback_number ?? null,
+
       // Content
       summary: call.summary || call.call_summary || call.call_analysis?.call_summary || null,
       transcript: call.transcript || null,
