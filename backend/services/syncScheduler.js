@@ -26,6 +26,73 @@ const _syncState = {
 
 function getSyncState() { return { ..._syncState }; }
 
+/**
+ * Does a single cron FIELD (minute/hour/day/month/dow) match a value? Supports
+ * '*', '*​/n' (step), 'a-b' (range), 'a,b,c' (list), and plain numbers — the
+ * standard 5-field syntax node-cron accepts. Any unparseable token → no match.
+ * @param {string} field  one cron field
+ * @param {number} value  the current value for that field
+ * @param {number} min    field minimum (for '*​/n' phase)
+ */
+function cronFieldMatches(field, value, min) {
+  for (const part of String(field).split(',')) {
+    if (part === '*') return true;
+    const step = part.match(/^\*\/(\d+)$/);
+    if (step) {
+      const n = parseInt(step[1], 10);
+      if (n > 0 && (value - min) % n === 0) return true;
+      continue;
+    }
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      if (value >= parseInt(range[1], 10) && value <= parseInt(range[2], 10)) return true;
+      continue;
+    }
+    const rangeStep = part.match(/^(\d+)-(\d+)\/(\d+)$/);
+    if (rangeStep) {
+      const a = parseInt(rangeStep[1], 10), b = parseInt(rangeStep[2], 10), n = parseInt(rangeStep[3], 10);
+      if (n > 0 && value >= a && value <= b && (value - a) % n === 0) return true;
+      continue;
+    }
+    if (/^\d+$/.test(part) && parseInt(part, 10) === value) return true;
+  }
+  return false;
+}
+
+/**
+ * Next fire time for a 5-field cron expression at or after `from`, by stepping
+ * minute-by-minute (bounded to ~366 days so a never-matching expression can't
+ * loop forever). Returns a Date, or null if it never matches within the window.
+ * Uses LOCAL time to mirror node-cron's default behavior.
+ * @param {string} schedule  '<min> <hour> <dom> <month> <dow>'
+ * @param {Date} from
+ * @returns {Date|null}
+ */
+function computeNextCronRun(schedule, from) {
+  const parts = String(schedule).trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [min, hour, dom, month, dow] = parts;
+
+  const next = new Date(from);
+  next.setSeconds(0, 0);
+  next.setMinutes(next.getMinutes() + 1); // strictly after `from`
+
+  const MAX_MINUTES = 366 * 24 * 60;
+  for (let i = 0; i < MAX_MINUTES; i++) {
+    if (
+      cronFieldMatches(min, next.getMinutes(), 0) &&
+      cronFieldMatches(hour, next.getHours(), 0) &&
+      cronFieldMatches(dom, next.getDate(), 1) &&
+      cronFieldMatches(month, next.getMonth() + 1, 1) &&
+      cronFieldMatches(dow, next.getDay(), 0)
+    ) {
+      return next;
+    }
+    next.setMinutes(next.getMinutes() + 1);
+  }
+  return null;
+}
+
 class SyncScheduler {
   constructor() {
     this.cronJob = null;
@@ -387,25 +454,11 @@ class SyncScheduler {
    */
   updateNextSyncTime() {
     if (this.cronJob) {
-      // Calculate next run time from cron expression
       const schedule = mangoConfig.sync.schedule;
-      const cronParts = schedule.split(' ');
-      
-      // Simple calculation for hourly schedule
-      const now = new Date();
-      const next = new Date(now);
-      
-      if (cronParts.length === 5) {
-        const minute = parseInt(cronParts[0]) || 0;
-        next.setMinutes(minute);
-        next.setSeconds(0);
-        
-        if (next <= now) {
-          next.setHours(next.getHours() + 1);
-        }
-      }
-      
-      this.nextSync = next.toISOString();
+      // Compute the real next fire time. The previous version did parseInt('*/5') → NaN
+      // → minute 0, so step schedules like '*/5 * * * *' displayed the wrong next-sync.
+      const next = computeNextCronRun(schedule, new Date());
+      this.nextSync = next ? next.toISOString() : null;
     }
   }
 
@@ -441,5 +494,8 @@ class SyncScheduler {
 // Export singleton instance
 const _instance = new SyncScheduler();
 _instance.getSyncState = getSyncState;
+// Exposed for unit tests (pure cron math, no scheduler state).
+_instance.computeNextCronRun = computeNextCronRun;
+_instance.cronFieldMatches = cronFieldMatches;
 module.exports = _instance;
 
