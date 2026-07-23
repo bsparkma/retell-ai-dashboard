@@ -16,11 +16,10 @@
  *
  *   DASHBOARD_API_TOKEN=$(az keyvault secret show --vault-name kv-carein-staging \
  *     --name dashboard-api-token --query value -o tsv) \
- *   MANGO_SEED_CONFIRM_PHONE=<PatNum 11373 unique phone> \
  *     STAGING_URL=https://staging.carein.ai node backend/scripts/inject-staging-mango.cjs
  *
  * Exercises the four cases the Mango slice must handle:
- *   1) confident-match  → od_sync_status 'matched'  (PatNum 11373 "Test" via its UNIQUE phone)
+ *   1) confident-match  → od_sync_status 'matched'  (MangoTest Test / PatNum 12828 via its UNIQUE phone)
  *   2) ambiguous        → od_sync_status 'needs_review' + candidates ("Stedi Test 2" shares a
  *                         phone with "Stedi Test" → always >1 candidate, never confident)
  *   3) short call <20s   → transcript-less, no summary (D4); still matched by phone
@@ -41,15 +40,15 @@ const isoAgo = (mins) => new Date(Date.now() - mins * 60 * 1000).toISOString();
 // line so the synthetics attribute to Roland via MANGO_LINE_OFFICE (not the fallback).
 const ROLAND_DID = process.env.MANGO_SEED_ROLAND_DID || '+19185036262'; // Roland Family Dental
 
-// PatNum 11373 ("Test") UNIQUE phone — the only value that produces a confident single
-// phone match (→ 'matched'). Beau supplies it (never invented). If unset, a placeholder
-// that matches no one is used, so the confident synthetic lands as needs_review/unmatched
-// until the real number is provided.
-const CONFIRM_PHONE = process.env.MANGO_SEED_CONFIRM_PHONE || '+15550111373'; // placeholder — set env for a real confident match
+// MangoTest fixture (Roland): PatNum 12828 "MangoTest Test". Its primary phone
+// +14795554999 is on exactly ONE record (verified read-only), so phone_exact yields a
+// single 0.95 match → 'matched'. Carried in the request body per-seed (NOT an env var).
+// (11373 "Test" was rejected as a fixture — its number is a shared McGee family phone.)
+const CONFIRM_PHONE = '+14795554999';
 
 const calls = [
   {
-    // 1) Confident single match — PatNum 11373 "Test" via its unique phone.
+    // 1) Confident single match — MangoTest Test (PatNum 12828) via its unique phone.
     //    matchByPhoneExact → single patient (0.95) → matchAndSetStatus → 'matched' (NO OD write).
     source: 'mango',
     external_id: 'mango_call_seed_confident',
@@ -60,9 +59,9 @@ const calls = [
     called_number: ROLAND_DID,
     duration_seconds: 185,
     outcome: 'answered',
-    caller_name: 'Test',
-    summary: 'Staff took a call from patient Test about a balance question. [SYNTHETIC mango confident-match → PatNum 11373]',
-    transcript: 'Staff: Front desk, how can I help? Caller: Hi, this is Test, I have a question about my balance.',
+    caller_name: 'MangoTest Test',
+    summary: 'Staff took a call from MangoTest Test about a balance question. [SYNTHETIC mango confident-match → PatNum 12828]',
+    transcript: 'Staff: Front desk, how can I help? Caller: Hi, this is MangoTest Test, I have a question about my balance.',
   },
   {
     // 2) Ambiguous — "Stedi Test 2" shares a phone with "Stedi Test" → >1 candidate →

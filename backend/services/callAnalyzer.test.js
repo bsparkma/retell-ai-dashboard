@@ -50,3 +50,47 @@ test('with no LLM provider configured, a Mango call falls back to regex analysis
   assert.equal(analysis.is_emergency, true);
   assert.ok('summary' in analysis && 'callback_needed' in analysis);
 });
+
+// Credential exclusivity (regression: "apiKey and azureADTokenProvider are mutually
+// exclusive"). In production SECRET_MAP loads azure-openai-key into AZURE_OPENAI_API_KEY,
+// which the openai SDK would otherwise merge with the MI token provider and throw.
+test('MI mode initializes even with an ambient AZURE_OPENAI_API_KEY (no mutual-exclusive throw)', () => {
+  const saved = {
+    endpoint: process.env.AZURE_OPENAI_ENDPOINT, deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+    auth: process.env.AZURE_OPENAI_AUTH_MODE, key: process.env.AZURE_OPENAI_API_KEY,
+    init: callAnalyzer.isInitialized, client: callAnalyzer.client, provider: callAnalyzer.provider,
+  };
+  process.env.AZURE_OPENAI_ENDPOINT = 'https://example.openai.azure.com/';
+  process.env.AZURE_OPENAI_DEPLOYMENT = 'gpt-5.4-mini';
+  process.env.AZURE_OPENAI_AUTH_MODE = 'managed_identity';
+  process.env.AZURE_OPENAI_API_KEY = 'ambient-key-must-be-ignored-on-MI-path';
+  try {
+    const ok = callAnalyzer.initialize();
+    assert.equal(ok, true, 'MI init should succeed even when an ambient api key is present');
+    assert.equal(callAnalyzer.provider, 'azure');
+  } finally {
+    const restore = { AZURE_OPENAI_ENDPOINT: saved.endpoint, AZURE_OPENAI_DEPLOYMENT: saved.deployment, AZURE_OPENAI_AUTH_MODE: saved.auth, AZURE_OPENAI_API_KEY: saved.key };
+    for (const [k, v] of Object.entries(restore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    callAnalyzer.isInitialized = saved.init; callAnalyzer.client = saved.client; callAnalyzer.provider = saved.provider;
+  }
+});
+
+test('api_key mode requires a key — no silent MI fallback', () => {
+  const saved = {
+    endpoint: process.env.AZURE_OPENAI_ENDPOINT, deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+    auth: process.env.AZURE_OPENAI_AUTH_MODE, key: process.env.AZURE_OPENAI_API_KEY,
+    init: callAnalyzer.isInitialized, client: callAnalyzer.client, provider: callAnalyzer.provider,
+  };
+  process.env.AZURE_OPENAI_ENDPOINT = 'https://example.openai.azure.com/';
+  process.env.AZURE_OPENAI_DEPLOYMENT = 'gpt-5.4-mini';
+  process.env.AZURE_OPENAI_AUTH_MODE = 'api_key';
+  delete process.env.AZURE_OPENAI_API_KEY;
+  try {
+    const ok = callAnalyzer.initialize();
+    assert.equal(ok, false, 'api_key mode without a key must not initialize');
+  } finally {
+    const restore = { AZURE_OPENAI_ENDPOINT: saved.endpoint, AZURE_OPENAI_DEPLOYMENT: saved.deployment, AZURE_OPENAI_AUTH_MODE: saved.auth, AZURE_OPENAI_API_KEY: saved.key };
+    for (const [k, v] of Object.entries(restore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    callAnalyzer.isInitialized = saved.init; callAnalyzer.client = saved.client; callAnalyzer.provider = saved.provider;
+  }
+});
