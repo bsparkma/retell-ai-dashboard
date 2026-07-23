@@ -93,6 +93,8 @@ export interface BackendUnifiedCall {
   caller_number?: string;
   // The office line the caller dialed (Mango DID). Present on Mango staff calls.
   called_number?: string;
+  // Mango call id — lets the UI request a fresh recording stream (item 6).
+  mango_call_id?: string | null;
   // Server-resolved office ('roland' | 'valley' | 'unknown'). 'unknown' = the Mango
   // called line isn't mapped yet; the UI shows an "Unmapped line" affordance.
   office_id?: string;
@@ -377,6 +379,7 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     // Server-resolved office; 'unknown' → the dialed line isn't mapped yet.
     officeId: (c.office_id as string | undefined) ?? null,
     calledNumber: (c.called_number as string | undefined) ?? null,
+    mangoCallId: (c.mango_call_id as string | undefined) ?? null,
     patientName: (c.caller_name as string) || extractNameFromText(c.transcript, c.call_summary ?? c.call_analysis?.call_summary ?? c.summary) || c.caller_number || "Unknown",
     patientId: (c.metadata as Record<string, string> | undefined)?.patient_id ?? "",
     duration,
