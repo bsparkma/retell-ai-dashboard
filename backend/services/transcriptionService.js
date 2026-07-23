@@ -18,11 +18,14 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { KNOWN_VOCABULARY, applyCorrections } = require('../config/mangoVocabulary');
 
 // Cognitive Services token audience for Entra/MI auth against Azure AI Speech.
 const AZURE_SPEECH_SCOPE = 'https://cognitiveservices.azure.com/.default';
 // Fast Transcription API version (synchronous, multipart audio, diarization supported).
-const FAST_TRANSCRIPTION_API_VERSION = '2024-11-15';
+// 2025-10-15 is the first version that supports `phraseList` for vocabulary biasing
+// (item 3c) — used to bias toward office/staff names (KNOWN_VOCABULARY).
+const FAST_TRANSCRIPTION_API_VERSION = '2025-10-15';
 
 class TranscriptionService {
   constructor() {
@@ -173,6 +176,9 @@ class TranscriptionService {
       // Diarization separates staff vs patient turns.
       diarization: { enabled: true, maxSpeakers },
       profanityFilterMode: 'None',
+      // Vocabulary biasing (item 3c) — steers the engine toward office/staff names so it
+      // hears "Roland" not "Rowland", etc. Supported on api-version 2025-10-15+.
+      phraseList: { phrases: [...KNOWN_VOCABULARY] },
     };
 
     const form = new FormData();
@@ -224,15 +230,19 @@ class TranscriptionService {
     }
 
     const combined = Array.isArray(result.combinedPhrases) ? result.combinedPhrases : [];
-    const text = combined.map((c) => c.text).filter(Boolean).join(' ').trim()
-      || (Array.isArray(result.phrases) ? result.phrases.map((p) => p.text).filter(Boolean).join(' ').trim() : '');
+    // Deterministic spelling corrections (item 3b) on the recognized transcript text —
+    // office-name only (see mangoVocabulary), a backstop to the phrase-list biasing (3c).
+    const text = applyCorrections(
+      combined.map((c) => c.text).filter(Boolean).join(' ').trim()
+      || (Array.isArray(result.phrases) ? result.phrases.map((p) => p.text).filter(Boolean).join(' ').trim() : '')
+    );
 
     const phrases = Array.isArray(result.phrases) ? result.phrases : [];
 
     // Utterances: one per diarized phrase (speaker-separated segments).
     const utterances = phrases.map((p) => ({
       speaker: typeof p.speaker === 'number' ? p.speaker : 0,
-      text: p.text || '',
+      text: applyCorrections(p.text || ''),
       start: (p.offsetMilliseconds || 0) / 1000,
       end: ((p.offsetMilliseconds || 0) + (p.durationMilliseconds || 0)) / 1000,
       confidence: p.confidence,
