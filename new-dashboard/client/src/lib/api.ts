@@ -91,6 +91,13 @@ export interface BackendUnifiedCall {
   id: string;
   source?: "retell" | "mango";
   caller_number?: string;
+  // The office line the caller dialed (Mango DID). Present on Mango staff calls.
+  called_number?: string;
+  // Mango call id — lets the UI request a fresh recording stream (item 6).
+  mango_call_id?: string | null;
+  // Server-resolved office ('roland' | 'valley' | 'unknown'). 'unknown' = the Mango
+  // called line isn't mapped yet; the UI shows an "Unmapped line" affordance.
+  office_id?: string;
   caller_name?: string;
   call_date?: string;
   duration_seconds?: number;
@@ -369,6 +376,10 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     source: (c.source === "mango" ? "mango" : "retell") as "retell" | "mango",
     agentName: c.source === "mango" ? "Staff" : "Rover",
     fromNumber: c.caller_number ?? "Unknown",
+    // Server-resolved office; 'unknown' → the dialed line isn't mapped yet.
+    officeId: (c.office_id as string | undefined) ?? null,
+    calledNumber: (c.called_number as string | undefined) ?? null,
+    mangoCallId: (c.mango_call_id as string | undefined) ?? null,
     patientName: (c.caller_name as string) || extractNameFromText(c.transcript, c.call_summary ?? c.call_analysis?.call_summary ?? c.summary) || c.caller_number || "Unknown",
     patientId: (c.metadata as Record<string, string> | undefined)?.patient_id ?? "",
     duration,
@@ -516,7 +527,10 @@ export const api = {
    */
   async resolvePatient(
     id: string,
-    body: { patientId: number; note?: string } | { notAPatient: true; reason: NotAPatientReason }
+    body:
+      // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
+      | { patientId: number; note?: string; content_type?: "summary" | "transcript" }
+      | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
@@ -534,8 +548,12 @@ export const api = {
    * The exact chart note "Send to chart" will write, for the confirm-preview dialog.
    * Same formatter/options as the send path, so preview === what gets written.
    */
-  async getCommlogPreview(id: string): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
-    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview`);
+  async getCommlogPreview(
+    id: string,
+    contentType: "summary" | "transcript" = "summary",
+  ): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
+    const q = contentType === "transcript" ? "?content_type=transcript" : "";
+    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q}`);
   },
 
   /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */

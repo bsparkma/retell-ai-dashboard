@@ -10,10 +10,76 @@ const express = require('express');
 const path = require('path');
 const router = express.Router();
 
+const { Readable } = require('stream');
 const mangoScraper = require('../services/mangoScraper');
+const mangoApiClient = require('../services/mangoApiClient');
 const transcriptionService = require('../services/transcriptionService');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSyncService = require('../services/openDentalSync');
+const audit = require('../platform/audit');
+
+/**
+ * GET /api/mango/calls/:callId/recording  (SSO-gated via the /api auth gate)
+ *
+ * Audio playback (day-1 item 6). We do NOT store recordings (D3 transcribe-and-discard),
+ * so on demand we re-fetch the call's CURRENT signed recording_url from the Mango API
+ * (the one captured at ingest has expired) and PROXY the stream to the browser — the mp3
+ * is never written to disk here and the signed URL never reaches the client. Range
+ * headers are forwarded so the player can seek. Missing recording → graceful 404.
+ */
+router.get('/calls/:callId/recording', async (req, res) => {
+  try {
+    const { callId } = req.params;
+    const call = unifiedCallStore.getCall(callId);
+    if (!call || call.source !== 'mango') {
+      return res.status(404).json({ error: 'Recording unavailable' });
+    }
+    const mangoId = call.mango_call_id
+      || (typeof call.external_id === 'string' ? call.external_id.replace(/^mango_call_/, '') : null);
+    if (!mangoId) return res.status(404).json({ error: 'Recording unavailable' });
+
+    // Re-fetch the fresh signed URL from Mango (stored one expires quickly).
+    let detail;
+    try {
+      detail = await mangoApiClient.getCall(mangoId);
+    } catch (e) {
+      console.error(`[Mango] recording re-fetch failed for ${callId}: ${e.message}`);
+      return res.status(502).json({ error: 'Recording unavailable' });
+    }
+    const url = detail && detail.recording_url;
+    if (!url || typeof url !== 'string') {
+      return res.status(404).json({ error: 'Recording unavailable' });
+    }
+
+    // Proxy the stream, forwarding Range for seek support.
+    const range = req.headers.range;
+    const upstream = await fetch(url, { headers: range ? { Range: range } : {} });
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(404).json({ error: 'Recording unavailable' });
+    }
+
+    // PHI audio → an authenticated READ.
+    await audit.audit(req, { action: 'READ', resourceType: 'recording', resourceId: callId, result: 'SUCCESS' });
+
+    res.status(upstream.status);
+    for (const h of ['content-type', 'content-length', 'accept-ranges', 'content-range']) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    if (!upstream.headers.get('content-type')) res.setHeader('content-type', 'audio/mpeg');
+    // Never let PHI audio be cached by intermediaries/browser disk.
+    res.setHeader('Cache-Control', 'private, no-store');
+
+    if (upstream.body) {
+      Readable.fromWeb(upstream.body).pipe(res);
+    } else {
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    }
+  } catch (error) {
+    console.error('[Mango] recording stream failed:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Recording unavailable' });
+  }
+});
 
 router.post('/fetch/:mangoCallId', async (req, res) => {
   try {
