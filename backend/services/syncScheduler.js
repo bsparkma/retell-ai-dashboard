@@ -214,6 +214,14 @@ class SyncScheduler {
       // Step 2: Analyze calls with AI
       console.log('🧠 Step 2/3: Analyzing calls with AI...');
       for (const call of calls) {
+        // RE-ANALYSIS DEDUP GUARD (cost-investigation #2a): if this call already has a
+        // summary in the store, don't re-bill the summarizer LLM on every poll. A prior
+        // FAILED analysis leaves summary null, so it is still retried. Mirrors the
+        // transcription dedup guard in mangoApiClient.fullSync.
+        const existingForCall = unifiedCallStore.findByExternalId(call.external_id);
+        if (existingForCall && existingForCall.summary) {
+          continue;
+        }
         // D4: skip the summary LLM for very short calls (transcript retained, no flags).
         if (call.transcript && (call.duration_seconds || 0) >= mangoConfig.summaryMinSeconds) {
           try {
@@ -364,6 +372,17 @@ class SyncScheduler {
     const errors = [];
 
     for (const call of batch) {
+      // CIRCUIT BREAKER (cost-investigation #2c): stop once the daily audio-minute budget is
+      // spent — keep the already-ingested metadata, just don't transcribe more today.
+      const budget = transcriptionService.checkDailyBudget();
+      if (!budget.allowed) {
+        console.warn(
+          `⛔ Transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min) — ` +
+          'stopping Mango transcription for today.'
+        );
+        break;
+      }
+
       // Verify the recording file actually exists on disk
       try {
         await fs.access(call.recording_path);

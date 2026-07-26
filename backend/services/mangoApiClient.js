@@ -17,6 +17,7 @@
 
 const config = require('../config/mango');
 const transcriptionService = require('./transcriptionService');
+const unifiedCallStore = require('./unifiedCallStore');
 const { normalizeMangoCall, isIngestibleCall } = require('./mangoNormalize');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -237,9 +238,12 @@ class MangoApiClient {
       calls_found: 0,
       calls_processed: 0,
       recordings_transcribed: 0,
+      recordings_reused: 0,             // transcript already in the store → not re-sent to Speech
+      transcription_skipped_budget: 0,  // skipped because the daily budget was spent
       calls: [],
       errors: [],
     };
+    let budgetLogged = false; // log the "budget reached" line at most once per run
 
     console.log(`📞 Mango API sync: pulling up to ${maxCalls} calls from last ${sinceDays}d...`);
 
@@ -274,20 +278,46 @@ class MangoApiClient {
       try {
         const call = normalizeMangoCall(c);
 
-        if (canTranscribe && !c.is_missed && (call.duration_seconds || 0) >= MIN_TRANSCRIBE_SECONDS) {
-          try {
-            const detail = await this.getCall(c.id);
-            const rec = detail && detail.recording_url;
-            if (rec && typeof rec === 'string') {
-              const tr = await transcriptionService.transcribeUrl(rec); // in-memory; discarded
-              if (tr && tr.text) {
-                call.transcript = tr.text;
-                call.transcript_json = tr.utterances || tr.words || null;
-                result.recordings_transcribed++;
-              }
+        // DEDUP GUARD (cost-investigation #2/#4): if this call already has a transcript in
+        // the store, REUSE it — never re-send the same recording to Azure Speech. Without
+        // this, every poll of the rolling `sinceDays` window re-transcribed the same answered
+        // calls (the root cause of the ~$60 re-transcription loop). The store is consulted by
+        // external_id, which the upsert preserves across re-scrapes.
+        const existing = unifiedCallStore.findByExternalId(call.external_id);
+        if (existing && existing.transcript) {
+          call.transcript = existing.transcript;
+          call.transcript_json = existing.transcript_json || null;
+          result.recordings_reused++;
+        } else if (canTranscribe && !c.is_missed && (call.duration_seconds || 0) >= MIN_TRANSCRIBE_SECONDS) {
+          // CIRCUIT BREAKER (#2c): once the daily audio-minute budget is spent, stop
+          // transcribing but keep ingesting metadata, so a dedup regression can never bill
+          // unbounded again.
+          const budget = transcriptionService.checkDailyBudget();
+          if (!budget.allowed) {
+            if (!budgetLogged) {
+              budgetLogged = true;
+              console.warn(
+                `⛔ Mango sync: transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min) — ` +
+                'ingesting call metadata only for the rest of today.'
+              );
             }
-          } catch (e) {
-            result.errors.push(`transcribe ${c.id}: ${e.message}`);
+            result.transcription_skipped_budget++;
+          } else {
+            try {
+              const detail = await this.getCall(c.id);
+              const rec = detail && detail.recording_url;
+              if (rec && typeof rec === 'string') {
+                const tr = await transcriptionService.transcribeUrl(rec); // in-memory; discarded
+                if (tr && tr.text) {
+                  call.transcript = tr.text;
+                  call.transcript_json = tr.utterances || tr.words || null;
+                  result.recordings_transcribed++;
+                }
+              }
+            } catch (e) {
+              // A budget-exceeded backstop throw also lands here; record and move on.
+              result.errors.push(`transcribe ${c.id}: ${e.message}`);
+            }
           }
         }
 
@@ -299,7 +329,10 @@ class MangoApiClient {
     }
 
     result.success = true;
-    console.log(`✅ Mango API sync: found ${result.calls_found}, transcribed ${result.recordings_transcribed}, errors ${result.errors.length}`);
+    console.log(
+      `✅ Mango API sync: found ${result.calls_found}, transcribed ${result.recordings_transcribed}, ` +
+      `reused ${result.recordings_reused}, budget-skipped ${result.transcription_skipped_budget}, errors ${result.errors.length}`
+    );
     return result;
   }
 }

@@ -123,8 +123,19 @@ class UnifiedCallStore {
     this.byDate = new Map(); // date string -> Set of call IDs
     this.byCallerNumber = new Map(); // phone -> Set of call IDs
     
-    // Persistence settings
-    this.persistPath = path.join(__dirname, '../../data/unified_calls.json');
+    // Persistence settings. Default resolves to <app>/data (next to the code). Override the
+    // directory with CALLSTORE_DIR to point at a DURABLE mount — e.g. /data, the AzureFile
+    // volume the prod container app already mounts.
+    // ⚠️ COST/DURABILITY (cost-investigation #5): the prod AzureFile volume mounts at /data,
+    // but this default path is <app>/data (__dirname is backend/services → ../../data). Until
+    // CALLSTORE_DIR=/data is set, the store rides the EPHEMERAL container layer and is wiped
+    // on every image deploy — which forces a full re-fetch + (pre-guard) re-transcription of
+    // the lookback window. Setting CALLSTORE_DIR=/data in prod makes the existing volume
+    // actually protect the store. Default is unchanged so this is inert until opted in.
+    const callstoreDir = process.env.CALLSTORE_DIR
+      ? process.env.CALLSTORE_DIR
+      : path.join(__dirname, '../../data');
+    this.persistPath = path.join(callstoreDir, 'unified_calls.json');
     this.tempPath = `${this.persistPath}.tmp`;
     this.isDirty = false;
     this.autoSaveInterval = null;
@@ -465,6 +476,23 @@ class UnifiedCallStore {
    */
   getCall(id) {
     return this.calls.get(id);
+  }
+
+  /**
+   * Find a stored call by its source external_id (e.g. Mango 'mango_call_<id>').
+   * Linear scan over the store (call counts are in the low thousands). Used by the
+   * api-ingest dedup guard to REUSE an existing transcript/summary instead of re-sending
+   * the same recording to Azure Speech (or re-billing the summarizer) on every poll —
+   * the root fix for the re-transcription loop (cost-investigation #2/#4).
+   * @param {string} externalId
+   * @returns {object|undefined}
+   */
+  findByExternalId(externalId) {
+    if (!externalId) return undefined;
+    for (const call of this.calls.values()) {
+      if (call.external_id === externalId) return call;
+    }
+    return undefined;
   }
 
   /**
