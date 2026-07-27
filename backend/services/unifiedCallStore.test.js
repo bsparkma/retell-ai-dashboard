@@ -148,3 +148,30 @@ test('Mango match/triage state survives an addMangoCalls re-scrape upsert (regre
   assert.equal(stored.source, 'mango');
   assert.equal(stored.duration_seconds, 185);
 });
+
+test('Mango called_number (office DID) survives store normalization → correct office attribution (day-1 bug)', () => {
+  const { getOfficeForCall } = require('../config/officeAgents');
+  // RAW format Mango actually returns for the office party (see live diagnostic):
+  // formatted "(918) 503-6262" — NOT pre-normalized E.164.
+  const [added] = unifiedCallStore.addMangoCalls([{
+    source: 'mango',
+    external_id: 'mango_call_office_did',
+    mango_call_id: 'office_did',
+    call_date: '2026-07-23T20:00:00.000Z',
+    caller_number: '+14795554557',
+    called_number: '(918) 503-6262', // Roland main, un-normalized
+    direction: 'inbound',
+    action_needed: 'Call back to confirm',
+    callback_number: '4795554557',
+    duration_seconds: 120,
+    outcome: 'answered',
+  }]);
+  const stored = unifiedCallStore.getCall(added.id);
+  // The bug: normalizeCall dropped called_number → getOfficeForCall saw undefined → 'unknown'.
+  assert.equal(stored.called_number, '(918) 503-6262', 'called_number must survive normalization');
+  assert.equal(stored.direction, 'inbound');
+  assert.equal(getOfficeForCall(stored), 'roland', 'stored Mango call attributes to its office, not unknown');
+  // Item-2 compact-summary fields also survive.
+  assert.equal(stored.action_needed, 'Call back to confirm');
+  assert.equal(stored.callback_number, '4795554557');
+});

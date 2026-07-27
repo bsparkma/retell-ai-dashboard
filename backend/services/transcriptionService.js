@@ -18,11 +18,14 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { KNOWN_VOCABULARY, applyCorrections } = require('../config/mangoVocabulary');
 
 // Cognitive Services token audience for Entra/MI auth against Azure AI Speech.
 const AZURE_SPEECH_SCOPE = 'https://cognitiveservices.azure.com/.default';
 // Fast Transcription API version (synchronous, multipart audio, diarization supported).
-const FAST_TRANSCRIPTION_API_VERSION = '2024-11-15';
+// 2025-10-15 is the first version that supports `phraseList` for vocabulary biasing
+// (item 3c) — used to bias toward office/staff names (KNOWN_VOCABULARY).
+const FAST_TRANSCRIPTION_API_VERSION = '2025-10-15';
 
 class TranscriptionService {
   constructor() {
@@ -38,6 +41,53 @@ class TranscriptionService {
       totalTranscriptions: 0,
       totalMinutes: 0,
       totalCost: 0,
+    };
+
+    // ── Daily circuit breaker (cost guardrail, cost-investigation #2c) ──────────────
+    // Caps audio-minutes sent to Azure Speech per UTC day. When exceeded, callers skip
+    // transcription and keep ingesting call metadata — so no dedup regression or retry loop
+    // can ever bill unbounded again. Default 120 min/day. Set the env to 0 to disable.
+    this.dailyBudgetMinutes = (() => {
+      const raw = process.env.MAX_TRANSCRIPTION_MINUTES_PER_DAY;
+      if (raw === undefined || raw === '') return 120;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 120;
+    })();
+    this.dailyKey = null;            // 'YYYY-MM-DD' (UTC) of the current accounting day
+    this.dailyMinutes = 0;           // audio-minutes transcribed so far today
+    this.dailyBudgetTripped = false; // whether we've logged the "budget reached" line today
+  }
+
+  /** Current UTC day key 'YYYY-MM-DD'. */
+  _todayKey() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  /** Reset the daily transcription counters when the UTC day rolls over. */
+  _rollDailyIfNeeded() {
+    const today = this._todayKey();
+    if (this.dailyKey !== today) {
+      this.dailyKey = today;
+      this.dailyMinutes = 0;
+      this.dailyBudgetTripped = false;
+    }
+  }
+
+  /**
+   * Circuit-breaker check. Callers MUST consult this before transcribing so they can skip
+   * cleanly (and keep ingesting metadata) rather than bill Azure Speech unbounded. A hard
+   * backstop in transcribeBuffer enforces the same cap even if a caller forgets.
+   * @returns {{allowed: boolean, usedMinutes: number, capMinutes: number, remainingMinutes: number}}
+   */
+  checkDailyBudget() {
+    this._rollDailyIfNeeded();
+    const cap = this.dailyBudgetMinutes;
+    const allowed = cap <= 0 || this.dailyMinutes < cap; // cap<=0 => unlimited
+    return {
+      allowed,
+      usedMinutes: this.dailyMinutes,
+      capMinutes: cap,
+      remainingMinutes: cap <= 0 ? Infinity : Math.max(0, cap - this.dailyMinutes),
     };
   }
 
@@ -165,6 +215,23 @@ class TranscriptionService {
       throw new Error('Transcription service not available. Configure Azure AI Speech.');
     }
 
+    // Hard circuit-breaker backstop (cost-investigation #2c): never exceed the daily
+    // audio-minute budget. Callers SHOULD check checkDailyBudget() first and skip
+    // gracefully, but enforce here too so no code path can bill Azure Speech unbounded.
+    const budget = this.checkDailyBudget();
+    if (!budget.allowed) {
+      if (!this.dailyBudgetTripped) {
+        this.dailyBudgetTripped = true;
+        console.warn(
+          `⛔ Transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min for ${this.dailyKey} UTC). ` +
+          'Halting transcription for the day; call metadata still ingests. Override with MAX_TRANSCRIPTION_MINUTES_PER_DAY.'
+        );
+      }
+      const err = new Error(`Transcription daily budget exceeded (${budget.capMinutes} min/day)`);
+      err.code = 'TRANSCRIPTION_BUDGET_EXCEEDED';
+      throw err;
+    }
+
     const locales = options.locales || this.locales;
     const maxSpeakers = options.maxSpeakers || this.maxSpeakers;
 
@@ -173,6 +240,9 @@ class TranscriptionService {
       // Diarization separates staff vs patient turns.
       diarization: { enabled: true, maxSpeakers },
       profanityFilterMode: 'None',
+      // Vocabulary biasing (item 3c) — steers the engine toward office/staff names so it
+      // hears "Roland" not "Rowland", etc. Supported on api-version 2025-10-15+.
+      phraseList: { phrases: [...KNOWN_VOCABULARY] },
     };
 
     const form = new FormData();
@@ -207,6 +277,9 @@ class TranscriptionService {
       this.stats.totalMinutes += transcript.duration_seconds / 60;
       // Azure AI Speech standard (S0) ≈ $1 / audio hour.
       this.stats.totalCost += (transcript.duration_seconds / 60) * (1 / 60);
+      // Daily circuit-breaker accounting: count the audio-minutes actually transcribed.
+      this._rollDailyIfNeeded();
+      this.dailyMinutes += transcript.duration_seconds / 60;
     }
 
     console.log(`✅ Azure Speech transcription complete in ${durationSec}s`);
@@ -224,15 +297,19 @@ class TranscriptionService {
     }
 
     const combined = Array.isArray(result.combinedPhrases) ? result.combinedPhrases : [];
-    const text = combined.map((c) => c.text).filter(Boolean).join(' ').trim()
-      || (Array.isArray(result.phrases) ? result.phrases.map((p) => p.text).filter(Boolean).join(' ').trim() : '');
+    // Deterministic spelling corrections (item 3b) on the recognized transcript text —
+    // office-name only (see mangoVocabulary), a backstop to the phrase-list biasing (3c).
+    const text = applyCorrections(
+      combined.map((c) => c.text).filter(Boolean).join(' ').trim()
+      || (Array.isArray(result.phrases) ? result.phrases.map((p) => p.text).filter(Boolean).join(' ').trim() : '')
+    );
 
     const phrases = Array.isArray(result.phrases) ? result.phrases : [];
 
     // Utterances: one per diarized phrase (speaker-separated segments).
     const utterances = phrases.map((p) => ({
       speaker: typeof p.speaker === 'number' ? p.speaker : 0,
-      text: p.text || '',
+      text: applyCorrections(p.text || ''),
       start: (p.offsetMilliseconds || 0) / 1000,
       end: ((p.offsetMilliseconds || 0) + (p.durationMilliseconds || 0)) / 1000,
       confidence: p.confidence,
@@ -294,6 +371,10 @@ class TranscriptionService {
       authMode: this.authMode,
       isInitialized: this.isInitialized,
       estimatedCostPerMinute: 1 / 60, // Azure S0 ≈ $1/audio hour
+      // Daily circuit-breaker visibility (cost-investigation #2c).
+      dailyKey: this.dailyKey,
+      dailyMinutes: Number(this.dailyMinutes.toFixed(2)),
+      dailyBudgetMinutes: this.dailyBudgetMinutes,
     };
   }
 

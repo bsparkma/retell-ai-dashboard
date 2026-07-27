@@ -222,8 +222,12 @@ test('commlog-preview returns the exact note the send will write', async () => {
   // Matches the real formatter (formatCommLogEntry) — same note the send path writes.
   const expected = openDentalSync.formatCommLogEntry(unifiedCallStore.getCall('c-preview'), {});
   assert.equal(body.note, expected.Note);
-  assert.match(body.note, /CALL SUMMARY/);
-  assert.match(body.note, /Caller asked to reschedule a cleaning\./);
+  // Compact 4-field block (item 2): header + Caller/Reason/Action/Callback lines.
+  assert.match(body.note, /^CareIN call - /m);
+  assert.match(body.note, /^Caller: /m);
+  assert.match(body.note, /^Reason: .*Caller asked to reschedule a cleaning\./m);
+  assert.match(body.note, /^Action: /m);
+  assert.match(body.note, /^Callback #: /m);
   assert.equal(body.patientId, 12827);
   assert.equal(body.patientName, 'Stedi Test 2');
 });
@@ -288,4 +292,22 @@ test('resolve-patient accepts the vendor + lab close-out reasons', async () => {
     const body = await res.json();
     assert.equal(body.call.not_a_patient_reason, reason);
   }
+});
+
+test('commlog-preview: content_type=transcript returns the full-transcript note (item 4)', async () => {
+  seedCall('c-ct', { call_analysis: { call_summary: 'Billing question.' } });
+  unifiedCallStore.updateCall('c-ct', {
+    od_patient_id: 12827, summary: 'Billing question.',
+    transcript: 'Hi, I have a question about my statement balance.',
+  });
+  // Default (summary) — compact block, no transcript.
+  const sres = await fetch(`${baseUrl}/api/unified-calls/c-ct/commlog-preview`);
+  const sbody = await sres.json();
+  assert.match(sbody.note, /^Caller: /m);
+  assert.ok(!/Full transcript/.test(sbody.note));
+  // content_type=transcript — appends the full transcript.
+  const tres = await fetch(`${baseUrl}/api/unified-calls/c-ct/commlog-preview?content_type=transcript`);
+  const tbody = await tres.json();
+  assert.match(tbody.note, /--- Full transcript ---/);
+  assert.match(tbody.note, /question about my statement balance/);
 });

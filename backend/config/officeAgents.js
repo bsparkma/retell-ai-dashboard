@@ -22,14 +22,28 @@
  * @property {boolean} odConnected  false → UI shows "OD not connected for this office yet"
  */
 
+// Internal office KEYS (roland / valley / unknown) are FROZEN identifiers used in
+// the office_id query param, the line map, and stored calls — never rename them.
+// Display LABELS (officeName) are separate and may change freely. Note: internal
+// key 'valley' IS the Fort Smith "Riley" office (historical name); the key stays
+// frozen even though the office is branded/known as Riley.
 /** @type {Record<string, OfficeConfig>} */
 const OFFICES = {
   roland: { officeId: 'roland', officeName: 'Roland', odConnected: true },
   valley: { officeId: 'valley', officeName: 'Valley Fort Smith', odConnected: false },
+  // Bucket for Mango calls whose called line isn't in MANGO_LINE_OFFICE yet. These
+  // still ingest and stay triageable; the UI surfaces the raw line so an admin can
+  // see which number to add. odConnected:false → no OD write path.
+  unknown: { officeId: 'unknown', officeName: 'Unmapped', odConnected: false },
 };
 
-// The office any unmapped agent (or a call with no agent id) belongs to today.
+// The office any unmapped Retell agent (or a call with no agent id) belongs to today.
+// NOTE: this is the RETELL fallback only. Unmapped Mango LINES go to UNMAPPED_OFFICE
+// ('unknown'), NOT here — an unknown DID must never be silently attributed to Roland.
 const FALLBACK_OFFICE = 'roland';
+
+// Where an unmapped Mango line lands. Honest 'unknown' instead of a silent Roland.
+const UNMAPPED_OFFICE = 'unknown';
 
 /**
  * Retell agent_id → officeId. Add a Valley agent later = ONE entry here.
@@ -58,14 +72,24 @@ const AGENT_OFFICE = {
 // E.164-normalized number so formatting differences ((479) 555-0000 vs
 // +14795550000) don't matter.
 //
-// Real office DIDs supplied by Beau (2026-07-21). Keys are E.164-normalized. Valley is
-// mapped for ATTRIBUTION only — OFFICES.valley is odConnected:false, so its calls are
-// attributed to Valley but have no OD write path until the per-location slice (mirrors
-// the existing office-config pattern). Any called_number not here → fallback + warn-once.
-/** @type {Record<string, string>} E.164 DID → officeId */
+// Real office DIDs supplied by Beau. Keys are E.164-normalized. This is the single
+// source of truth for line→office attribution — structured as DATA (an E.164→officeId
+// table) precisely so a future office-management admin UI can edit the SAME object.
+// Valley/Riley is mapped for ATTRIBUTION only — OFFICES.valley is odConnected:false, so
+// its calls are attributed but have no OD write path until the per-location slice.
+// Any called_number NOT here → UNMAPPED_OFFICE ('unknown') + warn-once (never Roland).
+/** @type {Record<string, string>} E.164 DID → officeId (frozen internal key) */
 const MANGO_LINE_OFFICE = {
-  '+19185036262': 'roland', // Roland Family Dental main line (918-503-6262)
-  '+14792263500': 'valley', // Valley Family Dental (479-226-3500) — attribution only (odConnected:false)
+  // Roland Family Dental
+  '+19189134595': 'roland', // 918-913-4595
+  '+19185036262': 'roland', // 918-503-6262 (main line)
+  '+19183930353': 'roland', // 918-393-0353
+  // Valley Family Dental — the Fort Smith "Riley" office (internal key 'valley' frozen)
+  '+14797854390': 'valley', // 479-785-4390
+  '+14793166111': 'valley', // 479-316-6111
+  '+14797851419': 'valley', // 479-785-1419
+  '+14792263500': 'valley', // 479-226-3500
+  '+14797633344': 'valley', // 479-763-3344
 };
 
 /**
@@ -117,15 +141,17 @@ const getOfficeForCall = (call) => {
     if (line && MANGO_LINE_OFFICE[line]) {
       return MANGO_LINE_OFFICE[line];
     }
+    // Unmapped line → honest 'unknown' (NOT Roland). The call still ingests and is
+    // triageable; the worklist surfaces the raw line so Beau can see which DID to add.
     const warnKey = line || '(no-line)';
     if (!warnedUnmappedLines.has(warnKey)) {
       warnedUnmappedLines.add(warnKey);
       console.warn(
-        `[officeAgents] Unmapped Mango line '${warnKey}' — routing to fallback office ` +
-        `'${FALLBACK_OFFICE}'. Add its DID to MANGO_LINE_OFFICE to assign it explicitly.`
+        `[officeAgents] Unmapped Mango line '${warnKey}' — attributing to '${UNMAPPED_OFFICE}' ` +
+        `(NOT Roland). Add its DID to MANGO_LINE_OFFICE to assign it to an office.`
       );
     }
-    return FALLBACK_OFFICE;
+    return UNMAPPED_OFFICE;
   }
 
   const agentId = getAgentId(call);
@@ -154,10 +180,13 @@ const getOfficeConfig = (officeId) => {
 };
 
 /**
- * All real offices, for the worklist office selector. Order is display order.
+ * Real offices for the worklist office selector, in display order. Excludes the
+ * 'unknown' system bucket — unmapped-line calls surface in the "All calls" view
+ * with an "Unmapped line" affordance rather than as a permanent empty office tab.
  * @returns {OfficeConfig[]}
  */
-const getAllOfficeConfigs = () => Object.values(OFFICES);
+const getAllOfficeConfigs = () =>
+  Object.values(OFFICES).filter((o) => o.officeId !== UNMAPPED_OFFICE);
 
 /**
  * Whether an agent is allowed for an office. Empty/"all"/"default" → allowed.
@@ -199,6 +228,7 @@ const filterCallsForOffice = (calls, officeId) => {
 module.exports = {
   OFFICES,
   FALLBACK_OFFICE,
+  UNMAPPED_OFFICE,
   AGENT_OFFICE,
   MANGO_LINE_OFFICE,
   normalizeE164,

@@ -202,3 +202,21 @@ test('mock IS allowed when allowMock() is true (dev escape hatch still works)', 
   const providers = await s.getProviders();
   assert.ok(Array.isArray(providers) && providers.length > 0, 'dev mock fallback preserved');
 });
+
+// ── OD 429 backoff (day-1 item 7) ────────────────────────────────────────────
+
+const { computeOdBackoffMs } = require('./openDental');
+
+test('computeOdBackoffMs: honors numeric Retry-After (seconds -> ms)', () => {
+  assert.equal(computeOdBackoffMs(1, 5), 5000);
+  assert.equal(computeOdBackoffMs(3, 0), 0);
+});
+
+test('computeOdBackoffMs: exponential 500·2^(n-1) capped at 8s when no header', () => {
+  assert.equal(computeOdBackoffMs(1, NaN), 500);
+  assert.equal(computeOdBackoffMs(2, undefined), 1000);
+  assert.equal(computeOdBackoffMs(3), 2000);
+  assert.equal(computeOdBackoffMs(4), 4000);
+  assert.equal(computeOdBackoffMs(5), 8000);
+  assert.equal(computeOdBackoffMs(9), 8000); // capped
+});

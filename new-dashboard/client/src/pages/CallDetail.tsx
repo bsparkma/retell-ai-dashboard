@@ -323,6 +323,25 @@ export default function CallDetail() {
   const [patientSource, setPatientSource] = useState<PatientMatchSource>("none");
   const [pickOpen, setPickOpen] = useState(false);
   const [sendTarget, setSendTarget] = useState<{ patientId: number; patientName: string } | null>(null);
+  // What the next send writes (item 4): summary (compact) or full transcript.
+  const [contentType, setContentType] = useState<"summary" | "transcript">("summary");
+
+  // Contextual send (item 4): pick the content, then either open the review dialog
+  // (patient already matched) or the Pick Patient modal first (which hands back here).
+  const startSend = useCallback((ct: "summary" | "transcript") => {
+    setContentType(ct);
+    setCall((prev) => {
+      if (prev && prev !== "loading" && prev.odPatientId != null && prev.odPatientId !== "") {
+        setSendTarget({
+          patientId: Number(prev.odPatientId),
+          patientName: prev.odPatientName || `PatNum ${prev.odPatientId}`,
+        });
+      } else {
+        setPickOpen(true);
+      }
+      return prev;
+    });
+  }, []);
 
   // After the chart note is sent, reflect synced + refresh the panel to the patient.
   const handleSent = useCallback((patientId: number) => {
@@ -351,6 +370,9 @@ export default function CallDetail() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
+  // Item 6: the recording stream can 404 if Mango no longer has it → graceful message.
+  const [audioError, setAudioError] = useState(false);
+  useEffect(() => { setAudioError(false); setIsPlaying(false); setCurrentTime(0); }, [id]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
@@ -446,6 +468,19 @@ export default function CallDetail() {
     sentiment: displayCall.sentiment,
   };
 
+  // Recording source (item 6). Mango recordings are NOT stored (D3), so play them via the
+  // SSO-gated backend stream, which re-fetches a fresh signed URL on demand. Retell keeps
+  // its existing static URL. For Mango we only offer the player when the call plausibly has
+  // audio (transcribed, or has duration); a 404 flips to "recording unavailable".
+  const isMango = displayCall.source === "mango";
+  const mangoRecordingUrl = isMango && displayCall.mangoCallId
+    ? `${API_BASE.replace(/\/$/, "")}/mango/calls/${encodeURIComponent(displayCall.id)}/recording`
+    : null;
+  const audioSrc = mangoRecordingUrl ?? resolveRecordingUrl(displayCall.recording_url);
+  const canPlay = isMango
+    ? !!mangoRecordingUrl && (displayCall.hasTranscript || displayCall.duration > 0)
+    : !!audioSrc;
+
   return (
     <div className="p-6 space-y-6">
       {/* Shared Pick Patient modal — candidates-first / OD search, then hands off
@@ -466,6 +501,7 @@ export default function CallDetail() {
           call={displayCall}
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
+          contentType={contentType}
           onSent={() => handleSent(sendTarget.patientId)}
         />
       )}
@@ -509,12 +545,8 @@ export default function CallDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {displayCall.recording_url ? (
-            <a
-              href={resolveRecordingUrl(displayCall.recording_url) ?? "#"}
-              download
-              className="inline-flex items-center"
-            >
+          {canPlay && !audioError && audioSrc ? (
+            <a href={audioSrc} download className="inline-flex items-center">
               <Button variant="outline" size="sm" asChild>
                 <span><Download size={14} className="mr-1.5" /> Download</span>
               </Button>
@@ -541,15 +573,16 @@ export default function CallDetail() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {displayCall.recording_url ? (
+              {canPlay && !audioError ? (
                 <>
                   <audio
                     ref={audioRef}
-                    src={resolveRecordingUrl(displayCall.recording_url) ?? undefined}
+                    src={audioSrc ?? undefined}
                     preload="metadata"
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
                     onEnded={() => setIsPlaying(false)}
+                    onError={() => { setIsPlaying(false); setAudioError(true); }}
                     onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
                     onLoadedMetadata={() => setAudioDuration(audioRef.current?.duration ?? 0)}
                   />
@@ -583,7 +616,9 @@ export default function CallDetail() {
                 </>
               ) : (
                 <div className="flex items-center justify-center p-6 bg-muted/40 rounded-lg">
-                  <p className="text-sm text-muted-foreground">No recording available</p>
+                  <p className="text-sm text-muted-foreground">
+                    {audioError ? "Recording unavailable" : "No recording available"}
+                  </p>
                 </div>
               )}
             </CardContent>
@@ -593,9 +628,18 @@ export default function CallDetail() {
           {transcript && transcript.length > 0 && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base font-semibold flex items-center gap-2">
-                  <FileText size={14} className="text-primary" /> Transcript
-                </CardTitle>
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <FileText size={14} className="text-primary" /> Transcript
+                  </CardTitle>
+                  {/* Contextual send (item 4): full transcript = a large note, deliberate. */}
+                  {displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
+                    <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2"
+                      onClick={() => startSend("transcript")}>
+                      <Send size={11} /> Send full transcript to chart
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
@@ -635,9 +679,18 @@ export default function CallDetail() {
           {/* AI Analysis */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <Bot size={14} className="text-primary" /> AI Analysis
-              </CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <Bot size={14} className="text-primary" /> AI Analysis
+                </CardTitle>
+                {/* Contextual send (item 4): the compact summary block. */}
+                {analysis.summary && displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
+                  <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2"
+                    onClick={() => startSend("summary")}>
+                    <Send size={11} /> Send summary to chart
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               {analysis.summary ? (
@@ -692,10 +745,7 @@ export default function CallDetail() {
             odPatientId={displayCall.odPatientId}
             odPatientName={displayCall.odPatientName}
             sentBy={displayCall.sentBy}
-            onSend={() => setSendTarget({
-              patientId: Number(displayCall.odPatientId),
-              patientName: displayCall.odPatientName || `PatNum ${displayCall.odPatientId}`,
-            })}
+            onSend={() => startSend("summary")}
           />
 
           {/* Call metadata */}

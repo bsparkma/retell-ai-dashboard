@@ -328,66 +328,46 @@ class OpenDentalSyncService {
    * Format a CommLog entry for Open Dental
    */
   formatCommLogEntry(call, options = {}) {
-    const handlerType = call.handler_type === 'ai' ? 'AI Agent' : 'Staff';
-    const source = call.source === 'retell' ? 'Retell AI' : 'Mango Voice';
-    
-    const callDate = new Date(call.call_date);
-    const formattedDate = callDate.toLocaleDateString('en-US', { 
-      weekday: 'short', 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    const source = call.source === 'retell' ? 'CareIN AI' : 'Staff (Mango)';
 
-    const duration = call.duration_seconds 
-      ? `${Math.floor(call.duration_seconds / 60)}:${(call.duration_seconds % 60).toString().padStart(2, '0')}`
-      : 'N/A';
+    // COMPACT chart note (item 2). Front-desk staff paste these into OD; the old verbose
+    // block was too long for OD notes. Four terse fields + a one-line header. The LLM is
+    // instructed (buildHumanCallPrompt) to keep each field to one line.
+    const localWhen = this.formatOfficeDateTime(call.call_date);
 
-    // Build the CommLog note
-    let note = `
-═══════════════════════════════════════════════════════
-📞 CALL SUMMARY - ${formattedDate}
-═══════════════════════════════════════════════════════
+    // No-content calls (item 5): short/missed/voicemail with no recording → no transcript
+    // AND no analyzed summary. Writing the compact block would be all "Unknown/None"; a
+    // minimal stub is clearer and keeps the call fully triageable/closable. Office-TZ ts.
+    const nonEmpty = (v) => typeof v === 'string' && v.trim().length > 0;
+    const hasContent = nonEmpty(call.transcript) || nonEmpty(call.summary) || nonEmpty(call.call_reason);
 
-Handler: ${handlerType} (${source})
-Duration: ${duration}
-Caller: ${call.caller_name || 'Unknown'} (${call.caller_number || 'N/A'})
-Outcome: ${call.outcome || call.success_status || 'N/A'}
-Sentiment: ${call.sentiment || 'neutral'}
+    let note;
+    if (!hasContent) {
+      note = `Call received ${localWhen}, no recording available.`;
+    } else {
+      const reason = call.call_reason || call.summary || 'Call';
+      const reasonLine = call.is_emergency ? `${reason} [EMERGENCY]` : reason;
+      // Prefer a callback number the caller explicitly gave; else the caller's own number
+      // when a callback is needed; else nothing. ('-' not em-dash: OD-safe ASCII.)
+      const callbackNum = call.callback_number
+        || (call.callback_required ? call.caller_number : null)
+        || '-';
 
-───────────────────────────────────────────────────────
-📝 AI SUMMARY
-───────────────────────────────────────────────────────
-${call.summary || call.call_reason || 'No summary available'}
-`.trim();
+      // ASCII-only so sanitizeForOd is a no-op and the chart note is clean.
+      note = [
+        `CareIN call - ${localWhen} - ${source}`,
+        `Caller: ${call.caller_name || 'Unknown'}`,
+        `Reason: ${reasonLine}`,
+        `Action: ${call.action_needed || 'None'}`,
+        `Callback #: ${callbackNum}`,
+      ].join('\n');
 
-    // Include full transcript if requested
-    if (options.includeTranscript && call.transcript) {
-      note += `
-
-───────────────────────────────────────────────────────
-📜 FULL TRANSCRIPT
-───────────────────────────────────────────────────────
-${this.formatTranscriptForCommLog(call.transcript, call.transcript_json)}
-`.trim();
+      // Transcript sends (item 4, contentType 'transcript') append the full transcript —
+      // deliberately a large note. Legacy includeTranscript flag honored for compatibility.
+      if ((options.contentType === 'transcript' || options.includeTranscript) && nonEmpty(call.transcript)) {
+        note += `\n\n--- Full transcript ---\n${this.formatTranscriptForCommLog(call.transcript, call.transcript_json)}`;
+      }
     }
-
-    // Add metadata footer
-    note += `
-
-───────────────────────────────────────────────────────
-📊 Metadata
-───────────────────────────────────────────────────────
-Call ID: ${call.id}
-Source: ${source}
-Is New Patient: ${call.is_new_patient ? 'Yes' : 'No'}
-Emergency: ${call.is_emergency ? 'Yes' : 'No'}
-Transfer: ${call.transfer_status || 'none'}
-Callback Required: ${call.callback_required ? 'Yes' : 'No'}
-═══════════════════════════════════════════════════════
-`;
 
     return {
       CommDateTime: call.call_date,
@@ -401,6 +381,26 @@ Callback Required: ${call.callback_required ? 'Yes' : 'No'}
       // Custom fields if supported
       IsNewPatient: call.is_new_patient ? 1 : 0
     };
+  }
+
+  /**
+   * Format a timestamp in the OFFICE timezone for the chart note. Both offices
+   * (Roland OK, Valley/Riley Fort Smith AR) are US Central; OFFICE_TIMEZONE env
+   * overrides if that ever changes. Falls back to ISO on a bad date.
+   * @param {string|Date} when
+   * @returns {string}
+   */
+  formatOfficeDateTime(when) {
+    const tz = process.env.OFFICE_TIMEZONE || 'America/Chicago';
+    try {
+      return new Date(when).toLocaleString('en-US', {
+        timeZone: tz,
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    } catch {
+      try { return new Date(when).toISOString(); } catch { return String(when); }
+    }
   }
 
   /**
