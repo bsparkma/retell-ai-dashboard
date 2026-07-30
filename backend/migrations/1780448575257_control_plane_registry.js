@@ -88,7 +88,7 @@ exports.up = (pgm) => {
   // --- tenant_module (N per tenant) --------------------------------------
   pgm.createTable('tenant_module', {
     tenant_id: { type: 'uuid', notNull: true, references: 'tenant', onDelete: 'CASCADE' },
-    module: { type: 'text', notNull: true }, // 'carein' | 'tc' | 'rcm'
+    module: { type: 'text', notNull: true }, // 'voice' | 'rcm' | 'tc' | 'scheduling' (CHECK added in 1785369600000_rename_module_carein_to_voice)
     enabled: { type: 'boolean', notNull: true, default: false },
   });
   pgm.addConstraint('tenant_module', 'tenant_module_pkey', {

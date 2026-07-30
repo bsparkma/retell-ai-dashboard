@@ -21,6 +21,12 @@ const AUTH_BASE = (
 export interface TenantInfo {
   slug: string;
   displayName: string;
+  /**
+   * Enabled module ids from tenant_module ('voice' | 'rcm' | 'tc' |
+   * 'scheduling'). Drives which product shells the SPA renders — UI hiding
+   * only; the backend requireModule() 403 is the source of truth.
+   */
+  modules: string[];
 }
 
 export interface AuthUser {
@@ -32,17 +38,21 @@ export interface AuthUser {
 }
 
 /** Narrow an unknown `tenant` object into TenantInfo (or null). No `any`. */
-function parseTenant(value: unknown): TenantInfo | null {
+export function parseTenant(value: unknown): TenantInfo | null {
   if (typeof value !== "object" || value === null) return null;
   const t = value as Record<string, unknown>;
   if (typeof t.slug === "string" && typeof t.displayName === "string") {
-    return { slug: t.slug, displayName: t.displayName };
+    // Older backends omit `modules`; anything non-string is dropped.
+    const modules = Array.isArray(t.modules)
+      ? t.modules.filter((m): m is string => typeof m === "string")
+      : [];
+    return { slug: t.slug, displayName: t.displayName, modules };
   }
   return null;
 }
 
 /** Narrow an unknown `/auth/me` body into an AuthUser (or null). No `any`. */
-function parseAuthUser(value: unknown): AuthUser | null {
+export function parseAuthUser(value: unknown): AuthUser | null {
   if (typeof value !== "object" || value === null) return null;
   const body = value as Record<string, unknown>;
   if (body.authenticated !== true) return null;

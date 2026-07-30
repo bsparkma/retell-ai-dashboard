@@ -5,7 +5,9 @@
  *
  *   tenant            slug 'carein', 'CareIN Dental LLC', active
  *   tenant_clinic     (1, 'Roland'), (2, 'Valley')   [OD ClinicNum]
- *   tenant_module     'carein' enabled
+ *   tenant_module     'voice' enabled (module id renamed from 'carein' in
+ *                     1785369600000_rename_module_carein_to_voice, which also
+ *                     merge-renames rows on environments seeded before that)
  *   tenant_connector  od_primary_mode 'api', od_api_base = current OPENDENTAL_API_BASE_URL,
  *                     KV secret NAMES for OD dev/cust keys + connector key (already in kv-carein-core)
  *   tenant_database   references KV secret NAME 'tenant-carein-db-url' (per-tenant app DB conn string)
@@ -88,7 +90,7 @@ exports.up = (pgm) => {
 
   pgm.sql(`
     INSERT INTO tenant_module (tenant_id, module, enabled)
-    VALUES (${id}, 'carein', true)
+    VALUES (${id}, 'voice', true)
     ON CONFLICT (tenant_id, module) DO NOTHING;
   `);
 

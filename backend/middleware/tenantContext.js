@@ -166,4 +166,66 @@ function requireEntitledClinic(req, clinicNum) {
   return clinics.some((c) => Number(c.clinic_num) === n);
 }
 
-module.exports = { tenantContext, resolveTenantForUser, requireEntitledClinic, CAREIN_FALLBACK };
+/**
+ * Predicate: is the calling tenant entitled to `name`?
+ *
+ * Mirrors requireEntitledClinic — a pure boolean over req.tenant, safe to call
+ * from any route handler. Fails closed: no tenant context (or a malformed
+ * modules array) reads as NOT entitled.
+ *
+ * @param {import('express').Request & { tenant?: RequestTenant }} req
+ * @param {string} name module id ('voice' | 'rcm' | 'tc' | 'scheduling')
+ * @returns {boolean} true if the tenant has this module enabled
+ */
+function isEntitledModule(req, name) {
+  const modules =
+    req && req.tenant && Array.isArray(req.tenant.modules) ? req.tenant.modules : [];
+  return modules.includes(name);
+}
+
+/**
+ * Express guard factory: 403 unless the resolved tenant is entitled to `name`.
+ *
+ * Mount AFTER tenantContext(). Fail-closed by construction: a missing
+ * req.tenant (route mounted outside the tenant gate by mistake, or a future
+ * refactor reordering middleware) is treated as unentitled — 403, never 500,
+ * never pass-through. The response shape is the module-entitlement contract:
+ * `{ error: 'MODULE_NOT_ENTITLED', module }`.
+ *
+ * `exempt` mirrors the tenantContext() factory: mount-relative paths that
+ * bypass the guard (e.g. /dev/seed under /api/mango, which is tenant-exempt
+ * upstream and would otherwise 403 here for lack of req.tenant).
+ *
+ * @param {string} name module id this route group belongs to
+ * @param {{ exempt?: RegExp[] }} [opts]
+ * @returns {import('express').RequestHandler}
+ */
+function requireModule(name, { exempt = [] } = {}) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('requireModule: a non-empty module name is required');
+  }
+  return function requireModuleMiddleware(req, res, next) {
+    const subPath = req.path || '';
+    for (const rx of exempt) {
+      if (rx.test(subPath)) return next();
+    }
+    if (!isEntitledModule(req, name)) {
+      return res.status(403).json({
+        success: false,
+        error: 'MODULE_NOT_ENTITLED',
+        module: name,
+        message: `This account is not entitled to the '${name}' module.`,
+      });
+    }
+    return next();
+  };
+}
+
+module.exports = {
+  tenantContext,
+  resolveTenantForUser,
+  requireEntitledClinic,
+  isEntitledModule,
+  requireModule,
+  CAREIN_FALLBACK,
+};
