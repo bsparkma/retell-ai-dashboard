@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
@@ -51,6 +52,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const auth = useAuth();
   // Practice (tenant) name from /auth/me — single tenant today, so no selector.
   const practiceName = auth.status === "authenticated" ? auth.user.tenant?.displayName : undefined;
+  // Global module selection (entitlement-driven; Voice-only today, so the
+  // switcher stays hidden until a second module is entitled AND renderable).
+  const { modules, module: activeModule, setModule } = useModule();
+  const activeModuleLabel = modules.find((m) => m.id === activeModule)?.label ?? "Voice";
+  const [moduleDropOpen, setModuleDropOpen] = useState(false);
   // Global office selection (shared across pages) — the real agent→office roster.
   const { offices, office, setOffice, selected } = useOffice();
   const selectedOfficeName = office === ALL_OFFICES ? "All Offices" : (selected?.officeName ?? "All Offices");
@@ -113,6 +119,36 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <X size={18} />
           </button>
         </div>
+
+        {/* Module switcher — only rendered when the tenant has >1 renderable
+            module, so today's Voice-only tenant sees an unchanged shell. */}
+        {modules.length > 1 && (
+          <div className="px-3 py-3 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
+            <button
+              onClick={() => setModuleDropOpen(!moduleDropOpen)}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors hover:bg-white/5"
+              style={{ color: "oklch(0.80 0.01 240)" }}
+            >
+              <LayoutDashboard size={14} className="flex-shrink-0" style={{ color: "oklch(0.60 0.08 210)" }} />
+              <span className="truncate flex-1 text-left text-xs font-medium">{activeModuleLabel}</span>
+              <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${moduleDropOpen ? "rotate-180" : ""}`} />
+            </button>
+            {moduleDropOpen && (
+              <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.12 0.04 245)" }}>
+                {modules.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setModule(m.id); setModuleDropOpen(false); }}
+                    className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
+                    style={{ color: m.id === activeModule ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
+                  >
+                    <span className="flex-1 truncate">{m.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Office selector */}
         <div className="px-3 py-3 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
