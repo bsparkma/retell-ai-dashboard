@@ -162,9 +162,6 @@ async function bootstrap() {
   // bearer gate so unauthenticated users can reach the sign-in flow.
   app.use('/auth', authRouter);
 
-  // Serve downloaded Mango recordings (MP3) from disk
-  app.use('/api/mango/recordings', express.static(path.join(__dirname, 'recordings', 'mango')));
-
   // Auth gate for /api/*: a valid Entra SSO session cookie OR the shared
   // dashboard bearer token. Webhooks (HMAC-authenticated) and the health check
   // are exempt so monitors and Retell can still reach them.
@@ -206,8 +203,15 @@ async function bootstrap() {
   //   /api/health         monitors
   //   /auth/*             SSO sign-in flow (mounted outside /api entirely)
   //   /api/mango/dev/seed staging-only seeder (tenant-exempt upstream)
-  //   /api/mango/recordings/* static mount registered before the auth gate
   const voiceModule = requireModule('voice');
+
+  // Legacy on-disk Mango recordings (MP3, scraper-era; current playback uses the
+  // proxy GET /api/mango/calls/:callId/recording). Recordings are PHI audio, so
+  // this static mount sits BELOW the auth gate + tenant context and carries the
+  // voice module guard like the rest of /api/mango. It must never be registered
+  // above the auth gate — that served recordings unauthenticated on the public
+  // hostname (see backend/test/recordingsAuthGate.test.js).
+  app.use('/api/mango/recordings', voiceModule, express.static(path.join(__dirname, 'recordings', 'mango')));
 
   app.use('/api/calls', voiceModule, callsRouter);
   app.use('/api/agents', voiceModule, agentsRouter);
