@@ -50,7 +50,35 @@
 /** @type {Record<string, string> | undefined} */
 exports.shorthands = undefined;
 
+// Least-privilege app role, same mechanism as the audit_log migration: the
+// repo's ONLY per-table grant path is an explicit role-guarded GRANT inside
+// the migration (there is no ALTER DEFAULT PRIVILEGES anywhere; provisioning
+// grants schema USAGE only). tc_* tables get normal CRUD for the app role —
+// unlike audit_log, which is deliberately append-only.
+const APP_ROLE = (process.env.AUDIT_APP_ROLE || 'carein_app').trim();
+if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(APP_ROLE)) {
+  throw new Error(`[tc_schema migration] invalid AUDIT_APP_ROLE '${APP_ROLE}'`);
+}
+
 const OFFICE_CHECK = "office_id IN ('roland', 'valley')";
+
+/** Every table this migration creates, in creation order. */
+const TC_TABLES = [
+  'tc_cases',
+  'tc_case_phases',
+  'tc_case_items',
+  'tc_case_objections',
+  'tc_followups',
+  'tc_case_events',
+  'tc_hygiene_intakes',
+  'tc_preauth_cases',
+  'tc_email_templates',
+  'tc_communications',
+  'tc_gallery_cases',
+  'tc_smile_simulations',
+  'tc_library_config',
+  'tc_legacy_user_map',
+];
 
 /** Shared column fragments (spread into createTable). */
 function officeCol() {
@@ -466,6 +494,31 @@ exports.up = (pgm) => {
     legacy_role: { type: 'text', notNull: true, default: '' },
     ...timestamps(pgm),
   });
+
+  // ── App-role grants (audit_log mechanism, CRUD scope) ────────────────────
+  // uuid PKs via gen_random_uuid() mean no sequence grants are needed. If the
+  // role is absent (local dev on a superuser) the grant is skipped with a
+  // NOTICE — create the role and re-run before serving PHI. down() needs no
+  // revoke: dropping a table drops its grants.
+  const tableList = TC_TABLES.map((t) => `'${t}'`).join(', ');
+  pgm.sql(`
+    DO $$
+    DECLARE r text := '${APP_ROLE}';
+            t text;
+    BEGIN
+      FOREACH t IN ARRAY ARRAY[${tableList}] LOOP
+        EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC', t);
+      END LOOP;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        FOREACH t IN ARRAY ARRAY[${tableList}] LOOP
+          EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I TO %I', t, r);
+        END LOOP;
+        RAISE NOTICE 'tc_schema: CRUD grants applied to role % on % tc_* tables', r, ${TC_TABLES.length};
+      ELSE
+        RAISE NOTICE 'tc_schema: app role % absent — grants SKIPPED. Create the least-privilege role and re-run before serving PHI.', r;
+      END IF;
+    END $$;
+  `);
 };
 
 /**

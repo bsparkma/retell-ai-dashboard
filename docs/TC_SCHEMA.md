@@ -148,22 +148,28 @@ TC-app; the CareIN-handoff integration is its own future decision).
 - Blob-backed media (gallery, smile sims) stores **keys only**; bytes go to
   Azure Blob behind an entitlement-checked proxy in a later slice.
 - `tc_cases.legacy_snapshot` is full-fidelity legacy JSON = PHI; it exists for
-  auditability of the import and is a candidate for retention policy once
-  Slice 2 is verified (OPEN QUESTION below).
+  auditability of the import. **Retention (PM decision, PR #23 review): KEEP
+  through the port; purged as part of the Slice 7 decommission checklist,
+  after the team signs off on the migrated data post-cutover.** Not forever,
+  not now.
 - Audit trail: PHI-touching TC routes will write `audit_log` rows (existing
   per-tenant table) when Slice 3 lands — no new audit machinery needed here.
 
-## OPEN QUESTIONS (for PM before Slice 2)
-1. **App-role grants**: `carein_app` currently has only schema USAGE (same as
-   `call_record`). Before Slice 3 routes, tc_* needs explicit
-   SELECT/INSERT/UPDATE/DELETE grants for the app role — grant in a follow-up
-   migration (proposed) or at provisioning?
-2. **`legacy_snapshot` retention**: keep forever, or purge after the Slice 2
-   import is verified (e.g. 90 days)?
-3. **Nurture-in-followups**: unifying nurture touchpoints into `tc_followups`
-   (kind='nurture') is the boldest part of decision 2 — veto now if nurture
-   should stay a separate table; after Slice 2 it's a data migration.
-4. **`patient_age`**: kept as legacy age-at-entry (stale by design). Replace
-   with birthdate once OD linking is authoritative, or keep both?
-5. **Office keys**: confirmed frozen as `roland`/`valley` with legacy `riley`
-   → `valley`. Any objection before data lands on them?
+## Review resolutions (PM, PR #23)
+1. **App-role grants — RESOLVED IN THIS PR.** Investigation: the repo's only
+   per-table grant mechanism is the explicit role-guarded GRANT inside a
+   migration (audit_log pattern); there is no ALTER DEFAULT PRIVILEGES
+   anywhere, and provisioning/CI grants schema USAGE only. The tc_schema
+   migration now grants `carein_app` SELECT/INSERT/UPDATE/DELETE on all 14
+   tc_* tables (REVOKE PUBLIC first; skip-with-NOTICE if the role is absent,
+   same as audit_log). Note for the voice workstream: `call_record` itself
+   has NO grants — `carein_app` cannot access it today; that will surface at
+   the Slice 3b unified-calls cutover.
+2. **`legacy_snapshot` retention: KEEP** — purge is a Slice 7 decommission
+   checklist item after post-cutover data sign-off (see PHI notes above).
+3. **Follow-up/nurture unification: APPROVED.** Visual separation later is a
+   UI filter on `kind`, not a schema change.
+4. **`patient_age` as stale age-at-entry: APPROVED.** Birthdate arrives with
+   OD linking in Slice 5.
+5. **Office keys `roland`/`valley`: CONFIRMED frozen**; `riley` → `valley` is
+   the correct mapping.
