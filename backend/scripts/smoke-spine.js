@@ -67,7 +67,7 @@ async function main() {
     `${tenant.display_name} / ${tenant.status}`
   );
   record('registry: 2 clinics seeded', clinics.length === 2, clinics.map((c) => `${c.clinic_num}:${c.name}`).join(', '));
-  record('registry: carein module enabled', modules.includes('carein'), `[${modules.join(', ')}]`);
+  record('registry: voice module enabled', modules.includes('voice'), `[${modules.join(', ')}]`);
   record(
     'registry: tenant_database ref',
     !!dbRef && dbRef.db_name === 'carein_t_carein' && dbRef.kv_conn_secret === 'tenant-carein-db-url',

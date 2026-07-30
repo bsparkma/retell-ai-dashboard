@@ -15,6 +15,7 @@
 const express = require('express');
 const sso = require('../config/sso');
 const { resolveTenantForUser } = require('../middleware/tenantContext');
+const registry = require('../platform/registry');
 
 const router = express.Router();
 
@@ -127,12 +128,22 @@ router.get('/me', async (req, res) => {
     return res.status(401).json({ authenticated: false });
   }
 
-  // Surface the tenant (practice) so the SPA can show its name. Degrades to null
-  // if the control DB is unreachable — auth status must not depend on it.
+  // Surface the tenant (practice) so the SPA can show its name, plus its
+  // enabled modules so the shell knows which products to render. Degrades to
+  // null if the control DB is unreachable — auth status must not depend on it.
+  // (UI hiding only: the backend requireModule() 403 is the source of truth.)
   let tenant = null;
   try {
     const t = await resolveTenantForUser({ email: claims.email, tenantId: claims.tid });
-    if (t) tenant = { slug: t.slug, displayName: t.display_name };
+    if (t) {
+      let modules = [];
+      try {
+        modules = await registry.getEnabledModules(t.tenant_id);
+      } catch (_err) {
+        // modules lookup failed — degrade to an empty list, keep auth working
+      }
+      tenant = { slug: t.slug, displayName: t.display_name, modules };
+    }
   } catch (_err) {
     // control plane unavailable — return the user without a tenant name
   }

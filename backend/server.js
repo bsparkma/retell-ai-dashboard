@@ -53,7 +53,7 @@ async function bootstrap() {
   const unifiedCallStore = require('./services/unifiedCallStore');
   const syncScheduler = require('./services/syncScheduler');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
-  const { tenantContext } = require('./middleware/tenantContext');
+  const { tenantContext, requireModule } = require('./middleware/tenantContext');
 
   const app = express();
   // Default ports: 5003 in production, 5103 in dev. PORT env var overrides both.
@@ -162,9 +162,6 @@ async function bootstrap() {
   // bearer gate so unauthenticated users can reach the sign-in flow.
   app.use('/auth', authRouter);
 
-  // Serve downloaded Mango recordings (MP3) from disk
-  app.use('/api/mango/recordings', express.static(path.join(__dirname, 'recordings', 'mango')));
-
   // Auth gate for /api/*: a valid Entra SSO session cookie OR the shared
   // dashboard bearer token. Webhooks (HMAC-authenticated) and the health check
   // are exempt so monitors and Retell can still reach them.
@@ -192,23 +189,46 @@ async function bootstrap() {
     })
   );
 
-  // Routes
-  app.use('/api/calls', callsRouter);
-  app.use('/api/agents', agentsRouter);
-  app.use('/api/opendental', openDentalRouter);
-  app.use('/api/opendental-sync', openDentalSyncRouter);
+  // Routes.
+  //
+  // Module entitlement (LOGICAL gating, no URL changes): every tenant-scoped
+  // route group belongs to a module and is guarded by requireModule(). The
+  // guard runs after tenantContext, so req.tenant.modules is populated; it
+  // fails closed (403 MODULE_NOT_ENTITLED) when the module isn't enabled OR
+  // when tenant context is missing entirely.
+  //
+  // NEVER guarded (no tenant context by design — a module guard would 403 them):
+  //   /api/webhooks/*     Retell/Mango webhooks (HMAC-verified)
+  //   /api/retell-tools/* LIVE voice-agent tools (Retell HMAC-verified)
+  //   /api/health         monitors
+  //   /auth/*             SSO sign-in flow (mounted outside /api entirely)
+  //   /api/mango/dev/seed staging-only seeder (tenant-exempt upstream)
+  const voiceModule = requireModule('voice');
+
+  // Legacy on-disk Mango recordings (MP3, scraper-era; current playback uses the
+  // proxy GET /api/mango/calls/:callId/recording). Recordings are PHI audio, so
+  // this static mount sits BELOW the auth gate + tenant context and carries the
+  // voice module guard like the rest of /api/mango. It must never be registered
+  // above the auth gate — that served recordings unauthenticated on the public
+  // hostname (see backend/test/recordingsAuthGate.test.js).
+  app.use('/api/mango/recordings', voiceModule, express.static(path.join(__dirname, 'recordings', 'mango')));
+
+  app.use('/api/calls', voiceModule, callsRouter);
+  app.use('/api/agents', voiceModule, agentsRouter);
+  app.use('/api/opendental', voiceModule, openDentalRouter);
+  app.use('/api/opendental-sync', voiceModule, openDentalSyncRouter);
   app.use('/api/webhooks', webhooksRouter);
-  app.use('/api/live-calls', liveCallsRouter);
-  app.use('/api/admin', adminRouter);
-  app.use('/api/mango', mangoRouter);
-  app.use('/api/callbacks', callbacksRouter);
-  app.use('/api/unified-calls', unifiedCallsRouter);
-  app.use('/api/analytics', analyticsRouter);
+  app.use('/api/live-calls', voiceModule, liveCallsRouter);
+  app.use('/api/admin', voiceModule, adminRouter);
+  app.use('/api/mango', requireModule('voice', { exempt: [/^\/dev\/seed$/] }), mangoRouter);
+  app.use('/api/callbacks', voiceModule, callbacksRouter);
+  app.use('/api/unified-calls', voiceModule, unifiedCallsRouter);
+  app.use('/api/analytics', voiceModule, analyticsRouter);
   app.use('/api/retell-tools', retellToolsRouter);
-  app.use('/api/retell-tools-config', retellToolsConfigRouter);
-  app.use('/api/agent-config', agentConfigRouter);
-  app.use('/api/notifications-config', notificationsConfigRouter);
-  app.use('/api/slot-markers', slotMarkersRouter);
+  app.use('/api/retell-tools-config', voiceModule, retellToolsConfigRouter);
+  app.use('/api/agent-config', voiceModule, agentConfigRouter);
+  app.use('/api/notifications-config', voiceModule, notificationsConfigRouter);
+  app.use('/api/slot-markers', voiceModule, slotMarkersRouter);
 
   // Health check endpoint
   app.get('/api/health', async (req, res) => {
