@@ -34,6 +34,7 @@ export interface TcCaseRow {
   status: string;
   urgency: string;
   doctor_name: string;
+  diagnosing_provider: string | null;
   assigned_tc: string;
   case_value_cents: number;
   readiness_score: number;
@@ -180,6 +181,7 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
     status: c.status,
     urgency: c.urgency,
     doctor_name: c.doctorName,
+    diagnosing_provider: c.diagnosingProvider,
     assigned_tc: c.assignedTc,
     case_value_cents: c.caseValueCents,
     readiness_score: c.readinessScore,
@@ -336,6 +338,7 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
     status: caseRow.status,
     urgency: caseRow.urgency,
     doctorName: caseRow.doctor_name,
+    diagnosingProvider: caseRow.diagnosing_provider,
     assignedTc: caseRow.assigned_tc,
     caseValueCents: caseRow.case_value_cents,
     readinessScore: caseRow.readiness_score,

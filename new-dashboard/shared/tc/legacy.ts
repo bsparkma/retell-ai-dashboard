@@ -463,6 +463,9 @@ export function legacyCaseToTc(input: unknown, newId: () => string): TcCase {
     status: legacy.status,
     urgency: legacy.urgency,
     doctorName: legacy.doctor,
+    // Legacy cases carried only the free-text doctor name — no provider
+    // identity existed to map. New case-entry flows (Slice 3+) set this.
+    diagnosingProvider: null,
     assignedTc: legacy.tc,
     caseValueCents: dollarsToCents(legacy.caseValue),
     readinessScore: Math.min(100, Math.max(0, Math.round(legacy.readinessScore))),

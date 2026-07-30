@@ -118,7 +118,12 @@ exports.up = (pgm) => {
     category: { type: 'text', notNull: true },
     status: { type: 'text', notNull: true },
     urgency: { type: 'text', notNull: true },
-    doctor_name: { type: 'text', notNull: true, default: '' },
+    doctor_name: { type: 'text', notNull: true, default: '' }, // display text (legacy free-text `doctor`)
+    // Identity of the doctor selected at case entry (hygiene handoff or TC
+    // case creation) — same identity convention as assigned_tc: a user key
+    // resolvable via tc_legacy_user_map. Nullable: legacy cases only carried
+    // the free-text doctor_name; new entry flows set this.
+    diagnosing_provider: { type: 'text' },
     assigned_tc: { type: 'text', notNull: true, default: '' }, // legacy user slug/name; resolves via tc_legacy_user_map
 
     // Value / readiness (money = integer cents, always).

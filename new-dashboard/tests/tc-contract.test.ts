@@ -341,6 +341,16 @@ describe("row mapping round-trip (contract → rows → contract)", () => {
     expect(roundTripped).toEqual(original);
   });
 
+  it("diagnosing_provider: null on legacy import, round-trips when set at case entry", () => {
+    const imported = legacyCaseToTc(SYNTHETIC_LEGACY_CASE, newId);
+    expect(imported.diagnosingProvider).toBeNull(); // legacy had only free-text doctorName
+
+    const entered = { ...imported, diagnosingProvider: "beau" }; // same identity convention as tc_legacy_user_map
+    const rows = caseToRows(entered, newId);
+    expect(rows.caseRow.diagnosing_provider).toBe("beau");
+    expect(caseFromRows(rows).diagnosingProvider).toBe("beau");
+  });
+
   it("stamps office_id on every child row (multi-office rule)", () => {
     const rows = caseToRows(legacyCaseToTc(SYNTHETIC_LEGACY_CASE, newId), newId);
     const all = [

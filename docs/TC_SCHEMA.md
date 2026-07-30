@@ -109,7 +109,8 @@ Case-level (`LegacyPatientCase` → `TcCase` / rows):
 | `id` | `tc_cases.legacy_id` | unique; import idempotency |
 | `patientName, age, phone, email, odPatientId` | identity columns | `''` → NULL; age outside 1–130 → NULL |
 | `caseType, category, status, urgency` | same-name columns | vocab CHECKs incl. new `hygiene_review`/`pending_pt`/`partially_accepted` |
-| `doctor` | `doctor_name` | free text |
+| `doctor` | `doctor_name` | free display text |
+| — (no legacy source) | `diagnosing_provider` | NEW (PR #23 review): identity of the doctor selected at case entry (hygiene handoff / TC creation); same identity convention as `assigned_tc` / `tc_legacy_user_map`. NULL on imported legacy cases; set by Slice 3+ entry flows |
 | `tc` | `assigned_tc` | legacy slug/name; platform identity resolves via `tc_legacy_user_map` |
 | `location` | `office_id` | **`riley` → `valley`** |
 | `caseValue` | `case_value_cents` | ×100 rounded |

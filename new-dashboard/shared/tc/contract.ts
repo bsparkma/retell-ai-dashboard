@@ -249,7 +249,13 @@ export const TcCase = z.object({
   category: CaseCategory,
   status: CaseStatus,
   urgency: Urgency,
-  doctorName: ShortText,
+  doctorName: ShortText, // display text (legacy free-text doctor)
+  /**
+   * Identity of the doctor selected at case entry (hygiene handoff or TC case
+   * creation) — same identity convention as assignedTc / tc_legacy_user_map.
+   * Null on imported legacy cases (legacy only had free-text doctorName).
+   */
+  diagnosingProvider: ShortText.nullable(),
   assignedTc: ShortText, // legacy slug/name; platform identity via tc_legacy_user_map
 
   // Value / readiness.
