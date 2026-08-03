@@ -1,0 +1,32 @@
+[
+  {
+    "id": "cm_ok",
+    "practiceId": "legacy-practice",
+    "caseId": "c_multi",
+    "templateId": "tpl_test",
+    "templateName": "Test Template",
+    "senderId": "holly",
+    "senderName": "Holly",
+    "to": "synth1@example.com",
+    "subject": "Your plan",
+    "status": "sent",
+    "messageId": "msg_1",
+    "error": null,
+    "createdAt": "2026-01-06T10:00:00.000Z"
+  },
+  {
+    "id": "cm_dangling",
+    "practiceId": "legacy-practice",
+    "caseId": "ghost_case",
+    "templateId": "tpl_missing",
+    "templateName": "Gone",
+    "senderId": "beau",
+    "senderName": "Beau",
+    "to": "synth2@example.com",
+    "subject": "Old",
+    "status": "stubbed",
+    "messageId": null,
+    "error": null,
+    "createdAt": "2026-01-07T10:00:00.000Z"
+  }
+]

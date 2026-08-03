@@ -1,0 +1,13 @@
+[
+  {
+    "id": "g1",
+    "title": "Synthetic Smile Case",
+    "category": "Veneers",
+    "description": "synthetic",
+    "doctor": "Dr. Fixture",
+    "createdAt": "2026-01-08T10:00:00.000Z",
+    "updatedAt": "2026-01-08T10:00:00.000Z",
+    "beforeImage": "gallery-images/before.png",
+    "afterImage": "gallery-images/after.png"
+  }
+]

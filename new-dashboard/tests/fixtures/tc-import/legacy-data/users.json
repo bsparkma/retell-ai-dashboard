@@ -1,0 +1,32 @@
+[
+  {
+    "id": "withemail",
+    "practiceId": "p",
+    "name": "Has Email",
+    "initials": "HE",
+    "role": "tc",
+    "pinHash": "SECRETHASH_SHOULD_NEVER_SURFACE",
+    "email": "has.email@example.com",
+    "isActive": true
+  },
+  {
+    "id": "noemail",
+    "practiceId": "p",
+    "name": "No Email",
+    "initials": "NE",
+    "role": "owner",
+    "pinHash": "SECRETHASH2",
+    "email": null,
+    "isActive": true
+  },
+  {
+    "id": "override",
+    "practiceId": "p",
+    "name": "Override Me",
+    "initials": "OM",
+    "role": "hygienist",
+    "pinHash": "SECRETHASH3",
+    "email": null,
+    "isActive": true
+  }
+]

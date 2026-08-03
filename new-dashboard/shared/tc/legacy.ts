@@ -25,13 +25,21 @@
 import { z } from "zod";
 import {
   ContactAttemptDetail,
+  LibrarySectionSchemas,
   TcCase,
   TcCaseEvent,
+  TcCommunication,
+  TcEmailTemplate,
   TcFollowup,
+  TcGalleryCase,
   TcHygieneIntake,
+  TcLegacyUserMapEntry,
   TcPreauthCase,
+  TcSmileSimulation,
+  type LibrarySection,
   type OfficeId,
 } from "./contract";
+import { EmailBlocks } from "./emailBlocks";
 
 // ── Conversions ─────────────────────────────────────────────────────────────
 
@@ -525,6 +533,386 @@ export function legacyCaseToTc(input: unknown, newId: () => string): TcCase {
     events,
     hygieneIntake,
   });
+}
+
+// ── Non-case entities (Slice 2 importer boundary) ───────────────────────────
+// Legacy shapes for the remaining data files. Same rules as above: tolerant
+// parse here, strict contract out, nothing past the mapper sees legacy shapes.
+// Cross-record links (comm.caseId → case uuid, sim.galleryCaseId → gallery
+// uuid) and blob keys are RESOLVED BY THE CALLER (the importer owns
+// referential wiring and blob uploads); mappers stay pure.
+
+export const LegacyEmailTemplate = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  category: z
+    .enum([
+      "consult_confirmation",
+      "consult_followup",
+      "financing_followup",
+      "preauth_approved",
+      "unscheduled_treatment",
+      "treatment_presentation",
+      "general",
+    ])
+    .catch("general"),
+  subject: z.string().min(1),
+  preheader: Str.default(""),
+  blocks: z.array(z.unknown()).min(1), // validated strictly by EmailBlocks in the mapper
+  isSeed: z.boolean().catch(false),
+});
+export type LegacyEmailTemplate = z.infer<typeof LegacyEmailTemplate>;
+
+/**
+ * Map one legacy EmailTemplate. `practiceId` is dropped (tenant DB +
+ * office_id supersede it); blocks parse through the strict EmailBlocks union —
+ * a block that fails is a per-record failure the importer reports.
+ */
+export function legacyTemplateToTc(
+  input: unknown,
+  newId: () => string,
+  officeId: OfficeId,
+): TcEmailTemplate {
+  const legacy = LegacyEmailTemplate.parse(input);
+  return TcEmailTemplate.parse({
+    templateId: newId(),
+    legacyId: legacy.id,
+    officeId,
+    name: legacy.name,
+    category: legacy.category,
+    subject: legacy.subject,
+    preheader: legacy.preheader,
+    blocks: EmailBlocks.parse(legacy.blocks),
+    isSeed: legacy.isSeed,
+  });
+}
+
+export const LegacyCommunication = z.object({
+  id: z.string().min(1),
+  caseId: z.string().nullable().catch(null).default(null),
+  templateId: z.string().nullable().catch(null).default(null),
+  templateName: Str.default(""),
+  senderId: Str.default(""),
+  senderName: Str.default(""),
+  to: z.string().min(1),
+  subject: Str.default(""),
+  status: z.enum(["sent", "stubbed", "error"]).catch("error"),
+  messageId: z.string().nullable().catch(null).default(null),
+  error: z.string().nullable().catch(null).default(null),
+  createdAt: Str.default(""),
+});
+export type LegacyCommunication = z.infer<typeof LegacyCommunication>;
+
+/**
+ * Map one legacy CommunicationLogEntry. The caller resolves legacy caseId /
+ * templateId to imported uuids (null when the reference dangles — real legacy
+ * data references deleted cases) and picks the office (linked case's office,
+ * else the default).
+ */
+export function legacyCommunicationToTc(
+  input: unknown,
+  newId: () => string,
+  officeId: OfficeId,
+  resolved: { caseId: string | null; templateId: string | null },
+): TcCommunication {
+  const legacy = LegacyCommunication.parse(input);
+  return TcCommunication.parse({
+    commId: newId(),
+    legacyId: legacy.id,
+    officeId,
+    caseId: resolved.caseId,
+    templateId: resolved.templateId,
+    templateName: legacy.templateName,
+    sender: legacy.senderId || "unknown",
+    senderName: legacy.senderName,
+    toEmail: legacy.to,
+    subject: legacy.subject,
+    status: legacy.status,
+    providerMessageId: legacy.messageId,
+    error: legacy.error,
+    sentAt: toIsoTimestamp(legacy.createdAt) ?? new Date(0).toISOString(),
+  });
+}
+
+export const LegacyGalleryEntry = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  category: Str.default(""),
+  description: Str.default(""),
+  doctor: Str.default(""),
+  createdAt: Str.default(""),
+  beforeImage: z.string().min(1), // path under the legacy data dir — becomes a blob key
+  afterImage: z.string().min(1),
+});
+export type LegacyGalleryEntry = z.infer<typeof LegacyGalleryEntry>;
+
+/**
+ * Map one legacy gallery entry. The caller uploads the image bytes and passes
+ * the resulting blob KEYS — legacy file paths/names never persist (they embed
+ * patient names).
+ */
+export function legacyGalleryToTc(
+  input: unknown,
+  newId: () => string,
+  officeId: OfficeId,
+  blobKeys: { before: string; after: string },
+): TcGalleryCase {
+  const legacy = LegacyGalleryEntry.parse(input);
+  return TcGalleryCase.parse({
+    galleryId: newId(),
+    legacyId: legacy.id,
+    officeId,
+    title: legacy.title,
+    category: legacy.category,
+    description: legacy.description,
+    doctorName: legacy.doctor,
+    beforeBlobKey: blobKeys.before,
+    afterBlobKey: blobKeys.after,
+    createdAt: toIsoTimestamp(legacy.createdAt) ?? new Date(0).toISOString(),
+  });
+}
+
+export const LegacySmileSimulation = z.object({
+  id: z.string().min(1),
+  caseId: z.string().nullable().catch(null).default(null),
+  treatmentType: z.string().min(1),
+  prompt: Str.default(""),
+  originalImage: z.string().min(1),
+  simulationImage: z.string().min(1),
+  savedToGallery: z.boolean().catch(false),
+  galleryCaseId: z.string().nullable().catch(null).default(null),
+  createdAt: Str.default(""),
+  createdBy: Str.default(""),
+});
+export type LegacySmileSimulation = z.infer<typeof LegacySmileSimulation>;
+
+/** Map one legacy smile simulation. Same caller contract as the gallery. */
+export function legacySimulationToTc(
+  input: unknown,
+  newId: () => string,
+  officeId: OfficeId,
+  blobKeys: { original: string; result: string },
+  resolved: { caseId: string | null; galleryId: string | null },
+): TcSmileSimulation {
+  const legacy = LegacySmileSimulation.parse(input);
+  return TcSmileSimulation.parse({
+    simId: newId(),
+    legacyId: legacy.id,
+    officeId,
+    caseId: resolved.caseId,
+    treatmentType: legacy.treatmentType,
+    prompt: legacy.prompt,
+    originalBlobKey: blobKeys.original,
+    resultBlobKey: blobKeys.result,
+    savedToGallery: legacy.savedToGallery,
+    galleryId: resolved.galleryId,
+    createdBy: legacy.createdBy,
+    createdAt: toIsoTimestamp(legacy.createdAt) ?? new Date(0).toISOString(),
+  });
+}
+
+// ── library.json → tc_library_config sections ───────────────────────────────
+
+const LegacyTag = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  archived: z.boolean().catch(false),
+});
+
+export const LegacyLibrary = z.object({
+  stages: z.array(z.unknown()).default([]),
+  objections: z.array(z.unknown()).default([]),
+  motivators: z.array(LegacyTag).default([]),
+  lostReasons: z.array(LegacyTag).default([]),
+  referralSources: z.array(LegacyTag).default([]),
+  treatmentCategories: z
+    .array(
+      z.object({
+        key: z.string().min(1),
+        label: z.string().min(1),
+        defaultFinancingProviderKey: z.string().nullable().catch(null).default(null),
+      }),
+    )
+    .default([]),
+  financingProviders: z
+    .array(
+      z.object({
+        key: z.string().min(1),
+        label: z.string().min(1),
+        logo: Str.default(""),
+        color: Str.default(""),
+        description: Str.default(""),
+        terms: z.array(z.number()).default([]),
+        promoTerms: z.array(z.number()).default([]),
+        minAmount: LegacyMoney.default(0),
+        promoApr: z.number().catch(0),
+        regularApr: z.number().catch(0),
+        enabled: z.boolean().catch(true),
+      }),
+    )
+    .default([]),
+  crownPricing: z
+    .object({
+      economy: LegacyMoney.default(0),
+      standard: LegacyMoney.default(0),
+      premium: LegacyMoney.default(0),
+      implant: LegacyMoney.default(0),
+    })
+    .nullable()
+    .catch(null)
+    .default(null),
+  financingConfig: z
+    .object({
+      serviceFeeEnabled: z.boolean().catch(false),
+      serviceFeePercent: z.number().catch(0),
+    })
+    .nullable()
+    .catch(null)
+    .default(null),
+  cadenceConfig: z.unknown().nullable().default(null),
+});
+export type LegacyLibrary = z.infer<typeof LegacyLibrary>;
+
+export interface LibrarySectionValue {
+  section: LibrarySection;
+  value: unknown; // already validated by the section schema
+}
+
+/**
+ * Map legacy library.json into per-section tc_library_config values.
+ * Conversions: money → cents (crown pricing, provider minimums, cadence
+ * thresholds); legacy tags gain `color: null`. `practiceId` is dropped.
+ * `financing_settings` is NOT produced here — it lived in per-browser
+ * localStorage, not in library.json (Slice 3 seeds server defaults).
+ * Each section value is validated by its LibrarySectionSchemas schema; a
+ * section that fails validation lands in `errors` (per-section failure for
+ * the importer to report) without sinking the sections that do map.
+ */
+export function legacyLibraryToSections(input: unknown): {
+  sections: LibrarySectionValue[];
+  errors: { section: LibrarySection; message: string }[];
+} {
+  const legacy = LegacyLibrary.parse(input);
+  const tag = (t: z.infer<typeof LegacyTag>) => ({
+    key: t.key,
+    label: t.label,
+    color: null,
+    archived: t.archived,
+  });
+
+  const out: LibrarySectionValue[] = [];
+  const errors: { section: LibrarySection; message: string }[] = [];
+  const push = (section: LibrarySection, value: unknown) => {
+    try {
+      out.push({ section, value: LibrarySectionSchemas[section].parse(value) });
+    } catch (err) {
+      errors.push({ section, message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  push("stages", legacy.stages);
+  push("objections", legacy.objections);
+  push("motivators", legacy.motivators.map(tag));
+  push("lost_reasons", legacy.lostReasons.map(tag));
+  push("referral_sources", legacy.referralSources.map(tag));
+  push("treatment_categories", legacy.treatmentCategories);
+  push(
+    "financing_providers",
+    legacy.financingProviders.map((p) => ({
+      key: p.key,
+      label: p.label,
+      logo: p.logo,
+      color: p.color,
+      description: p.description,
+      terms: p.terms,
+      promoTerms: p.promoTerms,
+      minAmountCents: dollarsToCents(p.minAmount),
+      promoApr: p.promoApr,
+      regularApr: p.regularApr,
+      enabled: p.enabled,
+    })),
+  );
+  if (legacy.crownPricing) {
+    push("crown_pricing", {
+      economyCents: dollarsToCents(legacy.crownPricing.economy),
+      standardCents: dollarsToCents(legacy.crownPricing.standard),
+      premiumCents: dollarsToCents(legacy.crownPricing.premium),
+      implantCents: dollarsToCents(legacy.crownPricing.implant),
+    });
+  }
+  if (legacy.financingConfig) push("financing_config", legacy.financingConfig);
+  if (legacy.cadenceConfig != null) {
+    try {
+      const c = z
+        .object({
+          tiers: z.array(
+            z.object({
+              key: z.string(),
+              label: z.string(),
+              intervals: z.array(z.number()),
+            }),
+          ),
+          thresholds: z.object({
+            standardMin: LegacyMoney.default(0),
+            highTouchMin: LegacyMoney.default(0),
+          }),
+          highUrgencyFirstDay: z.number().catch(0),
+          spouseFamilyMinFirstDay: z.number().catch(0),
+        })
+        .parse(legacy.cadenceConfig);
+      push("cadence_config", {
+        tiers: c.tiers,
+        thresholds: {
+          standardMinCents: dollarsToCents(c.thresholds.standardMin),
+          highTouchMinCents: dollarsToCents(c.thresholds.highTouchMin),
+        },
+        highUrgencyFirstDay: c.highUrgencyFirstDay,
+        spouseFamilyMinFirstDay: c.spouseFamilyMinFirstDay,
+      });
+    } catch (err) {
+      errors.push({
+        section: "cadence_config",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { sections: out, errors };
+}
+
+// ── users.json → tc_legacy_user_map ─────────────────────────────────────────
+
+/**
+ * Legacy TC-app user. `pinHash` is deliberately NOT modeled — z.object strips
+ * unknown keys, so credentials can never pass through this boundary.
+ */
+export const LegacyUser = z.object({
+  id: z.string().min(1),
+  name: Str.default(""),
+  role: Str.default(""),
+  email: z.string().nullable().catch(null).default(null),
+  isActive: z.boolean().catch(true),
+});
+export type LegacyUser = z.infer<typeof LegacyUser>;
+
+/**
+ * Map one legacy user into a tc_legacy_user_map entry. Platform email comes
+ * from `emailOverride` (the importer's --user-map file) or the legacy record.
+ * Returns null when no valid email is available — the importer reports those
+ * as needs-input rather than inventing identities.
+ */
+export function legacyUserToMapEntry(
+  input: unknown,
+  emailOverride?: string,
+): TcLegacyUserMapEntry | null {
+  const legacy = LegacyUser.parse(input);
+  const email = emailOverride ?? legacy.email ?? "";
+  const parsed = TcLegacyUserMapEntry.safeParse({
+    legacyUserId: legacy.id,
+    platformEmail: email,
+    displayName: legacy.name,
+    legacyRole: legacy.role,
+  });
+  return parsed.success ? parsed.data : null;
 }
 
 /** Map one legacy PreAuthCase into the strict contract. */

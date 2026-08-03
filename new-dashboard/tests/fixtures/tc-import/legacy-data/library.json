@@ -1,0 +1,114 @@
+{
+  "practiceId": "legacy-practice",
+  "stages": [
+    {
+      "key": "diagnosed",
+      "label": "Diagnosed",
+      "color": "blue",
+      "slaWarnDays": 3,
+      "slaCriticalDays": 7,
+      "order": 1,
+      "system": true
+    }
+  ],
+  "objections": [
+    {
+      "key": "cost",
+      "label": "Cost",
+      "script": "talk about financing",
+      "suggestedFollowUpDays": 3
+    }
+  ],
+  "motivators": [
+    {
+      "key": "smile",
+      "label": "Smile",
+      "archived": false
+    }
+  ],
+  "lostReasons": [
+    {
+      "key": "moved",
+      "label": "Moved away",
+      "archived": false
+    }
+  ],
+  "referralSources": [
+    {
+      "key": "google",
+      "label": "Google",
+      "archived": false
+    }
+  ],
+  "treatmentCategories": [
+    {
+      "key": "implant",
+      "label": "Implant",
+      "defaultFinancingProviderKey": null
+    }
+  ],
+  "financingProviders": [
+    {
+      "key": "cherry",
+      "label": "Cherry",
+      "logo": "C",
+      "color": "red",
+      "description": "",
+      "terms": [
+        6,
+        12
+      ],
+      "promoTerms": [
+        6
+      ],
+      "minAmount": 500.5,
+      "promoApr": 0,
+      "regularApr": 9.99,
+      "enabled": true
+    }
+  ],
+  "crownPricing": {
+    "economy": 899.99,
+    "standard": 1200,
+    "premium": 1500.5,
+    "implant": 3500
+  },
+  "financingConfig": {
+    "serviceFeeEnabled": true,
+    "serviceFeePercent": 3.5
+  },
+  "cadenceConfig": {
+    "tiers": [
+      {
+        "key": "light",
+        "label": "Light",
+        "intervals": [
+          30,
+          60
+        ]
+      },
+      {
+        "key": "standard",
+        "label": "Standard",
+        "intervals": [
+          14,
+          30
+        ]
+      },
+      {
+        "key": "high_touch",
+        "label": "High touch",
+        "intervals": [
+          7,
+          14
+        ]
+      }
+    ],
+    "thresholds": {
+      "standardMin": 3000,
+      "highTouchMin": 8000
+    },
+    "highUrgencyFirstDay": 1,
+    "spouseFamilyMinFirstDay": 2
+  }
+}
