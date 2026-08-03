@@ -24,30 +24,117 @@ import {
   Wifi,
   WifiOff,
   PlugZap,
+  KanbanSquare,
+  BellRing,
+  Inbox,
+  ClipboardList,
+  ClipboardCheck,
+  ShieldCheck,
+  Mail,
+  MessagesSquare,
+  Images,
+  Calculator,
+  BookOpen,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
+import type { ModuleId } from "@/lib/modules";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
-const navItems = [
-  { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/calls", label: "Calls", icon: PhoneCall },
-  { path: "/callbacks", label: "Callbacks", icon: PhoneIncoming },
-  { path: "/agents", label: "Agent Builder", icon: Bot },
-  { path: "/scheduling", label: "Scheduling", icon: CalendarClock },
-  { path: "/analytics", label: "Analytics", icon: BarChart3 },
-  { path: "/admin", label: "Admin", icon: Settings },
-];
+interface NavItem {
+  path: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+}
+
+interface NavGroup {
+  title: string;
+  items: NavItem[];
+}
+
+/**
+ * Per-module sidebar nav. The module switcher picks the active module; this
+ * map is the only other module-aware piece of the shell (the registry entry
+ * alone changes nothing but the switcher label).
+ */
+const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
+  voice: [
+    {
+      title: "Operations",
+      items: [
+        { path: "/", label: "Dashboard", icon: LayoutDashboard },
+        { path: "/calls", label: "Calls", icon: PhoneCall },
+        { path: "/callbacks", label: "Callbacks", icon: PhoneIncoming },
+        { path: "/agents", label: "Agent Builder", icon: Bot },
+        { path: "/scheduling", label: "Scheduling", icon: CalendarClock },
+      ],
+    },
+    {
+      title: "Insights",
+      items: [
+        { path: "/analytics", label: "Analytics", icon: BarChart3 },
+        { path: "/admin", label: "Admin", icon: Settings },
+      ],
+    },
+  ],
+  tc: [
+    {
+      title: "Casework",
+      items: [
+        { path: "/tc", label: "Pipeline", icon: KanbanSquare },
+        { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
+        { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
+      ],
+    },
+    {
+      title: "Hygiene",
+      items: [
+        { path: "/tc/hygiene/inbox", label: "TC Inbox", icon: Inbox },
+        { path: "/tc/hygiene", label: "Intake", icon: ClipboardList },
+        { path: "/tc/hygiene/submissions", label: "My Submissions", icon: ClipboardCheck },
+      ],
+    },
+    {
+      title: "Tools",
+      items: [
+        { path: "/tc/templates", label: "Email Templates", icon: Mail },
+        { path: "/tc/communications", label: "Communications", icon: MessagesSquare },
+        { path: "/tc/gallery", label: "Gallery", icon: Images },
+        { path: "/tc/cob", label: "COB Calculator", icon: Calculator },
+        { path: "/tc/library", label: "Library", icon: BookOpen },
+      ],
+    },
+  ],
+};
+
+/**
+ * Longest-prefix active match so "/tc/hygiene" doesn't light up while the
+ * user is on "/tc/hygiene/inbox". "/" and "/tc" only match exactly, except
+ * "/tc" also claims case-detail pages (they belong to Pipeline).
+ */
+function activeNavPath(location: string, groups: NavGroup[]): string | null {
+  let best: string | null = null;
+  for (const group of groups) {
+    for (const { path } of group.items) {
+      const matches =
+        path === "/" || path === "/tc"
+          ? location === path || (path === "/tc" && location.startsWith("/tc/cases"))
+          : location === path || location.startsWith(`${path}/`);
+      if (matches && (best === null || path.length > best.length)) best = path;
+    }
+  }
+  return best;
+}
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { theme, toggleTheme } = useTheme();
   const auth = useAuth();
   // Practice (tenant) name from /auth/me — single tenant today, so no selector.
@@ -81,6 +168,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const handleNavClick = () => {
     setSidebarOpen(false);
   };
+
+  const navGroups = NAV_BY_MODULE[activeModule] ?? NAV_BY_MODULE.voice ?? [];
+  const activePath = activeNavPath(location, navGroups);
+
+  // Patient-facing presentation mode renders chrome-free (legacy /present).
+  if (location.startsWith("/tc/present")) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -138,7 +233,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 {modules.map((m) => (
                   <button
                     key={m.id}
-                    onClick={() => { setModule(m.id); setModuleDropOpen(false); }}
+                    onClick={() => {
+                      const switching = m.id !== activeModule;
+                      setModule(m.id);
+                      setModuleDropOpen(false);
+                      // Land on the module's home so the nav and page agree.
+                      if (switching) setLocation(m.basePath);
+                    }}
                     className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
                     style={{ color: m.id === activeModule ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
                   >
@@ -179,55 +280,38 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           )}
         </div>
 
-        {/* Navigation */}
+        {/* Navigation (module-aware) */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
-          <div className="text-xs font-semibold uppercase tracking-wider mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
-            Operations
-          </div>
-          {navItems.slice(0, 5).map(({ path, label, icon: Icon }) => {
-            const isActive = path === "/" ? location === "/" : location.startsWith(path);
-            return (
-              <Link key={path} href={path} onClick={handleNavClick}>
-                <div
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-150 group ${
-                    isActive ? "border-l-[3px]" : "border-l-[3px] border-transparent"
-                  }`}
-                  style={{
-                    backgroundColor: isActive ? "oklch(0.55 0.18 210 / 0.18)" : "transparent",
-                    borderLeftColor: isActive ? "oklch(0.60 0.16 210)" : "transparent",
-                    color: isActive ? "oklch(0.72 0.14 210)" : "oklch(0.72 0.01 240)",
-                  }}
-                >
-                  <Icon size={16} className="flex-shrink-0" />
-                  <span className="flex-1">{label}</span>
-                </div>
-              </Link>
-            );
-          })}
-
-          <div className="text-xs font-semibold uppercase tracking-wider mt-4 mb-2 px-3" style={{ color: "oklch(0.45 0.04 245)" }}>
-            Insights
-          </div>
-          {navItems.slice(5).map(({ path, label, icon: Icon }) => {
-            const isActive = location.startsWith(path);
-            return (
-              <Link key={path} href={path} onClick={handleNavClick}>
-                <div
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-150 ${
-                    isActive ? "border-l-[3px]" : "border-l-[3px] border-transparent"
-                  }`}
-                  style={{
-                    backgroundColor: isActive ? "oklch(0.55 0.18 210 / 0.18)" : "transparent",
-                    borderLeftColor: isActive ? "oklch(0.60 0.16 210)" : "transparent",
-                    color: isActive ? "oklch(0.72 0.14 210)" : "oklch(0.72 0.01 240)",
-                  }}
-                >
-                  <Icon size={16} className="flex-shrink-0" />
-                  <span>{label}</span>
-                </div>
-              </Link>
-            );
-          })}
+          {navGroups.map((group, groupIdx) => (
+            <div key={group.title}>
+              <div
+                className={`text-xs font-semibold uppercase tracking-wider mb-2 px-3 ${groupIdx > 0 ? "mt-4" : ""}`}
+                style={{ color: "oklch(0.45 0.04 245)" }}
+              >
+                {group.title}
+              </div>
+              {group.items.map(({ path, label, icon: Icon }) => {
+                const isActive = path === activePath;
+                return (
+                  <Link key={path} href={path} onClick={handleNavClick}>
+                    <div
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-150 ${
+                        isActive ? "border-l-[3px]" : "border-l-[3px] border-transparent"
+                      }`}
+                      style={{
+                        backgroundColor: isActive ? "oklch(0.55 0.18 210 / 0.18)" : "transparent",
+                        borderLeftColor: isActive ? "oklch(0.60 0.16 210)" : "transparent",
+                        color: isActive ? "oklch(0.72 0.14 210)" : "oklch(0.72 0.01 240)",
+                      }}
+                    >
+                      <Icon size={16} className="flex-shrink-0" />
+                      <span className="flex-1">{label}</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* Sidebar footer */}

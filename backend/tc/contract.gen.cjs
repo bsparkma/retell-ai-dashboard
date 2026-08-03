@@ -15357,7 +15357,14 @@ var LibraryCrownPricing = import_zod2.z.object({
 });
 var LibraryFinancingConfig = import_zod2.z.object({
   serviceFeeEnabled: import_zod2.z.boolean(),
-  serviceFeePercent: import_zod2.z.number().min(0).max(15)
+  serviceFeePercent: import_zod2.z.number().min(0).max(15),
+  /**
+   * Pay-in-full cash discount — server truth for the legacy hardcoded "5%
+   * cash discount" (Slice 4 honesty-debt fix). Defaults keep pre-existing
+   * stored sections parseable: disabled until an office turns it on.
+   */
+  cashDiscountEnabled: import_zod2.z.boolean().default(false),
+  cashDiscountPercent: import_zod2.z.number().min(0).max(50).default(5)
 });
 var LibraryCadenceTier = import_zod2.z.object({
   key: NurtureCadence,

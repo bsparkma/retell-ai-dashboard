@@ -4,7 +4,9 @@ import path from "path";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    // Component tests (.tsx) get a DOM; pure-lib .ts tests stay on node.
+    environmentMatchGlobs: [["tests/**/*.test.tsx", "jsdom"]],
     coverage: {
       provider: "v8",
       include: ["server/lib/ingestion.ts", "server/lib/analytics.ts", "server/lib/commlog.ts"],

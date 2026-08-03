@@ -444,7 +444,15 @@ export const LibraryCrownPricing = z.object({
 export const LibraryFinancingConfig = z.object({
   serviceFeeEnabled: z.boolean(),
   serviceFeePercent: z.number().min(0).max(15),
+  /**
+   * Pay-in-full cash discount — server truth for the legacy hardcoded "5%
+   * cash discount" (Slice 4 honesty-debt fix). Defaults keep pre-existing
+   * stored sections parseable: disabled until an office turns it on.
+   */
+  cashDiscountEnabled: z.boolean().default(false),
+  cashDiscountPercent: z.number().min(0).max(50).default(5),
 });
+export type LibraryFinancingConfig = z.infer<typeof LibraryFinancingConfig>;
 
 export const LibraryCadenceTier = z.object({
   key: NurtureCadence,
