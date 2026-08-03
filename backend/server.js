@@ -230,6 +230,12 @@ async function bootstrap() {
   app.use('/api/notifications-config', voiceModule, notificationsConfigRouter);
   app.use('/api/slot-markers', voiceModule, slotMarkersRouter);
 
+  // TC (Treatment Coordinator) module — Slice 3 backend port. ONE mount for
+  // the whole /api/tc/* surface, behind its own module guard. Ships DARK: no
+  // tenant is entitled to 'tc' yet, so everything under it 403s until the
+  // entitlement flips (intentional — see routes/tc/index.js).
+  app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
+
   // Health check endpoint
   app.get('/api/health', async (req, res) => {
     const liveCallManager = require('./services/liveCallManager');
