@@ -16,7 +16,14 @@ import {
   TcCase,
   type ContactAttemptDetail,
   type OfficeId,
+  type TcCommunication,
+  type TcEmailTemplate,
+  type TcGalleryCase,
+  type TcLegacyUserMapEntry,
+  type TcPreauthCase,
+  type TcSmileSimulation,
 } from "./contract";
+import type { EmailBlock } from "./emailBlocks";
 
 type Iso = string;
 
@@ -441,4 +448,196 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
         }
       : null,
   });
+}
+
+// ── Non-case entity rows (Slice 2 importer + Slice 3 reads) ─────────────────
+// Same convention as the case aggregate: interfaces mirror the migration
+// column-for-column minus DB-owned bookkeeping. Gallery/smile-sim/comm rows
+// carry their historical timestamp column explicitly (created_at / sent_at)
+// because the contract preserves it; everything else lets the DB default.
+
+export interface TcPreauthRow {
+  preauth_id: string;
+  legacy_id: string | null;
+  office_id: OfficeId;
+  case_id: string | null;
+  patient_name: string;
+  phone: string | null;
+  email: string | null;
+  od_patient_id: number | null;
+  preauth_type: string;
+  description: string;
+  insurance_carrier: string;
+  status: string;
+  doctor_name: string;
+  submitted_date: string | null;
+  decision_date: string | null;
+  reference_number: string;
+  notes: string;
+}
+
+export function preauthToRow(p: TcPreauthCase): TcPreauthRow {
+  return {
+    preauth_id: p.preauthId,
+    legacy_id: p.legacyId,
+    office_id: p.officeId,
+    case_id: p.caseId,
+    patient_name: p.patientName,
+    phone: p.phone,
+    email: p.email,
+    od_patient_id: p.odPatientId,
+    preauth_type: p.preauthType,
+    description: p.description,
+    insurance_carrier: p.insuranceCarrier,
+    status: p.status,
+    doctor_name: p.doctorName,
+    submitted_date: p.submittedDate,
+    decision_date: p.decisionDate,
+    reference_number: p.referenceNumber,
+    notes: p.notes,
+  };
+}
+
+export interface TcEmailTemplateRow {
+  template_id: string;
+  legacy_id: string | null;
+  office_id: OfficeId;
+  name: string;
+  category: string;
+  subject: string;
+  preheader: string;
+  blocks: EmailBlock[];
+  is_seed: boolean;
+}
+
+export function templateToRow(t: TcEmailTemplate): TcEmailTemplateRow {
+  return {
+    template_id: t.templateId,
+    legacy_id: t.legacyId,
+    office_id: t.officeId,
+    name: t.name,
+    category: t.category,
+    subject: t.subject,
+    preheader: t.preheader,
+    blocks: t.blocks,
+    is_seed: t.isSeed,
+  };
+}
+
+export interface TcCommunicationRow {
+  comm_id: string;
+  legacy_id: string | null;
+  office_id: OfficeId;
+  case_id: string | null;
+  template_id: string | null;
+  template_name: string;
+  sender: string;
+  sender_name: string;
+  to_email: string;
+  subject: string;
+  status: string;
+  provider_message_id: string | null;
+  error: string | null;
+  sent_at: string;
+}
+
+export function communicationToRow(c: TcCommunication): TcCommunicationRow {
+  return {
+    comm_id: c.commId,
+    legacy_id: c.legacyId,
+    office_id: c.officeId,
+    case_id: c.caseId,
+    template_id: c.templateId,
+    template_name: c.templateName,
+    sender: c.sender,
+    sender_name: c.senderName,
+    to_email: c.toEmail,
+    subject: c.subject,
+    status: c.status,
+    provider_message_id: c.providerMessageId,
+    error: c.error,
+    sent_at: c.sentAt,
+  };
+}
+
+export interface TcGalleryRow {
+  gallery_id: string;
+  legacy_id: string | null;
+  office_id: OfficeId;
+  title: string;
+  category: string;
+  description: string;
+  doctor_name: string;
+  before_blob_key: string;
+  after_blob_key: string;
+  created_at: string;
+}
+
+export function galleryToRow(g: TcGalleryCase): TcGalleryRow {
+  return {
+    gallery_id: g.galleryId,
+    legacy_id: g.legacyId,
+    office_id: g.officeId,
+    title: g.title,
+    category: g.category,
+    description: g.description,
+    doctor_name: g.doctorName,
+    before_blob_key: g.beforeBlobKey,
+    after_blob_key: g.afterBlobKey,
+    created_at: g.createdAt,
+  };
+}
+
+export interface TcSmileSimulationRow {
+  sim_id: string;
+  legacy_id: string | null;
+  office_id: OfficeId;
+  case_id: string | null;
+  treatment_type: string;
+  prompt: string;
+  original_blob_key: string;
+  result_blob_key: string;
+  saved_to_gallery: boolean;
+  gallery_id: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export function simulationToRow(s: TcSmileSimulation): TcSmileSimulationRow {
+  return {
+    sim_id: s.simId,
+    legacy_id: s.legacyId,
+    office_id: s.officeId,
+    case_id: s.caseId,
+    treatment_type: s.treatmentType,
+    prompt: s.prompt,
+    original_blob_key: s.originalBlobKey,
+    result_blob_key: s.resultBlobKey,
+    saved_to_gallery: s.savedToGallery,
+    gallery_id: s.galleryId,
+    created_by: s.createdBy,
+    created_at: s.createdAt,
+  };
+}
+
+export interface TcLibraryConfigRow {
+  office_id: OfficeId;
+  section: string;
+  value: unknown;
+}
+
+export interface TcLegacyUserMapRow {
+  legacy_user_id: string;
+  platform_email: string;
+  display_name: string;
+  legacy_role: string;
+}
+
+export function userMapEntryToRow(u: TcLegacyUserMapEntry): TcLegacyUserMapRow {
+  return {
+    legacy_user_id: u.legacyUserId,
+    platform_email: u.platformEmail,
+    display_name: u.displayName,
+    legacy_role: u.legacyRole,
+  };
 }

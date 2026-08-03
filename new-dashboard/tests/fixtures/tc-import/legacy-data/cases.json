@@ -1,0 +1,256 @@
+[
+  {
+    "id": "c_multi",
+    "patientName": "Synthetic Multiphase",
+    "age": 44,
+    "phone": "5550001111",
+    "email": "synth1@example.com",
+    "caseType": "Full Mouth Rehabilitation",
+    "category": "full_mouth_rehab",
+    "doctor": "Dr. Fixture",
+    "tc": "holly",
+    "location": "roland",
+    "status": "presented",
+    "urgency": "high",
+    "caseValue": 12345.67,
+    "readinessScore": 72,
+    "financingStatus": "exploring",
+    "phases": [
+      {
+        "id": 1,
+        "name": "Phase 1",
+        "description": "Urgent work",
+        "items": [
+          {
+            "id": "od_123",
+            "tooth": "8",
+            "procedureName": "Crown",
+            "patientDescription": "Cap tooth",
+            "fee": 1234.56,
+            "estimatedInsurance": 600.1,
+            "patientPortion": 634.46,
+            "urgency": "high",
+            "timeEstimate": "2 visits",
+            "benefits": [
+              "Save tooth"
+            ],
+            "risksOfDelay": [
+              "Fracture"
+            ],
+            "expectedOutcome": "Restored"
+          },
+          {
+            "id": "itmNanoid1",
+            "tooth": "9",
+            "procedureName": "Filling",
+            "patientDescription": "",
+            "fee": 250,
+            "estimatedInsurance": 0,
+            "patientPortion": 250,
+            "urgency": "medium",
+            "timeEstimate": "",
+            "benefits": [],
+            "risksOfDelay": [],
+            "expectedOutcome": ""
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "name": "Phase 2",
+        "description": "",
+        "items": [
+          {
+            "id": "itmNanoid2",
+            "tooth": "",
+            "procedureName": "Whitening",
+            "patientDescription": "",
+            "fee": 399.99,
+            "estimatedInsurance": 0,
+            "patientPortion": 399.99,
+            "urgency": "elective",
+            "timeEstimate": "",
+            "benefits": [],
+            "risksOfDelay": [],
+            "expectedOutcome": ""
+          }
+        ]
+      }
+    ],
+    "financingOptions": [
+      {
+        "provider": "cherry",
+        "termMonths": 12,
+        "apr": 0,
+        "monthlyPayment": 100,
+        "downPayment": 0,
+        "totalCost": 1200
+      }
+    ],
+    "objections": [
+      {
+        "category": "cost",
+        "note": "worried about price",
+        "patientWords": "synthetic words",
+        "loggedAt": "2026-01-05T10:00:00.000Z"
+      }
+    ],
+    "followUps": [
+      {
+        "type": "phone_call",
+        "dueDate": "2026-01-10",
+        "note": "legacy system 1 reminder",
+        "completed": true
+      }
+    ],
+    "keyMotivators": [
+      "smile"
+    ],
+    "notes": "synthetic notes",
+    "nextFollowUpDate": "2026-01-15",
+    "diagnosedDate": "2026-01-02",
+    "odPatientId": 9001,
+    "followUpSteps": [
+      {
+        "id": "fus_1",
+        "dueDate": "2026-01-12",
+        "type": "text",
+        "suggestedTalkingPoint": "check in",
+        "status": "completed",
+        "outcomeNote": "replied",
+        "completedAt": "2026-01-12T15:30:00.000Z",
+        "source": "auto",
+        "patientResponded": true
+      },
+      {
+        "id": "fus_bad",
+        "dueDate": "soon",
+        "type": "phone_call",
+        "suggestedTalkingPoint": "no date",
+        "status": "pending",
+        "outcomeNote": "",
+        "completedAt": null,
+        "source": "manual",
+        "patientResponded": null
+      }
+    ],
+    "contactAttempts": [
+      {
+        "id": "ca_1",
+        "date": "2026-01-08T09:00:00.000Z",
+        "type": "call",
+        "outcome": "voicemail",
+        "note": "left vm"
+      }
+    ],
+    "nurtureCadence": "standard",
+    "inLongTailMode": false,
+    "lostReason": null,
+    "preferredFinancingProvider": null,
+    "decisionMakers": "spouse",
+    "financialSituation": [
+      "budget_conscious"
+    ],
+    "contactPreference": "text",
+    "bestTimeToReach": "afternoon",
+    "nurtureEnrolledAt": null,
+    "nurturePhaseChangedAt": null,
+    "nurtureCadenceOverride": null,
+    "nurtureUnsubscribed": false,
+    "nurtureTouchpoints": [
+      {
+        "id": "nt_1",
+        "type": "check_in",
+        "dueDate": "2026-02-01",
+        "status": "pending",
+        "channel": "call",
+        "scriptTemplate": "hello template",
+        "completedAt": null,
+        "completedBy": null,
+        "note": null
+      }
+    ],
+    "referralSource": "hygiene",
+    "statusChangedAt": "2026-01-04T12:00:00.000Z",
+    "caseEvents": [
+      {
+        "id": "ev_1",
+        "timestamp": "2026-01-02T08:00:00.000Z",
+        "type": "case_created",
+        "description": "created",
+        "actor": "holly"
+      },
+      {
+        "id": "ev_2",
+        "timestamp": "2026-01-04T12:00:00.000Z",
+        "type": "status_change",
+        "description": "to presented",
+        "actor": "holly"
+      }
+    ],
+    "hygieneIntake": {
+      "submittedById": "hyg1",
+      "submittedByName": "Synthetic Hygienist",
+      "submittedAt": "2026-01-02T07:45:00.000Z",
+      "operatory": "OP3",
+      "visitDate": "2026-01-02",
+      "providerSeen": "Dr. Fixture",
+      "chiefConcern": "pain",
+      "perioStatus": "gingivitis",
+      "recallType": "prophy",
+      "radiographs": [
+        "BWX"
+      ],
+      "intraoralPhotosTaken": true,
+      "areasOfConcern": "UL quad",
+      "suspectedTreatment": "crown",
+      "hygienistRecommendation": "see doctor",
+      "insuranceNoted": "synthetic ins",
+      "patientInterestLevel": "warm",
+      "flagUrgent": false
+    }
+  },
+  {
+    "id": "c_riley",
+    "patientName": "Synthetic Riley",
+    "age": 0,
+    "phone": "",
+    "email": "",
+    "caseType": "Implant",
+    "category": "implant",
+    "doctor": "",
+    "tc": "",
+    "location": "riley",
+    "status": "diagnosed",
+    "urgency": "medium",
+    "caseValue": 5000,
+    "readinessScore": 150,
+    "financingStatus": "",
+    "phases": [],
+    "financingOptions": [],
+    "objections": [],
+    "followUps": [],
+    "keyMotivators": [],
+    "notes": "",
+    "nextFollowUpDate": null,
+    "diagnosedDate": "",
+    "odPatientId": null,
+    "followUpSteps": [],
+    "nurtureCadence": "light",
+    "inLongTailMode": false,
+    "lostReason": null,
+    "preferredFinancingProvider": null,
+    "decisionMakers": "",
+    "financialSituation": [],
+    "contactPreference": null,
+    "bestTimeToReach": "",
+    "nurtureEnrolledAt": null,
+    "nurturePhaseChangedAt": null,
+    "nurtureCadenceOverride": null,
+    "nurtureUnsubscribed": false,
+    "nurtureTouchpoints": []
+  },
+  {
+    "id": "c_bad"
+  }
+]

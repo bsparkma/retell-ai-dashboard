@@ -18,6 +18,7 @@
     "@azure/identity": "^4.13.1",
     "@azure/keyvault-secrets": "^4.11.2",
     "@azure/msal-node": "^5.2.2",
+    "@azure/storage-blob": "^12.33.0",
     "axios": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
