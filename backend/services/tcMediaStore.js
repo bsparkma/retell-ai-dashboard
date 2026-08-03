@@ -9,13 +9,17 @@
  * the API (auth gate + module guard + key-must-exist-in-DB check) — a public
  * or SAS URL is never handed to the client.
  *
+ * Auth is AAD ONLY. The Slice 2 storage account has shared-key auth DISABLED,
+ * so there is deliberately no connection-string path — a connection string is
+ * a credential that cannot exist for this account (PR #26 review item 1).
+ *
  * Config (env):
- *   TC_BLOB_CONNECTION_STRING  dev/local — full connection string (Azurite ok)
- *   TC_BLOB_ACCOUNT_URL        cloud — https://<acct>.blob.core.windows.net
- *                              (auth via managed identity, same convention as
- *                              config/secrets.js: AZURE_USE_MANAGED_IDENTITY +
- *                              AZURE_MANAGED_IDENTITY_CLIENT_ID/AZURE_CLIENT_ID)
- *   TC_BLOB_CONTAINER          container name, default 'tc-media'
+ *   TC_BLOB_ACCOUNT_URL  https://<acct>.blob.core.windows.net
+ *   TC_BLOB_CONTAINER    container name, default 'tc-media'
+ *
+ * Credential: managed identity in Azure (same convention as config/secrets.js:
+ * AZURE_USE_MANAGED_IDENTITY + AZURE_MANAGED_IDENTITY_CLIENT_ID/AZURE_CLIENT_ID);
+ * DefaultAzureCredential locally (az login).
  *
  * Unconfigured is a legal state (TC ships dark) — isConfigured() gates the
  * route into a structured 503, never a crash at require time.
@@ -25,34 +29,32 @@
 let containerClient = null;
 
 function isConfigured() {
-  return Boolean(process.env.TC_BLOB_CONNECTION_STRING || process.env.TC_BLOB_ACCOUNT_URL);
+  return Boolean(process.env.TC_BLOB_ACCOUNT_URL);
 }
 
 /** Lazily build the container client (SDK loaded only when TC media is used). */
 function getContainerClient() {
   if (containerClient) return containerClient;
 
+  const accountUrl = process.env.TC_BLOB_ACCOUNT_URL;
+  if (!accountUrl) {
+    throw new Error('[tcMediaStore] not configured (TC_BLOB_ACCOUNT_URL)');
+  }
+
   const { BlobServiceClient } = require('@azure/storage-blob');
   const containerName = process.env.TC_BLOB_CONTAINER || 'tc-media';
 
-  let service;
-  if (process.env.TC_BLOB_CONNECTION_STRING) {
-    service = BlobServiceClient.fromConnectionString(process.env.TC_BLOB_CONNECTION_STRING);
-  } else if (process.env.TC_BLOB_ACCOUNT_URL) {
-    let credential;
-    if (process.env.AZURE_USE_MANAGED_IDENTITY === 'true') {
-      const { ManagedIdentityCredential } = require('@azure/identity');
-      const clientId = process.env.AZURE_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID;
-      credential = new ManagedIdentityCredential(clientId ? { clientId } : {});
-    } else {
-      const { DefaultAzureCredential } = require('@azure/identity');
-      credential = new DefaultAzureCredential();
-    }
-    service = new BlobServiceClient(process.env.TC_BLOB_ACCOUNT_URL, credential);
+  let credential;
+  if (process.env.AZURE_USE_MANAGED_IDENTITY === 'true') {
+    const { ManagedIdentityCredential } = require('@azure/identity');
+    const clientId = process.env.AZURE_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID;
+    credential = new ManagedIdentityCredential(clientId ? { clientId } : {});
   } else {
-    throw new Error('[tcMediaStore] not configured (TC_BLOB_CONNECTION_STRING or TC_BLOB_ACCOUNT_URL)');
+    const { DefaultAzureCredential } = require('@azure/identity');
+    credential = new DefaultAzureCredential();
   }
 
+  const service = new BlobServiceClient(accountUrl, credential);
   containerClient = service.getContainerClient(containerName);
   return containerClient;
 }

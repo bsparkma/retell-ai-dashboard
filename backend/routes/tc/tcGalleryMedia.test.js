@@ -113,7 +113,7 @@ test('media proxy: unknown or cross-office keys 404; unconfigured store 503', as
 test('media proxy streams an owned blob and audits the PHI read', async () => {
   const { baseUrl, db, close } = await bootTcApp();
   const originalOpen = mediaStore.openBlob;
-  process.env.TC_BLOB_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+  process.env.TC_BLOB_ACCOUNT_URL = 'https://sttest.blob.core.windows.net';
   try {
     await api(baseUrl, 'POST', '/api/tc/gallery?office=roland', GALLERY);
 
@@ -139,7 +139,7 @@ test('media proxy streams an owned blob and audits the PHI read', async () => {
     );
   } finally {
     mediaStore.openBlob = originalOpen;
-    delete process.env.TC_BLOB_CONNECTION_STRING;
+    delete process.env.TC_BLOB_ACCOUNT_URL;
     await close();
   }
 });

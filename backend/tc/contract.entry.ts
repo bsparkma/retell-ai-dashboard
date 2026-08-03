@@ -9,12 +9,16 @@
  * is COMMITTED so the Docker image needs no build step and the backend gains
  * no new dependency.
  *
- * Regenerate whenever shared/tc changes (from new-dashboard/, where esbuild is
- * a devDependency):
+ * Regenerate whenever shared/tc changes (from new-dashboard/, so the PINNED
+ * esbuild devDependency is used — never a floating npx version):
  *
- *   npx esbuild ../backend/tc/contract.entry.ts --bundle --platform=node \
+ *   pnpm exec esbuild ../backend/tc/contract.entry.ts --bundle --platform=node \
  *     --format=cjs --alias:zod=./node_modules/zod \
  *     --outfile=../backend/tc/contract.gen.cjs
+ *
+ * Drift guard: new-dashboard/tests/tc-contract-bundle.test.ts re-bundles with
+ * these exact options and fails the build on any diff — a stale bundle is a
+ * red build, not a discovery.
  *
  * The --alias is REQUIRED: without it this entry's own `zod` import resolves
  * from backend/node_modules (openai's transitive zod) while the contract's
