@@ -14885,6 +14885,12 @@ __export(contract_entry_exports, {
   ZodError: () => import_zod3.ZodError,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  communicationToRow: () => communicationToRow,
+  galleryToRow: () => galleryToRow,
+  preauthToRow: () => preauthToRow,
+  simulationToRow: () => simulationToRow,
+  templateToRow: () => templateToRow,
+  userMapEntryToRow: () => userMapEntryToRow,
   z: () => import_zod3.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
@@ -15657,6 +15663,96 @@ function caseFromRows(rows) {
     } : null
   });
 }
+function preauthToRow(p) {
+  return {
+    preauth_id: p.preauthId,
+    legacy_id: p.legacyId,
+    office_id: p.officeId,
+    case_id: p.caseId,
+    patient_name: p.patientName,
+    phone: p.phone,
+    email: p.email,
+    od_patient_id: p.odPatientId,
+    preauth_type: p.preauthType,
+    description: p.description,
+    insurance_carrier: p.insuranceCarrier,
+    status: p.status,
+    doctor_name: p.doctorName,
+    submitted_date: p.submittedDate,
+    decision_date: p.decisionDate,
+    reference_number: p.referenceNumber,
+    notes: p.notes
+  };
+}
+function templateToRow(t) {
+  return {
+    template_id: t.templateId,
+    legacy_id: t.legacyId,
+    office_id: t.officeId,
+    name: t.name,
+    category: t.category,
+    subject: t.subject,
+    preheader: t.preheader,
+    blocks: t.blocks,
+    is_seed: t.isSeed
+  };
+}
+function communicationToRow(c) {
+  return {
+    comm_id: c.commId,
+    legacy_id: c.legacyId,
+    office_id: c.officeId,
+    case_id: c.caseId,
+    template_id: c.templateId,
+    template_name: c.templateName,
+    sender: c.sender,
+    sender_name: c.senderName,
+    to_email: c.toEmail,
+    subject: c.subject,
+    status: c.status,
+    provider_message_id: c.providerMessageId,
+    error: c.error,
+    sent_at: c.sentAt
+  };
+}
+function galleryToRow(g) {
+  return {
+    gallery_id: g.galleryId,
+    legacy_id: g.legacyId,
+    office_id: g.officeId,
+    title: g.title,
+    category: g.category,
+    description: g.description,
+    doctor_name: g.doctorName,
+    before_blob_key: g.beforeBlobKey,
+    after_blob_key: g.afterBlobKey,
+    created_at: g.createdAt
+  };
+}
+function simulationToRow(s) {
+  return {
+    sim_id: s.simId,
+    legacy_id: s.legacyId,
+    office_id: s.officeId,
+    case_id: s.caseId,
+    treatment_type: s.treatmentType,
+    prompt: s.prompt,
+    original_blob_key: s.originalBlobKey,
+    result_blob_key: s.resultBlobKey,
+    saved_to_gallery: s.savedToGallery,
+    gallery_id: s.galleryId,
+    created_by: s.createdBy,
+    created_at: s.createdAt
+  };
+}
+function userMapEntryToRow(u) {
+  return {
+    legacy_user_id: u.legacyUserId,
+    platform_email: u.platformEmail,
+    display_name: u.displayName,
+    legacy_role: u.legacyRole
+  };
+}
 
 // ../backend/tc/contract.entry.ts
 var import_zod3 = __toESM(require_zod());
@@ -15724,5 +15820,11 @@ var import_zod3 = __toESM(require_zod());
   ZodError,
   caseFromRows,
   caseToRows,
+  communicationToRow,
+  galleryToRow,
+  preauthToRow,
+  simulationToRow,
+  templateToRow,
+  userMapEntryToRow,
   z
 });
