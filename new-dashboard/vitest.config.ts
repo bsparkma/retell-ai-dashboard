@@ -2,6 +2,10 @@ import { defineConfig } from "vitest/config";
 import path from "path";
 
 export default defineConfig({
+  // tsconfig has jsx:"preserve" (Vite's plugin-react handles the app); vitest
+  // runs without that plugin, so tell esbuild to use the automatic runtime for
+  // .tsx test files.
+  esbuild: { jsx: "automatic" },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
