@@ -328,7 +328,7 @@ function SchedulingRules() {
                   className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${rule.enabled ? "bg-primary" : "bg-muted-foreground/30"}`}
                   onClick={(e) => { e.stopPropagation(); toggleRule(appointmentRules, setAppointmentRules, rule.id); }}
                 >
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-background dark:bg-foreground shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
                 </button>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-foreground">{rule.name}</div>
@@ -391,7 +391,7 @@ function SchedulingRules() {
                   className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 mt-0.5 ${rule.enabled ? "bg-primary" : "bg-muted-foreground/30"}`}
                   onClick={() => toggleAvail(rule.id)}
                 >
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-background dark:bg-foreground shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
                 </button>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -507,7 +507,7 @@ export default function Scheduling() {
               onClick={() => setActiveTab(tab.key)}
               className="px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2"
               style={{
-                backgroundColor: activeTab === tab.key ? "white" : "transparent",
+                backgroundColor: activeTab === tab.key ? "var(--card)" : "transparent",
                 color: activeTab === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
                 boxShadow: activeTab === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}

@@ -205,7 +205,7 @@ export default function Callbacks() {
               onClick={() => setStatusFilter(tab.key)}
               className="px-3 py-1 rounded text-xs font-medium transition-all"
               style={{
-                backgroundColor: statusFilter === tab.key ? "white" : "transparent",
+                backgroundColor: statusFilter === tab.key ? "var(--card)" : "transparent",
                 color: statusFilter === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
                 boxShadow: statusFilter === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}

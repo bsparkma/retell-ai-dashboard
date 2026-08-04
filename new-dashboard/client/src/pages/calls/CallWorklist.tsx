@@ -255,8 +255,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
               aria-pressed={view === v.key}
               className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1.5"
               style={{
-                backgroundColor: view === v.key ? "white" : "transparent",
-                color: view === v.key ? "oklch(0.18 0.02 240)" : "var(--muted-foreground)",
+                backgroundColor: view === v.key ? "var(--card)" : "transparent",
+                color: view === v.key ? "var(--foreground)" : "var(--muted-foreground)",
                 boxShadow: view === v.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >
