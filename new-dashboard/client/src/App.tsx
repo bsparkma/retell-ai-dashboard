@@ -1,7 +1,8 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Redirect, Route, Switch } from "wouter";
+import Home from "@/pages/Home";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/AuthContext";
@@ -36,7 +37,8 @@ import TcLibrary from "./pages/tc/TcLibrary";
 import TcCobCalculator from "./pages/tc/TcCobCalculator";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 
-function Router() {
+// Exported for the routing tests (tests/module-home.test.tsx).
+export function Router() {
   const [location] = useLocation();
   // The COB scratchpad floats over every TC page except the patient-facing deck.
   const showFloatingCalc =
@@ -44,7 +46,13 @@ function Router() {
   return (
     <DashboardLayout>
       <Switch>
-        <Route path="/" component={Dashboard} />
+        {/* Hub-first: login lands on the SPA origin, so "/" always redirects
+            to the module hub. Deep links to module pages are untouched. */}
+        <Route path="/">
+          <Redirect to="/home" replace />
+        </Route>
+        <Route path="/home" component={Home} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route path="/calls" component={Calls} />
         <Route path="/calls/:id" component={CallDetail} />
         <Route path="/carein-calls/:id" component={CareInCallDetail} />
