@@ -35,8 +35,10 @@ import {
   Images,
   Calculator,
   BookOpen,
+  LogOut,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { logout } from "@/lib/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
@@ -149,7 +151,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const selectedOfficeName = office === ALL_OFFICES ? "All Offices" : (selected?.officeName ?? "All Offices");
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const userEmail = auth.status === "authenticated" ? auth.user.email : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -337,15 +341,51 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               v2.0
             </div>
           </div>
-          <div className="mt-2 flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white" style={{ backgroundColor: "oklch(0.55 0.18 210)" }}>
+          {/* User chip — opens upward into the account menu (email + sign out). */}
+          {userMenuOpen && (
+            <div
+              className="mt-2 mb-1 rounded-md overflow-hidden"
+              style={{ backgroundColor: "oklch(0.12 0.04 245)" }}
+              data-testid="sidebar-user-menu"
+            >
+              {userEmail && (
+                <div
+                  className="px-3 py-2 text-xs truncate border-b"
+                  style={{ color: "oklch(0.60 0.04 245)", borderColor: "oklch(0.22 0.05 245)" }}
+                  data-testid="sidebar-user-email"
+                >
+                  {userEmail}
+                </div>
+              )}
+              <button
+                onClick={() => void logout()}
+                className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
+                style={{ color: "oklch(0.72 0.01 240)" }}
+                data-testid="sidebar-signout"
+              >
+                <LogOut size={12} className="flex-shrink-0" />
+                <span>Sign out</span>
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => setUserMenuOpen(!userMenuOpen)}
+            className="mt-2 w-full flex items-center gap-2 rounded-md transition-colors hover:bg-white/5"
+            data-testid="sidebar-user-chip"
+          >
+            <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0" style={{ backgroundColor: "oklch(0.55 0.18 210)" }}>
               FD
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 text-left">
               <div className="text-xs font-medium truncate" style={{ color: "oklch(0.80 0.01 240)" }}>Front Desk</div>
               <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>{selectedOfficeName}</div>
             </div>
-          </div>
+            <ChevronDown
+              size={12}
+              className={`flex-shrink-0 transition-transform ${userMenuOpen ? "" : "rotate-180"}`}
+              style={{ color: "oklch(0.50 0.04 245)" }}
+            />
+          </button>
         </div>
       </aside>
 

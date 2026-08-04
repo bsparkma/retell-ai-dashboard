@@ -10,11 +10,13 @@
  * because the sidebar nav belongs to a module and none is chosen yet.
  * Authenticated but NOT module-gated: this is the chooser, not a module.
  */
+import { useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, Building2, Moon, Sun } from "lucide-react";
+import { ArrowRight, Building2, ChevronDown, LogOut, Moon, Sun } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import { logout } from "@/lib/auth";
 
 const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
 
@@ -22,8 +24,10 @@ export default function Home() {
   const auth = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { modules, setModule } = useModule();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const practiceName = auth.status === "authenticated" ? auth.user.tenant?.displayName : undefined;
   const firstName = auth.status === "authenticated" ? auth.user.name.split(" ")[0] : undefined;
+  const userEmail = auth.status === "authenticated" ? auth.user.email : undefined;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -36,12 +40,44 @@ export default function Home() {
           CareIn
         </div>
         <div className="ml-auto flex items-center gap-3">
-          {practiceName && (
-            <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          {/* Practice/user area — opens the account menu (email + sign out). */}
+          <div className="relative">
+            <button
+              className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              data-testid="home-user-chip"
+            >
               <Building2 size={14} className="flex-shrink-0" />
-              {practiceName}
-            </span>
-          )}
+              {practiceName ?? "Account"}
+              <ChevronDown
+                size={12}
+                className={`flex-shrink-0 transition-transform ${userMenuOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            {userMenuOpen && (
+              <div
+                className="absolute right-0 top-full z-10 mt-1 min-w-48 overflow-hidden rounded-md border border-border bg-card shadow-md"
+                data-testid="home-user-menu"
+              >
+                {userEmail && (
+                  <div
+                    className="truncate border-b border-border px-3 py-2 text-xs text-muted-foreground"
+                    data-testid="home-user-email"
+                  >
+                    {userEmail}
+                  </div>
+                )}
+                <button
+                  onClick={() => void logout()}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                  data-testid="home-signout"
+                >
+                  <LogOut size={14} className="flex-shrink-0" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            )}
+          </div>
           <button
             className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={toggleTheme}
