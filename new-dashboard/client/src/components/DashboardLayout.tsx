@@ -65,7 +65,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
     {
       title: "Operations",
       items: [
-        { path: "/", label: "Dashboard", icon: LayoutDashboard },
+        { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
         { path: "/calls", label: "Calls", icon: PhoneCall },
         { path: "/callbacks", label: "Callbacks", icon: PhoneIncoming },
         { path: "/agents", label: "Agent Builder", icon: Bot },
@@ -112,16 +112,16 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
 
 /**
  * Longest-prefix active match so "/tc/hygiene" doesn't light up while the
- * user is on "/tc/hygiene/inbox". "/" and "/tc" only match exactly, except
- * "/tc" also claims case-detail pages (they belong to Pipeline).
+ * user is on "/tc/hygiene/inbox". "/tc" only matches exactly, except it also
+ * claims case-detail pages (they belong to Pipeline).
  */
 function activeNavPath(location: string, groups: NavGroup[]): string | null {
   let best: string | null = null;
   for (const group of groups) {
     for (const { path } of group.items) {
       const matches =
-        path === "/" || path === "/tc"
-          ? location === path || (path === "/tc" && location.startsWith("/tc/cases"))
+        path === "/tc"
+          ? location === path || location.startsWith("/tc/cases")
           : location === path || location.startsWith(`${path}/`);
       if (matches && (best === null || path.length > best.length)) best = path;
     }
@@ -173,7 +173,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const activePath = activeNavPath(location, navGroups);
 
   // Patient-facing presentation mode renders chrome-free (legacy /present).
-  if (location.startsWith("/tc/present")) {
+  // The module hub is also chrome-free — the sidebar nav belongs to a module,
+  // and on /home none is chosen yet (the page brings its own header).
+  if (location.startsWith("/tc/present") || location === "/home") {
     return <>{children}</>;
   }
 
@@ -194,19 +196,26 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         }`}
         style={{ backgroundColor: "oklch(0.16 0.055 245)" }}
       >
-        {/* Sidebar header */}
+        {/* Sidebar header — the logo is the way back to the module hub. */}
         <div className="flex items-center gap-3 px-4 py-5 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
-          <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0 bg-white/10 flex items-center justify-center">
-            <img src={LOGO_URL} alt="CareIn" className="w-7 h-7 object-contain" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-white font-bold text-base leading-tight" style={{ fontFamily: "Outfit, sans-serif" }}>
-              CareIn
+          <Link
+            href="/home"
+            onClick={handleNavClick}
+            title="Back to module hub"
+            className="flex items-center gap-3 min-w-0 rounded-md transition-opacity hover:opacity-80"
+          >
+            <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0 bg-white/10 flex items-center justify-center">
+              <img src={LOGO_URL} alt="CareIn" className="w-7 h-7 object-contain" />
             </div>
-            <div className="text-xs" style={{ color: "oklch(0.60 0.08 210)" }}>
-              AI Operations Hub
+            <div className="min-w-0">
+              <div className="text-white font-bold text-base leading-tight" style={{ fontFamily: "Outfit, sans-serif" }}>
+                CareIn
+              </div>
+              <div className="text-xs" style={{ color: "oklch(0.60 0.08 210)" }}>
+                AI Operations Hub
+              </div>
             </div>
-          </div>
+          </Link>
           <button
             className="ml-auto lg:hidden text-white/60 hover:text-white"
             onClick={() => setSidebarOpen(false)}
