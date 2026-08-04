@@ -63,6 +63,11 @@ export function Router() {
         <Route path="/admin" component={Admin} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
+        {/* Bare /tc/cases (no id) belongs to the Pipeline — stale links land
+            there instead of the 404 page. */}
+        <Route path="/tc/cases">
+          <Redirect to="/tc" replace />
+        </Route>
         <Route path="/tc/cases/:id" component={TcCaseView} />
         <Route path="/tc/followups" component={TcFollowups} />
         <Route path="/tc/hygiene" component={TcHygieneIntake} />

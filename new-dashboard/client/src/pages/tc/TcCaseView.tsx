@@ -89,7 +89,7 @@ function CaseViewInner({ office }: { office: OfficeId }) {
       <div className="p-6">
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
           <SearchX size={32} className="text-muted-foreground" />
-          <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Case not found
           </h2>
           <p className="text-sm text-muted-foreground max-w-sm">
@@ -97,7 +97,7 @@ function CaseViewInner({ office }: { office: OfficeId }) {
             other office, or the link is stale.
           </p>
           <Button asChild variant="outline">
-            <Link href="/tc/cases">
+            <Link href="/tc">
               <ArrowLeft size={14} />
               Back to cases
             </Link>
@@ -123,7 +123,7 @@ function CaseViewInner({ office }: { office: OfficeId }) {
   return (
     <div className="p-6 space-y-4">
       <Link
-        href="/tc/cases"
+        href="/tc"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft size={14} />
