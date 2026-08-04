@@ -19,8 +19,28 @@ import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
 import Callbacks from "./pages/Callbacks";
 import { SlotMarkersProvider } from "./features/slotMarkers";
+import { useLocation } from "wouter";
+import TcPipeline from "./pages/tc/TcPipeline";
+import TcCaseView from "./pages/tc/TcCaseView";
+import TcFollowups from "./pages/tc/TcFollowups";
+import TcHygieneIntake from "./pages/tc/TcHygieneIntake";
+import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
+import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
+import TcPreauth from "./pages/tc/TcPreauth";
+import TcTemplates from "./pages/tc/TcTemplates";
+import TcTemplateEditor from "./pages/tc/TcTemplateEditor";
+import TcCommunications from "./pages/tc/TcCommunications";
+import TcGallery from "./pages/tc/TcGallery";
+import TcPresentation from "./pages/tc/TcPresentation";
+import TcLibrary from "./pages/tc/TcLibrary";
+import TcCobCalculator from "./pages/tc/TcCobCalculator";
+import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 
 function Router() {
+  const [location] = useLocation();
+  // The COB scratchpad floats over every TC page except the patient-facing deck.
+  const showFloatingCalc =
+    (location === "/tc" || location.startsWith("/tc/")) && !location.startsWith("/tc/present");
   return (
     <DashboardLayout>
       <Switch>
@@ -33,9 +53,25 @@ function Router() {
         <Route path="/scheduling" component={Scheduling} />
         <Route path="/analytics" component={Analytics} />
         <Route path="/admin" component={Admin} />
+        {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
+        <Route path="/tc" component={TcPipeline} />
+        <Route path="/tc/cases/:id" component={TcCaseView} />
+        <Route path="/tc/followups" component={TcFollowups} />
+        <Route path="/tc/hygiene" component={TcHygieneIntake} />
+        <Route path="/tc/hygiene/submissions" component={TcHygieneSubmissions} />
+        <Route path="/tc/hygiene/inbox" component={TcHygieneInbox} />
+        <Route path="/tc/preauth" component={TcPreauth} />
+        <Route path="/tc/templates" component={TcTemplates} />
+        <Route path="/tc/templates/:id" component={TcTemplateEditor} />
+        <Route path="/tc/communications" component={TcCommunications} />
+        <Route path="/tc/gallery" component={TcGallery} />
+        <Route path="/tc/present/:caseId" component={TcPresentation} />
+        <Route path="/tc/library" component={TcLibrary} />
+        <Route path="/tc/cob" component={TcCobCalculator} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>
+      {showFloatingCalc && <TcFloatingCalc />}
     </DashboardLayout>
   );
 }

@@ -25,6 +25,7 @@ export interface ModuleDef {
 /** Modules the SPA can actually render today. Voice = the whole current app. */
 export const MODULES: Partial<Record<ModuleId, ModuleDef>> = {
   voice: { id: "voice", label: "Voice", basePath: "/" },
+  tc: { id: "tc", label: "Treatment Coordinator", basePath: "/tc" },
 };
 
 export const DEFAULT_MODULE: ModuleId = "voice";
