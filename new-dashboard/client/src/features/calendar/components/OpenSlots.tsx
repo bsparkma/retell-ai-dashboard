@@ -273,7 +273,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {metrics.totalAppointments}
               </div>
@@ -285,7 +285,7 @@ export function OpenSlots() {
               <div
                 className="text-2xl font-bold"
                 style={{
-                  fontFamily: "Outfit, sans-serif",
+                  fontFamily: "Sora, sans-serif",
                   color:
                     metrics.availabilityPercentage > 30
                       ? "oklch(0.55 0.18 155)"
@@ -301,7 +301,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {markersInRange.filter((m) => m.date === selectedDate).length}
               </div>
@@ -312,7 +312,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {markersInRange.length}
               </div>

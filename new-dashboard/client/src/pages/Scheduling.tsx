@@ -485,7 +485,7 @@ export default function Scheduling() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Scheduling
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">

@@ -131,7 +131,7 @@ export default function Analytics() {
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Analytics
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -199,7 +199,7 @@ export default function Analytics() {
             {kpis.map((kpi) => (
               <Card key={kpi.label}>
                 <CardContent className="p-4">
-                  <div className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+                  <div className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
                     {kpi.value}
                   </div>
                   <div className="text-xs text-muted-foreground mt-0.5">{kpi.label}</div>
@@ -360,7 +360,7 @@ export default function Analytics() {
                   },
                 ].map((m) => (
                   <div key={m.label} className="text-center p-4 rounded-xl bg-muted/30">
-                    <div className="text-3xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: m.color }}>
+                    <div className="text-3xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: m.color }}>
                       {m.value}
                     </div>
                     <div className="text-sm font-medium text-foreground mt-1">{m.label}</div>
@@ -421,7 +421,7 @@ function CareInAnalyticsSection({
                 { label: "Offices Active", value: Object.keys(data.byOffice).length, sub: "Distinct offices" },
               ].map((s) => (
                 <div key={s.label} className="p-3 rounded-xl bg-muted/30">
-                  <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif" }}>{s.value}</div>
+                  <div className="text-2xl font-bold" style={{ fontFamily: "Sora, sans-serif" }}>{s.value}</div>
                   <div className="text-sm font-medium text-foreground mt-0.5">{s.label}</div>
                   <div className="text-xs text-muted-foreground">{s.sub}</div>
                 </div>
@@ -438,7 +438,7 @@ function CareInAnalyticsSection({
                   <div key={status} className="p-3 rounded-xl bg-muted/30 text-center">
                     <div
                       className="text-2xl font-bold"
-                      style={{ fontFamily: "Outfit, sans-serif", color: COMMLOG_COLORS[status] }}
+                      style={{ fontFamily: "Sora, sans-serif", color: COMMLOG_COLORS[status] }}
                     >
                       {data.commlogStats[status]}
                     </div>

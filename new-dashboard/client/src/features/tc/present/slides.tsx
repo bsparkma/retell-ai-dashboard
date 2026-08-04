@@ -58,7 +58,7 @@ export function SlideHeading({ title, subtitle }: { title: string; subtitle?: st
     <div className="text-center">
       <h1
         className="text-3xl sm:text-4xl font-bold text-foreground mb-3"
-        style={{ fontFamily: "Outfit, sans-serif" }}
+        style={{ fontFamily: "Sora, sans-serif" }}
       >
         {title}
       </h1>
@@ -150,7 +150,7 @@ export function PlanOverviewSlide({ tcCase }: { tcCase: TcCase }) {
                 <div>
                   <div
                     className="text-lg font-semibold text-foreground"
-                    style={{ fontFamily: "Outfit, sans-serif" }}
+                    style={{ fontFamily: "Sora, sans-serif" }}
                   >
                     {phase.name}
                   </div>
@@ -297,7 +297,7 @@ export function InvestmentSlide({
         <div className="text-sm sm:text-base text-muted-foreground mb-1">Total for your plan</div>
         <div
           className="text-5xl font-bold text-primary"
-          style={{ fontFamily: "Outfit, sans-serif" }}
+          style={{ fontFamily: "Sora, sans-serif" }}
         >
           {formatCents(totalCents)}
         </div>
@@ -322,7 +322,7 @@ export function InvestmentSlide({
               </div>
               <div
                 className="text-4xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {formatCents(opt.monthlyCents)}
                 <span className="text-base font-normal text-muted-foreground">/mo</span>
@@ -345,7 +345,7 @@ export function InvestmentSlide({
           </div>
           <div
             className="text-4xl font-bold text-emerald-700 dark:text-emerald-300"
-            style={{ fontFamily: "Outfit, sans-serif" }}
+            style={{ fontFamily: "Sora, sans-serif" }}
           >
             {formatCents(cash.discountedCents)}
           </div>

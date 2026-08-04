@@ -217,7 +217,7 @@ export default function Admin() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Admin
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -328,7 +328,7 @@ export default function Admin() {
                   {costs?.total_estimated !== undefined && (
                     <div className="mt-4 pt-4 border-t border-border">
                       <div className="text-xs text-muted-foreground">Estimated Cost (system-wide)</div>
-                      <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+                      <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
                         ${costs.total_estimated.toFixed(2)}
                       </div>
                     </div>
@@ -719,7 +719,7 @@ export default function Admin() {
                 {costs.total_estimated !== undefined && (
                   <div className="flex items-center justify-between pt-2 border-t border-border">
                     <span className="text-sm font-medium text-foreground">Total Estimated</span>
-                    <span className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+                    <span className="text-lg font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
                       ${costs.total_estimated.toFixed(2)}
                     </span>
                   </div>

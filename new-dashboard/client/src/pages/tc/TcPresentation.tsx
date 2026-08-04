@@ -218,7 +218,7 @@ export default function TcPresentation() {
       <div className="flex items-center justify-between px-6 sm:px-8 py-4 border-b border-border bg-card">
         <span
           className="text-sm font-semibold text-foreground"
-          style={{ fontFamily: "Outfit, sans-serif" }}
+          style={{ fontFamily: "Sora, sans-serif" }}
         >
           {practiceName}
         </span>

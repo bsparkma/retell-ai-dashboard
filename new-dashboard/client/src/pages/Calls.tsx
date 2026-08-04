@@ -135,7 +135,7 @@ export default function Calls() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Calls
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -193,7 +193,7 @@ export default function Calls() {
             ].map((s) => (
               <Card key={s.label} className={s.urgent ? "ring-2 ring-destructive/30" : ""}>
                 <CardContent className="p-4">
-                  <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+                  <div className="text-2xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                     {s.value}
                   </div>
                   <div className="text-sm text-muted-foreground mt-0.5">{s.label}</div>
@@ -458,7 +458,7 @@ function CareInLogTab({
         ].map((s) => (
           <Card key={s.label}>
             <CardContent className="p-4">
-              <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+              <div className="text-2xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                 {s.value}
               </div>
               <div className="text-sm font-medium text-foreground mt-0.5">{s.label}</div>

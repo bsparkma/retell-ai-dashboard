@@ -164,7 +164,7 @@ export default function Callbacks() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Callbacks
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -187,7 +187,7 @@ export default function Callbacks() {
         ].map((s) => (
           <Card key={s.label} className="flex-1 min-w-[120px]">
             <CardContent className="p-3 text-center">
-              <div className="text-xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+              <div className="text-xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                 {s.value}
               </div>
               <div className="text-xs text-muted-foreground">{s.label}</div>

@@ -37,7 +37,7 @@ export function TcOfficeGate() {
     <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
       <Building2 size={32} className="text-muted-foreground" />
       <div>
-        <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+        <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
           Pick an office
         </h2>
         <p className="text-sm text-muted-foreground mt-1 max-w-sm">
@@ -70,7 +70,7 @@ export function TcPageHeader({
   return (
     <div className="flex items-start justify-between gap-4 mb-4">
       <div>
-        <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+        <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
           {title}
         </h1>
         {subtitle && <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>}

@@ -198,10 +198,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         className={`fixed inset-y-0 left-0 z-50 w-60 flex flex-col transition-transform duration-300 lg:translate-x-0 lg:static lg:z-auto ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
-        style={{ backgroundColor: "oklch(0.16 0.055 245)" }}
+        style={{ backgroundColor: "var(--sidebar)" }}
       >
         {/* Sidebar header — the logo is the way back to the module hub. */}
-        <div className="flex items-center gap-3 px-4 py-5 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
+        <div className="flex items-center gap-3 px-4 py-5 border-b" style={{ borderColor: "var(--sidebar-border)" }}>
           <Link
             href="/home"
             onClick={handleNavClick}
@@ -212,10 +212,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               <img src={LOGO_URL} alt="CareIn" className="w-7 h-7 object-contain" />
             </div>
             <div className="min-w-0">
-              <div className="text-white font-bold text-base leading-tight" style={{ fontFamily: "Outfit, sans-serif" }}>
+              <div className="text-white font-bold text-base leading-tight" style={{ fontFamily: "Sora, sans-serif" }}>
                 CareIn
               </div>
-              <div className="text-xs" style={{ color: "oklch(0.60 0.08 210)" }}>
+              <div className="text-xs" style={{ color: "oklch(0.65 0.1 186)" }}>
                 AI Operations Hub
               </div>
             </div>
@@ -231,18 +231,18 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         {/* Module switcher — only rendered when the tenant has >1 renderable
             module, so today's Voice-only tenant sees an unchanged shell. */}
         {modules.length > 1 && (
-          <div className="px-3 py-3 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
+          <div className="px-3 py-3 border-b" style={{ borderColor: "var(--sidebar-border)" }}>
             <button
               onClick={() => setModuleDropOpen(!moduleDropOpen)}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors hover:bg-white/5"
-              style={{ color: "oklch(0.80 0.01 240)" }}
+              style={{ color: "var(--sidebar-foreground)" }}
             >
-              <LayoutDashboard size={14} className="flex-shrink-0" style={{ color: "oklch(0.60 0.08 210)" }} />
+              <LayoutDashboard size={14} className="flex-shrink-0" style={{ color: "oklch(0.65 0.1 186)" }} />
               <span className="truncate flex-1 text-left text-xs font-medium">{activeModuleLabel}</span>
               <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${moduleDropOpen ? "rotate-180" : ""}`} />
             </button>
             {moduleDropOpen && (
-              <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.12 0.04 245)" }}>
+              <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.11 0.015 250)" }}>
                 {modules.map((m) => (
                   <button
                     key={m.id}
@@ -254,7 +254,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                       if (switching) setLocation(m.basePath);
                     }}
                     className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
-                    style={{ color: m.id === activeModule ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
+                    style={{ color: m.id === activeModule ? "oklch(0.75 0.08 186)" : "oklch(0.65 0.01 250)" }}
                   >
                     <span className="flex-1 truncate">{m.label}</span>
                   </button>
@@ -265,25 +265,25 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         )}
 
         {/* Office selector */}
-        <div className="px-3 py-3 border-b" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
+        <div className="px-3 py-3 border-b" style={{ borderColor: "var(--sidebar-border)" }}>
           <button
             onClick={() => setOfficeDropOpen(!officeDropOpen)}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors hover:bg-white/5"
-            style={{ color: "oklch(0.80 0.01 240)" }}
+            style={{ color: "var(--sidebar-foreground)" }}
           >
-            <Building2 size={14} className="flex-shrink-0" style={{ color: "oklch(0.60 0.08 210)" }} />
+            <Building2 size={14} className="flex-shrink-0" style={{ color: "oklch(0.65 0.1 186)" }} />
             <span className="truncate flex-1 text-left text-xs font-medium">{selectedOfficeName}</span>
             <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${officeDropOpen ? "rotate-180" : ""}`} />
           </button>
           {officeDropOpen && (
-            <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.12 0.04 245)" }}>
+            <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.11 0.015 250)" }}>
               {[{ officeId: ALL_OFFICES, officeName: "All Offices", odConnected: true }, ...offices].map((o) => (
                 <button
                   key={o.officeId}
                   onClick={() => { setOffice(o.officeId); setOfficeDropOpen(false); }}
                   title={o.odConnected ? undefined : "OD not connected for this office yet"}
                   className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
-                  style={{ color: o.officeId === office ? "oklch(0.70 0.14 210)" : "oklch(0.72 0.01 240)" }}
+                  style={{ color: o.officeId === office ? "oklch(0.75 0.08 186)" : "oklch(0.65 0.01 250)" }}
                 >
                   <span className="flex-1 truncate">{o.officeName}</span>
                   {!o.odConnected && <PlugZap size={11} className="opacity-60 flex-shrink-0" />}
@@ -299,7 +299,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <div key={group.title}>
               <div
                 className={`text-xs font-semibold uppercase tracking-wider mb-2 px-3 ${groupIdx > 0 ? "mt-4" : ""}`}
-                style={{ color: "oklch(0.45 0.04 245)" }}
+                style={{ color: "oklch(0.5 0.02 250)" }}
               >
                 {group.title}
               </div>
@@ -312,9 +312,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                         isActive ? "border-l-[3px]" : "border-l-[3px] border-transparent"
                       }`}
                       style={{
-                        backgroundColor: isActive ? "oklch(0.55 0.18 210 / 0.18)" : "transparent",
-                        borderLeftColor: isActive ? "oklch(0.60 0.16 210)" : "transparent",
-                        color: isActive ? "oklch(0.72 0.14 210)" : "oklch(0.72 0.01 240)",
+                        backgroundColor: isActive ? "oklch(0.52 0.12 186 / 0.2)" : "transparent",
+                        borderLeftColor: isActive ? "oklch(0.65 0.1 186)" : "transparent",
+                        color: isActive ? "oklch(0.75 0.08 186)" : "oklch(0.65 0.01 250)",
                       }}
                     >
                       <Icon size={16} className="flex-shrink-0" />
@@ -328,7 +328,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         </nav>
 
         {/* Sidebar footer */}
-        <div className="px-4 py-4 border-t" style={{ borderColor: "oklch(0.25 0.05 245)" }}>
+        <div className="px-4 py-4 border-t" style={{ borderColor: "var(--sidebar-border)" }}>
           <div className="flex items-center gap-2">
             <div
               className="flex items-center gap-1.5 text-xs"
@@ -337,7 +337,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               {isConnected ? <Wifi size={12} /> : <WifiOff size={12} />}
               <span>{isConnected ? "Connected" : "Offline"}</span>
             </div>
-            <div className="ml-auto text-xs" style={{ color: "oklch(0.45 0.04 245)" }}>
+            <div className="ml-auto text-xs" style={{ color: "oklch(0.5 0.02 250)" }}>
               v2.0
             </div>
           </div>
@@ -345,13 +345,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           {userMenuOpen && (
             <div
               className="mt-2 mb-1 rounded-md overflow-hidden"
-              style={{ backgroundColor: "oklch(0.12 0.04 245)" }}
+              style={{ backgroundColor: "oklch(0.11 0.015 250)" }}
               data-testid="sidebar-user-menu"
             >
               {userEmail && (
                 <div
                   className="px-3 py-2 text-xs truncate border-b"
-                  style={{ color: "oklch(0.60 0.04 245)", borderColor: "oklch(0.22 0.05 245)" }}
+                  style={{ color: "oklch(0.6 0.015 250)", borderColor: "var(--sidebar-accent)" }}
                   data-testid="sidebar-user-email"
                 >
                   {userEmail}
@@ -360,7 +360,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               <button
                 onClick={() => void logout()}
                 className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
-                style={{ color: "oklch(0.72 0.01 240)" }}
+                style={{ color: "oklch(0.65 0.01 250)" }}
                 data-testid="sidebar-signout"
               >
                 <LogOut size={12} className="flex-shrink-0" />
@@ -373,17 +373,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             className="mt-2 w-full flex items-center gap-2 rounded-md transition-colors hover:bg-white/5"
             data-testid="sidebar-user-chip"
           >
-            <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0" style={{ backgroundColor: "oklch(0.55 0.18 210)" }}>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0" style={{ backgroundColor: "var(--sidebar-primary)" }}>
               FD
             </div>
             <div className="min-w-0 flex-1 text-left">
-              <div className="text-xs font-medium truncate" style={{ color: "oklch(0.80 0.01 240)" }}>Front Desk</div>
-              <div className="text-xs truncate" style={{ color: "oklch(0.50 0.04 245)" }}>{selectedOfficeName}</div>
+              <div className="text-xs font-medium truncate" style={{ color: "var(--sidebar-foreground)" }}>Front Desk</div>
+              <div className="text-xs truncate" style={{ color: "oklch(0.55 0.015 250)" }}>{selectedOfficeName}</div>
             </div>
             <ChevronDown
               size={12}
               className={`flex-shrink-0 transition-transform ${userMenuOpen ? "" : "rotate-180"}`}
-              style={{ color: "oklch(0.50 0.04 245)" }}
+              style={{ color: "oklch(0.55 0.015 250)" }}
             />
           </button>
         </div>

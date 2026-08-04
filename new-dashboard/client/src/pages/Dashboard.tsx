@@ -140,7 +140,7 @@ export default function Dashboard() {
       {/* Page header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             {greeting}
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -179,7 +179,7 @@ export default function Dashboard() {
                     <span className="w-2 h-2 rounded-full bg-destructive" />
                   )}
                 </div>
-                <div className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+                <div className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
                   {stat.value}
                 </div>
                 <div className="text-xs text-muted-foreground mt-0.5">{stat.label}</div>
