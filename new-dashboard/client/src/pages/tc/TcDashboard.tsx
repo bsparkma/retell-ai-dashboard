@@ -5,9 +5,10 @@
  * followupsDue + listFollowups for the selected office (see
  * features/tc/dashboard/derive.ts). Widgets the legacy page faked with
  * PIPELINE_STATS seed data render honest pipeline-state numbers or explicit
- * "not enough data yet" states instead. Deliberately omitted: CareIN handoffs
- * (cross-module integration, deferred) and Today's Consults (the platform
- * case model has no consult-date field).
+ * "not enough data yet" states instead. The CareIN handoffs strip is present
+ * for layout parity but carries an honest "coming soon" state — the real
+ * voice→TC handoff is its own slice. Deliberately omitted: Today's Consults
+ * (the platform case model has no consult-date field).
  *
  * All-offices: there is no server-side all-offices query, so the three loads
  * fan out per office and the derived widgets run over the merged rows. Every

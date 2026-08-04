@@ -44,6 +44,7 @@ import TcNurture from "./pages/tc/TcNurture";
 import TcGuide from "./pages/tc/TcGuide";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
+import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
 
 // Exported for the routing tests (tests/module-home.test.tsx).
 export function Router() {
@@ -115,8 +116,12 @@ function App() {
               <ModuleProvider>
                 <OfficeProvider>
                   <SlotMarkersProvider>
-                    <Toaster position="top-right" duration={4000} closeButton />
-                    <Router />
+                    {/* Renders nothing until a confirmed accepted transition
+                        fires it (TC only). */}
+                    <WinCelebrationProvider>
+                      <Toaster position="top-right" duration={4000} closeButton />
+                      <Router />
+                    </WinCelebrationProvider>
                   </SlotMarkersProvider>
                 </OfficeProvider>
               </ModuleProvider>

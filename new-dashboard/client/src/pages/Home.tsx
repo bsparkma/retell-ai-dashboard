@@ -18,7 +18,7 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { logout } from "@/lib/auth";
 
-const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
+const LOGO_URL = "/carein-logo.webp";
 
 export default function Home() {
   const auth = useAuth();

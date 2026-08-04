@@ -46,6 +46,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute } from "@/features/tc/officeScope";
+import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import type { ModuleId } from "@/lib/modules";
 
 const LOGO_URL = "/carein-logo.webp";
@@ -167,6 +168,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // office picker hide it entirely (pages that still need one office prompt
   // inline via <TcOfficeGate />).
   const hideOfficePicker = isTcSharedRoute(location);
+  const isTcRoute = location === "/tc" || location.startsWith("/tc/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -431,6 +433,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
 
           <div className="flex items-center gap-2 ml-auto">
+            {/* Case search palette (⌘K) — TC surfaces only; it searches TC
+                cases, so it stays out of the Voice header. */}
+            {isTcRoute && <TcGlobalSearch />}
             {/* Theme toggle */}
             <button
               className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

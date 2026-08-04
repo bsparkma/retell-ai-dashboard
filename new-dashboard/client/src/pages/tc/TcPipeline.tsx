@@ -29,6 +29,7 @@ import { toast } from "sonner";
 import { CaseCategory } from "@shared/tc/contract";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { listCases, tcErrorMessage, transitionCase } from "@/features/tc/api";
+import { isAcceptedStatus, useWinCelebration } from "@/features/tc/wins/WinCelebrationProvider";
 import type { TcCaseSummary } from "@/features/tc/api";
 import { ALL_CASE_STATUSES, caseStatusLabel, validateTransition } from "@/features/tc/status";
 import type { CaseStatusId, LostReasonId } from "@/features/tc/status";
@@ -78,6 +79,7 @@ function PipelineInner({
   showOfficeBadges: boolean;
 }) {
   const [, navigate] = useLocation();
+  const { celebrateWin } = useWinCelebration();
   const [cases, setCases] = useState<WithOffice<TcCaseSummary>[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -148,6 +150,18 @@ function PipelineInner({
         });
         mergeCase(result.case);
         toast.success(`${result.case.patientName} moved to ${caseStatusLabel(status)}`);
+        // Real accepted move → celebrate, with the loaded rows as the snapshot
+        // for the honest "accepted right now" count.
+        if (result.changed && isAcceptedStatus(result.case.status)) {
+          celebrateWin(
+            {
+              caseId: result.case.caseId,
+              patientName: result.case.patientName,
+              caseValueCents: result.case.caseValueCents,
+            },
+            cases,
+          );
+        }
         return true;
       } catch (err) {
         toast.error(tcErrorMessage(err));
