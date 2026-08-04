@@ -6,6 +6,12 @@
  * Confirmed-save rule: success toast + navigation happen ONLY after
  * createCase() resolves with the persisted case; failures toast and keep the
  * dialog open with values intact.
+ *
+ * Slice 5 adds an optional read-only Open Dental patient link at the top.
+ * Linking here is what lets the case page pull the treatment plan, run the COB
+ * pull and show the next appointment without a second lookup — so it is offered
+ * first, but never required: a case for someone not yet in Open Dental is a
+ * normal case.
  */
 import { useEffect, useState } from "react";
 import { z } from "zod";
@@ -33,7 +39,9 @@ import { toast } from "sonner";
 import { CaseCategory, ReferralSource } from "@shared/tc/contract";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { createCase, tcErrorMessage } from "../api";
-import type { TcCaseCreate } from "../api";
+import type { OdPatient, TcCaseCreate } from "../api";
+import { OdPatientSearch } from "../od/OdShell";
+import { fieldsFromOdPatient } from "../od/odPatient";
 import { dollarsInputToCents } from "../money";
 import { ALL_CASE_STATUSES, URGENCY_LABELS, caseStatusLabel } from "../status";
 import type { CaseStatusId, UrgencyId } from "../status";
@@ -98,6 +106,8 @@ export function NewCaseDialog({
   const [valueText, setValueText] = useState("");
   const [notes, setNotes] = useState("");
   const [referralSource, setReferralSource] = useState<ReferralSourceId | "none">("none");
+  /** Optional Open Dental link — read-only, and the source of odPatientId. */
+  const [odPatient, setOdPatient] = useState<OdPatient | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -117,9 +127,20 @@ export function NewCaseDialog({
     setValueText("");
     setNotes("");
     setReferralSource("none");
+    setOdPatient(null);
     setSubmitting(false);
     setAttempted(false);
   }, [open]);
+
+  /** Prefill from an OD patient. Every filled field stays editable. */
+  const linkOdPatient = (p: OdPatient) => {
+    const fields = fieldsFromOdPatient(p);
+    setOdPatient(p);
+    setPatientName(fields.patientName);
+    setPatientAge(fields.patientAge);
+    if (fields.phone) setPhone(fields.phone);
+    if (fields.email) setEmail(fields.email);
+  };
 
   // Inline validation.
   const valueCents = valueText.trim() === "" ? null : dollarsInputToCents(valueText);
@@ -147,6 +168,7 @@ export function NewCaseDialog({
       ...(valueCents !== null ? { caseValueCents: valueCents } : {}),
       ...(notes.trim() !== "" ? { notes: notes.trim() } : {}),
       ...(referralSource !== "none" ? { referralSource } : {}),
+      ...(odPatient ? { odPatientId: odPatient.patNum } : {}),
     };
 
     setSubmitting(true);
@@ -175,6 +197,14 @@ export function NewCaseDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          <OdPatientSearch
+            office={office}
+            selected={odPatient}
+            onSelect={linkOdPatient}
+            onClear={() => setOdPatient(null)}
+            label="Link an Open Dental patient (optional)"
+          />
+
           <div className="space-y-1.5">
             <Label htmlFor="tc-new-name">Patient name</Label>
             <Input

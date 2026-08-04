@@ -35,6 +35,16 @@ const apiMock = vi.hoisted(() => {
     getLibrary: vi.fn(),
     getLibrarySection: vi.fn(),
     putLibrarySection: vi.fn(),
+    // Slice 5: Integrations probes the live OD status for the selected office.
+    odStatus: vi.fn(async () => ({
+      office: "roland" as const,
+      officeName: "Roland Family Dental",
+      odConnected: true,
+      reachable: true,
+      detail: "",
+      writeEnabled: false,
+    })),
+    isOdNotConnected: vi.fn((e: unknown) => e instanceof TcApiError && e.code === "OFFICE_NOT_CONNECTED"),
     tcErrorMessage: vi.fn((e: unknown) =>
       e instanceof Error ? e.message : "Something went wrong.",
     ),
@@ -211,7 +221,9 @@ describe("TcSettings honest sections", () => {
       label: "Integrations",
       copy: [
         /Connections are provisioned by the platform/i,
-        /Open Dental linking coming in Slice 5/i,
+        // Slice 5: TC reads OD for real, and says so — including that it writes nothing.
+        /Treatment Coordinator can read Open Dental for this office/i,
+        /writes nothing back/i,
         /Coming with platform email/i,
       ],
     },
@@ -251,20 +263,40 @@ describe("TcSettings honest sections", () => {
     });
   }
 
-  it("reports the Open Dental connector honestly without claiming a TC link", async () => {
+  it("reports the platform connector and the TC read path as two separate facts", async () => {
     render(<TcSettings />);
     await screen.findByRole("region", { name: "Practice" });
 
     fireEvent.click(navButton("Integrations"));
     const region = await screen.findByRole("region", { name: "Integrations" });
 
-    // Platform connector is reported for this office...
+    // Platform connector for this office...
     expect(within(region).getByText("Connected")).toBeTruthy();
-    // ...but the TC-side Open Dental link is still explicitly pending.
+    // ...and, separately, whether TC's own OD reads actually work. They can
+    // disagree, which is the whole reason both rows exist.
+    expect(await within(region).findByText("Reading")).toBeTruthy();
     expect(
-      within(region).getByText(/Treatment Coordinator does not read from or write to Open Dental yet/i),
+      within(region).getByText(/writes nothing back — chart notes arrive in a later slice/i),
     ).toBeTruthy();
+    // Email is still the honest "not available" row.
     expect(within(region).getByText("Not available")).toBeTruthy();
+  });
+
+  it("says 'not connected' for the TC read path when the office refuses OD", async () => {
+    const api = await import("@/features/tc/api");
+    const err = new (api.TcApiError as unknown as new (m: string) => Error & { code: string })(
+      "Open Dental is not connected for this office yet",
+    );
+    err.code = "OFFICE_NOT_CONNECTED";
+    (api.odStatus as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(err);
+
+    window.location.hash = "#integrations";
+    render(<TcSettings />);
+
+    const region = await screen.findByRole("region", { name: "Integrations" });
+    expect(
+      await within(region).findByText(/cannot read Open Dental for this office yet/i),
+    ).toBeTruthy();
   });
 
   it("says 'Unknown' for Open Dental rather than 'disconnected' while offices load", async () => {

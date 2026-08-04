@@ -4,6 +4,10 @@
  * atomically via replacePhases. All money renders through formatCents; user
  * dollar input parses through dollarsInputToCents (invalid input blocks save
  * with inline validation — never guessed).
+ *
+ * Slice 5 adds "Pull from Open Dental" here. It opens a review dialog rather
+ * than importing on click: the pulled plan becomes what the patient is quoted,
+ * so a coordinator sees and approves the numbers first. See od/OdPullDialog.
  */
 import { useMemo, useState } from "react";
 import type { OfficeId, TcCase, TcCaseItem } from "@shared/tc/contract";
@@ -34,9 +38,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { DownloadCloud, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { replacePhases, tcErrorMessage } from "../api";
 import type { TcPhaseCreate } from "../api";
+import { OdPullDialog } from "../od/OdPullDialog";
 import { cn } from "@/lib/utils";
 import { centsToDollarsInput, dollarsInputToCents, formatCents } from "../money";
 import { URGENCY_LABELS } from "../status";
@@ -73,6 +78,7 @@ export interface TreatmentTabProps {
 
 export function TreatmentTab({ office, tcCase, onCaseUpdate }: TreatmentTabProps) {
   const [editOpen, setEditOpen] = useState(false);
+  const [odPullOpen, setOdPullOpen] = useState(false);
   const phases = useMemo(
     () => [...tcCase.phases].sort((a, b) => a.position - b.position),
     [tcCase.phases],
@@ -87,10 +93,16 @@ export function TreatmentTab({ office, tcCase, onCaseUpdate }: TreatmentTabProps
             ? "No treatment plan yet."
             : `Case total ${formatCents(caseTotals.feeCents)} · insurance est. ${formatCents(caseTotals.insuranceEstCents)} · patient portion ${formatCents(caseTotals.patientPortionCents)}`}
         </p>
-        <Button variant="outline" onClick={() => setEditOpen(true)}>
-          <Pencil size={14} />
-          Edit treatment plan
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setOdPullOpen(true)}>
+            <DownloadCloud size={14} />
+            Pull from Open Dental
+          </Button>
+          <Button variant="outline" onClick={() => setEditOpen(true)}>
+            <Pencil size={14} />
+            Edit treatment plan
+          </Button>
+        </div>
       </div>
 
       {phases.map((phase) => {
@@ -173,6 +185,14 @@ export function TreatmentTab({ office, tcCase, onCaseUpdate }: TreatmentTabProps
       })}
 
       <ValueEngineeringPanel office={office} tcCase={tcCase} />
+
+      <OdPullDialog
+        office={office}
+        tcCase={tcCase}
+        open={odPullOpen}
+        onOpenChange={setOdPullOpen}
+        onImported={onCaseUpdate}
+      />
 
       <EditTreatmentDialog
         key={editOpen ? "open" : "closed"}

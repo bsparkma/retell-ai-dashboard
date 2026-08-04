@@ -3,21 +3,26 @@
  * top of the case view. Display only: the single mutation affordance here is
  * the "Change status" button, which opens the StatusTransitionDialog owned by
  * the page.
+ *
+ * Slice 5 adds the legacy "Next appt:" line, read live from Open Dental for a
+ * case with a linked PatNum (TC-app CaseCommandBar.tsx line ~210).
  */
 import { Link } from "wouter";
-import type { TcCase } from "@shared/tc/contract";
+import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Gauge, Mail, Phone, Presentation, RefreshCcw, UserRound } from "lucide-react";
 import { formatCents } from "../money";
 import { CaseStatusBadge, UrgencyBadge } from "../components/TcShell";
+import { OdNextAppointment } from "../od/OdNextAppointment";
 
 export interface CaseCommandBarProps {
+  office: OfficeId;
   tcCase: TcCase;
   onChangeStatus: () => void;
 }
 
-export function CaseCommandBar({ tcCase, onChangeStatus }: CaseCommandBarProps) {
+export function CaseCommandBar({ office, tcCase, onChangeStatus }: CaseCommandBarProps) {
   return (
     <Card>
       <CardContent className="p-4">
@@ -55,6 +60,7 @@ export function CaseCommandBar({ tcCase, onChangeStatus }: CaseCommandBarProps) 
               <span className="inline-flex items-center gap-1">
                 <Gauge size={14} /> Readiness {tcCase.readinessScore}/100
               </span>
+              <OdNextAppointment office={office} patNum={tcCase.odPatientId} />
             </div>
           </div>
 

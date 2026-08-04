@@ -8,19 +8,24 @@
  * formatter — NOT formatCents. No case money flows through here.
  *
  * Platform adaptations vs DentaFlow:
- *  - The legacy "Pull from Open Dental" search panel is a DisabledFeatureButton
- *    (reason "slice5_od") — OD linking ships in Slice 5, no fake affordance.
- *  - No OD cross-check pill on the result panel (same reason).
  *  - Dark "display" panels use the var(--sidebar) family so dark mode works.
+ *
+ * Slice 5 brings the legacy "Pull from Open Dental" panel and the OD cross-check
+ * pill live (see od/OdCobPull). The pull pre-fills REMAINING max and deductible
+ * from the patient's year-to-date usage, and states the basis of those numbers —
+ * the OD Cloud API cannot see claimproc, so the basis is genuinely narrower than
+ * the legacy MySQL query's and the user is told exactly how.
  *
  * State can be lifted (state/onStateChange) so FloatingCalc preserves inputs
  * across dialog open/close; the page uses it uncontrolled.
  */
 import { useMemo, useState } from "react";
-import { CopyPlus, Download, Plus, RotateCcw, Trash2 } from "lucide-react";
+import type { OfficeId } from "@shared/tc/contract";
+import { CopyPlus, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { DisabledFeatureButton } from "../components/TcShell";
+import { OdCobPull, type OdCobPullResult } from "../od/OdCobPull";
+import { describeCode } from "../od/odCodes";
 import {
   calcCOB,
   type COBInput,
@@ -319,17 +324,83 @@ function PlanCard({
 
 // ── Component ───────────────────────────────────────────────────────────────
 
+/**
+ * Build a calculator state from a pulled Open Dental patient.
+ *
+ * Ported from the legacy FloatingCalc pre-fill. Two things matter:
+ *  - REMAINING max/deductible go into the fields (the fields mean "what's left",
+ *    per their own hint text), computed server-side from year-to-date usage.
+ *  - a value Open Dental did not give us is left as the user typed it, never
+ *    zeroed. A blank field invites a correction; a confident 0 does not.
+ */
+export function cobStateFromOdPull(current: CobCalcState, pull: OdCobPullResult): CobCalcState {
+  const primary = pull.insurance.plans.find((p) => p.role === "primary") ?? null;
+  const secondary = pull.insurance.plans.find((p) => p.role === "secondary") ?? null;
+
+  const planDraft = (
+    base: CobPlanDraft,
+    plan: typeof primary,
+  ): CobPlanDraft => {
+    if (!plan) return base;
+    const remainingMax = plan.remainingMax;
+    const remainingDed = plan.remainingDeductible;
+    const pct = plan.coinsurance[0]?.percent;
+    return {
+      ...base,
+      pct: pct != null ? String(pct) : base.pct,
+      ded: remainingDed != null ? String(remainingDed) : base.ded,
+      hasMax: plan.annualMax != null ? true : base.hasMax,
+      max: remainingMax != null ? String(remainingMax) : base.max,
+      // PPO/Copay plans are the in-network case; "" (percentage) is not.
+      inNetwork: plan.planType === "p" || plan.planType === "f" ? true : base.inNetwork,
+    };
+  };
+
+  const lineItems: CobLineDraft[] = pull.cob.procs.map((p) => ({
+    id: newId(),
+    label: describeCode(p.procCode, p.description),
+    fee: String(p.fee),
+    // Allowed amounts are the billed fee whenever OD could not give a contracted
+    // one; OdCobPull surfaces the count so the user knows to override.
+    pAllowed: String(p.primaryAllowed),
+    pPct: primary?.coinsurance[0]?.percent != null ? String(primary.coinsurance[0].percent) : "",
+    sAllowed: p.secondaryAllowed != null ? String(p.secondaryAllowed) : String(p.fee),
+    sPct: secondary?.coinsurance[0]?.percent != null ? String(secondary.coinsurance[0].percent) : "",
+    contracted: "",
+  }));
+
+  const firstFee = pull.cob.procs[0]?.fee;
+
+  return {
+    ...current,
+    primary: planDraft(current.primary, primary),
+    secondary: planDraft(current.secondary, secondary),
+    // Line items only when OD actually returned procedures — an empty plan must
+    // not wipe what the user already typed.
+    ...(lineItems.length > 0
+      ? { subMode: "line-items" as const, lineItems, dentistFee: String(firstFee ?? current.dentistFee) }
+      : {}),
+  };
+}
+
 export function CobCalculator({
   compact = false,
+  office,
   state,
   onStateChange,
 }: {
   compact?: boolean;
+  /**
+   * Office for the Open Dental pull. Omitted → the pull panel is not rendered
+   * (the calculator is pure math and still works standalone).
+   */
+  office?: OfficeId;
   /** Controlled state (FloatingCalc lifts it to survive dialog close). */
   state?: CobCalcState;
   onStateChange?: (next: CobCalcState) => void;
 }) {
   const [inner, setInner] = useState<CobCalcState>(defaultCobCalcState);
+  const [odPull, setOdPull] = useState<OdCobPullResult | null>(null);
   const st = state ?? inner;
 
   function apply(next: CobCalcState) {
@@ -366,18 +437,22 @@ export function CobCalculator({
 
   return (
     <div className="space-y-3">
-      {/* (1) Pull from Open Dental — honest disabled affordance (Slice 5) */}
-      <div className="rounded-xl border border-border bg-card p-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-bold text-foreground">Pull from Open Dental</p>
-          <p className="text-[10px] text-muted-foreground">
-            Reads the patient&apos;s treatment plan + both insurance plans (read-only).
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <DisabledFeatureButton reason="slice5_od" size="sm">
-            <Download className="w-4 h-4 mr-1" /> Pull
-          </DisabledFeatureButton>
+      {/* (1) Pull from Open Dental — live for offices with an OD connection */}
+      {office ? (
+        <OdCobPull
+          office={office}
+          pulled={odPull}
+          onPulled={(result) => {
+            setOdPull(result);
+            apply(cobStateFromOdPull(st, result));
+          }}
+          onClear={() => {
+            setOdPull(null);
+            apply(defaultCobCalcState());
+          }}
+        />
+      ) : (
+        <div className="flex items-center justify-end rounded-xl border border-border bg-card p-3">
           <Button
             variant="ghost"
             size="sm"
@@ -387,7 +462,7 @@ export function CobCalculator({
             <RotateCcw className="w-4 h-4 mr-1" /> Clear
           </Button>
         </div>
-      </div>
+      )}
 
       {/* (2) COB method chips + formula line */}
       <div className="rounded-xl border border-border bg-card p-3 space-y-2">
@@ -634,6 +709,34 @@ export function CobCalculator({
         <p className="mt-1 text-[10px] text-sidebar-foreground/60">
           {FORMULA_DESCRIPTION[formulaKey]}
         </p>
+
+        {/* OD cross-check pill — ported from legacy FloatingCalc. Compares what
+            this calculator says the plans pay against Open Dental's OWN estimate
+            for the same procedures. A mismatch is information, not an error: it
+            usually means the plan settings here differ from OD's. Only shown
+            when OD actually gave an estimate — never a "✓ matches" against a
+            silent zero. */}
+        {odPull?.odEstimateTotal != null &&
+          (() => {
+            const ours = result.totalPrimaryPaid + result.totalSecondaryPaid;
+            const odTotal = odPull.odEstimateTotal as number;
+            const diff = ours - odTotal;
+            const matches = Math.abs(diff) < 1; // within a dollar
+            return (
+              <div
+                className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${
+                  matches
+                    ? "bg-emerald-500/20 text-emerald-100"
+                    : "bg-amber-500/20 text-amber-100"
+                }`}
+                data-testid="od-cross-check"
+              >
+                {matches
+                  ? `✓ Matches Open Dental's estimate (${fmt(odTotal)})`
+                  : `Differs from OD by ${fmt(Math.abs(diff))} — OD says ${fmt(odTotal)}`}
+              </div>
+            );
+          })()}
       </div>
 
       {/* (7) Per-line breakdown (full plan, >1 line) */}

@@ -93,6 +93,16 @@ export function tcErrorMessage(err: unknown): string {
       return "This practice isn't enabled for Treatment Coordinator yet.";
     }
     if (err.code === "FEATURE_DISABLED") return "This feature isn't enabled yet.";
+    if (err.code === "OFFICE_NOT_CONNECTED") {
+      return "OD not connected for this office yet.";
+    }
+    if (err.code === "OD_RESOURCE_UNAVAILABLE") {
+      return "Open Dental hasn't enabled the data this needs. Ask your OD admin to enable it in the developer portal.";
+    }
+    if (err.code === "OD_UNAUTHORIZED") {
+      return "Open Dental rejected the request. Check the practice's API credentials.";
+    }
+    if (err.code === "OD_READ_FAILED") return "Couldn't reach Open Dental. Try again in a moment.";
     if (err.code === "VALIDATION_FAILED" && err.issues.length > 0) {
       const first = err.issues[0];
       return first ? `${first.path ? `${first.path}: ` : ""}${first.message}` : err.message;
@@ -953,6 +963,249 @@ export function tcMediaUrl(office: OfficeId, blobKey: string): string {
   url.searchParams.set("office", office);
   url.searchParams.set("key", blobKey);
   return url.toString();
+}
+
+// ── Open Dental reads (Slice 5) ─────────────────────────────────────────────
+//
+// READ-ONLY. There is no OD write in this client and no OD write route behind
+// it; the commlog send arrives in Slice 6.
+//
+// Every OD endpoint refuses an office with no Open Dental connection with a 503
+// carrying code OFFICE_NOT_CONNECTED. `isOdNotConnected(err)` is how UI code
+// tells that apart from a real failure so it can render the honest "OD not
+// connected for this office yet" state instead of an error.
+
+/** True when the failure is "this office has no OD connection", not a fault. */
+export function isOdNotConnected(err: unknown): boolean {
+  return err instanceof TcApiError && err.code === "OFFICE_NOT_CONNECTED";
+}
+
+/**
+ * One row of the OD API coverage report a read carries back: which data element
+ * the legacy query produced, and how well the OD Cloud API can express it.
+ *
+ *   confirmed — the API returns this directly
+ *   partial   — reconstructed, or narrower than the original; `note` says how
+ *   gap       — the API cannot express it at all; `note` says why
+ */
+export interface OdCoverage {
+  element: string;
+  status: "confirmed" | "partial" | "gap";
+  endpoint: string;
+  note: string | null;
+}
+
+export interface OdPatient {
+  patNum: number;
+  firstName: string;
+  lastName: string;
+  displayName: string;
+  birthdate: string;
+  phone: string;
+  email: string;
+  status: string;
+}
+
+export interface OdPatientSearchResult {
+  query: string;
+  /** Always "prefix" — OD's LName/FName filters are starts-with matches. */
+  matchMode: string;
+  patients: OdPatient[];
+  truncated: boolean;
+  totalFound?: number;
+  notes: string[];
+}
+
+export interface OdTreatmentProcedure {
+  procNum: number;
+  toothNum: string;
+  surf: string;
+  procCode: string;
+  description: string;
+  /** DOLLARS — Open Dental's domain. Converted to cents at the import boundary. */
+  fee: number;
+  insEst: number;
+  patAmt: number;
+}
+
+export interface OdTreatmentPlan {
+  patNum: number;
+  procedures: OdTreatmentProcedure[];
+  plans: { treatPlanNum: number; heading: string; status: string; dateTP: string }[];
+  source: { treatPlanNum: number; status: string; heading: string } | null;
+  /** True when procedures are missing from the totals (unreadable or truncated). */
+  partial: boolean;
+  truncated: boolean;
+  unreadable: { procNum: number; reason: string }[];
+  notes: string[];
+}
+
+export interface OdUnacceptedPatient extends OdPatient {
+  procCount: number;
+  totalFee: number;
+  earliestTP: string;
+  latestTP: string;
+  demographicsUnavailable: boolean;
+}
+
+export interface OdUnacceptedResult {
+  patients: OdUnacceptedPatient[];
+  total: number;
+  scanned: number;
+  pages: number;
+  /** True when the scan hit its page cap — this is NOT a full practice sweep. */
+  truncated: boolean;
+  filters: { minFee: number; days: number; cutoff: string; limit: number; clinicNum: string | null };
+  coverage: OdCoverage[];
+  notes: string[];
+}
+
+export interface OdCobProcedure {
+  procNum: number;
+  toothNum: string;
+  surf: string;
+  procCode: string;
+  description: string;
+  fee: number;
+  primaryAllowed: number;
+  primaryInsEst: number;
+  primaryDedEst: number | null;
+  hasPrimaryEstimate: boolean;
+  secondaryAllowed: number | null;
+  secondaryInsEst: number;
+  secondaryDedEst: number | null;
+  hasSecondaryEstimate: boolean;
+  /** True when "allowed" is really the billed fee — the UI must say so. */
+  allowedIsBilledFee: boolean;
+  estimateSource: string | null;
+}
+
+export interface OdCobResult {
+  patNum: number;
+  procs: OdCobProcedure[];
+  savedPlanUsed: number | null;
+  coverage: OdCoverage[];
+  notes: string[];
+}
+
+export interface OdInsurancePlan {
+  ordinal: number;
+  role: "primary" | "secondary";
+  patPlanNum: number;
+  planNum: number | null;
+  isPending: boolean;
+  relationship: string;
+  carrierName: string;
+  groupName: string;
+  groupNum: string;
+  planType: string;
+  cobRule: string;
+  monthRenew: number;
+  effectiveDate: string;
+  termDate: string;
+  /** null means "not known", never "zero". */
+  annualMax: number | null;
+  deductible: number | null;
+  coinsurance: { percent: number; category: number | null; procCode: string | null }[];
+  coverageLevel: string | null;
+  usage: {
+    paidYTD: number;
+    dedAppliedYTD: number;
+    claimCount: number;
+    benefitYearStart: string;
+    basis: string;
+  } | null;
+  remainingMax: number | null;
+  remainingDeductible: number | null;
+  unreadable: string[];
+}
+
+export interface OdInsuranceSnapshot {
+  patNum: number;
+  plans: OdInsurancePlan[];
+  ytdAvailable: boolean;
+  /** Plain-English statement of what the YTD numbers are counted from. */
+  ytdBasis: string;
+  coverage: OdCoverage[];
+  notes: string[];
+}
+
+export interface OdNextAppointment {
+  appointment: {
+    aptNum: number;
+    dateTime: string;
+    description: string;
+    providerName: string;
+    operatory: number | null;
+    isHygiene: boolean;
+  } | null;
+}
+
+export interface OdStatus {
+  office: OfficeId;
+  officeName: string;
+  odConnected: boolean;
+  reachable: boolean;
+  detail: string;
+  writeEnabled: boolean;
+}
+
+export function odStatus(office: OfficeId): Promise<OdStatus> {
+  return tcRequest<OdStatus & { success: true }>("/tc/od/status", { office });
+}
+
+/**
+ * Patient search. ⚠️ OD matches name fields by PREFIX, so "Smith" also returns
+ * "Smithson" — callers must show DOB/phone and let a human choose. Never
+ * auto-select the first result.
+ */
+export function odSearchPatients(
+  office: OfficeId,
+  query: string,
+  limit?: number,
+): Promise<OdPatientSearchResult> {
+  return tcRequest<OdPatientSearchResult & { success: true }>("/tc/od/patients", {
+    office,
+    params: { q: query, limit },
+  });
+}
+
+export function odGetPatient(office: OfficeId, patNum: number): Promise<OdPatient> {
+  return tcRequest<{ patient: OdPatient }>(`/tc/od/patients/${patNum}`, { office }).then(
+    (r) => r.patient,
+  );
+}
+
+export function odTreatmentPlan(office: OfficeId, patNum: number): Promise<OdTreatmentPlan> {
+  return tcRequest<OdTreatmentPlan & { success: true }>(`/tc/od/treatment-plan/${patNum}`, {
+    office,
+  });
+}
+
+export function odUnaccepted(
+  office: OfficeId,
+  filters?: { minFee?: number; days?: number; limit?: number },
+): Promise<OdUnacceptedResult> {
+  return tcRequest<OdUnacceptedResult & { success: true }>("/tc/od/unaccepted", {
+    office,
+    params: { ...filters },
+  });
+}
+
+export function odCobProcedures(office: OfficeId, patNum: number): Promise<OdCobResult> {
+  return tcRequest<OdCobResult & { success: true }>(`/tc/od/cob-procedures/${patNum}`, { office });
+}
+
+export function odInsurance(office: OfficeId, patNum: number): Promise<OdInsuranceSnapshot> {
+  return tcRequest<OdInsuranceSnapshot & { success: true }>(`/tc/od/insurance/${patNum}`, {
+    office,
+  });
+}
+
+export function odNextAppointment(office: OfficeId, patNum: number): Promise<OdNextAppointment> {
+  return tcRequest<OdNextAppointment & { success: true }>(`/tc/od/next-appointment/${patNum}`, {
+    office,
+  });
 }
 
 // ── Library config ──────────────────────────────────────────────────────────

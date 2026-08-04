@@ -146,7 +146,7 @@ function CaseViewInner({ office }: { office: OfficeId }) {
         </div>
       </div>
 
-      <CaseCommandBar tcCase={tcCase} onChangeStatus={() => setStatusDialogOpen(true)} />
+      <CaseCommandBar office={office} tcCase={tcCase} onChangeStatus={() => setStatusDialogOpen(true)} />
 
       <StatusTransitionDialog
         office={office}
