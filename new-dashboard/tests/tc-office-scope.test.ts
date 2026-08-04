@@ -175,18 +175,16 @@ describe("fanOutOfficeValues", () => {
 });
 
 describe("isTcSharedRoute", () => {
-  it("suppresses the office picker on office-agnostic TC routes", () => {
+  it("suppresses the office picker only on genuinely office-agnostic routes", () => {
     for (const route of TC_SHARED_ROUTES) {
       expect(isTcSharedRoute(route)).toBe(true);
     }
-    expect(isTcSharedRoute("/tc/templates/tmpl-1")).toBe(true);
-    expect(isTcSharedRoute("/tc/cases/case-1")).toBe(true);
-    expect(isTcSharedRoute("/tc/cases/case-1/prep")).toBe(true);
-    expect(isTcSharedRoute("/tc/cases/case-1/post-consult")).toBe(true);
+    // The guide is static coaching content — no office-scoped read at all.
+    expect(isTcSharedRoute("/tc/guide")).toBe(true);
   });
 
-  it("keeps the picker on office-scoped TC surfaces", () => {
-    // The pipeline list is "/tc" — "/tc/cases/" must not swallow it.
+  it("keeps the picker on every office-scoped TC surface", () => {
+    // The pipeline list is "/tc" — no prefix may swallow it.
     expect(isTcSharedRoute("/tc")).toBe(false);
     expect(isTcSharedRoute("/tc/dashboard")).toBe(false);
     expect(isTcSharedRoute("/tc/followups")).toBe(false);
@@ -195,6 +193,21 @@ describe("isTcSharedRoute", () => {
     expect(isTcSharedRoute("/tc/hygiene")).toBe(false);
     expect(isTcSharedRoute("/tc/hygiene/inbox")).toBe(false);
     expect(isTcSharedRoute("/tc/cob")).toBe(false);
+    // Pages DentaFlow treated as shared but which read per-office data here:
+    // hiding the picker would bury the only control that changes the page.
+    expect(isTcSharedRoute("/tc/financing")).toBe(false);
+    expect(isTcSharedRoute("/tc/gallery")).toBe(false);
+    expect(isTcSharedRoute("/tc/templates")).toBe(false);
+    expect(isTcSharedRoute("/tc/templates/tmpl-1")).toBe(false);
+    expect(isTcSharedRoute("/tc/communications")).toBe(false);
+    expect(isTcSharedRoute("/tc/library")).toBe(false);
+    expect(isTcSharedRoute("/tc/settings")).toBe(false);
+    expect(isTcSharedRoute("/tc/reports")).toBe(false);
+    // Case detail/prep/post-consult fetch with the selected office, so the
+    // picker is also the recovery control for "not found in this office".
+    expect(isTcSharedRoute("/tc/cases/case-1")).toBe(false);
+    expect(isTcSharedRoute("/tc/cases/case-1/prep")).toBe(false);
+    expect(isTcSharedRoute("/tc/cases/case-1/post-consult")).toBe(false);
   });
 
   it("leaves non-TC modules alone", () => {

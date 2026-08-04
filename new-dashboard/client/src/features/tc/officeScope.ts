@@ -244,26 +244,23 @@ export function hardErrorMessage(status: FanOutStatus): string | null {
 // ── Shared routes (DentaFlow SHARED_ROUTES port) ─────────────────────────────
 
 /**
- * TC routes whose content isn't scoped by the global office picker, so the
- * picker is hidden on them (DentaFlow hid it on financing / gallery / tc-guide
- * / email / settings / reports / patient sub-routes).
+ * TC routes whose content is genuinely office-AGNOSTIC, so the office picker
+ * is hidden on them.
  *
- * Each entry is a PREFIX. "/tc/cases/" keeps its trailing slash so it matches
- * case detail + prep + post-consult but never the pipeline list at "/tc".
- * "/tc/cob" is deliberately NOT here: the COB calculator reads the selected
- * office's financing config, so switching offices there is meaningful.
+ * DentaFlow hid the picker on a long list (financing / gallery / email /
+ * settings / reports / patient sub-routes) because those pages were
+ * office-agnostic THERE. That premise does not hold on the platform: every
+ * one of them is backed by a per-office API call (getLibrary, listGallery,
+ * listTemplates, listCommunications, listCases, getCase…), so hiding the
+ * picker would bury the only control that changes what the page shows —
+ * and on case detail it would hide the very control that recovers from
+ * "Case not found for the selected office".
+ *
+ * So the list is only what survives that test on the platform: the TC Guide,
+ * which is static coaching content with no API calls at all. Entries are
+ * PREFIXES. Any new page belongs here ONLY if it reads nothing office-scoped.
  */
-export const TC_SHARED_ROUTES = [
-  "/tc/financing",
-  "/tc/gallery",
-  "/tc/guide",
-  "/tc/templates",
-  "/tc/communications",
-  "/tc/library",
-  "/tc/settings",
-  "/tc/reports",
-  "/tc/cases/",
-] as const;
+export const TC_SHARED_ROUTES = ["/tc/guide"] as const;
 
 /** True when the office picker should be hidden for this location. */
 export function isTcSharedRoute(location: string): boolean {
