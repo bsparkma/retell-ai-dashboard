@@ -11,7 +11,7 @@ import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, SearchX } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, Presentation, SearchX } from "lucide-react";
 import { getCase, TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { TcOfficeGate, useTcOffice } from "@/features/tc/components/TcShell";
 import { ActivityTimeline } from "@/features/tc/caseview/ActivityTimeline";
@@ -122,13 +122,29 @@ function CaseViewInner({ office }: { office: OfficeId }) {
 
   return (
     <div className="p-6 space-y-4">
-      <Link
-        href="/tc"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft size={14} />
-        Back to cases
-      </Link>
+      <div className="flex items-center justify-between gap-2">
+        <Link
+          href="/tc"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft size={14} />
+          Back to cases
+        </Link>
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/tc/cases/${tcCase.caseId}/prep`}>
+              <ClipboardCheck size={14} />
+              Prep
+            </Link>
+          </Button>
+          <Button asChild size="sm">
+            <Link href={`/tc/present/${tcCase.caseId}`}>
+              <Presentation size={14} />
+              Present Case
+            </Link>
+          </Button>
+        </div>
+      </div>
 
       <CaseCommandBar tcCase={tcCase} onChangeStatus={() => setStatusDialogOpen(true)} />
 
