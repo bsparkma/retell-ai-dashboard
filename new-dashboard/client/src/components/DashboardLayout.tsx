@@ -36,6 +36,9 @@ import {
   Calculator,
   BookOpen,
   LogOut,
+  Heart,
+  CreditCard,
+  LibraryBig,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { logout } from "@/lib/auth";
@@ -82,11 +85,16 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       ],
     },
   ],
+  /* Ordered to match DentaFlow's sidebar (Dashboard → Pipeline → Nurture →
+     Tasks → Financing → Gallery → Pre-Auth → Email → Guide → Reports),
+     adapted to the platform's grouped shell. */
   tc: [
     {
       title: "Casework",
       items: [
+        { path: "/tc/dashboard", label: "Dashboard", icon: LayoutDashboard },
         { path: "/tc", label: "Pipeline", icon: KanbanSquare },
+        { path: "/tc/nurture", label: "Nurture", icon: Heart },
         { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
@@ -102,11 +110,14 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
     {
       title: "Tools",
       items: [
+        { path: "/tc/financing", label: "Financing", icon: CreditCard },
+        { path: "/tc/gallery", label: "Gallery", icon: Images },
         { path: "/tc/templates", label: "Email Templates", icon: Mail },
         { path: "/tc/communications", label: "Communications", icon: MessagesSquare },
-        { path: "/tc/gallery", label: "Gallery", icon: Images },
+        { path: "/tc/guide", label: "TC Guide", icon: BookOpen },
+        { path: "/tc/reports", label: "Reports", icon: BarChart3 },
         { path: "/tc/cob", label: "COB Calculator", icon: Calculator },
-        { path: "/tc/library", label: "Library", icon: BookOpen },
+        { path: "/tc/library", label: "Library", icon: LibraryBig },
       ],
     },
   ],

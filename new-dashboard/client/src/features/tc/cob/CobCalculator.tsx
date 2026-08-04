@@ -1,41 +1,25 @@
 /**
- * COB calculator UI — faithful port of the legacy FloatingCalc COB view
- * (TC-app FloatingCalc.tsx), restyled on platform tokens.
+ * COB calculator UI — DentaFlow COBView arrangement (TC-app FloatingCalc.tsx
+ * lines ~1294–1654) rebuilt on platform semantic tokens.
  *
  * DOLLARS DOMAIN: this is a pure scratchpad over user-typed dollar amounts.
- * calcCOB (ported verbatim, regression-tested) takes and returns dollars, so
- * results render through this component's own Intl formatter — NOT
- * formatCents. No case money flows through here.
+ * calcCOB (ported verbatim, regression-tested — DO NOT modify the math) takes
+ * and returns dollars, so results render through this component's own Intl
+ * formatter — NOT formatCents. No case money flows through here.
+ *
+ * Platform adaptations vs DentaFlow:
+ *  - The legacy "Pull from Open Dental" search panel is a DisabledFeatureButton
+ *    (reason "slice5_od") — OD linking ships in Slice 5, no fake affordance.
+ *  - No OD cross-check pill on the result panel (same reason).
+ *  - Dark "display" panels use the var(--sidebar) family so dark mode works.
  *
  * State can be lifted (state/onStateChange) so FloatingCalc preserves inputs
- * across sheet open/close; the page uses it uncontrolled.
+ * across dialog open/close; the page uses it uncontrolled.
  */
 import { useMemo, useState } from "react";
-import { Download, Info, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { CopyPlus, Download, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { DisabledFeatureButton } from "../components/TcShell";
 import {
   calcCOB,
@@ -64,6 +48,8 @@ export interface CobLineDraft {
   pPct: string;
   sAllowed: string;
   sPct: string;
+  /** Per-line contracted fee override — only used when both plans in-network. */
+  contracted: string;
 }
 
 export interface CobCalcState {
@@ -104,6 +90,7 @@ export function defaultCobCalcState(): CobCalcState {
         pPct: "50",
         sAllowed: "1100",
         sPct: "60",
+        contracted: "",
       },
     ],
   };
@@ -141,6 +128,50 @@ function sanitizeNumeric(raw: string): string {
   return raw.replace(/[^0-9.,]/g, "");
 }
 
+/** Map string-draft state → calcCOB input. Exported so FloatingCalc can build
+ * the COB copy-text from the same lifted state without duplicating parsing. */
+export function cobInputFromState(st: CobCalcState): COBInput {
+  const bothInNetwork = st.primary.inNetwork && st.secondary.inNetwork;
+  const overrideAmount = toAmount(st.contractedFeeOverride);
+  const planInput = (p: CobPlanDraft): COBPlanInput => ({
+    allowedAmount: toAmount(p.allowed),
+    coveragePct: toPct(p.pct),
+    remainingDeductible: toAmount(p.ded),
+    hasAnnualMax: p.hasMax,
+    remainingAnnualMax: toAmount(p.max),
+    inNetwork: p.inNetwork,
+  });
+  return {
+    method: st.method,
+    mobVariant: st.mobVariant,
+    secondaryWaivesDeductible: st.secondaryWaivesDeductible,
+    primary: planInput(st.primary),
+    secondary: planInput(st.secondary),
+    ...(st.subMode === "single" ? { dentistFee: toAmount(st.dentistFee) } : {}),
+    ...(st.subMode === "single" && bothInNetwork && overrideAmount > 0
+      ? { contractedFeeOverride: overrideAmount }
+      : {}),
+    ...(st.subMode === "line-items"
+      ? {
+          lineItems: st.lineItems.map((l) => {
+            const contracted = toAmount(l.contracted);
+            return {
+              label: l.label,
+              dentistFee: toAmount(l.fee),
+              primaryAllowed: toAmount(l.pAllowed),
+              primaryCoveragePct: toPct(l.pPct),
+              secondaryAllowed: toAmount(l.sAllowed),
+              secondaryCoveragePct: toPct(l.sPct),
+              ...(bothInNetwork && contracted > 0
+                ? { contractedFeeOverride: contracted }
+                : {}),
+            };
+          }),
+        }
+      : {}),
+  };
+}
+
 const FORMULA_DESCRIPTION: Record<string, string> = {
   "full-cob":
     "Secondary pays the patient's full remaining balance, capped only by its remaining annual max. Matches how Delta-on-Delta and most full-COB carriers actually adjudicate.",
@@ -153,9 +184,9 @@ const FORMULA_DESCRIPTION: Record<string, string> = {
     "Secondary pays its coverage % of the balance after primary, capped at what it would pay as primary.",
 };
 
-// ── Small fields ────────────────────────────────────────────────────────────
+// ── Small building blocks (DentaFlow field/chip styling, semantic tokens) ───
 
-function NumField({
+function CalcField({
   label,
   value,
   onChange,
@@ -169,28 +200,46 @@ function NumField({
   hint?: string;
 }) {
   return (
-    <div>
-      <Label className="text-[11px] text-muted-foreground">{label}</Label>
-      <div className="relative mt-0.5">
-        {!percent && (
-          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-            $
-          </span>
-        )}
-        <Input
+    <label className="block rounded-lg bg-background border border-border px-2.5 py-2 cursor-text focus-within:border-primary focus-within:ring-1 focus-within:ring-primary/30 transition-colors">
+      <span className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+        {label}
+      </span>
+      <span className="flex items-baseline gap-1 mt-0.5">
+        {!percent && <span className="text-sm text-muted-foreground">$</span>}
+        <input
           inputMode="decimal"
-          className={`h-8 text-sm tabular-nums ${percent ? "pr-7" : "pl-6"}`}
+          className="flex-1 min-w-0 border-0 outline-none bg-transparent text-lg font-bold text-foreground tabular-nums"
           value={value}
           onChange={(e) => onChange(sanitizeNumeric(e.target.value))}
         />
-        {percent && (
-          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-            %
-          </span>
-        )}
-      </div>
-      {hint && <p className="text-[10px] text-muted-foreground mt-0.5">{hint}</p>}
-    </div>
+        {percent && <span className="text-sm text-muted-foreground">%</span>}
+      </span>
+      {hint && <span className="block text-[10px] text-muted-foreground mt-0.5">{hint}</span>}
+    </label>
+  );
+}
+
+function MethodChip({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full text-[11px] font-semibold px-3 py-1.5 border transition-colors ${
+        active
+          ? "bg-primary text-primary-foreground border-primary"
+          : "bg-card text-muted-foreground border-border hover:text-foreground"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -208,48 +257,48 @@ function PlanCard({
   return (
     <div className="rounded-xl border border-border bg-card p-3 space-y-2.5">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold text-foreground">{title}</p>
-        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Switch
-            checked={plan.inNetwork}
-            onCheckedChange={(checked) => onPatch({ inNetwork: checked })}
-          />
+        <p className="text-xs font-bold text-foreground">{title}</p>
+        <button
+          type="button"
+          onClick={() => onPatch({ inNetwork: !plan.inNetwork })}
+          className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border transition-colors ${
+            plan.inNetwork
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-muted text-muted-foreground border-border"
+          }`}
+        >
           {plan.inNetwork ? "In-network" : "Out-of-network"}
-        </label>
+        </button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         {showAllowedAndPct && (
-          <NumField
-            label="Allowed amount"
+          <CalcField
+            label="Allowed Amount"
             value={plan.allowed}
             onChange={(v) => onPatch({ allowed: v })}
           />
         )}
         {showAllowedAndPct && (
-          <NumField
+          <CalcField
             label="Coverage %"
             percent
             value={plan.pct}
             onChange={(v) => onPatch({ pct: v })}
           />
         )}
-        <NumField
-          label="Deductible remaining"
-          value={plan.ded}
-          onChange={(v) => onPatch({ ded: v })}
-        />
+        <CalcField label="Ded Remaining" value={plan.ded} onChange={(v) => onPatch({ ded: v })} />
         <div>
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1">
             <Switch
               checked={plan.hasMax}
               onCheckedChange={(checked) => onPatch({ hasMax: checked })}
             />
-            {plan.hasMax ? "Annual max" : "Annual max — unlimited"}
+            {plan.hasMax ? "Remaining annual max" : "Annual max — unlimited"}
           </label>
           {plan.hasMax && (
             <div className="mt-1.5">
-              <NumField
-                label="Max remaining"
+              <CalcField
+                label="Max Remaining"
                 value={plan.max}
                 onChange={(v) => onPatch({ max: v })}
                 hint="Enter what's LEFT for the year, not the plan's full max."
@@ -276,7 +325,7 @@ export function CobCalculator({
   onStateChange,
 }: {
   compact?: boolean;
-  /** Controlled state (FloatingCalc lifts it to survive sheet close). */
+  /** Controlled state (FloatingCalc lifts it to survive dialog close). */
   state?: CobCalcState;
   onStateChange?: (next: CobCalcState) => void;
 }) {
@@ -297,114 +346,103 @@ export function CobCalculator({
       ...st,
       lineItems: st.lineItems.map((l) => (l.id === id ? { ...l, ...p } : l)),
     });
+  const duplicateLine = (id: string) => {
+    const idx = st.lineItems.findIndex((l) => l.id === id);
+    const src = st.lineItems[idx];
+    if (!src) return;
+    const copy: CobLineDraft = { ...src, id: newId(), label: `${src.label} (copy)` };
+    apply({
+      ...st,
+      lineItems: [...st.lineItems.slice(0, idx + 1), copy, ...st.lineItems.slice(idx + 1)],
+    });
+  };
 
   const bothInNetwork = st.primary.inNetwork && st.secondary.inNetwork;
 
-  const planInput = (p: CobPlanDraft): COBPlanInput => ({
-    allowedAmount: toAmount(p.allowed),
-    coveragePct: toPct(p.pct),
-    remainingDeductible: toAmount(p.ded),
-    hasAnnualMax: p.hasMax,
-    remainingAnnualMax: toAmount(p.max),
-    inNetwork: p.inNetwork,
-  });
-
-  const result = useMemo(() => {
-    const overrideAmount = toAmount(st.contractedFeeOverride);
-    const input: COBInput = {
-      method: st.method,
-      mobVariant: st.mobVariant,
-      secondaryWaivesDeductible: st.secondaryWaivesDeductible,
-      primary: planInput(st.primary),
-      secondary: planInput(st.secondary),
-      ...(st.subMode === "single" ? { dentistFee: toAmount(st.dentistFee) } : {}),
-      ...(st.subMode === "single" && bothInNetwork && overrideAmount > 0
-        ? { contractedFeeOverride: overrideAmount }
-        : {}),
-      ...(st.subMode === "line-items"
-        ? {
-            lineItems: st.lineItems.map((l) => ({
-              label: l.label,
-              dentistFee: toAmount(l.fee),
-              primaryAllowed: toAmount(l.pAllowed),
-              primaryCoveragePct: toPct(l.pPct),
-              secondaryAllowed: toAmount(l.sAllowed),
-              secondaryCoveragePct: toPct(l.sPct),
-            })),
-          }
-        : {}),
-    };
-    return calcCOB(input);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [st, bothInNetwork]);
+  const result = useMemo(() => calcCOB(cobInputFromState(st)), [st]);
 
   const formulaKey = st.method === "mob" ? `mob-${st.mobVariant}` : st.method;
-  const planGrid = compact ? "grid grid-cols-1 gap-2.5" : "grid grid-cols-1 md:grid-cols-2 gap-2.5";
+  const gridCols = "1.4fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr";
 
   return (
     <div className="space-y-3">
-      {/* Toolbar: OD pull (dark in this slice) + clear */}
-      <div className="flex items-center justify-between gap-2">
-        <DisabledFeatureButton reason="slice5_od" size="sm">
-          <Download className="w-4 h-4 mr-1" /> Pull from Open Dental
-        </DisabledFeatureButton>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => apply(defaultCobCalcState())}
-          className="text-muted-foreground"
-        >
-          <RotateCcw className="w-4 h-4 mr-1" /> Clear
-        </Button>
-      </div>
-
-      {/* Method */}
-      <div className="rounded-xl border border-border bg-card p-3 space-y-2">
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <Label className="text-[11px] text-muted-foreground">COB method</Label>
-            <Select
-              value={st.method}
-              onValueChange={(v) => patch({ method: v as COBMethod })}
-            >
-              <SelectTrigger className="h-8 w-56 text-xs mt-0.5">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="full-cob">Full COB (to 100%)</SelectItem>
-                <SelectItem value="standard">Standard (lesser-of)</SelectItem>
-                <SelectItem value="non-duplication">Non-duplication</SelectItem>
-                <SelectItem value="mob">MOB</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {st.method === "mob" && (
-            <div>
-              <Label className="text-[11px] text-muted-foreground">MOB variant</Label>
-              <Select
-                value={st.mobVariant}
-                onValueChange={(v) => patch({ mobVariant: v as MobVariant })}
-              >
-                <SelectTrigger className="h-8 w-56 text-xs mt-0.5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="carveout">Carve-out (capped)</SelectItem>
-                  <SelectItem value="coinsurance">Coinsurance on balance</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+      {/* (1) Pull from Open Dental — honest disabled affordance (Slice 5) */}
+      <div className="rounded-xl border border-border bg-card p-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-bold text-foreground">Pull from Open Dental</p>
+          <p className="text-[10px] text-muted-foreground">
+            Reads the patient&apos;s treatment plan + both insurance plans (read-only).
+          </p>
         </div>
-        <p className="text-[11px] text-muted-foreground">{FORMULA_DESCRIPTION[formulaKey]}</p>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <DisabledFeatureButton reason="slice5_od" size="sm">
+            <Download className="w-4 h-4 mr-1" /> Pull
+          </DisabledFeatureButton>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => apply(defaultCobCalcState())}
+            className="text-muted-foreground"
+          >
+            <RotateCcw className="w-4 h-4 mr-1" /> Clear
+          </Button>
+        </div>
       </div>
 
-      {/* Sub-mode */}
+      {/* (2) COB method chips + formula line */}
+      <div className="rounded-xl border border-border bg-card p-3 space-y-2">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          COB Method
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <MethodChip
+            active={st.method === "full-cob"}
+            label="Full COB (to 100%)"
+            onClick={() => patch({ method: "full-cob" })}
+          />
+          <MethodChip
+            active={st.method === "standard"}
+            label="Standard (lesser-of)"
+            onClick={() => patch({ method: "standard" })}
+          />
+          <MethodChip
+            active={st.method === "non-duplication"}
+            label="Non-duplication"
+            onClick={() => patch({ method: "non-duplication" })}
+          />
+          <MethodChip
+            active={st.method === "mob"}
+            label="MOB"
+            onClick={() => patch({ method: "mob" })}
+          />
+        </div>
+        {st.method === "mob" && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <MethodChip
+              active={st.mobVariant === "carveout"}
+              label="Carve-out (capped)"
+              onClick={() => patch({ mobVariant: "carveout" })}
+            />
+            <MethodChip
+              active={st.mobVariant === "coinsurance"}
+              label="Coinsurance on balance"
+              onClick={() => patch({ mobVariant: "coinsurance" })}
+            />
+            <p className="basis-full text-[10px] text-muted-foreground mt-1">
+              Carve-out: secondary pays the *difference* (capped). Coinsurance:
+              secondary pays its % of whatever the patient still owes.
+            </p>
+          </div>
+        )}
+        <p className="text-[11px] text-muted-foreground pt-1">{FORMULA_DESCRIPTION[formulaKey]}</p>
+      </div>
+
+      {/* (3) Sub-mode segmented toggle */}
       <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 gap-0.5">
         {(
           [
             { id: "single", label: "Single procedure" },
-            { id: "line-items", label: "Line items" },
+            { id: "line-items", label: "Full plan" },
           ] as const
         ).map((m) => (
           <button
@@ -422,8 +460,8 @@ export function CobCalculator({
         ))}
       </div>
 
-      {/* Plans */}
-      <div className={planGrid}>
+      {/* (4) Plan cards */}
+      <div className={compact ? "grid grid-cols-1 sm:grid-cols-2 gap-2.5" : "grid grid-cols-1 md:grid-cols-2 gap-2.5"}>
         <PlanCard
           title="Primary plan"
           plan={st.primary}
@@ -451,21 +489,21 @@ export function CobCalculator({
         </div>
       </div>
 
-      {/* Single-procedure inputs */}
+      {/* (5a) Single-procedure fee card */}
       {st.subMode === "single" && (
         <div
           className={`rounded-xl border border-border bg-card p-3 grid gap-2.5 ${
-            bothInNetwork && !compact ? "grid-cols-2" : "grid-cols-1"
+            bothInNetwork ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"
           }`}
         >
-          <NumField
-            label="Dentist fee"
+          <CalcField
+            label="Dentist Fee"
             value={st.dentistFee}
             onChange={(v) => patch({ dentistFee: v })}
           />
           {bothInNetwork && (
-            <NumField
-              label="Contracted fee (both in-network)"
+            <CalcField
+              label="Contracted Fee (both in-network)"
               value={st.contractedFeeOverride}
               onChange={(v) => patch({ contractedFeeOverride: v })}
               hint="Enter the patient's contracted fee — not the full fee. Leave blank to use primary's allowed."
@@ -474,7 +512,7 @@ export function CobCalculator({
         </div>
       )}
 
-      {/* Line items */}
+      {/* (5b) Full-plan line items */}
       {st.subMode === "line-items" && (
         <div className="rounded-xl border border-border bg-card p-3 space-y-2">
           <div className="flex items-center justify-between">
@@ -496,6 +534,7 @@ export function CobCalculator({
                       pPct: "50",
                       sAllowed: "",
                       sPct: "50",
+                      contracted: "",
                     },
                   ],
                 })
@@ -512,146 +551,145 @@ export function CobCalculator({
           {st.lineItems.map((l) => (
             <div key={l.id} className="rounded-lg border border-border bg-muted/30 p-2 space-y-2">
               <div className="flex items-center gap-2">
-                <Input
-                  className="h-8 flex-1 text-xs font-semibold"
+                <input
+                  className="flex-1 min-w-0 text-xs font-semibold bg-transparent border-0 outline-none text-foreground"
                   value={l.label}
                   onChange={(e) => patchLine(l.id, { label: e.target.value })}
                 />
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                  className="h-7 w-7 text-muted-foreground hover:text-primary"
+                  title="Duplicate this line"
+                  aria-label={`Duplicate ${l.label}`}
+                  onClick={() => duplicateLine(l.id)}
+                >
+                  <CopyPlus className="w-3.5 h-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  title="Remove this line"
                   aria-label={`Remove ${l.label}`}
                   onClick={() =>
                     patch({ lineItems: st.lineItems.filter((x) => x.id !== l.id) })
                   }
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
                 </Button>
               </div>
-              <div className={`grid gap-2 ${compact ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-5"}`}>
-                <NumField label="Fee" value={l.fee} onChange={(v) => patchLine(l.id, { fee: v })} />
-                <NumField
-                  label="P. allowed"
+              <div className={`grid gap-2 ${compact ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3"}`}>
+                <CalcField label="Fee" value={l.fee} onChange={(v) => patchLine(l.id, { fee: v })} />
+                <CalcField
+                  label="P. Allowed"
                   value={l.pAllowed}
                   onChange={(v) => patchLine(l.id, { pAllowed: v })}
                 />
-                <NumField
+                <CalcField
                   label="P. %"
                   percent
                   value={l.pPct}
                   onChange={(v) => patchLine(l.id, { pPct: v })}
                 />
-                <NumField
-                  label="S. allowed"
+                <CalcField
+                  label="S. Allowed"
                   value={l.sAllowed}
                   onChange={(v) => patchLine(l.id, { sAllowed: v })}
                 />
-                <NumField
+                <CalcField
                   label="S. %"
                   percent
                   value={l.sPct}
                   onChange={(v) => patchLine(l.id, { sPct: v })}
                 />
+                {bothInNetwork && (
+                  <CalcField
+                    label="Contracted"
+                    value={l.contracted}
+                    onChange={(v) => patchLine(l.id, { contracted: v })}
+                  />
+                )}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Headline result */}
-      <div className="rounded-xl border border-border bg-card p-4">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Patient out-of-pocket
+      {/* (6) Dark result panel — sidebar surface so dark mode works */}
+      <div className="rounded-xl bg-sidebar px-5 py-5">
+        <p className="text-[10px] uppercase tracking-[0.25em] text-sidebar-foreground/60">
+          Patient Out-of-Pocket
         </p>
-        <p className="text-4xl font-bold text-foreground tabular-nums mt-1">
+        <p
+          className="font-bold leading-none mt-1.5 text-4xl sm:text-5xl tabular-nums"
+          style={{ color: "var(--sidebar-primary-foreground)", letterSpacing: "-0.02em" }}
+        >
           {fmt(result.totalPatientPortion)}
         </p>
-        <p className="text-xs text-muted-foreground mt-2">
+        <p className="mt-2 text-xs text-sidebar-foreground/70">
           {result.methodLabel} · Primary {fmt(result.totalPrimaryPaid)} · Secondary{" "}
           {fmt(result.totalSecondaryPaid)} · Write-off {fmt(result.totalWriteOff)}
         </p>
+        <p className="mt-1 text-[10px] text-sidebar-foreground/60">
+          {FORMULA_DESCRIPTION[formulaKey]}
+        </p>
       </div>
 
-      {/* Per-line breakdown */}
-      <div className="rounded-xl border border-border bg-card overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="text-xs">Item</TableHead>
-              <TableHead className="text-xs text-right">Contracted</TableHead>
-              <TableHead className="text-xs text-right">Primary</TableHead>
-              <TableHead className="text-xs text-right">Secondary</TableHead>
-              <TableHead className="text-xs text-right">Write-off</TableHead>
-              <TableHead className="text-xs text-right">Patient</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+      {/* (7) Per-line breakdown (full plan, >1 line) */}
+      {st.subMode === "line-items" && result.lines.length > 1 && (
+        <div className="rounded-xl border border-border bg-card overflow-x-auto">
+          <div className="min-w-[560px]">
+            <div
+              className="px-3 py-2 grid gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
+              style={{ gridTemplateColumns: gridCols }}
+            >
+              <span>Item</span>
+              <span className="text-right">Fee</span>
+              <span className="text-right">Primary</span>
+              <span className="text-right">Secondary</span>
+              <span className="text-right">Write-off</span>
+              <span className="text-right">Patient</span>
+            </div>
             {result.lines.map((l, i) => (
-              <TableRow key={i}>
-                <TableCell className="text-xs">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="truncate max-w-48">{l.label}</span>
-                    {l.notes.length > 0 && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label="Line notes"
-                            className="text-muted-foreground hover:text-foreground"
-                          >
-                            <Info className="w-3.5 h-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs">
-                          <div className="space-y-1">
-                            {l.notes.map((n, j) => (
-                              <p key={j} className="text-xs">
-                                {n}
-                              </p>
-                            ))}
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                  </span>
-                </TableCell>
-                <TableCell className="text-xs text-right tabular-nums">
-                  {fmt(l.contractedFee)}
-                </TableCell>
-                <TableCell className="text-xs text-right tabular-nums">
-                  {fmt(l.primaryPaid)}
-                </TableCell>
-                <TableCell className="text-xs text-right tabular-nums">
-                  {fmt(l.secondaryPaid)}
-                </TableCell>
-                <TableCell className="text-xs text-right tabular-nums">{fmt(l.writeOff)}</TableCell>
-                <TableCell className="text-xs text-right tabular-nums font-semibold">
-                  {fmt(l.patientPortion)}
-                </TableCell>
-              </TableRow>
+              <div
+                key={i}
+                className={`px-3 py-2 grid gap-2 text-xs text-foreground ${
+                  i < result.lines.length - 1 ? "border-b border-border" : ""
+                }`}
+                style={{ gridTemplateColumns: gridCols }}
+              >
+                <span className="truncate">{l.label}</span>
+                <span className="text-right tabular-nums">{fmt(l.contractedFee)}</span>
+                <span className="text-right tabular-nums">{fmt(l.primaryPaid)}</span>
+                <span className="text-right tabular-nums">{fmt(l.secondaryPaid)}</span>
+                <span className="text-right tabular-nums">{fmt(l.writeOff)}</span>
+                <span className="text-right tabular-nums font-semibold">{fmt(l.patientPortion)}</span>
+              </div>
             ))}
-            <TableRow className="bg-muted/40">
-              <TableCell className="text-xs font-bold">Total</TableCell>
-              <TableCell className="text-xs text-right tabular-nums font-bold">
-                {fmt(result.totalContractedFee)}
-              </TableCell>
-              <TableCell className="text-xs text-right tabular-nums font-bold">
-                {fmt(result.totalPrimaryPaid)}
-              </TableCell>
-              <TableCell className="text-xs text-right tabular-nums font-bold">
-                {fmt(result.totalSecondaryPaid)}
-              </TableCell>
-              <TableCell className="text-xs text-right tabular-nums font-bold">
-                {fmt(result.totalWriteOff)}
-              </TableCell>
-              <TableCell className="text-xs text-right tabular-nums font-bold">
-                {fmt(result.totalPatientPortion)}
-              </TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-      </div>
+            <div
+              className="px-3 py-2 grid gap-2 text-xs font-bold bg-muted/40 text-foreground"
+              style={{ gridTemplateColumns: gridCols }}
+            >
+              <span>Total</span>
+              <span className="text-right tabular-nums">{fmt(result.totalContractedFee)}</span>
+              <span className="text-right tabular-nums">{fmt(result.totalPrimaryPaid)}</span>
+              <span className="text-right tabular-nums">{fmt(result.totalSecondaryPaid)}</span>
+              <span className="text-right tabular-nums">{fmt(result.totalWriteOff)}</span>
+              <span className="text-right tabular-nums">{fmt(result.totalPatientPortion)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* (8) Notes strip */}
+      {result.lines.some((l) => l.notes.length > 0) && (
+        <div className="rounded-lg p-2 text-[11px] space-y-1 bg-primary/10 border border-primary/30 text-foreground">
+          {result.lines.flatMap((l, i) =>
+            l.notes.map((n, j) => <div key={`${i}-${j}`}>· {n}</div>),
+          )}
+        </div>
+      )}
     </div>
   );
 }
