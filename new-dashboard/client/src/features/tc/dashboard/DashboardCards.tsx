@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { formatCents } from "../money";
 import { CaseStatusBadge } from "../components/TcShell";
+import { OfficeBadge } from "../components/OfficeBadge";
 import type { TcCaseSummary } from "../api";
 import type { PipelineNowStats, TcRollup } from "./derive";
 
@@ -118,7 +119,14 @@ function initialsOf(name: string): string {
     .join("");
 }
 
-export function ActiveCasesCard({ cases }: { cases: TcCaseSummary[] }) {
+export function ActiveCasesCard({
+  cases,
+  showOfficeBadges = false,
+}: {
+  cases: TcCaseSummary[];
+  /** All-offices view: tag each row with the office it came from. */
+  showOfficeBadges?: boolean;
+}) {
   return (
     <div className="bg-card rounded-xl border border-border shadow-sm">
       <div className="flex items-center justify-between p-4 border-b border-border">
@@ -153,7 +161,10 @@ export function ActiveCasesCard({ cases }: { cases: TcCaseSummary[] }) {
                 </div>
                 <div className="text-right shrink-0 space-y-0.5">
                   <div className="text-xs font-bold text-foreground">{formatCents(c.caseValueCents)}</div>
-                  <CaseStatusBadge status={c.status} />
+                  <div className="flex items-center justify-end gap-1">
+                    {showOfficeBadges && <OfficeBadge officeId={c.officeId} />}
+                    <CaseStatusBadge status={c.status} />
+                  </div>
                 </div>
               </div>
             </Link>

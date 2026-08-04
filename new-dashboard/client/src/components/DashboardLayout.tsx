@@ -45,9 +45,10 @@ import { logout } from "@/lib/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
+import { isTcSharedRoute } from "@/features/tc/officeScope";
 import type { ModuleId } from "@/lib/modules";
 
-const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
+const LOGO_URL = "/carein-logo.webp";
 
 interface NavItem {
   path: string;
@@ -118,6 +119,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc/reports", label: "Reports", icon: BarChart3 },
         { path: "/tc/cob", label: "COB Calculator", icon: Calculator },
         { path: "/tc/library", label: "Library", icon: LibraryBig },
+        { path: "/tc/settings", label: "Settings", icon: Settings },
       ],
     },
   ],
@@ -161,6 +163,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { offices, office, setOffice, selected } = useOffice();
   const selectedOfficeName = office === ALL_OFFICES ? "All Offices" : (selected?.officeName ?? "All Offices");
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
+  // DentaFlow SHARED_ROUTES port: routes whose content isn't scoped by the
+  // office picker hide it entirely (pages that still need one office prompt
+  // inline via <TcOfficeGate />).
+  const hideOfficePicker = isTcSharedRoute(location);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -226,8 +232,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               <div className="text-white font-bold text-base leading-tight" style={{ fontFamily: "Sora, sans-serif" }}>
                 CareIn
               </div>
-              <div className="text-xs" style={{ color: "oklch(0.65 0.1 186)" }}>
-                AI Operations Hub
+              {/* DentaFlow showed the practice under the wordmark; the name
+                  comes from the tenant record, never a hardcoded string. */}
+              <div className="text-xs truncate" style={{ color: "oklch(0.65 0.1 186)" }}>
+                {practiceName ?? "AI Operations Hub"}
               </div>
             </div>
           </Link>
@@ -275,7 +283,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
         )}
 
-        {/* Office selector */}
+        {/* Office selector — hidden on shared (office-agnostic) routes */}
+        {!hideOfficePicker && (
         <div className="px-3 py-3 border-b" style={{ borderColor: "var(--sidebar-border)" }}>
           <button
             onClick={() => setOfficeDropOpen(!officeDropOpen)}
@@ -303,6 +312,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
           )}
         </div>
+        )}
 
         {/* Navigation (module-aware) */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">

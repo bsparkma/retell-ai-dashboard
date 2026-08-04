@@ -12,17 +12,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Building2 } from "lucide-react";
-import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
+import { Building2, Loader2 } from "lucide-react";
+import { useOffice } from "@/contexts/OfficeContext";
 import { CASE_STATUSES, PREAUTH_STATUSES, URGENCY_BADGE, URGENCY_LABELS } from "../status";
 import type { CaseStatusId, PreauthStatusId, UrgencyId } from "../status";
 
 // ── Office narrowing ────────────────────────────────────────────────────────
 
 /**
- * The global office picker allows "all" (and future offices); every /api/tc
- * call requires a concrete 'roland' | 'valley'. Returns null when the current
- * selection can't be used — pages render <TcOfficeGate /> in that state.
+ * Single-office narrowing for surfaces that WRITE (case detail, prep/post
+ * consult, template editor, pre-auth, gallery upload, library): a write needs
+ * an unambiguous office, so "All Offices" resolves to null and the page shows
+ * <TcOfficeGate /> asking the user to pick one.
+ *
+ * List/queue surfaces do NOT use this — they use useTcOfficeScope() and fan
+ * out across every office in scope (see features/tc/officeScope.ts).
  */
 export function useTcOffice(): OfficeId | null {
   const { office } = useOffice();
@@ -30,9 +34,41 @@ export function useTcOffice(): OfficeId | null {
   return parsed.success ? parsed.data : null;
 }
 
-export function TcOfficeGate() {
+/**
+ * Inline prompt, not an error. Three states:
+ *  - loading: the office roster hasn't arrived yet
+ *  - no TC offices at all: honest dead end (genuine zero-office gate)
+ *  - otherwise: pick one of this tenant's offices (also the escape hatch on
+ *    routes where the sidebar picker is hidden — see TC_SHARED_ROUTES)
+ */
+export function TcOfficeGate({ loading = false }: { loading?: boolean }) {
   const { offices, setOffice } = useOffice();
   const tcOffices = offices.filter((o) => OfficeId.safeParse(o.officeId).success);
+
+  if (loading && tcOffices.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-24 text-muted-foreground">
+        <Loader2 className="w-5 h-5 animate-spin" />
+      </div>
+    );
+  }
+
+  if (tcOffices.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+        <Building2 size={32} className="text-muted-foreground" />
+        <div>
+          <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
+            No offices configured
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+            Treatment Coordinator has no offices set up for this practice yet.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
       <Building2 size={32} className="text-muted-foreground" />
@@ -41,8 +77,8 @@ export function TcOfficeGate() {
           Pick an office
         </h2>
         <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-          Treatment Coordinator works one office at a time. Choose an office to
-          see its cases.
+          This screen saves changes to one office at a time. Choose which office
+          you&apos;re working in.
         </p>
       </div>
       <div className="flex gap-2">
@@ -52,6 +88,18 @@ export function TcOfficeGate() {
           </Button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Warning banner for a partially-loaded fan-out (one office failed). */
+export function TcPartialDataNotice({ message }: { message: string }) {
+  return (
+    <div
+      role="status"
+      className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950 p-3 text-sm text-amber-800 dark:text-amber-300 flex items-center gap-2"
+    >
+      <Building2 className="w-4 h-4 shrink-0" /> {message}
     </div>
   );
 }

@@ -8,6 +8,10 @@
  * "not enough data yet" states instead. Deliberately omitted: CareIN handoffs
  * (cross-module integration, deferred) and Today's Consults (the platform
  * case model has no consult-date field).
+ *
+ * All-offices: there is no server-side all-offices query, so the three loads
+ * fan out per office and the derived widgets run over the merged rows. Every
+ * follow-up action writes back to the office that owns the row.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -15,12 +19,23 @@ import { toast } from "sonner";
 import { AlertTriangle, ClipboardCopy, Loader2, Target } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
-import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
+import {
+  TcOfficeGate,
+  TcPageHeader,
+  TcPartialDataNotice,
+} from "@/features/tc/components/TcShell";
+import {
+  fanOutOfficeValues,
+  hardErrorMessage,
+  partialNotice,
+  tagOffice,
+  useTcOfficeScope,
+  type WithOffice,
+} from "@/features/tc/officeScope";
 import {
   followupsDue,
   listCases,
   listFollowups,
-  tcErrorMessage,
   type TcCaseSummary,
   type TcDueFollowup,
   type TcQueueFollowup,
@@ -40,6 +55,7 @@ import {
   splitDueFollowups,
   topActiveCases,
 } from "@/features/tc/dashboard/derive";
+import { CareInHandoffsStrip } from "@/features/tc/handoffs/CareInHandoffsStrip";
 import {
   ActiveCasesCard,
   AllCaughtUpCard,
@@ -90,41 +106,49 @@ function SectionHeading({
 }
 
 export default function TcDashboard() {
-  const office = useTcOffice();
+  const scope = useTcOfficeScope();
+  const { offices, showOfficeBadges } = scope;
   const auth = useAuth();
   const userName = auth.status === "authenticated" ? auth.user.name : "";
 
   const todayIso = todayIsoDate();
   const now = new Date();
 
-  const [cases, setCases] = useState<TcCaseSummary[]>([]);
-  const [dueRows, setDueRows] = useState<TcDueFollowup[]>([]);
-  const [pendingFollowups, setPendingFollowups] = useState<TcQueueFollowup[]>([]);
+  const [cases, setCases] = useState<WithOffice<TcCaseSummary>[]>([]);
+  const [dueRows, setDueRows] = useState<WithOffice<TcDueFollowup>[]>([]);
+  const [pendingFollowups, setPendingFollowups] = useState<WithOffice<TcQueueFollowup>[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!office) return;
+    if (offices.length === 0) return;
     setLoading(true);
     setError(null);
-    try {
+    setNotice(null);
+    const result = await fanOutOfficeValues(offices, async (o) => {
       const [caseRows, due, pending] = await Promise.all([
-        listCases(office),
-        followupsDue(office, { date: addDaysIso(todayIsoDate(), UPCOMING_HORIZON_DAYS) }),
-        listFollowups(office, { status: "pending" }),
+        listCases(o),
+        followupsDue(o, { date: addDaysIso(todayIsoDate(), UPCOMING_HORIZON_DAYS) }),
+        listFollowups(o, { status: "pending" }),
       ]);
-      setCases(caseRows);
-      setDueRows(due);
-      setPendingFollowups(pending);
-    } catch (e) {
-      setCases([]);
-      setDueRows([]);
-      setPendingFollowups([]);
-      setError(tcErrorMessage(e));
-    } finally {
-      setLoading(false);
+      return { caseRows, due, pending };
+    });
+    const mergedCases: WithOffice<TcCaseSummary>[] = [];
+    const mergedDue: WithOffice<TcDueFollowup>[] = [];
+    const mergedPending: WithOffice<TcQueueFollowup>[] = [];
+    for (const { officeId, value } of result.values) {
+      mergedCases.push(...tagOffice(value.caseRows, officeId));
+      mergedDue.push(...tagOffice(value.due, officeId));
+      mergedPending.push(...tagOffice(value.pending, officeId));
     }
-  }, [office]);
+    setCases(mergedCases);
+    setDueRows(mergedDue);
+    setPendingFollowups(mergedPending);
+    setError(hardErrorMessage(result));
+    setNotice(partialNotice(result));
+    setLoading(false);
+  }, [offices]);
 
   useEffect(() => {
     void load();
@@ -173,10 +197,10 @@ export default function TcDashboard() {
       .catch(() => toast.error("Could not copy — try again"));
   }, [derived, userName]);
 
-  if (!office) {
+  if (offices.length === 0) {
     return (
       <div className="p-6">
-        <TcOfficeGate />
+        <TcOfficeGate loading={scope.loading} />
       </div>
     );
   }
@@ -211,6 +235,10 @@ export default function TcDashboard() {
         }
       />
 
+      <CareInHandoffsStrip />
+
+      {notice && <TcPartialDataNotice message={notice} />}
+
       {error && (
         <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950 p-3 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
@@ -240,8 +268,9 @@ export default function TcDashboard() {
                     {split.overdue.map((f) => (
                       <FollowupActionCard
                         key={f.followupId}
-                        office={office}
+                        office={f.officeId}
                         followup={f}
+                        showOfficeBadge={showOfficeBadges}
                         today={todayIso}
                         onCompleted={removeFollowup}
                         onSkipped={removeFollowup}
@@ -263,8 +292,9 @@ export default function TcDashboard() {
                     {split.dueToday.map((f) => (
                       <FollowupActionCard
                         key={f.followupId}
-                        office={office}
+                        office={f.officeId}
                         followup={f}
+                        showOfficeBadge={showOfficeBadges}
                         today={todayIso}
                         onCompleted={removeFollowup}
                         onSkipped={removeFollowup}
@@ -282,8 +312,9 @@ export default function TcDashboard() {
                     {upcoming.map((f) => (
                       <FollowupActionCard
                         key={f.followupId}
-                        office={office}
+                        office={f.officeId}
                         followup={f}
+                        showOfficeBadge={showOfficeBadges}
                         today={todayIso}
                         onCompleted={removeFollowup}
                         onSkipped={removeFollowup}
@@ -299,7 +330,7 @@ export default function TcDashboard() {
 
             {/* Right 1/3: active cases + objections deferral */}
             <div className="space-y-4 order-1 lg:order-2">
-              <ActiveCasesCard cases={derived.activeTop} />
+              <ActiveCasesCard cases={derived.activeTop} showOfficeBadges={showOfficeBadges} />
               <ObjectionsCard />
             </div>
           </div>

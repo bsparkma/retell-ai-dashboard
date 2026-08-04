@@ -9,14 +9,15 @@
  *    hardcoded "5" is dead; unset ⇒ 0 with a hint to configure it in Library.
  *  - Rate details are READ-ONLY here (the legacy page edited localStorage
  *    inline); rate editing stays in Library → Financing, one write path.
+ *  - The library is re-fetched on window focus / office change
+ *    (useFinancingLibrary), so edits in Library → Financing show up here
+ *    without a reload.
  *
  * DOLLARS DOMAIN: pure scratchpad — nothing on this page persists anything.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { CheckCircle2, DollarSign, Info, Percent } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getLibrary, tcErrorMessage } from "@/features/tc/api";
-import type { TcLibrary } from "@/features/tc/api";
 import {
   TcOfficeGate,
   TcPageHeader,
@@ -27,13 +28,19 @@ import {
   getEffectiveApr,
   getProviderRateDetails,
 } from "@/features/tc/calc/financingRates";
-import {
-  financingViewFromLibrary,
-  type AdaptedFinancingProvider,
-  type FinancingLibraryView,
+import type {
+  AdaptedFinancingProvider,
+  FinancingLibraryView,
 } from "@/features/tc/calc/libraryAdapter";
+import { useFinancingLibrary } from "@/features/tc/calc/useFinancingLibrary";
 
-const TERM_OPTIONS = [6, 12, 18, 24, 36, 48, 60, 72, 84];
+/**
+ * Fallback term spread for the comparison selector — a UI affordance, used
+ * only until the office's providers are known. Once they are, the selector
+ * offers the union of the providers' real term lists (PM ruling 2: provider
+ * lanes use the catalog/library terms, never a generic chip list).
+ */
+const FALLBACK_TERM_OPTIONS = [6, 12, 18, 24, 36, 48, 60, 72, 84];
 
 function formatCurrency(n: number): string {
   if (!Number.isFinite(n)) return "—";
@@ -47,8 +54,7 @@ function formatCurrency(n: number): string {
 export default function TcFinancing() {
   const office = useTcOffice();
 
-  const [library, setLibrary] = useState<TcLibrary | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { library, view, error: loadError } = useFinancingLibrary(office);
 
   const [treatmentTotal, setTreatmentTotal] = useState("8500");
   const [insurance, setInsurance] = useState("2000");
@@ -58,25 +64,6 @@ export default function TcFinancing() {
   /** null = untouched → follow the library's configured default. */
   const [cashDiscountDraft, setCashDiscountDraft] = useState<string | null>(null);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!office) return;
-    let cancelled = false;
-    setLibrary(null);
-    setLoadError(null);
-    getLibrary(office)
-      .then((lib) => {
-        if (!cancelled) setLibrary(lib);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setLoadError(tcErrorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [office]);
-
-  const view = useMemo(() => financingViewFromLibrary(library), [library]);
 
   if (!office) {
     return (
@@ -108,6 +95,22 @@ export default function TcFinancing() {
   const eligibleProviders = view.providers.filter((p) => financeAmount >= p.minAmount);
   const scriptProvider = eligibleProviders[0] ?? view.providers[0];
 
+  // Term selector offers the union of the enabled providers' real term lists;
+  // the static spread is only a fallback for the not-yet-configured case.
+  const providerTerms = view.providers
+    .flatMap((p) => p.terms)
+    .filter((t, i, all) => all.indexOf(t) === i)
+    .sort((a, b) => a - b);
+  const termOptions = providerTerms.length > 0 ? providerTerms : FALLBACK_TERM_OPTIONS;
+  // Keep the selection valid when the provider set changes (no effect needed —
+  // this is derived, so there's no stale-state window).
+  const activeTerm = termOptions.includes(selectedTerm)
+    ? selectedTerm
+    : termOptions.reduce(
+        (best, t) => (Math.abs(t - selectedTerm) < Math.abs(best - selectedTerm) ? t : best),
+        termOptions[0] ?? selectedTerm,
+      );
+
   return (
     <div className="p-6 space-y-6">
       <TcPageHeader
@@ -116,7 +119,7 @@ export default function TcFinancing() {
       />
 
       {loadError && (
-        <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>
+        <p className="text-sm text-destructive">{loadError}</p>
       )}
 
       {!library && !loadError ? (
@@ -272,11 +275,11 @@ export default function TcFinancing() {
                   </label>
                   <select
                     id="tc-financing-term"
-                    value={selectedTerm}
+                    value={activeTerm}
                     onChange={(e) => setSelectedTerm(Number(e.target.value))}
                     className="text-xs px-2 py-1 bg-background rounded border border-border focus:outline-none text-foreground"
                   >
-                    {TERM_OPTIONS.map((t) => (
+                    {termOptions.map((t) => (
                       <option key={t} value={t}>
                         {t} months
                       </option>
@@ -340,7 +343,7 @@ export default function TcFinancing() {
                       view={view}
                       financeAmount={financeAmount}
                       downPayment={downPayment}
-                      selectedTerm={selectedTerm}
+                      selectedTerm={activeTerm}
                       expanded={expandedProvider === provider.key}
                       onToggle={() =>
                         setExpandedProvider(
@@ -364,7 +367,13 @@ export default function TcFinancing() {
                 your treatment right away without waiting.
                 {scriptProvider &&
                   ` For example, with ${scriptProvider.name}, you're looking at about ${formatCurrency(
-                    amortize(financeAmount, 0, selectedTerm).monthly,
+                    // The provider's effective APR for this term — never a
+                    // hardcoded 0%, which would quote a payment nobody offers.
+                    amortize(
+                      financeAmount,
+                      getEffectiveApr(scriptProvider, activeTerm, view.overrides),
+                      activeTerm,
+                    ).monthly,
                   )} a month —`}
                 {!scriptProvider && " —"} that&apos;s less than a car payment for
                 a healthy smile that lasts a lifetime.&quot;

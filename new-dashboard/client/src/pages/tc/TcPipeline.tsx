@@ -5,6 +5,11 @@
  * through the guarded transition path and merge the server's returned case
  * back into the summary row (scalars only) — no optimistic writes, success
  * toasts only after the server persists (Slice-0 confirmed-save rule).
+ *
+ * All-offices: there is no server-side all-offices query, so the selection
+ * fans out over every office in scope and rows carry an officeId badge. Moves
+ * are written back to the office that owns the row; creating a case still
+ * needs one unambiguous office.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
@@ -27,23 +32,54 @@ import { listCases, tcErrorMessage, transitionCase } from "@/features/tc/api";
 import type { TcCaseSummary } from "@/features/tc/api";
 import { ALL_CASE_STATUSES, caseStatusLabel, validateTransition } from "@/features/tc/status";
 import type { CaseStatusId, LostReasonId } from "@/features/tc/status";
-import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
+import {
+  TcOfficeGate,
+  TcPageHeader,
+  TcPartialDataNotice,
+} from "@/features/tc/components/TcShell";
+import {
+  fanOutOfficeRows,
+  hardErrorMessage,
+  officeScopeKey,
+  partialNotice,
+  useTcOfficeScope,
+  type WithOffice,
+} from "@/features/tc/officeScope";
 import { PipelineBoard } from "@/features/tc/cases/PipelineBoard";
 import { CaseListTable } from "@/features/tc/cases/CaseListTable";
 import { NewCaseDialog, CASE_CATEGORY_LABELS } from "@/features/tc/cases/NewCaseDialog";
 import type { CaseCategoryId } from "@/features/tc/cases/NewCaseDialog";
 
 export default function TcPipeline() {
-  const office = useTcOffice();
-  if (!office) return <div className="p-6"><TcOfficeGate /></div>;
+  const scope = useTcOfficeScope();
+  if (scope.offices.length === 0) {
+    return <div className="p-6"><TcOfficeGate loading={scope.loading} /></div>;
+  }
   // Inner component so data/UI hooks never render in the gated state
-  // (office can flip between null and concrete via the global picker).
-  return <PipelineInner key={office} office={office} />;
+  // (the scope can flip between empty and concrete via the global picker).
+  return (
+    <PipelineInner
+      key={officeScopeKey(scope.offices)}
+      offices={scope.offices}
+      writeOffice={scope.office}
+      showOfficeBadges={scope.showOfficeBadges}
+    />
+  );
 }
 
-function PipelineInner({ office }: { office: OfficeId }) {
+function PipelineInner({
+  offices,
+  writeOffice,
+  showOfficeBadges,
+}: {
+  offices: OfficeId[];
+  /** The single office new cases are created in, or null on all-offices. */
+  writeOffice: OfficeId | null;
+  showOfficeBadges: boolean;
+}) {
   const [, navigate] = useLocation();
-  const [cases, setCases] = useState<TcCaseSummary[]>([]);
+  const [cases, setCases] = useState<WithOffice<TcCaseSummary>[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [view, setView] = useState<"board" | "list">("board");
@@ -55,17 +91,18 @@ function PipelineInner({ office }: { office: OfficeId }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    listCases(office)
-      .then((list) => { if (!cancelled) setCases(list); })
-      .catch((err) => {
-        if (!cancelled) {
-          setCases([]);
-          toast.error(tcErrorMessage(err));
-        }
+    // One office failing must not blank the board: keep what loaded and say so.
+    fanOutOfficeRows(offices, (o) => listCases(o))
+      .then((result) => {
+        if (cancelled) return;
+        setCases(result.rows);
+        setNotice(partialNotice(result));
+        const hard = hardErrorMessage(result);
+        if (hard) toast.error(hard);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [office]);
+  }, [offices]);
 
   /** Fold a returned full TcCase back into its summary row (scalars only). */
   const mergeCase = useCallback((updated: TcCase) => {
@@ -97,8 +134,14 @@ function PipelineInner({ office }: { office: OfficeId }) {
         toast.error(check.message);
         return false;
       }
+      // The write goes to the office that owns the row, never the page scope.
+      const rowOffice = cases.find((row) => row.caseId === caseId)?.officeId;
+      if (!rowOffice) {
+        toast.error("That case is no longer loaded — refresh and try again.");
+        return false;
+      }
       try {
-        const result = await transitionCase(office, caseId, {
+        const result = await transitionCase(rowOffice, caseId, {
           status,
           lostReason,
           ...(note !== undefined ? { note } : {}),
@@ -111,7 +154,7 @@ function PipelineInner({ office }: { office: OfficeId }) {
         return false;
       }
     },
-    [office, mergeCase],
+    [cases, mergeCase],
   );
 
   const openCase = useCallback(
@@ -142,13 +185,10 @@ function PipelineInner({ office }: { office: OfficeId }) {
       <TcPageHeader
         title="Pipeline"
         subtitle="Track every case from diagnosis to scheduled"
-        actions={
-          <Button onClick={() => setNewCaseOpen(true)} className="gap-1.5">
-            <Plus className="w-4 h-4" />
-            New Case
-          </Button>
-        }
+        actions={<NewCaseButton writeOffice={writeOffice} onClick={() => setNewCaseOpen(true)} />}
       />
+
+      {notice && <div className="mb-4"><TcPartialDataNotice message={notice} /></div>}
 
       <Tabs value={view} onValueChange={(v) => setView(v as "board" | "list")}>
         <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -217,10 +257,7 @@ function PipelineInner({ office }: { office: OfficeId }) {
                 Cases land here from the hygiene inbox or can be started by hand.
               </p>
             </div>
-            <Button onClick={() => setNewCaseOpen(true)} className="gap-1.5">
-              <Plus className="w-4 h-4" />
-              New Case
-            </Button>
+            <NewCaseButton writeOffice={writeOffice} onClick={() => setNewCaseOpen(true)} />
           </div>
         ) : (
           <>
@@ -229,22 +266,62 @@ function PipelineInner({ office }: { office: OfficeId }) {
                 cases={filteredCases}
                 onOpen={openCase}
                 onTransition={handleTransition}
+                showOfficeBadges={showOfficeBadges}
               />
             </TabsContent>
             <TabsContent value="list">
-              <CaseListTable cases={listCasesFiltered} onOpen={openCase} />
+              <CaseListTable
+                cases={listCasesFiltered}
+                onOpen={openCase}
+                showOfficeBadges={showOfficeBadges}
+              />
             </TabsContent>
           </>
         )}
       </Tabs>
 
-      <NewCaseDialog
-        office={office}
-        open={newCaseOpen}
-        onOpenChange={setNewCaseOpen}
-        onCreated={(created) => openCase(created.caseId)}
-      />
+      {writeOffice && (
+        <NewCaseDialog
+          office={writeOffice}
+          open={newCaseOpen}
+          onOpenChange={setNewCaseOpen}
+          onCreated={(created) => openCase(created.caseId)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Creating a case is a write, so it needs one unambiguous office. On the
+ * all-offices view the button stays visible but disabled with an honest
+ * "pick an office" prompt rather than silently guessing a location.
+ */
+function NewCaseButton({
+  writeOffice,
+  onClick,
+}: {
+  writeOffice: OfficeId | null;
+  onClick: () => void;
+}) {
+  if (!writeOffice) {
+    return (
+      <Button
+        disabled
+        className="gap-1.5"
+        title="Pick a single office to add a case"
+        aria-label="New Case — pick a single office first"
+      >
+        <Plus className="w-4 h-4" />
+        New Case — pick an office
+      </Button>
+    );
+  }
+  return (
+    <Button onClick={onClick} className="gap-1.5">
+      <Plus className="w-4 h-4" />
+      New Case
+    </Button>
   );
 }
 

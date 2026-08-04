@@ -13,7 +13,11 @@
  * Row actions: cadence overrides + unsubscribe via patchCase, financing
  * touchpoint via createFollowup, and exit-nurture via the guarded
  * transitionCase path back to 'considering' (the backend allows any
- * non-lost transition; lost is the only guarded target).
+ * non-lost transition; lost is the only guarded target). Every write targets
+ * the office that owns the row (`c.officeId`), which is what makes the
+ * all-offices view safe: `office` may be an ARRAY, in which case the roster
+ * fans out per office, rows carry an office badge, and one office failing
+ * leaves the rest of the workspace usable behind a partial notice.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -28,7 +32,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { OfficeId, TcCase } from "@shared/tc/contract";
+import type { TcCase } from "@shared/tc/contract";
 import {
   createFollowup,
   listCases,
@@ -41,7 +45,18 @@ import {
   type TcQueueFollowup,
 } from "../api";
 import { caseStatusLabel, validateTransition } from "../status";
-import { TcPageHeader } from "../components/TcShell";
+import { TcPageHeader, TcPartialDataNotice } from "../components/TcShell";
+import { OfficeBadge } from "../components/OfficeBadge";
+import {
+  fanOutOfficeValues,
+  hardErrorMessage,
+  officesOf,
+  partialNotice,
+  showsOfficeBadges,
+  tagOffice,
+  type TcOfficeSelection,
+  type WithOffice,
+} from "../officeScope";
 import { formatCents } from "../money";
 import { todayIsoDate } from "../lib/followups";
 import { FollowupActionCard } from "../followups/FollowupActionCard";
@@ -64,7 +79,8 @@ const PHASE_PILL: Record<1 | 2, string> = {
 };
 
 export interface NurtureWorkspaceProps {
-  office: OfficeId;
+  /** One office, or several for the all-offices view. */
+  office: TcOfficeSelection;
   /** YYYY-MM-DD "today" override for deterministic tests. */
   today?: string;
 }
@@ -72,32 +88,41 @@ export interface NurtureWorkspaceProps {
 export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
   const todayIso = today ?? todayIsoDate();
   const weekOutIso = addDaysIso(todayIso, 7);
+  const offices = useMemo(() => officesOf(office), [office]);
+  const showOfficeBadges = showsOfficeBadges(office);
 
-  const [cases, setCases] = useState<TcCaseSummary[]>([]);
-  const [touchpoints, setTouchpoints] = useState<TcQueueFollowup[]>([]);
+  const [cases, setCases] = useState<WithOffice<TcCaseSummary>[]>([]);
+  const [touchpoints, setTouchpoints] = useState<WithOffice<TcQueueFollowup>[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [cadenceTargetId, setCadenceTargetId] = useState<string | null>(null);
   const [busyCaseId, setBusyCaseId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
+    setNotice(null);
+    // Two lists per office, so fan out over values and merge here.
+    const result = await fanOutOfficeValues(offices, async (o) => {
       const [caseList, followups] = await Promise.all([
-        listCases(office, { status: "nurture" }),
-        listFollowups(office, { kind: "nurture" }),
+        listCases(o, { status: "nurture" }),
+        listFollowups(o, { kind: "nurture" }),
       ]);
-      setCases(caseList);
-      setTouchpoints(followups);
-    } catch (e) {
-      setCases([]);
-      setTouchpoints([]);
-      setError(tcErrorMessage(e));
-    } finally {
-      setLoading(false);
+      return { caseList, followups };
+    });
+    const mergedCases: WithOffice<TcCaseSummary>[] = [];
+    const mergedTouchpoints: WithOffice<TcQueueFollowup>[] = [];
+    for (const { officeId, value } of result.values) {
+      mergedCases.push(...tagOffice(value.caseList, officeId));
+      mergedTouchpoints.push(...tagOffice(value.followups, officeId));
     }
-  }, [office]);
+    setCases(mergedCases);
+    setTouchpoints(mergedTouchpoints);
+    setError(hardErrorMessage(result));
+    setNotice(partialNotice(result));
+    setLoading(false);
+  }, [offices]);
 
   useEffect(() => {
     void load();
@@ -192,7 +217,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
     async (c: TcCaseSummary) => {
       setBusyCaseId(c.caseId);
       try {
-        const created = await createFollowup(office, {
+        const created = await createFollowup(c.officeId, {
           caseId: c.caseId,
           kind: "nurture",
           dueDate: todayIso,
@@ -201,7 +226,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
           nurtureType: "financing",
           source: "manual",
         });
-        setTouchpoints((prev) => [...prev, created]);
+        setTouchpoints((prev) => [...prev, { ...created, officeId: c.officeId }]);
         toast.success(`Financing touchpoint added for ${c.patientName}`);
       } catch (e) {
         toast.error(tcErrorMessage(e));
@@ -209,7 +234,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
         setBusyCaseId(null);
       }
     },
-    [office, todayIso],
+    [todayIso],
   );
 
   const handleExitNurture = useCallback(
@@ -221,7 +246,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
       }
       setBusyCaseId(c.caseId);
       try {
-        await transitionCase(office, c.caseId, { status: EXIT_NURTURE_STATUS });
+        await transitionCase(c.officeId, c.caseId, { status: EXIT_NURTURE_STATUS });
         // No longer a nurture case — drop the row (its touchpoints unjoin too).
         setCases((prev) => prev.filter((row) => row.caseId !== c.caseId));
         toast.success(
@@ -233,14 +258,14 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
         setBusyCaseId(null);
       }
     },
-    [office],
+    [],
   );
 
   const handleUnsubscribe = useCallback(
     async (c: TcCaseSummary) => {
       setBusyCaseId(c.caseId);
       try {
-        const updated = await patchCase(office, c.caseId, { nurtureUnsubscribed: true });
+        const updated = await patchCase(c.officeId, c.caseId, { nurtureUnsubscribed: true });
         mergeCase(updated);
         toast.success(`${c.patientName} marked as unsubscribed`);
       } catch (e) {
@@ -249,7 +274,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
         setBusyCaseId(null);
       }
     },
-    [office, mergeCase],
+    [mergeCase],
   );
 
   const cadenceTarget = cadenceTargetId ? caseById.get(cadenceTargetId) ?? null : null;
@@ -270,6 +295,8 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
         title="Nurture Campaign"
         subtitle={`${cases.length} patient${cases.length !== 1 ? "s" : ""} in long-term nurture · ${todayItems.length} touchpoint${todayItems.length !== 1 ? "s" : ""} due today`}
       />
+
+      {notice && <TcPartialDataNotice message={notice} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950 p-3 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">
@@ -299,8 +326,9 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
             {todayItems.map((item) => (
               <FollowupActionCard
                 key={item.followupId}
-                office={office}
+                office={item.officeId}
                 followup={item}
+                showOfficeBadge={showOfficeBadges}
                 today={todayIso}
                 onCompleted={(id) => markLocal(id, "completed")}
                 onSkipped={(id) => markLocal(id, "skipped")}
@@ -321,8 +349,9 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
             {thisWeekItems.map((item) => (
               <FollowupActionCard
                 key={item.followupId}
-                office={office}
+                office={item.officeId}
                 followup={item}
+                showOfficeBadge={showOfficeBadges}
                 today={todayIso}
                 onCompleted={(id) => markLocal(id, "completed")}
                 onSkipped={(id) => markLocal(id, "skipped")}
@@ -351,6 +380,9 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
                 <thead>
                   <tr className="border-b border-border text-xs text-muted-foreground">
                     <th className="text-left px-4 py-3 font-medium">Patient</th>
+                    {showOfficeBadges && (
+                      <th className="text-left px-4 py-3 font-medium">Office</th>
+                    )}
                     <th className="text-left px-4 py-3 font-medium">Phase</th>
                     <th className="text-left px-4 py-3 font-medium">Days Enrolled</th>
                     <th className="text-left px-4 py-3 font-medium">Next Touchpoint</th>
@@ -390,6 +422,11 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
                             <span className="text-[10px] text-muted-foreground">Unsubscribed</span>
                           )}
                         </td>
+                        {showOfficeBadges && (
+                          <td className="px-4 py-3">
+                            <OfficeBadge officeId={c.officeId} />
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           {phase ? (
                             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${PHASE_PILL[phase]}`}>
@@ -502,7 +539,7 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
       {/* Cadence override dialog */}
       {cadenceTarget && (
         <CadenceDialog
-          office={office}
+          office={cadenceTarget.officeId}
           caseRow={cadenceTarget}
           onSaved={mergeCase}
           onClose={() => setCadenceTargetId(null)}

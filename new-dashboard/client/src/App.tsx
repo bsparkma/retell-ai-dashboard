@@ -36,6 +36,7 @@ import TcPresentation from "./pages/tc/TcPresentation";
 import TcLibrary from "./pages/tc/TcLibrary";
 import TcCobCalculator from "./pages/tc/TcCobCalculator";
 import TcFinancing from "./pages/tc/TcFinancing";
+import TcSettings from "./pages/tc/TcSettings";
 import TcDashboard from "./pages/tc/TcDashboard";
 import TcPrepConsult from "./pages/tc/TcPrepConsult";
 import TcPostConsult from "./pages/tc/TcPostConsult";
@@ -95,6 +96,7 @@ export function Router() {
         <Route path="/tc/library" component={TcLibrary} />
         <Route path="/tc/cob" component={TcCobCalculator} />
         <Route path="/tc/financing" component={TcFinancing} />
+        <Route path="/tc/settings" component={TcSettings} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>
