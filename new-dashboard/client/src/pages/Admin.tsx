@@ -315,7 +315,7 @@ export default function Admin() {
                           style={
                             connected
                               ? { backgroundColor: "oklch(0.65 0.18 155 / 0.12)", color: "oklch(0.45 0.18 155)" }
-                              : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "oklch(0.52 0.015 240)" }
+                              : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "var(--muted-foreground)" }
                           }
                         >
                           {key}
@@ -370,7 +370,7 @@ export default function Admin() {
           <Card>
             <CardContent className="p-5">
               <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white" style={{ backgroundColor: "oklch(0.55 0.18 210)" }}>
+                <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white" style={{ backgroundColor: "var(--primary)" }}>
                   FD
                 </div>
                 <div className="flex-1 min-w-0">
@@ -447,7 +447,7 @@ export default function Admin() {
                             style={
                               connected
                                 ? { backgroundColor: "oklch(0.65 0.18 155 / 0.15)", color: "oklch(0.45 0.18 155)" }
-                                : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "oklch(0.52 0.015 240)" }
+                                : { backgroundColor: "oklch(0.50 0.01 240 / 0.1)", color: "var(--muted-foreground)" }
                             }
                           >
                             {statusLabel}
@@ -772,7 +772,7 @@ export default function Admin() {
                     <span className="text-sm text-foreground">{label}</span>
                     <button
                       className="relative w-10 h-5 rounded-full transition-all"
-                      style={{ backgroundColor: enabled ? "oklch(0.55 0.18 210)" : "oklch(0.70 0.01 240)" }}
+                      style={{ backgroundColor: enabled ? "var(--primary)" : "oklch(0.70 0.01 240)" }}
                       onClick={() => {
                         setNotifConfig(prev => ({ ...prev, [key]: !prev[key] }));
                         setNotifHasUnsaved(true);

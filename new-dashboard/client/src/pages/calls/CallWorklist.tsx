@@ -58,7 +58,7 @@ const CHIPS: Chip[] = [
   { key: "emergency", label: "Emergency", icon: AlertTriangle, color: "oklch(0.55 0.20 25)", bg: "oklch(0.62 0.22 25 / 0.12)", match: (c) => c.isEmergency },
   { key: "booked", label: "Booked", icon: CalendarCheck, color: "oklch(0.48 0.16 155)", bg: "oklch(0.65 0.18 155 / 0.12)", match: (c) => c.appointmentBooked },
   { key: "new", label: "New patient", icon: UserPlus, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: (c) => c.isNewPatient },
-  { key: "insurance", label: "Insurance", icon: Shield, color: "oklch(0.48 0.13 210)", bg: "oklch(0.55 0.18 210 / 0.12)", match: (c) => c.insuranceMentioned },
+  { key: "insurance", label: "Insurance", icon: Shield, color: "oklch(0.45 0.11 186)", bg: "oklch(0.52 0.12 186 / 0.12)", match: (c) => c.insuranceMentioned },
 ];
 
 /** Short first-name + clock attribution, e.g. "Sarah, 9:14a". */
@@ -256,7 +256,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
               className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1.5"
               style={{
                 backgroundColor: view === v.key ? "white" : "transparent",
-                color: view === v.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                color: view === v.key ? "oklch(0.18 0.02 240)" : "var(--muted-foreground)",
                 boxShadow: view === v.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >
@@ -303,7 +303,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
               className="px-2.5 py-1.5 rounded text-xs font-medium transition-all"
               style={{
                 backgroundColor: sortDir === s.key ? "white" : "transparent",
-                color: sortDir === s.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                color: sortDir === s.key ? "oklch(0.18 0.02 240)" : "var(--muted-foreground)",
                 boxShadow: sortDir === s.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >
@@ -327,7 +327,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
               className="px-2.5 py-1.5 rounded text-xs font-medium transition-all inline-flex items-center gap-1"
               style={{
                 backgroundColor: sourceFilter === s.key ? "white" : "transparent",
-                color: sourceFilter === s.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                color: sourceFilter === s.key ? "oklch(0.18 0.02 240)" : "var(--muted-foreground)",
                 boxShadow: sourceFilter === s.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >

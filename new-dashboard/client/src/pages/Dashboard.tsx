@@ -128,7 +128,7 @@ export default function Dashboard() {
   ];
 
   const colorMap: Record<string, { bg: string; icon: string; text: string }> = {
-    teal: { bg: "oklch(0.55 0.18 210 / 0.1)", icon: "oklch(0.55 0.18 210)", text: "oklch(0.40 0.18 210)" },
+    teal: { bg: "oklch(0.52 0.12 186 / 0.1)", icon: "var(--primary)", text: "oklch(0.38 0.11 186)" },
     green: { bg: "oklch(0.65 0.18 155 / 0.1)", icon: "oklch(0.55 0.18 155)", text: "oklch(0.40 0.18 155)" },
     amber: { bg: "oklch(0.78 0.17 75 / 0.1)", icon: "oklch(0.65 0.17 75)", text: "oklch(0.50 0.17 75)" },
     purple: { bg: "oklch(0.60 0.15 280 / 0.1)", icon: "oklch(0.55 0.15 280)", text: "oklch(0.40 0.15 280)" },
@@ -210,20 +210,20 @@ export default function Dashboard() {
                 <AreaChart data={hourlyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                   <defs>
                     <linearGradient id="callGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="oklch(0.55 0.18 210)" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="oklch(0.55 0.18 210)" stopOpacity={0} />
+                      <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="var(--primary)" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
                   <Tooltip
-                    contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }}
+                    contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
                     labelStyle={{ fontWeight: 600 }}
                   />
                   <Area
                     type="monotone"
                     dataKey="calls"
-                    stroke="oklch(0.55 0.18 210)"
+                    stroke="var(--primary)"
                     strokeWidth={2}
                     fill="url(#callGrad)"
                     dot={false}
@@ -350,7 +350,7 @@ export default function Dashboard() {
                         ? "oklch(0.62 0.22 25)"
                         : cb.priority === "medium"
                         ? "oklch(0.78 0.17 75)"
-                        : "oklch(0.52 0.015 240)",
+                        : "var(--muted-foreground)",
                     }}
                   />
                   <div className="min-w-0 flex-1">

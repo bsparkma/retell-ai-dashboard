@@ -529,7 +529,7 @@ export default function CallDetail() {
             <span
               className="text-sm font-medium px-2.5 py-1 rounded-full"
               style={displayCall.source === "retell"
-                ? { backgroundColor: "oklch(0.55 0.18 210 / 0.12)", color: "oklch(0.40 0.18 210)" }
+                ? { backgroundColor: "oklch(0.52 0.12 186 / 0.12)", color: "oklch(0.38 0.11 186)" }
                 : { backgroundColor: "oklch(0.78 0.17 75 / 0.12)", color: "oklch(0.50 0.17 75)" }
               }
             >
@@ -602,7 +602,7 @@ export default function CallDetail() {
                         <div
                           className="h-full rounded-full transition-[width] duration-100"
                           style={{
-                            backgroundColor: "oklch(0.55 0.18 210)",
+                            backgroundColor: "var(--primary)",
                             width: audioDuration > 0 ? `${(currentTime / audioDuration) * 100}%` : "0%",
                           }}
                         />
@@ -722,7 +722,7 @@ export default function CallDetail() {
                         ? "oklch(0.65 0.18 155)"
                         : displayCall.sentiment === "negative"
                         ? "oklch(0.62 0.22 25)"
-                        : "oklch(0.52 0.015 240)",
+                        : "var(--muted-foreground)",
                     }}
                   />
                   <span className="text-sm capitalize">{displayCall.sentiment}</span>

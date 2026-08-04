@@ -4,8 +4,8 @@
  */
 
 export const STATUS_FALLBACK_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  scheduled: { bg: "oklch(0.55 0.18 210 / 0.12)", border: "oklch(0.55 0.18 210)", text: "oklch(0.35 0.18 210)" },
-  confirmed: { bg: "oklch(0.55 0.18 210 / 0.12)", border: "oklch(0.55 0.18 210)", text: "oklch(0.35 0.18 210)" },
+  scheduled: { bg: "oklch(0.52 0.12 186 / 0.12)", border: "oklch(0.52 0.12 186)", text: "oklch(0.34 0.1 186)" },
+  confirmed: { bg: "oklch(0.52 0.12 186 / 0.12)", border: "oklch(0.52 0.12 186)", text: "oklch(0.34 0.1 186)" },
   unconfirmed: { bg: "oklch(0.78 0.17 75 / 0.12)", border: "oklch(0.78 0.17 75)", text: "oklch(0.50 0.17 75)" },
   complete: { bg: "oklch(0.65 0.18 155 / 0.12)", border: "oklch(0.65 0.18 155)", text: "oklch(0.40 0.18 155)" },
   completed: { bg: "oklch(0.65 0.18 155 / 0.12)", border: "oklch(0.65 0.18 155)", text: "oklch(0.40 0.18 155)" },
@@ -16,7 +16,7 @@ export const STATUS_FALLBACK_COLORS: Record<string, { bg: string; border: string
   unschedList: { bg: "oklch(0.75 0.02 240 / 0.12)", border: "oklch(0.5 0.02 240)", text: "oklch(0.4 0.02 240)" },
 };
 
-const DEFAULT_COLOR = { bg: "oklch(0.55 0.18 210 / 0.12)", border: "oklch(0.55 0.18 210)", text: "oklch(0.35 0.18 210)" };
+const DEFAULT_COLOR = { bg: "oklch(0.52 0.12 186 / 0.12)", border: "oklch(0.52 0.12 186)", text: "oklch(0.34 0.1 186)" };
 
 export function getAppointmentCardColor(
   appointment: { colorOverride?: string; status?: string },

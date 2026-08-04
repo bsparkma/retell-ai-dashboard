@@ -14,12 +14,12 @@ import { api, careInApi, type CareInAnalytics } from "@/lib/api";
 import { toast } from "sonner";
 
 const INTENT_COLORS = [
-  "oklch(0.55 0.18 210)",
+  "var(--primary)",
   "oklch(0.65 0.18 155)",
   "oklch(0.78 0.17 75)",
   "oklch(0.62 0.22 25)",
   "oklch(0.55 0.15 280)",
-  "oklch(0.52 0.015 240)",
+  "var(--muted-foreground)",
 ];
 
 type DateRange = "7d" | "30d" | "90d";
@@ -147,7 +147,7 @@ export default function Analytics() {
                 className="px-3 py-1 rounded text-xs font-medium transition-all"
                 style={{
                   backgroundColor: dateRange === r ? "white" : "transparent",
-                  color: dateRange === r ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                  color: dateRange === r ? "var(--foreground)" : "var(--muted-foreground)",
                   boxShadow: dateRange === r ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}
               >
@@ -219,11 +219,11 @@ export default function Analytics() {
                 {data.callVolume.length > 0 ? (
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={data.callVolume} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                       <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="retell" name="AI (Retell)" fill="oklch(0.55 0.18 210)" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="retell" name="AI (Retell)" fill="var(--primary)" radius={[3, 3, 0, 0]} />
                       <Bar dataKey="mango" name="Staff (Mango)" fill="oklch(0.78 0.17 75 / 0.7)" radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
@@ -248,7 +248,7 @@ export default function Analytics() {
                             <Cell key={i} fill={INTENT_COLORS[i % INTENT_COLORS.length]} />
                           ))}
                         </Pie>
-                        <Tooltip contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }} />
+                        <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                       </PieChart>
                     </ResponsiveContainer>
                     <div className="space-y-1.5 mt-2">
@@ -290,12 +290,12 @@ export default function Analytics() {
                         <stop offset="95%" stopColor="oklch(0.62 0.22 25)" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Area type="monotone" dataKey="positive" name="Positive" stroke="oklch(0.55 0.18 155)" fill="url(#posGrad)" strokeWidth={2} dot={false} />
-                    <Area type="monotone" dataKey="neutral" name="Neutral" stroke="oklch(0.52 0.015 240)" fill="none" strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
+                    <Area type="monotone" dataKey="neutral" name="Neutral" stroke="var(--muted-foreground)" fill="none" strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
                     <Area type="monotone" dataKey="negative" name="Negative" stroke="oklch(0.62 0.22 25)" fill="url(#negGrad)" strokeWidth={2} dot={false} />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -310,12 +310,12 @@ export default function Analytics() {
               <CardContent>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={hourlyChartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                    <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: "oklch(0.52 0.015 240)" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "white", border: "1px solid oklch(0.90 0.006 85)", borderRadius: 8, fontSize: 12 }} />
-                    <Bar dataKey="calls" fill="oklch(0.55 0.18 210 / 0.7)" radius={[3, 3, 0, 0]}>
+                    <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                    <Bar dataKey="calls" fill="oklch(0.52 0.12 186 / 0.7)" radius={[3, 3, 0, 0]}>
                       {hourlyChartData.map((entry, i) => (
-                        <Cell key={i} fill={entry.calls > 5 ? "oklch(0.55 0.18 210)" : "oklch(0.55 0.18 210 / 0.5)"} />
+                        <Cell key={i} fill={entry.calls > 5 ? "var(--primary)" : "oklch(0.52 0.12 186 / 0.5)"} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -338,7 +338,7 @@ export default function Analytics() {
                     label: "Calls Fully Handled by AI",
                     value: `${data.kpis.aiHandledPct}%`,
                     sub: `${data.kpis.aiHandled} of ${data.kpis.totalCalls} calls`,
-                    color: "oklch(0.55 0.18 210)",
+                    color: "var(--primary)",
                   },
                   {
                     label: "Staff Handled",
@@ -465,7 +465,7 @@ function CareInAnalyticsSection({
                           <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                             <div
                               className="h-full rounded-full"
-                              style={{ width: `${pct}%`, backgroundColor: "oklch(0.55 0.18 210)" }}
+                              style={{ width: `${pct}%`, backgroundColor: "var(--primary)" }}
                               role="progressbar"
                               aria-valuenow={pct}
                               aria-valuemin={0}
