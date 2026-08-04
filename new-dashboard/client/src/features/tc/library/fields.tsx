@@ -79,7 +79,7 @@ export function SectionCard({
       <div>
         <h2
           className="text-sm font-semibold text-foreground"
-          style={{ fontFamily: "Outfit, sans-serif" }}
+          style={{ fontFamily: "Sora, sans-serif" }}
         >
           {title}
         </h2>

@@ -622,7 +622,7 @@ export default function AgentBuilder() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Agent Builder
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -707,7 +707,7 @@ export default function AgentBuilder() {
                     value={config.name}
                     onChange={(e) => setConfig(prev => ({ ...prev, name: e.target.value }))}
                     className="text-xl font-bold bg-transparent border-none outline-none text-foreground w-full mt-0.5"
-                    style={{ fontFamily: "Outfit, sans-serif" }}
+                    style={{ fontFamily: "Sora, sans-serif" }}
                     placeholder="e.g. Rover"
                   />
                 </div>

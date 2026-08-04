@@ -19,6 +19,7 @@ import { formatCents } from "../money";
 import { ALL_CASE_STATUSES, caseStatusLabel } from "../status";
 import type { CaseStatusId } from "../status";
 import { UrgencyBadge } from "../components/TcShell";
+import { OfficeBadge } from "../components/OfficeBadge";
 
 /** Whole days the case has sat in its current status (statusChangedAt, falling back to createdAt). */
 export function daysInStatus(row: TcCaseSummary): number {
@@ -33,6 +34,7 @@ export function CaseCard({
   onOpen,
   onMove,
   muted = false,
+  showOfficeBadge = false,
 }: {
   caseRow: TcCaseSummary;
   onOpen: () => void;
@@ -40,6 +42,8 @@ export function CaseCard({
   onMove: (status: CaseStatusId) => void;
   /** Ghost styling for the Nurture column. */
   muted?: boolean;
+  /** All-offices view: show which office this case belongs to. */
+  showOfficeBadge?: boolean;
 }) {
   const days = daysInStatus(caseRow);
   return (
@@ -99,8 +103,11 @@ export function CaseCard({
         {formatCents(caseRow.caseValueCents)}
       </div>
 
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <UrgencyBadge urgency={caseRow.urgency} />
+      <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <UrgencyBadge urgency={caseRow.urgency} />
+          {showOfficeBadge && <OfficeBadge officeId={caseRow.officeId} />}
+        </div>
         <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
           <Clock className="w-3 h-3" />
           {days}d in stage

@@ -162,7 +162,7 @@ function Section({
         <div>
           <h2
             className="text-base font-semibold text-foreground"
-            style={{ fontFamily: "Outfit, sans-serif" }}
+            style={{ fontFamily: "Sora, sans-serif" }}
           >
             {title}
           </h2>

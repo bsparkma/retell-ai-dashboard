@@ -196,7 +196,7 @@ export default function TcTemplateEditor() {
           <div className="min-w-0">
             <h1
               className="text-xl font-bold text-foreground truncate flex items-center gap-2"
-              style={{ fontFamily: "Outfit, sans-serif" }}
+              style={{ fontFamily: "Sora, sans-serif" }}
             >
               {draft?.name || "Template editor"}
               {template?.isSeed && (

@@ -29,6 +29,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2 } from "lucide-react";
 import { tcErrorMessage, transitionCase } from "../api";
+import { isAcceptedStatus, useWinCelebration } from "@/features/tc/wins/WinCelebrationProvider";
 import {
   ALL_CASE_STATUSES,
   CASE_STATUSES,
@@ -60,6 +61,7 @@ export function StatusTransitionDialog({
   const [note, setNote] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { celebrateWin } = useWinCelebration();
 
   // Reset the form to the case's current state each time the dialog opens.
   useEffect(() => {
@@ -95,6 +97,17 @@ export function StatusTransitionDialog({
       });
       // changed:false is still success — the server case is authoritative.
       toast.success(result.changed ? "Status updated" : "Status unchanged");
+      // Celebrate only a real, server-confirmed move into the accepted family.
+      if (result.changed && isAcceptedStatus(result.case.status)) {
+        celebrateWin(
+          {
+            caseId: result.case.caseId,
+            patientName: result.case.patientName,
+            caseValueCents: result.case.caseValueCents,
+          },
+          null,
+        );
+      }
       onSuccess(result.case);
       onOpenChange(false);
     } catch (e) {

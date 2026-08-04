@@ -26,7 +26,7 @@ export function CaseCommandBar({ tcCase, onChangeStatus }: CaseCommandBarProps) 
             <div className="flex flex-wrap items-center gap-2">
               <h1
                 className="text-xl font-bold text-foreground truncate"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {tcCase.patientName}
               </h1>
@@ -63,7 +63,7 @@ export function CaseCommandBar({ tcCase, onChangeStatus }: CaseCommandBarProps) 
               <div className="text-xs text-muted-foreground">Case value</div>
               <div
                 className="text-xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {formatCents(tcCase.caseValueCents)}
               </div>

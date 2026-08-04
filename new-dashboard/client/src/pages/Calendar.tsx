@@ -42,7 +42,7 @@ function CalendarContent() {
       )}
 
       <div>
-        <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+        <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
           Calendar
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">

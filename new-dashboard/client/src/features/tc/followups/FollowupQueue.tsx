@@ -7,14 +7,26 @@
  * the future, since the server only returns future rows then). Takes `office`
  * and an optional `today` as props so tests stay deterministic and free of
  * context providers.
+ *
+ * `office` accepts an ARRAY for the all-offices view: the queue fans out over
+ * each office, merges the rows, and tags each card with its office badge. One
+ * office failing leaves the rest of the queue workable behind a partial notice.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarCheck2, CalendarDays, Inbox, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { OfficeId } from "@shared/tc/contract";
-import { followupsDue, tcErrorMessage, type TcDueFollowup } from "../api";
+import { followupsDue, type TcDueFollowup } from "../api";
+import {
+  fanOutOfficeRows,
+  hardErrorMessage,
+  officesOf,
+  partialNotice,
+  showsOfficeBadges,
+  type TcOfficeSelection,
+} from "../officeScope";
 import { todayIsoDate, getDaysOverdue } from "../lib/followups";
+import { TcPartialDataNotice } from "../components/TcShell";
 import { FollowupActionCard } from "./FollowupActionCard";
 
 type KindFilter = "all" | TcDueFollowup["kind"];
@@ -40,17 +52,21 @@ function byDueDateThenUrgency(a: TcDueFollowup, b: TcDueFollowup): number {
 }
 
 export interface FollowupQueueProps {
-  office: OfficeId;
+  /** One office, or several for the all-offices view. */
+  office: TcOfficeSelection;
   /** YYYY-MM-DD "today" override for deterministic tests. */
   today?: string;
 }
 
 export function FollowupQueue({ office, today }: FollowupQueueProps) {
   const todayIso = today ?? todayIsoDate();
+  const offices = useMemo(() => officesOf(office), [office]);
+  const showOfficeBadges = showsOfficeBadges(office);
 
   const [rows, setRows] = useState<TcDueFollowup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [kind, setKind] = useState<KindFilter>("all");
   const [assignee, setAssignee] = useState("");
   const [horizon, setHorizon] = useState(todayIso);
@@ -58,19 +74,18 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const due = await followupsDue(office, {
+    setNotice(null);
+    const result = await fanOutOfficeRows(offices, (o) =>
+      followupsDue(o, {
         date: horizon,
         ...(kind !== "all" ? { kind } : {}),
-      });
-      setRows(due);
-    } catch (e) {
-      setRows([]);
-      setError(tcErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [office, horizon, kind]);
+      }),
+    );
+    setRows(result.rows);
+    setError(hardErrorMessage(result));
+    setNotice(partialNotice(result));
+    setLoading(false);
+  }, [offices, horizon, kind]);
 
   useEffect(() => {
     void load();
@@ -126,8 +141,9 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
           {items.map((f) => (
             <FollowupActionCard
               key={f.followupId}
-              office={office}
+              office={f.officeId}
               followup={f}
+              showOfficeBadge={showOfficeBadges}
               today={todayIso}
               onCompleted={removeRow}
               onSkipped={removeRow}
@@ -183,6 +199,8 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
+
+      {notice && <TcPartialDataNotice message={notice} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950 p-3 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">

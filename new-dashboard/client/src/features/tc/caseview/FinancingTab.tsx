@@ -102,7 +102,7 @@ export function FinancingTab({ office, tcCase }: FinancingTabProps) {
             <div className="text-xs text-muted-foreground">Patient portion</div>
             <div
               className="text-2xl font-bold text-foreground"
-              style={{ fontFamily: "Outfit, sans-serif" }}
+              style={{ fontFamily: "Sora, sans-serif" }}
             >
               {formatCents(portionCents)}
             </div>

@@ -35,7 +35,7 @@ interface ScheduleMetrics {
 }
 
 const DURATION_OPTIONS = [
-  { label: "30 min", value: 30, color: "oklch(0.55 0.18 210)" },
+  { label: "30 min", value: 30, color: "var(--primary)" },
   { label: "60 min", value: 60, color: "oklch(0.55 0.18 155)" },
   { label: "90 min", value: 90, color: "oklch(0.55 0.15 280)" },
 ];
@@ -166,7 +166,7 @@ export function OpenSlots() {
         className="px-3 py-1.5 rounded text-xs font-medium transition-all"
         style={{
           backgroundColor: isActive ? "white" : "transparent",
-          color: isActive ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+          color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
           boxShadow: isActive ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
         }}
       >
@@ -189,8 +189,8 @@ export function OpenSlots() {
                 style={{
                   backgroundColor: isRestorativeSelected ? "white" : "transparent",
                   color: isRestorativeSelected
-                    ? "oklch(0.18 0.02 240)"
-                    : "oklch(0.52 0.015 240)",
+                    ? "var(--foreground)"
+                    : "var(--muted-foreground)",
                   boxShadow: isRestorativeSelected ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}
               >
@@ -237,7 +237,7 @@ export function OpenSlots() {
                 className="px-3 py-1.5 rounded text-xs font-medium transition-all"
                 style={{
                   backgroundColor: selectedDuration === opt.value ? "white" : "transparent",
-                  color: selectedDuration === opt.value ? opt.color : "oklch(0.52 0.015 240)",
+                  color: selectedDuration === opt.value ? opt.color : "var(--muted-foreground)",
                   boxShadow:
                     selectedDuration === opt.value ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}
@@ -255,7 +255,7 @@ export function OpenSlots() {
                 className="px-3 py-1.5 rounded text-xs font-medium transition-all"
                 style={{
                   backgroundColor: selectedTimeFilter === i ? "white" : "transparent",
-                  color: selectedTimeFilter === i ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                  color: selectedTimeFilter === i ? "var(--foreground)" : "var(--muted-foreground)",
                   boxShadow: selectedTimeFilter === i ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}
               >
@@ -273,7 +273,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {metrics.totalAppointments}
               </div>
@@ -285,7 +285,7 @@ export function OpenSlots() {
               <div
                 className="text-2xl font-bold"
                 style={{
-                  fontFamily: "Outfit, sans-serif",
+                  fontFamily: "Sora, sans-serif",
                   color:
                     metrics.availabilityPercentage > 30
                       ? "oklch(0.55 0.18 155)"
@@ -301,7 +301,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {markersInRange.filter((m) => m.date === selectedDate).length}
               </div>
@@ -312,7 +312,7 @@ export function OpenSlots() {
             <CardContent className="p-3 text-center">
               <div
                 className="text-2xl font-bold text-foreground"
-                style={{ fontFamily: "Outfit, sans-serif" }}
+                style={{ fontFamily: "Sora, sans-serif" }}
               >
                 {markersInRange.length}
               </div>

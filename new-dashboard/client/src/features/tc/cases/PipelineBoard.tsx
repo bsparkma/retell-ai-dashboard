@@ -50,9 +50,16 @@ export interface PipelineBoardProps {
     lostReason: LostReasonId | null,
     note?: string,
   ) => Promise<boolean>;
+  /** All-offices view: cards carry an office badge. */
+  showOfficeBadges?: boolean;
 }
 
-export function PipelineBoard({ cases, onOpen, onTransition }: PipelineBoardProps) {
+export function PipelineBoard({
+  cases,
+  onOpen,
+  onTransition,
+  showOfficeBadges = false,
+}: PipelineBoardProps) {
   const [lostTarget, setLostTarget] = useState<TcCaseSummary | null>(null);
 
   const byStatus = useMemo(() => {
@@ -88,6 +95,7 @@ export function PipelineBoard({ cases, onOpen, onTransition }: PipelineBoardProp
                 cases={columnCases}
                 onOpen={onOpen}
                 onMove={handleMove}
+                showOfficeBadges={showOfficeBadges}
               />
             );
           })}
@@ -97,6 +105,7 @@ export function PipelineBoard({ cases, onOpen, onTransition }: PipelineBoardProp
             cases={nurtureCases}
             onOpen={onOpen}
             onMove={handleMove}
+            showOfficeBadges={showOfficeBadges}
             ghost
           />
         </div>
@@ -121,12 +130,14 @@ function BoardColumn({
   cases,
   onOpen,
   onMove,
+  showOfficeBadges = false,
   ghost = false,
 }: {
   title: string;
   cases: TcCaseSummary[];
   onOpen: (caseId: string) => void;
   onMove: (row: TcCaseSummary, status: CaseStatusId) => void;
+  showOfficeBadges?: boolean;
   ghost?: boolean;
 }) {
   const totalCents = cases.reduce((sum, c) => sum + c.caseValueCents, 0);
@@ -152,6 +163,7 @@ function BoardColumn({
             key={row.caseId}
             caseRow={row}
             muted={ghost}
+            showOfficeBadge={showOfficeBadges}
             onOpen={() => onOpen(row.caseId)}
             onMove={(status) => onMove(row, status)}
           />

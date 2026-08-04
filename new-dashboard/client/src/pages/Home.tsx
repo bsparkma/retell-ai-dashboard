@@ -18,7 +18,7 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { logout } from "@/lib/auth";
 
-const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310419663031054856/K6tiRwvhaJ5eVuqkxBJoTR/carein-logo-mark-WmvfiqGRU6eTRKJUhc4vUK.webp";
+const LOGO_URL = "/carein-logo.webp";
 
 export default function Home() {
   const auth = useAuth();
@@ -36,7 +36,7 @@ export default function Home() {
         <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg bg-primary/10">
           <img src={LOGO_URL} alt="CareIn" className="h-7 w-7 object-contain" />
         </div>
-        <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+        <div className="text-lg font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
           CareIn
         </div>
         <div className="ml-auto flex items-center gap-3">
@@ -91,7 +91,7 @@ export default function Home() {
       {/* Module chooser */}
       <main className="flex flex-1 items-center justify-center px-6 py-12">
         <div className="w-full max-w-3xl">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             {firstName ? `Welcome back, ${firstName}` : "Welcome back"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">

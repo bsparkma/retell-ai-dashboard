@@ -3,6 +3,17 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Platform design tokens — DentaFlow visual language (Slice 4b).
+ * Primary: Deep Teal | Accent: Warm Coral | Background: Warm White
+ * Headings: Sora | Body: DM Sans
+ *
+ * Light values are lifted verbatim from the legacy TC-app (the design
+ * authority). DentaFlow never shipped a dark palette, so .dark is a
+ * synthesized companion in the same hue family (slate 250 neutrals,
+ * teal 186 primary, coral 42 accent) — keep the two blocks in step.
+ */
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -22,6 +33,7 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-accent-coral: var(--accent-coral);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
@@ -43,84 +55,89 @@
 }
 
 :root {
-  --radius: 0.5rem;
-  --background: oklch(0.985 0.004 85);
-  --foreground: oklch(0.18 0.02 240);
+  --radius: 0.6rem;
+  --background: oklch(0.988 0.003 90);
+  --foreground: oklch(0.18 0.015 250);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.02 240);
+  --card-foreground: oklch(0.18 0.015 250);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.02 240);
-  --primary: oklch(0.55 0.18 210);
+  --popover-foreground: oklch(0.18 0.015 250);
+  --primary: oklch(0.52 0.12 186);
   --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.96 0.005 85);
-  --secondary-foreground: oklch(0.30 0.02 240);
-  --muted: oklch(0.95 0.005 85);
-  --muted-foreground: oklch(0.52 0.015 240);
-  --accent: oklch(0.93 0.02 210);
-  --accent-foreground: oklch(0.35 0.10 210);
-  --destructive: oklch(0.62 0.22 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.90 0.006 85);
-  --input: oklch(0.92 0.005 85);
-  --ring: oklch(0.55 0.18 210);
-  --chart-1: oklch(0.55 0.18 210);
-  --chart-2: oklch(0.65 0.18 155);
-  --chart-3: oklch(0.78 0.17 75);
-  --chart-4: oklch(0.62 0.22 25);
-  --chart-5: oklch(0.60 0.15 280);
-  --sidebar: oklch(0.16 0.055 245);
-  --sidebar-foreground: oklch(0.88 0.01 240);
-  --sidebar-primary: oklch(0.60 0.16 210);
+  --secondary: oklch(0.96 0.005 250);
+  --secondary-foreground: oklch(0.35 0.015 250);
+  --muted: oklch(0.95 0.004 250);
+  --muted-foreground: oklch(0.52 0.015 250);
+  --accent: oklch(0.95 0.004 250);
+  --accent-foreground: oklch(0.18 0.015 250);
+  --accent-coral: oklch(0.68 0.19 42);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.9 0.006 250);
+  --input: oklch(0.9 0.006 250);
+  --ring: oklch(0.52 0.12 186);
+  --chart-1: oklch(0.52 0.12 186);
+  --chart-2: oklch(0.68 0.19 42);
+  --chart-3: oklch(0.78 0.16 75);
+  --chart-4: oklch(0.62 0.14 220);
+  --chart-5: oklch(0.72 0.12 150);
+  --sidebar: oklch(0.14 0.02 250);
+  --sidebar-foreground: oklch(0.85 0.005 250);
+  --sidebar-primary: oklch(0.52 0.12 186);
   --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.22 0.055 245);
-  --sidebar-accent-foreground: oklch(0.92 0.01 240);
-  --sidebar-border: oklch(0.25 0.05 245);
-  --sidebar-ring: oklch(0.60 0.16 210);
+  --sidebar-accent: oklch(0.22 0.02 250);
+  --sidebar-accent-foreground: oklch(0.9 0.005 250);
+  --sidebar-border: oklch(0.25 0.02 250);
+  --sidebar-ring: oklch(0.52 0.12 186);
 }
 
 .dark {
-  --background: oklch(0.14 0.015 240);
-  --foreground: oklch(0.92 0.005 240);
-  --card: oklch(0.18 0.02 240);
-  --card-foreground: oklch(0.92 0.005 240);
-  --popover: oklch(0.18 0.02 240);
-  --popover-foreground: oklch(0.92 0.005 240);
-  --primary: oklch(0.60 0.18 210);
+  --background: oklch(0.14 0.015 250);
+  --foreground: oklch(0.92 0.005 250);
+  --card: oklch(0.18 0.015 250);
+  --card-foreground: oklch(0.92 0.005 250);
+  --popover: oklch(0.18 0.015 250);
+  --popover-foreground: oklch(0.92 0.005 250);
+  --primary: oklch(0.6 0.12 186);
   --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.22 0.02 240);
-  --secondary-foreground: oklch(0.75 0.01 240);
-  --muted: oklch(0.22 0.02 240);
-  --muted-foreground: oklch(0.60 0.015 240);
-  --accent: oklch(0.25 0.06 210);
-  --accent-foreground: oklch(0.80 0.10 210);
-  --destructive: oklch(0.65 0.22 25);
+  --secondary: oklch(0.22 0.015 250);
+  --secondary-foreground: oklch(0.75 0.01 250);
+  --muted: oklch(0.22 0.015 250);
+  --muted-foreground: oklch(0.6 0.015 250);
+  --accent: oklch(0.25 0.015 250);
+  --accent-foreground: oklch(0.9 0.005 250);
+  --accent-coral: oklch(0.72 0.17 42);
+  --destructive: oklch(0.65 0.22 27);
   --destructive-foreground: oklch(0.98 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.60 0.18 210);
-  --chart-1: oklch(0.60 0.18 210);
-  --chart-2: oklch(0.68 0.18 155);
-  --chart-3: oklch(0.80 0.17 75);
-  --chart-4: oklch(0.65 0.22 25);
-  --chart-5: oklch(0.62 0.15 280);
-  --sidebar: oklch(0.12 0.04 245);
-  --sidebar-foreground: oklch(0.88 0.01 240);
-  --sidebar-primary: oklch(0.60 0.16 210);
+  --ring: oklch(0.6 0.12 186);
+  --chart-1: oklch(0.6 0.12 186);
+  --chart-2: oklch(0.72 0.17 42);
+  --chart-3: oklch(0.8 0.16 75);
+  --chart-4: oklch(0.66 0.13 220);
+  --chart-5: oklch(0.74 0.11 150);
+  --sidebar: oklch(0.12 0.015 250);
+  --sidebar-foreground: oklch(0.85 0.005 250);
+  --sidebar-primary: oklch(0.52 0.12 186);
   --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.18 0.045 245);
-  --sidebar-accent-foreground: oklch(0.92 0.01 240);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.60 0.16 210);
+  --sidebar-accent: oklch(0.2 0.02 250);
+  --sidebar-accent-foreground: oklch(0.9 0.005 250);
+  --sidebar-border: oklch(0.22 0.02 250);
+  --sidebar-ring: oklch(0.52 0.12 186);
 }
 
 @layer base {
   * { @apply border-border outline-ring/50; }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
   h1, h2, h3, h4, h5, h6 {
-    font-family: 'Outfit', system-ui, sans-serif;
+    font-family: 'Sora', system-ui, sans-serif;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -150,6 +167,54 @@
   @media (min-width: 1024px) {
     .container { padding-left: 2rem; padding-right: 2rem; max-width: 1440px; }
   }
+
+  /* DentaFlow panel conventions — tokenized (color-mix keeps the tinted
+     cards legible in dark mode, unlike the legacy literal backgrounds). */
+  .metric-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 3px oklch(0 0 0 / 0.04);
+  }
+  .tc-script-card {
+    background: color-mix(in oklab, var(--primary) 10%, transparent);
+    border: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .objection-card {
+    background: color-mix(in oklab, var(--chart-3) 14%, transparent);
+    border: 1px solid color-mix(in oklab, var(--chart-3) 35%, transparent);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .financing-option-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    background: var(--card);
+    transition: border-color 0.15s;
+  }
+  .financing-option-card:hover {
+    border-color: color-mix(in oklab, var(--primary) 50%, transparent);
+  }
+  .tooth-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--sidebar);
+    color: var(--sidebar-foreground);
+    font-family: 'Sora', sans-serif;
+  }
+
+  /* Voice-module chrome animations (re-hued to the teal primary). */
   .live-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background-color: oklch(0.65 0.18 155);
@@ -161,7 +226,7 @@
   }
   .waveform-bar {
     border-radius: 2px;
-    background-color: oklch(0.60 0.16 210);
+    background-color: oklch(0.52 0.12 186);
     animation: waveform 1.2s ease-in-out infinite;
   }
   @keyframes waveform {
@@ -179,11 +244,11 @@
     50% { background-color: oklch(0.62 0.22 25 / 0.2); }
   }
   .call-active-ring {
-    box-shadow: 0 0 0 2px oklch(0.60 0.16 210 / 0.4);
+    box-shadow: 0 0 0 2px oklch(0.52 0.12 186 / 0.4);
     animation: active-ring 2s ease-in-out infinite;
   }
   @keyframes active-ring {
-    0%, 100% { box-shadow: 0 0 0 2px oklch(0.60 0.16 210 / 0.4); }
-    50% { box-shadow: 0 0 0 5px oklch(0.60 0.16 210 / 0.1); }
+    0%, 100% { box-shadow: 0 0 0 2px oklch(0.52 0.12 186 / 0.4); }
+    50% { box-shadow: 0 0 0 5px oklch(0.52 0.12 186 / 0.1); }
   }
 }

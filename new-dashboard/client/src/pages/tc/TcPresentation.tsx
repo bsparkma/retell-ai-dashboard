@@ -152,8 +152,10 @@ export default function TcPresentation() {
     [library, totalCents],
   );
 
+  // Exiting the deck (X button or Escape) lands on Post-Consult Capture so
+  // the outcome gets recorded while it's fresh — the DentaFlow flow.
   const exit = useCallback(() => {
-    setLocation(caseId ? `/tc/cases/${caseId}` : "/tc");
+    setLocation(caseId ? `/tc/cases/${caseId}/post-consult` : "/tc");
   }, [setLocation, caseId]);
 
   const slideCount = slides.length;
@@ -218,7 +220,7 @@ export default function TcPresentation() {
       <div className="flex items-center justify-between px-6 sm:px-8 py-4 border-b border-border bg-card">
         <span
           className="text-sm font-semibold text-foreground"
-          style={{ fontFamily: "Outfit, sans-serif" }}
+          style={{ fontFamily: "Sora, sans-serif" }}
         >
           {practiceName}
         </span>

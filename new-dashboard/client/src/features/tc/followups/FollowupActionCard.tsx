@@ -45,6 +45,7 @@ import {
 } from "../api";
 import { formatCents } from "../money";
 import { CaseStatusBadge, UrgencyBadge } from "../components/TcShell";
+import { OfficeBadge } from "../components/OfficeBadge";
 import {
   getDaysOverdue,
   getEscalationClass,
@@ -67,8 +68,11 @@ const KIND_LABELS: Record<TcDueFollowup["kind"], string> = {
 };
 
 export interface FollowupActionCardProps {
+  /** The office that owns this row — writes go here (row.officeId in fan-out). */
   office: OfficeId;
   followup: TcDueFollowup;
+  /** All-offices view: show which office the patient belongs to. */
+  showOfficeBadge?: boolean;
   /** YYYY-MM-DD reference date for escalation math (deterministic in tests). */
   today: string;
   /** Called after the API confirms — parent removes the row. */
@@ -81,6 +85,7 @@ export interface FollowupActionCardProps {
 export function FollowupActionCard({
   office,
   followup,
+  showOfficeBadge = false,
   today,
   onCompleted,
   onSkipped,
@@ -180,6 +185,7 @@ export function FollowupActionCard({
             </Badge>
             <CaseStatusBadge status={followup.caseStatus} />
             <UrgencyBadge urgency={followup.caseUrgency} />
+            {showOfficeBadge && <OfficeBadge officeId={followup.officeId} />}
           </div>
           <div className="flex items-center gap-2 flex-wrap mt-1.5 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted font-medium">

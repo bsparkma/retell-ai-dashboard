@@ -25,14 +25,14 @@ type ActiveTab = "calls" | "callbacks" | "carein";
 const priorityConfig = {
   high: { label: "High", color: "oklch(0.62 0.22 25)", bg: "oklch(0.62 0.22 25 / 0.12)" },
   medium: { label: "Medium", color: "oklch(0.65 0.17 75)", bg: "oklch(0.78 0.17 75 / 0.12)" },
-  low: { label: "Low", color: "oklch(0.52 0.015 240)", bg: "oklch(0.50 0.01 240 / 0.1)" },
+  low: { label: "Low", color: "var(--muted-foreground)", bg: "oklch(0.50 0.01 240 / 0.1)" },
 };
 
 const cbStatusConfig = {
-  pending: { label: "Pending", color: "oklch(0.55 0.18 210)", bg: "oklch(0.55 0.18 210 / 0.1)" },
+  pending: { label: "Pending", color: "var(--primary)", bg: "oklch(0.52 0.12 186 / 0.1)" },
   "in-progress": { label: "In Progress", color: "oklch(0.65 0.17 75)", bg: "oklch(0.78 0.17 75 / 0.1)" },
   completed: { label: "Completed", color: "oklch(0.55 0.18 155)", bg: "oklch(0.65 0.18 155 / 0.1)" },
-  failed: { label: "Failed", color: "oklch(0.52 0.015 240)", bg: "oklch(0.52 0.015 240 / 0.1)" },
+  failed: { label: "Failed", color: "var(--muted-foreground)", bg: "oklch(0.52 0.015 240 / 0.1)" },
 };
 
 export default function Calls() {
@@ -135,7 +135,7 @@ export default function Calls() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Calls
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -157,7 +157,7 @@ export default function Calls() {
             className="px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2"
             style={{
               backgroundColor: activeTab === tab.key ? "white" : "transparent",
-              color: activeTab === tab.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+              color: activeTab === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
               boxShadow: activeTab === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
             }}
           >
@@ -186,14 +186,14 @@ export default function Calls() {
           {/* Stats */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
-              { label: "Pending", value: cbStats.pending, color: "oklch(0.55 0.18 210)", urgent: false },
+              { label: "Pending", value: cbStats.pending, color: "var(--primary)", urgent: false },
               { label: "In Progress", value: cbStats.inProgress, color: "oklch(0.65 0.17 75)", urgent: false },
               { label: "Completed Today", value: cbStats.completed, color: "oklch(0.55 0.18 155)", urgent: false },
               { label: "High Priority", value: cbStats.highPriority, color: "oklch(0.62 0.22 25)", urgent: cbStats.highPriority > 0 },
             ].map((s) => (
               <Card key={s.label} className={s.urgent ? "ring-2 ring-destructive/30" : ""}>
                 <CardContent className="p-4">
-                  <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+                  <div className="text-2xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                     {s.value}
                   </div>
                   <div className="text-sm text-muted-foreground mt-0.5">{s.label}</div>
@@ -224,7 +224,7 @@ export default function Calls() {
                       className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                       style={{
                         backgroundColor: cbStatus === s ? "white" : "transparent",
-                        color: cbStatus === s ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                        color: cbStatus === s ? "var(--foreground)" : "var(--muted-foreground)",
                         boxShadow: cbStatus === s ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                       }}
                     >
@@ -241,7 +241,7 @@ export default function Calls() {
                       className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                       style={{
                         backgroundColor: cbPriority === p ? "white" : "transparent",
-                        color: cbPriority === p ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                        color: cbPriority === p ? "var(--foreground)" : "var(--muted-foreground)",
                         boxShadow: cbPriority === p ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                       }}
                     >
@@ -458,7 +458,7 @@ function CareInLogTab({
         ].map((s) => (
           <Card key={s.label}>
             <CardContent className="p-4">
-              <div className="text-2xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+              <div className="text-2xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                 {s.value}
               </div>
               <div className="text-sm font-medium text-foreground mt-0.5">{s.label}</div>
@@ -494,7 +494,7 @@ function CareInLogTab({
                     className="px-3 py-1 rounded text-xs font-medium transition-all"
                     style={{
                       backgroundColor: officeFilter === o ? "white" : "transparent",
-                      color: officeFilter === o ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                      color: officeFilter === o ? "var(--foreground)" : "var(--muted-foreground)",
                       boxShadow: officeFilter === o ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                     }}
                   >
@@ -514,7 +514,7 @@ function CareInLogTab({
                   className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                   style={{
                     backgroundColor: commlogFilter === s ? "white" : "transparent",
-                    color: commlogFilter === s ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                    color: commlogFilter === s ? "var(--foreground)" : "var(--muted-foreground)",
                     boxShadow: commlogFilter === s ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                   }}
                 >
@@ -595,7 +595,7 @@ function CareInLogTab({
               const sentimentColor =
                 call.sentiment === "positive" ? "oklch(0.55 0.18 155)"
                 : call.sentiment === "negative" ? "oklch(0.62 0.22 25)"
-                : "oklch(0.52 0.015 240)";
+                : "var(--muted-foreground)";
 
               return (
                 <Link key={call.id} href={`/carein-calls/${call.id}`}>

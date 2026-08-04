@@ -16,6 +16,7 @@ import {
 import type { TcCaseSummary } from "../api";
 import { formatCents } from "../money";
 import { CaseStatusBadge, UrgencyBadge } from "../components/TcShell";
+import { OfficeBadge } from "../components/OfficeBadge";
 import { CASE_CATEGORY_LABELS } from "./NewCaseDialog";
 
 type SortKey = "value" | "created";
@@ -30,9 +31,12 @@ function formatCreated(iso: string): string {
 export function CaseListTable({
   cases,
   onOpen,
+  showOfficeBadges = false,
 }: {
   cases: TcCaseSummary[];
   onOpen: (caseId: string) => void;
+  /** All-offices view: tag each row with the office it came from. */
+  showOfficeBadges?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
 
@@ -67,6 +71,7 @@ export function CaseListTable({
         <TableHeader>
           <TableRow>
             <TableHead>Patient</TableHead>
+            {showOfficeBadges && <TableHead>Office</TableHead>}
             <TableHead>Status</TableHead>
             <TableHead>Category</TableHead>
             <TableHead>Urgency</TableHead>
@@ -99,6 +104,9 @@ export function CaseListTable({
               className="cursor-pointer"
             >
               <TableCell className="font-medium text-foreground">{row.patientName}</TableCell>
+              {showOfficeBadges && (
+                <TableCell><OfficeBadge officeId={row.officeId} /></TableCell>
+              )}
               <TableCell><CaseStatusBadge status={row.status} /></TableCell>
               <TableCell className="text-muted-foreground">
                 {CASE_CATEGORY_LABELS[row.category]}
@@ -113,7 +121,10 @@ export function CaseListTable({
           ))}
           {sorted.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">
+              <TableCell
+                colSpan={showOfficeBadges ? 8 : 7}
+                className="text-center text-sm text-muted-foreground py-8"
+              >
                 No cases match the current filters.
               </TableCell>
             </TableRow>

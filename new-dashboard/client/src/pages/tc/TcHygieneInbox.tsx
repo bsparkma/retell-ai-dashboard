@@ -4,6 +4,9 @@
  * preserved as-is. Claim assigns the SSO caller and moves the case to
  * pending_tc; a concurrent claim surfaces as 409/404 → toast the server
  * message and refresh the list.
+ *
+ * All-offices: the inbox fans out over every office in scope and badges each
+ * row; Claim writes back to the office that owns the intake.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -23,9 +26,18 @@ import { Button } from "@/components/ui/button";
 import {
   TcOfficeGate,
   TcPageHeader,
+  TcPartialDataNotice,
   UrgencyBadge,
-  useTcOffice,
 } from "@/features/tc/components/TcShell";
+import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
+import {
+  fanOutOfficeRows,
+  hardErrorMessage,
+  officeScopeKey,
+  partialNotice,
+  useTcOfficeScope,
+  type WithOffice,
+} from "@/features/tc/officeScope";
 import {
   claimHygieneCase,
   hygieneInbox,
@@ -69,35 +81,47 @@ function formatSubmittedAt(iso: string): string {
   });
 }
 
-function InboxList({ office }: { office: OfficeId }) {
+function InboxList({
+  offices,
+  showOfficeBadges,
+}: {
+  offices: OfficeId[];
+  showOfficeBadges: boolean;
+}) {
   const [, navigate] = useLocation();
-  const [rows, setRows] = useState<TcInboxIntake[]>([]);
+  const [rows, setRows] = useState<WithOffice<TcInboxIntake>[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [claimingId, setClaimingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      // Server orders urgent-first, newest within — keep the order.
-      setRows(await hygieneInbox(office));
-    } catch (e) {
-      setRows([]);
-      setError(tcErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [office]);
+    setNotice(null);
+    // Server orders urgent-first, newest within — preserved per office, then
+    // urgent-first again across the merge so the top of the list stays honest.
+    const result = await fanOutOfficeRows(offices, (o) => hygieneInbox(o));
+    const merged = [...result.rows].sort(
+      (a, b) =>
+        Number(b.flagUrgent) - Number(a.flagUrgent) ||
+        b.submittedAt.localeCompare(a.submittedAt),
+    );
+    setRows(merged);
+    setError(hardErrorMessage(result));
+    setNotice(partialNotice(result));
+    setLoading(false);
+  }, [offices]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const claim = async (row: TcInboxIntake) => {
+  const claim = async (row: WithOffice<TcInboxIntake>) => {
     setClaimingId(row.caseId);
     try {
-      await claimHygieneCase(office, row.caseId);
+      // Claim is a write — always to the office that owns the intake.
+      await claimHygieneCase(row.officeId, row.caseId);
       setRows((prev) => prev.filter((r) => r.caseId !== row.caseId));
       toast.success(`Claimed ${row.patientName} — moved to Pending TC`, {
         action: {
@@ -153,6 +177,7 @@ function InboxList({ office }: { office: OfficeId }) {
 
   return (
     <div className="space-y-3">
+      {notice && <TcPartialDataNotice message={notice} />}
       {rows.map((r) => {
         const interest = INTEREST_CHIP[r.patientInterestLevel];
         return (
@@ -180,6 +205,7 @@ function InboxList({ office }: { office: OfficeId }) {
                     </Badge>
                   )}
                   <UrgencyBadge urgency={r.urgency} />
+                  {showOfficeBadges && <OfficeBadge officeId={r.officeId} />}
                   <span
                     className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${interest.cls}`}
                   >
@@ -249,11 +275,11 @@ function InboxList({ office }: { office: OfficeId }) {
 }
 
 export default function TcHygieneInbox() {
-  const office = useTcOffice();
-  if (!office) {
+  const scope = useTcOfficeScope();
+  if (scope.offices.length === 0) {
     return (
       <div className="p-6">
-        <TcOfficeGate />
+        <TcOfficeGate loading={scope.loading} />
       </div>
     );
   }
@@ -262,9 +288,17 @@ export default function TcHygieneInbox() {
     <div className="p-6 max-w-4xl mx-auto">
       <TcPageHeader
         title="Hygiene Inbox"
-        subtitle="Unclaimed handoffs from hygiene — claim one to start working it"
+        subtitle={
+          scope.showOfficeBadges
+            ? "Unclaimed handoffs from every office — claim one to start working it"
+            : "Unclaimed handoffs from hygiene — claim one to start working it"
+        }
       />
-      <InboxList office={office} />
+      <InboxList
+        key={officeScopeKey(scope.offices)}
+        offices={scope.offices}
+        showOfficeBadges={scope.showOfficeBadges}
+      />
     </div>
   );
 }
