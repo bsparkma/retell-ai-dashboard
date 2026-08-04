@@ -165,7 +165,7 @@ export function OpenSlots() {
         onClick={() => setSelectedCategory(key)}
         className="px-3 py-1.5 rounded text-xs font-medium transition-all"
         style={{
-          backgroundColor: isActive ? "white" : "transparent",
+          backgroundColor: isActive ? "var(--card)" : "transparent",
           color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
           boxShadow: isActive ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
         }}
@@ -187,7 +187,7 @@ export function OpenSlots() {
               <button
                 className="px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1"
                 style={{
-                  backgroundColor: isRestorativeSelected ? "white" : "transparent",
+                  backgroundColor: isRestorativeSelected ? "var(--card)" : "transparent",
                   color: isRestorativeSelected
                     ? "var(--foreground)"
                     : "var(--muted-foreground)",
@@ -236,7 +236,7 @@ export function OpenSlots() {
                 onClick={() => setSelectedDuration(opt.value)}
                 className="px-3 py-1.5 rounded text-xs font-medium transition-all"
                 style={{
-                  backgroundColor: selectedDuration === opt.value ? "white" : "transparent",
+                  backgroundColor: selectedDuration === opt.value ? "var(--card)" : "transparent",
                   color: selectedDuration === opt.value ? opt.color : "var(--muted-foreground)",
                   boxShadow:
                     selectedDuration === opt.value ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
@@ -254,7 +254,7 @@ export function OpenSlots() {
                 onClick={() => setSelectedTimeFilter(i)}
                 className="px-3 py-1.5 rounded text-xs font-medium transition-all"
                 style={{
-                  backgroundColor: selectedTimeFilter === i ? "white" : "transparent",
+                  backgroundColor: selectedTimeFilter === i ? "var(--card)" : "transparent",
                   color: selectedTimeFilter === i ? "var(--foreground)" : "var(--muted-foreground)",
                   boxShadow: selectedTimeFilter === i ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}

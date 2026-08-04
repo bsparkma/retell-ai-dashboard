@@ -772,14 +772,14 @@ export default function Admin() {
                     <span className="text-sm text-foreground">{label}</span>
                     <button
                       className="relative w-10 h-5 rounded-full transition-all"
-                      style={{ backgroundColor: enabled ? "var(--primary)" : "oklch(0.70 0.01 240)" }}
+                      style={{ backgroundColor: enabled ? "var(--primary)" : "color-mix(in oklab, var(--muted-foreground) 30%, transparent)" }}
                       onClick={() => {
                         setNotifConfig(prev => ({ ...prev, [key]: !prev[key] }));
                         setNotifHasUnsaved(true);
                       }}
                     >
                       <span
-                        className="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
+                        className="absolute top-0.5 left-0.5 w-4 h-4 bg-background dark:bg-foreground rounded-full shadow transition-transform"
                         style={{ transform: enabled ? "translateX(20px)" : "translateX(0)" }}
                       />
                     </button>

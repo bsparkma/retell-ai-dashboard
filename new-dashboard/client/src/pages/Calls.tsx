@@ -156,7 +156,7 @@ export default function Calls() {
             onClick={() => setActiveTab(tab.key)}
             className="px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2"
             style={{
-              backgroundColor: activeTab === tab.key ? "white" : "transparent",
+              backgroundColor: activeTab === tab.key ? "var(--card)" : "transparent",
               color: activeTab === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
               boxShadow: activeTab === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
             }}
@@ -223,7 +223,7 @@ export default function Calls() {
                       onClick={() => setCbStatus(s)}
                       className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                       style={{
-                        backgroundColor: cbStatus === s ? "white" : "transparent",
+                        backgroundColor: cbStatus === s ? "var(--card)" : "transparent",
                         color: cbStatus === s ? "var(--foreground)" : "var(--muted-foreground)",
                         boxShadow: cbStatus === s ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                       }}
@@ -240,7 +240,7 @@ export default function Calls() {
                       onClick={() => setCbPriority(p)}
                       className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                       style={{
-                        backgroundColor: cbPriority === p ? "white" : "transparent",
+                        backgroundColor: cbPriority === p ? "var(--card)" : "transparent",
                         color: cbPriority === p ? "var(--foreground)" : "var(--muted-foreground)",
                         boxShadow: cbPriority === p ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                       }}
@@ -493,7 +493,7 @@ function CareInLogTab({
                     onClick={() => onOffice(o)}
                     className="px-3 py-1 rounded text-xs font-medium transition-all"
                     style={{
-                      backgroundColor: officeFilter === o ? "white" : "transparent",
+                      backgroundColor: officeFilter === o ? "var(--card)" : "transparent",
                       color: officeFilter === o ? "var(--foreground)" : "var(--muted-foreground)",
                       boxShadow: officeFilter === o ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                     }}
@@ -513,7 +513,7 @@ function CareInLogTab({
                   onClick={() => onCommlog(s)}
                   className="px-3 py-1 rounded text-xs font-medium transition-all capitalize"
                   style={{
-                    backgroundColor: commlogFilter === s ? "white" : "transparent",
+                    backgroundColor: commlogFilter === s ? "var(--card)" : "transparent",
                     color: commlogFilter === s ? "var(--foreground)" : "var(--muted-foreground)",
                     boxShadow: commlogFilter === s ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                   }}

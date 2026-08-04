@@ -146,7 +146,7 @@ export default function Analytics() {
                 onClick={() => setDateRange(r)}
                 className="px-3 py-1 rounded text-xs font-medium transition-all"
                 style={{
-                  backgroundColor: dateRange === r ? "white" : "transparent",
+                  backgroundColor: dateRange === r ? "var(--card)" : "transparent",
                   color: dateRange === r ? "var(--foreground)" : "var(--muted-foreground)",
                   boxShadow: dateRange === r ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
                 }}
@@ -221,7 +221,7 @@ export default function Analytics() {
                     <BarChart data={data.callVolume} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                       <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                      <Tooltip contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                       <Legend wrapperStyle={{ fontSize: 12 }} />
                       <Bar dataKey="retell" name="AI (Retell)" fill="var(--primary)" radius={[3, 3, 0, 0]} />
                       <Bar dataKey="mango" name="Staff (Mango)" fill="oklch(0.78 0.17 75 / 0.7)" radius={[3, 3, 0, 0]} />
@@ -248,7 +248,7 @@ export default function Analytics() {
                             <Cell key={i} fill={INTENT_COLORS[i % INTENT_COLORS.length]} />
                           ))}
                         </Pie>
-                        <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                        <Tooltip contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                       </PieChart>
                     </ResponsiveContainer>
                     <div className="space-y-1.5 mt-2">
@@ -292,7 +292,7 @@ export default function Analytics() {
                     </defs>
                     <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                    <Tooltip contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Area type="monotone" dataKey="positive" name="Positive" stroke="oklch(0.55 0.18 155)" fill="url(#posGrad)" strokeWidth={2} dot={false} />
                     <Area type="monotone" dataKey="neutral" name="Neutral" stroke="var(--muted-foreground)" fill="none" strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
@@ -312,7 +312,7 @@ export default function Analytics() {
                   <BarChart data={hourlyChartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                     <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "white", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                    <Tooltip contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                     <Bar dataKey="calls" fill="oklch(0.52 0.12 186 / 0.7)" radius={[3, 3, 0, 0]}>
                       {hourlyChartData.map((entry, i) => (
                         <Cell key={i} fill={entry.calls > 5 ? "var(--primary)" : "oklch(0.52 0.12 186 / 0.5)"} />
