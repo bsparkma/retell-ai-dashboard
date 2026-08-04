@@ -24,9 +24,11 @@ import type {
   LibraryFinancingProvider,
   LibraryFinancingSettings,
 } from "@shared/tc/contract";
-import type {
-  FinancingProviderCatalogItem,
-  ProviderOverrideMap,
+import {
+  getProviderByKey,
+  getProviderByName,
+  type FinancingProviderCatalogItem,
+  type ProviderOverrideMap,
 } from "./financingRates";
 
 type FinancingProvider = z.infer<typeof LibraryFinancingProvider>;
@@ -43,10 +45,10 @@ export interface FinancingLibraryInput {
   crown_pricing?: CrownPricing;
 }
 
-/** Catalog item + the library's stable provider key (e.g. "carecredit"). */
-export interface AdaptedFinancingProvider extends FinancingProviderCatalogItem {
-  key: string;
-}
+/** Catalog item carrying the library's stable provider key (e.g. "carecredit").
+ * The catalog item type now owns `key`, so this is a straight alias kept for
+ * call-site readability. */
+export type AdaptedFinancingProvider = FinancingProviderCatalogItem;
 
 export interface FinancingLibraryView {
   /** False until the office has a financing_providers section in its library —
@@ -84,18 +86,27 @@ export function financingViewFromLibrary(
   for (const p of providersSection ?? []) {
     if (!providerEnabled(p, settings)) continue;
     const override = settings?.providerOverrides[p.key];
+    // Catalog entry (rate truth: merchant fees, per-term APR/minimums, penalty
+    // APR). Missing ⇒ a custom office provider we have no lender data for, and
+    // the UI keeps its honest "net unknown" treatment — never invented fees.
+    const catalog = getProviderByKey(p.key) ?? getProviderByName(p.label);
     providers.push({
       key: p.key,
       name: p.label,
       logo: p.logo,
       color: p.color,
       description: p.description,
-      terms: [...p.terms],
+      // An office row with no terms would render a lane with no term chips —
+      // fall back to the catalog's per-provider list (never SIMPLE_TERMS).
+      // promoTerms deliberately does NOT fall back: empty means the office
+      // turned promos off, which is a real answer.
+      terms: p.terms.length > 0 ? [...p.terms] : [...(catalog?.terms ?? [])],
       promoTerms: [...p.promoTerms],
       minAmount: p.minAmountCents / 100, // cents → dollars at the boundary
       apr: p.promoApr,
       promoApr: p.promoApr,
       regularApr: p.regularApr,
+      rates: catalog?.rates,
     });
     if (override) {
       overrides[p.key] = override;

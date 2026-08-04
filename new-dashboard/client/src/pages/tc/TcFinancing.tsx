@@ -454,9 +454,16 @@ function ProviderRow({
       >
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
+            {/* Provider chip: tinted with the provider's chart token and
+                labelled in the theme's foreground. The legacy solid fill +
+                hardcoded white text was unreadable against the lighter chart
+                tokens and didn't adapt to dark mode. */}
             <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0"
-              style={{ background: provider.color }}
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold text-foreground shrink-0"
+              style={{
+                background: `color-mix(in oklab, ${provider.color} 20%, transparent)`,
+                border: `1px solid color-mix(in oklab, ${provider.color} 45%, transparent)`,
+              }}
             >
               {provider.logo}
             </div>

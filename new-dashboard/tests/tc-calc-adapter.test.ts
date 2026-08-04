@@ -9,7 +9,11 @@ import {
   treatmentPresetsFromLibrary,
   type FinancingLibraryInput,
 } from "../client/src/features/tc/calc/libraryAdapter";
-import { getEffectiveApr } from "../client/src/features/tc/calc/financingRates";
+import {
+  getEffectiveApr,
+  getProviderRates,
+  merchantFeeFraction,
+} from "../client/src/features/tc/calc/financingRates";
 
 function provider(key: string, label: string, over: Partial<{
   enabled: boolean;
@@ -95,6 +99,58 @@ describe("financingViewFromLibrary", () => {
     const cherry = view.providers[0]!;
     expect(getEffectiveApr(cherry, 6, view.overrides)).toBe(1.25);
     expect(getEffectiveApr(cherry, 24, view.overrides)).toBe(8.75);
+  });
+
+  // ── PM ruling 2: rate truth rides along from the catalog ──────────────────
+
+  it("attaches the catalog rate schedule by provider key", () => {
+    const view = financingViewFromLibrary({
+      financing_providers: [
+        provider("carecredit", "CareCredit"),
+        provider("cherry", "Cherry"),
+        provider("in-house", "In-House Plan"), // legacy key spelling
+      ],
+    });
+    const [cc, ch, ih] = view.providers;
+    expect(cc!.rates).toBe(getProviderRates("carecredit"));
+    expect(ch!.rates).toBe(getProviderRates("cherry"));
+    expect(ih!.rates).toBe(getProviderRates("in_house")); // alias resolved
+    expect(merchantFeeFraction(cc!.rates?.promoMerchantFee, 12)).toBe(0.075);
+  });
+
+  it("falls back to matching the catalog by display name", () => {
+    const view = financingViewFromLibrary({
+      financing_providers: [provider("cc_legacy_key", "CareCredit")],
+    });
+    expect(view.providers[0]!.rates).toBe(getProviderRates("carecredit"));
+  });
+
+  it("a provider the catalog doesn't know gets NO rates (net stays unknown)", () => {
+    const view = financingViewFromLibrary({
+      financing_providers: [
+        provider("local_credit_union", "Local Credit Union"),
+        provider("sunbit", "Sunbit"), // in the catalog, but no fee data published
+      ],
+    });
+    expect(view.providers[0]!.rates).toBeUndefined();
+    expect(view.providers[1]!.rates).toBeUndefined();
+    expect(merchantFeeFraction(view.providers[0]!.rates?.merchantFee, 12)).toBeNull();
+  });
+
+  it("office terms win; an empty term list falls back to the catalog's", () => {
+    const view = financingViewFromLibrary({
+      financing_providers: [
+        provider("cherry", "Cherry", { terms: [6, 12], promoTerms: [6] }),
+        provider("carecredit", "CareCredit", { terms: [], promoTerms: [] }),
+      ],
+    });
+    // Office truth is respected as-is…
+    expect(view.providers[0]!.terms).toEqual([6, 12]);
+    // …but an empty office list would render a lane with no terms, so the
+    // catalog's per-provider list fills in (never the Simple-mode chip list).
+    expect(view.providers[1]!.terms).toEqual([6, 12, 18, 24, 36, 48, 60]);
+    // promoTerms does NOT fall back — "no promos" is a real office answer.
+    expect(view.providers[1]!.promoTerms).toEqual([]);
   });
 
   it("service fee and cash discount require both the flag and a non-zero percent", () => {

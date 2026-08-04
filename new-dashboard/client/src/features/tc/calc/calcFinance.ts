@@ -7,7 +7,21 @@
  * persisted money is integer cents (features/tc/money.ts + lib/financing.ts).
  */
 
-import { TC_RATES } from "./calcRates";
+import {
+  getProviderRates,
+  merchantFeeFraction,
+  type ProviderRateSchedule,
+} from "./financingRates";
+
+/**
+ * Catalog defaults for the three product-shaped lanes. These are lookups, not
+ * a second rate table — the numbers live in financingRates.ts (PM ruling 2).
+ * Each function accepts a `rates` argument so a library-adapted provider can
+ * pass its own schedule through.
+ */
+const CARECREDIT_RATES: ProviderRateSchedule = getProviderRates("carecredit") ?? {};
+const CHERRY_RATES: ProviderRateSchedule = getProviderRates("cherry") ?? {};
+const IN_HOUSE_RATES: ProviderRateSchedule = getProviderRates("in_house") ?? {};
 
 export interface FinanceResult {
   product: string;
@@ -48,14 +62,22 @@ export function amortize(
   return { monthly: m, total: m * months, interest: m * months - principal };
 }
 
-export function carecreditPromo(principal: number, months: number, penaltyAprOverride?: number): FinanceResult {
-  const R = TC_RATES.carecredit;
-  const penaltyAPR = penaltyAprOverride ?? R.penaltyAPR;
+/**
+ * Deferred-interest promo lane: 0% while it's paid on schedule, retroactive
+ * `penaltyApr` on the whole balance if it isn't.
+ */
+export function carecreditPromo(
+  principal: number,
+  months: number,
+  penaltyAprOverride?: number,
+  rates: ProviderRateSchedule = CARECREDIT_RATES,
+): FinanceResult {
+  const penaltyAPR = penaltyAprOverride ?? rates.penaltyApr ?? 0;
   const monthly = months > 0 ? principal / months : 0;
-  const fee = R.promoMerchantFee[months] ?? 0;
+  const fee = merchantFeeFraction(rates.promoMerchantFee, months) ?? 0;
   const merchantFee = principal * fee;
   const deferredRiskTotal = amortize(principal, penaltyAPR, months).total;
-  const minPurchase = R.promoMinPurchase[months] ?? 0;
+  const minPurchase = rates.promoMinPurchaseByTerm?.[months] ?? rates.minPurchase ?? 0;
   return {
     product: "CareCredit",
     variant: `${months}mo Promo`,
@@ -72,12 +94,16 @@ export function carecreditPromo(principal: number, months: number, penaltyAprOve
   };
 }
 
-export function carecreditExtended(principal: number, months: number): FinanceResult {
-  const R = TC_RATES.carecredit;
-  const apr = R.extendedAPR[months] ?? 14.9;
+/** Interest-bearing (extended) lane at the lender's published per-term APR. */
+export function carecreditExtended(
+  principal: number,
+  months: number,
+  rates: ProviderRateSchedule = CARECREDIT_RATES,
+): FinanceResult {
+  const apr = rates.aprByTerm?.[months] ?? rates.aprFallback ?? 0;
   const { monthly, total, interest } = amortize(principal, apr, months);
-  const merchantFee = principal * R.extendedMerchantFee;
-  const minPurchase = R.extendedMinPurchase[months] ?? 0;
+  const merchantFee = principal * (merchantFeeFraction(rates.merchantFee, months) ?? 0);
+  const minPurchase = rates.minPurchaseByTerm?.[months] ?? rates.minPurchase ?? 0;
   return {
     product: "CareCredit Extended",
     variant: `${months}mo @ ${apr}%`,
@@ -94,11 +120,22 @@ export function carecreditExtended(principal: number, months: number): FinanceRe
   };
 }
 
-export function cherry(principal: number, months: number, aprOverride?: number): FinanceResult {
-  const R = TC_RATES.cherry;
-  const apr = aprOverride ?? R.aprTypical[months] ?? 17.99;
+/**
+ * Amortized lane with a per-term APR table, a minimum purchase and a minimum
+ * monthly payment. `aprOverride` (the library's effective APR) wins over the
+ * catalog's published table.
+ */
+export function cherry(
+  principal: number,
+  months: number,
+  aprOverride?: number,
+  rates: ProviderRateSchedule = CHERRY_RATES,
+): FinanceResult {
+  const apr = aprOverride ?? rates.aprByTerm?.[months] ?? rates.aprFallback ?? 0;
   const { monthly, total, interest } = amortize(principal, apr, months);
-  const merchantFee = principal * (R.merchantFee[months] ?? 0.119);
+  const merchantFee = principal * (merchantFeeFraction(rates.merchantFee, months) ?? 0);
+  const minPurchase = rates.minPurchase ?? 0;
+  const minMonthly = rates.minMonthly ?? 0;
   return {
     product: "Cherry",
     variant: `${months}mo`,
@@ -109,14 +146,29 @@ export function cherry(principal: number, months: number, aprOverride?: number):
     interestIfOnTime: interest,
     merchantFee,
     netToPractice: principal - merchantFee,
-    minPurchase: R.minPurchase,
-    warning: monthly < R.minMonthly ? `Cherry requires ${fmtUSD(R.minMonthly)}/mo minimum.` : null,
-    eligible: principal >= R.minPurchase && monthly >= R.minMonthly,
+    minPurchase,
+    warning:
+      minMonthly > 0 && monthly < minMonthly
+        ? `Cherry requires ${fmtUSD(minMonthly)}/mo minimum.`
+        : null,
+    eligible: principal >= minPurchase && monthly >= minMonthly,
   };
 }
 
-export function inHousePlan(principal: number, months: number, apr = 0): FinanceResult {
+/**
+ * Practice-managed plan. There is no lender, so the merchant fee is a KNOWN
+ * zero (catalog `merchantFee: { flat: 0 }`) — not an unknown we're papering
+ * over — and there are no lender minimums.
+ */
+export function inHousePlan(
+  principal: number,
+  months: number,
+  apr = 0,
+  rates: ProviderRateSchedule = IN_HOUSE_RATES,
+): FinanceResult {
   const { monthly, total, interest } = amortize(principal, apr, months);
+  const merchantFee = principal * (merchantFeeFraction(rates.merchantFee, months) ?? 0);
+  const minPurchase = rates.minPurchase ?? 0;
   return {
     product: "In-house",
     variant: `${months}mo${apr > 0 ? ` @ ${apr}%` : " (0%)"}`,
@@ -125,10 +177,10 @@ export function inHousePlan(principal: number, months: number, apr = 0): Finance
     monthly,
     totalIfOnTime: total,
     interestIfOnTime: interest,
-    merchantFee: 0,
-    netToPractice: principal,
-    minPurchase: 0,
+    merchantFee,
+    netToPractice: principal - merchantFee,
+    minPurchase,
     warning: "Practice carries collection risk.",
-    eligible: true,
+    eligible: principal >= minPurchase,
   };
 }
