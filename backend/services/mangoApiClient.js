@@ -18,11 +18,53 @@
 const config = require('../config/mango');
 const transcriptionService = require('./transcriptionService');
 const unifiedCallStore = require('./unifiedCallStore');
+const ingestionWatermark = require('./ingestionWatermark');
 const { normalizeMangoCall, isIngestibleCall } = require('./mangoNormalize');
+const { getOfficeForCall, normalizeE164 } = require('../config/officeAgents');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Transcribe calls at least this long (very short clips are noise / AUDIO_TOO_SHORT).
 const MIN_TRANSCRIBE_SECONDS = 5;
+// Rows requested per /calls/ page during the backwards walk.
+const PAGE_SIZE = 50;
+// Offices we always report in the summary, in display order. Any office key not listed
+// here still gets a bucket — this is only the ordering/always-shown set.
+const OFFICE_LOG_ORDER = ['roland', 'valley', 'unknown'];
+
+/**
+ * One office's slice of a sync. Every ingested call lands in EXACTLY ONE outcome bucket,
+ * so `ingested` equals the sum of the rest — the diagnosis could not reconcile 1-6 calls
+ * per batch precisely because the old counters were not a closed set.
+ */
+function blankOfficeCounters() {
+  return {
+    ingested: 0,        // normalized + returned for storage
+    transcribed: 0,     // sent to Azure Speech, got text back
+    reused: 0,          // transcript already in the store (dedup guard)
+    budget_skipped: 0,  // daily audio-minute breaker was spent
+    no_recording: 0,    // Mango had no recording_url for it AT FETCH TIME
+    missed: 0,          // is_missed — nothing to transcribe
+    too_short: 0,       // shorter than MIN_TRANSCRIBE_SECONDS
+    errors: 0,          // detail fetch / Speech threw
+    unavailable: 0,     // Azure Speech not configured in this environment
+    empty: 0,           // Speech returned no text
+    // Recording IS enabled on every Mango line (confirmed by Beau), so a missing
+    // recording_url is a PUBLISH-LAG question, not a per-line setting question. Bucketing
+    // by how old the call was when we asked answers it: mass in <15m = publish lag (M4's
+    // on-demand button fixes it for free); anything >60m is a real gap worth investigating.
+    no_recording_age: { lt15m: 0, m15to60: 0, gt60m: 0, unknown: 0 },
+  };
+}
+
+/** Which age bucket a call falls in, measured at the moment we asked Mango for its detail. */
+function noRecordingAgeBucket(startedAt, nowMs) {
+  const t = startedAt ? Date.parse(startedAt) : NaN;
+  if (!Number.isFinite(t)) return 'unknown';
+  const ageMin = (nowMs - t) / 60000;
+  if (ageMin < 15) return 'lt15m';
+  if (ageMin <= 60) return 'm15to60';
+  return 'gt60m';
+}
 
 // ---------------------------------------------------------------------------
 // Auth layer — isolated behind a small interface so the eventual documented
@@ -226,12 +268,28 @@ class MangoApiClient {
    * Mirrors the contract syncScheduler expects from the retired scraper's fullSync,
    * except transcription happens here (the signed recording_url expires quickly).
    *
+   * INGESTION IS WATERMARKED (diagnosis H3). The backwards walk stops when it crosses
+   * `watermark − OVERLAP`, not after a fixed number of calls, so a busy hour can no longer
+   * saturate a 25-call cap and drop the remainder on the floor. `maxCalls`
+   * (MANGO_MAX_CALLS_PER_SYNC) therefore no longer truncates a watermarked walk — that
+   * truncation WAS the defect. It still bounds the COLD-START pull, where there is no
+   * floor to stop at and we are deliberately not backfilling history.
+   *
+   * The watermark advances on successful INGESTION only, never on transcription outcome:
+   * a call that was ingested but not transcribed keeps its row and stays transcribable
+   * later. That is the seam M4's on-demand transcribe button is built on.
+   *
    * @param {{ sinceDays?: number, maxCalls?: number }} [options]
    */
   async fullSync(options = {}) {
     const sinceDays = options.sinceDays || 1;
     const maxCalls = options.maxCalls || 100;
-    const sinceMs = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+    const maxPages = ingestionWatermark.MAX_PAGES;
+
+    const watermarkBefore = ingestionWatermark.get().startedAt;
+    const wmFloor = ingestionWatermark.floorMs();
+    const coldStart = wmFloor === null;
+    const floorMs = coldStart ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : wmFloor;
 
     const result = {
       success: false,
@@ -240,100 +298,238 @@ class MangoApiClient {
       recordings_transcribed: 0,
       recordings_reused: 0,             // transcript already in the store → not re-sent to Speech
       transcription_skipped_budget: 0,  // skipped because the daily budget was spent
+      recordings_missing: 0,            // Mango had no recording_url at fetch time
       calls: [],
       errors: [],
+      // Watermark / walk telemetry (read by the admin sync history + the summary log).
+      cold_start: coldStart,
+      watermark_before: watermarkBefore,
+      watermark_after: watermarkBefore,
+      walk_complete: false,
+      pages_fetched: 0,
+      calls_scanned: 0,
+      page_cap_hit: false,
+      // Per-office breakdown (item 5) + the count of calls whose `to` party had no DID.
+      by_office: {},
+      no_did: 0,
     };
     let budgetLogged = false; // log the "budget reached" line at most once per run
 
-    console.log(`📞 Mango API sync: pulling up to ${maxCalls} calls from last ${sinceDays}d...`);
+    if (coldStart) {
+      console.log(
+        `📞 Mango API sync: INITIALIZING — no ingestion watermark stored yet, falling back to the ` +
+        `last ${sinceDays}d (up to ${maxCalls} calls). Older history is NOT backfilled.`
+      );
+    } else {
+      console.log(
+        `📞 Mango API sync: walking back to ${new Date(floorMs).toISOString()} ` +
+        `(watermark ${watermarkBefore} − ${ingestionWatermark.OVERLAP_MINUTES}m overlap)...`
+      );
+    }
 
-    // Page through /calls/ (newest first) until we pass the window or hit maxCalls.
+    // ── Backwards walk: /calls/ newest-first until we cross the floor ──────────────────
     const raw = [];
     let offset = 0;
-    const pageSize = 50;
-    let stop = false;
-    while (raw.length < maxCalls && !stop) {
+    let reachedFloor = false;
+    let coldStartCapped = false;
+    let listCount = null;
+    let oldestScannedAt = null;
+
+    while (result.pages_fetched < maxPages) {
       let page;
       try {
-        page = await this.listCalls({ limit: Math.min(pageSize, maxCalls - raw.length), offset });
+        page = await this.listCalls({ limit: PAGE_SIZE, offset });
       } catch (e) {
         result.errors.push(`listCalls offset=${offset}: ${e.message}`);
-        break;
+        break; // walk incomplete → watermark is held below
       }
-      if (!page.results.length) break;
+      result.pages_fetched++;
+      if (typeof page.count === 'number') listCount = page.count;
+
+      if (!page.results.length) { reachedFloor = true; break; } // list exhausted
+
       for (const c of page.results) {
-        const started = c.started_at ? Date.parse(c.started_at) : Date.now();
-        if (Number.isFinite(started) && started < sinceMs) { stop = true; break; }
+        result.calls_scanned++;
+        const started = c.started_at ? Date.parse(c.started_at) : NaN;
+        if (Number.isFinite(started)) oldestScannedAt = started;
+        if (Number.isFinite(started) && started < floorMs) { reachedFloor = true; break; }
         if (isIngestibleCall(c)) raw.push(c);
+        // Cold start has no floor to stop at — bound it by maxCalls and move on.
+        if (coldStart && raw.length >= maxCalls) { coldStartCapped = true; break; }
       }
-      if (page.results.length < Math.min(pageSize, maxCalls)) break;
+      if (reachedFloor || coldStartCapped) break;
+      if (page.results.length < PAGE_SIZE) { reachedFloor = true; break; } // list exhausted
+
       offset += page.results.length;
       await sleep(300); // be polite
+    }
+
+    result.walk_complete = reachedFloor;
+    result.page_cap_hit = !reachedFloor && !coldStartCapped && result.pages_fetched >= maxPages;
+
+    if (result.page_cap_hit) {
+      // NEVER truncate silently. Hold the watermark so the next sync re-walks the same
+      // floor, and say out loud how much of the list we did not reach.
+      const remaining = Number.isFinite(listCount) ? listCount - result.calls_scanned : null;
+      console.error(
+        `⛔ Mango sync: PAGE CAP HIT — ${result.pages_fetched} pages / ${result.calls_scanned} calls scanned ` +
+        `without reaching the floor ${new Date(floorMs).toISOString()}. Oldest scanned ` +
+        `${oldestScannedAt ? new Date(oldestScannedAt).toISOString() : 'unknown'}; ` +
+        `up to ${remaining === null ? 'unknown' : remaining} older calls left UNFETCHED this run. ` +
+        `Watermark HELD at ${watermarkBefore} (nothing dropped silently) — the next sync re-walks the ` +
+        'same floor. Raise MANGO_SYNC_MAX_PAGES or shorten MANGO_SYNC_SCHEDULE if this repeats.'
+      );
     }
 
     result.calls_found = raw.length;
     const canTranscribe = transcriptionService.isAvailable();
 
+    // ── Normalize + transcribe ────────────────────────────────────────────────────────
+    let newestIngestedMs = null;
+
     for (const c of raw) {
+      let call;
       try {
-        const call = normalizeMangoCall(c);
-
-        // DEDUP GUARD (cost-investigation #2/#4): if this call already has a transcript in
-        // the store, REUSE it — never re-send the same recording to Azure Speech. Without
-        // this, every poll of the rolling `sinceDays` window re-transcribed the same answered
-        // calls (the root cause of the ~$60 re-transcription loop). The store is consulted by
-        // external_id, which the upsert preserves across re-scrapes.
-        const existing = unifiedCallStore.findByExternalId(call.external_id);
-        if (existing && existing.transcript) {
-          call.transcript = existing.transcript;
-          call.transcript_json = existing.transcript_json || null;
-          result.recordings_reused++;
-        } else if (canTranscribe && !c.is_missed && (call.duration_seconds || 0) >= MIN_TRANSCRIBE_SECONDS) {
-          // CIRCUIT BREAKER (#2c): once the daily audio-minute budget is spent, stop
-          // transcribing but keep ingesting metadata, so a dedup regression can never bill
-          // unbounded again.
-          const budget = transcriptionService.checkDailyBudget();
-          if (!budget.allowed) {
-            if (!budgetLogged) {
-              budgetLogged = true;
-              console.warn(
-                `⛔ Mango sync: transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min) — ` +
-                'ingesting call metadata only for the rest of today.'
-              );
-            }
-            result.transcription_skipped_budget++;
-          } else {
-            try {
-              const detail = await this.getCall(c.id);
-              const rec = detail && detail.recording_url;
-              if (rec && typeof rec === 'string') {
-                const tr = await transcriptionService.transcribeUrl(rec); // in-memory; discarded
-                if (tr && tr.text) {
-                  call.transcript = tr.text;
-                  call.transcript_json = tr.utterances || tr.words || null;
-                  result.recordings_transcribed++;
-                }
-              }
-            } catch (e) {
-              // A budget-exceeded backstop throw also lands here; record and move on.
-              result.errors.push(`transcribe ${c.id}: ${e.message}`);
-            }
-          }
-        }
-
-        result.calls.push(call);
-        result.calls_processed++;
+        call = normalizeMangoCall(c);
       } catch (e) {
         result.errors.push(`normalize ${c && c.id}: ${e.message}`);
+        continue; // NOT ingested → must not pull the watermark past it
+      }
+
+      // Office key for counters/logging (item 5). getOfficeForCall is a pure function of
+      // called_number, which normalizeMangoCall just computed. Attached to the in-flight
+      // object only — unifiedCallStore.normalizeCall is a field whitelist, so this never
+      // reaches the stored record and office stays a read-time derivation (diagnosis H5).
+      const office = getOfficeForCall(call);
+      call.office_id = office;
+      const oc = result.by_office[office] || (result.by_office[office] = blankOfficeCounters());
+      oc.ingested++;
+      // The `'(no-line)'` warn in officeAgents fires once per PROCESS, which hid the real
+      // count. Count it per sync: a `to` party from which no usable DID could be pulled.
+      if (normalizeE164(call.called_number) === null) result.no_did++;
+
+      // DEDUP GUARD (cost-investigation #2/#4): if this call already has a transcript in
+      // the store, REUSE it — never re-send the same recording to Azure Speech. Without
+      // this, every poll of the rolling window re-transcribed the same answered calls (the
+      // root cause of the ~$60 re-transcription loop). The store is consulted by
+      // external_id, which the upsert preserves across re-syncs — and which also makes
+      // re-ingesting inside the watermark overlap free.
+      const existing = unifiedCallStore.findByExternalId(call.external_id);
+      if (existing && existing.transcript) {
+        call.transcript = existing.transcript;
+        call.transcript_json = existing.transcript_json || null;
+        result.recordings_reused++;
+        oc.reused++;
+      } else if (!canTranscribe) {
+        oc.unavailable++;
+      } else if (c.is_missed) {
+        oc.missed++;
+      } else if ((call.duration_seconds || 0) < MIN_TRANSCRIBE_SECONDS) {
+        oc.too_short++;
+      } else {
+        // CIRCUIT BREAKER (#2c): once the daily audio-minute budget is spent, stop
+        // transcribing but keep ingesting metadata, so a dedup regression can never bill
+        // unbounded again. The call keeps its row and stays transcribable later (M4).
+        const budget = transcriptionService.checkDailyBudget();
+        if (!budget.allowed) {
+          if (!budgetLogged) {
+            budgetLogged = true;
+            console.warn(
+              `⛔ Mango sync: transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min) — ` +
+              'ingesting call metadata only for the rest of today.'
+            );
+          }
+          result.transcription_skipped_budget++;
+          oc.budget_skipped++;
+        } else {
+          try {
+            const detail = await this.getCall(c.id);
+            const rec = detail && detail.recording_url;
+            if (rec && typeof rec === 'string') {
+              const tr = await transcriptionService.transcribeUrl(rec); // in-memory; discarded
+              if (tr && tr.text) {
+                call.transcript = tr.text;
+                call.transcript_json = tr.utterances || tr.words || null;
+                result.recordings_transcribed++;
+                oc.transcribed++;
+              } else {
+                oc.empty++;
+              }
+            } else {
+              // Previously a SILENT fall-through (diagnosis H7): no log, no error, no
+              // counter, indistinguishable from "wasn't eligible". Now counted and aged.
+              result.recordings_missing++;
+              oc.no_recording++;
+              oc.no_recording_age[noRecordingAgeBucket(c.started_at, Date.now())]++;
+            }
+          } catch (e) {
+            // A budget-exceeded backstop throw also lands here; record and move on.
+            result.errors.push(`transcribe ${c.id}: ${e.message}`);
+            oc.errors++;
+          }
+        }
+      }
+
+      result.calls.push(call);
+      result.calls_processed++;
+
+      // Watermark candidate: newest SUCCESSFULLY INGESTED call. Deliberately independent
+      // of whether it got a transcript — see the contract in ingestionWatermark.js.
+      const startedMs = call.call_date ? Date.parse(call.call_date) : NaN;
+      if (Number.isFinite(startedMs) && (newestIngestedMs === null || startedMs > newestIngestedMs)) {
+        newestIngestedMs = startedMs;
       }
     }
 
+    // Advance only when the walk actually covered its floor (or was the bounded cold-start
+    // pull). A truncated walk leaves an unfetched gap, so the watermark is held.
+    if ((reachedFloor || coldStartCapped) && newestIngestedMs !== null) {
+      result.watermark_after = ingestionWatermark.advance(new Date(newestIngestedMs).toISOString());
+    }
+
     result.success = true;
+    this._logSyncSummary(result);
+    return result;
+  }
+
+  /**
+   * Sync summary — one aggregate line, then ONE LINE PER OFFICE so "is Riley
+   * disproportionate?" is answerable straight from Log Analytics. Strictly aggregate:
+   * no call ids, no caller numbers, no content, and no DID beyond the office key itself.
+   * @param {object} result the fullSync result
+   */
+  _logSyncSummary(result) {
     console.log(
       `✅ Mango API sync: found ${result.calls_found}, transcribed ${result.recordings_transcribed}, ` +
-      `reused ${result.recordings_reused}, budget-skipped ${result.transcription_skipped_budget}, errors ${result.errors.length}`
+      `reused ${result.recordings_reused}, budget-skipped ${result.transcription_skipped_budget}, ` +
+      `no-recording ${result.recordings_missing}, errors ${result.errors.length} ` +
+      `| scanned ${result.calls_scanned} over ${result.pages_fetched} page(s), ` +
+      `walk ${result.walk_complete ? 'complete' : 'INCOMPLETE'}, watermark ${result.watermark_after}`
     );
-    return result;
+
+    const keys = [
+      ...OFFICE_LOG_ORDER.filter((k) => result.by_office[k]),
+      ...Object.keys(result.by_office).filter((k) => !OFFICE_LOG_ORDER.includes(k)),
+    ];
+    for (const key of keys) {
+      const o = result.by_office[key];
+      const age = o.no_recording_age;
+      console.log(
+        `📊 Mango sync[${key}]: ingested ${o.ingested}, transcribed ${o.transcribed}, ` +
+        `reused ${o.reused}, budget-skipped ${o.budget_skipped}, ` +
+        `no-recording ${o.no_recording} (age at fetch: <15m ${age.lt15m}, 15-60m ${age.m15to60}, ` +
+        `>60m ${age.gt60m}, unknown ${age.unknown}), ` +
+        `missed ${o.missed}, too-short ${o.too_short}, errors ${o.errors}, ` +
+        `unavailable ${o.unavailable}, empty ${o.empty}`
+      );
+    }
+
+    if (result.no_did > 0) {
+      console.warn(
+        `📊 Mango sync: ${result.no_did} call(s) this sync had no usable DID on the office side ` +
+        "(ring group / IVR / user object instead of a number) → bucketed to 'unknown'."
+      );
+    }
   }
 }
 
