@@ -1,19 +1,19 @@
 /**
  * Mango utility routes
  *
- * Provides on-demand recording + transcription fetch for a Mango call ID.
- * This is useful because not every call has a recording, and the UI exposes
- * a stable per-call URL: https://app.mangovoice.com/calls/<id>
+ * Audio playback proxy for a stored Mango call (recordings are never persisted, so the
+ * signed recording_url is re-fetched on demand), plus the staging-only dev seeder.
+ * The UI exposes a stable per-call URL: https://app.mangovoice.com/calls/<id>
  */
 
 const express = require('express');
-const path = require('path');
 const router = express.Router();
 
 const { Readable } = require('stream');
-const mangoScraper = require('../services/mangoScraper');
+// NB: mangoScraper (Puppeteer) is deliberately NOT required here — the only route that
+// used it was the deleted POST /fetch/:mangoCallId, and Chromium is not in the lean
+// API container. Keep this file browser-free.
 const mangoApiClient = require('../services/mangoApiClient');
-const transcriptionService = require('../services/transcriptionService');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSyncService = require('../services/openDentalSync');
 const audit = require('../platform/audit');
@@ -81,87 +81,14 @@ router.get('/calls/:callId/recording', async (req, res) => {
   }
 });
 
-router.post('/fetch/:mangoCallId', async (req, res) => {
-  try {
-    const { mangoCallId } = req.params;
-    if (!mangoCallId || !/^\d+$/.test(String(mangoCallId))) {
-      return res.status(400).json({ success: false, error: 'Invalid mangoCallId' });
-    }
-
-    const externalId = `mango_call_${mangoCallId}`;
-    const detailUrl = `https://app.mangovoice.com/calls/${encodeURIComponent(mangoCallId)}`;
-
-    // Download MP3 (returns absolute path or null)
-    // Note: detailUrl is a /calls/<id> page, so mangoScraper.downloadRecording delegates to
-    // the network-capture flow for best reliability.
-    const recordingPath = await mangoScraper.downloadRecording(detailUrl, externalId);
-    if (!recordingPath) {
-      return res.json({
-        success: false,
-        message: 'No recording downloaded (call may show "No Recording Available" or download not accessible).',
-        mango_call_id: mangoCallId,
-      });
-    }
-
-    const filename = path.basename(recordingPath);
-    const recordingUrl = `/api/mango/recordings/${encodeURIComponent(filename)}`;
-
-    // Transcribe
-    let transcriptText = null;
-    let transcriptJson = null;
-    try {
-      const t = await transcriptionService.transcribeFile(recordingPath);
-      if (t) {
-        transcriptText = t.text || null;
-        transcriptJson = t.words || null;
-      }
-    } catch (e) {
-      // keep going; we still return recording
-    }
-
-    // Upsert onto the unified call (match by mango_call_id/external_id)
-    const existing = unifiedCallStore.getCalls({ source: 'mango', limit: 5000, offset: 0 }).calls
-      .find(c => c.mango_call_id === String(mangoCallId) || c.external_id === externalId);
-
-    if (existing?.id) {
-      unifiedCallStore.updateCall(existing.id, {
-        recording_path: recordingPath,
-        recording_url: recordingUrl,
-        transcript: transcriptText,
-        transcript_json: transcriptJson,
-      });
-      // Enter the source-agnostic path so it appears in the Slice B worklist. Skips synced.
-      await matchIfNeeded(existing.id);
-      await unifiedCallStore.persist();
-      return res.json({ success: true, call: unifiedCallStore.getCall(existing.id) });
-    }
-
-    // If we don't have a call yet, create a minimal Mango call entry
-    unifiedCallStore.addMangoCalls([{
-      id: externalId,
-      external_id: externalId,
-      mango_call_id: String(mangoCallId),
-      mango_detail_url: detailUrl,
-      call_date: new Date().toISOString(),
-      duration_seconds: 0,
-      caller_number: null,
-      outcome: 'unknown',
-      recording_path: recordingPath,
-      recording_url: recordingUrl,
-      transcript: transcriptText,
-      transcript_json: transcriptJson,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }]);
-    await matchIfNeeded(externalId);
-    await unifiedCallStore.persist();
-
-    return res.json({ success: true, call: unifiedCallStore.getCall(externalId) });
-  } catch (error) {
-    console.error('Mango fetch failed:', error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
+// (M3) `POST /fetch/:mangoCallId` was DELETED, not repaired. It swallowed transcription
+// failures in an empty catch and returned `success: true, transcript: null` — a live
+// violation of the platform rule "never claim success before the result is persisted"
+// (diagnosis §4). It was also already non-functional in prod: it routed through
+// mangoScraper.downloadRecording, i.e. Puppeteer/Chromium, which was dropped from the lean
+// API container in a1f1fc4. M4 builds the correct on-demand transcribe endpoint from
+// scratch on transcribeUrl/getCall, surfacing TRANSCRIPTION_BUDGET_EXCEEDED to the user
+// instead of hiding it. Removing this now keeps M4 from inheriting it.
 
 /**
  * POST /api/mango/dev/seed  — synthetic Mango-call seeder for STAGING.

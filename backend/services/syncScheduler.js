@@ -8,7 +8,6 @@
 const cron = require('node-cron');
 const mangoScraper = require('./mangoScraper');
 const mangoApiClient = require('./mangoApiClient');
-const transcriptionService = require('./transcriptionService');
 const callAnalyzer = require('./callAnalyzer');
 const unifiedCallStore = require('./unifiedCallStore');
 const openDentalSyncService = require('./openDentalSync');
@@ -279,12 +278,11 @@ class SyncScheduler {
       _syncState.lastRunAt = new Date().toISOString();
       _syncState.lastSuccess = new Date().toISOString();
 
-      // After Mango sync, transcribe any new recordings
-      if (syncLog.calls_imported > 0) {
-        this.transcribeUntranscribedMango({ maxCalls: syncLog.calls_imported }).catch(err =>
-          console.error('Post-sync transcription error:', err.message)
-        );
-      }
+      // (M3) The post-sync `transcribeUntranscribedMango` sweep was removed here: it
+      // filtered on `recording_path`, which the API ingest path never sets, so it found
+      // zero candidates on every run for 14 days (diagnosis H2). With the ingestion
+      // watermark in place, the retry for an untranscribed call is M4's on-demand button
+      // over the store — not a second automatic sweep.
 
     } catch (error) {
       console.error('❌ Sync job failed:', error.message);
@@ -336,112 +334,6 @@ class SyncScheduler {
       console.error('❌ Retell sync failed:', error.message);
       return { success: false, added: 0, message: error.message };
     }
-  }
-
-  /**
-   * Transcribe Mango calls that have local recordings but no transcript.
-   * Runs through the Azure AI Speech transcription + optional AI analysis pipeline.
-   */
-  async transcribeUntranscribedMango(options = {}) {
-    const maxCalls = options.maxCalls || 10;
-    const fs = require('fs').promises;
-
-    if (!transcriptionService.isAvailable()) {
-      console.warn('⚠️ Azure AI Speech not configured (AZURE_SPEECH_ENDPOINT missing). Skipping Mango transcription.');
-      return { transcribed: 0, analyzed: 0, errors: [] };
-    }
-
-    // Find Mango calls with a recording_path but no transcript
-    const allCalls = unifiedCallStore.getCalls({ source: 'mango', limit: 5000 }).calls;
-    const untranscribed = allCalls.filter(c =>
-      c.recording_path &&
-      !c.transcript &&
-      c.duration_seconds > 5 // skip very short calls (noise/hangups)
-    );
-
-    if (untranscribed.length === 0) {
-      console.log('✅ No untranscribed Mango calls found');
-      return { transcribed: 0, analyzed: 0, errors: [] };
-    }
-
-    console.log(`🎤 Found ${untranscribed.length} untranscribed Mango calls (processing up to ${maxCalls})`);
-
-    const batch = untranscribed.slice(0, maxCalls);
-    let transcribed = 0;
-    let analyzed = 0;
-    const errors = [];
-
-    for (const call of batch) {
-      // CIRCUIT BREAKER (cost-investigation #2c): stop once the daily audio-minute budget is
-      // spent — keep the already-ingested metadata, just don't transcribe more today.
-      const budget = transcriptionService.checkDailyBudget();
-      if (!budget.allowed) {
-        console.warn(
-          `⛔ Transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min) — ` +
-          'stopping Mango transcription for today.'
-        );
-        break;
-      }
-
-      // Verify the recording file actually exists on disk
-      try {
-        await fs.access(call.recording_path);
-      } catch {
-        // File missing — skip silently
-        continue;
-      }
-
-      // Step 1: Transcribe
-      try {
-        const result = await transcriptionService.transcribeFile(call.recording_path);
-        if (result && result.text) {
-          const updates = {
-            transcript: result.text,
-            transcript_json: result.utterances || result.words || null,
-          };
-
-          // Step 2: AI analysis (D4: skip the summary LLM for very short calls).
-          try {
-            const longEnough = (call.duration_seconds || 0) >= mangoConfig.summaryMinSeconds;
-            const analysis = longEnough
-              ? await callAnalyzer.analyzeCall({ ...call, transcript: result.text })
-              : null;
-            if (analysis) {
-              if (analysis.caller_name) updates.caller_name = analysis.caller_name;
-              if (analysis.call_reason) updates.call_reason = analysis.call_reason;
-              if (analysis.sentiment) updates.sentiment = analysis.sentiment;
-              if (analysis.summary) updates.summary = analysis.summary;
-              if (analysis.is_emergency !== undefined) updates.is_emergency = analysis.is_emergency;
-              // Compact-summary fields (item 2) for the OD note.
-              if (analysis.action_needed !== undefined) updates.action_needed = analysis.action_needed;
-              if (analysis.callback_number !== undefined) updates.callback_number = analysis.callback_number;
-              // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1).
-              if (analysis.appointment_requested !== undefined) updates.appointment_requested = analysis.appointment_requested;
-              if (analysis.callback_needed !== undefined) updates.callback_required = analysis.callback_needed;
-              analyzed++;
-            }
-          } catch (e) {
-            errors.push(`Analysis failed for ${call.id}: ${e.message}`);
-          }
-
-          unifiedCallStore.updateCall(call.id, updates);
-          transcribed++;
-        }
-      } catch (e) {
-        errors.push(`Transcription failed for ${call.id}: ${e.message}`);
-      }
-    }
-
-    // Re-run match → status now that these calls have a transcript + caller_name (a
-    // name can lift a phone-only 'needs_review' to a confident 'matched'). Skips synced.
-    const matched = await this.matchMangoCalls(batch);
-
-    if (transcribed > 0 || matched > 0) {
-      await unifiedCallStore.persist();
-    }
-
-    console.log(`✅ Mango transcription: ${transcribed} transcribed, ${analyzed} analyzed, ${matched} matched, ${errors.length} errors`);
-    return { transcribed, analyzed, matched, errors };
   }
 
   /**
