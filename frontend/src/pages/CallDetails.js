@@ -41,7 +41,7 @@ import {
   CheckCircle as CheckIcon,
 } from '@mui/icons-material';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis } from 'recharts';
-import { callsApi, unifiedCallsApi, openDentalSyncApi, mangoApi } from '../services/api';
+import { callsApi, unifiedCallsApi, openDentalSyncApi } from '../services/api';
 import { AudioSyncPlayer, ChatBubbleTranscript } from '../components/Transcript';
 import { PatientLinkDialog, SyncStatusBadge } from '../components/OpenDental';
 
@@ -66,7 +66,6 @@ const CallDetails = () => {
   const [patientLinkDialogOpen, setPatientLinkDialogOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [fetchingMango, setFetchingMango] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -109,22 +108,10 @@ const CallDetails = () => {
     }
   };
 
-  const handleFetchMangoRecording = async () => {
-    if (!call?.mango_call_id) return;
-    setFetchingMango(true);
-    try {
-      const result = await mangoApi.fetchRecordingAndTranscript(call.mango_call_id);
-      if (result?.success) {
-        await fetchCallDetails();
-      } else {
-        alert(result?.message || 'No recording available for this Mango call.');
-      }
-    } catch (e) {
-      alert(`Failed to fetch Mango recording: ${e.message}`);
-    } finally {
-      setFetchingMango(false);
-    }
-  };
+  // (M3) `handleFetchMangoRecording` was removed with POST /api/mango/fetch/:id — the
+  // route returned success:true with a null transcript when transcription failed, and had
+  // been non-functional in prod since Chromium left the lean container. M4 adds the
+  // correct on-demand transcribe action (in new-dashboard, the live UI).
 
   // Handle successful patient link
   const handleLinkSuccess = () => {
@@ -516,21 +503,9 @@ const CallDetails = () => {
             )}
           </Box>
 
-          {call.source === 'mango' && !(recording?.recording_url || call.recording_url) && call.mango_call_id && (
-            <Box sx={{ mb: 2 }}>
-              <Button
-                variant="outlined"
-                onClick={handleFetchMangoRecording}
-                disabled={fetchingMango}
-                startIcon={fetchingMango ? <CircularProgress size={16} /> : <SyncIcon />}
-              >
-                {fetchingMango ? 'Fetching recording…' : 'Fetch Mango Recording + Transcript'}
-              </Button>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                Mango recordings require an on-demand fetch if they weren’t downloaded during sync.
-              </Typography>
-            </Box>
-          )}
+          {/* (M3) The "Fetch Mango Recording + Transcript" button was removed with its
+              backend route — it reported success even when transcription failed. M4 adds
+              the correct on-demand transcribe action in new-dashboard. */}
 
           <AudioSyncPlayer
             audioUrl={recording?.recording_url || call.recording_url}

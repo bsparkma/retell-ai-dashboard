@@ -12,9 +12,27 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { beforeEach, afterEach } = test;
 
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Isolate durable state (the ingestion watermark, the budget accounting) in a temp dir so
+// the suite neither reads nor writes the repo's data/ directory. Must be set before the
+// modules below resolve CALLSTORE_DIR.
+const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'carein-dedup-'));
+const SAVED_CALLSTORE_DIR = process.env.CALLSTORE_DIR;
+process.env.CALLSTORE_DIR = TMP_DIR;
+
 const unifiedCallStore = require('./unifiedCallStore');
 const transcriptionService = require('./transcriptionService');
+const ingestionWatermark = require('./ingestionWatermark');
 const { MangoApiClient } = require('./mangoApiClient');
+
+test.after(() => {
+  if (SAVED_CALLSTORE_DIR === undefined) delete process.env.CALLSTORE_DIR;
+  else process.env.CALLSTORE_DIR = SAVED_CALLSTORE_DIR;
+  try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch (_) {}
+});
 
 let savedRequestPersist;
 let savedIsAvailable;
@@ -33,6 +51,10 @@ beforeEach(() => {
   savedRequestPersist = unifiedCallStore.requestPersist;
   unifiedCallStore.requestPersist = () => {};
   clearStore();
+  // Each test starts from a cold watermark (see ingestionWatermark.test.js for the
+  // watermark's own coverage) so these dedup assertions stay independent of walk state.
+  try { fs.unlinkSync(path.join(TMP_DIR, 'mango_ingestion_watermark.json')); } catch (_) {}
+  ingestionWatermark._state.reset();
 
   savedIsAvailable = transcriptionService.isAvailable;
   savedTranscribeUrl = transcriptionService.transcribeUrl;

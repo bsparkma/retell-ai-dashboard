@@ -7,7 +7,23 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { afterEach } = test;
 
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Isolate the persisted budget doc in a temp dir (see transcriptionDayKey.test.js for the
+// persistence/timezone coverage) so this suite never touches the repo's data/ directory.
+const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'carein-budget-legacy-'));
+const SAVED_CALLSTORE_DIR = process.env.CALLSTORE_DIR;
+process.env.CALLSTORE_DIR = TMP_DIR;
+
 const svc = require('./transcriptionService');
+
+test.after(() => {
+  if (SAVED_CALLSTORE_DIR === undefined) delete process.env.CALLSTORE_DIR;
+  else process.env.CALLSTORE_DIR = SAVED_CALLSTORE_DIR;
+  try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch (_) {}
+});
 
 // Snapshot the breaker fields so each test restores them.
 let saved;
@@ -46,7 +62,7 @@ test('checkDailyBudget blocks transcription once the cap is reached', () => {
   assert.equal(svc.checkDailyBudget().allowed, false);
 });
 
-test('counters reset when the UTC day rolls over', () => {
+test('counters reset when the local accounting day rolls over', () => {
   svc.dailyBudgetMinutes = 120;
   svc.dailyKey = '2020-01-01'; // a stale day
   svc.dailyMinutes = 999;

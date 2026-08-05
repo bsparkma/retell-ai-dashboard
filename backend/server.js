@@ -326,13 +326,10 @@ async function bootstrap() {
     // 3. Start Mango sync scheduler (cron-based, default: every hour at :15)
     syncScheduler.start();
 
-    // 4. Transcribe any untranscribed Mango calls that have local recordings
-    //    (runs once on startup, then again after each Mango sync via the scheduler)
-    setTimeout(() => {
-      syncScheduler.transcribeUntranscribedMango({ maxCalls: 10 }).catch(err =>
-        console.error('Mango transcription backfill error:', err.message)
-      );
-    }, 10000); // wait 10s for Retell sync to finish first
+    // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
+    // `recording_path`, which the API ingest path never sets, so it found zero candidates
+    // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
+    // on-demand button over the store, not an automatic startup sweep.
 
   }).catch(error => {
     console.error('Failed to initialize unified call store:', error);
