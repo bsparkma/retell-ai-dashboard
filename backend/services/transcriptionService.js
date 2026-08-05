@@ -19,6 +19,14 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { KNOWN_VOCABULARY, applyCorrections } = require('../config/mangoVocabulary');
+const { DurableState } = require('./durableState');
+
+// Timezone the daily audio-minute budget is accounted in. MUST be the offices' local zone,
+// not UTC: UTC midnight is 7:00 PM CDT, so a UTC day rolled the budget in the middle of the
+// evening and the 7:15 PM sync spent 35-40% of the next business day's budget on the
+// PREVIOUS evening's calls before the office even opened (diagnosis H1/§3b). Resolved with
+// Intl (real DST-aware zone data) — never a hardcoded -5/-6 offset.
+const BUDGET_TIMEZONE = process.env.TRANSCRIPTION_BUDGET_TZ || 'America/Chicago';
 
 // Cognitive Services token audience for Entra/MI auth against Azure AI Speech.
 const AZURE_SPEECH_SCOPE = 'https://cognitiveservices.azure.com/.default';
@@ -44,32 +52,70 @@ class TranscriptionService {
     };
 
     // ── Daily circuit breaker (cost guardrail, cost-investigation #2c) ──────────────
-    // Caps audio-minutes sent to Azure Speech per UTC day. When exceeded, callers skip
-    // transcription and keep ingesting call metadata — so no dedup regression or retry loop
-    // can ever bill unbounded again. Default 120 min/day. Set the env to 0 to disable.
+    // Caps audio-minutes sent to Azure Speech per LOCAL (America/Chicago) day. When
+    // exceeded, callers skip transcription and keep ingesting call metadata — so no dedup
+    // regression or retry loop can ever bill unbounded again. Default 120 min/day. Set the
+    // env to 0 to disable. The 120 is deliberately unchanged here: it is structurally
+    // undersized for transcribe-every-call, and M4 removes that demand by making
+    // transcription an explicit, human-triggered decision.
     this.dailyBudgetMinutes = (() => {
       const raw = process.env.MAX_TRANSCRIPTION_MINUTES_PER_DAY;
       if (raw === undefined || raw === '') return 120;
       const n = Number(raw);
       return Number.isFinite(n) && n >= 0 ? n : 120;
     })();
-    this.dailyKey = null;            // 'YYYY-MM-DD' (UTC) of the current accounting day
+    this.budgetTimezone = BUDGET_TIMEZONE;
+    this.dailyKey = null;            // 'YYYY-MM-DD' in budgetTimezone
     this.dailyMinutes = 0;           // audio-minutes transcribed so far today
     this.dailyBudgetTripped = false; // whether we've logged the "budget reached" line today
+    // Accounting survives a restart (diagnosis H11): an in-memory counter handed back a
+    // fresh 120 minutes every time the container recycled mid-day. Degrades to in-memory
+    // with one log line where there is no durable volume (staging) — never blocks startup.
+    this._dailyState = new DurableState('transcription_budget.json', { day_key: null, minutes_used: 0 });
+    this._dailyLoaded = false;
   }
 
-  /** Current UTC day key 'YYYY-MM-DD'. */
-  _todayKey() {
-    return new Date().toISOString().slice(0, 10);
+  /**
+   * Day key 'YYYY-MM-DD' in the budget timezone. DST-correct via Intl zone data (en-CA
+   * formats as YYYY-MM-DD); a fixed -5/-6 offset would be wrong for half the year.
+   * @param {Date} [now] injectable for tests
+   */
+  _todayKey(now = new Date()) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.budgetTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
   }
 
-  /** Reset the daily transcription counters when the UTC day rolls over. */
+  /** Load persisted {dayKey, minutesUsed} once per process (best-effort). */
+  _loadDailyState() {
+    if (this._dailyLoaded) return;
+    this._dailyLoaded = true;
+    const doc = this._dailyState.read();
+    const key = typeof doc.day_key === 'string' ? doc.day_key : null;
+    const used = Number(doc.minutes_used);
+    if (key && Number.isFinite(used) && used >= 0) {
+      this.dailyKey = key;
+      this.dailyMinutes = used;
+    }
+  }
+
+  /** Persist the current day's accounting (best-effort; never throws). */
+  _saveDailyState() {
+    this._dailyState.write({ day_key: this.dailyKey, minutes_used: Number(this.dailyMinutes.toFixed(3)) });
+  }
+
+  /** Reset the daily transcription counters when the local accounting day rolls over. */
   _rollDailyIfNeeded() {
+    this._loadDailyState();
     const today = this._todayKey();
     if (this.dailyKey !== today) {
       this.dailyKey = today;
       this.dailyMinutes = 0;
       this.dailyBudgetTripped = false;
+      this._saveDailyState();
     }
   }
 
@@ -223,7 +269,7 @@ class TranscriptionService {
       if (!this.dailyBudgetTripped) {
         this.dailyBudgetTripped = true;
         console.warn(
-          `⛔ Transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min for ${this.dailyKey} UTC). ` +
+          `⛔ Transcription daily budget reached (${budget.usedMinutes.toFixed(0)}/${budget.capMinutes} min for ${this.dailyKey} ${this.budgetTimezone}). ` +
           'Halting transcription for the day; call metadata still ingests. Override with MAX_TRANSCRIPTION_MINUTES_PER_DAY.'
         );
       }
@@ -277,9 +323,11 @@ class TranscriptionService {
       this.stats.totalMinutes += transcript.duration_seconds / 60;
       // Azure AI Speech standard (S0) ≈ $1 / audio hour.
       this.stats.totalCost += (transcript.duration_seconds / 60) * (1 / 60);
-      // Daily circuit-breaker accounting: count the audio-minutes actually transcribed.
+      // Daily circuit-breaker accounting: count the audio-minutes actually transcribed,
+      // and persist so a container restart cannot hand back a fresh budget mid-day (H11).
       this._rollDailyIfNeeded();
       this.dailyMinutes += transcript.duration_seconds / 60;
+      this._saveDailyState();
     }
 
     console.log(`✅ Azure Speech transcription complete in ${durationSec}s`);
@@ -375,6 +423,8 @@ class TranscriptionService {
       dailyKey: this.dailyKey,
       dailyMinutes: Number(this.dailyMinutes.toFixed(2)),
       dailyBudgetMinutes: this.dailyBudgetMinutes,
+      budgetTimezone: this.budgetTimezone,
+      budgetPersisted: this._dailyState.durable === true,
     };
   }
 
