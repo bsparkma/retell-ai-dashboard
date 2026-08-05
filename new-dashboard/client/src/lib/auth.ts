@@ -85,12 +85,12 @@ export function login(): void {
   window.location.href = `${AUTH_BASE}/auth/login`;
 }
 
-/** Clear the session cookie and return to the sign-in screen. */
+/** Clear the session cookie, then hard-redirect to the root (sign-in). */
 export async function logout(): Promise<void> {
   try {
     await fetch(`${AUTH_BASE}/auth/logout`, { method: "POST", credentials: "include" });
   } catch {
     // Ignore network errors — we still drop the client state below.
   }
-  window.location.reload();
+  window.location.href = "/";
 }

@@ -16,7 +16,7 @@ const PRIORITY_DOT: Record<string, string> = {
   emergency: "oklch(0.55 0.22 25)",
   high: "oklch(0.62 0.22 25)",
   medium: "oklch(0.78 0.17 75)",
-  low: "oklch(0.52 0.015 240)",
+  low: "var(--muted-foreground)",
 };
 const STATUS_BADGE: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; className: string }> = {
   pending: { variant: "outline", className: "border-amber-500/50 text-amber-700 bg-amber-500/10" },
@@ -164,7 +164,7 @@ export default function Callbacks() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Callbacks
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -180,14 +180,14 @@ export default function Callbacks() {
       {/* Stats bar */}
       <div className="flex flex-wrap gap-3">
         {[
-          { label: "Total", value: stats?.total ?? 0, color: "oklch(0.52 0.015 240)" },
-          { label: "Pending", value: stats?.pending ?? 0, color: (stats?.pending ?? 0) > 0 ? "oklch(0.65 0.17 75)" : "oklch(0.52 0.015 240)" },
-          { label: "Overdue", value: stats?.overdue ?? 0, color: (stats?.overdue ?? 0) > 0 ? "oklch(0.55 0.22 25)" : "oklch(0.52 0.015 240)" },
+          { label: "Total", value: stats?.total ?? 0, color: "var(--muted-foreground)" },
+          { label: "Pending", value: stats?.pending ?? 0, color: (stats?.pending ?? 0) > 0 ? "oklch(0.65 0.17 75)" : "var(--muted-foreground)" },
+          { label: "Overdue", value: stats?.overdue ?? 0, color: (stats?.overdue ?? 0) > 0 ? "oklch(0.55 0.22 25)" : "var(--muted-foreground)" },
           { label: "Completed", value: completedCount, color: "oklch(0.55 0.18 155)" },
         ].map((s) => (
           <Card key={s.label} className="flex-1 min-w-[120px]">
             <CardContent className="p-3 text-center">
-              <div className="text-xl font-bold" style={{ fontFamily: "Outfit, sans-serif", color: s.color }}>
+              <div className="text-xl font-bold" style={{ fontFamily: "Sora, sans-serif", color: s.color }}>
                 {s.value}
               </div>
               <div className="text-xs text-muted-foreground">{s.label}</div>
@@ -205,8 +205,8 @@ export default function Callbacks() {
               onClick={() => setStatusFilter(tab.key)}
               className="px-3 py-1 rounded text-xs font-medium transition-all"
               style={{
-                backgroundColor: statusFilter === tab.key ? "white" : "transparent",
-                color: statusFilter === tab.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                backgroundColor: statusFilter === tab.key ? "var(--card)" : "transparent",
+                color: statusFilter === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
                 boxShadow: statusFilter === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >

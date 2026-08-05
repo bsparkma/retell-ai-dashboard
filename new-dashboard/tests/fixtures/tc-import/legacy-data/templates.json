@@ -1,0 +1,53 @@
+[
+  {
+    "id": "tpl_test",
+    "practiceId": "legacy-practice",
+    "name": "Test Template",
+    "category": "general",
+    "subject": "Hello subject",
+    "preheader": "",
+    "isSeed": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "header",
+        "logoUrl": null,
+        "logoWidth": 140,
+        "headline": "Head",
+        "subhead": "",
+        "bgColor": "#ffffff",
+        "textColor": "#0f172a",
+        "align": "center"
+      },
+      {
+        "id": "b2",
+        "type": "text",
+        "html": "<p>hi</p>",
+        "bgColor": "#ffffff",
+        "textColor": "#0f172a",
+        "fontSize": 15
+      },
+      {
+        "id": "b3",
+        "type": "button",
+        "label": "Go",
+        "href": "https://example.com",
+        "bgColor": "#0ea5b8",
+        "textColor": "#ffffff",
+        "align": "center",
+        "fullWidth": false
+      },
+      {
+        "id": "b4",
+        "type": "footer",
+        "showAddress": true,
+        "showPhone": true,
+        "fineText": "fine",
+        "bgColor": "#f8fafc",
+        "textColor": "#64748b"
+      }
+    ]
+  }
+]

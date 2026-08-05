@@ -1,0 +1,37 @@
+[
+  {
+    "id": "pa_1",
+    "patientName": "Synthetic Preauth",
+    "phone": "",
+    "email": "",
+    "odPatientId": 9002,
+    "preAuthType": "treatment",
+    "description": "crown preauth",
+    "insuranceCarrier": "Synthetic Dental Ins",
+    "status": "submitted",
+    "doctor": "Dr. Fixture",
+    "createdAt": "2026-01-03T10:00:00.000Z",
+    "submittedDate": "2026-01-04",
+    "decisionDate": null,
+    "referenceNumber": "REF123",
+    "notes": "",
+    "location": "riley"
+  },
+  {
+    "id": "pa_2",
+    "patientName": "Synthetic Preauth Two",
+    "phone": "",
+    "email": "",
+    "odPatientId": null,
+    "preAuthType": "manual",
+    "description": "",
+    "insuranceCarrier": "",
+    "status": "pending",
+    "doctor": "",
+    "createdAt": "2026-01-05T10:00:00.000Z",
+    "submittedDate": null,
+    "decisionDate": null,
+    "referenceNumber": "",
+    "notes": ""
+  }
+]

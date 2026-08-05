@@ -26,7 +26,7 @@ import { toast } from "sonner";
 function sentimentColor(s: CareInCall["sentiment"]): string {
   if (s === "positive") return "oklch(0.55 0.18 155)";
   if (s === "negative") return "oklch(0.62 0.22 25)";
-  return "oklch(0.52 0.015 240)";
+  return "var(--muted-foreground)";
 }
 
 const TAG_LABELS: Record<string, string> = {
@@ -262,7 +262,7 @@ export default function CareInCallDetail() {
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+            <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
               {call.callerName}
             </h1>
             {call.isEmergency && (
@@ -272,7 +272,7 @@ export default function CareInCallDetail() {
             )}
             <span
               className="text-sm font-medium px-2.5 py-1 rounded-full"
-              style={{ backgroundColor: "oklch(0.55 0.18 210 / 0.12)", color: "oklch(0.40 0.18 210)" }}
+              style={{ backgroundColor: "oklch(0.52 0.12 186 / 0.12)", color: "oklch(0.38 0.11 186)" }}
             >
               CareIN · Rover (AI)
             </span>

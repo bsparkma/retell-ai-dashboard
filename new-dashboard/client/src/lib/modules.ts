@@ -12,19 +12,38 @@
  * won't render.
  */
 
+import { KanbanSquare, PhoneCall, type LucideIcon } from "lucide-react";
+
 export const MODULE_IDS = ["voice", "rcm", "tc", "scheduling"] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
 
 export interface ModuleDef {
   id: ModuleId;
   label: string;
-  /** Route prefix the module's pages live under ("/" for voice today). */
+  /** One-line pitch shown on the /home module tile. */
+  description: string;
+  /** Tile icon on /home (the sidebar keeps its own per-page icons). */
+  icon: LucideIcon;
+  /** The module's home route — where its tile and the switcher land. */
   basePath: string;
 }
 
 /** Modules the SPA can actually render today. Voice = the whole current app. */
 export const MODULES: Partial<Record<ModuleId, ModuleDef>> = {
-  voice: { id: "voice", label: "Voice", basePath: "/" },
+  voice: {
+    id: "voice",
+    label: "Voice",
+    description: "AI phone agent — calls, callbacks, scheduling, and analytics.",
+    icon: PhoneCall,
+    basePath: "/dashboard",
+  },
+  tc: {
+    id: "tc",
+    label: "Treatment Coordinator",
+    description: "Case pipeline, follow-ups, pre-auth, and patient presentations.",
+    icon: KanbanSquare,
+    basePath: "/tc",
+  },
 };
 
 export const DEFAULT_MODULE: ModuleId = "voice";

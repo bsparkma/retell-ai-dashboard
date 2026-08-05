@@ -173,7 +173,7 @@ function SlotMarkerSchedulingCard() {
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold flex items-center gap-2">
-          <CalendarClock size={16} style={{ color: "oklch(0.55 0.18 210)" }} />
+          <CalendarClock size={16} style={{ color: "var(--primary)" }} />
           Slot Marker Scheduling
         </CardTitle>
         <p className="text-xs text-muted-foreground">
@@ -303,7 +303,7 @@ function SchedulingRules() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <Stethoscope size={16} style={{ color: "oklch(0.55 0.18 210)" }} />
+              <Stethoscope size={16} style={{ color: "var(--primary)" }} />
               Appointment Types
             </CardTitle>
             <span className="text-xs text-muted-foreground">
@@ -328,7 +328,7 @@ function SchedulingRules() {
                   className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${rule.enabled ? "bg-primary" : "bg-muted-foreground/30"}`}
                   onClick={(e) => { e.stopPropagation(); toggleRule(appointmentRules, setAppointmentRules, rule.id); }}
                 >
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-background dark:bg-foreground shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
                 </button>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-foreground">{rule.name}</div>
@@ -363,7 +363,7 @@ function SchedulingRules() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <Settings2 size={16} style={{ color: "oklch(0.55 0.18 210)" }} />
+              <Settings2 size={16} style={{ color: "var(--primary)" }} />
               Scheduling Rules
             </CardTitle>
             <span className="text-xs text-muted-foreground">
@@ -378,7 +378,7 @@ function SchedulingRules() {
           {availabilityRules.map((rule) => {
             const typeColors: Record<string, { bg: string; text: string }> = {
               block: { bg: "oklch(0.62 0.22 25 / 0.12)", text: "oklch(0.55 0.22 25)" },
-              priority: { bg: "oklch(0.55 0.18 210 / 0.12)", text: "oklch(0.45 0.18 210)" },
+              priority: { bg: "oklch(0.52 0.12 186 / 0.12)", text: "oklch(0.42 0.12 186)" },
               buffer: { bg: "oklch(0.65 0.17 75 / 0.12)", text: "oklch(0.50 0.17 75)" },
             };
             const tc = typeColors[rule.type];
@@ -391,7 +391,7 @@ function SchedulingRules() {
                   className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 mt-0.5 ${rule.enabled ? "bg-primary" : "bg-muted-foreground/30"}`}
                   onClick={() => toggleAvail(rule.id)}
                 >
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-background dark:bg-foreground shadow transition-transform ${rule.enabled ? "left-[18px]" : "left-0.5"}`} />
                 </button>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -485,7 +485,7 @@ export default function Scheduling() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Outfit, sans-serif" }}>
+          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
             Scheduling
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -507,8 +507,8 @@ export default function Scheduling() {
               onClick={() => setActiveTab(tab.key)}
               className="px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2"
               style={{
-                backgroundColor: activeTab === tab.key ? "white" : "transparent",
-                color: activeTab === tab.key ? "oklch(0.18 0.02 240)" : "oklch(0.52 0.015 240)",
+                backgroundColor: activeTab === tab.key ? "var(--card)" : "transparent",
+                color: activeTab === tab.key ? "var(--foreground)" : "var(--muted-foreground)",
                 boxShadow: activeTab === tab.key ? "0 1px 3px oklch(0 0 0 / 0.1)" : "none",
               }}
             >
