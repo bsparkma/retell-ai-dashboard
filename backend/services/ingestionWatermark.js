@@ -15,15 +15,28 @@
  *   later. Ingestion captures everything; transcription is a separate, later decision
  *   over the store.
  *
- * SEMANTICS: `started_at` is the watermark, and it means "every call at or before this
- * instant has been ingested". The next sync walks back to `watermark − OVERLAP` rather
- * than to the watermark itself, so late-arriving / late-finalized calls that Mango only
- * published after we passed their timestamp are still picked up. Re-ingesting inside the
- * overlap is free: the store dedups on external_id (unifiedCallStore.addMangoCalls).
+ * SEMANTICS: `started_at` is the watermark. Every call newer than `watermark − OVERLAP`
+ * has been ingested, EXCEPT anything inside the recorded `gap` (below). The next sync
+ * walks back to `watermark − OVERLAP` rather than to the watermark itself, so
+ * late-arriving / late-finalized calls that Mango only published after we passed their
+ * timestamp are still picked up. Re-ingesting inside the overlap is free: the store
+ * dedups on external_id (unifiedCallStore.addMangoCalls).
  *
- * The watermark is only advanced when the walk actually REACHED the floor. If the page
- * cap truncated the walk there is an unfetched gap below the oldest call we saw, so the
- * watermark is HELD and the next sync re-walks the same floor. Nothing is dropped silently.
+ * THE GAP. If the page cap truncates a walk, everything from the oldest call we reached
+ * up to now IS ingested contiguously — but there is an unfetched range below it. Holding
+ * the watermark there does NOT work: the next walk restarts from the newest call, so new
+ * arrivals push its reach FORWARD and the unfetched range widens every sync. A backlog
+ * deeper than one sync's page budget would never drain.
+ *
+ * So a truncated walk advances the watermark to the newest ingested call (the top is
+ * covered) and records the unfetched range explicitly as `{ gap_from, gap_to }`. Later
+ * syncs do their normal short walk, then KEEP PAGING to drain the gap from its newest end
+ * downward, and the gap closes when a walk finally crosses `gap_from`.
+ *
+ * Pages that lie entirely in the already-ingested region between the gap and the floor
+ * carry no ingest work, so they are charged to a SEPARATE skip budget (MAX_SKIP_PAGES).
+ * Sharing one budget would re-stall: the skip region grows as the gap drains, and would
+ * eventually eat the whole page allowance before reaching any un-ingested call.
  */
 
 const { DurableState } = require('./durableState');
@@ -48,9 +61,25 @@ const MAX_PAGES = (() => {
   return Number.isFinite(n) && n >= 1 ? n : 10;
 })();
 
+/**
+ * Page budget for traversing the ALREADY-INGESTED region between a gap and the floor.
+ * These pages do no ingest work — they are list calls and nothing else — so they get
+ * their own, much larger allowance. Charging them to MAX_PAGES would re-create the stall.
+ */
+const MAX_SKIP_PAGES = (() => {
+  const raw = process.env.MANGO_SYNC_MAX_SKIP_PAGES;
+  if (raw === undefined || raw === '') return 60; // 3000 rows of already-covered history
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? n : 60;
+})();
+
 const OVERLAP_MS = OVERLAP_MINUTES * 60 * 1000;
 
-const state = new DurableState('mango_ingestion_watermark.json', { started_at: null });
+const state = new DurableState('mango_ingestion_watermark.json', {
+  started_at: null,
+  gap_from: null,
+  gap_to: null,
+});
 
 /**
  * Read the current watermark.
@@ -77,7 +106,9 @@ function floorMs() {
 
 /**
  * Advance the watermark to `isoTs` — call this ONLY with the newest `started_at` that was
- * successfully ingested, and ONLY when the walk reached its floor. Never moves backwards.
+ * successfully ingested. Never moves backwards. Safe to call after a TRUNCATED walk too:
+ * the region from the oldest call reached up to the newest is contiguous, and whatever
+ * lies below it is recorded separately by openOrExtendGap().
  * @param {string|null} isoTs
  * @returns {string|null} the watermark in effect after the call
  */
@@ -88,15 +119,59 @@ function advance(isoTs) {
   const current = get().startedAt;
   if (current && Date.parse(current) >= next) return current; // monotonic
 
-  const iso = new Date(next).toISOString();
-  state.write({ started_at: iso });
-  return iso;
+  const doc = state.read();
+  state.write({ ...doc, started_at: new Date(next).toISOString() });
+  return get().startedAt;
 }
 
-/** Clear the stored watermark (tests only). */
+/**
+ * The unfetched range a truncated walk left behind, if any.
+ * @returns {{ from: string, to: string }|null} `from` is the older bound, `to` the newer
+ */
+function getGap() {
+  const doc = state.read();
+  const from = Date.parse(doc.gap_from);
+  const to = Date.parse(doc.gap_to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return null;
+  return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+}
+
+/**
+ * Record (or extend) the unfetched range after a truncated walk.
+ *
+ * `from` is the boundary the walk was TRYING to reach and never did — it is preserved
+ * across runs, so a repeat truncation can't shrink the range we still owe. `to` is the
+ * oldest call this run reached; it only ever moves OLDER, because a run that made no
+ * progress must not discard the deeper coverage an earlier run already achieved.
+ *
+ * @param {number} fromMs older bound (the walk's stop target)
+ * @param {number} toMs   newer bound (oldest call actually reached this run)
+ */
+function openOrExtendGap(fromMs, toMs) {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) return getGap();
+  const doc = state.read();
+  const existingFrom = Date.parse(doc.gap_from);
+  const existingTo = Date.parse(doc.gap_to);
+
+  const from = Number.isFinite(existingFrom) ? Math.min(existingFrom, fromMs) : fromMs;
+  const to = Number.isFinite(existingTo) ? Math.min(existingTo, toMs) : toMs;
+  if (from >= to) return closeGap();
+
+  state.write({ ...doc, gap_from: new Date(from).toISOString(), gap_to: new Date(to).toISOString() });
+  return getGap();
+}
+
+/** Clear the gap — a walk finally crossed its older bound. */
+function closeGap() {
+  const doc = state.read();
+  state.write({ ...doc, gap_from: null, gap_to: null });
+  return null;
+}
+
+/** Clear all stored ingestion state (tests only). */
 function _reset() {
   state.reset();
-  state.write({ started_at: null });
+  state.write({ started_at: null, gap_from: null, gap_to: null });
   state.reset();
 }
 
@@ -104,9 +179,13 @@ module.exports = {
   get,
   floorMs,
   advance,
+  getGap,
+  openOrExtendGap,
+  closeGap,
   OVERLAP_MINUTES,
   OVERLAP_MS,
   MAX_PAGES,
+  MAX_SKIP_PAGES,
   _state: state,
   _reset,
 };

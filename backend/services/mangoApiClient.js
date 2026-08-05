@@ -286,10 +286,19 @@ class MangoApiClient {
     const maxCalls = options.maxCalls || 100;
     const maxPages = ingestionWatermark.MAX_PAGES;
 
+    const maxSkipPages = ingestionWatermark.MAX_SKIP_PAGES;
+
     const watermarkBefore = ingestionWatermark.get().startedAt;
     const wmFloor = ingestionWatermark.floorMs();
     const coldStart = wmFloor === null;
     const floorMs = coldStart ? Date.now() - sinceDays * 24 * 60 * 60 * 1000 : wmFloor;
+
+    // An unfetched range a previous truncated walk left behind. While one is open the walk
+    // keeps paging past the floor to drain it, and stops at its older bound instead.
+    const gap = coldStart ? null : ingestionWatermark.getGap();
+    const gapFromMs = gap ? Date.parse(gap.from) : null;
+    const gapToMs = gap ? Date.parse(gap.to) : null;
+    const stopMs = gap ? Math.min(floorMs, gapFromMs) : floorMs;
 
     const result = {
       success: false,
@@ -309,6 +318,12 @@ class MangoApiClient {
       pages_fetched: 0,
       calls_scanned: 0,
       page_cap_hit: false,
+      // Backlog drainage (a previous truncated walk's unfetched range).
+      gap_before: gap,
+      gap_after: gap,
+      gap_calls_ingested: 0,
+      skip_pages: 0,
+      skip_cap_hit: false,
       // Per-office breakdown (item 5) + the count of calls whose `to` party had no DID.
       by_office: {},
       no_did: 0,
@@ -320,6 +335,12 @@ class MangoApiClient {
         `📞 Mango API sync: INITIALIZING — no ingestion watermark stored yet, falling back to the ` +
         `last ${sinceDays}d (up to ${maxCalls} calls). Older history is NOT backfilled.`
       );
+    } else if (gap) {
+      console.warn(
+        `📞 Mango API sync: walking back to ${new Date(floorMs).toISOString()} ` +
+        `(watermark ${watermarkBefore} − ${ingestionWatermark.OVERLAP_MINUTES}m overlap), then DRAINING ` +
+        `the backlog gap ${gap.from} → ${gap.to} left by an earlier truncated walk...`
+      );
     } else {
       console.log(
         `📞 Mango API sync: walking back to ${new Date(floorMs).toISOString()} ` +
@@ -327,57 +348,90 @@ class MangoApiClient {
       );
     }
 
-    // ── Backwards walk: /calls/ newest-first until we cross the floor ──────────────────
+    // ── Backwards walk: /calls/ newest-first until we cross the stop boundary ──────────
+    // Rows above the floor are ingested (the normal window). With a gap open the walk
+    // continues past the floor: rows between the gap and the floor are ALREADY ingested,
+    // so they are skipped on a separate page budget, and rows inside the gap are ingested.
+    // Three independent page budgets. The normal window, the already-covered skip region,
+    // and the gap drain each get their own — a shared budget starves whichever comes last
+    // in the walk, which is always the drain, so the backlog would never move.
     const raw = [];
     let offset = 0;
-    let reachedFloor = false;
+    let reachedStop = false;
     let coldStartCapped = false;
     let listCount = null;
     let oldestScannedAt = null;
+    let normalPages = 0;
+    let gapPages = 0;
 
-    while (result.pages_fetched < maxPages) {
+    while (normalPages < maxPages && gapPages < maxPages && result.skip_pages < maxSkipPages) {
       let page;
       try {
         page = await this.listCalls({ limit: PAGE_SIZE, offset });
       } catch (e) {
         result.errors.push(`listCalls offset=${offset}: ${e.message}`);
-        break; // walk incomplete → watermark is held below
+        break; // walk incomplete → the unfetched remainder is recorded as a gap below
       }
       result.pages_fetched++;
       if (typeof page.count === 'number') listCount = page.count;
 
-      if (!page.results.length) { reachedFloor = true; break; } // list exhausted
+      if (!page.results.length) { reachedStop = true; break; } // list exhausted
 
+      let pageHadNormal = false;
+      let pageHadGap = false;
       for (const c of page.results) {
         result.calls_scanned++;
         const started = c.started_at ? Date.parse(c.started_at) : NaN;
         if (Number.isFinite(started)) oldestScannedAt = started;
-        if (Number.isFinite(started) && started < floorMs) { reachedFloor = true; break; }
-        if (isIngestibleCall(c)) raw.push(c);
+        if (Number.isFinite(started) && started < stopMs) { reachedStop = true; break; }
+
+        // Already covered by an earlier run: below the floor but above the gap. Costs a
+        // list row and nothing else.
+        if (gap !== null && Number.isFinite(started) && started < floorMs && started > gapToMs) {
+          continue;
+        }
+
+        const inGap = gap !== null && Number.isFinite(started) && started <= gapToMs;
+        if (inGap) pageHadGap = true; else pageHadNormal = true;
+
+        if (isIngestibleCall(c)) {
+          raw.push(c);
+          if (inGap) result.gap_calls_ingested++;
+        }
         // Cold start has no floor to stop at — bound it by maxCalls and move on.
         if (coldStart && raw.length >= maxCalls) { coldStartCapped = true; break; }
       }
-      if (reachedFloor || coldStartCapped) break;
-      if (page.results.length < PAGE_SIZE) { reachedFloor = true; break; } // list exhausted
+
+      // Charge the page to whichever budget it actually consumed.
+      if (pageHadNormal) normalPages++;
+      else if (pageHadGap) gapPages++;
+      else result.skip_pages++;
+
+      if (reachedStop || coldStartCapped) break;
+      if (page.results.length < PAGE_SIZE) { reachedStop = true; break; } // list exhausted
 
       offset += page.results.length;
       await sleep(300); // be polite
     }
 
-    result.walk_complete = reachedFloor;
-    result.page_cap_hit = !reachedFloor && !coldStartCapped && result.pages_fetched >= maxPages;
+    result.walk_complete = reachedStop;
+    result.skip_cap_hit = !reachedStop && !coldStartCapped && result.skip_pages >= maxSkipPages;
+    result.page_cap_hit = !reachedStop && !coldStartCapped && !result.skip_cap_hit
+      && (normalPages >= maxPages || gapPages >= maxPages);
 
-    if (result.page_cap_hit) {
-      // NEVER truncate silently. Hold the watermark so the next sync re-walks the same
-      // floor, and say out loud how much of the list we did not reach.
+    if (result.page_cap_hit || result.skip_cap_hit) {
+      // NEVER truncate silently. The region from oldestScanned up to now IS covered, so
+      // the watermark still advances (below) — what we owe is recorded as an explicit gap
+      // that later syncs drain from its newest end downward.
       const remaining = Number.isFinite(listCount) ? listCount - result.calls_scanned : null;
       console.error(
-        `⛔ Mango sync: PAGE CAP HIT — ${result.pages_fetched} pages / ${result.calls_scanned} calls scanned ` +
-        `without reaching the floor ${new Date(floorMs).toISOString()}. Oldest scanned ` +
+        `⛔ Mango sync: ${result.skip_cap_hit ? 'SKIP CAP' : 'PAGE CAP'} HIT — ${result.pages_fetched} pages / ` +
+        `${result.calls_scanned} calls scanned (${result.skip_pages} skip page(s)) without reaching ` +
+        `${new Date(stopMs).toISOString()}. Oldest scanned ` +
         `${oldestScannedAt ? new Date(oldestScannedAt).toISOString() : 'unknown'}; ` +
-        `up to ${remaining === null ? 'unknown' : remaining} older calls left UNFETCHED this run. ` +
-        `Watermark HELD at ${watermarkBefore} (nothing dropped silently) — the next sync re-walks the ` +
-        'same floor. Raise MANGO_SYNC_MAX_PAGES or shorten MANGO_SYNC_SCHEDULE if this repeats.'
+        `up to ${remaining === null ? 'unknown' : remaining} older calls left UNFETCHED this run — ` +
+        'RECORDED AS A GAP and drained by later syncs, not dropped. Raise ' +
+        `${result.skip_cap_hit ? 'MANGO_SYNC_MAX_SKIP_PAGES' : 'MANGO_SYNC_MAX_PAGES'} if this repeats.`
       );
     }
 
@@ -481,10 +535,33 @@ class MangoApiClient {
       }
     }
 
-    // Advance only when the walk actually covered its floor (or was the bounded cold-start
-    // pull). A truncated walk leaves an unfetched gap, so the watermark is held.
-    if ((reachedFloor || coldStartCapped) && newestIngestedMs !== null) {
+    // The region from `oldestScannedAt` up to the newest call is contiguous whether or not
+    // the walk finished, so the watermark advances either way. What a truncated walk owes
+    // is recorded as a gap instead of being papered over by holding the watermark — holding
+    // it does NOT work, because the next walk restarts from the newest call, so new
+    // arrivals push its reach forward and the unfetched range widens every sync.
+    if (newestIngestedMs !== null) {
       result.watermark_after = ingestionWatermark.advance(new Date(newestIngestedMs).toISOString());
+    }
+
+    if (reachedStop) {
+      // Crossed the stop boundary — which IS the gap's older bound whenever one was open.
+      if (gap) {
+        result.gap_after = ingestionWatermark.closeGap();
+        console.log(
+          `✅ Mango sync: backlog gap ${gap.from} → ${gap.to} fully drained ` +
+          `(${result.gap_calls_ingested} call(s) recovered from it this run).`
+        );
+      }
+    } else if (!coldStartCapped && oldestScannedAt !== null) {
+      result.gap_after = ingestionWatermark.openOrExtendGap(stopMs, oldestScannedAt);
+      if (result.gap_after) {
+        console.warn(
+          `📌 Mango sync: unfetched backlog now recorded as ${result.gap_after.from} → ${result.gap_after.to}` +
+          (gap ? ` (drained ${result.gap_calls_ingested} call(s) from it this run)` : '') +
+          '. Later syncs continue draining it from the newest end down.'
+        );
+      }
     }
 
     result.success = true;
@@ -503,8 +580,12 @@ class MangoApiClient {
       `✅ Mango API sync: found ${result.calls_found}, transcribed ${result.recordings_transcribed}, ` +
       `reused ${result.recordings_reused}, budget-skipped ${result.transcription_skipped_budget}, ` +
       `no-recording ${result.recordings_missing}, errors ${result.errors.length} ` +
-      `| scanned ${result.calls_scanned} over ${result.pages_fetched} page(s), ` +
-      `walk ${result.walk_complete ? 'complete' : 'INCOMPLETE'}, watermark ${result.watermark_after}`
+      `| scanned ${result.calls_scanned} over ${result.pages_fetched} page(s) ` +
+      `(${result.skip_pages} skip), walk ${result.walk_complete ? 'complete' : 'INCOMPLETE'}, ` +
+      `watermark ${result.watermark_after}` +
+      (result.gap_after
+        ? `, BACKLOG GAP OPEN ${result.gap_after.from} → ${result.gap_after.to} (drained ${result.gap_calls_ingested} this run)`
+        : '')
     );
 
     const keys = [

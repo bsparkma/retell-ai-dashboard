@@ -200,10 +200,11 @@ test('a busy hour above the old 25-call cap is ingested in full (H3)', async () 
 
 // ── Page cap ────────────────────────────────────────────────────────────────────────
 
-test('page cap hit: flagged, logged, and the watermark is HELD (no silent truncation)', async () => {
+test('page cap hit: logged, and the unfetched remainder is recorded as an explicit gap', async () => {
   const now = Date.now();
   const watermark = new Date(now - 1 * HOUR).toISOString();
   ingestionWatermark.advance(watermark);
+  const floor = new Date(Date.parse(watermark) - ingestionWatermark.OVERLAP_MS).toISOString();
 
   ingestionWatermark.MAX_PAGES = 2; // 2 pages × 50 = 100 of the 150 available
 
@@ -225,12 +226,79 @@ test('page cap hit: flagged, logged, and the watermark is HELD (no silent trunca
   assert.equal(result.walk_complete, false);
   assert.equal(result.pages_fetched, 2);
   assert.equal(result.calls_scanned, 100);
-  assert.equal(result.watermark_after, watermark, 'watermark HELD so the next sync re-walks the same floor');
-  assert.equal(ingestionWatermark.get().startedAt, watermark);
+
+  // The watermark ADVANCES — the region from the oldest call reached up to the newest is
+  // contiguous. Holding it here is what made a deep backlog un-drainable.
+  assert.equal(result.watermark_after, new Date(now).toISOString());
+
+  const gap = ingestionWatermark.getGap();
+  assert.ok(gap, 'the unfetched remainder is recorded explicitly');
+  assert.equal(gap.from, floor, 'the gap runs from the boundary the walk failed to reach');
+  assert.equal(gap.to, new Date(now - 99 * 1000).toISOString(), '…up to the oldest call it did reach');
 
   const capLine = logged.find((l) => l.includes('PAGE CAP HIT'));
   assert.ok(capLine, 'the cap must be logged explicitly, never silently');
   assert.ok(capLine.includes('up to 50 older calls left UNFETCHED'), 'the log states the count left unfetched');
+  assert.ok(capLine.includes('RECORDED AS A GAP'), 'and says the remainder is owed, not dropped');
+});
+
+test('a backlog deeper than one sync drains across syncs with ZERO loss', async () => {
+  // THE STALL THIS GUARDS: holding the watermark on a cap hit meant the next walk
+  // restarted from the newest call, so new arrivals pushed its reach FORWARD and the
+  // unfetched range widened every sync. A backlog deeper than one page budget was
+  // permanently unreachable — precisely the "we were down over the weekend" case.
+  const T0 = Date.parse('2026-08-06T18:00:00Z');
+  ingestionWatermark.MAX_PAGES = 3; // deliberately tight: forces a multi-sync drain
+
+  // 600 calls, one every 3 minutes (~30h of backlog), against a 30h-stale watermark.
+  const world = Array.from({ length: 600 }, (_, i) => rawCall(1000 + i, T0 - i * 3 * 60 * 1000));
+  ingestionWatermark.advance(new Date(T0 - 30 * HOUR).toISOString());
+
+  const backlogIds = world.map((c) => c.id);
+  const everIngested = new Set();
+  let nextId = 90000;
+
+  const savedError = console.error;
+  const savedWarn = console.warn;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    for (let sync = 1; sync <= 8; sync++) {
+      const { client } = makeClient(world);
+      const r = await client.fullSync();
+      for (const c of r.calls) everIngested.add(Number(c.mango_call_id));
+
+      // An hour passes and 20 more calls arrive at the top of the list.
+      for (let k = 0; k < 20; k++) {
+        world.push(rawCall(nextId++, T0 + sync * HOUR + k * 60 * 1000));
+      }
+      world.sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+    }
+  } finally {
+    console.error = savedError;
+    console.warn = savedWarn;
+  }
+
+  const missed = backlogIds.filter((id) => !everIngested.has(id));
+  assert.equal(missed.length, 0, `${missed.length} backlogged calls were never ingested`);
+  assert.equal(ingestionWatermark.getGap(), null, 'the gap closes once the walk crosses its older bound');
+});
+
+test('a gap only ever widens toward older calls — a stalled run cannot discard earlier coverage', () => {
+  const t = (iso) => Date.parse(iso);
+  ingestionWatermark.openOrExtendGap(t('2026-08-01T00:00:00Z'), t('2026-08-05T00:00:00Z'));
+
+  // A later run that reached FURTHER back moves the newer bound older.
+  ingestionWatermark.openOrExtendGap(t('2026-08-01T00:00:00Z'), t('2026-08-03T00:00:00Z'));
+  assert.equal(ingestionWatermark.getGap().to, '2026-08-03T00:00:00.000Z');
+
+  // A run that made NO progress must not throw away the deeper coverage already achieved.
+  ingestionWatermark.openOrExtendGap(t('2026-08-01T00:00:00Z'), t('2026-08-04T12:00:00Z'));
+  assert.equal(ingestionWatermark.getGap().to, '2026-08-03T00:00:00.000Z', 'newer bound is monotonic');
+  assert.equal(ingestionWatermark.getGap().from, '2026-08-01T00:00:00.000Z', 'older bound is preserved');
+
+  ingestionWatermark.closeGap();
+  assert.equal(ingestionWatermark.getGap(), null);
 });
 
 // ── THE M4 SEAM ─────────────────────────────────────────────────────────────────────
