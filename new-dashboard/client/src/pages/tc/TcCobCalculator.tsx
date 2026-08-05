@@ -1,6 +1,7 @@
 /**
- * /tc/cob — full-page COB calculator. Pure dollars-domain math (no server
- * data), but stays behind the office gate for TC-module consistency.
+ * /tc/cob — full-page COB calculator. Dollars-domain math, plus the Slice-5
+ * "Pull from Open Dental" panel: the office gate is what makes that pull
+ * possible (and is what refuses it for an office with no OD connection).
  */
 import { CobCalculator } from "@/features/tc/cob/CobCalculator";
 import {
@@ -26,7 +27,7 @@ export default function TcCobCalculator() {
         subtitle="Estimate a patient's out-of-pocket when two dental plans coordinate benefits"
       />
       <div className="max-w-4xl">
-        <CobCalculator />
+        <CobCalculator office={office} />
       </div>
     </div>
   );

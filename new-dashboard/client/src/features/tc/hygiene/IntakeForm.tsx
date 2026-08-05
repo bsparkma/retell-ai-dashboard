@@ -4,9 +4,14 @@
  *
  * Submits POST /tc/hygiene-intakes which creates the case in hygiene_review.
  * Identity (submittedBy) comes from the platform SSO session server-side —
- * this form never sends it. The legacy "search Open Dental / pull treatment
- * plan" prefill is a DisabledFeatureButton until Slice 5; dictation (Slice 7)
- * is omitted entirely.
+ * this form never sends it. Dictation (Slice 7) is omitted entirely.
+ *
+ * Slice 5 brings the legacy "Search Open Dental" prefill live, READ-ONLY: it
+ * links a real PatNum to the case at entry and fills the name/DOB-derived age/
+ * phone/email fields, which is what makes every later OD read on the case
+ * (treatment plan, COB, next appointment) possible without a second lookup.
+ * The chairside path still works with no OD at all — the fields stay typed by
+ * hand, and every prefilled field remains editable.
  */
 import { useId, useState } from "react";
 import { Link } from "wouter";
@@ -16,7 +21,6 @@ import {
   ClipboardList,
   Flame,
   Loader2,
-  Search,
   Send,
   Stethoscope,
   User,
@@ -44,9 +48,10 @@ import {
   Urgency,
   type OfficeId,
 } from "@shared/tc/contract";
-import { submitHygieneIntake, tcErrorMessage, type TcIntakeSubmit } from "../api";
+import { submitHygieneIntake, tcErrorMessage, type OdPatient, type TcIntakeSubmit } from "../api";
 import { URGENCY_LABELS, type UrgencyId } from "../status";
-import { DisabledFeatureButton } from "../components/TcShell";
+import { OdPatientSearch } from "../od/OdShell";
+import { fieldsFromOdPatient } from "../od/odPatient";
 import { todayIsoDate } from "../lib/followups";
 
 type CaseCategoryId = (typeof CaseCategory.options)[number];
@@ -113,6 +118,8 @@ interface IntakeDraft {
   insuranceNoted: string;
   patientInterestLevel: InterestId;
   flagUrgent: boolean;
+  /** Set only by the Open Dental link — never typed. */
+  odPatientId: number | null;
 }
 
 function emptyDraft(): IntakeDraft {
@@ -121,6 +128,7 @@ function emptyDraft(): IntakeDraft {
     patientAge: "",
     phone: "",
     email: "",
+    odPatientId: null,
     diagnosingProvider: "",
     category: "single_tooth",
     urgency: "medium",
@@ -185,11 +193,29 @@ export function IntakeForm({ office }: IntakeFormProps) {
   const fid = (name: string) => `${idPrefix}-${name}`;
 
   const [draft, setDraft] = useState<IntakeDraft>(emptyDraft);
+  const [odPatient, setOdPatient] = useState<OdPatient | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState<string | null>(null);
 
   const set = <K extends keyof IntakeDraft>(key: K, value: IntakeDraft[K]) => {
     setDraft((prev) => ({ ...prev, [key]: value }));
+  };
+
+  /**
+   * Link an Open Dental patient. Prefills the identity fields but does NOT lock
+   * them — a chairside correction (a preferred name, a better phone number) is a
+   * normal thing to make, and the PatNum link survives it.
+   */
+  const linkOdPatient = (p: OdPatient) => {
+    setOdPatient(p);
+    setDraft((prev) => ({ ...prev, ...fieldsFromOdPatient(p) }));
+  };
+
+  const unlinkOdPatient = () => {
+    setOdPatient(null);
+    // Leave the typed fields alone — unlinking removes the OD reference, not
+    // the intake the hygienist has already filled in.
+    setDraft((prev) => ({ ...prev, odPatientId: null }));
   };
 
   // "none" is exclusive of the actual film types (legacy behaviour preserved).
@@ -234,6 +260,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
       patientAge,
       phone: draft.phone.trim() || null,
       email: draft.email.trim() || null,
+      odPatientId: draft.odPatientId,
       diagnosingProvider,
       category: draft.category,
       urgency: draft.urgency,
@@ -260,6 +287,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
       toast.success("Sent to TC inbox");
       setLastSubmitted(patientName);
       setDraft(emptyDraft());
+      setOdPatient(null);
     } catch (e) {
       // Keep the form values so nothing typed chairside is lost.
       toast.error(tcErrorMessage(e));
@@ -291,10 +319,14 @@ export function IntakeForm({ office }: IntakeFormProps) {
         title="Patient"
         subtitle={submitterName ? `Submitting as ${submitterName}` : undefined}
       >
-        {/* Legacy OD search/prefill lived here — ships dark until Slice 5. */}
-        <DisabledFeatureButton reason="slice5_od" className="block w-full">
-          <Search className="w-4 h-4 mr-1.5" /> Search Open Dental
-        </DisabledFeatureButton>
+        {/* Read-only OD link. Optional: the chairside path works without it. */}
+        <OdPatientSearch
+          office={office}
+          selected={odPatient}
+          onSelect={linkOdPatient}
+          onClear={unlinkOdPatient}
+          label="Link an Open Dental patient (optional)"
+        />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2 space-y-1.5">
             <Label htmlFor={fid("name")}>Patient name *</Label>

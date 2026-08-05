@@ -150,17 +150,20 @@ export function UrgencyBadge({ urgency }: { urgency: UrgencyId }) {
 
 // ── Disabled features (honest "not yet" affordances) ────────────────────────
 
-export type DisabledReason = "platform_email" | "slice5_od" | "slice7_ai";
+// `slice5_od` is GONE as of Slice 5: Open Dental reads are live, so a disabled
+// "coming later" affordance would now be a lie. An office without an OD
+// connection gets the honest OdNotConnected state (features/tc/od/OdShell)
+// instead — a real answer about that office, not a promise about the roadmap.
+export type DisabledReason = "platform_email" | "slice7_ai";
 
 const DISABLED_COPY: Record<DisabledReason, string> = {
   platform_email: "Coming with platform email",
-  slice5_od: "Open Dental linking coming in Slice 5",
   slice7_ai: "AI generation coming in Slice 7",
 };
 
 /**
  * A visibly-disabled action with an honest tooltip. Used for Send (email),
- * Generate (smile sim), Pull from Open Dental, and dictation.
+ * Generate (smile sim), and dictation.
  */
 export function DisabledFeatureButton({
   reason,

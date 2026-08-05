@@ -342,7 +342,13 @@ export default function FloatingCalc() {
               />
             ) : (
               <div className="p-4">
-                <CobCalculator compact state={cobState} onStateChange={setCobState} />
+                {/* No office selected → no OD pull panel; the math still works. */}
+                <CobCalculator
+                  compact
+                  office={office ?? undefined}
+                  state={cobState}
+                  onStateChange={setCobState}
+                />
               </div>
             )}
           </div>

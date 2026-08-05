@@ -1427,6 +1427,84 @@ class OpenDentalService extends EventEmitter {
     return this.enabled;
   }
 
+  // ============================================================================
+  // GENERIC OD CLOUD READ (TC Slice 5)
+  // ============================================================================
+  //
+  // The named methods above cover the voice module's OD surface (patients,
+  // appointments, providers, operatories). The TC module reads a much wider set
+  // of OD resources (treatplans, proctps, treatplanattaches, procedurelogs,
+  // patplans, inssubs, insplans, benefits, carriers, claims) and every one of
+  // those legacy reads was a DIRECT MySQL query — impossible from Azure. Rather
+  // than grow ~10 more bespoke methods on this class, TC composes reads from one
+  // typed primitive.
+  //
+  // Deliberately read-only: `path` is a GET path only, and there is no
+  // write counterpart. Callers reach this through odAccess.odApiGet (the ONE
+  // seam) — never the singleton directly.
+  //
+  // Inherits the class's throttle interceptor (OD_API_MIN_INTERVAL_MS spacing)
+  // and 429 backoff-retry, so a fan-out of 25 procedure lookups can't burst OD.
+
+  /**
+   * Raw OD cloud GET returning the outcome instead of throwing, so callers can
+   * treat "this OD developer key has no access to /proctps" (a 403/404 capability
+   * gap) differently from "OD is down" (a transport failure).
+   *
+   * @param {string} path OD API path beginning with '/', e.g. '/treatplans'
+   * @param {Record<string, unknown>} [params] query params (PascalCase, per OD)
+   * @param {{ timeoutMs?: number }} [opts]
+   * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
+   */
+  async apiGetRaw(path, params = {}, opts = {}) {
+    if (this.useDatabase) {
+      // Direct-MySQL tenants have no cloud client. TC is api-mode only.
+      return { ok: false, status: 0, data: null, error: 'OD client is in direct-DB mode; TC reads require api mode' };
+    }
+    if (!this.enabled || !this.client) {
+      return { ok: false, status: 0, data: null, error: 'Open Dental cloud API is not configured' };
+    }
+
+    const clean = {};
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== undefined && v !== null && v !== '') clean[k] = v;
+    }
+
+    try {
+      const response = await this.client.get(path, {
+        params: clean,
+        ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+      });
+      return { ok: true, status: response.status, data: response.data };
+    } catch (error) {
+      const status = error.response?.status || 0;
+      // OD's body carries the actionable reason ("'X' is not a valid parameter",
+      // "not a valid resource"). Keep it — it is metadata, never PHI, and the
+      // capability probes below depend on reading it.
+      const body = error.response?.data;
+      const detail = typeof body === 'string' ? body : body ? JSON.stringify(body) : error.message;
+      return { ok: false, status, data: body ?? null, error: String(detail).slice(0, 400) };
+    }
+  }
+
+  /**
+   * Same as apiGetRaw but throws on failure — for reads where a miss is a real
+   * error rather than a capability question.
+   * @param {string} path
+   * @param {Record<string, unknown>} [params]
+   * @param {{ timeoutMs?: number }} [opts]
+   * @returns {Promise<unknown>}
+   */
+  async apiGet(path, params = {}, opts = {}) {
+    const res = await this.apiGetRaw(path, params, opts);
+    if (!res.ok) {
+      const err = new Error(`OD GET ${path} failed (${res.status}): ${res.error}`);
+      err.odStatus = res.status;
+      throw err;
+    }
+    return res.data;
+  }
+
   formatTime(dateTime) {
     if (!dateTime) return '00:00';
     

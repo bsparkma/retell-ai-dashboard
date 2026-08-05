@@ -18,11 +18,12 @@
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
  *   /library          per-office library config (server-owned settings)
+ *   /od               Open Dental READS (Slice 5) — patient search, treatment
+ *                     plans, unaccepted finder, COB + insurance, next appointment
  *
- * NOT here (explicitly out of Slice 3): every OD touchpoint (patient search,
- * treatment plans, bulk/COB, appointments → Slice 5; commlog review-then-send
- * → Slice 6) — those endpoints are ABSENT, not stubbed, so their arrival is a
- * visible surface change. No SPA changes (Slice 4), no scheduling.
+ * NOT here: the OD commlog write (review-then-send → Slice 6). Every /od route
+ * is a GET and the OD transport has no write counterpart, so this module cannot
+ * write to Open Dental. No scheduling.
  */
 
 const express = require('express');
@@ -39,5 +40,6 @@ router.use('/gallery', require('./gallery'));
 router.use('/smile-sim', require('./smileSim'));
 router.use('/media', require('./media'));
 router.use('/library', require('./library'));
+router.use('/od', require('./od'));
 
 module.exports = router;

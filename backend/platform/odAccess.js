@@ -338,6 +338,42 @@ function testConnection(req) {
 // OD writes (api mode: cloud API client; never direct MySQL, never a delete)
 // ===========================================================================
 
+// ===========================================================================
+// Generic OD cloud READ primitive (TC Slice 5)
+//
+// The named wrappers above model the voice module's OD surface. The TC module
+// reads ~10 further OD resources (treatplans, proctps, treatplanattaches,
+// procedurelogs, patplans, inssubs, insplans, benefits, carriers, claims) —
+// every one of them a DIRECT MySQL query in the legacy TC app, which is
+// impossible from Azure and forbidden. They are re-expressed as OD cloud reads
+// through THIS seam, so tenant resolution, od_primary_mode routing and the
+// od_api_base guard all still apply.
+//
+// AUDIT: deliberately NOT audited per-call. A single TC read (e.g. one
+// treatment plan) fans out to as many as 25 OD GETs; auditing each would bury
+// the trail. The TC route module emits exactly ONE audit row per PHI read
+// request (helpers.auditTc(req,'READ',...)), which is the same granularity the
+// voice module's audited named methods produce. Callers of odApiGet MUST audit
+// their logical read — see backend/routes/tc/od.js.
+//
+// Read-only by construction: there is no odApiPost/Put/Delete counterpart, so
+// this seam cannot become a back door for OD writes.
+// ===========================================================================
+
+/**
+ * @param {TenantReq} req
+ * @param {string} path OD API path beginning with '/'
+ * @param {Record<string, unknown>} [params]
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
+ */
+function odApiGet(req, path, params = {}, opts = {}) {
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    throw new OdAccessError(`odApiGet path must start with '/' (got ${path})`, 'OD_MODE_UNKNOWN');
+  }
+  return viaPrimary(req, 'apiGetRaw', [path, params, opts]);
+}
+
 /** @param {TenantReq} req @param {object} appointmentData */
 function bookAppointment(req, appointmentData) {
   return viaPrimary(req, 'bookAppointment', [appointmentData]);
@@ -478,6 +514,8 @@ module.exports = {
   checkSchedulingConflicts: withAudit('checkSchedulingConflicts', checkSchedulingConflicts),
   findAlternativeTimeSlots: withAudit('findAlternativeTimeSlots', findAlternativeTimeSlots),
   findAvailableSlotsForDay: withAudit('findAvailableSlotsForDay', findAvailableSlotsForDay),
+  // generic OD cloud read primitive (TC Slice 5) — caller audits its logical read
+  odApiGet,
   // non-PHI reference reads (NOT audited)
   getProviders,
   getOperatories,
