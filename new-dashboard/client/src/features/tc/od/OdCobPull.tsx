@@ -7,19 +7,18 @@
  * REMAINING max and REMAINING deductible rather than the plan's headline
  * numbers — which is the whole reason the pull exists.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT CHANGED FROM LEGACY, AND WHY THE UI MUST SAY SO
- * ─────────────────────────────────────────────────────────────────────────────
- * Legacy read claimproc directly out of MySQL, so it had per-plan CONTRACTED
- * allowed amounts (fee − WriteOffEst) and YTD usage summed from paid claimproc
- * rows. The OD Cloud API exposes no claimproc resource at all. So:
+ * The OD Cloud API does expose /claimprocs, so this is a faithful port of the
+ * legacy MySQL behaviour rather than an approximation: contracted allowed
+ * amounts (fee − WriteOffEst) and year-to-date usage come from the same rows the
+ * legacy query read, with the same DateCP basis.
  *
- *   allowed amount → NOT AVAILABLE. Falls back to the billed fee, and the panel
- *                    says how many lines that affects — the same warning the
- *                    legacy app showed for its own claimproc-less lines.
- *   YTD usage      → RECONSTRUCTED from received claims. Same dollars, different
- *                    date basis, and claims still in process are not counted.
- *                    `ytdBasis` from the server is printed verbatim.
+ * What the panel must still say out loud:
+ *   - lines where Open Dental has NO write-off estimate fall back to the billed
+ *     fee. The server counts them (`fallbackLines`) and the warning below is the
+ *     same one the legacy app showed for its own claimproc-less lines.
+ *   - remaining max and deductible do not subtract claims that are sent but not
+ *     yet paid. The server's `ytdBasis` sentence is printed VERBATIM rather than
+ *     paraphrased, so the caveat cannot drift away from the number it qualifies.
  *
  * The panel never hides a gap to look tidier: a pre-filled number the user
  * cannot trace is worse than a blank one, because they will quote it.
@@ -131,7 +130,7 @@ export function OdCobPull({
         cob,
         insurance,
         odEstimateTotal,
-        fallbackCount: cob.procs.filter((x) => x.allowedIsBilledFee).length,
+        fallbackCount: cob.fallbackLines,
         coverage: [...cob.coverage, ...insurance.coverage],
         notes: [...cob.notes, ...insurance.notes],
       });
@@ -249,10 +248,9 @@ export function OdCobPull({
 
           {pulled.fallbackCount > 0 && (
             <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
-              ⚠ {pulled.fallbackCount} line{pulled.fallbackCount === 1 ? "" : "s"} came in with no
-              contracted allowed amount — the billed fee was used instead. Open Dental&apos;s API
-              does not expose write-off estimates, so override the per-line allowed amount for
-              accuracy on fee-schedule contracts.
+              ⚠ {pulled.fallbackCount} line{pulled.fallbackCount === 1 ? "" : "s"} had no write-off
+              estimate in Open Dental — the billed fee was used as the allowed amount. Override the
+              per-line allowed amount for accuracy on fee-schedule contracts.
             </div>
           )}
 

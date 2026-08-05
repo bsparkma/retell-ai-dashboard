@@ -1075,7 +1075,11 @@ export interface OdCobProcedure {
   secondaryInsEst: number;
   secondaryDedEst: number | null;
   hasSecondaryEstimate: boolean;
-  /** True when "allowed" is really the billed fee — the UI must say so. */
+  /**
+   * True when "allowed" is really the billed fee — either OD has no write-off
+   * estimate for this line, or it holds the -1 "not calculated" sentinel. The
+   * UI must not present it as a contracted amount.
+   */
   allowedIsBilledFee: boolean;
   estimateSource: string | null;
 }
@@ -1083,7 +1087,9 @@ export interface OdCobProcedure {
 export interface OdCobResult {
   patNum: number;
   procs: OdCobProcedure[];
-  savedPlanUsed: number | null;
+  /** Lines that fell back to the billed fee — counted server-side. */
+  fallbackLines: number;
+  claimProcsAvailable: boolean;
   coverage: OdCoverage[];
   notes: string[];
 }

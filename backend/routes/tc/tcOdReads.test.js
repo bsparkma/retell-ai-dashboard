@@ -501,7 +501,14 @@ test('a scan that hits the page cap reports a partial sweep', async () => {
 
 // ── 6. COB + insurance (the other ex-MySQL read) ────────────────────────────
 
-test('COB procedures return the fee list and flag the claimproc gap honestly', async () => {
+/** Two plans on one patient, as the live Roland probe found for PatNum 12828. */
+const PATPLANS = [
+  { PatPlanNum: 10, PatNum: 12828, Ordinal: 1, InsSubNum: 100 },
+  { PatPlanNum: 11, PatNum: 12828, Ordinal: 2, InsSubNum: 101 },
+];
+const INSSUBS = { '/inssubs/100': () => ({ InsSubNum: 100, PlanNum: 900 }), '/inssubs/101': () => ({ InsSubNum: 101, PlanNum: 901 }) };
+
+test('COB procedures derive the contracted allowed amount from claimproc', async () => {
   const { baseUrl, close } = await bootTcApp();
   try {
     await withOd(
@@ -509,8 +516,20 @@ test('COB procedures return the fee list and flag the claimproc gap honestly', a
         '/procedurelogs': () => [
           { ProcNum: 501, PatNum: 12828, ProcFee: 1300, ProcStatus: 'TP', procCode: 'D2750', descript: 'Crown', ToothNum: '19', Surf: '' },
         ],
-        '/treatplans': () => [SAVED_PLAN],
-        '/proctps': () => [{ ProcNumOrig: 501, PriInsAmt: 650, SecInsAmt: 200, PatAmt: 450 }],
+        '/patplans': () => PATPLANS,
+        ...INSSUBS,
+        '/claimprocs': (_p, params) =>
+          Number(params.Offset) > 0
+            ? []
+            : [
+                // Primary estimate: allowed = 1300 − 300.
+                { ProcNum: 501, InsSubNum: 100, PlanNum: 900, Status: 'Estimate', WriteOffEst: 300, InsEstTotal: 650, DedEst: 50 },
+                // Secondary estimate: allowed = 1300 − 200.
+                { ProcNum: 501, InsSubNum: 101, PlanNum: 901, Status: 'Estimate', WriteOffEst: 200, InsEstTotal: 200, DedEst: 0 },
+                // A Received row on the SAME procedure — money already paid, not
+                // an estimate. Counting it would double the insurance estimate.
+                { ProcNum: 501, InsSubNum: 100, PlanNum: 900, Status: 'Received', InsPayAmt: 900, InsEstTotal: 900, WriteOffEst: 0 },
+              ],
       },
       async () => {
         const res = await api(baseUrl, 'GET', '/api/tc/od/cob-procedures/12828?office=roland');
@@ -519,17 +538,17 @@ test('COB procedures return the fee list and flag the claimproc gap honestly', a
 
         const p = res.body.procs[0];
         assert.equal(p.fee, 1300);
-        assert.equal(p.primaryInsEst, 650, "OD's own Saved-plan estimate stands in for claimproc.InsEstTotal");
+        assert.equal(p.primaryAllowed, 1000, 'allowed = fee − WriteOffEst, exactly as the legacy SQL');
+        assert.equal(p.secondaryAllowed, 1100);
+        assert.equal(p.primaryInsEst, 650, 'the Received row must not inflate the estimate');
         assert.equal(p.secondaryInsEst, 200);
-        assert.equal(p.primaryAllowed, 1300);
-        assert.equal(p.allowedIsBilledFee, true, 'the UI must not present the billed fee as a contracted amount');
-        assert.equal(p.estimateSource, 'od_saved_plan');
+        assert.equal(p.primaryDedEst, 50);
+        assert.equal(p.allowedIsBilledFee, false);
+        assert.equal(p.estimateSource, 'claimproc');
 
-        const gap = res.body.coverage.find((c) => c.element.includes('contracted allowed amount'));
-        assert.equal(gap.status, 'gap');
-        assert.match(gap.note, /claimproc/);
-        const est = res.body.coverage.find((c) => c.element.includes('insurance estimate'));
-        assert.equal(est.status, 'partial');
+        const allowed = res.body.coverage.find((c) => c.element.includes('contracted allowed amount'));
+        assert.equal(allowed.status, 'confirmed');
+        assert.equal(res.body.fallbackLines, 0);
       }
     );
   } finally {
@@ -537,20 +556,85 @@ test('COB procedures return the fee list and flag the claimproc gap honestly', a
   }
 });
 
-test('with no Saved plan, COB reports the estimate as a gap rather than zero', async () => {
+test("Open Dental's -1 'not calculated' sentinel never becomes a dollar amount", async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd(
+      {
+        '/procedurelogs': () => [{ ProcNum: 501, PatNum: 12828, ProcFee: 86, ProcStatus: 'TP', procCode: 'D0140' }],
+        '/patplans': () => PATPLANS,
+        ...INSSUBS,
+        '/claimprocs': (_p, params) =>
+          Number(params.Offset) > 0
+            ? []
+            : [{ ProcNum: 501, InsSubNum: 100, PlanNum: 900, Status: 'Estimate', WriteOffEst: -1, InsEstTotal: 86, DedEst: -1 }],
+      },
+      async () => {
+        const res = await api(baseUrl, 'GET', '/api/tc/od/cob-procedures/12828?office=roland');
+        const p = res.body.procs[0];
+        // The legacy COALESCE(WriteOffEst, 0) would have produced 86 − (−1) = 87.
+        assert.equal(p.primaryAllowed, 86, 'a -1 write-off means "no estimate", not a $1 discount');
+        assert.equal(p.allowedIsBilledFee, true);
+        assert.equal(p.primaryDedEst, null, 'an uncalculated deductible stays null, never 0');
+        assert.equal(res.body.fallbackLines, 1);
+        assert.ok(res.body.notes.some((n) => n.includes('no contracted allowed amount')));
+      }
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("OD's *Override columns win, so the panel agrees with the Open Dental screen", async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd(
+      {
+        '/procedurelogs': () => [{ ProcNum: 501, PatNum: 12828, ProcFee: 1000, ProcStatus: 'TP', procCode: 'D2750' }],
+        '/patplans': () => PATPLANS,
+        ...INSSUBS,
+        '/claimprocs': (_p, params) =>
+          Number(params.Offset) > 0
+            ? []
+            : [
+                {
+                  ProcNum: 501, InsSubNum: 100, PlanNum: 900, Status: 'Estimate',
+                  WriteOffEst: 100, WriteOffEstOverride: 250,
+                  InsEstTotal: 400, InsEstTotalOverride: 500,
+                },
+              ],
+      },
+      async () => {
+        const res = await api(baseUrl, 'GET', '/api/tc/od/cob-procedures/12828?office=roland');
+        const p = res.body.procs[0];
+        assert.equal(p.primaryAllowed, 750, 'the override write-off is used, not the computed one');
+        assert.equal(p.primaryInsEst, 500);
+      }
+    );
+  } finally {
+    await close();
+  }
+});
+
+test('a claimproc read that fails degrades the estimates without losing the fee list', async () => {
   const { baseUrl, close } = await bootTcApp();
   try {
     await withOd(
       {
         '/procedurelogs': () => [{ ProcNum: 501, PatNum: 12828, ProcFee: 1300, ProcStatus: 'TP', procCode: 'D2750' }],
-        '/treatplans': () => [],
+        '/patplans': () => PATPLANS,
+        ...INSSUBS,
+        '/claimprocs': () => ({ ok: false, status: 404, data: 'not a valid resource', error: 'not a valid resource' }),
       },
       async () => {
         const res = await api(baseUrl, 'GET', '/api/tc/od/cob-procedures/12828?office=roland');
-        assert.equal(res.status, 200);
-        const est = res.body.coverage.find((c) => c.element.includes('insurance estimate'));
-        assert.equal(est.status, 'gap');
-        assert.ok(res.body.notes.some((n) => n.includes('No Saved treatment plan')));
+        assert.equal(res.status, 200, 'the procedure list still comes back');
+        assert.equal(res.body.procs.length, 1);
+        assert.equal(res.body.procs[0].primaryAllowed, 1300);
+        assert.equal(res.body.claimProcsAvailable, false);
+        const allowed = res.body.coverage.find((c) => c.element.includes('contracted allowed amount'));
+        assert.equal(allowed.status, 'gap');
+        assert.ok(res.body.notes.some((n) => n.includes('billed fee')));
       }
     );
   } finally {
@@ -558,7 +642,7 @@ test('with no Saved plan, COB reports the estimate as a gap rather than zero', a
   }
 });
 
-test('the insurance snapshot builds the plan chain and derives YTD from received claims', async () => {
+test('the insurance snapshot builds the plan chain and sums YTD from paid claimprocs', async () => {
   const { baseUrl, close } = await bootTcApp();
   const year = new Date().getFullYear();
   try {
@@ -582,10 +666,17 @@ test('the insurance snapshot builds the plan chain and derives YTD from received
                 { BenefitType: 'CoInsurance', Percent: 80, CovCatNum: 2 },
               ]
             : [],
-        '/claims': () => [
-          { ClaimNum: 1, PlanNum: 900, ClaimStatus: 'R', DateReceived: `${year}-03-01`, InsPayAmt: 400, DedApplied: 50 },
-          { ClaimNum: 2, PlanNum: 900, ClaimStatus: 'R', DateReceived: `${year - 2}-03-01`, InsPayAmt: 9999, DedApplied: 50 },
-        ],
+        '/claimprocs': (_p, params) =>
+          Number(params.Offset) > 0
+            ? []
+            : [
+                { InsSubNum: 100, PlanNum: 900, Status: 'Received', DateCP: `${year}-03-01`, InsPayAmt: 300, DedApplied: 50 },
+                { InsSubNum: 100, PlanNum: 900, Status: 'Supplemental', DateCP: `${year}-04-01`, InsPayAmt: 100, DedApplied: 0 },
+                // Prior benefit year — must not count.
+                { InsSubNum: 100, PlanNum: 900, Status: 'Received', DateCP: `${year - 2}-03-01`, InsPayAmt: 9999, DedApplied: 50 },
+                // An ESTIMATE for planned work must never count against the max.
+                { InsSubNum: 100, PlanNum: 900, Status: 'Estimate', DateCP: `${year}-05-01`, InsPayAmt: 5000, DedApplied: 0 },
+              ],
       },
       async () => {
         const res = await api(baseUrl, 'GET', '/api/tc/od/insurance/12828?office=roland');
@@ -598,7 +689,12 @@ test('the insurance snapshot builds the plan chain and derives YTD from received
         assert.equal(primary.annualMax, 1500);
         assert.equal(primary.deductible, 50);
         assert.deepEqual(primary.coinsurance, [{ percent: 80, category: 2, procCode: null }]);
-        assert.equal(primary.usage.paidYTD, 400, 'a prior-year claim is outside the benefit year');
+        assert.equal(
+          primary.usage.paidYTD,
+          400,
+          'Received + Supplemental inside the benefit year; the prior-year row and the Estimate are excluded'
+        );
+        assert.equal(primary.usage.dedAppliedYTD, 50);
         assert.equal(primary.usage.benefitYearStart, `${year}-01-01`);
         assert.equal(primary.remainingMax, 1100);
         assert.equal(primary.remainingDeductible, 0);
@@ -606,12 +702,15 @@ test('the insurance snapshot builds the plan chain and derives YTD from received
         const secondary = res.body.plans[1];
         assert.equal(secondary.role, 'secondary');
         assert.equal(secondary.usage.basis, 'plan year starting 07/01', 'the plan renewal month drives the basis');
+        assert.equal(secondary.usage.paidYTD, 0, 'the secondary plan has no paid claimprocs');
+        assert.equal(secondary.remainingMax, null, 'no annual maximum on file stays null, never 0');
 
         assert.equal(res.body.ytdAvailable, true);
-        assert.match(res.body.ytdBasis, /received insurance claims/i);
+        assert.match(res.body.ytdBasis, /paid claims since/i);
+        assert.match(res.body.ytdBasis, /not yet paid are not subtracted/i);
         const ytd = res.body.coverage.find((c) => c.element.includes('YTD paid'));
-        assert.equal(ytd.status, 'partial');
-        assert.match(ytd.note, /DateReceived/);
+        assert.equal(ytd.status, 'confirmed');
+        assert.match(ytd.note, /DateCP/);
       }
     );
   } finally {
@@ -626,7 +725,7 @@ test('an unreadable plan leg degrades that plan, not the whole snapshot', async 
       {
         '/patplans': () => [{ PatPlanNum: 10, PatNum: 12828, Ordinal: 1, InsSubNum: 100 }],
         '/inssubs/100': () => ({ ok: false, status: 500, data: null, error: 'boom' }),
-        '/claims': () => [],
+        '/claimprocs': () => [],
       },
       async () => {
         const res = await api(baseUrl, 'GET', '/api/tc/od/insurance/12828?office=roland');

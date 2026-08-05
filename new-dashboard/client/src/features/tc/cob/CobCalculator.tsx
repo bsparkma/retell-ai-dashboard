@@ -12,9 +12,9 @@
  *
  * Slice 5 brings the legacy "Pull from Open Dental" panel and the OD cross-check
  * pill live (see od/OdCobPull). The pull pre-fills REMAINING max and deductible
- * from the patient's year-to-date usage, and states the basis of those numbers —
- * the OD Cloud API cannot see claimproc, so the basis is genuinely narrower than
- * the legacy MySQL query's and the user is told exactly how.
+ * from the patient's year-to-date usage and states the basis of those numbers,
+ * because the field hints say "what's LEFT" and a pre-filled number the user
+ * cannot trace is one they will quote without checking.
  *
  * State can be lifted (state/onStateChange) so FloatingCalc preserves inputs
  * across dialog open/close; the page uses it uncontrolled.
@@ -360,8 +360,8 @@ export function cobStateFromOdPull(current: CobCalcState, pull: OdCobPullResult)
     id: newId(),
     label: describeCode(p.procCode, p.description),
     fee: String(p.fee),
-    // Allowed amounts are the billed fee whenever OD could not give a contracted
-    // one; OdCobPull surfaces the count so the user knows to override.
+    // Contracted allowed amount (fee − write-off) when OD has one; the billed
+    // fee otherwise. OdCobPull surfaces that count so the user knows to override.
     pAllowed: String(p.primaryAllowed),
     pPct: primary?.coinsurance[0]?.percent != null ? String(primary.coinsurance[0].percent) : "",
     sAllowed: p.secondaryAllowed != null ? String(p.secondaryAllowed) : String(p.fee),

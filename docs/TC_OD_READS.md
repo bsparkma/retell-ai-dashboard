@@ -8,10 +8,16 @@ Companion to [`OD_API_COVERAGE.md`](OD_API_COVERAGE.md) (the voice module's
 coverage matrix) and [`OD_API_CONTRACT.md`](OD_API_CONTRACT.md) (real OD param
 and enum shapes). Same legend, same discipline.
 
-> **This table is the deliverable that feeds RCM planning.** RCM needs the same
-> claimproc-shaped data the COB pull needs, and hits the same wall. Read the
-> "Gap: claimproc" section before designing anything that needs write-off,
-> per-procedure insurance estimates, or ledger-accurate benefit usage.
+> **This table is the deliverable that feeds RCM planning**, and its headline is
+> good news: **`GET /claimprocs` exists** and returns the full claimproc row —
+> `WriteOffEst`, `InsEstTotal`, `DedEst`, `InsPayAmt`, `DedApplied`, `Status`,
+> `DateCP`, `PlanNum`, `InsSubNum`. RCM does **not** need a connector-side SQL
+> export for per-procedure adjudication data. See
+> [Live probe transcript](#live-probe-transcript-2026-08-04) for the evidence and
+> the two behavioural traps it exposed.
+
+Every row below marked **verified** was proven against the live Roland Open
+Dental database on 2026-08-04, read-only, from inside the staging container.
 
 ---
 
@@ -81,14 +87,14 @@ document does.
 
 | Data element | Coverage | OD endpoint(s) | Notes |
 |---|---|---|---|
-| Patient search by name | **partial** | `GET /patients?LName` / `?FName` | ⚠️ **`LName`/`FName` are PREFIX matches** (`OD_API_CONTRACT.md` §7) — "Smith" also returns "Smithson". No exact-match parameter exists. Mitigated, not solved: DOB + phone are always returned and the UI never auto-selects |
+| Patient search by name | **partial** ✅verified | `GET /patients?LName` / `?FName` | ⚠️ **`LName`/`FName` are PREFIX matches** — **proven live**: `LName=Spark` returns **18 rows**, the first being "Sparkman". No exact-match parameter exists. Mitigated, not solved: DOB + phone are always returned and the UI never auto-selects. Both name lanes are load-bearing — the module's own test patient 12828 is `LName: "Test", FName: "MangoTest"`, so a last-name-only search misses it |
 | Patient DOB / phone / email | **confirmed** | `GET /patients` | TC normalizes its own shape; the voice client's `transformPatientData` drops `WirelessPhone`, which is the number the legacy TC app preferred |
 | Patient status filter | **confirmed** | `GET /patients` | API returns a **string** enum (`"Patient"`, `"Inactive"`, `"Deceased"`…), not the DB int |
 | Patient by PatNum | **confirmed** | `GET /patients/{PatNum}` | |
 | Treatment plans for a patient | **confirmed** | `GET /treatplans?PatNum` | |
-| Saved-plan procedures | **confirmed*** | `GET /proctps?TreatPlanNum` | *Subject to the developer key having the resource enabled — see "Resource-name and entitlement notes" |
-| Active/Inactive-plan procedures | **confirmed*** | `GET /treatplanattaches?TreatPlanNum` → `GET /procedurelogs/{ProcNum}` | Up to `TP_ATTACH_CAP` (25) procedure calls, bounded-concurrency |
-| Next scheduled appointment | **confirmed** | `GET /appointments?PatNum&AptStatus=Scheduled&dateStart` | `provAbbr` on the row removes the legacy provider join. `AptStatus` is the **string** `"Scheduled"`, not DB `1` |
+| Saved-plan procedures | **confirmed** ✅verified | `GET /proctps?TreatPlanNum` | **Plural only** — `/proctp` returns 404 "proctp is not a valid resource" |
+| Active/Inactive-plan procedures | **confirmed** ✅verified | `GET /treatplanattaches?TreatPlanNum` → `GET /procedurelogs/{ProcNum}` | **Plural only** — `/treatplanattach` returns 404. Up to `TP_ATTACH_CAP` (25) procedure calls, bounded-concurrency |
+| Next scheduled appointment | **confirmed** ✅verified | `GET /appointments?PatNum&AptStatus=Scheduled&dateStart` | `provAbbr` on the row removes the legacy provider join. `AptStatus` is the **string** `"Scheduled"`, not DB `1` |
 
 ### 4 — Bulk unaccepted finder ⚠️ was direct MySQL
 
@@ -107,7 +113,7 @@ express go to OD; everything else is re-implemented over a paginated scan.
 
 | Data element | Coverage | OD endpoint | Delta vs MySQL |
 |---|---|---|---|
-| `ProcStatus = 1` (treatment planned) | **confirmed** | `GET /procedurelogs?ProcStatus=TP` | Requires OD **25.2.21+**. Older builds reject the param; the route detects that, degrades to an unfiltered scan with a client-side filter, and says so in `notes[]` |
+| `ProcStatus = 1` (treatment planned) | **confirmed** ✅verified | `GET /procedurelogs?ProcStatus=TP` | Roland's OD accepts it (returned a full 100-row page). Older builds reject the param; the route detects that, degrades to an unfiltered scan with a client-side filter, and says so in `notes[]` |
 | `ProcFee`, `PatNum`, `DateTP` per procedure | **confirmed** | `GET /procedurelogs` | |
 | `pl.ProcFee > 0` | **partial** | — | No fee predicate in the API; applied client-side |
 | `pl.DateTP >= cutoff` | **partial** | — | **No `DateTP` filter exists.** `GET /procedurelogs` filters on `ProcDate` and `DateTStamp` only — neither is the treatment-planned date. Window applied client-side over scanned rows |
@@ -116,7 +122,7 @@ express go to OD; everything else is re-implemented over a paginated scan.
 | `ORDER BY totalFee DESC` | **partial** | — | No server-side ordering; sorted client-side |
 | `JOIN patient` (name, DOB, phone, email) | **partial** | `GET /patients/{PatNum}` | **No join exists.** One extra call per ranked patient, so demographics are fetched only for the returned page. A patient whose record fails to read keeps its money and is labelled `PatNum <n>` rather than being dropped |
 | `p.PatStatus = 0` | **partial** | `GET /patients/{PatNum}` | Applied *after* the demographics fetch, so an inactive patient can consume one of the ranked slots |
-| `pl.ClinicNum = ?` | **partial** | `GET /procedurelogs?ClinicNum` | The param exists (OD 23.3.13+) but is **left unset by default**: the customer key already scopes to one practice database, and filtering on a guessed ClinicNum would silently return nothing. Set `TC_OD_CLINIC_NUM` once the value is verified against the live database |
+| `pl.ClinicNum = ?` | **partial** ✅verified | `GET /procedurelogs?ClinicNum` | The param exists (OD 23.3.13+) but is **left unset by default**: the customer key already scopes to one practice database. Live probe shows **every Roland procedure carries `ClinicNum: 0`**, so the legacy default of 0 was right and setting `TC_OD_CLINIC_NUM=0` would be a no-op. Leave unset; it only becomes meaningful in a multi-clinic database |
 | Full-practice completeness | **partial→gap** | `GET /procedurelogs?Offset` | OD paginates at **100/page**. Capped at `TC_OD_MAX_SCAN_PAGES` (40 → ≤4,000 procedures). Hitting the cap sets `truncated: true`, and the UI states it is a partial sweep rather than a full practice list |
 
 **Cost note for RCM:** a full-practice TP sweep is ~1 call per 100 procedures
@@ -140,62 +146,95 @@ FROM claimproc cp JOIN inssub i … JOIN patplan pp …
 WHERE cp.PatNum = ? AND cp.Status IN (1,4) AND cp.DateCP >= benefitYearStart
 ```
 
-**Verdict: PARTIAL, with one hard GAP at the centre.**
+**Verdict: fully expressible.** `GET /claimprocs` exists and returns the entire
+claimproc row, so this is a faithful port rather than a substitute — including
+the same `DateCP` basis for year-to-date usage.
 
 | Data element | Coverage | OD endpoint | Notes |
 |---|---|---|---|
-| TP procedures (code, tooth, surface, fee) | **confirmed** | `GET /procedurelogs?PatNum&ProcStatus=TP` | `procCode` + `descript` on the row remove the `procedurecode` join |
-| Primary / secondary designation | **confirmed** | `GET /patplans?PatNum` | `Ordinal` 1 / 2, exactly as the legacy join used |
-| Carrier, group name/number, plan type, COB rule | **confirmed** | `GET /inssubs/{n}` → `GET /insplans/{n}` → `GET /carriers/{n}` | 3 calls per plan; the full legacy chain |
+| TP procedures (code, tooth, surface, fee) | **confirmed** ✅verified | `GET /procedurelogs?PatNum&ProcStatus=TP` | `procCode` + `descript` on the row remove the `procedurecode` join |
+| Primary / secondary designation | **confirmed** ✅verified | `GET /patplans?PatNum` | `Ordinal` 1 / 2, exactly as the legacy join used |
+| Carrier, group name/number, plan type, COB rule | **confirmed** ✅verified | `GET /inssubs/{n}` → `GET /insplans/{n}` → `GET /carriers/{n}` | 3 calls per plan; the full legacy chain |
 | Coverage effective / termination dates | **confirmed** | `GET /inssubs/{n}` | |
-| Annual maximum, deductible, coinsurance % | **confirmed** | `GET /benefits?PlanNum` **and** `?PatPlanNum` | Both levels read and merged — patient-specific benefit rows override plan-level ones |
-| Benefit-year start | **confirmed** | `GET /insplans/{n}` → `MonthRenew` | **Better than legacy**, which hard-coded January 1 regardless of the plan's renewal month (`MonthRenew` 0 = calendar year) |
-| **Per-plan contracted allowed amount** (`ProcFee − WriteOffEst`) | **🔴 GAP** | *(none)* | **The OD Cloud API exposes no `claimproc` resource.** There is no `/claimprocs` endpoint, and `WriteOffEst` appears in no other payload. `GET /claims` carries a whole-claim `WriteOff` that cannot be attributed back to an individual planned procedure. Falls back to the billed fee with `allowedIsBilledFee: true`, and the panel reports the affected line count |
-| Per-procedure insurance estimate (`claimproc.InsEstTotal`) | **partial** | `GET /proctps?TreatPlanNum` | Substituted from OD's **own** Saved-plan estimates (`PriInsAmt` / `SecInsAmt`). Available only for procedures that appear in a Saved plan; `gap` otherwise |
-| Per-procedure deductible estimate (`claimproc.DedEst`) | **🔴 GAP** | *(none)* | Same claimproc gap. Returned as `null`, never `0` |
-| YTD paid / deductible applied | **partial** | `GET /claims?PatNum&ClaimStatus=R` | Summed from **received claims** (`InsPayAmt`, `DedApplied`) attributed to a plan via `claim.PlanNum`. **Different date basis** — `claim.DateReceived` rather than `claimproc.DateCP` — and claims not yet marked Received are excluded, so it can read **low** near a benefit-year boundary or with claims in flight. The UI prints this basis verbatim (`ytdBasis`) next to the pre-filled remaining max |
-| Supplemental payments (`claimproc.Status = 4`) | **partial** | `GET /claims` | Counted only where the supplemental payment is reflected in the claim total |
+| Annual maximum, deductible, coinsurance % | **confirmed** ✅verified | `GET /benefits?PlanNum` **and** `?PatPlanNum` | Both levels read and merged — patient-specific rows override plan-level ones. ⚠️ `MonetaryAmt: -1` means **unlimited**, and is skipped rather than read as $0 |
+| Benefit-year start | **confirmed** ✅verified | `GET /insplans/{n}` → `MonthRenew` | **Better than legacy**, which hard-coded January 1 regardless of the plan's renewal month (`MonthRenew` 0 = calendar year) |
+| **Per-plan contracted allowed amount** (`ProcFee − WriteOffEst`) | **confirmed** ✅verified | `GET /claimprocs?PatNum` | The endpoint the legacy join needed. See the **-1 sentinel** trap below |
+| Per-procedure insurance estimate (`claimproc.InsEstTotal`) | **confirmed** ✅verified | `GET /claimprocs?PatNum` | |
+| Per-procedure deductible estimate (`claimproc.DedEst`) | **confirmed** ✅verified | `GET /claimprocs?PatNum` | `null` when OD has not calculated it — never `0` |
+| YTD paid / deductible applied | **confirmed** ✅verified | `GET /claimprocs?PatNum` | Same rows, same `DateCP` basis as the legacy `SUM(InsPayAmt)`, `SUM(DedApplied)` |
+| Supplemental payments | **confirmed** ✅verified | `GET /claimprocs?PatNum` | `Status: "Supplemental"` counted alongside `"Received"`, matching legacy `Status IN (1,4)` |
 
-#### Gap: claimproc
+#### `/claimprocs` — the contract, as measured
 
-`claimproc` is the row that carries, per procedure per plan: the insurance
-estimate, the write-off estimate, the deductible portion, the amount actually
-paid, and the payment date. **None of it is reachable through the OD Cloud API.**
+Accepts `PatNum`, `ProcNum`, `ClaimNum`, `PlanNum`, `Status`, `DateCP`, `Offset`
+(100/page). The **singular** `/claimproc` is not a resource. Returns ~48 fields
+including everything the legacy query read.
 
-Consequences, in the order they will bite:
+`Status` is OD's **string** enum, not the DB integer — passing `Status=1` returns
+`400 "Status is invalid."`. Verified valid values: `NotReceived`, `Received`,
+`Preauth`, `Adjustment`, `Supplemental`, `Estimate`, `CapEstimate`, `InsHist`.
+The legacy integer sets map as:
 
-1. **Contracted (fee-schedule) allowed amounts cannot be computed at all.** For a
-   PPO patient this is the difference between an accurate quote and a billed-fee
-   quote. The COB panel is explicit about it and invites a per-line override.
-2. **Benefit usage is claim-grained, not procedure-grained.** Good enough for
-   "roughly how much of the annual max is left"; not good enough to reconcile a
-   ledger.
-3. **RCM implications.** Anything RCM needs at claimproc granularity —
-   write-offs, per-procedure adjudication, EOB reconciliation against estimates —
-   is not available on this transport. Options, in order of preference:
-   - a **scheduled export** from the office's own OD database into the tenant
-     database via the on-prem connector (the connector *can* run SQL locally),
-   - an **ERA/835 ingest** for post-payment data (Stedi — but note Delta Dental
-     OK and HealthChoice OK do not support ERA via Stedi),
-   - **fee-schedule-based estimation** (`insplan.FeeSched` + `GET /fees`),
-     which approximates the allowed amount without claimproc. Not attempted in
-     this slice; a reasonable Slice-N candidate if the COB panel needs it.
+| Legacy SQL | Meaning | API strings |
+|---|---|---|
+| `Status IN (6, 0)` | treatment-plan estimates | `Estimate`, `NotReceived` |
+| `Status IN (1, 4)` | money actually paid | `Received`, `Supplemental` |
 
-**Recommendation for this slice:** ship as built. The COB pull is genuinely
-useful — plan identification, benefits, and remaining-max pre-fill are the parts
-coordinators spend the most time on — and every number it cannot source is
-labelled rather than faked. Do **not** attempt to synthesise an allowed amount.
+#### Two traps this exposed (both fixed here, both bugs in the legacy code)
+
+**1. `-1` means "not calculated", not "zero dollars."** OD writes `-1` into
+`WriteOffEst`, `DedEst`, `InsEstTotal` and `AllowedOverride` when it has no
+estimate. The legacy query did `COALESCE(cp.WriteOffEst, 0)` and then
+`fee − writeOff` — but `COALESCE` only guards SQL `NULL`, and OD stores `-1`, not
+`NULL`. **The legacy COB calculator therefore produced an allowed amount one
+dollar ABOVE the billed fee on every uncalculated line.** Confirmed live: patient
+11618's D0140 carries `DedEst: -1` and `AllowedOverride: -1`. Here `-1` maps to
+`null`, the allowed amount falls back to the billed fee, and the line is counted
+in `fallbackLines` so the panel can warn.
+
+**2. OD's `*Override` columns win.** `WriteOffEstOverride`, `InsEstTotalOverride`
+and `DedEstOverride` are what Open Dental itself displays when set. The legacy
+query ignored them, so the calculator could silently disagree with the number on
+the OD screen. Here the override takes precedence.
+
+#### One improvement over the legacy join
+
+The legacy SQL reached the plan ordinal via `inssub ON PlanNum` → `patplan ON
+InsSubNum`. `claimproc` carries `InsSubNum` **directly**, so this matches on that
+first (falling back to `PlanNum`). Two subscribers on the same group plan — a
+couple who both work somewhere and each cover the other — resolve correctly here
+and could collide in the legacy join. Verified live: patient 11618's claimprocs
+carry `InsSubNum: 15019`, which is exactly the `InsSubNum` on their `Ordinal: 1`
+patplan row.
+
+#### What this means for RCM
+
+**RCM does not need a connector-side SQL export for adjudication data.** Every
+field the EOB/denial workflows want — `InsPayAmt`, `WriteOff`, `DedApplied`,
+`Status`, `DateCP`, `ClaimNum`, `ClaimPaymentNum`, `ClaimAdjReasonCodes` — is on
+the `/claimprocs` payload, filterable by `ClaimNum`, `PlanNum`, `Status` and
+`DateCP`. Plan on that transport.
+
+Two caveats to carry into RCM design:
+
+- **Paging, not aggregation.** No `SUM`, no `GROUP BY`, no server-side ordering,
+  100 rows per page. Practice-scale roll-ups are a scheduled-sync shape, not an
+  interactive one.
+- **Estimates and payments share the table.** Filtering on `Status` is not
+  optional: mixing `Estimate` rows into a payment total double-counts, and mixing
+  `Received` rows into a treatment-plan estimate makes planned work look
+  pre-paid. Both directions are guarded here and both should be guarded there.
 
 ---
 
 ## Resource-name and entitlement notes
 
 The legacy app called `/proctp` and `/treatplanattach` (**singular**) and carried
-a whole `procEndpointBlocked` branch for the 404s that produced. OD's documented
-resources are **plural** (`/treatplanattaches`). The port tries **plural first,
-then the legacy singular alias**, memoized per request, and records which one
-answered in `endpointsUsed[]`. Whichever the practice's OD build exposes, the
-read works.
+a whole `procEndpointBlocked` branch for the 404s that produced. That branch was
+firing because **the singular names are simply not resources** — confirmed live
+above. OD's resources are plural. The port tries **plural first, then the legacy
+singular alias**, memoized per request, and records which one answered in
+`endpointsUsed[]`; on Roland the plural always wins on the first call.
 
 Separately, OD developer keys are entitled per resource. A key without
 `/proctps`, `/treatplanattaches` or `/procedurelogs` gets a 404 "not a valid
@@ -213,6 +252,9 @@ not as an empty treatment plan.
 | A procedure that fails to read | whole plan silently short-paid | **partial result**: good rows kept, failures listed in `unreadable[]`, totals annotated |
 | A plan larger than the cap | silently truncated at 25 | `truncated: true` + an on-screen note before the user imports |
 | Benefit year | hard-coded January 1 | `insplan.MonthRenew` |
+| `WriteOffEst = -1` | `COALESCE(…,0)` → allowed = **fee + $1** | treated as "no estimate" → falls back to the billed fee and is counted |
+| OD `*Override` columns | ignored — could disagree with the OD screen | take precedence, as OD itself does |
+| Plan-ordinal match | via `PlanNum` (collides for two subscribers on one group plan) | via the claimproc's own `InsSubNum`, `PlanNum` as fallback |
 | Import to a case | direct | **review step** — editable table, per-row include, live total, explicit confirm |
 
 ## Tunables
@@ -224,6 +266,105 @@ not as an empty treatment plan.
 | `TC_OD_TP_ATTACH_CAP` | `25` | Procedures read per Active/Inactive plan (legacy parity) |
 | `TC_OD_MAX_SCAN_PAGES` | `40` | Page cap for the practice-wide TP scan (100/page) |
 | `TC_OD_CLINIC_NUM` | *(unset)* | Adds a `ClinicNum` filter. Leave unset until verified |
+
+## Live probe transcript (2026-08-04)
+
+Read-only GETs against the **live Roland Open Dental database**, run from inside
+`rg-carein-staging/ca-carein-backend` (revision `0000061`) so the practice's keys
+were used in place and never printed. No writes, no OD state changed.
+
+**Resource existence — plural wins, singular is dead**
+
+```
+GET /claimprocs?PatNum=12828        → 200  (0 rows; this patient has none)
+GET /claimproc?PatNum=12828         → 404  "claimproc is not a valid resource."
+GET /proctps?TreatPlanNum=1         → 200  2 rows
+GET /proctp?TreatPlanNum=1          → 404  "proctp is not a valid resource."
+GET /treatplanattaches?TreatPlanNum=1 → 200
+GET /treatplanattach?TreatPlanNum=1   → 404  "treatplanattach is not a valid resource."
+GET /procedurelogs?ProcStatus=TP    → 200  100 rows (full page), all ClinicNum 0
+GET /benefits?PlanNum=1             → 200  22 rows
+```
+
+**`/claimprocs` filters and enum**
+
+```
+?PlanNum=1                 → 200 (100)     ?PatNum=11618&Status=Received → 200 (6)
+?ProcNum=<n>               → 200 (1)       ?DateCP=2026-01-01            → 200 (100)
+?PatNum=11618              → 200 (53)      ?PatNum=11618&Offset=50       → 200 (3)
+?Status=NotReceived|Supplemental|Estimate|CapEstimate|Adjustment|InsHist → 200
+?Status=0  →  400 "Status is invalid."     ?Status=1 → 400 "Status is invalid."
+```
+
+**Patient search — prefix matching proven**
+
+```
+LName=Spark      → 18 rows, first "Sparkman"          ← prefix, not exact
+LName/FName=MangoTest → 12828  Test, MangoTest  DOB 1990-01-01  Patient
+LName/FName=Stedi     → 12829  Stedi, Test 2   DOB 1985-05-15
+                        12826  Test, Stedi     DOB 2025-09-24
+                        12827  Test 2, Stedi   DOB 2025-09-24   ← the named fixture
+LName=Sparkman   → 8305 Aiden · 1017 Amy · 1618 Beau · 1094 Cason
+                   11474 Cecile (Inactive — correctly retained; only
+                   Deceased/Deleted/NonPatient are excluded, per legacy)
+```
+
+⚠️ **PatNum 12828 is `LName: "Test", FName: "MangoTest"`** — a last-name-only
+search misses it entirely. The dual-lane merge ported from the legacy app is what
+makes this fixture findable, and is not optional.
+
+**Treatment plan (PatNum 11618)**
+
+```
+GET /treatplans?PatNum=11618 → 33782:Active  33834:Saved  33994:Saved  34604:Saved
+newest Saved (34604) → GET /proctps → 12 billable rows, fee total $2,001.00
+  D7210  t18  fee 315  pri 315  sec 0  pat 0
+  D0220  t19  fee  34  pri  34  sec 0  pat 0
+  D7210  t19  fee 316  pri 316  sec 0  pat 0
+  D4341  t—   fee 284  pri 284  sec 0  pat 0
+```
+
+**COB + insurance (PatNum 11618)**
+
+```
+patplans          → InsSubNum 15019 → Ordinal 1 (primary only, no secondary)
+claimprocs        → 53 rows across 2 pages (Received 6 / Estimate 27 / Preauth 20)
+TP procedures     → 22 lines, $5,315.84 total
+per-line (allowed = fee − WriteOffEst, overrides applied, -1 → null):
+  D0140  fee  86.00  allowed  86.00  insEst  86   dedEst null   (DedEst was -1)
+  0000   fee   9.84  allowed   9.84  insEst   0   dedEst null
+  D4910  fee 151.00  allowed 151.00  insEst   0   dedEst 0
+  D1330  fee  60.00  allowed  60.00  insEst   0   dedEst null
+  D0160  fee 164.00  allowed 164.00  insEst 156   dedEst 0
+fallbackLines     → 6 of 22 (no write-off estimate → billed fee, warned in the UI)
+
+plan chain        → PlanNum 14914 · "OK DUAL COMPLETE PLAN PPO H2001-056"
+                    PlanType "p" (PPO) · CobRule "Basic" · MonthRenew 0
+carrier           → "UNITED HEALTHCARE DUAL COMPLETE PLANS"
+benefits          → CoInsurance 100% rows; MonetaryAmt -1 (unlimited) → skipped,
+                    NOT read as $0. No Limitations/Deductible row on this plan, so
+                    annualMax stays null and the panel says "none on file"
+YTD (ordinal 1)   → benefit year 2026-01-01 (MonthRenew 0)
+                    paid $327.00 · deductible applied $0.00 · 4 claimprocs
+```
+
+`dedEst null` vs `dedEst 0` on adjacent lines is the -1 sentinel being handled:
+D0140 carries `DedEst: -1` ("not calculated") and D4910 carries a real `0`.
+
+### What this transcript does **not** prove
+
+The probes exercise the same OD calls and the same arithmetic as
+`backend/routes/tc/odReads.js`, but they are **not** the deployed module — this
+branch is not on staging yet. Still outstanding, and the right content for the
+staging walk after merge:
+
+1. the routes end to end through `requireModule` + `requireOffice` +
+   `requireOdOffice` against real OD (unit-tested against a fake OD, not live);
+2. Beau's **dollar-for-dollar side-by-side** of the treatment-plan pull and the
+   COB panel against the legacy app — noting that the two are **expected to
+   disagree** on any line where the legacy `-1` bug inflated the allowed amount
+   by $1, and where OD's `*Override` columns are set;
+3. `valley` rendering the not-connected state in the browser.
 
 ## Audit
 

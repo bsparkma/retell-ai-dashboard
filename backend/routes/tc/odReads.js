@@ -78,6 +78,40 @@ const OD_CLINIC_NUM = process.env.TC_OD_CLINIC_NUM || '';
 
 // ── Small utilities ─────────────────────────────────────────────────────────
 
+/**
+ * claimproc.Status as the OD API spells it — a STRING enum, not the DB integer
+ * (same class as AptStatus/ProcStatus; see docs/OD_API_CONTRACT.md §1).
+ * Verified live against Roland OD: "Received", "Estimate" and "Preauth" all
+ * observed on one patient.
+ *
+ * The legacy MySQL used the DB integers:
+ *   Status IN (6, 0) → Estimate + NotReceived  = treatment-plan estimates
+ *   Status IN (1, 4) → Received + Supplemental = money actually paid
+ */
+const CP_ESTIMATE_STATUSES = Object.freeze(['Estimate', 'NotReceived', '6', '0']);
+const CP_PAID_STATUSES = Object.freeze(['Received', 'Supplemental', '1', '4']);
+
+/**
+ * Open Dental writes **-1** into WriteOffEst / DedEst / InsEstTotal to mean
+ * "not calculated", not "zero dollars".
+ *
+ * This matters: the legacy query did `COALESCE(cp.WriteOffEst, 0)` and then
+ * `fee - writeOff`, so a -1 sentinel silently produced an allowed amount of
+ * fee + $1. COALESCE only guards SQL NULL, and OD does not store NULL here.
+ * Returning null instead lets the caller fall back to the billed fee and SAY it
+ * is falling back, which is the whole point of the panel.
+ *
+ * @param {unknown} value
+ * @param {unknown} [override] OD's paired *Override column, which wins when set
+ * @returns {number|null}
+ */
+function odEstimate(value, override) {
+  const o = Number(override);
+  if (Number.isFinite(o) && o >= 0) return o;
+  const v = Number(value);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
+
 /** OD list endpoints return a bare array; be defensive about envelopes. */
 function asArray(data) {
   if (Array.isArray(data)) return data;
@@ -709,6 +743,86 @@ async function findUnaccepted(odGet, opts = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Read every claimproc for a patient, following OD's 100-row pagination.
+ *
+ * `GET /claimprocs` is the endpoint the legacy MySQL join needed and it DOES
+ * exist (verified live against Roland OD, 2026-08-04): it accepts PatNum,
+ * ProcNum, ClaimNum, PlanNum, Status and DateCP, and returns the full row —
+ * WriteOffEst, InsEstTotal, DedEst, InsPayAmt, DedApplied, Status, DateCP,
+ * PlanNum, InsSubNum. Note the singular `/claimproc` is NOT a resource.
+ *
+ * @returns {Promise<{rows: any[], truncated: boolean}>}
+ */
+async function fetchClaimProcs(odGet, params) {
+  const rows = [];
+  let truncated = false;
+  for (let page = 0; page < MAX_SCAN_PAGES; page += 1) {
+    const res = await odGet(
+      '/claimprocs',
+      { ...params, Offset: page * OD_PAGE_SIZE },
+      { timeoutMs: OD_CALL_TIMEOUT_MS }
+    );
+    if (!res.ok) {
+      if (page === 0) {
+        const err = new Error(`Failed to fetch insurance estimates (${res.status})`);
+        err.odStatus = res.status;
+        err.capability = isCapabilityMiss(res);
+        throw err;
+      }
+      truncated = true;
+      break;
+    }
+    const batch = asArray(res.data);
+    rows.push(...batch);
+    if (batch.length < OD_PAGE_SIZE) break;
+    if (page === MAX_SCAN_PAGES - 1) truncated = true;
+  }
+  return { rows, truncated };
+}
+
+/**
+ * Map a patient's plans to their ordinal (1 = primary, 2 = secondary), keyed by
+ * BOTH InsSubNum and PlanNum.
+ *
+ * The legacy SQL joined `inssub ON PlanNum` then `patplan ON InsSubNum` — i.e.
+ * it reached the ordinal via the PLAN. claimproc carries InsSubNum directly, so
+ * we key on that first: two subscribers on the same group plan (a couple who
+ * both work somewhere, each covering the other) resolve correctly here and
+ * could collide in the legacy join. PlanNum stays as a fallback.
+ */
+async function loadPlanOrdinals(odGet, patNum) {
+  const res = await odGet('/patplans', { PatNum: patNum }, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  if (!res.ok) return { bySub: new Map(), byPlan: new Map(), patPlans: [] };
+
+  const patPlans = asArray(res.data).filter((pp) => {
+    const o = Number(pp.Ordinal);
+    return o === 1 || o === 2;
+  });
+
+  const bySub = new Map();
+  const byPlan = new Map();
+  await mapLimit(patPlans, OD_CONCURRENCY, async (pp) => {
+    const ordinal = Number(pp.Ordinal);
+    bySub.set(num(pp.InsSubNum), ordinal);
+    const sub = await odGet(`/inssubs/${pp.InsSubNum}`, {}, { timeoutMs: OD_CALL_TIMEOUT_MS });
+    if (sub.ok) {
+      const row = Array.isArray(sub.data) ? sub.data[0] : sub.data;
+      const planNum = num(row && row.PlanNum);
+      if (planNum && !byPlan.has(planNum)) byPlan.set(planNum, ordinal);
+    }
+  });
+
+  return { bySub, byPlan, patPlans };
+}
+
+/** Ordinal for a claimproc row, InsSubNum first then PlanNum. */
+function ordinalFor(cp, maps) {
+  const bySub = maps.bySub.get(num(cp.InsSubNum));
+  if (bySub) return bySub;
+  return maps.byPlan.get(num(cp.PlanNum)) || null;
+}
+
+/**
  * Legacy (/api/od/cob-procedures/:patNum) read procedurelog joined to per-plan
  * claimproc aggregates (via patplan.Ordinal → inssub → claimproc), giving each
  * TP procedure a REAL contracted allowed amount:
@@ -717,22 +831,20 @@ async function findUnaccepted(odGet, opts = {}) {
  *     insEst     = claimproc.InsEstTotal
  *     dedEst     = claimproc.DedEst
  *
- * API verdict: the procedure list is CONFIRMED; the per-plan claimproc numbers
- * are a GAP. **The OD Cloud API exposes no claimproc resource** — there is no
- * /claimprocs endpoint, and claim-level /claims rows carry only whole-claim
- * totals, which cannot be attributed back to an individual planned procedure.
- * WriteOffEst in particular has no API expression at all, so the contracted
- * allowed amount cannot be derived.
+ * API verdict: **fully expressible.** `GET /claimprocs` exists and returns the
+ * whole row, so this is a faithful port rather than a substitute — see
+ * docs/TC_OD_READS.md for the live probe evidence.
  *
- * What IS available, and is used here as the sanctioned partial substitute: when
- * the patient has a SAVED treatment plan, OD's own proctp rows carry PriInsAmt /
- * SecInsAmt / PatAmt — OD's per-plan insurance ESTIMATES. Those fill primary and
- * secondary insEst. They are not allowed amounts and are labelled as estimates.
+ * Two corrections to the legacy behavior, both deliberate:
  *
- * When neither is available, `primaryAllowed` falls back to the billed fee — the
- * same fallback the legacy Riley path used — and the coverage row says so, so the
- * COB panel can print "allowed = billed fee (no contracted amount available)"
- * instead of implying a negotiated number.
+ *  1. **The -1 sentinel.** OD writes -1 into WriteOffEst/DedEst/InsEstTotal to
+ *     mean "not calculated". The legacy `COALESCE(cp.WriteOffEst, 0)` only
+ *     guarded SQL NULL, so a -1 became `fee − (−1)` = an allowed amount one
+ *     dollar ABOVE the billed fee. Here -1 means "no estimate": the allowed
+ *     amount falls back to the fee and `allowedIsBilledFee` says so.
+ *  2. **OD's *Override columns win.** WriteOffEstOverride / InsEstTotalOverride /
+ *     DedEstOverride are what OD itself displays when set; the legacy query
+ *     ignored them and could disagree with the OD screen.
  */
 async function getCobProcedures(odGet, patNum) {
   const coverage = [];
@@ -762,42 +874,71 @@ async function getCobProcedures(odGet, patNum) {
     return num(r.ProcFee) > 0;
   });
 
-  // ── Saved-plan estimates (the only per-plan numbers the API can give) ─────
-  /** @type {Map<number, {pri:number, sec:number, pat:number|null}>} keyed by ProcNumOrig */
-  const savedEstimates = new Map();
-  let savedPlanUsed = null;
+  // ── Per-plan claimproc estimates (the legacy join, on the API) ────────────
+  const maps = await loadPlanOrdinals(odGet, patNum);
+  endpointsUsed.push('GET /patplans?PatNum', 'GET /inssubs/{n}');
 
-  const plansRes = await odGet('/treatplans', { PatNum: patNum, TPStatus: 'Saved' }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-  if (plansRes.ok) {
-    const saved = asArray(plansRes.data).sort(
-      (a, b) => new Date(b.SecDateTEdit || 0).getTime() - new Date(a.SecDateTEdit || 0).getTime()
+  let claimProcs = [];
+  let cpTruncated = false;
+  let cpAvailable = true;
+  try {
+    const fetched = await fetchClaimProcs(odGet, { PatNum: patNum });
+    claimProcs = fetched.rows;
+    cpTruncated = fetched.truncated;
+    endpointsUsed.push('GET /claimprocs?PatNum&Offset');
+  } catch (err) {
+    // A claimproc failure must not sink the procedure list — the fee column is
+    // still useful, and the coverage row will say the estimates are missing.
+    cpAvailable = false;
+    notes.push(
+      err && err.capability
+        ? 'This Open Dental key cannot read insurance estimates (/claimprocs). Allowed amounts fall back to the billed fee.'
+        : 'Insurance estimates could not be read from Open Dental. Allowed amounts fall back to the billed fee.'
     );
-    for (const plan of saved.slice(0, 3)) {
-      let r = await odGet('/proctps', { TreatPlanNum: plan.TreatPlanNum }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-      if (!r.ok && isCapabilityMiss(r)) {
-        r = await odGet('/proctp', { TreatPlanNum: plan.TreatPlanNum }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-      }
-      if (!r.ok) break;
-      const rowsTp = asArray(r.data);
-      if (rowsTp.length === 0) continue;
-      for (const t of rowsTp) {
-        const key = num(t.ProcNumOrig);
-        if (!key || savedEstimates.has(key)) continue;
-        savedEstimates.set(key, {
-          pri: num(t.PriInsAmt),
-          sec: num(t.SecInsAmt),
-          pat: t.PatAmt == null ? null : num(t.PatAmt),
-        });
-      }
-      savedPlanUsed = num(plan.TreatPlanNum);
-      endpointsUsed.push('GET /proctps?TreatPlanNum');
-      break;
-    }
   }
 
+  /**
+   * ProcNum → { 1: est, 2: est }. Only claimprocs in an ESTIMATE status count:
+   * a Received row is money already paid on a completed procedure, not an
+   * estimate for planned work, and summing the two would double-count.
+   */
+  const estByProc = new Map();
+  for (const cp of claimProcs) {
+    if (!CP_ESTIMATE_STATUSES.includes(String(cp.Status))) continue;
+    const ordinal = ordinalFor(cp, maps);
+    if (ordinal !== 1 && ordinal !== 2) continue;
+    const procNum = num(cp.ProcNum);
+    if (!procNum) continue;
+
+    const slot = estByProc.get(procNum) || {};
+    const prior = slot[ordinal];
+    // Duplicate rows per plan (an estimate plus an adjustment) collapse by sum,
+    // matching the legacy derived-table SUM(...) GROUP BY ProcNum.
+    const writeOff = odEstimate(cp.WriteOffEst, cp.WriteOffEstOverride);
+    const insEst = odEstimate(cp.InsEstTotal, cp.InsEstTotalOverride);
+    const dedEst = odEstimate(cp.DedEst, cp.DedEstOverride);
+    slot[ordinal] = {
+      writeOff: writeOff == null ? (prior ? prior.writeOff : null) : (prior && prior.writeOff != null ? prior.writeOff + writeOff : writeOff),
+      insEst: insEst == null ? (prior ? prior.insEst : null) : (prior && prior.insEst != null ? prior.insEst + insEst : insEst),
+      dedEst: dedEst == null ? (prior ? prior.dedEst : null) : (prior && prior.dedEst != null ? prior.dedEst + dedEst : dedEst),
+    };
+    estByProc.set(procNum, slot);
+  }
+
+  let fallbackLines = 0;
   const procs = tpRows.map((r) => {
     const fee = num(r.ProcFee);
-    const est = savedEstimates.get(num(r.ProcNum));
+    const slot = estByProc.get(num(r.ProcNum)) || {};
+    const pri = slot[1] || null;
+    const sec = slot[2] || null;
+
+    // allowed = fee − write-off, exactly as the legacy query, but only when OD
+    // actually has a write-off estimate.
+    const priAllowed = pri && pri.writeOff != null ? Math.max(0, fee - pri.writeOff) : fee;
+    const secAllowed = sec && sec.writeOff != null ? Math.max(0, fee - sec.writeOff) : null;
+    const allowedIsBilledFee = !(pri && pri.writeOff != null);
+    if (allowedIsBilledFee) fallbackLines += 1;
+
     return {
       procNum: num(r.ProcNum),
       toothNum: String(r.ToothNum ?? '').trim() || 'N/A',
@@ -805,42 +946,44 @@ async function getCobProcedures(odGet, patNum) {
       procCode: (r.procCode || r.ProcCode || '').toString().toUpperCase(),
       description: r.descript || r.Descript || '',
       fee,
-      // Contracted allowed amounts are not derivable from the API — the billed
-      // fee stands in, and `allowedIsBilledFee` tells the UI to say so.
-      primaryAllowed: fee,
-      primaryInsEst: est ? est.pri : 0,
-      primaryDedEst: null,
-      hasPrimaryEstimate: !!est,
-      secondaryAllowed: null,
-      secondaryInsEst: est ? est.sec : 0,
-      secondaryDedEst: null,
-      hasSecondaryEstimate: !!(est && est.sec > 0),
-      allowedIsBilledFee: true,
-      estimateSource: est ? 'od_saved_plan' : null,
+      primaryAllowed: priAllowed,
+      primaryInsEst: pri && pri.insEst != null ? pri.insEst : 0,
+      primaryDedEst: pri ? pri.dedEst : null,
+      hasPrimaryEstimate: !!pri,
+      secondaryAllowed: secAllowed,
+      secondaryInsEst: sec && sec.insEst != null ? sec.insEst : 0,
+      secondaryDedEst: sec ? sec.dedEst : null,
+      hasSecondaryEstimate: !!sec,
+      allowedIsBilledFee,
+      estimateSource: pri || sec ? 'claimproc' : null,
     };
   });
 
   coverage.push(
     cov('Treatment-planned procedures (code, tooth, surface, fee)', 'confirmed', 'GET /procedurelogs?PatNum&ProcStatus=TP'),
-    cov('Per-plan contracted allowed amount (ProcFee − claimproc.WriteOffEst)', 'gap', '(none)',
-      'The OD Cloud API exposes no claimproc resource, and WriteOffEst appears in no other endpoint. Allowed amounts fall back to the billed fee.'),
-    cov('Per-plan insurance estimate (claimproc.InsEstTotal)', savedEstimates.size > 0 ? 'partial' : 'gap',
-      savedEstimates.size > 0 ? 'GET /proctps?TreatPlanNum' : '(none)',
-      savedEstimates.size > 0
-        ? "Substituted from OD's own Saved-plan estimates (proctp PriInsAmt/SecInsAmt), not from claimproc. Available only for procedures in a Saved plan."
-        : 'No Saved treatment plan for this patient, so no per-plan estimate is available.'),
-    cov('Per-procedure deductible estimate (claimproc.DedEst)', 'gap', '(none)',
-      'claimproc is not exposed by the API; per-procedure deductible is unavailable.'),
-    cov('Primary / secondary split by patplan.Ordinal', 'confirmed', 'GET /patplans?PatNum',
-      'Ordinals come from the insurance snapshot; the per-procedure split is limited by the claimproc gap above.')
+    cov('Per-plan contracted allowed amount (ProcFee − claimproc.WriteOffEst)', cpAvailable ? 'confirmed' : 'gap',
+      cpAvailable ? 'GET /claimprocs?PatNum' : '(none)',
+      cpAvailable
+        ? 'A -1 write-off estimate means "not calculated" in Open Dental, not zero — those lines fall back to the billed fee and are counted for you.'
+        : 'Insurance estimates could not be read; allowed amounts are the billed fees.'),
+    cov('Per-plan insurance estimate (claimproc.InsEstTotal)', cpAvailable ? 'confirmed' : 'gap',
+      cpAvailable ? 'GET /claimprocs?PatNum' : '(none)'),
+    cov('Per-procedure deductible estimate (claimproc.DedEst)', cpAvailable ? 'confirmed' : 'gap',
+      cpAvailable ? 'GET /claimprocs?PatNum' : '(none)'),
+    cov('Primary / secondary split by patplan.Ordinal', 'confirmed', 'GET /patplans?PatNum → /inssubs/{n}',
+      'Matched on the claimproc\'s own InsSubNum first, so two subscribers sharing one group plan resolve correctly.')
   );
 
-  if (savedEstimates.size === 0) {
-    notes.push('No Saved treatment plan was found, so Open Dental has no per-plan insurance estimate for these procedures.');
+  if (cpTruncated) {
+    notes.push('This patient has more insurance history than one read returns; some estimates may be missing.');
   }
-  notes.push('Allowed amounts shown are the billed fees. Contracted (write-off adjusted) amounts are not available through the Open Dental API.');
+  if (cpAvailable && fallbackLines > 0) {
+    notes.push(
+      `${fallbackLines} procedure${fallbackLines === 1 ? ' has' : 's have'} no contracted allowed amount in Open Dental — the billed fee is used for ${fallbackLines === 1 ? 'it' : 'them'}.`
+    );
+  }
 
-  return { procs, savedPlanUsed, coverage, endpointsUsed, notes };
+  return { procs, fallbackLines, claimProcsAvailable: cpAvailable, coverage, endpointsUsed, notes };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -897,14 +1040,16 @@ function benefitYearStart(monthRenew) {
  *   FROM claimproc cp JOIN inssub i … JOIN patplan pp …
  *   WHERE cp.PatNum = ? AND cp.Status IN (1,4) AND cp.DateCP >= benefitYearStart
  *
- * API verdict:
- *   - the plan chain (patplan → inssub → insplan → carrier) is CONFIRMED
- *   - annual max / deductible / coinsurance from /benefits is CONFIRMED
- *   - YTD usage is PARTIAL: with no claimproc resource, paid-to-date is summed
- *     from RECEIVED CLAIMS (/claims → InsPayAmt, DedApplied) attributed to a plan
- *     via claim.PlanNum. Same dollars, DIFFERENT DATE BASIS — claim.DateReceived
- *     rather than claimproc.DateCP — and claims not yet marked Received are not
- *     counted. `ytdBasis` states this and the UI must print it.
+ * API verdict: **fully expressible.** `GET /claimprocs` accepts PatNum and
+ * Status, returns InsPayAmt / DedApplied / DateCP / PlanNum / InsSubNum, and
+ * pages via Offset — so this is the same aggregation on the same rows with the
+ * same date basis (claimproc.DateCP), not an approximation from claim headers.
+ *
+ * Status is OD's STRING enum here ("Received" / "Supplemental"), not the DB
+ * integers 1 and 4 the legacy query used.
+ *
+ * One improvement over legacy: the benefit year comes from insplan.MonthRenew
+ * rather than a hard-coded January 1, so plans on a non-calendar year are right.
  */
 async function getInsuranceSnapshot(odGet, patNum) {
   const coverage = [];
@@ -929,6 +1074,8 @@ async function getInsuranceSnapshot(odGet, patNum) {
       ordinal,
       role: ordinal === 1 ? 'primary' : 'secondary',
       patPlanNum: num(pp.PatPlanNum),
+      // Carried so claimproc rows can be attributed by their own InsSubNum.
+      insSubNum: num(pp.InsSubNum),
       isPending: !!pp.IsPending,
       relationship: pp.Relationship || '',
       planNum: null,
@@ -999,34 +1146,46 @@ async function getInsuranceSnapshot(odGet, patNum) {
   const planList = plans.filter((r) => r && r.ok).map((r) => r.value);
   if (planList.length > 0) endpointsUsed.push('GET /inssubs/{n}', 'GET /insplans/{n}', 'GET /carriers/{n}', 'GET /benefits?PlanNum|PatPlanNum');
 
-  // ── YTD usage from RECEIVED claims (the claimproc substitute) ─────────────
+  // ── YTD usage: the legacy claimproc roll-up, on the API ───────────────────
   const yearFor = planList.length > 0 ? benefitYearStart(planList[0].monthRenew) : benefitYearStart(0);
-  const claimsRes = await odGet('/claims', { PatNum: patNum, ClaimStatus: 'R' }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-  let ytdAvailable = claimsRes.ok;
-  const usageByPlan = new Map();
 
-  if (claimsRes.ok) {
-    endpointsUsed.push('GET /claims?PatNum&ClaimStatus=R');
-    for (const c of asArray(claimsRes.data)) {
-      const when = odDate(c.DateReceived) || odDate(c.DateService);
-      if (!when) continue;
-      const planNum = num(c.PlanNum);
-      const own = planList.find((p) => p.planNum === planNum);
-      if (!own) continue;
-      const yr = benefitYearStart(own.monthRenew);
-      if (when < yr.start) continue;
-      const acc = usageByPlan.get(planNum) || { paidYTD: 0, dedAppliedYTD: 0, claimCount: 0 };
-      acc.paidYTD += num(c.InsPayAmt);
-      acc.dedAppliedYTD += num(c.DedApplied);
+  /** InsSubNum/PlanNum → ordinal, so a claimproc lands on the right plan. */
+  const bySub = new Map(planList.map((p) => [p.insSubNum, p.ordinal]));
+  const byPlan = new Map(planList.filter((p) => p.planNum).map((p) => [p.planNum, p.ordinal]));
+
+  let ytdAvailable = true;
+  let ytdTruncated = false;
+  const usageByOrdinal = new Map();
+  try {
+    const { rows, truncated } = await fetchClaimProcs(odGet, { PatNum: patNum });
+    ytdTruncated = truncated;
+    endpointsUsed.push('GET /claimprocs?PatNum&Offset');
+
+    for (const cp of rows) {
+      // Money actually paid — never estimates, or the treatment being quoted
+      // would count against its own annual maximum.
+      if (!CP_PAID_STATUSES.includes(String(cp.Status))) continue;
+      const ordinal = bySub.get(num(cp.InsSubNum)) || byPlan.get(num(cp.PlanNum)) || null;
+      if (ordinal !== 1 && ordinal !== 2) continue;
+
+      const plan = planList.find((p) => p.ordinal === ordinal);
+      const yr = benefitYearStart(plan ? plan.monthRenew : 0);
+      const when = odDate(cp.DateCP);
+      if (!when || when < yr.start) continue;
+
+      const acc = usageByOrdinal.get(ordinal) || { paidYTD: 0, dedAppliedYTD: 0, claimCount: 0 };
+      acc.paidYTD += num(cp.InsPayAmt);
+      acc.dedAppliedYTD += num(cp.DedApplied);
       acc.claimCount += 1;
-      usageByPlan.set(planNum, acc);
+      usageByOrdinal.set(ordinal, acc);
     }
-  } else {
-    notes.push('Claims could not be read, so year-to-date insurance usage is unavailable.');
+  } catch (_err) {
+    ytdAvailable = false;
+    notes.push('Insurance payment history could not be read, so year-to-date usage is unavailable.');
   }
 
   for (const p of planList) {
-    const u = usageByPlan.get(p.planNum);
+    const u = usageByOrdinal.get(p.ordinal);
     const yr = benefitYearStart(p.monthRenew);
     p.usage = ytdAvailable
       ? {
@@ -1037,6 +1196,7 @@ async function getInsuranceSnapshot(odGet, patNum) {
           basis: yr.basis,
         }
       : null;
+    // null, not 0: an unknown maximum must never render as "nothing left".
     p.remainingMax = p.annualMax != null && p.usage ? Math.max(0, p.annualMax - p.usage.paidYTD) : null;
     p.remainingDeductible =
       p.deductible != null && p.usage ? Math.max(0, p.deductible - p.usage.dedAppliedYTD) : null;
@@ -1049,20 +1209,25 @@ async function getInsuranceSnapshot(odGet, patNum) {
       'Plan-level and patient-specific benefit rows are merged; patient-specific rows override.'),
     cov('Benefit-year start (insplan.MonthRenew)', 'confirmed', 'GET /insplans/{n}',
       'Better than the legacy query, which hard-coded January 1 regardless of the plan renewal month.'),
-    cov('YTD paid / deductible applied (SUM claimproc.InsPayAmt, DedApplied)', ytdAvailable ? 'partial' : 'gap',
-      ytdAvailable ? 'GET /claims?PatNum&ClaimStatus=R' : '(none)',
+    cov('YTD paid / deductible applied (SUM claimproc.InsPayAmt, DedApplied)', ytdAvailable ? 'confirmed' : 'gap',
+      ytdAvailable ? 'GET /claimprocs?PatNum' : '(none)',
       ytdAvailable
-        ? 'Summed from RECEIVED CLAIMS, not claimproc. Date basis is claim.DateReceived rather than claimproc.DateCP, and claims not yet marked Received are excluded — so this can read low near a benefit-year boundary or with claims in flight.'
-        : 'No claimproc resource in the API and the claims read failed.'),
-    cov('Supplemental payments (claimproc.Status = 4)', 'partial', 'GET /claims?PatNum&ClaimStatus=R',
-      'Included only where the supplemental payment is reflected in the claim total.')
+        ? 'Same rows and same date basis (claimproc.DateCP) as the legacy query. Claims sent but not yet paid are NOT subtracted — adjust by hand if a large claim is in process.'
+        : 'The claimproc read failed for this patient.'),
+    cov('Supplemental payments (claimproc Status Supplemental)', ytdAvailable ? 'confirmed' : 'gap',
+      ytdAvailable ? 'GET /claimprocs?PatNum' : '(none)',
+      'Counted alongside Received, matching the legacy Status IN (1,4).')
   );
+
+  if (ytdTruncated) {
+    notes.push('This patient has a long insurance history; year-to-date totals may be incomplete.');
+  }
 
   return {
     plans: planList,
     ytdAvailable,
     ytdBasis: ytdAvailable
-      ? `Year-to-date figures are summed from received insurance claims since ${yearFor.start} (${yearFor.basis}). Claims still in process are not counted.`
+      ? `Remaining maximum and deductible are computed from paid claims since ${yearFor.start} (${yearFor.basis}). Claims sent but not yet paid are not subtracted — adjust by hand if a large claim is in process.`
       : 'Year-to-date insurance usage is unavailable.',
     coverage,
     endpointsUsed,
@@ -1142,6 +1307,10 @@ module.exports = {
   benefitYearStart,
   readBenefits,
   odDate,
+  odEstimate,
+  fetchClaimProcs,
+  CP_ESTIMATE_STATUSES,
+  CP_PAID_STATUSES,
   OD_CONCURRENCY,
   TP_ATTACH_CAP,
 };
