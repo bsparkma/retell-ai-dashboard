@@ -9,12 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
-  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck
+  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck, Loader2, Sparkles
 } from "lucide-react";
 import {
   api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
-  type CallActor, type OdSyncStatus,
+  type CallActor, type OdSyncStatus, type TranscribeResult,
 } from "@/lib/api";
+import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
@@ -365,6 +366,22 @@ export default function CallDetail() {
     setCall((prev) => (prev && prev !== "loading" ? { ...prev, notAPatient: true, notAPatientReason: reason } : prev));
   }, []);
 
+  // (M4) On-demand transcription. Auto-transcription is off, so a staff call shows only
+  // metadata until someone decides it matters. The page reflects the transcript ONLY after
+  // the server confirms it is persisted — no optimistic success.
+  const onTranscribed = useCallback((_callId: string, result: TranscribeResult) => {
+    if (result.status !== "completed" && result.status !== "exists") return;
+    setCall((prev) => (prev && prev !== "loading"
+      ? {
+          ...prev,
+          transcript: result.transcript ?? prev.transcript,
+          summary: result.summary ?? prev.summary,
+          hasTranscript: true,
+        }
+      : prev));
+  }, []);
+  const transcribe = useTranscribeCall(onTranscribed);
+
   // Audio player state
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -568,9 +585,27 @@ export default function CallDetail() {
           {/* Recording player */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <Play size={14} className="text-primary" /> Recording
-              </CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <Play size={14} className="text-primary" /> Recording
+                </CardTitle>
+                {/* (M4) The primary on-demand action, right next to playback: listen, decide
+                    it matters, transcribe. Only for staff (Mango) calls without a transcript
+                    — once one exists the transcript card below simply shows it. */}
+                {isMango && !displayCall.hasTranscript && (
+                  <Button
+                    size="sm"
+                    disabled={transcribe.isRunning(displayCall.id)}
+                    onClick={() => transcribe.run(displayCall.id)}
+                    title="Transcribe and summarize this call (uses the daily transcription budget)"
+                    className="h-8 gap-1.5 text-xs"
+                  >
+                    {transcribe.isRunning(displayCall.id)
+                      ? <><Loader2 size={13} className="animate-spin" /> Transcribing…</>
+                      : <><Sparkles size={13} /> Transcribe &amp; Summarize</>}
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {canPlay && !audioError ? (
@@ -698,6 +733,12 @@ export default function CallDetail() {
                   <div className="text-xs text-muted-foreground mb-1.5">Call Summary</div>
                   <p className="text-sm text-foreground leading-relaxed">{analysis.summary}</p>
                 </div>
+              ) : isMango && !displayCall.hasTranscript ? (
+                // (M4) Say WHY there's no summary. "No analysis available" reads like a
+                // failure; the truth is nobody has asked for one yet.
+                <p className="text-sm text-muted-foreground">
+                  This call hasn't been transcribed yet — use <span className="font-medium">Transcribe &amp; Summarize</span> above.
+                </p>
               ) : (
                 <p className="text-sm text-muted-foreground">No analysis available for this call.</p>
               )}

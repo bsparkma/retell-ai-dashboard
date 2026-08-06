@@ -19,10 +19,13 @@ import {
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
   CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, ChevronDown, Loader2, PlugZap, Clock, Send,
+  FileText,
 } from "lucide-react";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
+  type TranscribeResult,
 } from "@/lib/api";
+import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { callNeedsAttention } from "@/lib/worklist";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -155,6 +158,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   };
 
   const reopen = (call: UnifiedCall) => applyTriage(call, "needs_action");
+
+  // (M4) On-demand transcription. Auto-transcription is off, so a Mango call arrives with
+  // metadata only until somebody decides it's worth reading. NOTHING is patched optimistically
+  // — the row only gains a transcript/summary once the server says it is persisted.
+  const onTranscribed = useCallback((callId: string, result: TranscribeResult) => {
+    if (result.status !== "completed" && result.status !== "exists") return;
+    patchCall(callId, {
+      hasTranscript: true,
+      transcript: result.transcript ?? undefined,
+      summary: result.summary ?? "",
+    });
+  }, [patchCall]);
+  const transcribe = useTranscribeCall(onTranscribed);
 
   const onNotPatient = (call: UnifiedCall, reason: NotAPatientReason) => {
     patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
@@ -460,8 +476,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   />
                 </div>
 
-                {/* Signals (disposition chips) */}
-                <div className="flex flex-wrap gap-1">
+                {/* Signals (disposition chips) + the on-demand transcribe action */}
+                <div className="flex flex-wrap items-center gap-1">
                   {CHIPS.filter((chip) => chip.match(call)).map((chip) => {
                     const Icon = chip.icon;
                     return (
@@ -475,6 +491,11 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                       </span>
                     );
                   })}
+                  <TranscribeAction
+                    call={call}
+                    running={transcribe.isRunning(call.id)}
+                    onTranscribe={() => transcribe.run(call.id)}
+                  />
                 </div>
 
                 {/* Triage */}
@@ -512,6 +533,44 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * (M4) The row-level "Transcribe" action. Only offered for staff (Mango) calls that don't
+ * have a transcript yet — a Retell call arrives with one, and a Mango call that already
+ * has one needs nothing. Three honest states: idle → "Transcribing…" (disabled) → gone,
+ * replaced by the transcript indicator once the server confirms it is saved.
+ */
+function TranscribeAction({
+  call, running, onTranscribe,
+}: { call: UnifiedCall; running: boolean; onTranscribe: () => void }) {
+  if (call.source !== "mango") return null;
+
+  if (call.hasTranscript) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-muted-foreground bg-muted"
+        title="This call has a transcript"
+      >
+        <FileText size={10} /> Transcript
+      </span>
+    );
+  }
+
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={running}
+      onClick={onTranscribe}
+      title="Transcribe and summarize this call (uses the daily transcription budget)"
+      className="h-7 gap-1 text-[11px] px-2"
+    >
+      {running
+        ? <><Loader2 size={11} className="animate-spin" /> Transcribing…</>
+        : <><FileText size={11} /> Transcribe</>}
+    </Button>
+  );
+}
 
 function PatientIdentityCell({
   call, officeOdConnected, onPick, onSend,
