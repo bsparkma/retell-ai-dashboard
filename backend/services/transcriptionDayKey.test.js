@@ -169,6 +169,50 @@ test('persisted state from a PREVIOUS day is discarded on load', () => {
   assert.equal(budget.usedMinutes, 0, 'yesterday’s spend does not eat today’s budget');
 });
 
+// ── When the budget next resets (M4: the user is told, not just refused) ────────────
+
+/** The local wall-clock time at an instant, in the budget timezone. */
+const localClock = (iso) =>
+  new Intl.DateTimeFormat('en-GB', {
+    timeZone: svc.budgetTimezone, hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(new Date(iso));
+
+test('nextBudgetResetIso lands exactly on the next LOCAL midnight (CDT)', () => {
+  const at = new Date('2026-08-05T19:00:00Z'); // 2:00 PM CDT
+  const reset = svc.nextBudgetResetIso(at);
+  assert.equal(localClock(reset), '00:00:00');
+  assert.equal(svc._todayKey(new Date(Date.parse(reset) - 1000)), '2026-08-05', 'it is the END of today');
+  assert.ok(Date.parse(reset) > at.getTime());
+});
+
+test('nextBudgetResetIso lands exactly on the next LOCAL midnight (CST)', () => {
+  const at = new Date('2026-01-15T19:00:00Z'); // 1:00 PM CST
+  const reset = svc.nextBudgetResetIso(at);
+  assert.equal(localClock(reset), '00:00:00');
+  assert.equal(svc._todayKey(new Date(Date.parse(reset) - 1000)), '2026-01-15');
+});
+
+test('nextBudgetResetIso survives both DST transitions', () => {
+  // Spring forward: the local day 2026-03-08 is only 23 hours long. A naive
+  // "now + remaining seconds" jump lands at 01:00, not midnight — the correction fixes it.
+  const spring = svc.nextBudgetResetIso(new Date('2026-03-08T20:00:00Z')); // 3:00 PM CDT
+  assert.equal(localClock(spring), '00:00:00');
+  assert.equal(svc._todayKey(new Date(Date.parse(spring) - 1000)), '2026-03-08');
+
+  // Fall back: 2026-11-01 is 25 hours long — the naive jump overshoots to 23:00.
+  const fall = svc.nextBudgetResetIso(new Date('2026-11-01T19:00:00Z')); // 1:00 PM CST
+  assert.equal(localClock(fall), '00:00:00');
+  assert.equal(svc._todayKey(new Date(Date.parse(fall) - 1000)), '2026-11-01');
+});
+
+test('nextBudgetResetIso just before midnight rolls to the NEXT day, not tonight', () => {
+  const at = new Date('2026-08-05T04:59:00Z'); // 23:59 CDT on 08-04
+  const reset = svc.nextBudgetResetIso(at);
+  assert.equal(localClock(reset), '00:00:00');
+  assert.ok(Date.parse(reset) - at.getTime() <= 61_000, 'about a minute away, not 24 hours');
+});
+
 // ── Graceful degradation where there is no durable volume (staging) ─────────────────
 
 test('a missing/unwritable state directory degrades to in-memory without throwing', () => {
