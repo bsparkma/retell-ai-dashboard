@@ -19,13 +19,15 @@ import {
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
   CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, ChevronDown, Loader2, PlugZap, Clock, Send,
-  FileText,
+  FileText, VolumeX,
 } from "lucide-react";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
   type TranscribeResult,
 } from "@/lib/api";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
+import { needsRebillConfirm } from "@/lib/transcribe";
+import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import { callNeedsAttention } from "@/lib/worklist";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -163,12 +165,21 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   // metadata only until somebody decides it's worth reading. NOTHING is patched optimistically
   // — the row only gains a transcript/summary once the server says it is persisted.
   const onTranscribed = useCallback((callId: string, result: TranscribeResult) => {
-    if (result.status !== "completed" && result.status !== "exists") return;
-    patchCall(callId, {
-      hasTranscript: true,
-      transcript: result.transcript ?? undefined,
-      summary: result.summary ?? "",
-    });
+    if (result.status === "completed" || result.status === "exists") {
+      patchCall(callId, {
+        hasTranscript: true,
+        transcript: result.transcript ?? undefined,
+        summary: result.summary ?? "",
+        transcribeLastOutcome: result.status,
+      });
+      return;
+    }
+    // An attempt that found no speech SPENT budget. Remember it on the row so the next
+    // click has to be confirmed — without this the row looks idle again and re-bills on
+    // a misclick. The server persists the same thing, so it survives a reload too.
+    if (result.status === "no_speech") {
+      patchCall(callId, { transcribeLastOutcome: "no_speech" });
+    }
   }, [patchCall]);
   const transcribe = useTranscribeCall(onTranscribed);
 
@@ -494,7 +505,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   <TranscribeAction
                     call={call}
                     running={transcribe.isRunning(call.id)}
-                    onTranscribe={() => transcribe.run(call.id)}
+                    onTranscribe={() => transcribe.request(call.id, call.transcribeLastOutcome)}
                   />
                 </div>
 
@@ -507,6 +518,13 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* (M4) Re-billing a call that already came back silent needs a deliberate yes. */}
+      <TranscribeRebillDialog
+        open={transcribe.pendingConfirm !== null}
+        onConfirm={transcribe.confirm}
+        onCancel={transcribe.cancelConfirm}
+      />
 
       {pickCall && (
         <PickPatientModal
@@ -537,8 +555,12 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 /**
  * (M4) The row-level "Transcribe" action. Only offered for staff (Mango) calls that don't
  * have a transcript yet — a Retell call arrives with one, and a Mango call that already
- * has one needs nothing. Three honest states: idle → "Transcribing…" (disabled) → gone,
- * replaced by the transcript indicator once the server confirms it is saved.
+ * has one needs nothing. Honest states: idle → "Transcribing…" (disabled) → the transcript
+ * indicator once the server confirms it is saved.
+ *
+ * The fourth state is "No speech detected": an attempt that BILLED and found nothing. Still
+ * clickable — that is a human's call to make — but the click goes through a confirmation,
+ * because a retry is a fresh charge for the same silent recording.
  */
 function TranscribeAction({
   call, running, onTranscribe,
@@ -556,17 +578,23 @@ function TranscribeAction({
     );
   }
 
+  const noSpeech = needsRebillConfirm(call.transcribeLastOutcome);
+
   return (
     <Button
       size="sm"
       variant="outline"
       disabled={running}
       onClick={onTranscribe}
-      title="Transcribe and summarize this call (uses the daily transcription budget)"
-      className="h-7 gap-1 text-[11px] px-2"
+      title={noSpeech
+        ? "No speech was found last time — transcribing again will spend budget again"
+        : "Transcribe and summarize this call (uses the daily transcription budget)"}
+      className={`h-7 gap-1 text-[11px] px-2 ${noSpeech ? "text-muted-foreground" : ""}`}
     >
       {running
         ? <><Loader2 size={11} className="animate-spin" /> Transcribing…</>
+        : noSpeech
+        ? <><VolumeX size={11} /> No speech detected</>
         : <><FileText size={11} /> Transcribe</>}
     </Button>
   );

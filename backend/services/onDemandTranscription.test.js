@@ -360,6 +360,69 @@ test('no_speech: Speech heard nothing — no empty transcript is stored', async 
   assert.equal(unifiedCallStore.getCall(call.id).transcript, null);
 });
 
+test('no_speech is REMEMBERED on the call — it already spent budget', async () => {
+  // This is the one refusal that cost money. If the row goes back to looking idle, a
+  // misclick re-bills the same silent recording, which breaks the button's promise that
+  // an existing result is never re-billed. So it is persisted, and flagged to the client.
+  const call = seedCall();
+  transcriptionService.transcribeUrl = async () => ({ text: '', utterances: [], duration_seconds: 30 });
+
+  const res = await onDemand.transcribeCall(call.id, { actor: ACTOR });
+
+  assert.equal(res.body.alreadyBilled, true, 'the client must know this one cost money');
+
+  const stored = unifiedCallStore.getCall(call.id);
+  assert.equal(stored.transcribe_last_outcome, 'no_speech');
+  assert.ok(stored.transcribe_last_attempt_at, 'and when');
+  assert.deepEqual(stored.transcribe_last_attempt_by, ACTOR, 'and who');
+  assert.equal(stored.transcript, null, 'still no transcript — the call stays workable');
+  assert.equal(res.minutes, 0.5, 'the billed minutes are still counted against the budget');
+});
+
+test('a remembered no_speech survives a re-ingest of the same call', async () => {
+  // The hourly sync re-ingests inside the watermark overlap and rebuilds the record through
+  // normalizeCall's whitelist. Losing the marker there would silently re-arm the misclick.
+  const call = seedCall();
+  transcriptionService.transcribeUrl = async () => ({ text: '', utterances: [], duration_seconds: 30 });
+  await onDemand.transcribeCall(call.id, { actor: ACTOR });
+
+  unifiedCallStore.addMangoCalls([{
+    external_id: call.external_id,
+    caller_number: '4795551234',
+    call_date: call.call_date,
+    duration_seconds: 90,
+  }]);
+
+  assert.equal(unifiedCallStore.getCall(call.id).transcribe_last_outcome, 'no_speech');
+});
+
+test('a retry that DOES find speech clears the remembered no_speech', async () => {
+  const call = seedCall();
+  transcriptionService.transcribeUrl = async () => ({ text: '', utterances: [], duration_seconds: 30 });
+  await onDemand.transcribeCall(call.id, { actor: ACTOR });
+  assert.equal(unifiedCallStore.getCall(call.id).transcribe_last_outcome, 'no_speech');
+
+  transcriptionService.transcribeUrl = async () => ({ text: 'there was speech after all', utterances: [], duration_seconds: 60 });
+  const res = await onDemand.transcribeCall(call.id, { actor: ACTOR });
+
+  assert.equal(res.body.status, 'completed');
+  assert.equal(unifiedCallStore.getCall(call.id).transcribe_last_outcome, 'completed',
+    'the row must stop warning about a silence that is no longer true');
+});
+
+test('a free refusal does NOT get the already-billed marker', async () => {
+  // Only no_speech spent money. A budget refusal, a missing recording, an in-flight click:
+  // all free, so none of them may make the next click ask for confirmation.
+  const call = seedCall();
+  transcriptionService.checkDailyBudget = () => ({ allowed: false, usedMinutes: 120, capMinutes: 120, remainingMinutes: 0 });
+
+  const res = await onDemand.transcribeCall(call.id, { actor: ACTOR });
+
+  assert.equal(res.body.status, 'budget_exhausted');
+  assert.equal(res.body.alreadyBilled, undefined);
+  assert.equal(unifiedCallStore.getCall(call.id).transcribe_last_outcome ?? null, null);
+});
+
 test('unavailable: Azure Speech unconfigured says so instead of failing obscurely', async () => {
   const call = seedCall();
   transcriptionService.isAvailable = () => false;

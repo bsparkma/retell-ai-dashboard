@@ -14,6 +14,9 @@ import {
   formatResetTime,
   transcribeFeedback,
   toastDuration,
+  needsRebillConfirm,
+  REBILL_CONFIRM_BODY,
+  REBILL_CONFIRM_TITLE,
 } from "@/lib/transcribe";
 import type { TranscribeResult, TranscribeStatus } from "@/lib/api";
 
@@ -28,12 +31,26 @@ describe("button state machine", () => {
     expect(nextButtonState("exists")).toBe("done");
   });
 
-  it("every refusal returns to idle, so the call stays transcribable", () => {
+  it("every refusal leaves the call transcribable", () => {
     const refusals = ALL_STATUSES.filter((s) => s !== "completed" && s !== "exists");
     for (const status of refusals) {
-      expect(nextButtonState(status), `${status} must not consume the button`).toBe("idle");
+      expect(nextButtonState(status), `${status} must not consume the button`).not.toBe("done");
       expect(isTerminal(status)).toBe(false);
     }
+  });
+
+  it("a free refusal returns to plain idle", () => {
+    const free = ALL_STATUSES.filter(
+      (s) => s !== "completed" && s !== "exists" && s !== "no_speech",
+    );
+    for (const status of free) {
+      expect(nextButtonState(status), `${status} costs nothing to retry`).toBe("idle");
+    }
+  });
+
+  it("no_speech gets its own state — it is not idle, because it already cost money", () => {
+    expect(nextButtonState("no_speech")).toBe("no_speech");
+    expect(isTerminal("no_speech")).toBe(false);
   });
 
   it("a failed attempt never marks the call done — the M3 seam stays open", () => {
@@ -125,6 +142,27 @@ describe("copy coverage", () => {
   it("failures stay on screen longer than successes — refusals need reading", () => {
     expect(toastDuration("error")).toBeGreaterThan(toastDuration("success"));
     expect(toastDuration("error")).toBeGreaterThan(toastDuration("info"));
+  });
+});
+
+describe("re-bill confirmation", () => {
+  it("ONLY a previous no_speech requires confirming — every other refusal was free", () => {
+    expect(needsRebillConfirm("no_speech")).toBe(true);
+
+    for (const status of ALL_STATUSES.filter((s) => s !== "no_speech")) {
+      expect(needsRebillConfirm(status), `${status} cost nothing, so it must not nag`).toBe(false);
+    }
+    expect(needsRebillConfirm(null)).toBe(false);
+    expect(needsRebillConfirm(undefined)).toBe(false);
+  });
+
+  it("the prompt says BOTH true things: nothing was found, and it will cost again", () => {
+    expect(REBILL_CONFIRM_BODY).toBe(
+      "No speech was found in this recording last time. Transcribing again will spend budget again. Continue?",
+    );
+    expect(REBILL_CONFIRM_BODY).toMatch(/no speech was found/i);
+    expect(REBILL_CONFIRM_BODY).toMatch(/spend budget again/i);
+    expect(REBILL_CONFIRM_TITLE).toMatch(/again\?$/);
   });
 });
 

@@ -35,16 +35,37 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
+import { needsRebillConfirm, REBILL_CONFIRM_BODY, REBILL_CONFIRM_ACCEPT, REBILL_CONFIRM_CANCEL } from "@/lib/transcribe";
+import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import type { TranscribeResult } from "@/lib/api";
 
-/** The smallest thing that behaves like both real placements. */
-function TranscribeButton({ onResult }: { onResult?: (id: string, r: TranscribeResult) => void }) {
+/**
+ * The smallest thing that behaves like both real placements: a button that goes through
+ * `request` (so the re-bill gate applies) plus the shared confirmation dialog.
+ */
+function TranscribeButton({
+  onResult, lastOutcome,
+}: {
+  onResult?: (id: string, r: TranscribeResult) => void;
+  lastOutcome?: string | null;
+}) {
   const transcribe = useTranscribeCall(onResult);
   const running = transcribe.isRunning("call-1");
   return (
-    <button disabled={running} onClick={() => transcribe.run("call-1")}>
-      {running ? "Transcribing…" : "Transcribe & Summarize"}
-    </button>
+    <>
+      <button disabled={running} onClick={() => transcribe.request("call-1", lastOutcome)}>
+        {running
+          ? "Transcribing…"
+          : needsRebillConfirm(lastOutcome)
+          ? "No speech detected"
+          : "Transcribe & Summarize"}
+      </button>
+      <TranscribeRebillDialog
+        open={transcribe.pendingConfirm !== null}
+        onConfirm={transcribe.confirm}
+        onCancel={transcribe.cancelConfirm}
+      />
+    </>
   );
 }
 
@@ -153,6 +174,19 @@ describe("outcome announcements", () => {
     expect(seen[0].status).toBe("error");
   });
 
+  it("no_speech is announced and reported back so the row can remember it", async () => {
+    const seen: TranscribeResult[] = [];
+    transcribeMock.fn.mockResolvedValue({ status: "no_speech", alreadyBilled: true } as TranscribeResult);
+
+    render(<TranscribeButton onResult={(_id, r) => seen.push(r)} />);
+    fireEvent.click(screen.getByRole("button"));
+
+    await waitFor(() => expect(toasts.calls).toHaveLength(1));
+    expect(toasts.calls[0].kind).toBe("error");
+    expect(toasts.calls[0].text).toContain("No speech was detected");
+    expect(seen[0].alreadyBilled).toBe(true);
+  });
+
   it("only completed/exists hand a transcript back to the caller", async () => {
     const seen: Array<{ id: string; r: TranscribeResult }> = [];
     transcribeMock.fn.mockResolvedValue({ status: "exists", transcript: "already here" } as TranscribeResult);
@@ -164,5 +198,72 @@ describe("outcome announcements", () => {
     expect(seen[0].id).toBe("call-1");
     expect(seen[0].r.transcript).toBe("already here");
     expect(toasts.calls[0].kind).toBe("info");
+  });
+});
+
+describe("re-bill confirmation for a silent call", () => {
+  it("a first click on a NEVER-billed call runs straight away — no ceremony", async () => {
+    transcribeMock.fn.mockResolvedValue({ status: "completed", minutesUsed: 1 } as TranscribeResult);
+
+    render(<TranscribeButton lastOutcome={null} />);
+    fireEvent.click(screen.getByRole("button"));
+
+    await waitFor(() => expect(transcribeMock.fn).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(REBILL_CONFIRM_BODY)).toBeNull();
+  });
+
+  it("a call that already came back silent shows its state and ASKS before spending", async () => {
+    transcribeMock.fn.mockResolvedValue({ status: "completed", minutesUsed: 1 } as TranscribeResult);
+
+    render(<TranscribeButton lastOutcome="no_speech" />);
+    expect(screen.getByRole("button").textContent).toContain("No speech detected");
+
+    fireEvent.click(screen.getByRole("button"));
+
+    // The dialog is up and NOTHING has been spent yet.
+    await waitFor(() => expect(screen.getByText(REBILL_CONFIRM_BODY)).toBeTruthy());
+    expect(transcribeMock.fn).not.toHaveBeenCalled();
+  });
+
+  it("cancelling spends nothing — the misclick this exists to stop", async () => {
+    transcribeMock.fn.mockResolvedValue({ status: "completed", minutesUsed: 1 } as TranscribeResult);
+
+    render(<TranscribeButton lastOutcome="no_speech" />);
+    fireEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByText(REBILL_CONFIRM_BODY)).toBeTruthy());
+
+    fireEvent.click(screen.getByText(REBILL_CONFIRM_CANCEL));
+
+    await waitFor(() => expect(screen.queryByText(REBILL_CONFIRM_BODY)).toBeNull());
+    expect(transcribeMock.fn).not.toHaveBeenCalled();
+    expect(toasts.calls).toHaveLength(0);
+  });
+
+  it("confirming DOES spend — this is a guard rail, not a lockout", async () => {
+    transcribeMock.fn.mockResolvedValue({ status: "completed", minutesUsed: 1 } as TranscribeResult);
+
+    render(<TranscribeButton lastOutcome="no_speech" />);
+    fireEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByText(REBILL_CONFIRM_BODY)).toBeTruthy());
+
+    fireEvent.click(screen.getByText(REBILL_CONFIRM_ACCEPT));
+
+    await waitFor(() => expect(transcribeMock.fn).toHaveBeenCalledTimes(1));
+    expect(transcribeMock.fn).toHaveBeenCalledWith("call-1");
+    await waitFor(() => expect(toasts.calls[0].kind).toBe("success"));
+  });
+
+  it("repeated clicks while the dialog is open never queue up extra spend", async () => {
+    transcribeMock.fn.mockResolvedValue({ status: "completed", minutesUsed: 1 } as TranscribeResult);
+
+    render(<TranscribeButton lastOutcome="no_speech" />);
+    const button = screen.getByRole("button");
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByText(REBILL_CONFIRM_BODY)).toBeTruthy());
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    fireEvent.click(screen.getByText(REBILL_CONFIRM_ACCEPT));
+    await waitFor(() => expect(transcribeMock.fn).toHaveBeenCalledTimes(1));
   });
 });

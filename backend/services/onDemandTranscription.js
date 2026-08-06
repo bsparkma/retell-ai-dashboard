@@ -184,6 +184,30 @@ async function transcribeCall(callId, options = {}) {
 }
 
 /**
+ * Remember the outcome of an attempt that produced no transcript but DID spend budget, so
+ * the UI can hold that state across a reload and ask before spending again.
+ *
+ * Best-effort and non-fatal by design: this is a guard rail on a refusal we have already
+ * reported honestly. Failing to record it must not turn "no speech was found" into a
+ * different, more confusing error.
+ * @param {string} callId
+ * @param {string} outcome
+ * @param {{name?: string|null, email?: string|null}|null} actor
+ */
+async function rememberAttempt(callId, outcome, actor) {
+  try {
+    unifiedCallStore.updateCall(callId, {
+      transcribe_last_outcome: outcome,
+      transcribe_last_attempt_at: new Date().toISOString(),
+      transcribe_last_attempt_by: actor,
+    });
+    await unifiedCallStore.persist();
+  } catch (e) {
+    console.error(`[M4] could not record the '${outcome}' attempt for ${callId}: ${e.message}`);
+  }
+}
+
+/**
  * The billing path, run under the in-flight lock. Ordered so nothing is spent before we
  * know it can be: availability → budget → fresh recording URL → Speech → summary →
  * persist. Returns `{httpStatus, outcome, body, minutes?, summaryCost?, call?}`.
@@ -262,9 +286,16 @@ async function runTranscription(call, { actor }) {
   const minutes = transcript && transcript.duration_seconds ? transcript.duration_seconds / 60 : 0;
 
   if (!transcript || !transcript.text) {
-    // Speech ran (and billed) but heard nothing — a silent or music-only recording. No
-    // transcript is stored, so the call stays clickable; the UI says what happened rather
-    // than showing an empty transcript that looks like a bug.
+    // Speech ran (and BILLED) but heard nothing — a silent or music-only recording. No
+    // transcript is stored, so the call stays clickable and the UI says what happened
+    // rather than showing an empty transcript that looks like a bug.
+    //
+    // But this is the one refusal that already cost money, so it MUST be remembered: a
+    // silent-call row that re-bills on every misclick breaks the promise the whole button
+    // makes ("an existing result is never re-billed"). Persisting the outcome lets the UI
+    // hold the state across reloads and demand an explicit confirmation before spending
+    // again. Deliberately NOT a lockout — a human may still have a reason to retry.
+    await rememberAttempt(callId, 'no_speech', actor);
     return {
       httpStatus: 422,
       outcome: 'no_speech',
@@ -272,6 +303,8 @@ async function runTranscription(call, { actor }) {
       body: {
         status: 'no_speech',
         error: 'No speech was detected in this recording — there is nothing to summarize.',
+        /** Tells the client to require a confirmation before spending on this call again. */
+        alreadyBilled: true,
       },
     };
   }
@@ -296,6 +329,11 @@ async function runTranscription(call, { actor }) {
     transcribed_at: new Date().toISOString(),
     transcribed_by: actor,
     transcribe_source: 'on_demand',
+    // Clears any remembered 'no_speech' from an earlier attempt — a retry that DID find
+    // speech must not leave the row still warning about the previous silent one.
+    transcribe_last_outcome: 'completed',
+    transcribe_last_attempt_at: new Date().toISOString(),
+    transcribe_last_attempt_by: actor,
   };
   if (analysis) {
     updates.caller_name = analysis.caller_name || call.caller_name;

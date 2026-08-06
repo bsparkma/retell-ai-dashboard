@@ -29,7 +29,7 @@ The UI switches on the `status` field, not the HTTP code:
 | `in_progress` | 409 | Another click for this call is still running (per-call lock). |
 | `recording_not_ready` | 422 | Mango hasn't published the recording yet (call younger than `MANGO_RECORDING_LAG_MINUTES`, default 30). |
 | `recording_unavailable` | 422 | Mango no longer serves a recording for this call. |
-| `no_speech` | 422 | Azure Speech ran but heard nothing. No empty transcript is stored. |
+| `no_speech` | 422 | Azure Speech ran but heard nothing. No empty transcript is stored; the outcome **is** persisted (see below). |
 | `budget_exhausted` | 429 | Daily audio-minute breaker is spent. Carries `resetsAt`. |
 | `unavailable` | 503 | Azure Speech isn't configured in this environment. |
 | `not_found` | 404 | No such Mango call in the store. |
@@ -44,6 +44,13 @@ Guarantees, in order of how much they cost when broken:
   tells the user when it resets.
 - **A double click bills once.** Per-call in-flight lock, released in `finally`.
 - **An existing transcript is reused, never re-billed.**
+- **A silent call cannot re-bill on a misclick.** `no_speech` is the one refusal that
+  already spent money — Speech billed for the audio and returned nothing. The outcome is
+  persisted to `transcribe_last_outcome` (and carried through `normalizeCall`, so a
+  re-ingest can't erase it), the button holds a *"No speech detected"* state across
+  reloads, and the next click opens a confirmation rather than spending. Deliberately a
+  guard rail, **not** a lockout — a human may still have a reason to retry. A retry that
+  does find speech clears the marker.
 - **Nothing here writes to Open Dental.** Review-then-send is untouched; the only
   OD-adjacent step is `matchAndSetStatus`, which sets worklist status and writes nothing.
 

@@ -18,8 +18,14 @@
 
 import type { TranscribeResult, TranscribeStatus } from "@/lib/api";
 
-/** What the button is doing right now. */
-export type TranscribeButtonState = "idle" | "running" | "done";
+/**
+ * What the button is doing right now.
+ *
+ * `no_speech` is a state, not just a past event: an attempt that found no speech STILL
+ * SPENT BUDGET, so the row has to remember it. The button stays clickable — a human may
+ * have a reason to retry — but the next click costs money again, so it asks first.
+ */
+export type TranscribeButtonState = "idle" | "running" | "done" | "no_speech";
 
 /** How the outcome should be announced. Maps to sonner's success/info/error toasts. */
 export type TranscribeToneKind = "success" | "info" | "error";
@@ -31,16 +37,43 @@ export interface TranscribeFeedback {
 
 /**
  * The next button state for an outcome. Only a server-confirmed, persisted transcript
- * ends the run; everything else leaves the call clickable again.
+ * ends the run; a billed-but-empty result becomes the `no_speech` state; everything else
+ * leaves the call plainly clickable again.
  */
 export function nextButtonState(status: TranscribeStatus): TranscribeButtonState {
-  return status === "completed" || status === "exists" ? "done" : "idle";
+  if (status === "completed" || status === "exists") return "done";
+  if (status === "no_speech") return "no_speech";
+  return "idle";
 }
 
 /** Whether the call still has work the button can do. */
 export function isTerminal(status: TranscribeStatus): boolean {
   return nextButtonState(status) === "done";
 }
+
+/**
+ * Does clicking again SPEND BUDGET on something we already paid for? True only for a call
+ * whose last attempt found no speech: Azure Speech billed for the audio and returned
+ * nothing, so a retry is a fresh charge for the same silent recording.
+ *
+ * This is the one place the button's "an existing result is never re-billed" promise could
+ * quietly break — a misclick on a silent call costs real money — so the caller must confirm
+ * rather than the UI silently allowing it or silently locking it out.
+ */
+export function needsRebillConfirm(lastOutcome: string | null | undefined): boolean {
+  return lastOutcome === "no_speech";
+}
+
+/**
+ * The re-bill confirmation. Named constants because the PM reviews this wording, and
+ * because the tests assert it says both true things: nothing was found last time, AND
+ * doing it again costs budget again.
+ */
+export const REBILL_CONFIRM_TITLE = "Transcribe this call again?";
+export const REBILL_CONFIRM_BODY =
+  "No speech was found in this recording last time. Transcribing again will spend budget again. Continue?";
+export const REBILL_CONFIRM_ACCEPT = "Transcribe again";
+export const REBILL_CONFIRM_CANCEL = "Cancel";
 
 /**
  * Format an ISO instant as a short local clock time ("12:00 AM"). Used so the budget

@@ -14,13 +14,28 @@
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, type TranscribeResult } from "@/lib/api";
-import { transcribeFeedback, toastDuration } from "@/lib/transcribe";
+import { transcribeFeedback, toastDuration, needsRebillConfirm } from "@/lib/transcribe";
 
 export interface UseTranscribeCall {
   /** Is this specific call being transcribed right now? */
   isRunning: (callId: string) => boolean;
-  /** Kick off a transcription. Resolves with the outcome, or null if already running. */
+  /**
+   * Kick off a transcription immediately, with no confirmation. Use `request` from UI —
+   * this is the "the user has already said yes" path.
+   */
   run: (callId: string) => Promise<TranscribeResult | null>;
+  /**
+   * What a button click should do. Runs straight away for a call that has never spent
+   * budget; for one whose last attempt found no speech, parks the id in `pendingConfirm`
+   * instead so the caller can ask before charging for the same silent recording again.
+   */
+  request: (callId: string, lastOutcome?: string | null) => void;
+  /** The call awaiting a re-bill confirmation, or null. */
+  pendingConfirm: string | null;
+  /** The user said yes — spend the budget. */
+  confirm: () => void;
+  /** The user said no. Nothing is spent. */
+  cancelConfirm: () => void;
 }
 
 /**
@@ -32,6 +47,7 @@ export function useTranscribeCall(
 ): UseTranscribeCall {
   const inFlight = useRef<Set<string>>(new Set());
   const [running, setRunning] = useState<string[]>([]);
+  const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
 
   const run = useCallback(
     async (callId: string): Promise<TranscribeResult | null> => {
@@ -65,5 +81,30 @@ export function useTranscribeCall(
 
   const isRunning = useCallback((callId: string) => running.includes(callId), [running]);
 
-  return { isRunning, run };
+  // A call whose last attempt found no speech already cost budget and produced nothing.
+  // Clicking it again is a FRESH charge for the same silent recording, so it must be a
+  // deliberate act — not a lockout (a human may have a reason), not a silent re-spend.
+  const request = useCallback(
+    (callId: string, lastOutcome?: string | null) => {
+      if (needsRebillConfirm(lastOutcome)) {
+        setPendingConfirm(callId);
+        return;
+      }
+      void run(callId);
+    },
+    [run],
+  );
+
+  // Read the id from state and clear it BEFORE running — never kick off the request from
+  // inside a state updater, which React may invoke twice.
+  const confirm = useCallback(() => {
+    if (!pendingConfirm) return;
+    const callId = pendingConfirm;
+    setPendingConfirm(null);
+    void run(callId);
+  }, [pendingConfirm, run]);
+
+  const cancelConfirm = useCallback(() => setPendingConfirm(null), []);
+
+  return { isRunning, run, request, pendingConfirm, confirm, cancelConfirm };
 }

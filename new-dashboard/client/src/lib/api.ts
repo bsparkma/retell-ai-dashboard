@@ -115,6 +115,11 @@ export interface TranscribeResult {
   capMinutes?: number;
   /** How long until the recording should be published (recording_not_ready only). */
   retryAfterMinutes?: number;
+  /**
+   * This attempt SPENT BUDGET and produced nothing (no_speech only). The client must
+   * require an explicit confirmation before charging for the same recording again.
+   */
+  alreadyBilled?: boolean;
   error?: string;
   detail?: string;
 }
@@ -186,6 +191,12 @@ export interface BackendUnifiedCall {
   // Slice B.1 — who sent the chart note + when
   sent_by?: CallActor | null;
   sent_at?: string | null;
+  // Slice M4 — the last on-demand transcription attempt. 'no_speech' means it SPENT
+  // budget and produced nothing, so the next click must be confirmed.
+  transcribe_last_outcome?: TranscribeStatus | null;
+  transcribe_last_attempt_at?: string | null;
+  transcribed_by?: CallActor | null;
+  transcribed_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -521,6 +532,13 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     resolvedAt: c.resolved_at ?? null,
     sentBy: (c.sent_by ?? null) as CallActor | null,
     sentAt: c.sent_at ?? null,
+
+    // Slice M4 — on-demand transcription. transcribeLastOutcome === 'no_speech' means the
+    // last attempt billed Azure Speech and found nothing, so the button must confirm
+    // before spending on the same recording again.
+    transcribeLastOutcome: (c.transcribe_last_outcome ?? null) as TranscribeStatus | null,
+    transcribedBy: (c.transcribed_by ?? null) as CallActor | null,
+    transcribedAt: c.transcribed_at ?? null,
 
     // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1). On Retell calls
     // these are usually absent (defaults false) — Retell attention is unaffected by mode.

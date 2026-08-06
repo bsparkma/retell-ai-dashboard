@@ -309,6 +309,13 @@ class UnifiedCallStore {
       transcribed_at: call.transcribed_at ?? null,
       transcribed_by: call.transcribed_by ?? null,
       transcribe_source: call.transcribe_source ?? null,
+      // The last on-demand attempt's outcome. Carries 'no_speech' — an attempt that spent
+      // budget and produced nothing — so the UI can hold that state across a reload and
+      // require an explicit confirmation before spending on the same silent recording
+      // again. Losing this to a re-ingest would silently re-arm accidental re-billing.
+      transcribe_last_outcome: call.transcribe_last_outcome ?? null,
+      transcribe_last_attempt_at: call.transcribe_last_attempt_at ?? null,
+      transcribe_last_attempt_by: call.transcribe_last_attempt_by ?? null,
       recording_url: call.recording_url || null,
       recording_path: call.recording_path || null,
 
