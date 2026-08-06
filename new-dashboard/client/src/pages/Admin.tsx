@@ -16,8 +16,102 @@ import { api } from "@/lib/api";
 import type {
   AdminHealthData, AdminConfigData, AdminCostsData,
   AdminServiceStatus, SyncHistoryEntry, AdminQueuesData, AdminErrorEntry,
-  NotificationsConfig,
+  NotificationsConfig, MangoTranscriptionCosts,
 } from "@/lib/api";
+import { formatResetTime } from "@/lib/transcribe";
+
+/** Office keys shown first in the on-demand breakdown; anything else follows. */
+const OFFICE_ORDER = ["roland", "valley", "unknown"];
+
+/**
+ * (M4) Mango transcription usage. Transcription is now a human decision per call, so the
+ * question this answers is "what did we choose to spend today, and where is the ceiling" —
+ * today's audio minutes against the daily breaker, who ran what, and the month to date.
+ */
+function MangoTranscriptionCard({ data }: { data: MangoTranscriptionCosts }) {
+  const { daily_budget: budget, on_demand_today: today, on_demand_month: month } = data;
+  const capped = budget.budget_minutes > 0;
+  const pct = capped ? Math.min(100, (budget.used_minutes / budget.budget_minutes) * 100) : 0;
+  // Colour the bar by pressure, not decoration: amber past 75%, red when it's spent.
+  const barColor = pct >= 100 ? "oklch(0.62 0.22 25)" : pct >= 75 ? "oklch(0.72 0.16 70)" : "var(--primary)";
+
+  const offices = Object.entries(today.by_office).sort(
+    (a, b) => (OFFICE_ORDER.indexOf(a[0]) + 1 || 99) - (OFFICE_ORDER.indexOf(b[0]) + 1 || 99)
+  );
+
+  return (
+    <div className="p-3 rounded-lg bg-muted/40 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-medium text-foreground">Mango transcription (on demand)</div>
+        <Badge variant={data.auto_transcribe ? "destructive" : "secondary"} className="text-[10px]">
+          {data.auto_transcribe ? "Auto: ON" : "Auto: OFF"}
+        </Badge>
+      </div>
+
+      {/* Today vs the daily breaker */}
+      <div>
+        <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+          <span>Today&apos;s audio minutes</span>
+          <span className="font-mono text-foreground">
+            {budget.used_minutes.toFixed(1)} / {capped ? `${budget.budget_minutes}` : "∞"} min
+          </span>
+        </div>
+        {capped && (
+          <div className="h-2 bg-border rounded-full overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+          </div>
+        )}
+        <div className="text-[11px] text-muted-foreground mt-1">
+          {capped && pct >= 100
+            ? `Budget spent — resets at ${formatResetTime(budget.resets_at)}.`
+            : `Resets at ${formatResetTime(budget.resets_at)} (${budget.timezone}).`}
+          {!budget.persisted && " · Not persisted — resets on restart."}
+        </div>
+      </div>
+
+      {/* Who transcribed what today */}
+      <div>
+        <div className="text-xs text-muted-foreground mb-1">
+          Transcriptions today: <span className="text-foreground font-medium">{today.completed}</span>
+          {today.total > today.completed && (
+            <span className="text-muted-foreground"> ({today.total} attempts)</span>
+          )}
+        </div>
+        {offices.length === 0 ? (
+          <div className="text-[11px] text-muted-foreground">Nobody has transcribed a call today.</div>
+        ) : (
+          <div className="space-y-0.5">
+            {offices.map(([office, counts]) => (
+              <div key={office} className="flex items-center justify-between text-[11px]">
+                <span className="capitalize text-foreground">{office}</span>
+                <span className="text-muted-foreground font-mono">
+                  {counts.completed} done · {counts.minutes.toFixed(1)} min
+                  {counts.budget_exhausted > 0 && ` · ${counts.budget_exhausted} over budget`}
+                  {counts.error > 0 && ` · ${counts.error} failed`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Month to date, at list rates */}
+      <div className="pt-2 border-t border-border/60 text-[11px] text-muted-foreground space-y-0.5">
+        <div className="flex items-center justify-between">
+          <span>{month.month_key} on demand</span>
+          <span className="font-mono text-foreground">
+            {month.transcriptions} calls · {month.minutes.toFixed(1)} min
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span>Estimated spend (Speech + summaries)</span>
+          <span className="font-mono text-foreground">${month.estimated_cost.toFixed(2)}</span>
+        </div>
+        <div className="text-muted-foreground/80">{data.rates.speech}</div>
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Integration display config: maps backend service keys to UI
@@ -694,6 +788,9 @@ export default function Admin() {
                 <CardTitle className="text-base font-semibold">Usage & Costs</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                {costs.mango_transcription && (
+                  <MangoTranscriptionCard data={costs.mango_transcription} />
+                )}
                 {costs.transcription && (
                   <div className="p-3 rounded-lg bg-muted/40">
                     <div className="text-sm font-medium text-foreground">Transcription ({costs.transcription.provider})</div>
