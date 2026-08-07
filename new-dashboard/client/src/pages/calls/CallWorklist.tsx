@@ -86,7 +86,7 @@ interface CallWorklistProps {
 export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const auth = useAuth();
   // Office scope comes from the global app-shell selector (sidebar), not this page.
-  const { office, selected: selectedOffice } = useOffice();
+  const { office, offices, selected: selectedOffice } = useOffice();
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -124,7 +124,25 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
   useEffect(() => { load(); }, [load]);
 
-  const officeOdConnected = office === ALL_OFFICES ? true : (selectedOffice?.odConnected ?? true);
+  /**
+   * Open Dental connectivity PER CALL, not per selected tab.
+   *
+   * The old rule read the SELECTED office, so the "All calls" view offered the full
+   * action set on every row — including Riley rows and unmapped-line rows that have
+   * nowhere to write. Each call now answers for itself, from the office the SERVER
+   * resolved for it. An office absent from the roster (notably the 'unknown' bucket,
+   * which is deliberately not offered as a tab) is not connected.
+   */
+  const odConnectedForCall = useCallback(
+    (call: UnifiedCall) =>
+      Boolean(call.officeId) &&
+      (offices.find((o) => o.officeId === call.officeId)?.odConnected ?? false),
+    [offices],
+  );
+
+  /** Does the CURRENT view have any OD-connected office at all (for the empty state)? */
+  const officeOdConnected =
+    office === ALL_OFFICES ? offices.some((o) => o.odConnected) : (selectedOffice?.odConnected ?? false);
 
   const patchCall = useCallback((id: string, patch: Partial<UnifiedCall>) => {
     setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -477,7 +495,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                 <div className="min-w-0">
                   <PatientIdentityCell
                     call={call}
-                    officeOdConnected={officeOdConnected}
+                    officeOdConnected={odConnectedForCall(call)}
+                    officeName={offices.find((o) => o.officeId === call.officeId)?.officeName ?? null}
                     onPick={() => setPickCall(call)}
                     onSend={() => setSendTarget({
                       call,
@@ -601,10 +620,28 @@ function TranscribeAction({
 }
 
 function PatientIdentityCell({
-  call, officeOdConnected, onPick, onSend,
-}: { call: UnifiedCall; officeOdConnected: boolean; onPick: () => void; onSend: () => void }) {
+  call, officeOdConnected, officeName, onPick, onSend,
+}: {
+  call: UnifiedCall;
+  officeOdConnected: boolean;
+  /** Display name of this call's office; null when the office isn't in the roster. */
+  officeName: string | null;
+  onPick: () => void;
+  onSend: () => void;
+}) {
+  // No Open Dental for THIS call's office → no chart actions, and an honest reason.
+  // Two distinct situations, because the answer to "what do I do about it?" differs:
+  // an unmapped line needs its DID added; a known office needs OD switched on.
   if (!officeOdConnected) {
-    return <span className="text-xs text-muted-foreground/70 italic">OD not connected for this office yet</span>;
+    const message =
+      call.officeId === "unknown" || !officeName
+        ? "Can't connect this call to a chart — its office is unknown"
+        : `OD not connected for ${officeName} yet`;
+    return (
+      <span className="text-xs text-muted-foreground/70 italic" title={message}>
+        {message}
+      </span>
+    );
   }
   if (call.notAPatient) {
     return (

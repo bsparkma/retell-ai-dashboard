@@ -13,8 +13,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Loader2, RotateCcw } from "lucide-react";
-import { api, type UnifiedCall } from "@/lib/api";
+import { Send, Loader2, RotateCcw, Building2 } from "lucide-react";
+import { api, type UnifiedCall, type OfficeConfig } from "@/lib/api";
 import { toast } from "sonner";
 
 interface SendToChartDialogProps {
@@ -38,15 +38,23 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
   const [text, setText] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [sending, setSending] = useState(false);
+  // Which practice's chart this note is headed for, per the server.
+  const [office, setOffice] = useState<OfficeConfig | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setGenerated(null);
     setText("");
+    setOffice(null);
     setLoadingPreview(true);
     let cancelled = false;
     api.getCommlogPreview(call.id, contentType)
-      .then((res) => { if (!cancelled) { setGenerated(res.note); setText(res.note); } })
+      .then((res) => {
+        if (cancelled) return;
+        setGenerated(res.note);
+        setText(res.note);
+        setOffice(res.office ?? null);
+      })
       .catch(() => { if (!cancelled) { setGenerated(null); setText(""); } })
       .finally(() => { if (!cancelled) setLoadingPreview(false); });
     return () => { cancelled = true; };
@@ -59,9 +67,18 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
     if (!text.trim()) { toast.error("Note is empty", { duration: 8000 }); return; }
     setSending(true);
     try {
-      const res = await api.resolvePatient(call.id, { patientId, note: text, content_type: contentType });
+      const res = await api.resolvePatient(call.id, {
+        patientId,
+        note: text,
+        content_type: contentType,
+        // Assert the office the UI thinks it is writing to. The server resolves the
+        // real one from the call and refuses on a mismatch, so a stale screen can
+        // never send a note to the wrong practice — it gets an error instead.
+        ...(office ? { office_id: office.officeId } : {}),
+      });
       if (res.success) {
-        toast.success(res.alreadySynced ? `Already on ${patientName}'s chart` : `Sent to ${patientName}'s chart`);
+        const where = office ? `${patientName}'s chart at ${office.officeName}` : `${patientName}'s chart`;
+        toast.success(res.alreadySynced ? `Already on ${where}` : `Sent to ${where}`);
         onSent();
         onOpenChange(false);
       } else {
@@ -85,6 +102,18 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
             Review or edit it first — nothing is written until you confirm.
           </DialogDescription>
         </DialogHeader>
+
+        {/* WHICH practice's chart. PatNum numbering restarts per Open Dental database,
+            so the patient name alone doesn't say where this note lands. */}
+        {office && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground rounded-md border border-border/60 px-2.5 py-1.5">
+            <Building2 size={12} className="flex-shrink-0" />
+            <span>
+              Writing to <span className="font-medium text-foreground">{office.officeName}</span>
+              {patientId ? <> · PatNum {patientId}</> : null}
+            </span>
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">

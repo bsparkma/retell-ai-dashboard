@@ -124,9 +124,15 @@ export interface TranscribeResult {
   detail?: string;
 }
 
-/** Open Dental commlog sync state. 'matched' = auto-matched, ready for a human to send (Slice B.1). */
+/**
+ * Open Dental commlog sync state. 'matched' = auto-matched, ready for a human to
+ * send (Slice B.1). 'office_not_connected' = this call's office has no Open Dental
+ * connection, so it was never matched against ANY practice — the honest state that
+ * replaced quietly matching it against whichever database happened to be wired.
+ */
 export type OdSyncStatus =
-  | "synced" | "matched" | "needs_review" | "pending_match" | "pending" | "error" | "unlinked" | null;
+  | "synced" | "matched" | "needs_review" | "pending_match" | "pending" | "error"
+  | "unlinked" | "office_not_connected" | null;
 
 /** A stored patient match candidate for the Pick Patient modal ({ id, name }). */
 export interface OdMatchCandidate {
@@ -138,7 +144,14 @@ export interface OdMatchCandidate {
 export interface OfficeConfig {
   officeId: string;
   officeName: string;
+  /**
+   * EFFECTIVE Open Dental connectivity: the office is switched on AND its
+   * credentials are present. An office switched on without its customer key
+   * reports false here, so the UI never offers actions that would fail.
+   */
   odConnected: boolean;
+  /** Why OD is unavailable for this office, in words a human can act on. */
+  odBlockedReason?: string | null;
 }
 
 export interface BackendUnifiedCall {
@@ -175,6 +188,16 @@ export interface BackendUnifiedCall {
   od_sync_status?: OdSyncStatus;
   od_patient_id?: number | string | null;
   od_patient_name?: string | null;
+  /**
+   * Which practice's database od_patient_id belongs to. PatNum numbering restarts
+   * per Open Dental database, so the number alone does not identify a person —
+   * PatNum 7115 is a different patient in each of the two connected practices.
+   */
+  od_patient_office?: string | null;
+  /** Why this call's office has no Open Dental connection (when it doesn't). */
+  od_office_blocked_reason?: string | null;
+  /** Full office descriptor, present on the single-call fetch. */
+  office?: OfficeConfig;
   od_commlog_num?: number | null;
   od_match_confidence?: number | null;
   od_match_candidates?: OdMatchCandidate[] | null;
@@ -516,6 +539,9 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     odSyncStatus: (c.od_sync_status ?? null) as OdSyncStatus,
     odPatientId: c.od_patient_id ?? null,
     odPatientName: c.od_patient_name ?? null,
+    // The office that PatNum belongs to, and (when OD is unavailable) why.
+    odPatientOffice: c.od_patient_office ?? null,
+    odOfficeBlockedReason: c.od_office_blocked_reason ?? null,
     odCommlogNum: c.od_commlog_num ?? null,
     odMatchConfidence: c.od_match_confidence ?? null,
     odMatchCandidates: (c.od_match_candidates ?? []) as OdMatchCandidate[],
@@ -647,9 +673,12 @@ export const api = {
     id: string,
     body:
       // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
-      | { patientId: number; note?: string; content_type?: "summary" | "transcript" }
+      // office_id: which office the UI BELIEVES this call belongs to. The server
+      // resolves the real office from the call itself and refuses on a mismatch —
+      // this can only cause a refusal, never redirect the write to another practice.
+      | { patientId: number; note?: string; content_type?: "summary" | "transcript"; office_id?: string }
       | { notAPatient: true; reason: NotAPatientReason }
-  ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; call?: BackendUnifiedCall }> {
+  ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -669,21 +698,38 @@ export const api = {
   async getCommlogPreview(
     id: string,
     contentType: "summary" | "transcript" = "summary",
-  ): Promise<{ note: string; patientId: number | null; patientName: string | null }> {
+  ): Promise<{ note: string; patientId: number | null; patientName: string | null; office?: OfficeConfig }> {
     const q = contentType === "transcript" ? "?content_type=transcript" : "";
     return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q}`);
   },
 
-  /** Search Open Dental patients for the Pick Patient modal (LName/FName/Phone). */
-  async searchPatients(q: string): Promise<OdPatient[]> {
-    if (!q || q.trim().length < 2) return [];
+  /**
+   * Search Open Dental patients for the Pick Patient modal, scoped to the office of
+   * THE CALL being resolved.
+   *
+   * Deliberately call-scoped rather than passing an office id: the server derives
+   * the office from the call, so this cannot search one practice while resolving a
+   * call that belongs to another. The response names the office searched so the
+   * modal can show the operator whose patient list they are looking at.
+   */
+  async searchPatientsForCall(
+    callId: string,
+    q: string,
+  ): Promise<{ patients: OdPatient[]; office: OfficeConfig | null; error?: string }> {
+    if (!q || q.trim().length < 2) return { patients: [], office: null };
     try {
-      const res = await request<{ success: boolean; patients: OdPatient[]; count: number }>(
-        `/opendental/patients/search?q=${encodeURIComponent(q.trim())}`
+      const res = await request<{ patients: OdPatient[]; office: OfficeConfig; error?: string }>(
+        `/unified-calls/${encodeURIComponent(callId)}/patient-search?q=${encodeURIComponent(q.trim())}`
       );
-      return res.patients ?? [];
-    } catch {
-      return [];
+      return { patients: res.patients ?? [], office: res.office ?? null };
+    } catch (err) {
+      // A failed search must never look like "no such patient" — the modal renders
+      // the difference, so surface it rather than swallowing it into an empty list.
+      return {
+        patients: [],
+        office: null,
+        error: err instanceof Error ? err.message : "Patient search failed",
+      };
     }
   },
 
