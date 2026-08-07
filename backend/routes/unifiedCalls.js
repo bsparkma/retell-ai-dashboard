@@ -13,7 +13,20 @@ const openDentalSync = require('../services/openDentalSync');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const audit = require('../platform/audit');
 const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
+const odOffices = require('../config/odOffices');
 const mangoConfig = require('../config/mango');
+
+/**
+ * The office roster for the UI, with EFFECTIVE Open Dental connectivity.
+ *
+ * officeAgents owns the intent flag (odConnected — the reversible switch); this
+ * layer ANDs it with "are that office's credentials actually present". An office
+ * switched on without its customer key therefore still renders as disconnected
+ * rather than appearing live and failing at the moment someone clicks Send.
+ * @returns {Array<{officeId: string, officeName: string, odConnected: boolean, odBlockedReason: string|null}>}
+ */
+const officeRoster = () =>
+  getAllOfficeConfigs().map((o) => odOffices.describeOffice(o.officeId));
 
 // --- Slice B: triage worklist + patient review queue -----------------------
 
@@ -306,10 +319,10 @@ router.get('/', async (req, res) => {
         byHandler: stats.byHandler,
         lastSync: stats.lastSync,
       },
-      // Full office roster for the worklist selector (includes odConnected so the
-      // UI can render Valley's "OD not connected for this office yet" state).
-      offices: getAllOfficeConfigs(),
-      office_config: office_id ? getOfficeConfig(office_id) : null,
+      // Full office roster for the worklist selector, with EFFECTIVE odConnected so
+      // the UI renders the honest "OD not connected for this office yet" state.
+      offices: officeRoster(),
+      office_config: office_id ? odOffices.describeOffice(office_id) : null,
       // PRD D1: tells the worklist whether ALL Mango calls demand attention ('all') or
       // only flagged ones ('flagged'). Backend-owned config so a flip is an env change.
       mango_worklist_mode: mangoConfig.worklistMode,
@@ -341,7 +354,68 @@ router.get('/stats', async (req, res) => {
  * isn't captured as an id.
  */
 router.get('/offices', (req, res) => {
-  res.json({ offices: getAllOfficeConfigs() });
+  res.json({ offices: officeRoster() });
+});
+
+/**
+ * GET /api/unified-calls/:id/patient-search?q=
+ *
+ * The Pick Patient modal's Open Dental search, scoped to the office of THE CALL
+ * BEING RESOLVED. Deliberately call-scoped rather than a bare
+ * /opendental/patients/search?office_id=… : the office is derived server-side
+ * from the call, so no request can search one practice while resolving a call
+ * that belongs to another. The response names the office so the modal can show
+ * the operator which patient list they are looking at.
+ *
+ * Returns patient records (PHI) → audited READ.
+ */
+router.get('/:id/patient-search', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    const officeKey = getOfficeForCall(call);
+    const office = odOffices.describeOffice(officeKey);
+
+    // Unknown / not-connected / unkeyed office: no search, no guessing.
+    let od;
+    try {
+      od = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+    } catch (err) {
+      return res.status(odOffices.httpStatusFor(err)).json({
+        error: err.publicMessage || 'Open Dental is not available for this office',
+        code: err.code,
+        office,
+        patients: [],
+      });
+    }
+
+    if (q.length < 2) {
+      return res.json({ patients: [], office });
+    }
+
+    const patients = await od.client.searchPatients(q);
+
+    await audit.audit(req, {
+      action: 'READ',
+      resourceType: 'patient',
+      // The query is PHI — never store it. The office IS recorded, so the trail
+      // shows which practice's records were searched.
+      resourceId: null,
+      office: officeKey,
+      result: 'SUCCESS',
+    });
+
+    res.json({ patients: patients || [], office });
+  } catch (error) {
+    console.error('Error searching patients for call:', error);
+    res.status(500).json({ error: 'Failed to search patients' });
+  }
 });
 
 /**
@@ -363,11 +437,17 @@ router.get('/:id/commlog-preview', async (req, res) => {
     // content_type (item 4): 'summary' (default, compact block) | 'transcript' (full note).
     const contentType = req.query.content_type === 'transcript' ? 'transcript' : 'summary';
     const entry = openDentalSync.formatCommLogEntry(call, { contentType });
-    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+    const officeKey = getOfficeForCall(call);
+    await audit.audit(req, {
+      action: 'READ', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+    });
     res.json({
       note: entry.Note,
       patientId: call.od_patient_id ?? null,
       patientName: call.od_patient_name ?? null,
+      // Which chart this note is about to land in — shown in the confirm dialog so
+      // the operator sees the practice, not just the patient, before sending.
+      office: odOffices.describeOffice(officeKey),
     });
   } catch (error) {
     console.error('Error building commlog preview:', error);
@@ -391,11 +471,18 @@ router.get('/:id', async (req, res) => {
     // Apply caller name extraction if name is missing
     enrichCallerName(call);
 
+    // Stamp the server-resolved office, same as the list endpoint does. Call detail
+    // renders the same OD actions as the worklist, so it needs the same office truth
+    // to gate them — without this a valley call opened directly would look Roland-ish.
+    const officeKey = getOfficeForCall(call);
+
     // HIPAA audit: this returns a full call record (transcript = PHI). Audited
     // before responding; a failed audit write fails closed (no PHI returned).
-    await audit.audit(req, { action: 'READ', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+    await audit.audit(req, {
+      action: 'READ', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+    });
 
-    res.json(call);
+    res.json({ ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) });
   } catch (error) {
     console.error('Error fetching call:', error);
     res.status(500).json({ error: 'Failed to fetch call' });
@@ -608,6 +695,30 @@ router.post('/:id/resolve-patient', async (req, res) => {
       return res.status(404).json({ error: 'Call not found' });
     }
 
+    // The office of THIS call, resolved server-side. Everything below that touches
+    // Open Dental is bound to it.
+    const officeKey = getOfficeForCall(call);
+
+    // Cross-office guard. `office_id` in the body is the client saying which office
+    // it BELIEVES it is acting on. It can only ever cause a refusal — it never
+    // selects the target — so a request naming the wrong office is rejected rather
+    // than obeyed. (This is the "valley call + roland office param" case.)
+    if (typeof body.office_id === 'string' && body.office_id && body.office_id !== officeKey) {
+      console.error(
+        `[unifiedCalls] BLOCKED cross-office resolve on call ${id}: client claimed ` +
+        `office '${body.office_id}' but the call belongs to '${officeKey}'`
+      );
+      await audit.audit(req, {
+        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'UNAUTHORIZED',
+      });
+      return res.status(409).json({
+        success: false,
+        error: 'This call belongs to a different office — refusing to touch that chart',
+        code: 'OFFICE_MISMATCH',
+        office: odOffices.describeOffice(officeKey),
+      });
+    }
+
     // ---- Shape B: "not a patient" close-out (no OD write) ------------------
     if (body.notAPatient === true) {
       if (!NOT_A_PATIENT_REASONS.has(body.reason)) {
@@ -623,7 +734,9 @@ router.post('/:id/resolve-patient', async (req, res) => {
         resolved_at: nowIso,
       });
 
-      await audit.audit(req, { action: 'UPDATE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+      await audit.audit(req, {
+        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+      });
 
       return res.json({ success: true, notAPatient: true, call: updatedCall });
     }
@@ -632,6 +745,22 @@ router.post('/:id/resolve-patient', async (req, res) => {
     const patientId = body.patientId;
     if (patientId === undefined || patientId === null || patientId === '') {
       return res.status(400).json({ error: 'patientId is required' });
+    }
+
+    // Server-side OD lockout. The worklist already hides these actions for an
+    // unmapped/unconnected office, but the UI is not the control — an 'unknown'
+    // call must be unable to reach a chart even by a hand-rolled request.
+    const blocked = odOffices.odBlockReason(officeKey);
+    if (blocked) {
+      await audit.audit(req, {
+        action: 'CREATE', resourceType: 'commlog', resourceId: id, office: officeKey, result: 'UNAUTHORIZED',
+      });
+      return res.status(odOffices.httpStatusFor({ code: blocked.code })).json({
+        success: false,
+        error: blocked.message,
+        code: blocked.code,
+        office: odOffices.describeOffice(officeKey),
+      });
     }
 
     // Idempotency guard: if this call is already synced, do not write a second
@@ -650,13 +779,23 @@ router.post('/:id/resolve-patient', async (req, res) => {
     // syncNow:false so we can drive the idempotent, NON-forced commlog write
     // ourselves — linkCallToPatient's own syncNow path forces the write and would
     // bypass the 'synced' dedup guard.
+    // expectOfficeKey re-asserts the office INSIDE the service, so the guard holds
+    // even if this route is ever refactored around.
     const linkResult = await openDentalSync.linkCallToPatient(id, patientId, {
       syncNow: false,
       userId: actor?.email || 'system',
+      expectOfficeKey: officeKey,
     });
     if (!linkResult.success) {
-      const status = linkResult.error === 'Patient not found in Open Dental' ? 404 : 400;
-      return res.status(status).json({ success: false, error: linkResult.error });
+      const status = linkResult.officeBlocked
+        ? odOffices.httpStatusFor({ code: linkResult.code })
+        : linkResult.error === 'Patient not found in Open Dental' ? 404 : 400;
+      return res.status(status).json({
+        success: false,
+        error: linkResult.error,
+        code: linkResult.code,
+        office: odOffices.describeOffice(officeKey),
+      });
     }
 
     // Determine the note to send. The generated note is the baseline; a human-edited
@@ -670,12 +809,17 @@ router.post('/:id/resolve-patient', async (req, res) => {
     const noteEdited = sentNote.trim() !== generatedNote.trim();
 
     // Write the commlog via the hardened, non-forced path (skips if already synced).
-    const syncResult = await openDentalSync.syncCallToCommLog(id, { noteOverride: sentNote });
+    const syncResult = await openDentalSync.syncCallToCommLog(id, {
+      noteOverride: sentNote,
+      expectOfficeKey: officeKey,
+    });
     if (!syncResult.success) {
-      return res.status(422).json({
+      return res.status(syncResult.officeBlocked ? odOffices.httpStatusFor({ code: syncResult.code }) : 422).json({
         success: false,
         error: syncResult.error || 'CommLog write failed',
+        code: syncResult.code,
         requiresManualLink: syncResult.requiresManualLink || false,
+        office: odOffices.describeOffice(officeKey),
       });
     }
 
@@ -692,10 +836,12 @@ router.post('/:id/resolve-patient', async (req, res) => {
     });
 
     // User-initiated PHI write (a commlog was created against a patient) → audit CREATE.
+    // The office is recorded so the trail answers "whose chart?", not just "which PatNum?".
     await audit.audit(req, {
       action: 'CREATE',
       resourceType: 'commlog',
       resourceId: syncResult.commLogNum ?? id,
+      office: officeKey,
       result: 'SUCCESS',
     });
 
@@ -703,6 +849,7 @@ router.post('/:id/resolve-patient', async (req, res) => {
       success: true,
       commLogNum: syncResult.commLogNum ?? null,
       patientId: updatedCall.od_patient_id ?? patientId,
+      office: odOffices.describeOffice(officeKey),
       call: updatedCall,
     });
   } catch (error) {

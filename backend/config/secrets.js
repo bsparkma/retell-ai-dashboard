@@ -45,6 +45,13 @@ const SECRET_MAP = Object.freeze([
   { secretName: 'od-api-key', envKey: 'OD_API_KEY' },
   { secretName: 'opendental-developer-key', envKey: 'OPENDENTAL_DEVELOPER_KEY' },
   { secretName: 'opendental-customer-key', envKey: 'OPENDENTAL_CUSTOMER_KEY' },
+  // Per-location slice: the SECOND practice's OD customer key (Riley / internal
+  // office key 'valley'). The developer key above is shared across practices;
+  // the customer key is what selects which OD DATABASE a request reaches, so
+  // each connected office needs its own. Consumed by config/odOffices.js.
+  // Absent in the vault -> skipped, and that office stays honestly disconnected
+  // (odOffices fails closed per office; it never falls back to Roland's key).
+  { secretName: 'opendental-customer-key-valley', envKey: 'OPENDENTAL_CUSTOMER_KEY_VALLEY' },
   { secretName: 'retell-api-key', envKey: 'RETELL_API_KEY' },
   { secretName: 'mango-username', envKey: 'MANGO_USERNAME' },
   { secretName: 'mango-password', envKey: 'MANGO_PASSWORD' },
