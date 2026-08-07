@@ -6,7 +6,7 @@
 // WHY THIS FILE EXISTS. Verified live against both practices on 2026-08-07:
 //
 //     PatNum 7115 in Riley/valley = "Stedi TestValley"  (the test patient)
-//     PatNum 7115 in Roland       = a different, REAL patient
+//     PatNum 7115 in Roland       = a different, REAL patient (not named here)
 //     "CareIN AI Call" CommType   = DefNum 486 in Roland, DefNum 451 in Riley
 //
 // So a valley call that reached Roland's client would put a chart note on an
@@ -31,7 +31,14 @@ const { MANGO_LINE_OFFICE } = require('../config/officeAgents');
 const VALLEY_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[d] === 'valley');
 const ROLAND_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[d] === 'roland');
 
-/** Patients as each practice's OD would answer for the SAME PatNum. */
+/**
+ * The SAME PatNum, as each practice's OD would answer for it.
+ *
+ * The Roland side is a STAND-IN. PatNum 7115 really is a different, real patient
+ * in Roland's database — that collision is the point of these tests — but naming
+ * them would put a real patient's name, tied to their practice, in a fixture. The
+ * assertions only need the two answers to differ.
+ */
 const VALLEY_PATIENT = { id: 7115, firstName: 'Stedi', lastName: 'TestValley', fullName: 'Stedi TestValley' };
 const ROLAND_PATIENT = { id: 7115, firstName: 'Different', lastName: 'RolandPatient', fullName: 'Different RolandPatient' };
 
