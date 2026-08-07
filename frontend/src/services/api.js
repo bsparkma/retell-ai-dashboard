@@ -136,13 +136,10 @@ export const healthApi = {
   },
 };
 
-export const mangoApi = {
-  // On-demand: fetch Mango recording + transcript for a Mango call ID
-  fetchRecordingAndTranscript: async (mangoCallId) => {
-    const response = await api.post(`/mango/fetch/${encodeURIComponent(mangoCallId)}`);
-    return response.data;
-  },
-};
+// (M3) `mangoApi.fetchRecordingAndTranscript` was removed with its backend route
+// (POST /api/mango/fetch/:id — it returned success:true with a null transcript when
+// transcription failed). It had no callers in this app. M4 adds the correct on-demand
+// transcribe endpoint; the live UI is new-dashboard, not this legacy app.
 
 export const openDentalApi = {
   // Health and sync status
