@@ -19,13 +19,12 @@ const assert = require('node:assert/strict');
 const { beforeEach, afterEach } = test;
 
 const odOffices = require('./odOffices');
-const { OFFICES } = require('./officeAgents');
 
 const ROLAND_KEY = 'test-roland-customer-key';
 const VALLEY_KEY = 'test-valley-customer-key';
 
 let savedEnv;
-let savedValleyConnected;
+let savedValleyEnabled;
 
 beforeEach(() => {
   savedEnv = {
@@ -34,16 +33,16 @@ beforeEach(() => {
     rolandDef: process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM,
     valleyDef: process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY,
   };
-  // The banner flag is what Step 4 of this slice flips. These tests must assert the
-  // MACHINERY, not whichever value the flag currently ships with, so they set it
-  // explicitly and restore it afterwards.
-  savedValleyConnected = OFFICES.valley.odConnected;
+  // odEnabled is what the final commit of this slice flips. These tests assert the
+  // MACHINERY, not whichever value currently ships, so they set it explicitly and
+  // restore it afterwards.
+  savedValleyEnabled = odOffices.OFFICE_OD_SETTINGS.valley.odEnabled;
 
   process.env.OPENDENTAL_CUSTOMER_KEY = ROLAND_KEY;
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = VALLEY_KEY;
   delete process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM;
   delete process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY;
-  OFFICES.valley.odConnected = true;
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
   odOffices.resetOdOfficeCache();
 });
 
@@ -53,7 +52,7 @@ afterEach(() => {
   set('OPENDENTAL_CUSTOMER_KEY_VALLEY', savedEnv.valley);
   set('OPENDENTAL_CAREIN_COMMTYPE_DEFNUM', savedEnv.rolandDef);
   set('OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY', savedEnv.valleyDef);
-  OFFICES.valley.odConnected = savedValleyConnected;
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = savedValleyEnabled;
   odOffices.resetOdOfficeCache();
 });
 
@@ -96,7 +95,7 @@ test('an office with no customer key is disconnected — it never borrows anothe
   assert.equal(odOffices.getOdOffice('roland').client.customerKey, ROLAND_KEY);
 });
 
-test('flipping the banner on WITHOUT the key still reports the office as disconnected', () => {
+test('flipping the switch on WITHOUT the key still reports the office as disconnected', () => {
   // The reversible switch alone must not be able to make an office look live.
   delete process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY;
   odOffices.resetOdOfficeCache();
@@ -107,7 +106,7 @@ test('flipping the banner on WITHOUT the key still reports the office as disconn
 });
 
 test('an office switched OFF is disconnected even with a key present', () => {
-  OFFICES.valley.odConnected = false;
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = false;
   odOffices.resetOdOfficeCache();
 
   assert.equal(odOffices.isOdReady('valley'), false);
@@ -200,4 +199,25 @@ test('describeOffice and secretNames expose names and state, never a credential'
   assert.ok(!serialized.includes(ROLAND_KEY));
   assert.ok(!serialized.includes(VALLEY_KEY));
   assert.ok(odOffices.secretNames.includes('opendental-customer-key-valley'));
+});
+
+// ── The voice switch is NOT the TC switch ───────────────────────────────────
+
+test('turning an office on for VOICE does not open the TC module for it', () => {
+  // backend/routes/tc/od.js gates /api/tc/od/* on officeAgents.odConnected, and TC
+  // still reaches Open Dental through the single process-wide client. If these two
+  // switches were the same flag, connecting Riley for the voice worklist would have
+  // served ROLAND's patients, treatment plans and claims under a Riley selector.
+  // They are deliberately separate until TC gets its own office-aware slice.
+  const { OFFICES: OFFICE_CONFIG } = require('./officeAgents');
+
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
+  odOffices.resetOdOfficeCache();
+
+  assert.equal(odOffices.isOdReady('valley'), true, 'voice path is connected');
+  assert.equal(
+    OFFICE_CONFIG.valley.odConnected,
+    false,
+    'TC gate must stay closed for valley — flipping it would point TC at Roland'
+  );
 });

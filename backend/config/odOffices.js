@@ -49,24 +49,43 @@ const { OpenDentalService } = require('./openDental');
  * DefNum 486 must therefore NEVER be written to Riley's database (486 is not a
  * CommLogType there at all), and 451 must never be written to Roland's.
  *
+ * `odEnabled` is THE reversible switch for the voice module: flip it and that
+ * office's calls get the full worklist action set; flip it back and they don't.
+ *
+ * It lives here rather than on officeAgents.OFFICES[].odConnected — which would
+ * have been the smaller edit — because that flag is NOT voice-only. The TC module
+ * gates its own Open Dental routes on it (backend/routes/tc/od.js), and TC still
+ * reaches OD through the single process-wide client via odAccess. Flipping the
+ * shared flag would therefore have opened /api/tc/od/* for valley and served
+ * ROLAND's patients, treatment plans, insurance and claims under a Riley office
+ * selector — the very contamination this module exists to prevent, in a module
+ * that has not been made office-aware. Keeping the two switches separate lets the
+ * voice path go live while TC stays honestly refused until its own slice.
+ *
  * @typedef {Object} OdOfficeSettings
  * @property {string} officeKey            frozen internal office key
+ * @property {boolean} odEnabled           the voice module's reversible OD switch
  * @property {string} customerKeyEnv       process.env key holding the OD customer key
  * @property {string} customerKeySecret    Key Vault secret NAME (never a value)
  * @property {string} commTypeEnv          process.env key overriding commTypeDefNum
  * @property {number} defaultCommTypeDefNum verified default for this practice
  * @type {Readonly<Record<string, OdOfficeSettings>>}
  */
+// Outer map frozen (no office may be added or removed at runtime); the entries
+// themselves stay mutable so tests can toggle `odEnabled` and assert the machinery
+// rather than whichever value currently ships — same pattern as MANGO_LINE_OFFICE.
 const OFFICE_OD_SETTINGS = Object.freeze({
-  roland: Object.freeze({
+  roland: ({
     officeKey: 'roland',
+    odEnabled: true,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY',
     customerKeySecret: 'opendental-customer-key',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM',
     defaultCommTypeDefNum: 486,
   }),
-  valley: Object.freeze({
+  valley: ({
     officeKey: 'valley',
+    odEnabled: false,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY_VALLEY',
     customerKeySecret: 'opendental-customer-key-valley',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY',
@@ -174,18 +193,6 @@ function odBlockReason(officeKey) {
     };
   }
 
-  // The intent flag in officeAgents (the reversible banner switch). An office
-  // that has not been turned on stays off no matter what credentials exist.
-  if (!officeConfig.odConnected) {
-    return {
-      code: 'OFFICE_NOT_OD_CONNECTED',
-      message: `Open Dental is not connected for ${officeConfig.officeName} yet`,
-    };
-  }
-
-  // Fail closed PER OFFICE: turning the banner on without shipping the key
-  // leaves this office honestly disconnected. It must NEVER inherit another
-  // office's credentials — that is precisely the PatNum-collision hazard.
   const settings = OFFICE_OD_SETTINGS[officeKey];
   if (!settings) {
     return {
@@ -193,6 +200,19 @@ function odBlockReason(officeKey) {
       message: `Open Dental is not configured for ${officeConfig.officeName}`,
     };
   }
+
+  // The voice module's reversible switch (odEnabled above). An office that has
+  // not been turned on stays off no matter what credentials exist.
+  if (!settings.odEnabled) {
+    return {
+      code: 'OFFICE_NOT_OD_CONNECTED',
+      message: `Open Dental is not connected for ${officeConfig.officeName} yet`,
+    };
+  }
+
+  // Fail closed PER OFFICE: turning the switch on without shipping the key leaves
+  // this office honestly disconnected. It must NEVER inherit another office's
+  // credentials — that is precisely the PatNum-collision hazard.
   if (!customerKeyFor(settings)) {
     return {
       code: 'OFFICE_OD_KEY_MISSING',

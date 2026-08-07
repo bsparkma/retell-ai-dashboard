@@ -24,7 +24,7 @@ const { beforeEach, afterEach } = test;
 const sync = require('./openDentalSync');
 const unifiedCallStore = require('./unifiedCallStore');
 const odOffices = require('../config/odOffices');
-const { OFFICES, MANGO_LINE_OFFICE } = require('../config/officeAgents');
+const { MANGO_LINE_OFFICE } = require('../config/officeAgents');
 
 // Real DIDs from the line map, so these calls attribute exactly the way production
 // attributes them rather than through a test-only shortcut.
@@ -129,15 +129,15 @@ beforeEach(() => {
     persist: unifiedCallStore.requestPersist,
     roland: process.env.OPENDENTAL_CUSTOMER_KEY,
     valley: process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY,
-    valleyConnected: OFFICES.valley.odConnected,
+    valleyEnabled: odOffices.OFFICE_OD_SETTINGS.valley.odEnabled,
   };
   unifiedCallStore.requestPersist = () => {};
   clearStore();
 
   process.env.OPENDENTAL_CUSTOMER_KEY = 'test-roland-customer-key';
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-valley-customer-key';
-  // Assert the machinery, not whichever value the banner flag currently ships with.
-  OFFICES.valley.odConnected = true;
+  // Assert the machinery, not whichever value the switch currently ships with.
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
   odOffices.resetOdOfficeCache();
   stubOfficeClients();
 });
@@ -148,7 +148,7 @@ afterEach(() => {
   const set = (k, v) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
   set('OPENDENTAL_CUSTOMER_KEY', saved.roland);
   set('OPENDENTAL_CUSTOMER_KEY_VALLEY', saved.valley);
-  OFFICES.valley.odConnected = saved.valleyConnected;
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = saved.valleyEnabled;
   odOffices.resetOdOfficeCache();
   clearStore();
 });

@@ -22,7 +22,7 @@ const router = require('./unifiedCalls');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSync = require('../services/openDentalSync');
 const odOffices = require('../config/odOffices');
-const { OFFICES, MANGO_LINE_OFFICE } = require('../config/officeAgents');
+const { OFFICES, MANGO_LINE_OFFICE } = require("../config/officeAgents");
 const audit = require('../platform/audit');
 
 // Since the per-location slice, resolve-patient refuses an OD write for an office
@@ -349,13 +349,13 @@ const VALLEY_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[
 const ROLAND_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[d] === 'roland');
 const UNMAPPED_DID = '+15550000000';
 
-/** Run a body with valley switched on, then restore the shipped flag value. */
+/** Run a body with valley switched on, then restore the shipped switch value. */
 async function withValleyConnected(fn) {
-  const prev = OFFICES.valley.odConnected;
-  OFFICES.valley.odConnected = true;
+  const prev = odOffices.OFFICE_OD_SETTINGS.valley.odEnabled;
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
   odOffices.resetOdOfficeCache();
   try { return await fn(); } finally {
-    OFFICES.valley.odConnected = prev;
+    odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = prev;
     odOffices.resetOdOfficeCache();
   }
 }
