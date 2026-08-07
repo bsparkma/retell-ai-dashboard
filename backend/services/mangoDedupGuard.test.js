@@ -26,6 +26,7 @@ process.env.CALLSTORE_DIR = TMP_DIR;
 const unifiedCallStore = require('./unifiedCallStore');
 const transcriptionService = require('./transcriptionService');
 const ingestionWatermark = require('./ingestionWatermark');
+const mangoConfig = require('../config/mango');
 const { MangoApiClient } = require('./mangoApiClient');
 
 test.after(() => {
@@ -38,6 +39,7 @@ let savedRequestPersist;
 let savedIsAvailable;
 let savedTranscribeUrl;
 let savedCheckBudget;
+let savedAutoTranscribe;
 
 function clearStore() {
   unifiedCallStore.calls.clear();
@@ -59,8 +61,14 @@ beforeEach(() => {
   savedIsAvailable = transcriptionService.isAvailable;
   savedTranscribeUrl = transcriptionService.transcribeUrl;
   savedCheckBudget = transcriptionService.checkDailyBudget;
+  savedAutoTranscribe = mangoConfig.autoTranscribe;
   transcriptionService.isAvailable = () => true;
   transcriptionService.checkDailyBudget = () => ({ allowed: true, usedMinutes: 0, capMinutes: 120, remainingMinutes: 120 });
+  // (M4) The dedup guard lives on the TRANSCRIBE branch, which is now gated behind
+  // MANGO_AUTO_TRANSCRIBE (default off). Turn it on so these assertions still describe
+  // the guard rather than the valve — the valve has its own suite. The guard applies
+  // identically to the on-demand path (see onDemandTranscription.test.js).
+  mangoConfig.autoTranscribe = true;
 });
 
 afterEach(() => {
@@ -68,6 +76,7 @@ afterEach(() => {
   transcriptionService.isAvailable = savedIsAvailable;
   transcriptionService.transcribeUrl = savedTranscribeUrl;
   transcriptionService.checkDailyBudget = savedCheckBudget;
+  mangoConfig.autoTranscribe = savedAutoTranscribe;
   clearStore();
 });
 

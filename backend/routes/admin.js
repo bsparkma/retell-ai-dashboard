@@ -13,6 +13,8 @@ const transcriptionService = require('../services/transcriptionService');
 const callAnalyzer = require('../services/callAnalyzer');
 const liveCallManager = require('../services/liveCallManager');
 const openDentalService = require('../config/openDental');
+const onDemandLedger = require('../services/onDemandTranscriptionLedger');
+const mangoConfig = require('../config/mango');
 const { getConnectedClientCount } = require('../socket/socketHandler');
 
 /**
@@ -231,6 +233,34 @@ router.get('/costs', (req, res) => {
           rate: '$0.002/1K tokens',
         },
         total_estimated: transcriptionStats.totalCost + analyzerStats.estimatedCost,
+
+        // (M4) Mango transcription, the way the office actually spends it: today's audio
+        // minutes against the daily breaker, how many on-demand transcriptions each office
+        // ran today, and the month's estimated Speech + summary spend at list rates.
+        //
+        // The `transcription` block above is PROCESS-LIFETIME and resets on every container
+        // restart, so it cannot answer "what has this month cost" — the ledger can, because
+        // it is durable and rolls on the offices' local day (same boundary as the breaker).
+        mango_transcription: {
+          auto_transcribe: mangoConfig.autoTranscribe,
+          daily_budget: {
+            day_key: transcriptionStats.dailyKey,
+            timezone: transcriptionStats.budgetTimezone,
+            used_minutes: transcriptionStats.dailyMinutes,
+            budget_minutes: transcriptionStats.dailyBudgetMinutes,
+            remaining_minutes: transcriptionStats.dailyBudgetMinutes > 0
+              ? Number(Math.max(0, transcriptionStats.dailyBudgetMinutes - transcriptionStats.dailyMinutes).toFixed(2))
+              : null,
+            persisted: transcriptionStats.budgetPersisted,
+            resets_at: transcriptionService.nextBudgetResetIso(),
+          },
+          on_demand_today: onDemandLedger.today(),
+          on_demand_month: onDemandLedger.month(),
+          rates: {
+            speech: '$1/audio hour (Azure AI Speech S0)',
+            summary: `$0.0006/1K tokens (${analyzerStats.isInitialized ? 'Azure OpenAI' : 'unconfigured'})`,
+          },
+        },
       },
     });
   } catch (error) {

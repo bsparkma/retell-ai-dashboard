@@ -16,7 +16,17 @@ const { Readable } = require('stream');
 const mangoApiClient = require('../services/mangoApiClient');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSyncService = require('../services/openDentalSync');
+const onDemandTranscription = require('../services/onDemandTranscription');
 const audit = require('../platform/audit');
+
+/**
+ * The acting user, from the SSO session attached by the auth middleware — the same
+ * attribution shape triage/resolve use. Null in the (dev-only) case with no session user.
+ * @param {import('express').Request} req
+ * @returns {{ name: string|null, email: string|null } | null}
+ */
+const actorFrom = (req) =>
+  req.user ? { name: req.user.name ?? null, email: req.user.email ?? null } : null;
 
 /**
  * GET /api/mango/calls/:callId/recording  (SSO-gated via the /api auth gate)
@@ -78,6 +88,62 @@ router.get('/calls/:callId/recording', async (req, res) => {
   } catch (error) {
     console.error('[Mango] recording stream failed:', error.message);
     if (!res.headersSent) res.status(500).json({ error: 'Recording unavailable' });
+  }
+});
+
+/**
+ * POST /api/mango/calls/:callId/transcribe  (SSO-gated via the /api auth gate)
+ *
+ * THE M4 BUTTON. Transcribe + summarize ONE stored Mango call, because a human decided it
+ * matters. Auto-transcription is off by default (MANGO_AUTO_TRANSCRIBE); ingestion is
+ * untouched and still automatic, so every call has a row this can act on — including the
+ * ones the old auto pipeline missed.
+ *
+ * The orchestration (dedup, in-flight lock, breaker, recording freshness, persist-then
+ * -report) lives in services/onDemandTranscription.js. This handler owns the HTTP surface,
+ * the HIPAA audit row, and the socket nudge.
+ *
+ * Responses — the UI switches on `status`, not the code:
+ *   200 { status: 'completed', transcript, summary, minutesUsed }
+ *   200 { status: 'exists', transcript, summary }            already transcribed, zero spend
+ *   404 { status: 'not_found' }
+ *   409 { status: 'in_progress' }                            another click is still running
+ *   422 { status: 'recording_not_ready', retryAfterMinutes } publish lag — retry soon
+ *   422 { status: 'recording_unavailable' }                  Mango no longer serves it
+ *   422 { status: 'no_speech' }                              Speech heard nothing
+ *   429 { status: 'budget_exhausted', resetsAt, usedMinutes, capMinutes }
+ *   503 { status: 'unavailable' }                            Azure Speech not configured
+ *   500/502 { status: 'error' }                              nothing was saved
+ */
+router.post('/calls/:callId/transcribe', async (req, res) => {
+  const { callId } = req.params;
+  try {
+    const result = await onDemandTranscription.transcribeCall(callId, { actor: actorFrom(req) });
+
+    // EVERY attempt is audited, whatever the outcome. A completed run created new PHI
+    // (a transcript) → CREATE; every other outcome served or refused an existing record
+    // → READ. Fail-closed like the rest of the platform: if the audit write fails we do
+    // NOT return a success, we fall to the 500 below. (A completed transcript is already
+    // persisted at that point, so the next click returns 'exists' — nothing is re-billed.)
+    await audit.audit(req, {
+      action: result.outcome === 'completed' ? 'CREATE' : 'READ',
+      resourceType: 'transcript',
+      resourceId: callId,
+      result: result.httpStatus < 400 ? 'SUCCESS' : 'ERROR',
+    });
+
+    // Nudge open dashboards so a transcript one person requested appears for everyone.
+    if (result.outcome === 'completed' && result.call) {
+      const liveCallManager = require('../services/liveCallManager');
+      if (liveCallManager.io) liveCallManager.io.emit('call:updated', result.call);
+    }
+
+    return res.status(result.httpStatus).json(result.body);
+  } catch (error) {
+    console.error(`[M4] transcribe route failed for ${callId}:`, error.message);
+    if (!res.headersSent) {
+      return res.status(500).json({ status: 'error', error: 'Transcription failed — nothing was saved. Try again.' });
+    }
   }
 });
 

@@ -145,6 +145,8 @@ contract: `tenant_database.kv_conn_secret = 'tenant-carein-db-url'` → dev env 
 | `DASHBOARD_SESSION_SECRET` | Entra SSO session JWT key | dev value | Key Vault `dashboard-session-secret` |
 | `OPENDENTAL_INTEGRATION_MODE` / `OPENDENTAL_API_BASE_URL` | OD API mode (non-secret) | `api` / public URL | same (non-secret config) |
 | `RETELL_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `MANGO_*` | external services | blank (syncs no-op, non-fatal) | Key Vault |
+| `MANGO_INGEST_MODE` | whether Mango calls are pulled in at all (`api` \| `off`) | `off` | `api` in prod (non-secret config) |
+| `MANGO_AUTO_TRANSCRIBE` | whether the hourly sync also transcribes them — **off since M4**, transcription is a per-call human decision | unset (`false`) | unset (`false`); see [MANGO_TRANSCRIPTION.md](./MANGO_TRANSCRIPTION.md) |
 
 In **non-production** `config/secrets.js` makes **no Azure calls** — it relies on
 this env file. In production it authenticates to Key Vault and overlays the same

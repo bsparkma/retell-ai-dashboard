@@ -13,10 +13,16 @@ import type { AgentConfig } from "@/pages/AgentBuilder";
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 const DASHBOARD_TOKEN = (import.meta.env.VITE_DASHBOARD_API_TOKEN ?? "").trim();
 
-async function request<T>(
+/**
+ * One authenticated fetch, returning the RAW Response. Base-URL resolution, the SSO
+ * cookie and the bearer token live here so every caller gets them — including the few
+ * (M4's transcribe) that need to read a typed body on a non-2xx status rather than have
+ * it collapsed into an Error.
+ */
+async function apiFetch(
   path: string,
   options?: RequestInit & { params?: Record<string, string | number | boolean | undefined> }
-): Promise<T> {
+): Promise<Response> {
   const { params, ...init } = options ?? {};
   // Resolve relative bases (e.g. VITE_API_URL="/api" for same-origin prod)
   // against the current origin; absolute URLs ignore the base. Lets the team hit
@@ -33,12 +39,19 @@ async function request<T>(
   const authHeaders: Record<string, string> = DASHBOARD_TOKEN
     ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` }
     : {};
-  const res = await fetch(url.toString(), {
+  return fetch(url.toString(), {
     ...init,
     // Send the Entra SSO session cookie (HttpOnly) alongside any bearer token.
     credentials: "include",
     headers: { "Content-Type": "application/json", ...authHeaders, ...init.headers },
   });
+}
+
+async function request<T>(
+  path: string,
+  options?: RequestInit & { params?: Record<string, string | number | boolean | undefined> }
+): Promise<T> {
+  const res = await apiFetch(path, options);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: res.statusText }));
     throw new Error((err as { message?: string }).message ?? `HTTP ${res.status}`);
@@ -69,6 +82,47 @@ export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong
  * emergency / appointment-requested / callback-needed Mango calls demand attention.
  */
 export type MangoWorklistMode = "all" | "flagged";
+
+// --- Slice M4: on-demand transcription --------------------------------------
+
+/**
+ * Every outcome POST /api/mango/calls/:id/transcribe can return. The UI switches on this,
+ * not on the HTTP status, so a new outcome is a compile error here rather than a silent
+ * "something went wrong" toast.
+ */
+export type TranscribeStatus =
+  | "completed"               // transcribed + summarized + saved
+  | "exists"                  // already had a transcript — dedup guard, zero spend
+  | "in_progress"             // another click for this call is still running
+  | "recording_not_ready"     // Mango hasn't published the recording yet
+  | "recording_unavailable"   // Mango no longer serves a recording for this call
+  | "no_speech"               // Azure Speech heard nothing
+  | "budget_exhausted"        // daily audio-minute breaker is spent
+  | "unavailable"             // Azure Speech isn't configured in this environment
+  | "not_found"
+  | "error";
+
+/** The transcribe endpoint's response body. Fields beyond `status` are per-outcome. */
+export interface TranscribeResult {
+  status: TranscribeStatus;
+  transcript?: string | null;
+  summary?: string | null;
+  /** Audio minutes billed by this run (completed only). */
+  minutesUsed?: number;
+  /** ISO instant the daily budget rolls over (budget_exhausted only). */
+  resetsAt?: string;
+  usedMinutes?: number;
+  capMinutes?: number;
+  /** How long until the recording should be published (recording_not_ready only). */
+  retryAfterMinutes?: number;
+  /**
+   * This attempt SPENT BUDGET and produced nothing (no_speech only). The client must
+   * require an explicit confirmation before charging for the same recording again.
+   */
+  alreadyBilled?: boolean;
+  error?: string;
+  detail?: string;
+}
 
 /** Open Dental commlog sync state. 'matched' = auto-matched, ready for a human to send (Slice B.1). */
 export type OdSyncStatus =
@@ -137,6 +191,12 @@ export interface BackendUnifiedCall {
   // Slice B.1 — who sent the chart note + when
   sent_by?: CallActor | null;
   sent_at?: string | null;
+  // Slice M4 — the last on-demand transcription attempt. 'no_speech' means it SPENT
+  // budget and produced nothing, so the next click must be confirmed.
+  transcribe_last_outcome?: TranscribeStatus | null;
+  transcribe_last_attempt_at?: string | null;
+  transcribed_by?: CallActor | null;
+  transcribed_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -236,6 +296,56 @@ export interface AdminHealthData {
   services: Record<string, AdminServiceStatus>;
 }
 
+/** One office's on-demand transcription tallies for today (M4 ledger). */
+export interface MangoOnDemandOfficeCounts {
+  attempts: number;
+  minutes: number;
+  completed: number;
+  exists: number;
+  in_progress: number;
+  budget_exhausted: number;
+  recording_not_ready: number;
+  recording_unavailable: number;
+  no_speech: number;
+  unavailable: number;
+  error: number;
+}
+
+/**
+ * (M4) What Mango transcription actually costs, the way the office spends it: today's
+ * audio minutes against the daily breaker, who transcribed what, and the month to date.
+ */
+export interface MangoTranscriptionCosts {
+  /** Whether the hourly sync still transcribes automatically (MANGO_AUTO_TRANSCRIBE). */
+  auto_transcribe: boolean;
+  daily_budget: {
+    day_key: string | null;
+    timezone: string;
+    used_minutes: number;
+    budget_minutes: number;
+    remaining_minutes: number | null;
+    persisted: boolean;
+    resets_at: string;
+  };
+  on_demand_today: {
+    day_key: string;
+    timezone: string;
+    total: number;
+    completed: number;
+    minutes: number;
+    by_office: Record<string, MangoOnDemandOfficeCounts>;
+  };
+  on_demand_month: {
+    month_key: string;
+    transcriptions: number;
+    minutes: number;
+    speech_cost: number;
+    summary_cost: number;
+    estimated_cost: number;
+  };
+  rates: { speech: string; summary: string };
+}
+
 export interface AdminCostsData {
   transcription?: {
     provider: string;
@@ -244,6 +354,7 @@ export interface AdminCostsData {
     estimated_cost: number;
     rate: string;
   };
+  mango_transcription?: MangoTranscriptionCosts;
   analysis?: {
     provider: string;
     total_analyses: number;
@@ -422,6 +533,13 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     sentBy: (c.sent_by ?? null) as CallActor | null,
     sentAt: c.sent_at ?? null,
 
+    // Slice M4 — on-demand transcription. transcribeLastOutcome === 'no_speech' means the
+    // last attempt billed Azure Speech and found nothing, so the button must confirm
+    // before spending on the same recording again.
+    transcribeLastOutcome: (c.transcribe_last_outcome ?? null) as TranscribeStatus | null,
+    transcribedBy: (c.transcribed_by ?? null) as CallActor | null,
+    transcribedAt: c.transcribed_at ?? null,
+
     // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1). On Retell calls
     // these are usually absent (defaults false) — Retell attention is unaffected by mode.
     appointmentRequested: c.appointment_requested ?? false,
@@ -567,6 +685,21 @@ export const api = {
     } catch {
       return [];
     }
+  },
+
+  /**
+   * (M4) Transcribe + summarize ONE Mango call, because a human asked for it.
+   *
+   * Deliberately does NOT throw on a refusal: budget spent, recording not published yet,
+   * already running — those are answers, not errors, and each gets its own message. Only a
+   * network/parse failure throws, and the caller renders that as the generic error state.
+   */
+  async transcribeMangoCall(id: string): Promise<TranscribeResult> {
+    const res = await apiFetch(`/mango/calls/${encodeURIComponent(id)}/transcribe`, { method: "POST" });
+    const body = (await res.json().catch(() => null)) as TranscribeResult | null;
+    if (body && typeof body.status === "string") return body;
+    // A response with no usable body is a real failure — never report it as success.
+    return { status: "error", error: `HTTP ${res.status}` };
   },
 
   async getUnifiedCall(id: string) {

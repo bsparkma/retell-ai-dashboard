@@ -171,6 +171,8 @@ class SyncScheduler {
       calls_found: 0,
       calls_imported: 0,
       calls_transcribed: 0,
+      calls_skipped_auto_off: 0,
+      calls_skipped_budget: 0,
       calls_analyzed: 0,
       errors: [],
     };
@@ -203,6 +205,11 @@ class SyncScheduler {
       syncLog.calls_found = sourceResult.calls_found;
       syncLog.calls_imported = sourceResult.calls_processed;
       syncLog.calls_transcribed = sourceResult.recordings_transcribed || 0;
+      // (M4) Calls that WOULD have been transcribed automatically but were left for a human
+      // to decide on. Reported separately from calls_skipped_budget so "the valve is off"
+      // never reads as "the breaker fired".
+      syncLog.calls_skipped_auto_off = sourceResult.transcription_skipped_auto_off || 0;
+      syncLog.calls_skipped_budget = sourceResult.transcription_skipped_budget || 0;
 
       if (sourceResult.errors && sourceResult.errors.length > 0) {
         syncLog.errors.push(...sourceResult.errors);
