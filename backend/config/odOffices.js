@@ -85,7 +85,7 @@ const OFFICE_OD_SETTINGS = Object.freeze({
   }),
   valley: ({
     officeKey: 'valley',
-    odEnabled: false,
+    odEnabled: true,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY_VALLEY',
     customerKeySecret: 'opendental-customer-key-valley',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY',
