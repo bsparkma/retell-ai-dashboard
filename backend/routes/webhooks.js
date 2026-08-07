@@ -323,6 +323,18 @@ async function writeCommlogForAnalyzedCall(callData) {
       caller_name: callData.call_analysis?.caller_name || 'Unknown',
     });
 
+    // Per-location slice: the call's office has no Open Dental connection (unmapped
+    // line, office not switched on, or its key isn't shipped). Nothing was matched and
+    // nothing may be written — the call still lands in the worklist with an honest
+    // "office not connected" state for a human to deal with.
+    if (outcome.status === 'office_not_connected') {
+      console.warn(
+        `🟠 [Webhook] ${callId} office not OD-connected (${outcome.code}) — ` +
+        `no match attempted, no commlog written`
+      );
+      return { officeBlocked: true, code: outcome.code, reason: outcome.reason };
+    }
+
     // Fix 3: ambiguous / low-confidence / no match -> needs_review. NEVER auto-write to a
     // guessed chart (e.g. when the caller's number is on more than one patient record).
     if (outcome.status === 'needs_review') {
@@ -384,13 +396,18 @@ ${transcript}`;
       DateTimeEnd: callData.end_timestamp || new Date().toISOString()
     };
 
-    const result = await openDentalSyncService.createCommLog(patient.id, commLogEntry);
+    // Write into THIS call's office. matchAndSetStatus already proved the office is
+    // OD-connected (it matched a patient there), so resolving again is cheap and
+    // keeps the write bound to the same practice the match came from.
+    const od = openDentalSyncService.odForCall(unifiedCallStore.getCall(callId) || {});
+    const result = await openDentalSyncService.createCommLog(patient.id, commLogEntry, od);
 
     if (result.success) {
       // Persist synced state so a Retell retry AND a later /sync-all both no-op (Fix 1).
       unifiedCallStore.updateCall(callId, {
         od_sync_status: 'synced',
         od_patient_id: patient.id,
+        od_patient_office: od.officeKey,
         od_commlog_num: result.commLogNum,
         od_synced_at: new Date().toISOString(),
         od_match_confidence: matchResult.confidence,

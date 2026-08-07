@@ -12,14 +12,33 @@ const assert = require('node:assert/strict');
 const sync = require('./openDentalSync');
 const openDentalService = require('../config/openDental');
 
+/**
+ * A fake office-bound OD connection. Since the per-location slice every commlog
+ * write takes one of these — there is no "default office" for a chart write — so
+ * these tests name the office explicitly, exactly as production does.
+ * @param {{officeKey?: string, officeName?: string, commTypeDefNum?: number, client?: object}} [over]
+ */
+function fakeOd(over = {}) {
+  return {
+    officeKey: over.officeKey || 'roland',
+    officeName: over.officeName || 'Roland',
+    commTypeDefNum: over.commTypeDefNum ?? 486,
+    client: over.client || openDentalService,
+  };
+}
+
 test('buildCommLogApiPayload maps DB-shaped entry to the real OD /commlogs contract', () => {
-  const payload = sync.buildCommLogApiPayload(1001, {
-    CommDateTime: '2026-06-04T15:30:00.000Z',
-    Mode_: 3,            // DB int -> "Phone"
-    SentOrReceived: 1,   // inbound -> "Received"
-    Note: 'CareIN call summary',
-    CommType: 2          // ignored on the API path; replaced by the configured DefNum
-  });
+  const payload = sync.buildCommLogApiPayload(
+    1001,
+    {
+      CommDateTime: '2026-06-04T15:30:00.000Z',
+      Mode_: 3,            // DB int -> "Phone"
+      SentOrReceived: 1,   // inbound -> "Received"
+      Note: 'CareIN call summary',
+      CommType: 2          // ignored on the API path; replaced by the OFFICE's DefNum
+    },
+    fakeOd()
+  );
 
   assert.equal(payload.PatNum, 1001);
   assert.equal(payload.Note, 'CareIN call summary');
@@ -28,52 +47,63 @@ test('buildCommLogApiPayload maps DB-shaped entry to the real OD /commlogs contr
   assert.equal(payload.SentOrReceived, 'Received');          // string enum, not 1
   assert.equal(typeof payload.Mode_, 'string');
   assert.equal(typeof payload.SentOrReceived, 'string');
-  assert.equal(payload.CommType, sync.careinCommType);       // configured DefNum (default 486)
+  assert.equal(payload.CommType, 486);                       // Roland's "CareIN AI Call" DefNum
 });
 
-test('careinCommType defaults to the CareIN convention DefNum 486', () => {
-  // (Unless OPENDENTAL_CAREIN_COMMTYPE_DEFNUM overrides it in the environment.)
-  if (!process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM) {
-    assert.equal(sync.careinCommType, 486);
-  }
+test("CommType comes from the OFFICE, so one practice's DefNum never reaches another", () => {
+  // Verified live 2026-08-07: "CareIN AI Call" is DefNum 486 in Roland and 451 in
+  // Riley/valley. 486 is not a CommLogType in Riley's database at all.
+  const entry = { CommDateTime: '2026-06-04 15:30:00', Mode_: 3, SentOrReceived: 1, Note: 'x' };
+
+  const roland = sync.buildCommLogApiPayload(1001, entry, fakeOd({ officeKey: 'roland', commTypeDefNum: 486 }));
+  const valley = sync.buildCommLogApiPayload(7115, entry, fakeOd({ officeKey: 'valley', commTypeDefNum: 451 }));
+
+  assert.equal(roland.CommType, 486);
+  assert.equal(valley.CommType, 451);
+  assert.notEqual(valley.CommType, 486);
 });
 
 test('createCommLog POSTs /commlogs with the API payload when in api mode', async () => {
-  const prev = { useDatabase: openDentalService.useDatabase, pool: openDentalService.pool, client: openDentalService.client };
   const calls = [];
-  openDentalService.useDatabase = false;
-  openDentalService.pool = null;
-  openDentalService.client = {
-    post: async (url, body) => { calls.push({ url, body }); return { data: { CommlogNum: 7777 } }; }
+  const client = {
+    useDatabase: false,
+    pool: null,
+    client: {
+      post: async (url, body) => { calls.push({ url, body }); return { data: { CommlogNum: 7777 } }; }
+    },
+    formatODDateTime: openDentalService.formatODDateTime.bind(openDentalService),
   };
 
-  try {
-    const result = await sync.createCommLog(1001, {
-      CommDateTime: '2026-06-04 15:30:00', Mode_: 3, SentOrReceived: 1, Note: 'hi', CommType: 1
-    });
-    assert.equal(result.success, true);
-    assert.equal(result.commLogNum, 7777);
-    assert.equal(calls[0].url, '/commlogs');
-    assert.equal(calls[0].body.Mode_, 'Phone');
-    assert.equal(calls[0].body.SentOrReceived, 'Received');
-    assert.equal(calls[0].body.PatNum, 1001);
-  } finally {
-    Object.assign(openDentalService, prev);
-  }
+  const result = await sync.createCommLog(
+    1001,
+    { CommDateTime: '2026-06-04 15:30:00', Mode_: 3, SentOrReceived: 1, Note: 'hi', CommType: 1 },
+    fakeOd({ client })
+  );
+  assert.equal(result.success, true);
+  assert.equal(result.commLogNum, 7777);
+  assert.equal(calls[0].url, '/commlogs');
+  assert.equal(calls[0].body.Mode_, 'Phone');
+  assert.equal(calls[0].body.SentOrReceived, 'Received');
+  assert.equal(calls[0].body.PatNum, 1001);
 });
 
 test('createCommLog reports failure (not a throw) when no OD connection is available', async () => {
-  const prev = { useDatabase: openDentalService.useDatabase, pool: openDentalService.pool, client: openDentalService.client };
-  openDentalService.useDatabase = false;
-  openDentalService.pool = null;
-  openDentalService.client = null;
-  try {
-    const result = await sync.createCommLog(1001, { Note: 'x', CommDateTime: '2026-06-04 15:30:00' });
-    assert.equal(result.success, false);
-    assert.match(result.error, /No Open Dental connection/);
-  } finally {
-    Object.assign(openDentalService, prev);
-  }
+  const client = { useDatabase: false, pool: null, client: null };
+  const result = await sync.createCommLog(
+    1001,
+    { Note: 'x', CommDateTime: '2026-06-04 15:30:00' },
+    fakeOd({ client })
+  );
+  assert.equal(result.success, false);
+  assert.match(result.error, /No Open Dental connection/);
+});
+
+test('createCommLog refuses a write with no office connection at all', async () => {
+  // There is no default practice for a chart note. A caller that cannot name the
+  // office must be refused rather than allowed to guess.
+  const result = await sync.createCommLog(1001, { Note: 'x', CommDateTime: '2026-06-04 15:30:00' });
+  assert.equal(result.success, false);
+  assert.match(result.error, /No Open Dental office connection/);
 });
 
 // ── Compact summary block (day-1 item 2) ─────────────────────────────────────

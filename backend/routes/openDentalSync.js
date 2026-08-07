@@ -10,6 +10,20 @@ const router = express.Router();
 const openDentalSync = require('../services/openDentalSync');
 const odAccess = require('../platform/odAccess');
 const unifiedCallStore = require('../services/unifiedCallStore');
+const odOffices = require('../config/odOffices');
+const { getOfficeForCall } = require('../config/officeAgents');
+
+/**
+ * Resolve the office for a patient-scoped route. PatNum numbering is per-database,
+ * so a route that takes a bare :patientId MUST be told which practice it means —
+ * there is no safe default. Missing/unknown office → a 400 the caller can act on.
+ * @param {import('express').Request} req
+ * @returns {string|null} the office key, or null if absent/not OD-ready
+ */
+function officeFromQuery(req) {
+  const officeKey = typeof req.query.office_id === 'string' ? req.query.office_id.trim() : '';
+  return officeKey && odOffices.isOdReady(officeKey) ? officeKey : null;
+}
 
 // ============================================================================
 // SYNC STATUS AND OVERVIEW
@@ -54,30 +68,36 @@ router.get('/pending-links', async (req, res) => {
     const callsWithSuggestions = await Promise.all(
       limited.map(async (call) => {
         let suggestions = [];
-        
+        const officeKey = getOfficeForCall(call);
+
         try {
-          // Try to find matching patients
+          // Suggestions come from the call's OWN office. A call whose office has no
+          // OD connection gets NO suggestions — offering another practice's patients
+          // here would put the wrong chart one click away.
+          const od = openDentalSync.odForCall(call);
+
           if (call.caller_number) {
-            const phoneMatches = await odAccess.searchPatients(
-              req,
+            const phoneMatches = await od.client.searchPatients(
               openDentalSync.cleanPhoneNumber(call.caller_number)
             );
             suggestions.push(...phoneMatches.map(p => ({ ...p, matchType: 'phone' })));
           }
 
           if (call.caller_name && suggestions.length < 5) {
-            const nameMatches = await odAccess.searchPatients(req, call.caller_name);
+            const nameMatches = await od.client.searchPatients(call.caller_name);
             const newMatches = nameMatches.filter(
               nm => !suggestions.find(s => s.id === nm.id)
             );
             suggestions.push(...newMatches.map(p => ({ ...p, matchType: 'name' })));
           }
         } catch (e) {
-          // Ignore match errors
+          // Office not connected, or an OD read failed — no suggestions, never a guess.
+          suggestions = [];
         }
-        
+
         return {
           ...call,
+          office_id: officeKey,
           patientSuggestions: suggestions.slice(0, 5)
         };
       })
@@ -264,11 +284,21 @@ router.get('/patients/:patientId/calls', async (req, res) => {
   try {
     const { patientId } = req.params;
     const { limit = 50 } = req.query;
-    
+
+    // office_id is required: PatNum 7115 is a different person in each practice.
+    const officeKey = officeFromQuery(req);
+    if (!officeKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'office_id is required and must name an Open Dental-connected office',
+      });
+    }
+
     const result = await openDentalSync.getPatientCallHistory(patientId, {
-      limit: parseInt(limit)
+      limit: parseInt(limit),
+      officeKey,
     });
-    
+
     res.json({
       success: true,
       ...result
@@ -285,9 +315,18 @@ router.get('/patients/:patientId/calls', async (req, res) => {
 router.get('/patients/:patientId/potential-calls', async (req, res) => {
   try {
     const { patientId } = req.params;
-    
-    const calls = await openDentalSync.findPotentialCallsForPatient(patientId);
-    
+
+    // Same rule as the history route — a bare PatNum does not name a person.
+    const officeKey = officeFromQuery(req);
+    if (!officeKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'office_id is required and must name an Open Dental-connected office',
+      });
+    }
+
+    const calls = await openDentalSync.findPotentialCallsForPatient(patientId, officeKey);
+
     res.json({
       success: true,
       calls,
@@ -337,22 +376,36 @@ router.post('/match-all', async (req, res) => {
       total: 0,
       matched: 0,
       noMatch: 0,
+      // Calls whose office has no Open Dental connection. Counted separately from
+      // errors: skipping them is the CORRECT behaviour, not a failure.
+      officeBlocked: 0,
       errors: []
     };
-    
+
     for (const call of allCalls.calls) {
       if (call.od_patient_id) continue; // Already linked
       if (results.total >= limit) break;
-      
+
       results.total++;
-      
+
+      // Match each call in ITS OWN office's database. An office with no OD
+      // connection is skipped entirely — never matched against another practice.
+      let od;
       try {
-        const matchResult = await openDentalSync.matchCallToPatient(call);
-        
+        od = openDentalSync.odForCall(call);
+      } catch (e) {
+        results.officeBlocked++;
+        continue;
+      }
+
+      try {
+        const matchResult = await openDentalSync.matchCallToPatient(call, od);
+
         if (matchResult.patient && matchResult.confidence >= 0.7) {
           unifiedCallStore.updateCall(call.id, {
             od_patient_id: matchResult.patient.id,
             od_patient_name: matchResult.patient.fullName,
+            od_patient_office: od.officeKey,
             od_match_confidence: matchResult.confidence,
             od_match_method: matchResult.method,
             od_sync_status: 'matched'
