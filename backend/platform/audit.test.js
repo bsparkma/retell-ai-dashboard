@@ -49,7 +49,7 @@ test('writes one audit row with the expected column order and values', async () 
   await audit.audit(req, { action: 'READ', resourceType: 'patient', resourceId: 123, result: 'SUCCESS' });
 
   assert.match(captured.text, /INSERT INTO audit_log/);
-  // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint]
+  // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office]
   assert.deepEqual(captured.params, [
     'staff@carein.ai',
     'T1',
@@ -59,7 +59,25 @@ test('writes one audit row with the expected column order and values', async () 
     '203.0.113.7',
     'SUCCESS',
     '/api/opendental/patients/123',
+    null, // office omitted → NULL ("not an office-scoped action"), never a guess
   ]);
+});
+
+test('records the office key when the action is office-scoped', async () => {
+  const captured = captureQuery();
+  const req = {
+    user: { email: 'staff@carein.ai' },
+    tenant: { id: 'T1' },
+    ip: '203.0.113.7',
+    originalUrl: '/api/unified-calls/abc/resolve-patient',
+  };
+
+  await audit.audit(req, {
+    action: 'CREATE', resourceType: 'commlog', resourceId: 9001, office: 'valley', result: 'SUCCESS',
+  });
+
+  // Without the office, "commlog against PatNum 7115" is ambiguous across practices.
+  assert.equal(captured.params[8], 'valley');
 });
 
 test('scrubs PHI from the recorded endpoint and never stores the phone number', async () => {

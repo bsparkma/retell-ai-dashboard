@@ -21,7 +21,19 @@ const express = require('express');
 const router = require('./unifiedCalls');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSync = require('../services/openDentalSync');
+const odOffices = require('../config/odOffices');
+const { OFFICES, MANGO_LINE_OFFICE } = require('../config/officeAgents');
 const audit = require('../platform/audit');
+
+// Since the per-location slice, resolve-patient refuses an OD write for an office
+// with no credentials (fail closed, per office). These tests are about triage and
+// idempotency rather than credential loading, so both offices get placeholder keys.
+// The values are meaningless strings — nothing in this file reaches a real OD.
+function giveOfficesTestCredentials() {
+  process.env.OPENDENTAL_CUSTOMER_KEY = 'test-roland-customer-key';
+  process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-valley-customer-key';
+  odOffices.resetOdOfficeCache();
+}
 
 const SESSION_USER = { name: 'Sarah Front', email: 'sarah@carein.ai' };
 
@@ -44,6 +56,7 @@ beforeEach(async () => {
   originalRequestPersist = unifiedCallStore.requestPersist;
   unifiedCallStore.requestPersist = () => {};
   clearStore();
+  giveOfficesTestCredentials();
 
   original = {
     audit: audit.audit,
@@ -310,4 +323,173 @@ test('commlog-preview: content_type=transcript returns the full-transcript note 
   const tbody = await tres.json();
   assert.match(tbody.note, /--- Full transcript ---/);
   assert.match(tbody.note, /question about my statement balance/);
+});
+
+// --- per-location slice: office scoping + cross-office guards ---------------
+//
+// These exercise the HTTP surface: the worklist and Pick Patient modal talk to
+// these endpoints, and the UI is not the control — a hand-rolled request must be
+// refused just as firmly as a hidden button.
+
+/** Store a Mango call on a real office DID so it attributes exactly as production does. */
+function seedMangoCall(id, did, extra = {}) {
+  unifiedCallStore.calls.set(id, {
+    id,
+    source: 'mango',
+    called_number: did,
+    caller_number: '+15551234567',
+    caller_name: 'Stedi TestValley',
+    call_date: '2026-08-07T15:00:00.000Z',
+    summary: 'wants an appointment',
+    ...extra,
+  });
+}
+
+const VALLEY_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[d] === 'valley');
+const ROLAND_DID = Object.keys(MANGO_LINE_OFFICE).find((d) => MANGO_LINE_OFFICE[d] === 'roland');
+const UNMAPPED_DID = '+15550000000';
+
+/** Run a body with valley switched on, then restore the shipped flag value. */
+async function withValleyConnected(fn) {
+  const prev = OFFICES.valley.odConnected;
+  OFFICES.valley.odConnected = true;
+  odOffices.resetOdOfficeCache();
+  try { return await fn(); } finally {
+    OFFICES.valley.odConnected = prev;
+    odOffices.resetOdOfficeCache();
+  }
+}
+
+test('resolve-patient REFUSES a valley call sent with a roland office param', async () => {
+  await withValleyConnected(async () => {
+    seedMangoCall('x-mismatch', VALLEY_DID);
+    const res = await resolve('x-mismatch', { patientId: 7115, office_id: 'roland' });
+
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, 'OFFICE_MISMATCH');
+    assert.equal(commlogWrites, 0, 'a refused resolve must write nothing');
+  });
+});
+
+test('resolve-patient REFUSES a roland call sent with a valley office param', async () => {
+  await withValleyConnected(async () => {
+    seedMangoCall('x-mismatch-2', ROLAND_DID);
+    const res = await resolve('x-mismatch-2', { patientId: 7115, office_id: 'valley' });
+
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, 'OFFICE_MISMATCH');
+    assert.equal(commlogWrites, 0);
+  });
+});
+
+test('resolve-patient accepts the call\'s OWN office named explicitly', async () => {
+  await withValleyConnected(async () => {
+    seedMangoCall('x-ok', VALLEY_DID);
+    const res = await resolve('x-ok', { patientId: 7115, office_id: 'valley' });
+    assert.equal(res.status, 200);
+    assert.equal(commlogWrites, 1);
+  });
+});
+
+test('an unknown-office call is locked out of resolve SERVER-SIDE', async () => {
+  seedMangoCall('x-unknown', UNMAPPED_DID);
+  const res = await resolve('x-unknown', { patientId: 7115 });
+
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, 'OFFICE_UNKNOWN');
+  assert.match(body.error, /office is unknown/i);
+  assert.equal(commlogWrites, 0, 'an unmapped line must never reach a chart');
+});
+
+test('an unknown-office call CAN still be closed out as not-a-patient (no OD write)', async () => {
+  // The lockout is on chart writes, not on clearing the pile. Otherwise unmapped
+  // calls would be stuck in the worklist forever.
+  seedMangoCall('x-unknown-2', UNMAPPED_DID);
+  const res = await resolve('x-unknown-2', { notAPatient: true, reason: 'spam' });
+
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).call.not_a_patient, true);
+  assert.equal(commlogWrites, 0);
+});
+
+test('an office with no credentials is refused at the HTTP boundary', async () => {
+  await withValleyConnected(async () => {
+    delete process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY;
+    odOffices.resetOdOfficeCache();
+
+    seedMangoCall('x-nokey', VALLEY_DID);
+    const res = await resolve('x-nokey', { patientId: 7115 });
+
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).code, 'OFFICE_OD_KEY_MISSING');
+    assert.equal(commlogWrites, 0);
+  });
+});
+
+test('patient-search is scoped to the call, and names the office it searched', async () => {
+  await withValleyConnected(async () => {
+    // Record which office's client the route reached. Patching the instance method
+    // (not the frozen handle) leaves the real office→client wiring under test.
+    const searched = [];
+    for (const key of ['roland', 'valley']) {
+      const c = odOffices.getOdOffice(key).client;
+      c.searchPatients = async (q) => {
+        searched.push({ office: key, q });
+        return key === 'valley'
+          ? [{ id: 7115, fullName: 'Stedi TestValley' }]
+          : [{ id: 7115, fullName: 'Different RolandPatient' }];
+      };
+    }
+
+    seedMangoCall('x-search', VALLEY_DID);
+    const res = await fetch(`${baseUrl}/api/unified-calls/x-search/patient-search?q=TestValley`);
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    // Only Riley's patient list was consulted.
+    assert.deepEqual(searched.map((s) => s.office), ['valley']);
+    assert.equal(body.patients[0].fullName, 'Stedi TestValley');
+    // The response states WHICH practice was searched — that is what lets an
+    // operator catch a wrong-office moment before they pick a patient.
+    assert.equal(body.office.officeId, 'valley');
+    assert.equal(body.office.officeName, OFFICES.valley.officeName);
+  });
+});
+
+test('patient-search on an unknown-office call searches nothing and says why', async () => {
+  seedMangoCall('x-search-unknown', UNMAPPED_DID);
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-search-unknown/patient-search?q=Test`);
+
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, 'OFFICE_UNKNOWN');
+  assert.deepEqual(body.patients, []);
+});
+
+test('the office roster reports EFFECTIVE connectivity, not just the flag', async () => {
+  await withValleyConnected(async () => {
+    delete process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY;
+    odOffices.resetOdOfficeCache();
+
+    const res = await fetch(`${baseUrl}/api/unified-calls/offices`);
+    const { offices } = await res.json();
+    const valley = offices.find((o) => o.officeId === 'valley');
+
+    // Switched on but unkeyed → the UI must still show it as not connected.
+    assert.equal(valley.odConnected, false);
+    assert.match(valley.odBlockedReason, /credentials/i);
+  });
+});
+
+test('a single call fetch carries its server-resolved office', async () => {
+  seedMangoCall('x-detail', VALLEY_DID);
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-detail`);
+  const call = await res.json();
+
+  // Call detail renders the same OD actions as the worklist, so it needs the same
+  // office truth to gate them.
+  assert.equal(call.office_id, 'valley');
+  assert.equal(call.office.officeId, 'valley');
 });
