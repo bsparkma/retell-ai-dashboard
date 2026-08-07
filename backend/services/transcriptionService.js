@@ -120,6 +120,44 @@ class TranscriptionService {
   }
 
   /**
+   * The instant the daily budget next rolls over — the NEXT midnight in the budget
+   * timezone, as an ISO string. M4's on-demand endpoint hands this to the user so
+   * "budget is used up" can say WHEN it resets instead of just refusing.
+   *
+   * DST-correct by construction: we jump forward by the remaining wall-clock seconds of
+   * the local day, then re-read the local time at that instant and correct — on a spring
+   * -forward / fall-back day the naive jump lands at 01:00 / 23:00 local, and the
+   * correction pulls it onto midnight. Bounded to 3 iterations (one is always enough).
+   * @param {Date} [now] injectable for tests
+   * @returns {string} ISO-8601 timestamp of the next local midnight
+   */
+  nextBudgetResetIso(now = new Date()) {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: this.budgetTimezone,
+      hourCycle: 'h23',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    // Seconds elapsed in the local day at instant `d`.
+    const localSeconds = (d) => {
+      const [h, m, s] = fmt.format(d).split(':').map(Number);
+      return h * 3600 + m * 60 + s;
+    };
+
+    const DAY = 24 * 3600;
+    let ms = now.getTime() + (DAY - localSeconds(now)) * 1000;
+    for (let i = 0; i < 3; i++) {
+      const off = localSeconds(new Date(ms));
+      if (off === 0) break;
+      // off near the end of the day => we landed BEFORE midnight, push forward;
+      // otherwise we overshot past midnight, pull back.
+      ms += (off > DAY / 2 ? DAY - off : -off) * 1000;
+    }
+    return new Date(ms).toISOString();
+  }
+
+  /**
    * Circuit-breaker check. Callers MUST consult this before transcribing so they can skip
    * cleanly (and keep ingesting metadata) rather than bill Azure Speech unbounded. A hard
    * backstop in transcribeBuffer enforces the same cap even if a caller forgets.

@@ -27,6 +27,7 @@ process.env.CALLSTORE_DIR = TMP_DIR;
 const unifiedCallStore = require('./unifiedCallStore');
 const transcriptionService = require('./transcriptionService');
 const ingestionWatermark = require('./ingestionWatermark');
+const mangoConfig = require('../config/mango');
 const { MangoApiClient } = require('./mangoApiClient');
 
 const HOUR = 60 * 60 * 1000;
@@ -53,7 +54,13 @@ beforeEach(() => {
     transcribeUrl: transcriptionService.transcribeUrl,
     checkDailyBudget: transcriptionService.checkDailyBudget,
     maxPages: ingestionWatermark.MAX_PAGES,
+    autoTranscribe: mangoConfig.autoTranscribe,
   };
+  // (M4) These cases exercise the TRANSCRIBE branch of the walk — the budget skip, the
+  // missing-recording ageing, the per-office accounting. M4 gates that branch behind
+  // MANGO_AUTO_TRANSCRIBE (default off), so turn it on here to keep testing what this
+  // suite is about. The valve's own behaviour lives in mangoAutoTranscribeValve.test.js.
+  mangoConfig.autoTranscribe = true;
   unifiedCallStore.requestPersist = () => {};
   transcriptionService.isAvailable = () => true;
   transcriptionService.checkDailyBudget = () => ({ allowed: true, usedMinutes: 0, capMinutes: 120, remainingMinutes: 120 });
@@ -68,6 +75,7 @@ afterEach(() => {
   transcriptionService.transcribeUrl = saved.transcribeUrl;
   transcriptionService.checkDailyBudget = saved.checkDailyBudget;
   ingestionWatermark.MAX_PAGES = saved.maxPages;
+  mangoConfig.autoTranscribe = saved.autoTranscribe;
   clearStore();
   clearWatermark();
 });

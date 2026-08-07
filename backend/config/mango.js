@@ -48,7 +48,21 @@ module.exports = {
 
   // Ingestion source (PRD). 'off' (default): no Mango ingestion. 'api': pull calls from the
   // internal REST API. The former DOM 'scraper' mode is retired in favor of 'api'.
+  //
+  // INGESTION AND TRANSCRIPTION ARE INDEPENDENT SWITCHES (M4). This one only decides whether
+  // calls are pulled in at all; `autoTranscribe` below decides whether the sync also sends
+  // them to Azure Speech. Do not conflate them — M4 turns transcription off while leaving
+  // ingestion fully on, which is precisely what guarantees every call still has a row the
+  // on-demand button can act on.
   ingestMode: process.env.MANGO_INGEST_MODE === 'api' ? 'api' : 'off',
+
+  // Automatic transcription during the hourly sync (M4, decision D1-REVISED).
+  // DEFAULT FALSE — transcription is a human decision made per call from the dashboard
+  // ("Transcribe & Summarize"), not something the sync does to every answered call. The
+  // valve exists so an office/tenant that wants the legacy automatic behaviour back can
+  // have it with an env change rather than a rebuild. Set MANGO_AUTO_TRANSCRIBE=true to
+  // restore it; anything else (including unset) leaves it off.
+  autoTranscribe: String(process.env.MANGO_AUTO_TRANSCRIBE ?? '').trim().toLowerCase() === 'true',
 
   // Authentication
   auth: {

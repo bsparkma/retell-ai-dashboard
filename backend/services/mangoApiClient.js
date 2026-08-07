@@ -41,6 +41,7 @@ function blankOfficeCounters() {
     ingested: 0,        // normalized + returned for storage
     transcribed: 0,     // sent to Azure Speech, got text back
     reused: 0,          // transcript already in the store (dedup guard)
+    auto_off: 0,        // WOULD have been transcribed, but MANGO_AUTO_TRANSCRIBE is false
     budget_skipped: 0,  // daily audio-minute breaker was spent
     no_recording: 0,    // Mango had no recording_url for it AT FETCH TIME
     missed: 0,          // is_missed — nothing to transcribe
@@ -306,6 +307,7 @@ class MangoApiClient {
       calls_processed: 0,
       recordings_transcribed: 0,
       recordings_reused: 0,             // transcript already in the store → not re-sent to Speech
+      transcription_skipped_auto_off: 0, // eligible, but automatic transcription is off (M4)
       transcription_skipped_budget: 0,  // skipped because the daily budget was spent
       recordings_missing: 0,            // Mango had no recording_url at fetch time
       calls: [],
@@ -329,6 +331,7 @@ class MangoApiClient {
       no_did: 0,
     };
     let budgetLogged = false; // log the "budget reached" line at most once per run
+    let autoOffLogged = false; // ditto for the "automatic transcription is off" line
 
     if (coldStart) {
       console.log(
@@ -480,6 +483,26 @@ class MangoApiClient {
         oc.missed++;
       } else if ((call.duration_seconds || 0) < MIN_TRANSCRIBE_SECONDS) {
         oc.too_short++;
+      } else if (!config.autoTranscribe) {
+        // AUTO-TRANSCRIBE VALVE (M4, D1-REVISED). Off by default: ingest the call fully —
+        // watermark, counters, worklist row, everything M3 does — and simply do not send it
+        // to Azure Speech. A human decides per call, from the dashboard button.
+        //
+        // Counted SEPARATELY from budget_skipped on purpose. Both mean "ingested, not
+        // transcribed", but one is a policy and the other is a breaker firing; collapsing
+        // them would make a spent budget invisible in the logs. And this branch sits AFTER
+        // the missed / too-short / unavailable classifications so `auto_off` is exactly the
+        // set of calls automatic transcription WOULD have billed — i.e. the answer to
+        // "what is the valve saving us?"
+        result.transcription_skipped_auto_off++;
+        oc.auto_off++;
+        if (!autoOffLogged) {
+          autoOffLogged = true;
+          console.log(
+            '⏸️  Mango sync: automatic transcription is OFF (MANGO_AUTO_TRANSCRIBE unset/false) — ' +
+            'ingesting call metadata only. Transcribe from the dashboard button per call.'
+          );
+        }
       } else {
         // CIRCUIT BREAKER (#2c): once the daily audio-minute budget is spent, stop
         // transcribing but keep ingesting metadata, so a dedup regression can never bill
@@ -578,7 +601,8 @@ class MangoApiClient {
   _logSyncSummary(result) {
     console.log(
       `✅ Mango API sync: found ${result.calls_found}, transcribed ${result.recordings_transcribed}, ` +
-      `reused ${result.recordings_reused}, budget-skipped ${result.transcription_skipped_budget}, ` +
+      `reused ${result.recordings_reused}, auto-off ${result.transcription_skipped_auto_off}, ` +
+      `budget-skipped ${result.transcription_skipped_budget}, ` +
       `no-recording ${result.recordings_missing}, errors ${result.errors.length} ` +
       `| scanned ${result.calls_scanned} over ${result.pages_fetched} page(s) ` +
       `(${result.skip_pages} skip), walk ${result.walk_complete ? 'complete' : 'INCOMPLETE'}, ` +
@@ -597,7 +621,7 @@ class MangoApiClient {
       const age = o.no_recording_age;
       console.log(
         `📊 Mango sync[${key}]: ingested ${o.ingested}, transcribed ${o.transcribed}, ` +
-        `reused ${o.reused}, budget-skipped ${o.budget_skipped}, ` +
+        `reused ${o.reused}, auto-off ${o.auto_off}, budget-skipped ${o.budget_skipped}, ` +
         `no-recording ${o.no_recording} (age at fetch: <15m ${age.lt15m}, 15-60m ${age.m15to60}, ` +
         `>60m ${age.gt60m}, unknown ${age.unknown}), ` +
         `missed ${o.missed}, too-short ${o.too_short}, errors ${o.errors}, ` +

@@ -300,6 +300,22 @@ class UnifiedCallStore {
       summary: call.summary || call.call_summary || call.call_analysis?.call_summary || null,
       transcript: call.transcript || null,
       transcript_json: call.transcript_json || call.transcript_object || null,
+
+      // On-demand transcription attribution (Mango slice M4). MUST survive re-normalization
+      // for the same reason as od_* / triage_* below: the hourly sync re-ingests inside the
+      // watermark overlap and addMangoCalls rebuilds the record through normalizeCall, so
+      // without carrying these through, "who pressed Transcribe, and when" is erased within
+      // the hour while the transcript it produced stays.
+      transcribed_at: call.transcribed_at ?? null,
+      transcribed_by: call.transcribed_by ?? null,
+      transcribe_source: call.transcribe_source ?? null,
+      // The last on-demand attempt's outcome. Carries 'no_speech' — an attempt that spent
+      // budget and produced nothing — so the UI can hold that state across a reload and
+      // require an explicit confirmation before spending on the same silent recording
+      // again. Losing this to a re-ingest would silently re-arm accidental re-billing.
+      transcribe_last_outcome: call.transcribe_last_outcome ?? null,
+      transcribe_last_attempt_at: call.transcribe_last_attempt_at ?? null,
+      transcribe_last_attempt_by: call.transcribe_last_attempt_by ?? null,
       recording_url: call.recording_url || null,
       recording_path: call.recording_path || null,
 
