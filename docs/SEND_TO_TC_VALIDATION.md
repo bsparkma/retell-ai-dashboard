@@ -3,23 +3,24 @@
 The voice side of the cross-module handoff. This is the click-list for proving it
 on staging before it goes near prod.
 
-## 0. Prerequisite — merge order
+## 0. Prerequisite — both halves deployed
 
-This slice CALLS `POST /api/tc/cases/from-call`. That endpoint belongs to the TC
-track and was **not on `develop` when this branch was built**.
+This slice CALLS `POST /api/tc/cases/from-call` (PR #42, the TC track) from
+`POST /api/unified-calls/:id/send-to-tc` (PR #41, this one). Both merged to
+`develop` on 2026-08-08 and deployed to staging together as image tag
+**`f8ee636`**.
 
-**The TC endpoint's PR must merge before this one can be validated.** Until it
-does, every Send returns the honest failure — *"Couldn't reach the TC app —
-nothing was sent. Try again."* — and nothing is persisted. That is the correct
-behaviour, not a bug, but it proves nothing about the happy path.
-
-Check before starting:
+Confirm the running revision carries both before validating:
 
 ```bash
-git fetch origin && git grep -l "from-call" origin/develop
+az containerapp revision list -n ca-carein-backend -g rg-carein-staging \
+  --query "[?properties.active].{rev:name,image:properties.template.containers[0].image}" -o table
 ```
 
-Empty output = not merged yet. Stop here and coordinate the merge order.
+The image tag must be a develop commit at or after `f8ee636`. If only one half
+were deployed, every Send would return the honest failure — *"Couldn't reach the
+TC app — nothing was sent. Try again."* — which is correct behaviour, but proves
+nothing about the happy path.
 
 ## 1. What must be true on staging
 
@@ -74,15 +75,27 @@ Expected: `mango_call_seed_valley_confident` → office `valley`, `od_sync_statu
 1. Open the **call detail** page for the same call
    (`/calls/<id>`) — the button is in the *Patient Record* panel.
 2. It should already read **In TC**. That is the UI-level guard.
-3. To prove the SERVER-level guard, hit it directly:
+3. To prove the SERVER-level guard, hit it from the **browser console on the
+   staging dashboard** (F12 → Console), where the SSO session cookie is already
+   attached:
 
-   ```bash
-   curl -sS -X POST https://staging.carein.ai/api/unified-calls/<CALL_ID>/send-to-tc \
-     -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}' | jq
+   ```js
+   await (await fetch('/api/unified-calls/mango_call_seed_valley_confident/send-to-tc',
+     { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json()
    ```
 
-   Expected: `success: true`, `alreadySent: true`, and the **same** `caseId` as
+   Expected: `success: true`, `alreadySent: true`, and the **same** `case_id` as
    step 3a. **No second case appears in TC.**
+
+> **Do not try this with the dashboard bearer token.** `/api/unified-calls/*`
+> and `/api/tc/*` both sit behind `tenantContext`, which resolves the tenant from
+> `req.user.email` — and `req.user` is set only on the Entra SSO path
+> (`middleware/auth.js`). A bearer token carries no user identity, so every such
+> request fails closed with **403 `TENANT_UNRESOLVED`** before it reaches any
+> route. That 403 is identical for a route that exists and one that doesn't, so
+> it also cannot be used to probe whether an endpoint is deployed — use the
+> revision's image tag for that. Only `/api/mango/dev/seed` (tenant-exempt) works
+> with the bearer token, which is why step 2 above does.
 
 ### c. The Roland control
 
@@ -92,13 +105,19 @@ Expected: `mango_call_seed_valley_confident` → office `valley`, `od_sync_statu
    Open Dental database — a case filed under the wrong practice is the failure
    this check exists to catch.
 
-### d. The attach path (needs a second call for the same patient)
+### d. The attach path
 
-1. Send a **second** valley call for `Stedi TestValley` to TC while the first
-   case is still open.
-2. Toast must read **"Added to Stedi TestValley's existing TC case"** — *not*
+Use the seeded **valley review** call — it is the second valley call, and
+resolving it to the same patient is exactly the real-world shape.
+
+1. Find `mango_call_seed_valley_review` (shows as **Needs match**).
+2. **Pick Patient** → search `TestValley` → PatNum **7115**. (This also writes
+   the chart note, which is the existing resolve flow — expected.)
+3. Now **Send to TC** on that call, while the case from step (a) is still open
+   (`pending_tc` is an OPEN status).
+4. Toast must read **"Added to Stedi TestValley's existing TC case"** — *not*
    "Case created". Different words because the coordinator's next move differs.
-3. Both calls appear on the one case in TC.
+5. Both calls appear as `voice_handoff` events on the ONE case in TC.
 
 ### e. The refusals (these should be invisible in normal use)
 
