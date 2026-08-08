@@ -81,6 +81,45 @@ financing math depending on the laptop). Crown pricing and financing provider
 minimums are converted to cents (`*Cents` fields) in the contract section
 schemas.
 
+### 7. The voice → TC handoff lives on the timeline, not in a join
+Migration `1786500000000_tc_voice_handoff` (additive only) supports
+`POST /api/tc/cases/from-call`:
+
+- **`tc_case_events.type` gains `voice_handoff`.** The voice module prunes call
+  rows on its own schedule, so a foreign key or a lookup into voice data would
+  rot. Everything TC needs — the summary text, the call id, the deep link — is
+  **snapshot** into the event at handoff time, and nothing in TC dereferences a
+  call row. `call_url` is stored knowing it may 404 later; the summary above it
+  is what carries the meaning.
+- **`tc_case_events.source_call_id`** — nullable text, `UNIQUE ... WHERE
+  source_call_id IS NOT NULL`. This is the idempotency key: a second "Send to
+  TC" on the same call returns the case the first one landed on, and the
+  guarantee sits in the index rather than in a read-then-write, so two
+  concurrent clicks cannot both open a case. Per-tenant, because this is a
+  per-tenant database and a call belongs to exactly one office within it.
+- **`audit_log.source_ref`** — nullable text, deliberately generic ("the
+  external identifier that caused this action"). `tc_case_events` is normal
+  CRUD for the app role; `audit_log` is append-only. Recording the call id
+  there is the copy of "which call opened this case" that survives. No new
+  grant — audit_log's append-only grant is table-level INSERT.
+
+**Attach-or-create.** A handoff attaches to the patient's most recently active
+OPEN case in that office (`tc_cases.updated_at DESC`, ties broken by
+`created_at` then `case_id`), or opens a new one at `pending_tc` assigned to
+the acting user. "Open" is `OPEN_CASE_STATUSES` in `shared/tc/contract.ts`,
+where it is a **compile-time-total** partition of `CaseStatus`:
+
+| | statuses |
+|---|---|
+| **Open** (attach) | `hygiene_review`, `diagnosed`, `pending_tc`, `pending_pt`, `presented`, `considering`, `financing_pending`, `nurture` |
+| **Terminal** (do not attach) | `accepted`, `partially_accepted`, `scheduled`, `started`, `completed`, `lost` |
+
+Terminal means the patient has decided or the case has left the TC's pursuit
+queue — a new call there is new business, not the same conversation. `nurture`
+is deliberately **open**: a long-tail case is still being worked, and an
+inbound call is exactly the outcome the campaign exists to produce. Adding a
+`CaseStatus` without classifying it fails `tsc --noEmit`.
+
 ## Table inventory
 
 | Table | Purpose | PHI | Notes |
@@ -90,7 +129,7 @@ schemas.
 | `tc_case_items` | Procedures within a phase | med — clinical procedures + fees | `od_proc_num` parsed from legacy `od_<n>` ids; money in cents |
 | `tc_case_objections` | Logged patient objections | **HIGH** — `patient_words` is verbatim patient speech | |
 | `tc_followups` | THE unified outreach queue (followups + nurture) | med — talking points/outcomes reference patient context | queue index `(office_id, status, due_date)` |
-| `tc_case_events` | Case timeline (status changes, notes, contact attempts) | med | `detail` jsonb typed per event type |
+| `tc_case_events` | Case timeline (status changes, notes, contact attempts, voice handoffs) | med — a `voice_handoff` detail carries a call-summary snapshot | `detail` jsonb typed per event type; `source_call_id` UNIQUE where non-null (see §7) |
 | `tc_hygiene_intakes` | Hygienist chairside handoff (1:0..1 per case) | **HIGH** — clinical findings | accommodates the in-flight hygiene-intake workstream |
 | `tc_preauth_cases` | Insurance pre-authorization tracker | **HIGH** — patient identity + carrier | optional `case_id` link (legacy had none) |
 | `tc_communications` | Outbound patient email log | **HIGH** — `to_email`, `subject` | `template_name` denormalized so template deletion keeps history |

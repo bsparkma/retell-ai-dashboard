@@ -14857,6 +14857,7 @@ __export(contract_entry_exports, {
   LostReason: () => LostReason,
   NurtureCadence: () => NurtureCadence,
   NurtureType: () => NurtureType,
+  OPEN_CASE_STATUSES: () => OPEN_CASE_STATUSES,
   OfficeId: () => OfficeId,
   PatientInterestLevel: () => PatientInterestLevel,
   PerioStatus: () => PerioStatus,
@@ -14866,8 +14867,10 @@ __export(contract_entry_exports, {
   RecallType: () => RecallType,
   ReferralSource: () => ReferralSource,
   SignatureBlock: () => SignatureBlock,
+  TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
+  TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
   TcCommunication: () => TcCommunication,
@@ -14882,11 +14885,14 @@ __export(contract_entry_exports, {
   TextBlock: () => TextBlock,
   Urgency: () => Urgency,
   Uuid: () => Uuid,
+  VoiceHandoffDetail: () => VoiceHandoffDetail,
   ZodError: () => import_zod3.ZodError,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   communicationToRow: () => communicationToRow,
   galleryToRow: () => galleryToRow,
+  isContactAttemptDetail: () => isContactAttemptDetail,
+  isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   preauthToRow: () => preauthToRow,
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
@@ -15055,8 +15061,35 @@ var CaseEventType = import_zod2.z.enum([
   "note_added",
   "case_created",
   "nurture_enrolled",
-  "contact_attempt"
+  "contact_attempt",
+  /**
+   * A voice call was handed to the TC module (POST /api/tc/cases/from-call).
+   * Server-written only — the client-loggable event endpoint cannot emit it.
+   * This event IS the durable artifact of the handoff: the voice module prunes
+   * call rows on its own schedule, so everything TC needs to show the handoff
+   * later (summary text, call id, deep link) is SNAPSHOT into this row. Nothing
+   * in TC may dereference a voice-module record.
+   */
+  "voice_handoff"
 ]);
+var OPEN_CASE_STATUSES = [
+  "hygiene_review",
+  "diagnosed",
+  "pending_tc",
+  "pending_pt",
+  "presented",
+  "considering",
+  "financing_pending",
+  "nurture"
+];
+var TERMINAL_CASE_STATUSES = [
+  "accepted",
+  "partially_accepted",
+  "scheduled",
+  "started",
+  "completed",
+  "lost"
+];
 var PreauthType = import_zod2.z.enum(["treatment", "perio", "manual"]);
 var PreauthStatus = import_zod2.z.enum([
   "pending",
@@ -15143,6 +15176,19 @@ var ContactAttemptDetail = import_zod2.z.object({
   channel: import_zod2.z.enum(["call", "text", "email"]),
   outcome: import_zod2.z.enum(["reached", "voicemail", "no_answer"])
 });
+var VoiceHandoffDetail = import_zod2.z.object({
+  callUrl: import_zod2.z.string().max(500).nullable(),
+  callSummary: LongText.nullable(),
+  /** True if the handoff attached to an existing open case, false if it created one. */
+  attached: import_zod2.z.boolean()
+});
+var TcCaseEventDetail = import_zod2.z.union([ContactAttemptDetail, VoiceHandoffDetail]);
+function isContactAttemptDetail(detail) {
+  return detail != null && "channel" in detail;
+}
+function isVoiceHandoffDetail(detail) {
+  return detail != null && "attached" in detail;
+}
 var TcCaseEvent = import_zod2.z.object({
   eventId: Uuid,
   legacyId: import_zod2.z.string().max(60).nullable(),
@@ -15151,8 +15197,15 @@ var TcCaseEvent = import_zod2.z.object({
   description: LongText,
   actor: ShortText.nullable(),
   // staff identity — never patient identity
-  detail: ContactAttemptDetail.nullable()
-  // typed payload; only contact_attempt uses it today
+  detail: TcCaseEventDetail.nullable(),
+  // typed payload; contact_attempt + voice_handoff use it
+  /**
+   * Originating external call id for voice_handoff events, null on every other
+   * type. Carries a UNIQUE (per tenant) guarantee in the schema — it is the
+   * idempotency key that makes a repeated "Send to TC" a no-op instead of a
+   * duplicate case. Defaulted so pre-existing construction sites stay valid.
+   */
+  sourceCallId: import_zod2.z.string().max(200).nullable().default(null)
 });
 var TcHygieneIntake = import_zod2.z.object({
   submittedBy: ShortText.min(1),
@@ -15524,7 +15577,8 @@ function caseToRows(tcCase, newId) {
     description: e.description,
     actor: e.actor,
     detail: e.detail,
-    legacy_id: e.legacyId
+    legacy_id: e.legacyId,
+    source_call_id: e.sourceCallId
   }));
   const hygieneIntakeRow = c.hygieneIntake ? {
     intake_id: newId(),
@@ -15647,7 +15701,8 @@ function caseFromRows(rows) {
       type: e.type,
       description: e.description,
       actor: e.actor,
-      detail: e.detail
+      detail: e.detail,
+      sourceCallId: e.source_call_id
     })),
     hygieneIntake: hygieneIntakeRow ? {
       submittedBy: hygieneIntakeRow.submitted_by,
@@ -15799,6 +15854,7 @@ var import_zod3 = __toESM(require_zod());
   LostReason,
   NurtureCadence,
   NurtureType,
+  OPEN_CASE_STATUSES,
   OfficeId,
   PatientInterestLevel,
   PerioStatus,
@@ -15808,8 +15864,10 @@ var import_zod3 = __toESM(require_zod());
   RecallType,
   ReferralSource,
   SignatureBlock,
+  TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
+  TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
   TcCommunication,
@@ -15824,11 +15882,14 @@ var import_zod3 = __toESM(require_zod());
   TextBlock,
   Urgency,
   Uuid,
+  VoiceHandoffDetail,
   ZodError,
   caseFromRows,
   caseToRows,
   communicationToRow,
   galleryToRow,
+  isContactAttemptDetail,
+  isVoiceHandoffDetail,
   preauthToRow,
   simulationToRow,
   templateToRow,

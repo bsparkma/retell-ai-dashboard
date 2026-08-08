@@ -32,12 +32,18 @@ class AuditError extends Error {
  *
  * @param {import('express').Request & { user?: any, tenant?: { id?: string } }} req
  * @param {{ action: AuditAction, resourceType: string, resourceId?: string|number|null,
- *           result: AuditResult, endpoint?: string, office?: string|null }} entry
+ *           result: AuditResult, endpoint?: string, office?: string|null,
+ *           sourceRef?: string|null }} entry
  *   `office` is the frozen internal office key ('roland' | 'valley' | 'unknown')
  *   the action touched. Required in spirit on any Open Dental path once a tenant
  *   has more than one connected practice: PatNum numbering restarts per database,
  *   so resource_id alone does not identify a patient. Never a display name, never
  *   PHI. Omitted → NULL, meaning "not an office-scoped action".
+ *
+ *   `sourceRef` is the external identifier that CAUSED the action, when the cause
+ *   lives outside the audited resource — today, the voice call id behind a TC
+ *   handoff. An identifier, never a PHI value, same class as resource_id.
+ *   Omitted → NULL, meaning "the action had no recorded external cause".
  * @returns {Promise<void>}
  */
 async function audit(req, entry) {
@@ -60,13 +66,16 @@ async function audit(req, entry) {
   // Office key ('roland' | 'valley' | 'unknown') — an identifier, not PHI.
   const office = entry.office != null ? String(entry.office) : null;
 
+  // External cause (e.g. a voice call id) — an identifier, not PHI.
+  const sourceRef = entry.sourceRef != null ? String(entry.sourceRef) : null;
+
   try {
     await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `INSERT INTO audit_log
-            (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office]
+            (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, source_ref)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, sourceRef]
       )
     );
   } catch (err) {
