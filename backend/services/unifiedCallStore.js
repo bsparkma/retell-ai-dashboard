@@ -13,6 +13,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 
 function normalizeCallDate(value) {
   if (value instanceof Date) {
@@ -299,7 +300,15 @@ class UnifiedCallStore {
       // Content
       summary: call.summary || call.call_summary || call.call_analysis?.call_summary || null,
       transcript: call.transcript || null,
-      transcript_json: call.transcript_json || call.transcript_object || null,
+      // ONE canonical transcript shape in the store (utils/transcriptShape.js).
+      // Producers disagreed — Retell writes {role, content}, the M4 on-demand path
+      // writes Azure's {speaker, text, start, end} — and every consumer was left to
+      // guess, which is how "Send transcript to chart" came to write
+      // "[] 👤 Caller: undefined" for every on-demand line. Normalizing HERE means
+      // the store holds one shape no matter who wrote it, and since this runs on
+      // every re-ingest it also heals rows written before the fix. Idempotent, so
+      // re-normalizing already-canonical data is a no-op.
+      transcript_json: normalizeTranscriptJson(call.transcript_json || call.transcript_object),
 
       // On-demand transcription attribution (Mango slice M4). MUST survive re-normalization
       // for the same reason as od_* / triage_* below: the hourly sync re-ingests inside the

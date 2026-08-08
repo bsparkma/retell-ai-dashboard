@@ -239,6 +239,21 @@ test('the payload is assembled from the stored call, not the request body', asyn
   });
 });
 
+test('call_summary is always a string or null, never a structured shape', async () => {
+  // The transcript-shape bug (2026-08-08) was a structured field reaching a consumer
+  // that expected scalars. TC's body schema is z.string().nullable() AND .strict(), so
+  // a non-string summary would 400 the whole handoff. `summary` is a scalar from
+  // callAnalyzer and never transcript_json — pinned here because this is the
+  // cross-module boundary where such a regression is expensive to diagnose.
+  seedSendable('call_summary_type', { summary: 'Patient asked to reschedule.' });
+  await sendToTc('call_summary_type');
+  assert.equal(typeof tcCalls[0].call_summary, 'string');
+
+  seedSendable('call_summary_null');
+  await sendToTc('call_summary_null');
+  assert.equal(tcCalls[1].call_summary, null);
+});
+
 test('an untranscribed call still hands over, with a null summary', async () => {
   // The handoff does not require a transcript — a coordinator can still want the
   // call on the case. call_summary carries null rather than an invented string.
