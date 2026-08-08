@@ -16,7 +16,23 @@ function computeOdBackoffMs(attempt, retryAfterSec) {
 }
 
 class OpenDentalService extends EventEmitter {
-  constructor() {
+  /**
+   * @param {{ customerKey?: string, officeKey?: string|null, autoSync?: boolean }} [options]
+   *   Per-office overrides (per-location slice). Constructed with NO arguments
+   *   the behaviour is exactly what it always was — env credentials, background
+   *   sync on — so the singleton below and every existing caller (including the
+   *   TC module's odAccess path) are untouched. Only the office-keyed registry
+   *   config/odOffices.js passes options.
+   *
+   *   - customerKey: bind this instance to ONE practice's OD database instead of
+   *     the process-wide OPENDENTAL_CUSTOMER_KEY.
+   *   - officeKey: the office this instance serves — carried so a client can be
+   *     checked against the office an operation is for (odOffices.assertOfficeMatch).
+   *   - autoSync: false skips startRealTimeSync(). Per-office instances set this;
+   *     the 3-minute sync loop is a singleton concern and must not be duplicated
+   *     once per connected office.
+   */
+  constructor(options = {}) {
     super();
     // Support both database and API connections
     // Also support alternative variable names
@@ -26,11 +42,18 @@ class OpenDentalService extends EventEmitter {
     this.dbUrl = process.env.OPENDENTAL_DB_URL;
     this.apiUrl = process.env.OD_API_URL || process.env.OPENDENTAL_API_BASE_URL;
     this.apiKey = process.env.OD_API_KEY;
-    
-    // Open Dental eConnector API uses developer key + customer key
+
+    // The office this instance is bound to. null = the process-wide singleton,
+    // which is office-unaware by design and serves the existing default path.
+    this.officeKey = options.officeKey || null;
+
+    // Open Dental eConnector API uses developer key + customer key. The developer
+    // key is shared across all of CareIN's practices; the CUSTOMER key is what
+    // selects WHICH practice's database you are talking to — so it, and only it,
+    // is per-office.
     this.developerKey = process.env.OPENDENTAL_DEVELOPER_KEY;
-    this.customerKey = process.env.OPENDENTAL_CUSTOMER_KEY;
-    
+    this.customerKey = options.customerKey || process.env.OPENDENTAL_CUSTOMER_KEY;
+
     // Connection mode. CareIN runs in 'api' mode (HTTP REST), never direct
     // MySQL. The MySQL-parsing path (setupDatabaseConnection -> new URL(dbUrl))
     // only runs when a direct-DB mode is EXPLICITLY configured, so the API base
@@ -76,9 +99,12 @@ class OpenDentalService extends EventEmitter {
           headers['Authorization'] = `Bearer ${this.apiKey}`;
         }
         
-        console.log('[OD API] Initializing with URL:', this.apiUrl);
+        console.log(
+          `[OD API] Initializing with URL: ${this.apiUrl}` +
+          (this.officeKey ? ` (office: ${this.officeKey})` : '')
+        );
         console.log('[OD API] Using ODFHIR authentication:', !!(this.developerKey && this.customerKey));
-        
+
         this.client = axios.create({
           baseURL: this.apiUrl,
           timeout: 30000,
@@ -87,8 +113,12 @@ class OpenDentalService extends EventEmitter {
         this.setupInterceptors();
       }
       
-      // Start real-time sync
-      this.startRealTimeSync();
+      // Start real-time sync. Per-office instances opt out (autoSync:false) —
+      // one background loop per connected office would multiply OD load for no
+      // benefit; the loop belongs to the process-wide singleton.
+      if (options.autoSync !== false) {
+        this.startRealTimeSync();
+      }
     }
   }
 

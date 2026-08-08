@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, UserCheck, Ban, Loader2 } from "lucide-react";
-import { api, type UnifiedCall, type OdPatient, type NotAPatientReason } from "@/lib/api";
+import { Search, UserCheck, Ban, Loader2, Building2, AlertTriangle } from "lucide-react";
+import { api, type UnifiedCall, type OdPatient, type NotAPatientReason, type OfficeConfig } from "@/lib/api";
 import { toast } from "sonner";
 
 const NOT_A_PATIENT_REASONS: { value: NotAPatientReason; label: string }[] = [
@@ -39,6 +39,9 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  // The office whose patient list is being searched, as reported by the server.
+  const [office, setOffice] = useState<OfficeConfig | null>(null);
   const [submittingId, setSubmittingId] = useState<number | "not_patient" | null>(null);
   const [reason, setReason] = useState<NotAPatientReason>("spam");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,29 +52,34 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
       setQuery("");
       setResults([]);
       setSearching(false);
+      setSearchError(null);
+      setOffice(null);
       setSubmittingId(null);
       setReason("spam");
     }
   }, [open, call.id]);
 
-  // Debounced OD patient search.
+  // Debounced OD patient search, scoped server-side to THIS call's office.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (query.trim().length < 2) {
       setResults([]);
       setSearching(false);
+      setSearchError(null);
       return;
     }
     setSearching(true);
     debounceRef.current = setTimeout(async () => {
-      const patients = await api.searchPatients(query);
+      const { patients, office: searchedOffice, error } = await api.searchPatientsForCall(call.id, query);
       setResults(patients);
+      setSearchError(error ?? null);
+      if (searchedOffice) setOffice(searchedOffice);
       setSearching(false);
     }, 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, call.id]);
 
   // Picking a patient does NOT write — it hands off to the review/edit → send dialog.
   const choosePatient = (patientId: number, label: string) => {
@@ -140,10 +148,19 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
             </div>
           )}
 
-          {/* OD patient search */}
+          {/* OD patient search — always says WHICH practice is being searched, so a
+              wrong-office moment is visible before anyone picks a patient. */}
           <div>
-            <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">
-              Search Open Dental
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Search Open Dental
+              </div>
+              {office && (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground min-w-0">
+                  <Building2 size={12} className="flex-shrink-0" />
+                  <span className="truncate">Searching {office.officeName} patients</span>
+                </div>
+              )}
             </div>
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -161,8 +178,17 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
                 <div className="text-center py-4 text-xs text-muted-foreground flex items-center justify-center gap-2">
                   <Loader2 size={13} className="animate-spin" /> Searching…
                 </div>
+              ) : searchError ? (
+                // A failed search must never read as "no such patient" — that would
+                // invite someone to create a duplicate, or pick the wrong record.
+                <div className="flex items-start gap-2 py-3 px-2 text-xs text-destructive">
+                  <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                  <span>{searchError}</span>
+                </div>
               ) : query.trim().length >= 2 && results.length === 0 ? (
-                <div className="text-center py-4 text-xs text-muted-foreground">No patients found.</div>
+                <div className="text-center py-4 text-xs text-muted-foreground">
+                  No patients found{office ? ` in ${office.officeName}` : ""}.
+                </div>
               ) : (
                 results.map((p) => (
                   <div

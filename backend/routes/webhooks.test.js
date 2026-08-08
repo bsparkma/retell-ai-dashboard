@@ -15,11 +15,22 @@ const { beforeEach, afterEach } = test;
 const webhooks = require('./webhooks');
 const openDentalSyncService = require('../services/openDentalSync');
 const unifiedCallStore = require('../services/unifiedCallStore');
+const odOffices = require('../config/odOffices');
 const callAnalyzer = require('../services/callAnalyzer');
 
 let originalRequestPersist;
 
+// Since the per-location slice the webhook path resolves the call's OFFICE before it
+// matches anything, and an office with no customer key is refused (fail closed, per
+// office). Retell calls with no mapped agent attribute to Roland, so Roland needs a
+// key here. The value is a meaningless string — nothing here reaches a real OD.
+function giveOfficesTestCredentials() {
+  process.env.OPENDENTAL_CUSTOMER_KEY = 'test-roland-customer-key';
+  odOffices.resetOdOfficeCache();
+}
+
 beforeEach(() => {
+  giveOfficesTestCredentials();
   // Don't touch disk and isolate state between tests (mirrors unifiedCallStore.test.js).
   originalRequestPersist = unifiedCallStore.requestPersist;
   unifiedCallStore.requestPersist = () => {};
@@ -44,8 +55,10 @@ function stubOD({ match, create }) {
   };
   const createCalls = [];
   openDentalSyncService.matchCallToPatient = async () => match;
-  openDentalSyncService.createCommLog = async (patientId, entry) => {
-    createCalls.push({ patientId, entry });
+  // `od` is the office-bound connection the write is going through — captured so
+  // tests can assert WHICH practice's database a chart note was aimed at.
+  openDentalSyncService.createCommLog = async (patientId, entry, od) => {
+    createCalls.push({ patientId, entry, officeKey: od && od.officeKey });
     return create ? create(patientId, entry) : { success: true, commLogNum: 1000 + createCalls.length };
   };
   return { createCalls, restore: () => Object.assign(openDentalSyncService, prev) };

@@ -31,7 +31,13 @@ class AuditError extends Error {
  * Write one audit row to the tenant's append-only audit_log.
  *
  * @param {import('express').Request & { user?: any, tenant?: { id?: string } }} req
- * @param {{ action: AuditAction, resourceType: string, resourceId?: string|number|null, result: AuditResult, endpoint?: string }} entry
+ * @param {{ action: AuditAction, resourceType: string, resourceId?: string|number|null,
+ *           result: AuditResult, endpoint?: string, office?: string|null }} entry
+ *   `office` is the frozen internal office key ('roland' | 'valley' | 'unknown')
+ *   the action touched. Required in spirit on any Open Dental path once a tenant
+ *   has more than one connected practice: PatNum numbering restarts per database,
+ *   so resource_id alone does not identify a patient. Never a display name, never
+ *   PHI. Omitted → NULL, meaning "not an office-scoped action".
  * @returns {Promise<void>}
  */
 async function audit(req, entry) {
@@ -51,13 +57,16 @@ async function audit(req, entry) {
   // resource_id is stringified; callers must pass an ID, never a PHI value.
   const resourceId = entry.resourceId != null ? String(entry.resourceId) : null;
 
+  // Office key ('roland' | 'valley' | 'unknown') — an identifier, not PHI.
+  const office = entry.office != null ? String(entry.office) : null;
+
   try {
     await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `INSERT INTO audit_log
-            (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint]
+            (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office]
       )
     );
   } catch (err) {

@@ -5,9 +5,31 @@
  * via CommLog entries. Also provides enhanced patient matching capabilities.
  */
 
-const openDentalService = require('../config/openDental');
 const unifiedCallStore = require('./unifiedCallStore');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
+const { getOfficeForCall } = require('../config/officeAgents');
+const odOffices = require('../config/odOffices');
+
+// ── Office-keyed Open Dental access (per-location slice) ─────────────────────
+// This service used to talk to ONE process-wide OD client (config/openDental).
+// It now resolves the client BY OFFICE, and the office always comes from the
+// CALL — never from a caller-supplied parameter. That is what makes a valley
+// call structurally unable to reach Roland's database: there is no argument a
+// route (or a request) can pass that changes which chart gets written.
+//
+// Every OD-touching method takes an `od` handle from odOffices.getOdOffice()
+// and runs it through odOffices.assertOfficeMatch() before use.
+
+/**
+ * The office-bound OD connection for a stored call.
+ * @param {{source?: string, called_number?: string, handler_id?: string}} call
+ * @returns {import('../config/odOffices').OdOfficeHandle}
+ * @throws {import('../config/odOffices').OdOfficeError} unknown / unconnected / unkeyed office
+ */
+function odForCall(call) {
+  const officeKey = getOfficeForCall(call);
+  return odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+}
 
 // ── Shared match → status logic (source-agnostic) ────────────────────────────
 // Extracted from the Retell webhook path so BOTH Retell (call_analyzed) and Mango
@@ -66,11 +88,12 @@ class OpenDentalSyncService {
     };
 
     // CommType for CareIN automated commlog entries is an OD definition.DefNum
-    // (Category=27) and is PRACTICE-SPECIFIC — it differs per OD database (Roland vs
-    // Valley), so it must be resolved per-connected-database and never hardcoded blindly.
-    // Defaults to the CareIN convention DefNum 486; override per tenant via env.
+    // (Category=27) and is PRACTICE-SPECIFIC. It is no longer a single value on this
+    // service: it now lives PER OFFICE in config/odOffices.js and arrives on the
+    // office handle, because writing one practice's DefNum into another practice's
+    // database is a corrupt row. Verified live 2026-08-07:
+    //   Roland "CareIN AI Call" = 486   Riley/valley "CareIN AI Call" = 451
     // See docs/OD_API_CONTRACT.md §10.
-    this.careinCommType = parseInt(process.env.OPENDENTAL_CAREIN_COMMTYPE_DEFNUM || '486', 10);
   }
 
   // ============================================================================
@@ -78,18 +101,23 @@ class OpenDentalSyncService {
   // ============================================================================
 
   /**
-   * Match a call to a patient using multiple strategies
-   * Returns the best matching patient or null
+   * Match a call to a patient using multiple strategies, IN THAT CALL'S OFFICE.
+   * Returns the best matching patient or null.
+   *
+   * @param {object} call the stored call — its office decides which OD database is searched
+   * @param {import('../config/odOffices').OdOfficeHandle} [od] pre-resolved office
+   *   connection; omitted, it is derived from the call. Callers that already hold a
+   *   handle pass it so the office is resolved (and asserted) exactly once.
    */
-  async matchCallToPatient(call) {
-    if (!openDentalService.isEnabled()) {
+  async matchCallToPatient(call, od = odForCall(call)) {
+    if (!od.client.isEnabled()) {
       return { patient: null, confidence: 0, method: 'disabled' };
     }
 
     const strategies = [
-      { name: 'phone_exact', fn: () => this.matchByPhoneExact(call.caller_number) },
-      { name: 'name_phone', fn: () => this.matchByNameAndPhone(call.caller_name, call.caller_number) },
-      { name: 'name_fuzzy', fn: () => this.matchByNameFuzzy(call.caller_name) }
+      { name: 'phone_exact', fn: () => this.matchByPhoneExact(call.caller_number, od) },
+      { name: 'name_phone', fn: () => this.matchByNameAndPhone(call.caller_name, call.caller_number, od) },
+      { name: 'name_fuzzy', fn: () => this.matchByNameFuzzy(call.caller_name, od) }
     ];
 
     for (const strategy of strategies) {
@@ -107,9 +135,11 @@ class OpenDentalSyncService {
   }
 
   /**
-   * Match patient by exact phone number
+   * Match patient by exact phone number, in the given office's OD database.
+   * @param {string} phoneNumber
+   * @param {import('../config/odOffices').OdOfficeHandle} od
    */
-  async matchByPhoneExact(phoneNumber) {
+  async matchByPhoneExact(phoneNumber, od) {
     if (!phoneNumber) return { patient: null, confidence: 0 };
 
     // Clean the phone number
@@ -117,8 +147,8 @@ class OpenDentalSyncService {
     if (cleanPhone.length < 10) return { patient: null, confidence: 0 };
 
     try {
-      const patients = await openDentalService.searchPatients(cleanPhone);
-      
+      const patients = await od.client.searchPatients(cleanPhone);
+
       if (patients.length === 1) {
         return { patient: patients[0], confidence: 0.95 };
       } else if (patients.length > 1) {
@@ -133,9 +163,12 @@ class OpenDentalSyncService {
   }
 
   /**
-   * Match patient by name AND phone (higher confidence)
+   * Match patient by name AND phone (higher confidence), in the given office's OD.
+   * @param {string} callerName
+   * @param {string} phoneNumber
+   * @param {import('../config/odOffices').OdOfficeHandle} od
    */
-  async matchByNameAndPhone(callerName, phoneNumber) {
+  async matchByNameAndPhone(callerName, phoneNumber, od) {
     if (!callerName || !phoneNumber) return { patient: null, confidence: 0 };
 
     const cleanPhone = this.cleanPhoneNumber(phoneNumber);
@@ -143,8 +176,8 @@ class OpenDentalSyncService {
 
     try {
       // Search by phone first
-      const phoneMatches = await openDentalService.searchPatients(cleanPhone);
-      
+      const phoneMatches = await od.client.searchPatients(cleanPhone);
+
       if (phoneMatches.length > 0) {
         // Check if any of the phone matches also match the name
         for (const patient of phoneMatches) {
@@ -169,9 +202,11 @@ class OpenDentalSyncService {
   }
 
   /**
-   * Match patient by name only (fuzzy matching)
+   * Match patient by name only (fuzzy matching), in the given office's OD.
+   * @param {string} callerName
+   * @param {import('../config/odOffices').OdOfficeHandle} od
    */
-  async matchByNameFuzzy(callerName) {
+  async matchByNameFuzzy(callerName, od) {
     if (!callerName || callerName.length < 3) return { patient: null, confidence: 0 };
 
     const normalizedName = this.normalizeName(callerName);
@@ -183,8 +218,8 @@ class OpenDentalSyncService {
     }
 
     try {
-      const patients = await openDentalService.searchPatients(callerName);
-      
+      const patients = await od.client.searchPatients(callerName);
+
       if (patients.length === 1) {
         const patientName = this.normalizeName(patients[0].fullName || `${patients[0].firstName} ${patients[0].lastName}`);
         const similarity = this.calculateNameSimilarity(normalizedName, patientName);
@@ -220,11 +255,21 @@ class OpenDentalSyncService {
   // ============================================================================
 
   /**
-   * Sync a call's transcript and summary to Open Dental CommLog
+   * Sync a call's transcript and summary to Open Dental CommLog.
+   *
+   * The target office is the CALL's office, always. `options.expectOfficeKey` is an
+   * optional assertion from the caller ("I believe this is a valley call") — it can
+   * only ever cause a refusal, never redirect the write, so a request that names the
+   * wrong office is rejected rather than obeyed.
+   *
+   * @param {string} callId
+   * @param {{ force?: boolean, allowUnmatched?: boolean, noteOverride?: string,
+   *           contentType?: string, includeTranscript?: boolean,
+   *           expectOfficeKey?: string }} [options]
    */
   async syncCallToCommLog(callId, options = {}) {
     const call = unifiedCallStore.getCall(callId);
-    
+
     if (!call) {
       return { success: false, error: 'Call not found' };
     }
@@ -234,12 +279,43 @@ class OpenDentalSyncService {
       return { success: true, message: 'Already synced', skipped: true };
     }
 
+    // Resolve THIS call's office connection. An unknown / not-yet-connected /
+    // unkeyed office refuses here, before anything touches a chart.
+    let od;
+    try {
+      od = odForCall(call);
+      if (options.expectOfficeKey) {
+        odOffices.assertOfficeMatch(options.expectOfficeKey, od);
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: err.publicMessage || err.message,
+        code: err.code,
+        officeBlocked: true,
+      };
+    }
+
     // Match to patient if not already matched
     let patientId = call.od_patient_id;
     let matchResult = null;
 
+    // A stored PatNum is only meaningful together with the office it came from —
+    // PatNum 7115 is "Stedi TestValley" in Riley and a different real patient in
+    // Roland. A match banked against a DIFFERENT office than the call now resolves
+    // to is not a match at all; discard it and re-match in the right database
+    // rather than writing a chart note to whoever happens to hold that number.
+    if (patientId && !this.patientOfficeMatches(call, od.officeKey)) {
+      console.warn(
+        `[OD Sync] ${callId}: stored patient match belongs to office ` +
+        `'${this.patientOfficeOf(call)}' but the call resolves to '${od.officeKey}' — ` +
+        `discarding the stale match and re-matching`
+      );
+      patientId = null;
+    }
+
     if (!patientId) {
-      matchResult = await this.matchCallToPatient(call);
+      matchResult = await this.matchCallToPatient(call, od);
       if (matchResult.patient) {
         patientId = matchResult.patient.id;
       }
@@ -270,7 +346,7 @@ class OpenDentalSyncService {
       if (typeof options.noteOverride === 'string' && options.noteOverride.trim()) {
         commLogEntry.Note = options.noteOverride;
       }
-      const result = await this.createCommLog(patientId, commLogEntry);
+      const result = await this.createCommLog(patientId, commLogEntry, od);
 
       if (!result.success) {
         throw new Error(result.error || 'CommLog create failed');
@@ -279,6 +355,9 @@ class OpenDentalSyncService {
       unifiedCallStore.updateCall(callId, {
         od_sync_status: 'synced',
         od_patient_id: patientId,
+        // Which practice's database that PatNum lives in. Written alongside every
+        // PatNum so a later read can tell a Riley 7115 from a Roland 7115.
+        od_patient_office: od.officeKey,
         od_commlog_num: result.commLogNum,
         od_synced_at: new Date().toISOString(),
         od_match_confidence: matchResult?.confidence
@@ -454,20 +533,27 @@ class OpenDentalSyncService {
    * ("Database pool not available") so call summaries never reached OD on api-mode
    * tenants. See docs/OD_API_CONTRACT.md §10.
    */
-  async createCommLog(patientId, commLogEntry) {
+  async createCommLog(patientId, commLogEntry, od) {
+    // An office-bound connection is REQUIRED. There is no "default office" for a
+    // chart write — a caller that cannot say which practice this note belongs in
+    // must not be allowed to guess.
+    if (!od || !od.officeKey || !od.client) {
+      return { success: false, error: 'No Open Dental office connection supplied for this write' };
+    }
+
     // Final OD-safety net: sanitize the note at the single write boundary, so every
     // path (generated, user-edited, legacy auto-write) lands mojibake-free. Idempotent.
     if (commLogEntry && typeof commLogEntry.Note === 'string') {
       commLogEntry = { ...commLogEntry, Note: sanitizeForOd(commLogEntry.Note) };
     }
-    if (openDentalService.useDatabase && openDentalService.pool) {
-      return this.insertCommLogToDatabase(patientId, commLogEntry);
+    if (od.client.useDatabase && od.client.pool) {
+      return this.insertCommLogToDatabase(patientId, commLogEntry, od);
     }
 
-    if (openDentalService.client) {
+    if (od.client.client) {
       try {
-        const payload = this.buildCommLogApiPayload(patientId, commLogEntry);
-        const response = await openDentalService.client.post('/commlogs', payload);
+        const payload = this.buildCommLogApiPayload(patientId, commLogEntry, od);
+        const response = await od.client.client.post('/commlogs', payload);
         return {
           success: true,
           commLogNum: response.data?.CommlogNum,
@@ -489,7 +575,7 @@ class OpenDentalSyncService {
    * (Category=27). These are CareIN inbound call summaries, so Mode_="Phone" and
    * SentOrReceived="Received" by intent. See docs/OD_API_CONTRACT.md §10.
    */
-  buildCommLogApiPayload(patientId, commLogEntry) {
+  buildCommLogApiPayload(patientId, commLogEntry, od) {
     const modeEnum = { 0: 'None', 1: 'Email', 2: 'Text', 3: 'Phone', 4: 'In Person', 5: 'Mail' };
     const Mode_ = typeof commLogEntry.Mode_ === 'string'
       ? commLogEntry.Mode_
@@ -498,24 +584,26 @@ class OpenDentalSyncService {
     return {
       PatNum: patientId,
       Note: commLogEntry.Note,
-      CommDateTime: openDentalService.formatODDateTime(commLogEntry.CommDateTime),
+      CommDateTime: od.client.formatODDateTime(commLogEntry.CommDateTime),
       Mode_,
       SentOrReceived: 'Received', // inbound call summaries are always received
-      CommType: this.careinCommType
+      // THIS OFFICE's "CareIN AI Call" DefNum. Roland's 486 is not a CommLogType in
+      // Riley's database at all (Riley's is 451), so it can never be sent there.
+      CommType: od.commTypeDefNum
     };
   }
 
   /**
    * Insert CommLog directly into Open Dental database
    */
-  async insertCommLogToDatabase(patientId, commLogEntry) {
-    if (!openDentalService.pool) {
+  async insertCommLogToDatabase(patientId, commLogEntry, od) {
+    if (!od || !od.client || !od.client.pool) {
       return { success: false, error: 'Database pool not available' };
     }
 
     try {
       // Check if commlog table exists and get its structure
-      const [columns] = await openDentalService.pool.execute("SHOW COLUMNS FROM commlog");
+      const [columns] = await od.client.pool.execute("SHOW COLUMNS FROM commlog");
       const columnNames = columns.map(col => col.Field);
 
       // Build INSERT query based on available columns
@@ -555,7 +643,7 @@ class OpenDentalSyncService {
 
       const query = `INSERT INTO commlog (${insertFields.join(', ')}) VALUES (${placeholders.join(', ')})`;
       
-      const [result] = await openDentalService.pool.execute(query, insertValues);
+      const [result] = await od.client.pool.execute(query, insertValues);
 
       return { 
         success: true, 
@@ -574,25 +662,50 @@ class OpenDentalSyncService {
   // ============================================================================
 
   /**
-   * Manually link a call to a patient
+   * Manually link a call to a patient — in that call's office, and nowhere else.
+   *
+   * The PatNum is verified to exist in THAT office's database before it is stored,
+   * so a Roland PatNum pasted at a valley call fails here rather than silently
+   * linking to whichever Riley patient happens to hold the same number.
+   *
+   * @param {string} callId
+   * @param {string|number} patientId
+   * @param {{ syncNow?: boolean, userId?: string, expectOfficeKey?: string }} [options]
    */
   async linkCallToPatient(callId, patientId, options = {}) {
     const call = unifiedCallStore.getCall(callId);
-    
+
     if (!call) {
       return { success: false, error: 'Call not found' };
     }
 
-    // Verify patient exists
-    const patient = await openDentalService.getPatientDetails(patientId);
+    let od;
+    try {
+      od = odForCall(call);
+      if (options.expectOfficeKey) {
+        odOffices.assertOfficeMatch(options.expectOfficeKey, od);
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: err.publicMessage || err.message,
+        code: err.code,
+        officeBlocked: true,
+      };
+    }
+
+    // Verify the patient exists IN THIS OFFICE's database.
+    const patient = await od.client.getPatientDetails(patientId);
     if (!patient) {
       return { success: false, error: 'Patient not found in Open Dental' };
     }
 
-    // Update call with patient link
+    // Update call with patient link. od_patient_office records WHICH database this
+    // PatNum came from — without it a stored PatNum is ambiguous across practices.
     unifiedCallStore.updateCall(callId, {
       od_patient_id: patientId,
       od_patient_name: patient.fullName,
+      od_patient_office: od.officeKey,
       od_linked_manually: true,
       od_linked_at: new Date().toISOString(),
       od_linked_by: options.userId || 'system'
@@ -629,6 +742,7 @@ class OpenDentalSyncService {
     unifiedCallStore.updateCall(callId, {
       od_patient_id: null,
       od_patient_name: null,
+      od_patient_office: null,
       od_linked_manually: false,
       od_linked_at: null,
       od_sync_status: 'unlinked'
@@ -642,15 +756,25 @@ class OpenDentalSyncService {
   // ============================================================================
 
   /**
-   * Get all calls for a specific patient
+   * Get all calls for a specific patient IN ONE OFFICE.
+   *
+   * A bare PatNum does not identify a person across practices, so this read is
+   * office-scoped on both halves: calls are matched on (PatNum, office) and the
+   * patient record is fetched from that office's database.
+   *
+   * @param {string|number} patientId
+   * @param {{ limit?: number, officeKey?: string }} [options] officeKey is REQUIRED
+   *   to reach Open Dental; without it the call list is still returned but the
+   *   patient record is not fetched (nothing to fetch it from).
    */
   async getPatientCallHistory(patientId, options = {}) {
     const allCalls = unifiedCallStore.getAllCalls();
-    
-    // Filter calls linked to this patient
-    const patientCalls = allCalls.filter(call => 
-      call.od_patient_id === patientId || 
-      call.od_patient_id === String(patientId)
+    const officeKey = options.officeKey || null;
+
+    // Filter calls linked to this patient — same PatNum AND same office.
+    const patientCalls = allCalls.filter(call =>
+      (call.od_patient_id === patientId || call.od_patient_id === String(patientId)) &&
+      (!officeKey || this.patientOfficeMatches(call, officeKey))
     );
 
     // Sort by date descending
@@ -660,12 +784,15 @@ class OpenDentalSyncService {
     const limit = options.limit || 50;
     const limited = patientCalls.slice(0, limit);
 
-    // Get patient details
+    // Get patient details from THIS office's database.
     let patient = null;
-    try {
-      patient = await openDentalService.getPatientDetails(patientId);
-    } catch (e) {
-      console.error('[OD Sync] Failed to get patient details:', e.message);
+    if (officeKey) {
+      try {
+        const od = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+        patient = await od.client.getPatientDetails(patientId);
+      } catch (e) {
+        console.error('[OD Sync] Failed to get patient details:', e.message);
+      }
     }
 
     return {
@@ -683,18 +810,29 @@ class OpenDentalSyncService {
   }
 
   /**
-   * Search for calls that might belong to a patient (for linking suggestions)
+   * Search for calls that might belong to a patient (for linking suggestions).
+   *
+   * Office-scoped on both ends: the patient is read from `officeKey`'s database,
+   * and only calls belonging to that same office can be suggested — suggesting a
+   * Roland call for a Riley patient would invite exactly the wrong link.
+   *
+   * @param {string|number} patientId
+   * @param {string} officeKey
    */
-  async findPotentialCallsForPatient(patientId) {
-    const patient = await openDentalService.getPatientDetails(patientId);
+  async findPotentialCallsForPatient(patientId, officeKey) {
+    const od = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+    const patient = await od.client.getPatientDetails(patientId);
     if (!patient) return [];
 
     const allCalls = unifiedCallStore.getAllCalls();
-    
+
     // Find unlinked calls that might match this patient
     const potentialMatches = allCalls.filter(call => {
       // Skip already linked calls
       if (call.od_patient_id) return false;
+
+      // Only ever suggest calls from the SAME office as the patient.
+      if (getOfficeForCall(call) !== officeKey) return false;
 
       // Check phone match
       if (patient.phone && call.caller_number) {
@@ -879,6 +1017,46 @@ class OpenDentalSyncService {
   }
 
   // ==========================================================================
+  // PATIENT ↔ OFFICE PAIRING
+  //
+  // od_patient_id is meaningless on its own: PatNum numbering restarts in every
+  // Open Dental database. Verified live 2026-08-07 — PatNum 7115 is "Stedi
+  // TestValley" in Riley and a DIFFERENT real patient in Roland. So every stored
+  // PatNum is written together with od_patient_office, and every read of one
+  // checks that pairing before it is allowed to reach a chart.
+  // ==========================================================================
+
+  /**
+   * The office a call's stored PatNum belongs to.
+   *
+   * LEGACY ROWS: calls matched before this slice carry no od_patient_office. Every
+   * such match was produced by the single process-wide OD client, which was bound
+   * to ROLAND — so an absent value is read as 'roland'. That assumption is what
+   * makes the guard below fire (rather than silently pass) on the genuinely
+   * dangerous rows: valley-attributed calls that were auto-matched against
+   * Roland's database while valley had no OD connection of its own.
+   *
+   * @param {{od_patient_office?: string|null}} call
+   * @returns {string}
+   */
+  patientOfficeOf(call) {
+    const stored = call && call.od_patient_office;
+    return typeof stored === 'string' && stored ? stored : 'roland';
+  }
+
+  /**
+   * Whether a call's stored PatNum came from the office we are about to use.
+   * A call with no stored PatNum has nothing to disagree about → true.
+   * @param {{od_patient_id?: any, od_patient_office?: string|null}} call
+   * @param {string} officeKey
+   * @returns {boolean}
+   */
+  patientOfficeMatches(call, officeKey) {
+    if (!call || call.od_patient_id == null || call.od_patient_id === '') return true;
+    return this.patientOfficeOf(call) === officeKey;
+  }
+
+  // ==========================================================================
   // SOURCE-AGNOSTIC MATCH → STATUS (review-then-send)
   // ==========================================================================
 
@@ -894,15 +1072,47 @@ class OpenDentalSyncService {
    * Idempotent-safe callers should skip already-'synced' calls before invoking (a human
    * Send-to-chart is terminal). Never throws for a missing patient; surfaces OD errors.
    *
+   * OFFICE: the call is matched against ITS OWN office's Open Dental database. A call
+   * whose office has no OD connection (unknown line, office not switched on, key not
+   * shipped) is NOT matched at all — it is parked in 'office_not_connected' with an
+   * honest reason instead of being quietly matched against some other practice's
+   * patients, which is what happened before this slice.
+   *
    * @param {string} callId  unified-store id
    * @param {{caller_number?: string, caller_name?: string}} matchInput
-   * @returns {Promise<{status:'matched'|'needs_review', patient?:object, matchResult:object, candidates?:Array}>}
+   * @returns {Promise<{status:'matched'|'needs_review'|'office_not_connected', patient?:object, matchResult?:object, candidates?:Array}>}
    */
   async matchAndSetStatus(callId, matchInput = {}) {
-    const matchResult = await this.matchCallToPatient({
-      caller_number: matchInput.caller_number,
-      caller_name: matchInput.caller_name || 'Unknown',
-    });
+    const call = unifiedCallStore.getCall(callId);
+    if (!call) {
+      return { status: 'needs_review', needsReview: true, candidates: [], matchResult: null };
+    }
+
+    let od;
+    try {
+      od = odForCall(call);
+    } catch (err) {
+      // No OD for this call's office. Record why, match nothing, write nothing.
+      unifiedCallStore.updateCall(callId, {
+        od_sync_status: 'office_not_connected',
+        od_office_blocked_reason: err.publicMessage || err.message,
+        od_sync_attempted_at: new Date().toISOString(),
+      });
+      return {
+        status: 'office_not_connected',
+        officeBlocked: true,
+        code: err.code,
+        reason: err.publicMessage || err.message,
+      };
+    }
+
+    const matchResult = await this.matchCallToPatient(
+      {
+        caller_number: matchInput.caller_number,
+        caller_name: matchInput.caller_name || 'Unknown',
+      },
+      od
+    );
 
     if (!isConfidentUnambiguousMatch(matchResult)) {
       const candidates = buildMatchCandidates(matchResult);
@@ -910,6 +1120,7 @@ class OpenDentalSyncService {
         od_sync_status: 'needs_review',
         od_match_candidates: candidates,
         od_match_confidence: matchResult ? (matchResult.confidence || 0) : 0,
+        od_office_blocked_reason: null,
         od_sync_attempted_at: new Date().toISOString(),
       });
       return { status: 'needs_review', needsReview: true, candidates, matchResult };
@@ -922,7 +1133,10 @@ class OpenDentalSyncService {
       od_sync_status: 'matched',
       od_patient_id: patient.id,
       od_patient_name: matchedName,
+      // The PatNum above only means something paired with this office.
+      od_patient_office: od.officeKey,
       od_match_confidence: matchResult.confidence,
+      od_office_blocked_reason: null,
       od_sync_attempted_at: new Date().toISOString(),
     });
     return { status: 'matched', matched: true, patient, matchResult };
@@ -935,6 +1149,11 @@ const openDentalSyncService = new OpenDentalSyncService();
 openDentalSyncService.isConfidentUnambiguousMatch = isConfidentUnambiguousMatch;
 openDentalSyncService.buildMatchCandidates = buildMatchCandidates;
 openDentalSyncService.CONFIDENT_WRITE_MIN = CONFIDENT_WRITE_MIN;
+// Office resolution for a stored call — the ONE way the voice path gets an OD
+// client. Exposed so route handlers (which need the office before they touch the
+// service) resolve it exactly the same way this service does, instead of
+// re-deriving it and risking a second, divergent answer.
+openDentalSyncService.odForCall = odForCall;
 
 module.exports = openDentalSyncService;
 

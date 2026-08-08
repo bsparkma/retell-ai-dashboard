@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Synthetic Mango calls for validating per-location Open Dental routing on STAGING.",
+    "POST to /api/mango/dev/seed (ALLOW_MANGO_DEV_SEED=true; prod never sets it).",
+    "No real caller data: every caller_number is either a designated OD test fixture",
+    "or an unassigned test range. called_number is the OFFICE DID — the attribution key.",
+    "Nothing here writes to Open Dental; seeding only sets review-then-send status.",
+    "",
+    "479-739-4999 is the point of the exercise: it is on ONE patient in Riley",
+    "(PatNum 7115, Stedi TestValley) and TWO in Roland. Same number, different",
+    "practice, different outcome — which is only possible if office routing is real."
+  ],
+  "calls": [
+    {
+      "_case": "VALLEY confident. One Riley patient on this number -> matched, PatNum 7115. Send this one to chart and check it chairside in Riley.",
+      "source": "mango",
+      "external_id": "mango_call_seed_valley_confident",
+      "mango_call_id": "seed_valley_confident",
+      "call_date": "2026-08-07T15:05:00.000Z",
+      "caller_number": "+14797394999",
+      "called_number": "+14797854390",
+      "direction": "inbound",
+      "duration_seconds": 164,
+      "outcome": "answered",
+      "caller_name": "Stedi TestValley",
+      "summary": "Staff took a call about scheduling a cleaning. [SYNTHETIC valley confident-match -> Riley PatNum 7115]",
+      "transcript": "Staff: Front desk, how can I help? Caller: Hi, this is Stedi TestValley, I would like to get a cleaning scheduled."
+    },
+    {
+      "_case": "VALLEY needs_review. Number not in Riley OD -> no confident match, so this is the Pick Patient path. Search TestValley; the modal must say it is searching Valley Fort Smith.",
+      "source": "mango",
+      "external_id": "mango_call_seed_valley_review",
+      "mango_call_id": "seed_valley_review",
+      "call_date": "2026-08-07T15:12:00.000Z",
+      "caller_number": "+15550100011",
+      "called_number": "+14793166111",
+      "direction": "inbound",
+      "duration_seconds": 92,
+      "outcome": "answered",
+      "caller_name": "Unknown",
+      "summary": "Caller asked about an appointment but did not give a name the matcher could use. [SYNTHETIC valley needs_review -> resolve via Pick Patient]",
+      "transcript": "Staff: Front desk. Caller: Hi, I wanted to ask about getting in this week."
+    },
+    {
+      "_case": "ROLAND control, SAME number as the valley confident call. Two Roland patients hold it -> needs_review with candidates. Proves the two offices are searching different databases.",
+      "source": "mango",
+      "external_id": "mango_call_seed_roland_control",
+      "mango_call_id": "seed_roland_control",
+      "call_date": "2026-08-07T15:18:00.000Z",
+      "caller_number": "+14797394999",
+      "called_number": "+19185036262",
+      "direction": "inbound",
+      "duration_seconds": 141,
+      "outcome": "answered",
+      "caller_name": "Stedi Test 2",
+      "summary": "Staff took a billing question. [SYNTHETIC roland control -> ambiguous, unchanged behaviour]",
+      "transcript": "Staff: Roland Family Dental. Caller: Hi, I have a question about my statement."
+    },
+    {
+      "_case": "UNKNOWN office. DID is not in MANGO_LINE_OFFICE -> office_not_connected. Every OD action must be blocked, in the UI and server-side; the not-a-patient close-out must still work.",
+      "source": "mango",
+      "external_id": "mango_call_seed_unknown_office",
+      "mango_call_id": "seed_unknown_office",
+      "call_date": "2026-08-07T15:24:00.000Z",
+      "caller_number": "+15550100012",
+      "called_number": "+15550000000",
+      "direction": "inbound",
+      "duration_seconds": 58,
+      "outcome": "answered",
+      "caller_name": "Unknown",
+      "summary": "Call on a line that is not mapped to an office yet. [SYNTHETIC unknown-office -> OD actions must be locked out]",
+      "transcript": "Staff: Hello. Caller: Hi, is this the dental office?"
+    }
+  ]
+}

@@ -41,9 +41,30 @@ const fs = require('fs');
 const path = require('path');
 const router = express.Router();
 
-const openDentalService = require('../config/openDental');
 const openDentalSyncService = require('../services/openDentalSync');
 const { requireOdWriteEnabled } = require('../middleware/envGuards');
+const odOffices = require('../config/odOffices');
+const { getOfficeForCall } = require('../config/officeAgents');
+
+/**
+ * The Open Dental office a LIVE Retell tool call belongs to, resolved from the
+ * handling agent exactly the way stored calls are (AGENT_OFFICE, same Roland
+ * fallback for an unmapped agent). Every mapped Retell agent is Roland today, so
+ * this reproduces current behaviour precisely — but it does so by ASKING which
+ * office, so mapping a Retell agent to Riley later routes that agent's lookups
+ * and bookings to Riley's database with no further code change.
+ *
+ * @param {import('express').Request} req
+ * @returns {import('../config/odOffices').OdOfficeHandle}
+ * @throws {import('../config/odOffices').OdOfficeError} when that office has no OD
+ */
+function odForToolCall(req) {
+  const body = (req && req.body) || {};
+  const args = body.args || {};
+  const agentId = body.agent_id || args.agent_id || (body.call && body.call.agent_id) || null;
+  const officeKey = getOfficeForCall({ agent_id: agentId });
+  return odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+}
 
 // ---------------------------------------------------------------------------
 // Per-tool enable/disable config
@@ -219,10 +240,10 @@ router.post('/lookup_patient', async (req, res) => {
 
   try {
     const match = await withTimeout(
-      openDentalSyncService.matchCallToPatient({
-        caller_number: phone,
-        caller_name: name,
-      }),
+      openDentalSyncService.matchCallToPatient(
+        { caller_number: phone, caller_name: name },
+        odForToolCall(req)
+      ),
       TOOL_TIMEOUT_MS,
       { patient: null, confidence: 0, method: 'timeout' }
     );
@@ -307,9 +328,12 @@ router.post('/find_available_slots', async (req, res) => {
   try {
     const baseAppt = {
       duration,
-      providerId: providerId || 1, // openDentalService requires *some* provider for its working-hours lookup
+      providerId: providerId || 1, // the OD client requires *some* provider for its working-hours lookup
       operatoryId: operatoryId || 1,
     };
+
+    // Availability is read from the calling agent's own office.
+    const od = odForToolCall(req);
 
     const slots = await withTimeout(
       (async () => {
@@ -317,10 +341,7 @@ router.post('/find_available_slots', async (req, res) => {
         for (let i = 0; i < 7 && out.length < maxResults; i++) {
           const day = new Date(startDate);
           day.setDate(day.getDate() + i);
-          const daySlots = await openDentalService.findAvailableSlotsForDay(
-            baseAppt,
-            day
-          );
+          const daySlots = await od.client.findAvailableSlotsForDay(baseAppt, day);
           out.push(...daySlots);
         }
         return out.slice(0, maxResults);
@@ -439,8 +460,9 @@ router.post('/book_appointment', requireOdWriteEnabled, async (req, res) => {
   };
 
   try {
+    // Book into the calling agent's own office — never a default practice.
     const result = await withTimeout(
-      openDentalService.bookAppointment(appointmentData),
+      odForToolCall(req).client.bookAppointment(appointmentData),
       TOOL_TIMEOUT_MS,
       { success: false, message: 'timeout' }
     );
