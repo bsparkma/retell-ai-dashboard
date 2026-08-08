@@ -7,8 +7,19 @@
 
 const unifiedCallStore = require('./unifiedCallStore');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
+const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 const { getOfficeForCall } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
+
+/**
+ * Seconds → `m:ss`, for the per-line timestamp in a transcript chart note.
+ * @param {number} seconds
+ * @returns {string}
+ */
+function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
 
 // ── Office-keyed Open Dental access (per-location slice) ─────────────────────
 // This service used to talk to ONE process-wide OD client (config/openDental).
@@ -444,7 +455,12 @@ class OpenDentalSyncService {
       // Transcript sends (item 4, contentType 'transcript') append the full transcript —
       // deliberately a large note. Legacy includeTranscript flag honored for compatibility.
       if ((options.contentType === 'transcript' || options.includeTranscript) && nonEmpty(call.transcript)) {
-        note += `\n\n--- Full transcript ---\n${this.formatTranscriptForCommLog(call.transcript, call.transcript_json)}`;
+        // Only write the section if it has content. A header with nothing under it
+        // reads like the note was truncated, which is worse than omitting it.
+        const body = this.formatTranscriptForCommLog(call.transcript, call.transcript_json);
+        if (nonEmpty(body)) {
+          note += `\n\n--- Full transcript ---\n${body}`;
+        }
       }
     }
 
@@ -483,15 +499,46 @@ class OpenDentalSyncService {
   }
 
   /**
-   * Format transcript for CommLog (plain text)
+   * Format transcript for CommLog (plain text).
+   *
+   * Reads the canonical transcript_json shape (utils/transcriptShape.js), but
+   * normalizes defensively rather than assuming: rows transcribed before that
+   * normalization shipped are still in the store in a producer-specific shape,
+   * and a call outside the hourly re-ingest window never gets healed. This is a
+   * chart write — it has to be right for data that already exists, not only for
+   * data written from now on.
+   *
+   * Renders nothing at all for an empty transcript. It used to render a line per
+   * entry unconditionally, which is how an unrecognized shape became a wall of
+   * `[] 👤 Caller: undefined` in a patient's chart.
+   *
+   * @param {unknown} transcript plain-text transcript (the fallback)
+   * @param {unknown} transcriptJson structured transcript, any historical shape
+   * @returns {string}
    */
   formatTranscriptForCommLog(transcript, transcriptJson) {
-    if (transcriptJson && Array.isArray(transcriptJson)) {
-      return transcriptJson.map(msg => {
-        const role = msg.role === 'agent' ? '🤖 Agent' : '👤 Caller';
-        const timestamp = msg.timestamp || '';
-        return `[${timestamp}] ${role}: ${msg.content}`;
-      }).join('\n');
+    const entries = normalizeTranscriptJson(transcriptJson);
+
+    if (entries) {
+      const lines = entries.map((e) => {
+        // Who spoke. A role is a claim ("this is the agent"); a diarization index
+        // is only "this is a different voice". Say whichever we actually know,
+        // and never upgrade an index into a role.
+        const who = e.role === 'agent'
+          ? '🤖 Agent'
+          : e.role === 'user'
+          ? '👤 Caller'
+          : e.speaker !== null
+          ? `Speaker ${e.speaker + 1}`
+          : 'Speaker';
+        // Timing only when the shape carried it — the legacy path never did, and
+        // printing an empty "[] " on every line was noise in the chart note.
+        const stamp = e.start !== null ? `[${formatClock(e.start)}] ` : '';
+        return `${stamp}${who}: ${e.content}`;
+      });
+      // An empty structured transcript is NOT an error — it means nothing was
+      // recognized. Fall through to the plain text if there is any.
+      if (lines.length > 0) return lines.join('\n');
     }
 
     if (typeof transcript === 'string') {

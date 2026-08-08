@@ -34,6 +34,7 @@ const unifiedCallStore = require('./unifiedCallStore');
 const openDentalSyncService = require('./openDentalSync');
 const ledger = require('./onDemandTranscriptionLedger');
 const { getOfficeForCall } = require('../config/officeAgents');
+const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 
 /**
  * How recent a call has to be for "Mango has no recording_url" to mean PUBLISH LAG rather
@@ -324,7 +325,12 @@ async function runTranscription(call, { actor }) {
   // ── PERSIST, THEN report success. Never the other way round. ─────────────────────────
   const updates = {
     transcript: transcript.text,
-    transcript_json: transcript.utterances || transcript.words || null,
+    // Canonical shape at the source (utils/transcriptShape.js). Azure hands us
+    // {speaker, text, start, end}; the store's canonical entry is {role, speaker,
+    // content, start, end}. normalizeCall normalizes too — writing it canonical
+    // here keeps the divergence from being re-introduced by some future path that
+    // bypasses the store's normalizer.
+    transcript_json: normalizeTranscriptJson(transcript.utterances || transcript.words),
     // Attribution for the on-demand decision, alongside triage_by / sent_by.
     transcribed_at: new Date().toISOString(),
     transcribed_by: actor,

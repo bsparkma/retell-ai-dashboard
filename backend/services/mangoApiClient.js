@@ -21,6 +21,7 @@ const unifiedCallStore = require('./unifiedCallStore');
 const ingestionWatermark = require('./ingestionWatermark');
 const { normalizeMangoCall, isIngestibleCall } = require('./mangoNormalize');
 const { getOfficeForCall, normalizeE164 } = require('../config/officeAgents');
+const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Transcribe calls at least this long (very short clips are noise / AUDIO_TOO_SHORT).
@@ -526,7 +527,8 @@ class MangoApiClient {
               const tr = await transcriptionService.transcribeUrl(rec); // in-memory; discarded
               if (tr && tr.text) {
                 call.transcript = tr.text;
-                call.transcript_json = tr.utterances || tr.words || null;
+                // Canonical shape at the source — see utils/transcriptShape.js.
+                call.transcript_json = normalizeTranscriptJson(tr.utterances || tr.words);
                 result.recordings_transcribed++;
                 oc.transcribed++;
               } else {
