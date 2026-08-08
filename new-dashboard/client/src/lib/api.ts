@@ -47,14 +47,34 @@ async function apiFetch(
   });
 }
 
+/**
+ * A non-2xx API response, with the parts a caller needs to react precisely:
+ * the HTTP `status` and the backend's structured `code`. Still an Error, so the
+ * many `err instanceof Error ? err.message` call sites keep working unchanged.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  constructor(message: string, status: number, code: string | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function request<T>(
   path: string,
   options?: RequestInit & { params?: Record<string, string | number | boolean | undefined> }
 ): Promise<T> {
   const res = await apiFetch(path, options);
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error((err as { message?: string }).message ?? `HTTP ${res.status}`);
+    const err = (await res.json().catch(() => ({}))) as { message?: string; error?: string; code?: string };
+    throw new ApiError(
+      err.message ?? err.error ?? res.statusText ?? `HTTP ${res.status}`,
+      res.status,
+      err.code ?? null,
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -220,6 +240,12 @@ export interface BackendUnifiedCall {
   transcribe_last_attempt_at?: string | null;
   transcribed_by?: CallActor | null;
   transcribed_at?: string | null;
+  // Slice M6 — cross-module handoff. Set once this call has been handed to the
+  // Treatment Coordinator module; tc_case_id present = "already in TC".
+  tc_case_id?: string | null;
+  tc_case_url?: string | null;
+  tc_sent_at?: string | null;
+  tc_sent_by?: CallActor | null;
   [key: string]: unknown;
 }
 
@@ -566,6 +592,13 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     transcribedBy: (c.transcribed_by ?? null) as CallActor | null,
     transcribedAt: c.transcribed_at ?? null,
 
+    // Slice M6 — TC handoff. tcCaseId present means this call already lives on a
+    // TC case, so the UI shows a passive "In TC" link instead of a send button.
+    tcCaseId: c.tc_case_id ?? null,
+    tcCaseUrl: c.tc_case_url ?? null,
+    tcSentAt: c.tc_sent_at ?? null,
+    tcSentBy: (c.tc_sent_by ?? null) as CallActor | null,
+
     // Disposition signals for MANGO_WORKLIST_MODE='flagged' (PRD D1). On Retell calls
     // these are usually absent (defaults false) — Retell attention is unaffected by mode.
     appointmentRequested: c.appointment_requested ?? false,
@@ -680,6 +713,36 @@ export const api = {
       | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Hand a matched call to the Treatment Coordinator module (slice M6).
+   *
+   * The server assembles the whole payload from the stored call — the patient, the
+   * office, the summary snapshot. `office_id` is only an assertion of which office
+   * this screen believes it is acting on; the server refuses on a mismatch, so a
+   * stale tab can never file a case under the wrong practice.
+   *
+   * `attached: true` = the call joined the patient's existing open case;
+   * `attached: false` = a new case was created. `alreadySent` = this call was
+   * already in TC, so the same case comes back untouched.
+   */
+  async sendCallToTc(
+    id: string,
+    body: { office_id?: string } = {},
+  ): Promise<{
+    success: boolean;
+    alreadySent?: boolean;
+    caseId: string;
+    url: string | null;
+    attached: boolean | null;
+    office?: OfficeConfig;
+    call?: BackendUnifiedCall;
+  }> {
+    return request(`/unified-calls/${encodeURIComponent(id)}/send-to-tc`, {
       method: "POST",
       body: JSON.stringify(body),
     });

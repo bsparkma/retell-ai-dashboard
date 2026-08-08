@@ -15,6 +15,8 @@ const audit = require('../platform/audit');
 const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
 const mangoConfig = require('../config/mango');
+const { isEntitledModule } = require('../middleware/tenantContext');
+const tcCaseClient = require('../services/tcCaseClient');
 
 /**
  * The office roster for the UI, with EFFECTIVE Open Dental connectivity.
@@ -855,6 +857,187 @@ router.post('/:id/resolve-patient', async (req, res) => {
   } catch (error) {
     console.error('Error resolving patient:', error);
     res.status(500).json({ error: 'Failed to resolve patient' });
+  }
+});
+
+/**
+ * POST /api/unified-calls/:id/send-to-tc
+ *
+ * The voice side of the cross-module handoff (Mango slice M6). Hands a matched
+ * call to the Treatment Coordinator module, which either opens a new case or
+ * attaches the call to the patient's existing open one.
+ *
+ * The payload is assembled HERE, from the stored call — never from the request
+ * body. A PatNum means nothing without the practice it belongs to (numbering
+ * restarts per Open Dental database), so letting a client name the patient and
+ * the office independently would be the cross-office bug all over again. `office_id`
+ * in the body is accepted only as an assertion: it can cause a refusal, never a
+ * redirect — same shape as resolve-patient above.
+ *
+ * Idempotent twice over: this route short-circuits once the call carries a
+ * tc_case_id, and the TC endpoint is itself idempotent on call_id, so even a
+ * concurrent double-click converges on one case.
+ *
+ * Nothing here writes to Open Dental — a TC case is app data, not a chart entry —
+ * so this path deliberately does NOT require an OD-connected office. It does
+ * require a REAL office ('unknown' has no practice to file a case under).
+ */
+router.post('/:id/send-to-tc', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const actor = actorFrom(req);
+
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ success: false, error: 'Call not found', code: 'CALL_NOT_FOUND' });
+    }
+
+    const officeKey = getOfficeForCall(call);
+
+    // Entitlement, checked before anything else is spent. The button is hidden for
+    // a voice-only tenant, but the UI is not the control — /api/tc would 403 this
+    // anyway; refusing here makes the reason legible and skips the round trip.
+    if (!isEntitledModule(req, 'tc')) {
+      return res.status(403).json({
+        success: false,
+        error: 'MODULE_NOT_ENTITLED',
+        code: 'MODULE_NOT_ENTITLED',
+        module: 'tc',
+        message: "This account is not entitled to the 'tc' module.",
+      });
+    }
+
+    // Cross-office guard: the client saying which office it BELIEVES it is acting
+    // on can only ever cause a refusal.
+    if (typeof body.office_id === 'string' && body.office_id && body.office_id !== officeKey) {
+      console.error(
+        `[unifiedCalls] BLOCKED cross-office TC handoff on call ${id}: client claimed ` +
+        `office '${body.office_id}' but the call belongs to '${officeKey}'`
+      );
+      await audit.audit(req, {
+        action: 'CREATE', resourceType: 'tc_case', resourceId: id, office: officeKey, result: 'UNAUTHORIZED',
+      });
+      return res.status(409).json({
+        success: false,
+        error: 'This call belongs to a different office — refusing to file it there',
+        code: 'OFFICE_MISMATCH',
+        office: odOffices.describeOffice(officeKey),
+      });
+    }
+
+    // A case has to belong to a practice. 'unknown' means the dialed line isn't
+    // mapped yet (M5 already keeps those out of the chart path); it must not
+    // reach TC either.
+    if (!officeKey || officeKey === 'unknown') {
+      return res.status(409).json({
+        success: false,
+        error: "This call's office is unknown — map its line before sending it to TC",
+        code: 'OFFICE_UNKNOWN',
+        office: odOffices.describeOffice(officeKey),
+      });
+    }
+
+    const patientId = Number(call.od_patient_id);
+    if (!call.od_patient_id || !Number.isFinite(patientId) || patientId <= 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'This call has no matched patient — match it before sending it to TC',
+        code: 'NO_MATCHED_PATIENT',
+      });
+    }
+
+    // patient_name is REQUIRED by the contract, and it is the snapshot TC files the
+    // case under. A nameless payload would create a case nobody can identify, so
+    // refuse rather than send one.
+    const patientName = typeof call.od_patient_name === 'string' ? call.od_patient_name.trim() : '';
+    if (!patientName) {
+      return res.status(409).json({
+        success: false,
+        error: "The matched patient's name is unavailable — re-match the call before sending it to TC",
+        code: 'PATIENT_NAME_UNAVAILABLE',
+      });
+    }
+
+    // Already handed over → return the same case. No second call, no second audit row.
+    if (call.tc_case_id) {
+      return res.json({
+        success: true,
+        alreadySent: true,
+        caseId: call.tc_case_id,
+        url: call.tc_case_url ?? null,
+        attached: null,
+        call,
+      });
+    }
+
+    const phone = typeof call.caller_number === 'string' && call.caller_number !== 'Unknown'
+      ? call.caller_number
+      : null;
+
+    const result = await tcCaseClient.createCaseFromCall(req, {
+      od_patient_id: patientId,
+      office: officeKey,
+      call_id: id,
+      // A call that was never transcribed still has value to a coordinator — the
+      // handoff does not require a summary, it just carries null when there is none.
+      call_summary: call.summary ?? null,
+      call_url: `/calls/${id}`,
+      patient_name: patientName,
+      ...(phone ? { patient_phone: phone } : {}),
+    });
+
+    if (!result.ok) {
+      await audit.audit(req, {
+        action: 'CREATE',
+        resourceType: 'tc_case',
+        resourceId: id,
+        office: officeKey,
+        result: result.code === 'TC_MODULE_NOT_ENTITLED' ? 'UNAUTHORIZED' : 'ERROR',
+      });
+      // 0 (unreachable) and 404 (endpoint not deployed) are the same thing to a
+      // human: the TC app didn't take it. Surface them as 502 — our request, their
+      // dependency — rather than echoing a 404 that reads like "call not found".
+      const status = result.status === 403 ? 403 : result.status >= 400 && result.status < 500 && result.status !== 404
+        ? result.status
+        : 502;
+      return res.status(status).json({
+        success: false,
+        error: result.error,
+        code: result.code,
+      });
+    }
+
+    // Persist the linkage. These four fields are on normalizeCall's preservation
+    // list, so the hourly re-ingest inside the watermark overlap cannot wipe them.
+    const updatedCall = unifiedCallStore.updateCall(id, {
+      tc_case_id: result.caseId,
+      tc_case_url: result.url,
+      tc_sent_at: new Date().toISOString(),
+      tc_sent_by: actor,
+    });
+
+    // Voice-side audit: TC audits the case; we audit the send. resource_id is the
+    // case id — an identifier, never PHI.
+    await audit.audit(req, {
+      action: 'CREATE',
+      resourceType: 'tc_case',
+      resourceId: result.caseId,
+      office: officeKey,
+      result: 'SUCCESS',
+    });
+
+    res.json({
+      success: true,
+      caseId: result.caseId,
+      url: result.url,
+      attached: result.attached,
+      office: odOffices.describeOffice(officeKey),
+      call: updatedCall,
+    });
+  } catch (error) {
+    console.error('Error sending call to TC:', error);
+    res.status(500).json({ success: false, error: 'Failed to send this call to TC', code: 'SEND_TO_TC_FAILED' });
   }
 });
 

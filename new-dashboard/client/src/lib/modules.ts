@@ -59,6 +59,17 @@ export function entitledModuleIds(raw: readonly string[] | undefined): ModuleId[
 }
 
 /**
+ * Is this tenant entitled to `id`? Mirrors the backend's isEntitledModule() and
+ * fails closed the same way: no list, or a list that isn't an array, reads as
+ * NOT entitled. Used to hide cross-module affordances (e.g. the voice side's
+ * "Send to TC") from a tenant that doesn't have the other module — UI convenience
+ * only; the backend requireModule() 403 remains the source of truth.
+ */
+export function hasModule(raw: readonly string[] | undefined, id: ModuleId): boolean {
+  return entitledModuleIds(raw).includes(id);
+}
+
+/**
  * Resolve which module is active given a remembered selection and the
  * entitlement list. Pure so it's directly unit-testable:
  *  - remembered selection wins when still entitled,

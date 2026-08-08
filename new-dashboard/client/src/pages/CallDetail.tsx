@@ -22,6 +22,7 @@ import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
 import { SendToChartDialog } from "./calls/SendToChartDialog";
+import { SendToTcButton, type SendToTcResult } from "./calls/SendToTcButton";
 
 type PatientMatchSource = "id" | "phone" | "none";
 
@@ -115,11 +116,14 @@ interface CallPatientPanelProps {
   odPatientName: string | null;
   sentBy: CallActor | null;
   onSend: () => void;
+  /** (M6) The whole call — the TC handoff reads office/patient/case state off it. */
+  call: UnifiedCall;
+  onSentToTc: (result: SendToTcResult) => void;
 }
 
 function CallPatientPanel({
   patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
-  syncStatus, odPatientId, odPatientName, sentBy, onSend,
+  syncStatus, odPatientId, odPatientName, sentBy, onSend, call, onSentToTc,
 }: CallPatientPanelProps) {
   const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
   const sent = syncStatus === "synced";
@@ -152,6 +156,12 @@ function CallPatientPanel({
             </Button>
           </div>
         )}
+
+        {/* (M6) Cross-module handoff. Sits beside "Send to chart" because it is the
+            other thing you might do with a matched call — but it is NOT a chart
+            write, so it is offered whether or not the note has been sent, and it
+            renders nothing at all unless this tenant has the TC module. */}
+        <SendToTcButton call={call} onSent={onSentToTc} variant="panel" />
 
         {loading ? (
           <div className="space-y-2" aria-label="Loading patient record">
@@ -356,6 +366,14 @@ export default function CallDetail() {
       .then((p) => { setPatient(p); setPatientSource("id"); })
       .catch(() => { /* keep prior view; toast already fired */ })
       .finally(() => setPatientLoading(false));
+  }, []);
+
+  // (M6) TC took the call. Reflect the linkage so the button becomes the passive
+  // "In TC" link — driven by the server's response, never assumed.
+  const handleSentToTc = useCallback((result: SendToTcResult) => {
+    setCall((prev) => (prev && prev !== "loading"
+      ? { ...prev, tcCaseId: result.caseId, tcCaseUrl: result.caseUrl, tcSentAt: new Date().toISOString() }
+      : prev));
   }, []);
 
   // Picker chose a patient → hand off to the review/edit → send dialog.
@@ -814,6 +832,8 @@ export default function CallDetail() {
             odPatientName={displayCall.odPatientName}
             sentBy={displayCall.sentBy}
             onSend={() => startSend("summary")}
+            call={displayCall}
+            onSentToTc={handleSentToTc}
           />
 
           {/* Call metadata */}
