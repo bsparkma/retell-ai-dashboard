@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "FRESH synthetic Mango calls for re-walking the link-only + Send-to-TC flow on STAGING.",
+    "POST to /api/mango/dev/seed (ALLOW_MANGO_DEV_SEED=true; prod never sets it).",
+    "",
+    "WHY A SECOND FIXTURE FILE RATHER THAN RE-SEEDING THE FIRST: re-seeding does NOT",
+    "reset a call. od_sync_status / od_patient_id / od_patient_name are on",
+    "normalizeCall's preservation whitelist on purpose — an hourly re-ingest must never",
+    "revert a call somebody already worked. So a walked fixture stays walked, and a",
+    "fresh walk needs fresh external_ids. Bump the -w2 suffix for each subsequent walk.",
+    "",
+    "No real caller data: caller_number is either the designated OD test fixture number",
+    "or an unassigned 555 test-range number. called_number is the OFFICE DID.",
+    "Seeding writes nothing to Open Dental — it only sets review-then-send status."
+  ],
+  "calls": [
+    {
+      "_case": "VALLEY unmatched -> the Pick Patient path. THE ONE FOR THIS WALK: open Pick Patient, search TestValley, click Link. The row must flip to 'Matched: Stedi TestValley' with Send to chart AND Send to TC side by side, TC enabled, no page refresh.",
+      "source": "mango",
+      "external_id": "mango_call_w2_valley_link",
+      "mango_call_id": "w2_valley_link",
+      "call_date": "2026-08-08T21:40:00.000Z",
+      "caller_number": "+15550100021",
+      "called_number": "+14793166111",
+      "direction": "inbound",
+      "duration_seconds": 118,
+      "outcome": "answered",
+      "caller_name": "Unknown",
+      "summary": "Caller asked about moving an appointment but gave no name the matcher could use. [SYNTHETIC valley unmatched -> Pick Patient -> Link]",
+      "transcript": "Staff: Front desk. Caller: Hi, I need to move my appointment next week."
+    },
+    {
+      "_case": "VALLEY confident -> already matched to PatNum 7115 on ingest. Use this one to test Send to TC directly on a matched-but-never-sent call, and to prove Send to chart and Send to TC are independent.",
+      "source": "mango",
+      "external_id": "mango_call_w2_valley_matched",
+      "mango_call_id": "w2_valley_matched",
+      "call_date": "2026-08-08T21:46:00.000Z",
+      "caller_number": "+14797394999",
+      "called_number": "+14797854390",
+      "direction": "inbound",
+      "duration_seconds": 151,
+      "outcome": "answered",
+      "caller_name": "Stedi TestValley",
+      "summary": "Staff took a call about a crown that feels high. [SYNTHETIC valley confident-match -> Riley PatNum 7115]",
+      "transcript": "Staff: Front desk, how can I help? Caller: This is Stedi TestValley, my new crown feels high."
+    },
+    {
+      "_case": "ROLAND unmatched control. Same caller number as the valley confident call, but TWO Roland patients hold it -> needs_review with candidates. Link one and confirm the case lands under Roland, not Valley.",
+      "source": "mango",
+      "external_id": "mango_call_w2_roland_link",
+      "mango_call_id": "w2_roland_link",
+      "call_date": "2026-08-08T21:52:00.000Z",
+      "caller_number": "+14797394999",
+      "called_number": "+19185036262",
+      "direction": "inbound",
+      "duration_seconds": 96,
+      "outcome": "answered",
+      "caller_name": "Unknown",
+      "summary": "Caller asked about a balance on the account. [SYNTHETIC roland control -> Pick Patient -> Link]",
+      "transcript": "Staff: Thanks for calling. Caller: I had a question about my balance."
+    }
+  ]
+}
