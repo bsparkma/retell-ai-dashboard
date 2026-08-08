@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Loader2, RotateCcw, Building2 } from "lucide-react";
-import { api, type UnifiedCall, type OfficeConfig } from "@/lib/api";
+import { api, normalizeUnifiedCall, type UnifiedCall, type OfficeConfig } from "@/lib/api";
 import { toast } from "sonner";
 
 interface SendToChartDialogProps {
@@ -24,7 +24,14 @@ interface SendToChartDialogProps {
   /** The patient to write to (matched patient, or the one just picked). */
   patientId: number;
   patientName: string;
-  onSent: () => void;
+  /**
+   * The send succeeded. `updated` is the server's COMPLETE post-send call record
+   * (normalized), or null when the response carried none. Render from it rather
+   * than patching the fields you think changed: the send also sets
+   * od_patient_name, which "Send to TC" visibility depends on, and a hand-rolled
+   * patch that forgets it leaves that button disabled until a page refresh.
+   */
+  onSent: (updated: UnifiedCall | null) => void;
   /**
    * What to write (item 4): 'summary' (compact block, default) or 'transcript'
    * (full transcript — a large note, the user's deliberate choice). The contextual
@@ -79,7 +86,10 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
       if (res.success) {
         const where = office ? `${patientName}'s chart at ${office.officeName}` : `${patientName}'s chart`;
         toast.success(res.alreadySynced ? `Already on ${where}` : `Sent to ${where}`);
-        onSent();
+        // Hand back what the SERVER says the call now is — including the matched
+        // patient's name, which is what makes "Send to TC" become usable without
+        // a reload.
+        onSent(res.call ? normalizeUnifiedCall(res.call) : null);
         onOpenChange(false);
       } else {
         toast.error("Could not send to chart", { duration: 8000 });

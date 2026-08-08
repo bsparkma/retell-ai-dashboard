@@ -773,7 +773,9 @@ router.post('/:id/resolve-patient', async (req, res) => {
         alreadySynced: true,
         commLogNum: call.od_commlog_num ?? null,
         patientId: call.od_patient_id ?? null,
-        call,
+        // Same complete record GET /:id returns — see the note on the success
+        // response below.
+        call: { ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
       });
     }
 
@@ -852,7 +854,13 @@ router.post('/:id/resolve-patient', async (req, res) => {
       commLogNum: syncResult.commLogNum ?? null,
       patientId: updatedCall.od_patient_id ?? patientId,
       office: odOffices.describeOffice(officeKey),
-      call: updatedCall,
+      // The COMPLETE updated record, stamped with the server-resolved office
+      // exactly as GET /:id stamps it. The client renders the post-send state
+      // from this instead of hand-patching the two or three fields it happens to
+      // know changed — a subset that silently goes stale every time a new
+      // consumer starts reading a field nobody remembered to include (which is
+      // how the TC button came to sit disabled until a page refresh).
+      call: { ...updatedCall, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
     });
   } catch (error) {
     console.error('Error resolving patient:', error);
