@@ -229,10 +229,13 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     });
   };
 
-  // A patient was chosen in the picker → hand off to the review/edit → send dialog.
-  const chooseThenSend = (call: UnifiedCall, patientId: number, patientName: string) => {
+  // The picker LINKED a patient — no chart note was written. The row moves to
+  // 'matched', where "Send to chart" and "Send to TC" become separate choices.
+  // It used to jump straight into the send dialog, which made a chart note the
+  // price of identifying a caller.
+  const onLinked = (call: UnifiedCall, updated: UnifiedCall) => {
     setPickCall(null);
-    setSendTarget({ call, patientId, patientName });
+    patchCall(call.id, updated);
   };
 
   // ---- filtering ----------------------------------------------------------
@@ -570,7 +573,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           open={pickCall !== null}
           onOpenChange={(o) => { if (!o) setPickCall(null); }}
           call={pickCall}
-          onChoosePatient={(patientId, patientName) => chooseThenSend(pickCall, patientId, patientName)}
+          onLinked={(updated) => onLinked(pickCall, updated)}
           onNotPatient={(reason) => onNotPatient(pickCall, reason)}
         />
       )}

@@ -699,19 +699,27 @@ export const api = {
   },
 
   /**
-   * Resolve a needs-review call to a patient (writes the CareIN commlog via the
-   * idempotent Slice-A path) OR close it out as "not a patient" (no OD write).
+   * Resolve a needs-review call. Three shapes:
+   *
+   *  - `{ patientId, linkOnly: true }` — LINK ONLY. Establishes the match and
+   *    writes NOTHING to any chart. The call lands in 'matched', where "Send to
+   *    chart" and "Send to TC" stand as independent actions.
+   *  - `{ patientId, note?, content_type? }` — link AND write the CareIN commlog
+   *    via the idempotent Slice-A path.
+   *  - `{ notAPatient, reason }` — close it out, no OD write.
+   *
+   * office_id is which office the UI BELIEVES this call belongs to. The server
+   * resolves the real office from the call itself and refuses on a mismatch —
+   * this can only cause a refusal, never redirect a write to another practice.
    */
   async resolvePatient(
     id: string,
     body:
+      | { patientId: number; linkOnly: true; office_id?: string }
       // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
-      // office_id: which office the UI BELIEVES this call belongs to. The server
-      // resolves the real office from the call itself and refuses on a mismatch —
-      // this can only cause a refusal, never redirect the write to another practice.
       | { patientId: number; note?: string; content_type?: "summary" | "transcript"; office_id?: string }
       | { notAPatient: true; reason: NotAPatientReason }
-  ): Promise<{ success: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
+  ): Promise<{ success: boolean; linked?: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
       body: JSON.stringify(body),

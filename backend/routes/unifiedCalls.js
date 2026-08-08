@@ -765,6 +765,86 @@ router.post('/:id/resolve-patient', async (req, res) => {
       });
     }
 
+    // ---- Shape C: LINK ONLY — establish the match, write nothing to the chart --
+    //
+    // Identifying who called and filing a note about it are two different
+    // decisions, and they were welded together: the only way to set od_patient_id
+    // was to write a commlog in the same request. That forced a chart note onto
+    // every match — including matches made just to see who it was, or to hand the
+    // call to TC, which is not a chart write at all.
+    //
+    // This links and stops. od_sync_status becomes 'matched', which is the status
+    // Slice B.1 already defined as "patient known, note not sent yet" — the same
+    // state an auto-matched call lands in, so the review-then-send UI needs no new
+    // vocabulary. "Send to chart" and "Send to TC" then stand on their own.
+    if (body.linkOnly === true) {
+      // Already on the chart: the commlog is written against whoever it was written
+      // against. Silently re-pointing the linkage would make the stored record
+      // disagree with the chart, so a DIFFERENT patient is refused outright. The
+      // same patient is a harmless no-op.
+      if (call.od_sync_status === 'synced') {
+        if (String(call.od_patient_id) === String(patientId)) {
+          return res.json({
+            success: true,
+            linked: true,
+            alreadySynced: true,
+            patientId: call.od_patient_id,
+            office: odOffices.describeOffice(officeKey),
+            call: { ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error: 'This call already has a chart note on another patient — re-linking would leave the note filed under the wrong person',
+          code: 'ALREADY_SENT_TO_CHART',
+          office: odOffices.describeOffice(officeKey),
+        });
+      }
+
+      // Validates the patient exists in THIS office's database and stamps
+      // od_patient_id / od_patient_name / od_patient_office. syncNow:false is what
+      // keeps it from writing a commlog.
+      const linkResult = await openDentalSync.linkCallToPatient(id, patientId, {
+        syncNow: false,
+        userId: actor?.email || 'system',
+        expectOfficeKey: officeKey,
+      });
+      if (!linkResult.success) {
+        const status = linkResult.officeBlocked
+          ? odOffices.httpStatusFor({ code: linkResult.code })
+          : linkResult.error === 'Patient not found in Open Dental' ? 404 : 400;
+        return res.status(status).json({
+          success: false,
+          error: linkResult.error,
+          code: linkResult.code,
+          office: odOffices.describeOffice(officeKey),
+        });
+      }
+
+      // resolved_by/at = who established the match. sent_by/sent_at stay null:
+      // nothing has been sent, and claiming otherwise would misattribute a chart
+      // note that does not exist.
+      const linkedCall = unifiedCallStore.updateCall(id, {
+        od_sync_status: 'matched',
+        resolved_by: actor,
+        resolved_at: nowIso,
+      });
+
+      // UPDATE on the call, NOT CREATE on a commlog — nothing was written to any
+      // chart, and the audit trail must not imply that it was.
+      await audit.audit(req, {
+        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+      });
+
+      return res.json({
+        success: true,
+        linked: true,
+        patientId: linkedCall.od_patient_id ?? patientId,
+        office: odOffices.describeOffice(officeKey),
+        call: { ...linkedCall, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+      });
+    }
+
     // Idempotency guard: if this call is already synced, do not write a second
     // commlog. Return the existing linkage as a success no-op.
     if (call.od_sync_status === 'synced') {

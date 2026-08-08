@@ -385,10 +385,21 @@ export default function CallDetail() {
       : prev));
   }, []);
 
-  // Picker chose a patient → hand off to the review/edit → send dialog.
-  const handleChoosePatient = useCallback((patientId: number, patientName: string) => {
+  // The picker LINKED a patient — nothing was written to the chart. Reflect the
+  // server's post-link record; "Send to chart" and "Send to TC" then stand on
+  // their own in the patient panel, instead of a note being the price of a match.
+  const handleLinked = useCallback((updated: UnifiedCall) => {
     setPickOpen(false);
-    setSendTarget({ patientId, patientName });
+    setCall((prev) => (prev && prev !== "loading" ? { ...prev, ...updated } : prev));
+    // Show the person we just linked, same as the send path does — a match that
+    // doesn't visibly change the panel reads as though it didn't take.
+    const linkedId = Number(updated.odPatientId);
+    if (!Number.isFinite(linkedId) || linkedId <= 0) return;
+    setPatientLoading(true);
+    api.getOpenDentalPatient(linkedId)
+      .then((p) => { setPatient(p); setPatientSource("id"); })
+      .catch(() => { /* keep the prior view; the link itself already succeeded */ })
+      .finally(() => setPatientLoading(false));
   }, []);
 
   const handleNotPatient = useCallback((reason: NotAPatientReason) => {
@@ -548,7 +559,7 @@ export default function CallDetail() {
         open={pickOpen}
         onOpenChange={setPickOpen}
         call={displayCall}
-        onChoosePatient={handleChoosePatient}
+        onLinked={handleLinked}
         onNotPatient={handleNotPatient}
       />
 
