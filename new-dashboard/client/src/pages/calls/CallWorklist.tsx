@@ -206,7 +206,15 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
   };
 
-  const onSent = (call: UnifiedCall, patientId: number) => {
+  // `updated` is the server's complete post-send record. Prefer it over patching the
+  // fields we think changed: resolving a patient also sets od_patient_name, and the
+  // "Send to TC" button is hidden/disabled without it — patching only id + status is
+  // why that button used to need a page refresh before it became usable.
+  const onSent = (call: UnifiedCall, patientId: number, updated: UnifiedCall | null) => {
+    if (updated) {
+      patchCall(call.id, updated);
+      return;
+    }
     const actor = auth.status === "authenticated" ? { name: auth.user.name, email: auth.user.email } : null;
     patchCall(call.id, { odSyncStatus: "synced", odPatientId: patientId, sentBy: actor, sentAt: new Date().toISOString() });
   };
@@ -221,10 +229,13 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     });
   };
 
-  // A patient was chosen in the picker → hand off to the review/edit → send dialog.
-  const chooseThenSend = (call: UnifiedCall, patientId: number, patientName: string) => {
+  // The picker LINKED a patient — no chart note was written. The row moves to
+  // 'matched', where "Send to chart" and "Send to TC" become separate choices.
+  // It used to jump straight into the send dialog, which made a chart note the
+  // price of identifying a caller.
+  const onLinked = (call: UnifiedCall, updated: UnifiedCall) => {
     setPickCall(null);
-    setSendTarget({ call, patientId, patientName });
+    patchCall(call.id, updated);
   };
 
   // ---- filtering ----------------------------------------------------------
@@ -562,7 +573,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           open={pickCall !== null}
           onOpenChange={(o) => { if (!o) setPickCall(null); }}
           call={pickCall}
-          onChoosePatient={(patientId, patientName) => chooseThenSend(pickCall, patientId, patientName)}
+          onLinked={(updated) => onLinked(pickCall, updated)}
           onNotPatient={(reason) => onNotPatient(pickCall, reason)}
         />
       )}
@@ -574,7 +585,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           call={sendTarget.call}
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
-          onSent={() => onSent(sendTarget.call, sendTarget.patientId)}
+          onSent={(updated) => onSent(sendTarget.call, sendTarget.patientId, updated)}
         />
       )}
     </>
