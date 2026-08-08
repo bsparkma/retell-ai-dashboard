@@ -206,7 +206,15 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
   };
 
-  const onSent = (call: UnifiedCall, patientId: number) => {
+  // `updated` is the server's complete post-send record. Prefer it over patching the
+  // fields we think changed: resolving a patient also sets od_patient_name, and the
+  // "Send to TC" button is hidden/disabled without it — patching only id + status is
+  // why that button used to need a page refresh before it became usable.
+  const onSent = (call: UnifiedCall, patientId: number, updated: UnifiedCall | null) => {
+    if (updated) {
+      patchCall(call.id, updated);
+      return;
+    }
     const actor = auth.status === "authenticated" ? { name: auth.user.name, email: auth.user.email } : null;
     patchCall(call.id, { odSyncStatus: "synced", odPatientId: patientId, sentBy: actor, sentAt: new Date().toISOString() });
   };
@@ -574,7 +582,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           call={sendTarget.call}
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
-          onSent={() => onSent(sendTarget.call, sendTarget.patientId)}
+          onSent={(updated) => onSent(sendTarget.call, sendTarget.patientId, updated)}
         />
       )}
     </>

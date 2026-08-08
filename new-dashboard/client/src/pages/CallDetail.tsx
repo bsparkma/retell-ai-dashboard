@@ -357,10 +357,19 @@ export default function CallDetail() {
   }, []);
 
   // After the chart note is sent, reflect synced + refresh the panel to the patient.
-  const handleSent = useCallback((patientId: number) => {
-    setCall((prev) => (prev && prev !== "loading"
-      ? { ...prev, odPatientId: patientId, odSyncStatus: "synced", sentAt: new Date().toISOString() }
-      : prev));
+  //
+  // `updated` is the server's complete post-send record. Prefer it over patching
+  // the fields we think changed: resolving a patient also sets od_patient_name,
+  // and "Send to TC" is hidden/disabled without it — patching only id + status is
+  // why that button used to need a page refresh before it became usable.
+  const handleSent = useCallback((patientId: number, updated: UnifiedCall | null) => {
+    setCall((prev) => {
+      if (!prev || prev === "loading") return prev;
+      if (updated) return { ...prev, ...updated };
+      // No record came back — fall back to the old partial patch so the page
+      // still reflects the send.
+      return { ...prev, odPatientId: patientId, odSyncStatus: "synced", sentAt: new Date().toISOString() };
+    });
     setPatientLoading(true);
     api.getOpenDentalPatient(patientId)
       .then((p) => { setPatient(p); setPatientSource("id"); })
@@ -559,7 +568,7 @@ export default function CallDetail() {
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
           contentType={contentType}
-          onSent={() => handleSent(sendTarget.patientId)}
+          onSent={(updated) => handleSent(sendTarget.patientId, updated)}
         />
       )}
 

@@ -67,12 +67,21 @@ beforeEach(async () => {
   // Fail-closed audit needs a tenant Postgres — no-op it here.
   audit.audit = async () => {};
 
-  // Stub the OD write path. link just sets od_patient_id; sync writes ONE commlog
-  // and marks the call synced, honoring the 'synced' dedup guard like the real one.
+  // Stub the OD write path. link mirrors what the REAL linkCallToPatient persists;
+  // sync writes ONE commlog and marks the call synced, honoring the 'synced' dedup
+  // guard like the real one.
   commlogWrites = 0;
-  openDentalSync.linkCallToPatient = async (callId, patientId) => {
+  openDentalSync.linkCallToPatient = async (callId, patientId, options = {}) => {
     if (!unifiedCallStore.getCall(callId)) return { success: false, error: 'Call not found' };
-    unifiedCallStore.updateCall(callId, { od_patient_id: patientId });
+    // The real service also writes od_patient_name + od_patient_office
+    // (openDentalSync.js). A stub that set only the id was quietly weaker than
+    // production, and it hid the fact that the resolve RESPONSE has to carry the
+    // matched name — without it "Send to TC" stays unusable until a page refresh.
+    unifiedCallStore.updateCall(callId, {
+      od_patient_id: patientId,
+      od_patient_name: 'Stedi Test 2',
+      od_patient_office: options.expectOfficeKey ?? null,
+    });
     return { success: true, patient: { id: patientId, fullName: 'Stedi Test 2' } };
   };
   commlogWrites = 0;
@@ -492,4 +501,45 @@ test('a single call fetch carries its server-resolved office', async () => {
   // office truth to gate them.
   assert.equal(call.office_id, 'valley');
   assert.equal(call.office.officeId, 'valley');
+});
+
+test('resolve-patient returns the COMPLETE post-send call, office and matched name included', async () => {
+  // The client renders the post-send state from this record instead of patching
+  // the fields it assumes changed. If the office or the matched patient's name
+  // is missing here, the "Send to TC" button silently stays hidden/disabled
+  // until a page refresh — the bug this response shape exists to prevent.
+  seedMangoCall('x-complete', VALLEY_DID);
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-complete/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.success, true);
+  assert.ok(body.call, 'the updated call record is returned');
+  assert.equal(body.call.office_id, 'valley', 'office is stamped like GET /:id stamps it');
+  assert.equal(body.call.office.officeId, 'valley');
+  assert.equal(body.call.od_patient_id, 7115);
+  assert.equal(body.call.od_sync_status, 'synced');
+  // The name the TC handoff contract requires, and the button refuses to fire without.
+  assert.ok(body.call.od_patient_name, 'the matched patient name is carried back');
+});
+
+test('an already-synced resolve also returns the complete record', async () => {
+  seedMangoCall('x-complete-2', VALLEY_DID);
+  const send = () => fetch(`${baseUrl}/api/unified-calls/x-complete-2/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+
+  await send();
+  const body = await (await send()).json();
+
+  assert.equal(body.alreadySynced, true);
+  assert.equal(body.call.office_id, 'valley', 'the no-op path must not return a less complete record');
+  assert.ok(body.call.od_patient_name);
 });
