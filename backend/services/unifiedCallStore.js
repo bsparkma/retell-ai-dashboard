@@ -370,6 +370,18 @@ class UnifiedCallStore {
       resolved_by: call.resolved_by ?? null,
       resolved_at: call.resolved_at ?? null,
 
+      // Cross-module handoff to Treatment Coordinator (Mango slice M6) — MUST
+      // survive re-normalization for exactly the reason od_*/triage_*/no_speech
+      // above do: the hourly Mango sync re-ingests inside the watermark overlap
+      // and addMangoCalls rebuilds the record through normalizeCall. Without
+      // carrying these through, a call handed to TC would lose its case linkage
+      // within the hour — the "In TC" chip would vanish and the row would invite
+      // a second send, while the case sits in TC unreferenced.
+      tc_case_id: call.tc_case_id ?? null,
+      tc_case_url: call.tc_case_url ?? null,
+      tc_sent_at: call.tc_sent_at ?? null,
+      tc_sent_by: call.tc_sent_by ?? null,
+
       // Timestamps
       created_at: call.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -427,6 +439,13 @@ class UnifiedCallStore {
       not_a_patient_reason: call.not_a_patient_reason ?? existing?.not_a_patient_reason ?? null,
       resolved_by: call.resolved_by ?? existing?.resolved_by ?? null,
       resolved_at: call.resolved_at ?? existing?.resolved_at ?? null,
+      // TC handoff linkage (M6) — same rationale: a Retell webhook re-delivery or
+      // the 15-min poller payload carries none of these, so inherit them or a
+      // re-add drops the call's TC case.
+      tc_case_id: call.tc_case_id ?? existing?.tc_case_id ?? null,
+      tc_case_url: call.tc_case_url ?? existing?.tc_case_url ?? null,
+      tc_sent_at: call.tc_sent_at ?? existing?.tc_sent_at ?? null,
+      tc_sent_by: call.tc_sent_by ?? existing?.tc_sent_by ?? null,
     };
 
     const stored = this.addCallInternal(normalizedCall);
