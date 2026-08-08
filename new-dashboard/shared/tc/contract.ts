@@ -96,7 +96,66 @@ export const CaseEventType = z.enum([
   "case_created",
   "nurture_enrolled",
   "contact_attempt",
+  /**
+   * A voice call was handed to the TC module (POST /api/tc/cases/from-call).
+   * Server-written only — the client-loggable event endpoint cannot emit it.
+   * This event IS the durable artifact of the handoff: the voice module prunes
+   * call rows on its own schedule, so everything TC needs to show the handoff
+   * later (summary text, call id, deep link) is SNAPSHOT into this row. Nothing
+   * in TC may dereference a voice-module record.
+   */
+  "voice_handoff",
 ]);
+
+/**
+ * Which statuses mean "this case is still open TC work".
+ *
+ * The partition is the attach-or-create law for the voice handoff endpoint: an
+ * inbound call attaches to a patient's most recently active OPEN case, and
+ * opens a new case when every existing one is terminal. Terminal = the patient
+ * has decided (accepted / partially_accepted) or the case has left the TC's
+ * pursuit queue (scheduled, started, completed, lost) — a new call at that
+ * point is new business, not a continuation of the same conversation.
+ * `nurture` is deliberately OPEN: a long-tail case is still being pursued, and
+ * an inbound call is exactly the outcome the nurture campaign exists to get.
+ *
+ * The two `satisfies` clauses + the _statusPartition checks below make this a
+ * TOTAL partition at compile time: adding a CaseStatus without classifying it
+ * (or classifying it twice, or misspelling one) fails `tsc --noEmit`.
+ */
+export const OPEN_CASE_STATUSES = [
+  "hygiene_review",
+  "diagnosed",
+  "pending_tc",
+  "pending_pt",
+  "presented",
+  "considering",
+  "financing_pending",
+  "nurture",
+] as const satisfies readonly z.infer<typeof CaseStatus>[];
+
+export const TERMINAL_CASE_STATUSES = [
+  "accepted",
+  "partially_accepted",
+  "scheduled",
+  "started",
+  "completed",
+  "lost",
+] as const satisfies readonly z.infer<typeof CaseStatus>[];
+
+type OpenCaseStatus = (typeof OPEN_CASE_STATUSES)[number];
+type TerminalCaseStatus = (typeof TERMINAL_CASE_STATUSES)[number];
+
+/** Compile-time only: every status is classified, and none is classified twice. */
+type Assert<T extends true> = T;
+type _StatusPartitionCovers = Assert<
+  [Exclude<z.infer<typeof CaseStatus>, OpenCaseStatus | TerminalCaseStatus>] extends [never]
+    ? true
+    : false
+>;
+type _StatusPartitionDisjoint = Assert<
+  [Extract<OpenCaseStatus, TerminalCaseStatus>] extends [never] ? true : false
+>;
 
 export const PreauthType = z.enum(["treatment", "perio", "manual"]);
 export const PreauthStatus = z.enum([
@@ -200,6 +259,43 @@ export const ContactAttemptDetail = z.object({
 });
 export type ContactAttemptDetail = z.infer<typeof ContactAttemptDetail>;
 
+/**
+ * Structured payload for voice_handoff events — the SNAPSHOT, not a reference.
+ *
+ * `callSummary` is a copy of the voice module's summary text at handoff time;
+ * `callUrl` is a deep link that MAY 404 once the voice side prunes the call
+ * row (accepted — the summary above it is what carries the meaning). The call
+ * id itself lives on TcCaseEvent.sourceCallId, which is the indexed idempotency
+ * key, so it is deliberately not duplicated in here.
+ */
+export const VoiceHandoffDetail = z.object({
+  callUrl: z.string().max(500).nullable(),
+  callSummary: LongText.nullable(),
+  /** True if the handoff attached to an existing open case, false if it created one. */
+  attached: z.boolean(),
+});
+export type VoiceHandoffDetail = z.infer<typeof VoiceHandoffDetail>;
+
+/**
+ * Typed event payloads. A plain union, not a discriminated one: the discriminant
+ * is the event's own `type`, and the two member shapes have no overlapping
+ * required keys, so parse order is unambiguous. Narrow with the guards below.
+ */
+export const TcCaseEventDetail = z.union([ContactAttemptDetail, VoiceHandoffDetail]);
+export type TcCaseEventDetail = z.infer<typeof TcCaseEventDetail>;
+
+export function isContactAttemptDetail(
+  detail: TcCaseEventDetail | null | undefined,
+): detail is ContactAttemptDetail {
+  return detail != null && "channel" in detail;
+}
+
+export function isVoiceHandoffDetail(
+  detail: TcCaseEventDetail | null | undefined,
+): detail is VoiceHandoffDetail {
+  return detail != null && "attached" in detail;
+}
+
 export const TcCaseEvent = z.object({
   eventId: Uuid,
   legacyId: z.string().max(60).nullable(),
@@ -207,7 +303,14 @@ export const TcCaseEvent = z.object({
   type: CaseEventType,
   description: LongText,
   actor: ShortText.nullable(), // staff identity — never patient identity
-  detail: ContactAttemptDetail.nullable(), // typed payload; only contact_attempt uses it today
+  detail: TcCaseEventDetail.nullable(), // typed payload; contact_attempt + voice_handoff use it
+  /**
+   * Originating external call id for voice_handoff events, null on every other
+   * type. Carries a UNIQUE (per tenant) guarantee in the schema — it is the
+   * idempotency key that makes a repeated "Send to TC" a no-op instead of a
+   * duplicate case. Defaulted so pre-existing construction sites stay valid.
+   */
+  sourceCallId: z.string().max(200).nullable().default(null),
 });
 export type TcCaseEvent = z.infer<typeof TcCaseEvent>;
 

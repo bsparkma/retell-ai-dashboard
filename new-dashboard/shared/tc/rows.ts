@@ -14,8 +14,8 @@
  */
 import {
   TcCase,
-  type ContactAttemptDetail,
   type OfficeId,
+  type TcCaseEventDetail,
   type TcCommunication,
   type TcEmailTemplate,
   type TcGalleryCase,
@@ -132,8 +132,10 @@ export interface TcCaseEventRow {
   type: string;
   description: string;
   actor: string | null;
-  detail: ContactAttemptDetail | null;
+  detail: TcCaseEventDetail | null;
   legacy_id: string | null;
+  /** UNIQUE per tenant where non-null — the voice-handoff idempotency key. */
+  source_call_id: string | null;
 }
 
 export interface TcHygieneIntakeRow {
@@ -286,6 +288,7 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
     actor: e.actor,
     detail: e.detail,
     legacy_id: e.legacyId,
+    source_call_id: e.sourceCallId,
   }));
 
   const hygieneIntakeRow: TcHygieneIntakeRow | null = c.hygieneIntake
@@ -425,6 +428,7 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
       description: e.description,
       actor: e.actor,
       detail: e.detail,
+      sourceCallId: e.source_call_id,
     })),
     hygieneIntake: hygieneIntakeRow
       ? {

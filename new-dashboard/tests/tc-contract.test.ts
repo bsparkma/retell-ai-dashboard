@@ -10,9 +10,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CaseStatus,
+  OPEN_CASE_STATUSES,
+  TERMINAL_CASE_STATUSES,
   TcCase,
+  TcCaseEvent,
   TcFollowup,
   LibrarySectionSchemas,
+  isContactAttemptDetail,
+  isVoiceHandoffDetail,
 } from "../shared/tc/contract";
 import {
   dollarsToCents,
@@ -424,6 +429,102 @@ describe("library config sections", () => {
         premiumCents: 150000,
         implantCents: 180000,
       }),
+    ).toThrow();
+  });
+});
+
+describe("case lifecycle partition (voice→TC attach-or-create law)", () => {
+  it("classifies every CaseStatus exactly once", () => {
+    const open = new Set<string>(OPEN_CASE_STATUSES);
+    const terminal = new Set<string>(TERMINAL_CASE_STATUSES);
+
+    for (const status of CaseStatus.options) {
+      expect(open.has(status) || terminal.has(status), `${status} is unclassified`).toBe(true);
+      expect(open.has(status) && terminal.has(status), `${status} is classified twice`).toBe(false);
+    }
+    expect(open.size + terminal.size).toBe(CaseStatus.options.length);
+  });
+
+  it("pins the exact open set a handoff may attach to", () => {
+    // Changing this list changes which inbound calls join an existing case
+    // instead of opening a new one — it should take a deliberate edit here.
+    expect([...OPEN_CASE_STATUSES].sort()).toEqual(
+      [
+        "considering",
+        "diagnosed",
+        "financing_pending",
+        "hygiene_review",
+        "nurture",
+        "pending_pt",
+        "pending_tc",
+        "presented",
+      ].sort(),
+    );
+  });
+
+  it("treats a decided or in-production case as terminal, and nurture as open", () => {
+    expect(TERMINAL_CASE_STATUSES).toContain("accepted");
+    expect(TERMINAL_CASE_STATUSES).toContain("partially_accepted");
+    expect(TERMINAL_CASE_STATUSES).toContain("scheduled");
+    expect(TERMINAL_CASE_STATUSES).toContain("started");
+    // A long-tail case is still being pursued — an inbound call is the win.
+    expect(OPEN_CASE_STATUSES).toContain("nurture");
+  });
+});
+
+describe("voice_handoff event (the durable handoff artifact)", () => {
+  const handoff = {
+    eventId: "11111111-1111-4111-8111-111111111111",
+    legacyId: null,
+    ts: "2026-08-07T15:04:05.000Z",
+    type: "voice_handoff",
+    description: "Sent to TC from a CareIN call — new case",
+    actor: "tc@carein.ai",
+    detail: { callUrl: "/calls/c1", callSummary: "Asked about an implant.", attached: false },
+    sourceCallId: "mango_call_1",
+  };
+
+  it("parses with a voice-handoff payload and keeps the call id", () => {
+    const parsed = TcCaseEvent.parse(handoff);
+    expect(parsed.sourceCallId).toBe("mango_call_1");
+    expect(isVoiceHandoffDetail(parsed.detail)).toBe(true);
+    expect(isContactAttemptDetail(parsed.detail)).toBe(false);
+  });
+
+  it("still parses a contact_attempt payload — the union is unambiguous", () => {
+    const parsed = TcCaseEvent.parse({
+      ...handoff,
+      type: "contact_attempt",
+      detail: { channel: "call", outcome: "voicemail" },
+      sourceCallId: null,
+    });
+    expect(isContactAttemptDetail(parsed.detail)).toBe(true);
+    expect(isVoiceHandoffDetail(parsed.detail)).toBe(false);
+  });
+
+  it("defaults sourceCallId to null so pre-existing construction sites stay valid", () => {
+    const { sourceCallId, ...withoutCallId } = handoff;
+    const parsed = TcCaseEvent.parse({ ...withoutCallId, detail: null, type: "note_added" });
+    expect(parsed.sourceCallId).toBeNull();
+  });
+
+  it("round-trips through the row mapping without losing the call id or the summary", () => {
+    const original = legacyCaseToTc(SYNTHETIC_LEGACY_CASE, newId);
+    const withHandoff = TcCase.parse({
+      ...original,
+      events: [...original.events, TcCaseEvent.parse(handoff)],
+    });
+    const rows = caseToRows(withHandoff, newId);
+
+    const eventRow = rows.eventRows.find((r) => r.type === "voice_handoff");
+    expect(eventRow?.source_call_id).toBe("mango_call_1");
+
+    expect(caseFromRows(rows)).toEqual(withHandoff);
+  });
+
+  it("rejects a malformed handoff payload — no passthrough", () => {
+    expect(() =>
+      TcCaseEvent.parse({ ...handoff, detail: { callUrl: "/calls/c1" } }), // no `attached`
     ).toThrow();
   });
 });

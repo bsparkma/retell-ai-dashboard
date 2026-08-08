@@ -154,9 +154,21 @@ function h(fn) {
  * @param {'CREATE'|'UPDATE'|'DELETE'|'READ'} action
  * @param {string} resourceType
  * @param {string|number|null} resourceId
+ * @param {{ office?: string|null, sourceRef?: string|null }} [extra]
+ *   `office` stamps which practice the action touched; `sourceRef` the external
+ *   identifier that caused it (see platform/audit.js). Both are identifiers,
+ *   never PHI. Omitted on the routes that predate them — an unstamped row means
+ *   "not recorded", which is the honest value.
  */
-async function auditTc(req, action, resourceType, resourceId) {
-  await audit(req, { action, resourceType, resourceId, result: 'SUCCESS' });
+async function auditTc(req, action, resourceType, resourceId, extra = {}) {
+  await audit(req, {
+    action,
+    resourceType,
+    resourceId,
+    result: 'SUCCESS',
+    office: extra.office ?? null,
+    sourceRef: extra.sourceRef ?? null,
+  });
 }
 
 /** ISO string for a pg timestamptz value (Date | string | null). */

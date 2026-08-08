@@ -8,6 +8,7 @@
  * environment until the entitlement flips — that is intentional.
  *
  * Route families (each module documents its own surface):
+ *   /cases/from-call  voice → TC handoff intake (idempotent attach-or-create)
  *   /cases            case aggregate CRUD + status + phases/objections/events
  *   /followups        THE unified outreach queue (due / complete / reschedule)
  *   /hygiene-intakes  hygiene → TC handoff (submit / mine / inbox / claim)
@@ -30,6 +31,11 @@ const express = require('express');
 
 const router = express.Router();
 
+// MUST precede the /cases mount: express matches mounts in registration order,
+// and './cases' applies requireOffice to everything under it — but the voice
+// handoff carries its office in the body (frozen contract), not in ?office=.
+// See intakeFromCall.js for why that is deliberate rather than a loophole.
+router.use('/cases/from-call', require('./intakeFromCall'));
 router.use('/cases', require('./cases'));
 router.use('/followups', require('./followups'));
 router.use('/hygiene-intakes', require('./hygiene'));

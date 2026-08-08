@@ -20,8 +20,15 @@ database. Stores **resource IDs and actor/source only — never a PHI value**.
 | `ip` | source IP |
 | `result` | `SUCCESS` \| `UNAUTHORIZED` \| `ERROR` (CHECK) |
 | `endpoint` | optional, **scrubbed** request path |
+| `office` | frozen office key (`roland` \| `valley` \| `unknown`) the action touched — PatNum numbering restarts per OD database, so `resource_id` alone is ambiguous once a tenant has two connected practices. `NULL` = "not an office-scoped action" |
+| `source_ref` | the **external identifier that caused** the action, when the cause lives outside the audited resource (today: the voice call id behind a TC handoff). An identifier, never a PHI value. `NULL` = "no recorded external cause" |
 
-Indexes: `(ts)` and `(resource_type, resource_id)`.
+Indexes: `(ts)`, `(resource_type, resource_id)` and `(office, ts)`.
+
+`office` and `source_ref` are nullable **with no backfill**. Rows written before
+each column existed genuinely lack the information, and writing an assumption
+into an audit trail as though it were observed is exactly what an audit trail
+must not do.
 
 ### Append-only (two-role model — REQUIRED in any env holding PHI)
 
@@ -45,6 +52,12 @@ succeed and `UPDATE`/`DELETE` return *permission denied*.
 
 ```js
 await audit.audit(req, { action: 'READ', resourceType: 'patient', resourceId: patNum, result: 'SUCCESS' });
+
+// Office-scoped, with an external cause (voice → TC handoff):
+await audit.audit(req, {
+  action: 'CREATE', resourceType: 'tc_case', resourceId: caseId,
+  office: 'roland', sourceRef: callId, result: 'SUCCESS',
+});
 ```
 
 Resolves the tenant pool from `req.tenant.id` (per-tenant store), and fills
