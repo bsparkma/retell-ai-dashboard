@@ -563,9 +563,12 @@ export default function CallDetail() {
         onNotPatient={handleNotPatient}
       />
 
-      {/* (M4) Re-billing a call that already came back silent needs a deliberate yes. */}
+      {/* (M4) Re-billing a call that already came back silent, or (M7) transcribing the
+          PBX copy of a call the AI already transcribed, needs a deliberate yes. */}
       <TranscribeRebillDialog
         open={transcribe.pendingConfirm !== null}
+        kind={transcribe.pendingConfirmKind}
+        linkedCallId={displayCall.linkedCallId ?? null}
         onConfirm={transcribe.confirm}
         onCancel={transcribe.cancelConfirm}
       />
@@ -657,7 +660,7 @@ export default function CallDetail() {
                     size="sm"
                     variant={noSpeechLastTime ? "outline" : "default"}
                     disabled={transcribe.isRunning(displayCall.id)}
-                    onClick={() => transcribe.request(displayCall.id, displayCall.transcribeLastOutcome)}
+                    onClick={() => transcribe.request(displayCall.id, displayCall.transcribeLastOutcome, displayCall.linkRole)}
                     title={noSpeechLastTime
                       ? "No speech was found last time — transcribing again will spend budget again"
                       : "Transcribe and summarize this call (uses the daily transcription budget)"}
