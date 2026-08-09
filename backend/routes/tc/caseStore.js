@@ -103,7 +103,20 @@ const FOLLOWUP_COLS = [
   'legacy_id',
 ];
 
-const EVENT_COLS = ['event_id', 'case_id', 'office_id', 'ts', 'type', 'description', 'actor', 'detail', 'legacy_id'];
+// source_call_id is null on every event type but voice_handoff; params() maps a
+// missing key to null, so existing insertEventRow callers need no change.
+const EVENT_COLS = [
+  'event_id',
+  'case_id',
+  'office_id',
+  'ts',
+  'type',
+  'description',
+  'actor',
+  'detail',
+  'legacy_id',
+  'source_call_id',
+];
 
 const INTAKE_COLS = [
   'intake_id',

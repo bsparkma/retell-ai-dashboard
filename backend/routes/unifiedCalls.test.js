@@ -67,12 +67,21 @@ beforeEach(async () => {
   // Fail-closed audit needs a tenant Postgres — no-op it here.
   audit.audit = async () => {};
 
-  // Stub the OD write path. link just sets od_patient_id; sync writes ONE commlog
-  // and marks the call synced, honoring the 'synced' dedup guard like the real one.
+  // Stub the OD write path. link mirrors what the REAL linkCallToPatient persists;
+  // sync writes ONE commlog and marks the call synced, honoring the 'synced' dedup
+  // guard like the real one.
   commlogWrites = 0;
-  openDentalSync.linkCallToPatient = async (callId, patientId) => {
+  openDentalSync.linkCallToPatient = async (callId, patientId, options = {}) => {
     if (!unifiedCallStore.getCall(callId)) return { success: false, error: 'Call not found' };
-    unifiedCallStore.updateCall(callId, { od_patient_id: patientId });
+    // The real service also writes od_patient_name + od_patient_office
+    // (openDentalSync.js). A stub that set only the id was quietly weaker than
+    // production, and it hid the fact that the resolve RESPONSE has to carry the
+    // matched name — without it "Send to TC" stays unusable until a page refresh.
+    unifiedCallStore.updateCall(callId, {
+      od_patient_id: patientId,
+      od_patient_name: 'Stedi Test 2',
+      od_patient_office: options.expectOfficeKey ?? null,
+    });
     return { success: true, patient: { id: patientId, fullName: 'Stedi Test 2' } };
   };
   commlogWrites = 0;
@@ -492,4 +501,170 @@ test('a single call fetch carries its server-resolved office', async () => {
   // office truth to gate them.
   assert.equal(call.office_id, 'valley');
   assert.equal(call.office.officeId, 'valley');
+});
+
+test('resolve-patient returns the COMPLETE post-send call, office and matched name included', async () => {
+  // The client renders the post-send state from this record instead of patching
+  // the fields it assumes changed. If the office or the matched patient's name
+  // is missing here, the "Send to TC" button silently stays hidden/disabled
+  // until a page refresh — the bug this response shape exists to prevent.
+  seedMangoCall('x-complete', VALLEY_DID);
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-complete/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.success, true);
+  assert.ok(body.call, 'the updated call record is returned');
+  assert.equal(body.call.office_id, 'valley', 'office is stamped like GET /:id stamps it');
+  assert.equal(body.call.office.officeId, 'valley');
+  assert.equal(body.call.od_patient_id, 7115);
+  assert.equal(body.call.od_sync_status, 'synced');
+  // The name the TC handoff contract requires, and the button refuses to fire without.
+  assert.ok(body.call.od_patient_name, 'the matched patient name is carried back');
+});
+
+test('an already-synced resolve also returns the complete record', async () => {
+  seedMangoCall('x-complete-2', VALLEY_DID);
+  const send = () => fetch(`${baseUrl}/api/unified-calls/x-complete-2/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+
+  await send();
+  const body = await (await send()).json();
+
+  assert.equal(body.alreadySynced, true);
+  assert.equal(body.call.office_id, 'valley', 'the no-op path must not return a less complete record');
+  assert.ok(body.call.od_patient_name);
+});
+
+// --- link-only: establishing the match without filing a chart note ----------
+
+test('linkOnly sets the match and writes NO commlog', async () => {
+  // The whole point of the scope: identifying who called must not force a note
+  // into their chart.
+  seedMangoCall('x-link', VALLEY_DID);
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-link/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115, linkOnly: true }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.linked, true);
+  assert.equal(commlogWrites, 0, 'linking must not write a chart note');
+
+  const stored = unifiedCallStore.getCall('x-link');
+  assert.equal(stored.od_patient_id, 7115);
+  assert.ok(stored.od_patient_name, 'the matched name is stored');
+  // 'matched' is the existing review-then-send state, so the UI needs no new vocabulary.
+  assert.equal(stored.od_sync_status, 'matched');
+  // Nothing was sent, so nothing may claim it was.
+  assert.equal(stored.sent_at ?? null, null);
+  assert.equal(stored.sent_by ?? null, null);
+  assert.equal(stored.od_commlog_num ?? null, null);
+  // But WHO established the match is recorded.
+  assert.deepEqual(stored.resolved_by, SESSION_USER);
+  assert.ok(stored.resolved_at);
+});
+
+test('linkOnly returns the complete record so the row updates without a refresh', async () => {
+  seedMangoCall('x-link-2', VALLEY_DID);
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-link-2/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115, linkOnly: true }),
+  });
+  const body = await res.json();
+
+  assert.equal(body.call.office_id, 'valley');
+  assert.equal(body.call.od_sync_status, 'matched');
+  assert.ok(body.call.od_patient_name, 'the name Send to TC needs is in the response');
+});
+
+test('after linkOnly, sending to chart still writes exactly one commlog', async () => {
+  // Link and send are now separate actions; doing both must not double-write, and
+  // the send must still work on an already-linked call.
+  seedMangoCall('x-link-3', VALLEY_DID);
+  await fetch(`${baseUrl}/api/unified-calls/x-link-3/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115, linkOnly: true }),
+  });
+  assert.equal(commlogWrites, 0);
+
+  const send = await fetch(`${baseUrl}/api/unified-calls/x-link-3/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+  assert.equal(send.status, 200);
+  assert.equal(commlogWrites, 1);
+  assert.equal(unifiedCallStore.getCall('x-link-3').od_sync_status, 'synced');
+});
+
+test('linkOnly on an already-sent call is refused for a DIFFERENT patient', async () => {
+  // The commlog is already filed against someone. Re-pointing the linkage would
+  // leave the stored record disagreeing with the chart.
+  seedMangoCall('x-link-4', VALLEY_DID);
+  await fetch(`${baseUrl}/api/unified-calls/x-link-4/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-link-4/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 9999, linkOnly: true }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 409);
+  assert.equal(body.code, 'ALREADY_SENT_TO_CHART');
+  assert.equal(unifiedCallStore.getCall('x-link-4').od_patient_id, 7115, 'the original link is untouched');
+});
+
+test('linkOnly on an already-sent call is a no-op for the SAME patient', async () => {
+  seedMangoCall('x-link-5', VALLEY_DID);
+  await fetch(`${baseUrl}/api/unified-calls/x-link-5/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115 }),
+  });
+  const before = commlogWrites;
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-link-5/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115, linkOnly: true }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.alreadySynced, true);
+  assert.equal(commlogWrites, before, 'no extra write');
+  assert.equal(unifiedCallStore.getCall('x-link-5').od_sync_status, 'synced', 'status is not downgraded');
+});
+
+test('linkOnly obeys the same cross-office refusal as a chart write', async () => {
+  seedMangoCall('x-link-6', VALLEY_DID);
+  const res = await fetch(`${baseUrl}/api/unified-calls/x-link-6/resolve-patient`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patientId: 7115, linkOnly: true, office_id: 'roland' }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, 'OFFICE_MISMATCH');
+  assert.equal(unifiedCallStore.getCall('x-link-6').od_patient_id ?? null, null);
 });

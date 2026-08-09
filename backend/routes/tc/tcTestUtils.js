@@ -25,6 +25,40 @@ const { tenantContext, requireModule } = require('../../middleware/tenantContext
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
 const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot']);
 
+/** Comparable scalar for a cell (Date → epoch ms, null → sorts last like pg's default). */
+function sortKey(v) {
+  if (v == null) return null;
+  if (v instanceof Date) return v.getTime();
+  return typeof v === 'number' ? v : String(v);
+}
+
+/**
+ * Apply an `ORDER BY a DESC, b, c DESC` clause. Ties fall through to the next
+ * term and finally to insertion order (Array.prototype.sort is stable), which
+ * matches what a real query with a fully-tied ORDER BY may return.
+ * @param {Array<Record<string, unknown>>} rows
+ * @param {string} clause
+ */
+function sortRows(rows, clause) {
+  const terms = clause.split(',').map((raw) => {
+    const [col, dir] = raw.trim().split(/\s+/);
+    return { col, desc: (dir || '').toUpperCase() === 'DESC' };
+  });
+  return rows.slice().sort((a, b) => {
+    for (const { col, desc } of terms) {
+      const av = sortKey(a[col]);
+      const bv = sortKey(b[col]);
+      if (av === bv) continue;
+      // NULLS LAST on ASC, NULLS FIRST on DESC — Postgres's default ordering.
+      if (av == null) return desc ? -1 : 1;
+      if (bv == null) return desc ? 1 : -1;
+      const cmp = av < bv ? -1 : 1;
+      return desc ? -cmp : cmp;
+    }
+    return 0;
+  });
+}
+
 class FakeTenantDb {
   constructor() {
     /** @type {Map<string, Array<Record<string, unknown>>>} */
@@ -57,6 +91,14 @@ class FakeTenantDb {
       if ((m = term.match(/^\(\s*(\w+) = \$(\d+) OR (\w+) = \$(\d+)\s*\)$/))) {
         const [, a, ai, b, bi] = m;
         return (r) => r[a] === params[ai - 1] || r[b] === params[bi - 1];
+      }
+      // `col = ANY($n)` — the parameterized IN-list form (open-status filter).
+      if ((m = term.match(/^(\w+) = ANY\(\$(\d+)\)$/))) {
+        const [, col, idx] = m;
+        return (r) => {
+          const set = params[idx - 1];
+          return Array.isArray(set) && set.includes(r[col]);
+        };
       }
       if ((m = term.match(/^(\w+) = \$(\d+)$/))) {
         const [, col, idx] = m;
@@ -204,13 +246,19 @@ class FakeTenantDb {
     }
 
     // SELECT (single table; JOIN queries need a per-test override).
-    if ((m = text.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY [^)]+?)?(?: LIMIT .+)?$/i))) {
+    if ((m = text.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY ([^)]+?))?(?: LIMIT (\d+))?$/i))) {
       if (/ JOIN /i.test(text)) {
         throw new Error(`FakeTenantDb: JOIN queries need an onQuery override: ${text}`);
       }
       const table = m[2];
       let rows = this.table(table).slice();
       if (m[3]) rows = rows.filter(this.wherePredicate(m[3], params));
+      // ORDER BY and LIMIT are APPLIED, not ignored: "the most recently active
+      // open case" and "newest 500" are behaviours the routes rely on, and a
+      // harness that silently returns insertion order would pass a test the
+      // real database fails.
+      if (m[4]) rows = sortRows(rows, m[4]);
+      if (m[5]) rows = rows.slice(0, Number(m[5]));
       return { rows: rows.map((r) => ({ ...r })) };
     }
 

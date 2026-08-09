@@ -13,6 +13,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 
 function normalizeCallDate(value) {
   if (value instanceof Date) {
@@ -299,7 +300,15 @@ class UnifiedCallStore {
       // Content
       summary: call.summary || call.call_summary || call.call_analysis?.call_summary || null,
       transcript: call.transcript || null,
-      transcript_json: call.transcript_json || call.transcript_object || null,
+      // ONE canonical transcript shape in the store (utils/transcriptShape.js).
+      // Producers disagreed — Retell writes {role, content}, the M4 on-demand path
+      // writes Azure's {speaker, text, start, end} — and every consumer was left to
+      // guess, which is how "Send transcript to chart" came to write
+      // "[] 👤 Caller: undefined" for every on-demand line. Normalizing HERE means
+      // the store holds one shape no matter who wrote it, and since this runs on
+      // every re-ingest it also heals rows written before the fix. Idempotent, so
+      // re-normalizing already-canonical data is a no-op.
+      transcript_json: normalizeTranscriptJson(call.transcript_json || call.transcript_object),
 
       // On-demand transcription attribution (Mango slice M4). MUST survive re-normalization
       // for the same reason as od_* / triage_* below: the hourly sync re-ingests inside the
@@ -370,6 +379,18 @@ class UnifiedCallStore {
       resolved_by: call.resolved_by ?? null,
       resolved_at: call.resolved_at ?? null,
 
+      // Cross-module handoff to Treatment Coordinator (Mango slice M6) — MUST
+      // survive re-normalization for exactly the reason od_*/triage_*/no_speech
+      // above do: the hourly Mango sync re-ingests inside the watermark overlap
+      // and addMangoCalls rebuilds the record through normalizeCall. Without
+      // carrying these through, a call handed to TC would lose its case linkage
+      // within the hour — the "In TC" chip would vanish and the row would invite
+      // a second send, while the case sits in TC unreferenced.
+      tc_case_id: call.tc_case_id ?? null,
+      tc_case_url: call.tc_case_url ?? null,
+      tc_sent_at: call.tc_sent_at ?? null,
+      tc_sent_by: call.tc_sent_by ?? null,
+
       // Timestamps
       created_at: call.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -427,6 +448,13 @@ class UnifiedCallStore {
       not_a_patient_reason: call.not_a_patient_reason ?? existing?.not_a_patient_reason ?? null,
       resolved_by: call.resolved_by ?? existing?.resolved_by ?? null,
       resolved_at: call.resolved_at ?? existing?.resolved_at ?? null,
+      // TC handoff linkage (M6) — same rationale: a Retell webhook re-delivery or
+      // the 15-min poller payload carries none of these, so inherit them or a
+      // re-add drops the call's TC case.
+      tc_case_id: call.tc_case_id ?? existing?.tc_case_id ?? null,
+      tc_case_url: call.tc_case_url ?? existing?.tc_case_url ?? null,
+      tc_sent_at: call.tc_sent_at ?? existing?.tc_sent_at ?? null,
+      tc_sent_by: call.tc_sent_by ?? existing?.tc_sent_by ?? null,
     };
 
     const stored = this.addCallInternal(normalizedCall);

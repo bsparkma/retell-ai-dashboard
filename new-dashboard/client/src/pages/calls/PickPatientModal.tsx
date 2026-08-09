@@ -3,8 +3,14 @@
  * patient, or close it out as "not a patient".
  *
  * Stored match candidates (from Slice A) are shown first for one-click linking;
- * an OD patient search covers everything else. Confirming a patient calls the
- * idempotent resolve endpoint (writes the CareIN commlog exactly once).
+ * an OD patient search covers everything else.
+ *
+ * Linking establishes WHO called and writes NOTHING to the chart. It used to be
+ * welded to the chart note — the only way to set a patient was to file a commlog
+ * in the same request — so every match, including one made just to identify a
+ * caller or to hand the call to TC, forced a note into someone's chart. The call
+ * lands in 'matched', where "Send to chart" and "Send to TC" are independent,
+ * optional next steps.
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -13,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, UserCheck, Ban, Loader2, Building2, AlertTriangle } from "lucide-react";
-import { api, type UnifiedCall, type OdPatient, type NotAPatientReason, type OfficeConfig } from "@/lib/api";
+import { api, normalizeUnifiedCall, type UnifiedCall, type OdPatient, type NotAPatientReason, type OfficeConfig } from "@/lib/api";
 import { toast } from "sonner";
 
 const NOT_A_PATIENT_REASONS: { value: NotAPatientReason; label: string }[] = [
@@ -29,13 +35,18 @@ interface PickPatientModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   call: UnifiedCall;
-  /** A patient was chosen — hand off to the review/edit → send dialog (no write yet). */
-  onChoosePatient: (patientId: number, patientName: string) => void;
+  /**
+   * The patient was LINKED — the match is persisted and nothing was written to
+   * any chart. `updated` is the server's complete post-link call record; the call
+   * is now 'matched', where "Send to chart" and "Send to TC" are separate,
+   * optional next steps.
+   */
+  onLinked: (updated: UnifiedCall) => void;
   /** Closed out as not-a-patient (already persisted; no OD write). */
   onNotPatient: (reason: NotAPatientReason) => void;
 }
 
-export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, onNotPatient }: PickPatientModalProps) {
+export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPatient }: PickPatientModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
   const [searching, setSearching] = useState(false);
@@ -81,10 +92,34 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
     };
   }, [query, call.id]);
 
-  // Picking a patient does NOT write — it hands off to the review/edit → send dialog.
-  const choosePatient = (patientId: number, label: string) => {
-    onChoosePatient(patientId, label);
-    onOpenChange(false);
+  /**
+   * Link the call to this patient. This establishes WHO called and nothing else —
+   * no chart note is written. Identifying the caller and filing a note about the
+   * call are two decisions, and this modal now only makes the first one; the
+   * matched row then offers "Send to chart" and "Send to TC" independently.
+   */
+  const linkPatient = async (patientId: number, label: string) => {
+    setSubmittingId(patientId);
+    try {
+      const res = await api.resolvePatient(call.id, {
+        patientId,
+        linkOnly: true,
+        // Assert the office this screen believes it is acting on. The server
+        // resolves the real one and refuses on a mismatch.
+        ...(office ? { office_id: office.officeId } : {}),
+      });
+      if (res.success && res.call) {
+        toast.success(`Linked to ${label}`);
+        onLinked(normalizeUnifiedCall(res.call));
+        onOpenChange(false);
+      } else {
+        toast.error("Could not link this patient", { duration: 8000 });
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to link patient", { duration: 8000 });
+    } finally {
+      setSubmittingId(null);
+    }
   };
 
   const closeAsNotPatient = async () => {
@@ -138,9 +173,11 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
                       size="sm"
                       className="h-8 gap-1.5 text-xs flex-shrink-0"
                       disabled={submittingId !== null}
-                      onClick={() => choosePatient(c.id, c.name)}
+                      onClick={() => linkPatient(c.id, c.name)}
                     >
-                      <UserCheck size={12} /> Use
+                      {submittingId === c.id
+                        ? <><Loader2 size={12} className="animate-spin" /> Linking…</>
+                        : <><UserCheck size={12} /> Link</>}
                     </Button>
                   </div>
                 ))}
@@ -208,9 +245,11 @@ export function PickPatientModal({ open, onOpenChange, call, onChoosePatient, on
                       variant="outline"
                       className="h-8 gap-1.5 text-xs flex-shrink-0"
                       disabled={submittingId !== null}
-                      onClick={() => choosePatient(p.id, p.fullName)}
+                      onClick={() => linkPatient(p.id, p.fullName)}
                     >
-                      <UserCheck size={12} /> Use
+                      {submittingId === p.id
+                        ? <><Loader2 size={12} className="animate-spin" /> Linking…</>
+                        : <><UserCheck size={12} /> Link</>}
                     </Button>
                   </div>
                 ))

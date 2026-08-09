@@ -35,6 +35,7 @@ import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { toast } from "sonner";
 import { PickPatientModal } from "./PickPatientModal";
 import { SendToChartDialog } from "./SendToChartDialog";
+import { SendToTcButton, type SendToTcResult } from "./SendToTcButton";
 
 const OUTCOMES: { value: TriageOutcome; label: string }[] = [
   { value: "scheduled", label: "Scheduled" },
@@ -205,15 +206,36 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     patchCall(call.id, { notAPatient: true, notAPatientReason: reason });
   };
 
-  const onSent = (call: UnifiedCall, patientId: number) => {
+  // `updated` is the server's complete post-send record. Prefer it over patching the
+  // fields we think changed: resolving a patient also sets od_patient_name, and the
+  // "Send to TC" button is hidden/disabled without it — patching only id + status is
+  // why that button used to need a page refresh before it became usable.
+  const onSent = (call: UnifiedCall, patientId: number, updated: UnifiedCall | null) => {
+    if (updated) {
+      patchCall(call.id, updated);
+      return;
+    }
     const actor = auth.status === "authenticated" ? { name: auth.user.name, email: auth.user.email } : null;
     patchCall(call.id, { odSyncStatus: "synced", odPatientId: patientId, sentBy: actor, sentAt: new Date().toISOString() });
   };
 
-  // A patient was chosen in the picker → hand off to the review/edit → send dialog.
-  const chooseThenSend = (call: UnifiedCall, patientId: number, patientName: string) => {
+  // (M6) TC took the call — flip the row to the passive "In TC" link. Driven by the
+  // server's response; the store keeps tc_* through re-ingest so a refresh agrees.
+  const onSentToTc = (call: UnifiedCall, result: SendToTcResult) => {
+    patchCall(call.id, {
+      tcCaseId: result.caseId,
+      tcCaseUrl: result.caseUrl,
+      tcSentAt: new Date().toISOString(),
+    });
+  };
+
+  // The picker LINKED a patient — no chart note was written. The row moves to
+  // 'matched', where "Send to chart" and "Send to TC" become separate choices.
+  // It used to jump straight into the send dialog, which made a chart note the
+  // price of identifying a caller.
+  const onLinked = (call: UnifiedCall, updated: UnifiedCall) => {
     setPickCall(null);
-    setSendTarget({ call, patientId, patientName });
+    patchCall(call.id, updated);
   };
 
   // ---- filtering ----------------------------------------------------------
@@ -503,6 +525,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                       patientId: Number(call.odPatientId),
                       patientName: call.odPatientName || `PatNum ${call.odPatientId}`,
                     })}
+                    onSentToTc={(result) => onSentToTc(call, result)}
                   />
                 </div>
 
@@ -550,7 +573,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           open={pickCall !== null}
           onOpenChange={(o) => { if (!o) setPickCall(null); }}
           call={pickCall}
-          onChoosePatient={(patientId, patientName) => chooseThenSend(pickCall, patientId, patientName)}
+          onLinked={(updated) => onLinked(pickCall, updated)}
           onNotPatient={(reason) => onNotPatient(pickCall, reason)}
         />
       )}
@@ -562,7 +585,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           call={sendTarget.call}
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
-          onSent={() => onSent(sendTarget.call, sendTarget.patientId)}
+          onSent={(updated) => onSent(sendTarget.call, sendTarget.patientId, updated)}
         />
       )}
     </>
@@ -620,7 +643,7 @@ function TranscribeAction({
 }
 
 function PatientIdentityCell({
-  call, officeOdConnected, officeName, onPick, onSend,
+  call, officeOdConnected, officeName, onPick, onSend, onSentToTc,
 }: {
   call: UnifiedCall;
   officeOdConnected: boolean;
@@ -628,6 +651,8 @@ function PatientIdentityCell({
   officeName: string | null;
   onPick: () => void;
   onSend: () => void;
+  /** (M6) The call was handed to Treatment Coordinator. */
+  onSentToTc: (result: SendToTcResult) => void;
 }) {
   // No Open Dental for THIS call's office → no chart actions, and an honest reason.
   // Two distinct situations, because the answer to "what do I do about it?" differs:
@@ -653,10 +678,14 @@ function PatientIdentityCell({
   // Sent = the chart note was written (od_sync_status 'synced').
   if (call.odSyncStatus === "synced") {
     return (
-      <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline">
-        <CheckCircle2 size={12} className="text-emerald-600" />
-        Sent · {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "chart")}
-      </Link>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline truncate">
+          <CheckCircle2 size={12} className="text-emerald-600 flex-shrink-0" />
+          Sent · {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "chart")}
+        </Link>
+        {/* (M6) A call already on the chart can still be worth a TC case. */}
+        <SendToTcButton call={call} onSent={onSentToTc} />
+      </div>
     );
   }
   // Matched but NOT sent (review-then-send): a patient is linked (od_patient_id) but
@@ -672,6 +701,9 @@ function PatientIdentityCell({
         <Button size="sm" className="h-7 gap-1 text-[11px] px-2 flex-shrink-0" onClick={onSend}>
           <Send size={11} /> Send to chart
         </Button>
+        {/* (M6) The other thing you can do with a matched call — file it with TC.
+            Not a chart write, so it stands apart from the review-then-send flow. */}
+        <SendToTcButton call={call} onSent={onSentToTc} />
       </div>
     );
   }

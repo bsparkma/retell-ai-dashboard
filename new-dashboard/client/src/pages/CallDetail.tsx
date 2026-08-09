@@ -22,6 +22,7 @@ import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
 import { SendToChartDialog } from "./calls/SendToChartDialog";
+import { SendToTcButton, type SendToTcResult } from "./calls/SendToTcButton";
 
 type PatientMatchSource = "id" | "phone" | "none";
 
@@ -115,11 +116,14 @@ interface CallPatientPanelProps {
   odPatientName: string | null;
   sentBy: CallActor | null;
   onSend: () => void;
+  /** (M6) The whole call — the TC handoff reads office/patient/case state off it. */
+  call: UnifiedCall;
+  onSentToTc: (result: SendToTcResult) => void;
 }
 
 function CallPatientPanel({
   patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
-  syncStatus, odPatientId, odPatientName, sentBy, onSend,
+  syncStatus, odPatientId, odPatientName, sentBy, onSend, call, onSentToTc,
 }: CallPatientPanelProps) {
   const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
   const sent = syncStatus === "synced";
@@ -152,6 +156,12 @@ function CallPatientPanel({
             </Button>
           </div>
         )}
+
+        {/* (M6) Cross-module handoff. Sits beside "Send to chart" because it is the
+            other thing you might do with a matched call — but it is NOT a chart
+            write, so it is offered whether or not the note has been sent, and it
+            renders nothing at all unless this tenant has the TC module. */}
+        <SendToTcButton call={call} onSent={onSentToTc} variant="panel" />
 
         {loading ? (
           <div className="space-y-2" aria-label="Loading patient record">
@@ -347,10 +357,19 @@ export default function CallDetail() {
   }, []);
 
   // After the chart note is sent, reflect synced + refresh the panel to the patient.
-  const handleSent = useCallback((patientId: number) => {
-    setCall((prev) => (prev && prev !== "loading"
-      ? { ...prev, odPatientId: patientId, odSyncStatus: "synced", sentAt: new Date().toISOString() }
-      : prev));
+  //
+  // `updated` is the server's complete post-send record. Prefer it over patching
+  // the fields we think changed: resolving a patient also sets od_patient_name,
+  // and "Send to TC" is hidden/disabled without it — patching only id + status is
+  // why that button used to need a page refresh before it became usable.
+  const handleSent = useCallback((patientId: number, updated: UnifiedCall | null) => {
+    setCall((prev) => {
+      if (!prev || prev === "loading") return prev;
+      if (updated) return { ...prev, ...updated };
+      // No record came back — fall back to the old partial patch so the page
+      // still reflects the send.
+      return { ...prev, odPatientId: patientId, odSyncStatus: "synced", sentAt: new Date().toISOString() };
+    });
     setPatientLoading(true);
     api.getOpenDentalPatient(patientId)
       .then((p) => { setPatient(p); setPatientSource("id"); })
@@ -358,10 +377,29 @@ export default function CallDetail() {
       .finally(() => setPatientLoading(false));
   }, []);
 
-  // Picker chose a patient → hand off to the review/edit → send dialog.
-  const handleChoosePatient = useCallback((patientId: number, patientName: string) => {
+  // (M6) TC took the call. Reflect the linkage so the button becomes the passive
+  // "In TC" link — driven by the server's response, never assumed.
+  const handleSentToTc = useCallback((result: SendToTcResult) => {
+    setCall((prev) => (prev && prev !== "loading"
+      ? { ...prev, tcCaseId: result.caseId, tcCaseUrl: result.caseUrl, tcSentAt: new Date().toISOString() }
+      : prev));
+  }, []);
+
+  // The picker LINKED a patient — nothing was written to the chart. Reflect the
+  // server's post-link record; "Send to chart" and "Send to TC" then stand on
+  // their own in the patient panel, instead of a note being the price of a match.
+  const handleLinked = useCallback((updated: UnifiedCall) => {
     setPickOpen(false);
-    setSendTarget({ patientId, patientName });
+    setCall((prev) => (prev && prev !== "loading" ? { ...prev, ...updated } : prev));
+    // Show the person we just linked, same as the send path does — a match that
+    // doesn't visibly change the panel reads as though it didn't take.
+    const linkedId = Number(updated.odPatientId);
+    if (!Number.isFinite(linkedId) || linkedId <= 0) return;
+    setPatientLoading(true);
+    api.getOpenDentalPatient(linkedId)
+      .then((p) => { setPatient(p); setPatientSource("id"); })
+      .catch(() => { /* keep the prior view; the link itself already succeeded */ })
+      .finally(() => setPatientLoading(false));
   }, []);
 
   const handleNotPatient = useCallback((reason: NotAPatientReason) => {
@@ -521,7 +559,7 @@ export default function CallDetail() {
         open={pickOpen}
         onOpenChange={setPickOpen}
         call={displayCall}
-        onChoosePatient={handleChoosePatient}
+        onLinked={handleLinked}
         onNotPatient={handleNotPatient}
       />
 
@@ -541,7 +579,7 @@ export default function CallDetail() {
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
           contentType={contentType}
-          onSent={() => handleSent(sendTarget.patientId)}
+          onSent={(updated) => handleSent(sendTarget.patientId, updated)}
         />
       )}
 
@@ -814,6 +852,8 @@ export default function CallDetail() {
             odPatientName={displayCall.odPatientName}
             sentBy={displayCall.sentBy}
             onSend={() => startSend("summary")}
+            call={displayCall}
+            onSentToTc={handleSentToTc}
           />
 
           {/* Call metadata */}

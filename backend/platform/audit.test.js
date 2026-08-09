@@ -49,7 +49,8 @@ test('writes one audit row with the expected column order and values', async () 
   await audit.audit(req, { action: 'READ', resourceType: 'patient', resourceId: 123, result: 'SUCCESS' });
 
   assert.match(captured.text, /INSERT INTO audit_log/);
-  // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office]
+  // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint,
+  //  office, source_ref]
   assert.deepEqual(captured.params, [
     'staff@carein.ai',
     'T1',
@@ -60,7 +61,31 @@ test('writes one audit row with the expected column order and values', async () 
     'SUCCESS',
     '/api/opendental/patients/123',
     null, // office omitted → NULL ("not an office-scoped action"), never a guess
+    null, // source_ref omitted → NULL ("no recorded external cause"), same rule
   ]);
+});
+
+test('records the external cause when one is given', async () => {
+  const captured = captureQuery();
+  const req = {
+    user: { email: 'staff@carein.ai' },
+    tenant: { id: 'T1' },
+    ip: '203.0.113.7',
+    originalUrl: '/api/tc/cases/from-call',
+  };
+
+  await audit.audit(req, {
+    action: 'CREATE',
+    resourceType: 'tc_case',
+    resourceId: 'c-1',
+    office: 'roland',
+    sourceRef: 'mango_call_9',
+    result: 'SUCCESS',
+  });
+
+  // tc_case_events is normal CRUD; audit_log is append-only. This is the copy
+  // of "which call caused this case" that survives.
+  assert.equal(captured.params[9], 'mango_call_9');
 });
 
 test('records the office key when the action is office-scoped', async () => {
