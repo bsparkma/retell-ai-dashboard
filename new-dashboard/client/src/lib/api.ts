@@ -174,6 +174,19 @@ export interface OfficeConfig {
   odBlockedReason?: string | null;
 }
 
+/**
+ * Which leg of a twinned conversation a call row is (slice M7).
+ *
+ *  - `primary`         the Retell row. It owns the transcript, the analysis and the agent.
+ *  - `duplicate_leg`   the Mango row of a call the AI handled END TO END. Nothing on it
+ *                      that the primary doesn't already have, so it drops out of the
+ *                      default worklist view (it is never deleted — retention owns that).
+ *  - `transferred_leg` the Mango row of a call the AI handed to a human. Its recording is
+ *                      the human half of the conversation, which the AI's transcript does
+ *                      NOT contain, so it stays in the worklist like any other staff call.
+ */
+export type CallLinkRole = "primary" | "duplicate_leg" | "transferred_leg";
+
 export interface BackendUnifiedCall {
   id: string;
   source?: "retell" | "mango";
@@ -246,6 +259,12 @@ export interface BackendUnifiedCall {
   tc_case_url?: string | null;
   tc_sent_at?: string | null;
   tc_sent_by?: CallActor | null;
+  // Slice M7 — Mango↔Retell twin linkage. The same conversation logged twice, once by the
+  // PBX and once by the AI that answered it. `linked_call_id` is the OTHER leg's id (set on
+  // both rows); `link_role` says which leg this is.
+  linked_call_id?: string | null;
+  link_role?: CallLinkRole | null;
+  disconnection_reason?: string | null;
   [key: string]: unknown;
 }
 
@@ -603,6 +622,11 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     // these are usually absent (defaults false) — Retell attention is unaffected by mode.
     appointmentRequested: c.appointment_requested ?? false,
     callbackRequested: c.callback_required ?? false,
+
+    // Slice M7 — twin linkage. `linkedCallId` is the other leg's id, so a row can link
+    // straight to its twin; `linkRole` decides how this row behaves in the worklist.
+    linkedCallId: c.linked_call_id ?? null,
+    linkRole: (c.link_role ?? null) as CallLinkRole | null,
   };
 }
 

@@ -26,9 +26,9 @@ import {
   type TranscribeResult,
 } from "@/lib/api";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
-import { needsRebillConfirm } from "@/lib/transcribe";
+import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
-import { callNeedsAttention } from "@/lib/worklist";
+import { callNeedsAttention, isAiDuplicateLeg } from "@/lib/worklist";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
@@ -65,7 +65,13 @@ const CHIPS: Chip[] = [
   { key: "booked", label: "Booked", icon: CalendarCheck, color: "oklch(0.48 0.16 155)", bg: "oklch(0.65 0.18 155 / 0.12)", match: (c) => c.appointmentBooked },
   { key: "new", label: "New patient", icon: UserPlus, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: (c) => c.isNewPatient },
   { key: "insurance", label: "Insurance", icon: Shield, color: "oklch(0.45 0.11 186)", bg: "oklch(0.52 0.12 186 / 0.12)", match: (c) => c.insuranceMentioned },
+  // M7. The one chip that surfaces rows the default view hides, which is exactly why it
+  // exists: "hidden" must never mean "unreachable". Toggling it also switches to "All
+  // calls" (see toggleChip) — in the attention view it would always return nothing.
+  { key: "ai_duplicate", label: ANSWERED_BY_AI_BADGE, icon: Bot, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: isAiDuplicateLeg },
 ];
+/** Chips that only make sense outside the "Needs attention" view. */
+const ALL_CALLS_ONLY_CHIPS = new Set(["ai_duplicate"]);
 
 /** Short first-name + clock attribution, e.g. "Sarah, 9:14a". */
 function formatAttribution(name: string | null | undefined, iso: string | null | undefined): string {
@@ -284,12 +290,16 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     );
   }, [calls, view, search, activeChips, sortDir, sourceFilter, needsAttention]);
 
-  const toggleChip = (key: string) =>
+  const toggleChip = (key: string) => {
+    // Turning on a chip that only matches rows the attention view hides has to take you
+    // somewhere those rows exist, or the filter reads as broken (M7).
+    if (ALL_CALLS_ONLY_CHIPS.has(key) && !activeChips.has(key)) setView("all");
     setActiveChips((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -500,6 +510,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                     <div className="text-[11px] text-muted-foreground/70">
                       {formatDuration(call.duration)} · {formatTimeAgo(call.date)}
                     </div>
+                    {/* M7 — the PBX copy of a call the AI answered end to end. Says so
+                        plainly, and links to the row that actually holds the transcript.
+                        stopPropagation so the jump-link isn't swallowed by the row link. */}
+                    {isAiDuplicateLeg(call) && (
+                      <Link
+                        href={`/calls/${call.linkedCallId}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-0.5 inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full text-primary bg-primary/10 hover:underline"
+                        title="This call was answered by the AI agent — open the AI call to see its transcript"
+                      >
+                        <Bot size={10} /> {ANSWERED_BY_AI_BADGE}
+                      </Link>
+                    )}
                     {/* Unmapped Mango line: never lost — surface the dialed DID so an admin
                         can see which number to add to MANGO_LINE_OFFICE. */}
                     {call.source === "mango" && call.officeId === "unknown" && (
@@ -531,7 +554,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
                 {/* Signals (disposition chips) + the on-demand transcribe action */}
                 <div className="flex flex-wrap items-center gap-1">
-                  {CHIPS.filter((chip) => chip.match(call)).map((chip) => {
+                  {/* Filter-only chips are excluded here — "Answered by CareIN AI" already
+                      renders as its own linked badge next to the caller, and showing it
+                      twice on the same row would just be noise. */}
+                  {CHIPS.filter((chip) => !ALL_CALLS_ONLY_CHIPS.has(chip.key) && chip.match(call)).map((chip) => {
                     const Icon = chip.icon;
                     return (
                       <span
@@ -547,7 +573,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   <TranscribeAction
                     call={call}
                     running={transcribe.isRunning(call.id)}
-                    onTranscribe={() => transcribe.request(call.id, call.transcribeLastOutcome)}
+                    onTranscribe={() => transcribe.request(call.id, call.transcribeLastOutcome, call.linkRole)}
                   />
                 </div>
 
@@ -561,9 +587,12 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
         </CardContent>
       </Card>
 
-      {/* (M4) Re-billing a call that already came back silent needs a deliberate yes. */}
+      {/* (M4) Re-billing a call that already came back silent, or (M7) transcribing the
+          PBX copy of a call the AI already transcribed, needs a deliberate yes. */}
       <TranscribeRebillDialog
         open={transcribe.pendingConfirm !== null}
+        kind={transcribe.pendingConfirmKind}
+        linkedCallId={calls.find((c) => c.id === transcribe.pendingConfirm)?.linkedCallId ?? null}
         onConfirm={transcribe.confirm}
         onCancel={transcribe.cancelConfirm}
       />

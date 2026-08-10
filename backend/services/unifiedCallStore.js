@@ -14,6 +14,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { normalizeTranscriptJson } = require('../utils/transcriptShape');
+const callTwins = require('./callTwins');
 
 function normalizeCallDate(value) {
   if (value instanceof Date) {
@@ -123,7 +124,12 @@ class UnifiedCallStore {
     
     this.byDate = new Map(); // date string -> Set of call IDs
     this.byCallerNumber = new Map(); // phone -> Set of call IDs
-    
+    // NORMALIZED caller index (M7). Distinct from byCallerNumber above, which keys on the
+    // RAW string and therefore can never match a Mango row against a Retell one: the two
+    // sources format the same number differently ("(918) 555-1234" vs "+19185551234").
+    // Keyed on the last 10 digits so twin lookup is a Set hit instead of a full scan.
+    this.byCallerKey = new Map(); // last-10-digits -> Set of call IDs
+
     // Persistence settings. Default resolves to <app>/data (next to the code). Override the
     // directory with CALLSTORE_DIR to point at a DURABLE mount — e.g. /data, the AzureFile
     // volume the prod container app already mounts.
@@ -152,7 +158,18 @@ class UnifiedCallStore {
       totalMango: 0,
       lastRetellSync: null,
       lastMangoSync: null,
+      // M7 tripwire. Counts Retell calls that ended in a transfer to a human. Production
+      // has never seen one — that is exactly why it is counted rather than assumed: the
+      // day this goes above zero, the "the Mango leg is pure duplication" premise this
+      // slice is built on stops holding for those calls, and the transferred-leg design
+      // has to be reopened. Persisted with the store so it survives a restart.
+      transferDisconnects: 0,
     };
+
+    // Reasons we've already warned about (transfer tripwire) / ambiguous twins we've
+    // already reported, so a repeated condition logs once per process rather than per call.
+    this.warnedTransferReasons = new Set();
+    this.warnedAmbiguousTwins = new Set();
   }
 
   /**
@@ -182,6 +199,15 @@ class UnifiedCallStore {
         }
         
         console.log(`✅ Unified call store loaded: ${this.calls.size} calls`);
+
+        // M7 backlog pass: link the twins that were already in the store before this
+        // slice existed. Idempotent, so a restart re-runs it harmlessly.
+        const { linked, duplicates, transferred } = this.relinkAllTwins();
+        console.log(
+          `🔗 Mango↔Retell twins: ${duplicates} AI-answered duplicate leg(s)` +
+          `${transferred ? `, ${transferred} transferred leg(s)` : ''}` +
+          ` (${linked} newly linked this pass)`
+        );
       } catch (e) {
         if (e.code !== 'ENOENT') {
           console.error('⚠️ Error loading call store:', e.message);
@@ -235,7 +261,16 @@ class UnifiedCallStore {
       }
       this.byCallerNumber.get(phone).add(id);
     }
-    
+
+    // Update the normalized caller index (M7 twin lookup).
+    const callerKey = callTwins.callerKey(phone);
+    if (callerKey) {
+      if (!this.byCallerKey.has(callerKey)) {
+        this.byCallerKey.set(callerKey, new Set());
+      }
+      this.byCallerKey.get(callerKey).add(id);
+    }
+
     if (markDirty) {
       this.isDirty = true;
       this.requestPersist();
@@ -391,6 +426,23 @@ class UnifiedCallStore {
       tc_sent_at: call.tc_sent_at ?? null,
       tc_sent_by: call.tc_sent_by ?? null,
 
+      // Mango ↔ Retell twin linkage (M7) — MUST survive re-normalization for exactly the
+      // reason od_*/triage_*/tc_* above do: the hourly Mango sync re-ingests inside the
+      // watermark overlap and addMangoCalls rebuilds the record through normalizeCall, and
+      // every Retell webhook event re-adds the AI row. Without carrying these through, a
+      // linked duplicate leg would un-hide itself within the hour and the front desk would
+      // watch resolved clutter reappear. `linked_call_id` is the twin's store id on BOTH
+      // rows; `link_role` is 'primary' (Retell) / 'duplicate_leg' / 'transferred_leg'.
+      linked_call_id: call.linked_call_id ?? null,
+      link_role: call.link_role ?? null,
+
+      // Retell's own reason the call ended. Captured on the call_ended webhook since day
+      // one and thrown away here ever since — this whitelist is the only reason it never
+      // reached the store. It is the ONLY honest basis for telling an AI-completed call
+      // from one the AI transferred to a human; the duration delta cannot do it, because
+      // the two legs end at the same instant by construction (see services/callTwins.js).
+      disconnection_reason: call.disconnection_reason ?? null,
+
       // Timestamps
       created_at: call.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -455,7 +507,17 @@ class UnifiedCallStore {
       tc_case_url: call.tc_case_url ?? existing?.tc_case_url ?? null,
       tc_sent_at: call.tc_sent_at ?? existing?.tc_sent_at ?? null,
       tc_sent_by: call.tc_sent_by ?? existing?.tc_sent_by ?? null,
+      // M7 — same rationale again. A Retell call is re-added at least three times
+      // (call_started → call_ended → call_analyzed) plus every 15-min poll, and only ONE
+      // of those payloads carries disconnection_reason. Inheriting it means the reason
+      // survives the events that don't mention it; inheriting the link means the twin
+      // survives them too.
+      linked_call_id: call.linked_call_id ?? existing?.linked_call_id ?? null,
+      link_role: call.link_role ?? existing?.link_role ?? null,
+      disconnection_reason: call.disconnection_reason ?? existing?.disconnection_reason ?? null,
     };
+
+    this.noteTransferDisconnect(normalizedCall, existing);
 
     const stored = this.addCallInternal(normalizedCall);
 
@@ -463,6 +525,11 @@ class UnifiedCallStore {
       this.stats.totalRetell++;
     }
     this.stats.lastRetellSync = new Date().toISOString();
+
+    // A Retell call usually lands AFTER its Mango leg (the PBX row is created when the
+    // call hits the PBX, the AI row when it is forwarded), so linking has to run from
+    // this side too — not only on Mango ingest.
+    if (stored) this.linkTwinFor(stored);
 
     return stored;
   }
@@ -508,11 +575,192 @@ class UnifiedCallStore {
         this.stats.totalMango++;
       }
     }
-    
+
+    // Link every row this upsert touched — added AND updated. The updated ones matter:
+    // a Mango leg ingested before its Retell twin arrived would otherwise stay unlinked
+    // until the next full relink, which is the window in which the duplicate is visible
+    // in "Needs attention".
+    let linked = 0;
+    for (const call of [...added, ...updated]) {
+      if (this.linkTwinFor(call)) linked++;
+    }
+
     this.stats.lastMangoSync = new Date().toISOString();
-    console.log(`✅ Mango store upsert: added ${added.length}, updated ${updated.length}`);
-    
+    console.log(
+      `✅ Mango store upsert: added ${added.length}, updated ${updated.length}` +
+      (linked ? `, linked ${linked} AI twin(s)` : '')
+    );
+
     return added;
+  }
+
+  /**
+   * Count (and warn once about) a Retell call that ended by transferring to a human.
+   *
+   * This is the M7 tripwire. Every twin observed in production so far has been
+   * AI-COMPLETED — the AI handled the call end to end and the Mango leg is pure
+   * duplication — which is what makes hiding the Mango leg safe. A transfer breaks that:
+   * the Mango leg then holds the human half of the conversation and must stay visible.
+   * Rather than assume the observed pattern holds forever, we count the exception.
+   * Counts CALLS, not events. A Retell call is re-added on every webhook event and on
+   * every 15-minute poll, so incrementing unconditionally would inflate the count by an
+   * order of magnitude and make the tripwire useless as a signal. Only a call whose stored
+   * record did not already carry a transfer reason counts.
+   *
+   * @param {{source?: string, disconnection_reason?: string}} call the incoming record
+   * @param {{disconnection_reason?: string}} [existing] the record already in the store
+   */
+  noteTransferDisconnect(call, existing) {
+    if (!call || call.source !== 'retell') return;
+    const reason = call.disconnection_reason;
+    if (!callTwins.isTransferDisconnect(reason)) return;
+    if (callTwins.isTransferDisconnect(existing && existing.disconnection_reason)) return;
+
+    this.stats.transferDisconnects = (this.stats.transferDisconnects || 0) + 1;
+    if (!this.warnedTransferReasons.has(reason)) {
+      this.warnedTransferReasons.add(reason);
+      console.warn(
+        `[callTwins] TRIPWIRE: Retell disconnection_reason '${reason}' means the AI ` +
+        `transferred this call to a human. Its Mango leg holds the human half of the ` +
+        `conversation and is NOT a duplicate — it stays in the worklist. ` +
+        `(transferDisconnects=${this.stats.transferDisconnects}) ` +
+        `If this keeps firing, reopen the transferred-leg design.`
+      );
+    }
+  }
+
+  /**
+   * Link one call to its twin on the other source, writing `linked_call_id` / `link_role`
+   * onto BOTH rows. Idempotent: re-running over already-linked rows is a no-op, which is
+   * what lets it be called on every ingest and on the whole backlog alike.
+   *
+   * Candidate lookup goes through byCallerKey, so this is a Set hit plus a handful of
+   * comparisons rather than a scan of the store.
+   *
+   * @param {object} call either leg
+   * @returns {boolean} true when a NEW link was written
+   */
+  linkTwinFor(call) {
+    if (!call || (call.source !== 'mango' && call.source !== 'retell')) return false;
+
+    const key = callTwins.callerKey(call.caller_number);
+    if (!key) return false;
+
+    const candidateIds = this.byCallerKey.get(key);
+    if (!candidateIds) return false;
+
+    const bySource = { mango: [], retell: [] };
+    for (const id of candidateIds) {
+      const candidate = this.calls.get(id);
+      if (candidate && bySource[candidate.source]) bySource[candidate.source].push(candidate);
+    }
+    if (!bySource.mango.length || !bySource.retell.length) return false;
+
+    // ALWAYS resolve from the Mango side, whichever leg we were handed. Resolving from the
+    // Retell side would only ever count competing MANGO rows, so a second Retell row with
+    // the same timings would quietly steal an existing link instead of being caught as the
+    // ambiguity it is. Every twin has exactly one Mango leg, so this is also the direction
+    // that visits each pair once.
+    const mangoLegs = call.source === 'mango' ? [call] : bySource.mango;
+
+    let linked = false;
+    for (const mangoLeg of mangoLegs) {
+      const { twin, ambiguous } = callTwins.findTwin(mangoLeg, bySource.retell);
+
+      if (ambiguous) {
+        // We no longer know which Retell row this leg belongs to. Drop any link we wrote
+        // earlier rather than leaving a confident-looking one we can't stand behind — a
+        // wrongly linked leg is a HIDDEN leg.
+        if (mangoLeg.linked_call_id) this.unlinkTwin(mangoLeg);
+        this.reportAmbiguousTwin(mangoLeg);
+        continue;
+      }
+      if (!twin) continue;
+
+      const role = callTwins.mangoLegRole(twin);
+      const alreadyLinked =
+        mangoLeg.linked_call_id === twin.id &&
+        twin.linked_call_id === mangoLeg.id &&
+        mangoLeg.link_role === role &&
+        twin.link_role === callTwins.ROLE_PRIMARY;
+      if (alreadyLinked) continue;
+
+      mangoLeg.linked_call_id = twin.id;
+      mangoLeg.link_role = role;
+      twin.linked_call_id = mangoLeg.id;
+      twin.link_role = callTwins.ROLE_PRIMARY;
+
+      this.isDirty = true;
+      this.requestPersist();
+      linked = true;
+    }
+
+    return linked;
+  }
+
+  /**
+   * Clear a link from both sides. Used when a leg that was linked stops having exactly one
+   * defensible twin — see the ambiguity branch of linkTwinFor().
+   * @param {{linked_call_id?: string|null}} call
+   */
+  unlinkTwin(call) {
+    const other = call.linked_call_id ? this.calls.get(call.linked_call_id) : null;
+    if (other && other.linked_call_id === call.id) {
+      other.linked_call_id = null;
+      other.link_role = null;
+    }
+    call.linked_call_id = null;
+    call.link_role = null;
+    this.isDirty = true;
+    this.requestPersist();
+  }
+
+  /**
+   * Two candidates satisfied the twin rule for one leg. Link NOTHING — hiding the wrong
+   * row is worse than hiding none — and say so once per call.
+   * @param {{id: string}} call
+   * @returns {false}
+   */
+  reportAmbiguousTwin(call) {
+    if (!this.warnedAmbiguousTwins.has(call.id)) {
+      this.warnedAmbiguousTwins.add(call.id);
+      console.warn(
+        `[callTwins] Ambiguous twin for call ${call.id} — more than one candidate matched ` +
+        `the correlation rule, so nothing was linked. This has never fired on production ` +
+        `data; if it does, tighten END_SKEW_SECONDS in services/callTwins.js.`
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Link the whole store — the backlog pass.
+   *
+   * Runs once at startup, after the store is loaded from disk, so the twins that already
+   * exist (67 of them on prod at the time this shipped, every one still sitting unworked
+   * in "Needs attention") get linked without waiting for a re-ingest that may never come:
+   * the Mango watermark only re-walks a short overlap, and a Retell call is re-added only
+   * while the 15-minute poller still has it in its window.
+   *
+   * @returns {{linked: number, duplicates: number, transferred: number}}
+   */
+  relinkAllTwins() {
+    let linked = 0;
+    // Drive from the Mango side: every twin has exactly one Mango leg, so this visits each
+    // pair once instead of twice.
+    for (const call of this.calls.values()) {
+      if (call.source !== 'mango') continue;
+      if (this.linkTwinFor(call)) linked++;
+    }
+
+    let duplicates = 0;
+    let transferred = 0;
+    for (const call of this.calls.values()) {
+      if (call.link_role === callTwins.ROLE_DUPLICATE) duplicates++;
+      else if (call.link_role === callTwins.ROLE_TRANSFERRED) transferred++;
+    }
+
+    return { linked, duplicates, transferred };
   }
 
   /**
@@ -721,6 +969,14 @@ class UnifiedCallStore {
         retell: this.stats.lastRetellSync,
         mango: this.stats.lastMangoSync,
       },
+      // M7. `transferDisconnects` is the tripwire — see noteTransferDisconnect(). While it
+      // reads 0, every linked Mango leg is a pure duplicate of an AI-completed call, which
+      // is the premise the hide-from-worklist behaviour rests on.
+      twins: {
+        duplicateLegs: allCalls.filter(c => c.link_role === callTwins.ROLE_DUPLICATE).length,
+        transferredLegs: allCalls.filter(c => c.link_role === callTwins.ROLE_TRANSFERRED).length,
+        transferDisconnects: this.stats.transferDisconnects || 0,
+      },
     };
   }
 
@@ -836,11 +1092,15 @@ class UnifiedCallStore {
     this.bySource.mango.clear();
     this.byDate.clear();
     this.byCallerNumber.clear();
+    this.byCallerKey.clear();
+    this.warnedTransferReasons.clear();
+    this.warnedAmbiguousTwins.clear();
     this.stats = {
       totalRetell: 0,
       totalMango: 0,
       lastRetellSync: null,
       lastMangoSync: null,
+      transferDisconnects: 0,
     };
     this.isDirty = true;
   }

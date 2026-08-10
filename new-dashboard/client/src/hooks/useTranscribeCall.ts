@@ -14,7 +14,18 @@
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, type TranscribeResult } from "@/lib/api";
-import { transcribeFeedback, toastDuration, needsRebillConfirm } from "@/lib/transcribe";
+import {
+  transcribeFeedback, toastDuration, needsRebillConfirm, needsDuplicateLegConfirm,
+} from "@/lib/transcribe";
+
+/**
+ * Why we are asking before spending.
+ *
+ *  - `rebill`        the last attempt billed Azure Speech and found no speech (M4).
+ *  - `duplicate_leg` this is the PBX copy of a call the AI answered; the transcript
+ *                    already exists on the linked Retell row (M7).
+ */
+export type TranscribeConfirmKind = "rebill" | "duplicate_leg";
 
 export interface UseTranscribeCall {
   /** Is this specific call being transcribed right now? */
@@ -25,13 +36,15 @@ export interface UseTranscribeCall {
    */
   run: (callId: string) => Promise<TranscribeResult | null>;
   /**
-   * What a button click should do. Runs straight away for a call that has never spent
-   * budget; for one whose last attempt found no speech, parks the id in `pendingConfirm`
-   * instead so the caller can ask before charging for the same silent recording again.
+   * What a button click should do. Runs straight away for a call that would spend budget
+   * on something genuinely new; otherwise parks the id in `pendingConfirm` (with the
+   * reason in `pendingConfirmKind`) so the caller can ask first.
    */
-  request: (callId: string, lastOutcome?: string | null) => void;
-  /** The call awaiting a re-bill confirmation, or null. */
+  request: (callId: string, lastOutcome?: string | null, linkRole?: string | null) => void;
+  /** The call awaiting a confirmation, or null. */
   pendingConfirm: string | null;
+  /** Why that call is awaiting confirmation, or null when nothing is pending. */
+  pendingConfirmKind: TranscribeConfirmKind | null;
   /** The user said yes — spend the budget. */
   confirm: () => void;
   /** The user said no. Nothing is spent. */
@@ -48,6 +61,7 @@ export function useTranscribeCall(
   const inFlight = useRef<Set<string>>(new Set());
   const [running, setRunning] = useState<string[]>([]);
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+  const [pendingConfirmKind, setPendingConfirmKind] = useState<TranscribeConfirmKind | null>(null);
 
   const run = useCallback(
     async (callId: string): Promise<TranscribeResult | null> => {
@@ -81,13 +95,26 @@ export function useTranscribeCall(
 
   const isRunning = useCallback((callId: string) => running.includes(callId), [running]);
 
-  // A call whose last attempt found no speech already cost budget and produced nothing.
-  // Clicking it again is a FRESH charge for the same silent recording, so it must be a
-  // deliberate act — not a lockout (a human may have a reason), not a silent re-spend.
+  // Two ways a click can be about to spend budget on something we already have, both of
+  // which must be a deliberate act — not a lockout (a human may have a reason), not a
+  // silent re-spend:
+  //
+  //   duplicate_leg  the AI already transcribed this exact conversation on the linked row
+  //   rebill         the last attempt billed for this recording and found no speech
+  //
+  // duplicate_leg is checked FIRST because it is the more useful thing to be told: it
+  // comes with somewhere to go (the linked call already has the transcript), whereas the
+  // re-bill warning can only say "this may cost you nothing again".
   const request = useCallback(
-    (callId: string, lastOutcome?: string | null) => {
-      if (needsRebillConfirm(lastOutcome)) {
+    (callId: string, lastOutcome?: string | null, linkRole?: string | null) => {
+      const kind: TranscribeConfirmKind | null = needsDuplicateLegConfirm(linkRole)
+        ? "duplicate_leg"
+        : needsRebillConfirm(lastOutcome)
+        ? "rebill"
+        : null;
+      if (kind) {
         setPendingConfirm(callId);
+        setPendingConfirmKind(kind);
         return;
       }
       void run(callId);
@@ -101,10 +128,14 @@ export function useTranscribeCall(
     if (!pendingConfirm) return;
     const callId = pendingConfirm;
     setPendingConfirm(null);
+    setPendingConfirmKind(null);
     void run(callId);
   }, [pendingConfirm, run]);
 
-  const cancelConfirm = useCallback(() => setPendingConfirm(null), []);
+  const cancelConfirm = useCallback(() => {
+    setPendingConfirm(null);
+    setPendingConfirmKind(null);
+  }, []);
 
-  return { isRunning, run, request, pendingConfirm, confirm, cancelConfirm };
+  return { isRunning, run, request, pendingConfirm, pendingConfirmKind, confirm, cancelConfirm };
 }
