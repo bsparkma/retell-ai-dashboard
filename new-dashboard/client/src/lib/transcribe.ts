@@ -76,6 +76,40 @@ export const REBILL_CONFIRM_ACCEPT = "Transcribe again";
 export const REBILL_CONFIRM_CANCEL = "Cancel";
 
 /**
+ * Does transcribing this call duplicate a transcript we ALREADY HAVE? (slice M7)
+ *
+ * True for the Mango leg of a call the AI answered end to end. The PBX recorded the same
+ * conversation the AI did, so transcribing it spends Azure Speech + summary budget to
+ * produce a second copy of the linked Retell row's transcript. This had already happened
+ * twice on production before the twins were linked — which is the whole reason this
+ * confirmation exists.
+ *
+ * Like the no-speech guard, this is a CONFIRMATION AND NOT A LOCKOUT. There are honest
+ * reasons to want the PBX-side audio (a caller heard on the other channel, a recording
+ * quality question), so the judgement stays with the human — they just have to be told
+ * first that they are paying for a duplicate.
+ */
+export function needsDuplicateLegConfirm(linkRole: string | null | undefined): boolean {
+  return linkRole === "duplicate_leg";
+}
+
+/**
+ * The duplicate-leg confirmation. Named constants for the same reason the re-bill ones
+ * are: the PM reviews this wording, and the tests assert it says both true things — the
+ * AI answered this call, AND its transcript already exists on the linked row.
+ */
+export const DUPLICATE_LEG_CONFIRM_TITLE = "This call was already answered by the AI";
+export const DUPLICATE_LEG_CONFIRM_BODY =
+  "This call was answered by the AI agent — its transcript already exists on the linked call. " +
+  "Transcribing this copy will spend budget to produce the same transcript again. Continue?";
+export const DUPLICATE_LEG_CONFIRM_ACCEPT = "Transcribe anyway";
+export const DUPLICATE_LEG_CONFIRM_CANCEL = "Cancel";
+/** Label on the link that jumps to the Retell row holding the real transcript. */
+export const DUPLICATE_LEG_JUMP_LABEL = "Open the AI call";
+/** The worklist badge on a Mango leg the AI answered. */
+export const ANSWERED_BY_AI_BADGE = "Answered by CareIN AI";
+
+/**
  * Format an ISO instant as a short local clock time ("12:00 AM"). Used so the budget
  * message can say WHEN it resets rather than a vague "tomorrow". Falls back to the raw
  * string if the date is unparseable — never renders "Invalid Date" at a user.
