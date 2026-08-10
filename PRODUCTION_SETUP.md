@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Provisions a DigitalOcean droplet. That infrastructure is retired. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Production Setup Guide - DigitalOcean Deployment
 
 **Complete step-by-step guide for deploying Retell AI Dashboard to DigitalOcean**

@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Records scraper-based Mango ingestion and local recording download as shipped. Ingestion is API-only and recordings are transcribe-and-discard -- audio is never written to disk. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # CareIn Dashboard V2 - Master Implementation Plan
 
 ## 🎯 Project Overview

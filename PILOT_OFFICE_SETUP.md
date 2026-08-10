@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Claims primacy over the other docs, and describes scraper ingestion, port 5000, and a single global Open Dental connection. All three are retired. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Pilot Office Setup
 
 This is the deployment guide for the **first dental office** running CareIn.

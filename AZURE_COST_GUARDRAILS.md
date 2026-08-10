@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** States that no Azure Container Apps or Log Analytics resources are running and that the app is on-prem at $0 Azure. Two Container Apps environments and two Postgres servers now run. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Azure Cost Guardrails
 
 _How to keep the CareIN Azure footprint near-zero through Phase 1 and avoid bill surprises. Drafted 2026-06-02._

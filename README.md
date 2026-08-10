@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Describes a DigitalOcean droplet at `159.89.82.167` as live production and the Material-UI `frontend/` as the app. Production is Azure Container Apps; the active UI is `new-dashboard/`. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Retell AI Dashboard
 
 A modern, comprehensive dashboard for managing and monitoring Retell AI voice agent calls.

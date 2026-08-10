@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Sets one global `OPENDENTAL_DB_URL` for direct MySQL access. Open Dental is reached through the cloud REST API, keyed per office; never write to OD MySQL directly. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Open Dental Database Connection Setup
 
 This project now supports direct database connection to Open Dental, similar to your working Python project.

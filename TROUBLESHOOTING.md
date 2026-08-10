@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** The whole diagnostic ladder starts by SSHing a retired DigitalOcean host. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Troubleshooting Guide - Retell AI Dashboard
 
 **🔧 Complete guide for diagnosing and fixing common issues with your production deployment.**

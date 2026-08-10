@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Presents an on-prem certificate loaded from the Windows certificate store as the production path to Key Vault. Azure Container Apps authenticate with a managed identity, and the per-environment vaults are `kv-carein-staging` / `kv-carein-prod`. See [../CLAUDE.md](../CLAUDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Secrets & Configuration
 
 The CareIN backend loads its credentials two different ways depending on the

@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Presents DigitalOcean + PM2 + Nginx as the current deployment target. Deploys now run through GitHub Actions to Azure Container Apps. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Deployment Guide - Retell AI Dashboard
 
 **Complete deployment reference for Retell AI Dashboard across multiple platforms.**

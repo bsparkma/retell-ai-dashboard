@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Inventories the deprecated Material-UI `frontend/` app as the product. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Retell AI Dashboard Features
 
 ## 🎯 Core Features

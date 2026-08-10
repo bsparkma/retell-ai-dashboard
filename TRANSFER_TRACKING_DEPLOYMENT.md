@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Deploys to a retired DigitalOcean host. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Transfer Tracking Features - Production Deployment Guide
 
 ## 🎯 Overview
