@@ -20,6 +20,7 @@ const { contract, requireOffice, actorEmail, actorName, parseBody, h, auditTc, n
 const { withTenantTx } = require('./tx');
 const { requirePermission } = require('../../config/permissions');
 const tenantDb = require('../../platform/tenantDb');
+const registry = require('../../platform/registry');
 const store = require('./caseStore');
 
 const { z, TcCase, TcHygieneIntake, Uuid, caseToRows } = contract;
@@ -36,6 +37,11 @@ const IntakeSubmit = TcHygieneIntake.omit({
   submittedByName: true,
   submittedAt: true,
 })
+  // hygienistName IS client-supplied — that is the point of it (Roles PR B).
+  // It is clinical attribution the person chooses, not identity: the server
+  // still stamps submittedBy/submittedByName from the session, so a bad value
+  // here can misattribute a visit but can never misrepresent who was signed in.
+  .partial({ hygienistName: true })
   .partial({
     operatory: true,
     visitDate: true,
@@ -126,6 +132,10 @@ router.post(
       hygieneIntake: {
         submittedBy: submitter,
         submittedByName: submitterName,
+        // The pick, trimmed; empty falls back to the signed-in user's display
+        // name so a submission is never attributed to nobody. The fallback is
+        // also applied in caseToRows, so both paths agree.
+        hygienistName: (input.hygienistName || '').trim() || submitterName,
         submittedAt: now,
         operatory: input.operatory ?? '',
         visitDate: input.visitDate ?? null,
@@ -154,6 +164,110 @@ router.post(
 
     await auditTc(req, 'CREATE', 'tc_hygiene_intake', caseId);
     res.status(201).json({ success: true, case: persisted });
+  })
+);
+
+// ── GET /hygienists — the roster the intake form's picker offers ────────────
+
+/**
+ * The tenant's active hygiene-role users, for the intake form's "Hygienist"
+ * picker (Roles PR B).
+ *
+ * MUST precede /:caseId-shaped routes? No — this router's only param route is
+ * POST /:caseId/claim, a different method and depth. Ordering here is by
+ * readability, not necessity.
+ *
+ * app_user carries no display-name column (Entra owns names and this platform
+ * does not sync them), so the label is derived from the address' local part:
+ * raegan@carein.ai → "Raegan". That is exactly right for this roster of first
+ * names and merely unhelpful for an address it doesn't fit — which is why the
+ * form also offers free text. The picker is a convenience, never a constraint.
+ *
+ * Gated tc.hygiene at the mount, so a hygienist can read it. It exposes staff
+ * addresses within one's own practice and no patient data.
+ */
+router.get(
+  '/hygienists',
+  h(async (req, res) => {
+    const rows = await registry.listTenantUsersByRole(req.tenant.id, 'hygiene');
+    res.json({
+      success: true,
+      hygienists: rows.map((r) => ({ email: r.email, label: labelFromEmail(r.email) })),
+    });
+  })
+);
+
+/** "raegan@carein.ai" → "Raegan". Best effort; the form allows free text. */
+function labelFromEmail(email) {
+  const local = String(email || '').split('@')[0] || '';
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+// ── GET / — the office's submissions, optionally filtered by hygienist ──────
+
+/**
+ * The shared, filterable submissions view (Roles PR B).
+ *
+ * "My Submissions" used to be exactly `/mine`. With a shared temp account that
+ * view answers the wrong question, so the page now lists the office's
+ * submissions and filters by ATTRIBUTION. `/mine` is untouched below and stays
+ * the session-scoped fast path — nobody loses their current view.
+ *
+ * `hygienists` comes back alongside the rows so the UI can build its filter
+ * chips from what actually exists rather than from the roster (a hygienist who
+ * has left still has submissions; a new hire has none yet).
+ */
+router.get(
+  '/',
+  h(async (req, res) => {
+    const wanted = typeof req.query.hygienist === 'string' ? req.query.hygienist.trim() : '';
+
+    const params = [req.tcOffice];
+    let filter = '';
+    if (wanted) {
+      params.push(wanted);
+      filter = `AND i.hygienist_name = $${params.length}`;
+    }
+
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      pool.query(
+        `SELECT ${store.INTAKE_COLS.map((c) => `i.${c}`).join(', ')},
+                c.patient_name, c.status AS case_status
+           FROM tc_hygiene_intakes i
+           JOIN tc_cases c ON c.case_id = i.case_id AND c.office_id = i.office_id
+          WHERE i.office_id = $1 ${filter}
+          ORDER BY i.submitted_at DESC
+          LIMIT 200`,
+        params
+      )
+    );
+
+    // The chip list is derived from the UNFILTERED set — otherwise selecting a
+    // chip would erase every other chip and strand the user on one filter.
+    const names = await tenantDb.withTenantDb(req, (pool) =>
+      pool.query(
+        `SELECT DISTINCT hygienist_name
+           FROM tc_hygiene_intakes
+          WHERE office_id = $1 AND hygienist_name <> ''
+          ORDER BY hygienist_name`,
+        [req.tcOffice]
+      )
+    );
+
+    await auditTc(req, 'READ', 'tc_hygiene_intake', null);
+    res.json({
+      success: true,
+      intakes: rows.rows.map((r) => ({
+        ...store.normalizeIntakeRow(r),
+        patient_name: r.patient_name,
+        case_status: r.case_status,
+      })),
+      hygienists: names.rows.map((r) => r.hygienist_name),
+    });
   })
 );
 

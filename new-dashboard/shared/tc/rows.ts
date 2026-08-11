@@ -144,6 +144,8 @@ export interface TcHygieneIntakeRow {
   office_id: OfficeId;
   submitted_by: string;
   submitted_by_name: string;
+  /** Clinical attribution — see TcHygieneIntake.hygienistName. */
+  hygienist_name: string;
   submitted_at: Iso;
   operatory: string;
   visit_date: string | null;
@@ -298,6 +300,9 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
         office_id: office,
         submitted_by: c.hygieneIntake.submittedBy,
         submitted_by_name: c.hygieneIntake.submittedByName,
+        // Falls back to the signed-in user's display name when the form did not
+        // carry a pick, so a row is never attributed to nobody.
+        hygienist_name: c.hygieneIntake.hygienistName || c.hygieneIntake.submittedByName,
         submitted_at: c.hygieneIntake.submittedAt,
         operatory: c.hygieneIntake.operatory,
         visit_date: c.hygieneIntake.visitDate,
