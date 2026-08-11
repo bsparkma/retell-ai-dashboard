@@ -51,3 +51,32 @@ export function callNeedsAttention(c: UnifiedCall, mangoWorklistMode: MangoWorkl
   }
   return true;
 }
+
+/**
+ * Which single row action gets to carry a WORD instead of just an icon.
+ *
+ * A worklist row can offer five actions at once, and when each one wore a label they
+ * collectively squeezed the patient's name down to a few characters. Only the call's next
+ * logical step earns a label now; everything else is an icon with a tooltip.
+ *
+ * These are not new rules — they are the same conditions the row already used to decide
+ * whether to render "Send to chart" (PatientIdentityCell) and "Transcribe"
+ * (TranscribeAction), hoisted here so one row can't show two labels.
+ *
+ * Order matters: a matched staff call with no transcript satisfies both, and filing the
+ * chart note is the step that closes the call out, so it wins.
+ */
+export type RowPrimaryAction = "send_to_chart" | "transcribe" | null;
+
+export function rowPrimaryAction(c: UnifiedCall, odConnectedForCall: boolean): RowPrimaryAction {
+  // Matched but not yet on the chart — the review-then-send step. Mirrors the
+  // PatientIdentityCell branch order: no OD for this call's office, or a not-a-patient
+  // close-out, means there is no chart action at all.
+  if (odConnectedForCall && !c.notAPatient && c.odSyncStatus !== "synced" && c.odPatientId) {
+    return "send_to_chart";
+  }
+  // A staff call nobody has read yet. (A Retell call arrives with a transcript; a Mango
+  // call that already has one needs nothing.)
+  if (c.source === "mango" && !c.hasTranscript) return "transcribe";
+  return null;
+}

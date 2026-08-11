@@ -18,9 +18,10 @@ import {
 } from "@/components/ui/popover";
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
-  CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, ChevronDown, Loader2, PlugZap, Clock, Send,
-  FileText, VolumeX,
+  CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
+  FileText, VolumeX, RotateCcw,
 } from "lucide-react";
+import { ActionTooltip, IconAction, ACTION_HEIGHT, ICON_ACTION_CLASS } from "@/components/calls/IconAction";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
   type TranscribeResult, type SyncStatus,
@@ -29,7 +30,8 @@ import { syncToast, syncCaption, SYNC_COOLDOWN_SECONDS } from "@/lib/sync";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
-import { callNeedsAttention, isAiDuplicateLeg } from "@/lib/worklist";
+import { callNeedsAttention, isAiDuplicateLeg, rowPrimaryAction } from "@/lib/worklist";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
@@ -375,7 +377,23 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     [syncStatus],
   );
 
-  const GRID = "2.2fr 1.7fr 1.3fr 1.9fr";
+  // Column template. Patient gets a real MINIMUM rather than a share of whatever is left,
+  // because the previous `1.7fr` share was routinely spent by the buttons that used to sit
+  // beside the name.
+  //
+  // Actions is a FIXED width, not `max-content`. Every row is its own grid container, so a
+  // content-sized last column makes each row solve for different column widths — the
+  // Patient column then starts at a different x on every row, and a tidy table reads as a
+  // broken one. A fixed track is wide enough for the worst case (one labeled button plus
+  // four icons) and identical on every row; rows with fewer actions right-align inside it.
+  //
+  // Below ~1100px Signals folds into the Patient cell (as chips under the name) instead of
+  // all four columns crushing each other. Inline gridTemplateColumns can't carry a media
+  // query, so the layout has to know the width in JS.
+  const wide = useMediaQuery("(min-width: 1100px)");
+  const GRID = wide
+    ? "minmax(180px,2fr) minmax(220px,1.8fr) minmax(90px,1fr) 17rem"
+    : "minmax(160px,2fr) minmax(200px,1.8fr) 17rem";
 
   return (
     <>
@@ -553,8 +571,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           >
             <div>Caller</div>
             <div>Patient</div>
-            <div>Signals</div>
-            <div>Triage</div>
+            {wide && <div>Signals</div>}
+            <div className="text-right">Actions</div>
           </div>
 
           {loading ? (
@@ -585,7 +603,9 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   </div>
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-foreground truncate flex items-center gap-1.5">
-                      <span className="truncate">{call.patientName}</span>
+                      {/* title so a name too long for the cell is still readable on hover —
+                          truncation is the last resort, never the only reading. */}
+                      <span className="truncate" title={call.patientName}>{call.patientName}</span>
                       <span
                         className={`inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0 ${call.source === "retell" ? "text-primary bg-primary/10" : "text-amber-700 bg-amber-500/10"}`}
                         title={call.source === "retell" ? "CareIN AI (Retell)" : "Staff-answered (Mango)"}
@@ -623,51 +643,39 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   </div>
                 </Link>
 
-                {/* Patient identity */}
+                {/* Patient identity — the name has this cell to itself. Every action that
+                    used to sit on this line moved to the Actions column. */}
                 <div className="min-w-0">
                   <PatientIdentityCell
                     call={call}
                     officeOdConnected={odConnectedForCall(call)}
                     officeName={offices.find((o) => o.officeId === call.officeId)?.officeName ?? null}
                     onPick={() => setPickCall(call)}
-                    onSend={() => setSendTarget({
-                      call,
-                      patientId: Number(call.odPatientId),
-                      patientName: call.odPatientName || `PatNum ${call.odPatientId}`,
-                    })}
-                    onSentToTc={(result) => onSentToTc(call, result)}
                   />
+                  {/* Narrow viewports: signals live under the name rather than as a fourth
+                      column squeezing it. */}
+                  {!wide && <RowSignals call={call} className="mt-1.5" />}
                 </div>
 
-                {/* Signals (disposition chips) + the on-demand transcribe action */}
-                <div className="flex flex-wrap items-center gap-1">
-                  {/* Filter-only chips are excluded here — "Answered by CareIN AI" already
-                      renders as its own linked badge next to the caller, and showing it
-                      twice on the same row would just be noise. */}
-                  {CHIPS.filter((chip) => !ALL_CALLS_ONLY_CHIPS.has(chip.key) && chip.match(call)).map((chip) => {
-                    const Icon = chip.icon;
-                    return (
-                      <span
-                        key={chip.key}
-                        className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full"
-                        style={{ color: chip.color, backgroundColor: chip.bg }}
-                        title={chip.label}
-                      >
-                        <Icon size={10} /> {chip.label}
-                      </span>
-                    );
+                {/* Signals (disposition chips + passive indicators) */}
+                {wide && <RowSignals call={call} />}
+
+                {/* Actions — every row control, right-aligned, one label at most */}
+                <RowActions
+                  call={call}
+                  odConnected={odConnectedForCall(call)}
+                  transcribeRunning={transcribe.isRunning(call.id)}
+                  onTranscribe={() => transcribe.request(call.id, call.transcribeLastOutcome, call.linkRole)}
+                  onSend={() => setSendTarget({
+                    call,
+                    patientId: Number(call.odPatientId),
+                    patientName: call.odPatientName || `PatNum ${call.odPatientId}`,
                   })}
-                  <TranscribeAction
-                    call={call}
-                    running={transcribe.isRunning(call.id)}
-                    onTranscribe={() => transcribe.request(call.id, call.transcribeLastOutcome, call.linkRole)}
-                  />
-                </div>
-
-                {/* Triage */}
-                <div>
-                  <TriageCell call={call} onFollowUp={() => applyTriage(call, "needs_action")} onDone={applyTriage} onReopen={() => reopen(call)} />
-                </div>
+                  onSentToTc={(result) => onSentToTc(call, result)}
+                  onFollowUp={() => applyTriage(call, "needs_action")}
+                  onDone={applyTriage}
+                  onReopen={() => reopen(call)}
+                />
               </div>
             ))
           )}
@@ -711,64 +719,153 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 // ---------------------------------------------------------------------------
 
 /**
- * (M4) The row-level "Transcribe" action. Only offered for staff (Mango) calls that don't
- * have a transcript yet — a Retell call arrives with one, and a Mango call that already
- * has one needs nothing. Honest states: idle → "Transcribing…" (disabled) → the transcript
- * indicator once the server confirms it is saved.
+ * The passive half of a row: disposition chips, the transcript indicator, and the
+ * resolved triage outcome. Everything here states a FACT about the call — nothing is
+ * clickable, so none of it competes with the patient's name or the Actions column.
  *
- * The fourth state is "No speech detected": an attempt that BILLED and found nothing. Still
- * clickable — that is a human's call to make — but the click goes through a confirmation,
- * because a retry is a fresh charge for the same silent recording.
+ * Rendered as its own column on wide viewports and folded under the name below ~1100px.
  */
-function TranscribeAction({
-  call, running, onTranscribe,
-}: { call: UnifiedCall; running: boolean; onTranscribe: () => void }) {
-  if (call.source !== "mango") return null;
+function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: string }) {
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {/* Filter-only chips are excluded here — "Answered by CareIN AI" already
+          renders as its own linked badge next to the caller, and showing it
+          twice on the same row would just be noise. */}
+      {CHIPS.filter((chip) => !ALL_CALLS_ONLY_CHIPS.has(chip.key) && chip.match(call)).map((chip) => {
+        const Icon = chip.icon;
+        return (
+          <span
+            key={chip.key}
+            className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full"
+            style={{ color: chip.color, backgroundColor: chip.bg }}
+            title={chip.label}
+          >
+            <Icon size={10} /> {chip.label}
+          </span>
+        );
+      })}
 
-  if (call.hasTranscript) {
-    return (
-      <span
-        className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-muted-foreground bg-muted"
-        title="This call has a transcript"
-      >
-        <FileText size={10} /> Transcript
-      </span>
-    );
-  }
+      {/* (M4) A staff call that has already been read. The ACTION that produces it lives
+          in the Actions column; this is only the resulting state. */}
+      {call.source === "mango" && call.hasTranscript && (
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-muted-foreground bg-muted"
+          title="This call has a transcript"
+        >
+          <FileText size={10} /> Transcript
+        </span>
+      )}
 
+      {/* Resolved triage. This used to live in the Triage column beside the Follow up /
+          Done buttons; the buttons became icons in Actions, and the outcome — which is a
+          fact, not an action — belongs with the other facts. */}
+      {call.triageStatus === "done" && (
+        <>
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-emerald-700 bg-emerald-500/10">
+            <CheckCircle2 size={10} />
+            {call.triageOutcome ? OUTCOME_LABEL[call.triageOutcome] : "Done"}
+          </span>
+          {/* w-full puts attribution on its own line inside the wrapping chip row, so a
+              long name can't push the chips out of the column. */}
+          {call.triageBy && (
+            <span className="w-full text-[10px] text-muted-foreground">
+              {formatAttribution(call.triageBy.name, call.triageAt)}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Every action a row offers, in one right-aligned column, in a stable order:
+ * Send to chart · Transcribe · Send to TC · Follow up · Done (or Reopen).
+ *
+ * AT MOST ONE carries a word — `rowPrimaryAction` picks it from the call's state. The
+ * rest are icons with tooltips. This is purely about width: the guards, handlers and
+ * confirmations below are the same ones the old Patient / Signals / Triage cells used.
+ */
+function RowActions({
+  call, odConnected, transcribeRunning, onTranscribe, onSend, onSentToTc, onFollowUp, onDone, onReopen,
+}: {
+  call: UnifiedCall;
+  odConnected: boolean;
+  transcribeRunning: boolean;
+  onTranscribe: () => void;
+  onSend: () => void;
+  /** (M6) The call was handed to Treatment Coordinator. */
+  onSentToTc: (result: SendToTcResult) => void;
+  onFollowUp: () => void;
+  onDone: (call: UnifiedCall, status: "done", outcome: TriageOutcome, note?: string) => void;
+  onReopen: () => void;
+}) {
+  const primary = rowPrimaryAction(call, odConnected);
+
+  // Same conditions the old cells used, unchanged.
+  //  - a chart write needs an OD-connected office, a live (non-close-out) call, a matched
+  //    patient, and a note not already sent;
+  //  - SendToTcButton decides its own visibility (sendToTcState) but was only ever
+  //    reachable from an OD-connected, non-close-out row, so that gate is preserved here;
+  //  - transcription is offered for staff calls with no transcript yet.
+  const canSendToChart =
+    odConnected && !call.notAPatient && call.odSyncStatus !== "synced" && Boolean(call.odPatientId);
+  const canOfferTc = odConnected && !call.notAPatient;
+  const canTranscribe = call.source === "mango" && !call.hasTranscript;
+  // An attempt that BILLED and found nothing. Still clickable — that is a human's call —
+  // but the click goes through a confirmation, because a retry is a fresh charge for the
+  // same silent recording.
   const noSpeech = needsRebillConfirm(call.transcribeLastOutcome);
+  const transcribeLabel = transcribeRunning
+    ? "Transcribing…"
+    : noSpeech
+      ? "No speech was found last time — transcribing again will spend budget again"
+      : "Transcribe and summarize this call (uses the daily transcription budget)";
+  const transcribeIcon = transcribeRunning
+    ? <Loader2 size={13} className="animate-spin" />
+    : noSpeech ? <VolumeX size={13} /> : <FileText size={13} />;
 
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      disabled={running}
-      onClick={onTranscribe}
-      title={noSpeech
-        ? "No speech was found last time — transcribing again will spend budget again"
-        : "Transcribe and summarize this call (uses the daily transcription budget)"}
-      className={`h-7 gap-1 text-[11px] px-2 ${noSpeech ? "text-muted-foreground" : ""}`}
-    >
-      {running
-        ? <><Loader2 size={11} className="animate-spin" /> Transcribing…</>
-        : noSpeech
-        ? <><VolumeX size={11} /> No speech detected</>
-        : <><FileText size={11} /> Transcribe</>}
-    </Button>
+    <div className="flex items-center justify-end gap-1.5" data-testid="row-actions">
+      {canSendToChart && (
+        <Button size="sm" className={`${ACTION_HEIGHT} gap-1 text-[11px] px-2.5 flex-shrink-0`} onClick={onSend}>
+          <Send size={12} /> Send to chart
+        </Button>
+      )}
+
+      {canTranscribe && (
+        primary === "transcribe" ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={transcribeRunning}
+            onClick={onTranscribe}
+            title={transcribeLabel}
+            className={`${ACTION_HEIGHT} gap-1 text-[11px] px-2.5 flex-shrink-0 ${noSpeech ? "text-muted-foreground" : ""}`}
+          >
+            {transcribeIcon}
+            {transcribeRunning ? "Transcribing…" : noSpeech ? "No speech detected" : "Transcribe"}
+          </Button>
+        ) : (
+          <IconAction label={transcribeLabel} icon={transcribeIcon} disabled={transcribeRunning} onClick={onTranscribe} />
+        )
+      )}
+
+      {canOfferTc && <SendToTcButton call={call} onSent={onSentToTc} variant="icon" />}
+
+      <TriageActions call={call} onFollowUp={onFollowUp} onDone={onDone} onReopen={onReopen} />
+    </div>
   );
 }
 
 function PatientIdentityCell({
-  call, officeOdConnected, officeName, onPick, onSend, onSentToTc,
+  call, officeOdConnected, officeName, onPick,
 }: {
   call: UnifiedCall;
   officeOdConnected: boolean;
   /** Display name of this call's office; null when the office isn't in the roster. */
   officeName: string | null;
   onPick: () => void;
-  onSend: () => void;
-  /** (M6) The call was handed to Treatment Coordinator. */
-  onSentToTc: (result: SendToTcResult) => void;
 }) {
   // No Open Dental for THIS call's office → no chart actions, and an honest reason.
   // Two distinct situations, because the answer to "what do I do about it?" differs:
@@ -793,54 +890,62 @@ function PatientIdentityCell({
   }
   // Sent = the chart note was written (od_sync_status 'synced').
   if (call.odSyncStatus === "synced") {
+    const name = call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "chart");
     return (
-      <div className="flex items-center gap-1.5 min-w-0">
-        <Link href={`/calls/${call.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline truncate">
-          <CheckCircle2 size={12} className="text-emerald-600 flex-shrink-0" />
-          Sent · {call.odPatientName || (call.odPatientId ? `PatNum ${call.odPatientId}` : "chart")}
-        </Link>
-        {/* (M6) A call already on the chart can still be worth a TC case. */}
-        <SendToTcButton call={call} onSent={onSentToTc} />
-      </div>
+      <Link
+        href={`/calls/${call.id}`}
+        className="flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline min-w-0"
+        title={`Sent to ${name}'s chart`}
+      >
+        <CheckCircle2 size={12} className="text-emerald-600 flex-shrink-0" />
+        <span className="truncate">Sent · {name}</span>
+      </Link>
     );
   }
-  // Matched but NOT sent (review-then-send): a patient is linked (od_patient_id) but
-  // no chart note has been written. Surface the match + a Send button (opens the
-  // confirm-preview dialog). Nothing is written until the human confirms.
+  // Matched but NOT sent (review-then-send): a patient is linked (od_patient_id) but no
+  // chart note has been written. The Send button that used to sit on this line — and take
+  // most of it — is now the row's one labeled action in the Actions column. Nothing about
+  // the flow changed: nothing is written until the human confirms in the dialog.
   if (call.odPatientId) {
+    const name = call.odPatientName || `PatNum ${call.odPatientId}`;
     return (
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-sky-700 truncate" title="Auto-matched — review before sending">
-          <UserCheck size={12} className="text-sky-600 flex-shrink-0" />
-          Matched: {call.odPatientName || `PatNum ${call.odPatientId}`}
-        </span>
-        <Button size="sm" className="h-7 gap-1 text-[11px] px-2 flex-shrink-0" onClick={onSend}>
-          <Send size={11} /> Send to chart
-        </Button>
-        {/* (M6) The other thing you can do with a matched call — file it with TC.
-            Not a chart write, so it stands apart from the review-then-send flow. */}
-        <SendToTcButton call={call} onSent={onSentToTc} />
-      </div>
+      <span
+        className="flex items-center gap-1 text-xs font-medium text-sky-700 min-w-0"
+        title={`${name} — auto-matched, review before sending`}
+      >
+        <UserCheck size={12} className="text-sky-600 flex-shrink-0" />
+        <span className="truncate">Matched: {name}</span>
+      </span>
     );
   }
   // No linked patient → actionable. Stored candidates (Slice-A needs_review) label as
   // "Needs match (N)"; everything else (incl. pull-synced calls) is "Unmatched". The
   // button opens the modal, which offers BOTH Pick Patient and the not-a-patient close-out.
   const n = call.odMatchCandidates?.length ?? 0;
+  const label = n > 0 ? `Needs match (${n})` : "Unmatched";
   return (
     <button
       onClick={onPick}
       title="Match to a patient or mark not a patient"
-      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md border transition-colors hover:bg-amber-500/10"
+      // ACTION_HEIGHT so this status chip lines up with the buttons across the row —
+      // the old mix of 28px chips and 32px buttons is what made rows read as noisy.
+      className={`inline-flex ${ACTION_HEIGHT} items-center gap-1 text-xs font-medium px-2 rounded-md border transition-colors hover:bg-amber-500/10`}
       style={{ color: "oklch(0.52 0.14 75)", borderColor: "oklch(0.75 0.14 75 / 0.5)" }}
     >
-      <UserSearch size={12} />
-      {n > 0 ? `Needs match (${n})` : "Unmatched"}
+      <UserSearch size={12} className="flex-shrink-0" />
+      <span className="truncate">{label}</span>
     </button>
   );
 }
 
-function TriageCell({
+/**
+ * Follow up / Done / Reopen — ALWAYS icon-only.
+ *
+ * These fire on every row regardless of state, so they are exactly the labels a row can't
+ * afford. The "Following up" distinction survives as the button's filled variant plus its
+ * tooltip, and the resolved outcome is rendered by RowSignals.
+ */
+function TriageActions({
   call, onFollowUp, onDone, onReopen,
 }: {
   call: UnifiedCall;
@@ -853,34 +958,34 @@ function TriageCell({
 
   if (call.triageStatus === "done") {
     return (
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 truncate">
-          <CheckCircle2 size={12} className="text-emerald-600 flex-shrink-0" />
-          {call.triageOutcome ? OUTCOME_LABEL[call.triageOutcome] : "Done"}
-          {call.triageBy && <span className="text-muted-foreground font-normal">— {formatAttribution(call.triageBy.name, call.triageAt)}</span>}
-        </span>
-        <button onClick={onReopen} className="text-[11px] text-muted-foreground underline flex-shrink-0">Reopen</button>
-      </div>
+      <IconAction
+        label="Reopen this call"
+        icon={<RotateCcw size={13} />}
+        variant="ghost"
+        onClick={onReopen}
+      />
     );
   }
 
+  const followingUp = call.triageStatus === "needs_action";
+
   return (
-    <div className="flex items-center gap-1.5">
-      <Button
-        size="sm"
-        variant={call.triageStatus === "needs_action" ? "secondary" : "outline"}
-        className="h-8 gap-1.5 text-xs"
+    <>
+      <IconAction
+        label={followingUp ? "Following up — click to keep it flagged" : "Flag for follow up"}
+        icon={<PhoneForwarded size={13} />}
+        variant={followingUp ? "secondary" : "outline"}
         onClick={onFollowUp}
-      >
-        <PhoneForwarded size={12} /> {call.triageStatus === "needs_action" ? "Following up" : "Follow up"}
-      </Button>
+      />
 
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button size="sm" className="h-8 gap-1 text-xs">
-            <CheckCircle2 size={12} /> Done <ChevronDown size={12} />
-          </Button>
-        </PopoverTrigger>
+        <ActionTooltip label="Mark done — choose an outcome">
+          <PopoverTrigger asChild>
+            <Button size="sm" className={ICON_ACTION_CLASS} aria-label="Mark done — choose an outcome">
+              <CheckCircle2 size={13} />
+            </Button>
+          </PopoverTrigger>
+        </ActionTooltip>
         <PopoverContent align="end" className="w-56 p-2">
           <div className="text-xs font-semibold text-muted-foreground px-1 pb-1.5">Outcome</div>
           <div className="space-y-0.5">
@@ -903,6 +1008,6 @@ function TriageCell({
           />
         </PopoverContent>
       </Popover>
-    </div>
+    </>
   );
 }

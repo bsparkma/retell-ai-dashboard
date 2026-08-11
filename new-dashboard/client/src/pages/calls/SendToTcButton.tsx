@@ -17,6 +17,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
+import { IconAction } from "@/components/calls/IconAction";
 import { KanbanSquare, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, type UnifiedCall } from "@/lib/api";
@@ -36,10 +37,12 @@ interface SendToTcButtonProps {
   /** Called after the server confirms the handoff, so the page can reflect it. */
   onSent: (result: SendToTcResult) => void;
   /**
-   * "row" = the compact worklist affordance; "panel" = the full-width button in
-   * the call-detail patient card, next to Send to chart.
+   * "row"   = the compact worklist affordance;
+   * "panel" = the full-width button in the call-detail patient card, next to Send to chart;
+   * "icon"  = square, label-only-on-hover, for the worklist's Actions column — where
+   *           five labeled buttons per row were what crushed the patient's name.
    */
-  variant?: "row" | "panel";
+  variant?: "row" | "panel" | "icon";
 }
 
 export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButtonProps) {
@@ -55,10 +58,13 @@ export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButton
 
   if (state.kind === "hidden") return null;
 
-  const compact = variant === "row";
-  const className = compact
-    ? "h-7 gap-1 text-[11px] px-2 flex-shrink-0"
-    : "w-full gap-1.5 text-xs";
+  const iconOnly = variant === "icon";
+  const compact = variant === "row" || iconOnly;
+  const className = iconOnly
+    ? "h-8 w-8 p-0 flex-shrink-0"
+    : compact
+      ? "h-7 gap-1 text-[11px] px-2 flex-shrink-0"
+      : "w-full gap-1.5 text-xs";
 
   // Already in TC → a link to the case, not a button. When the stored url is
   // somehow missing we still say "In TC" (the linkage is real) but don't offer a
@@ -66,7 +72,7 @@ export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButton
   if (state.kind === "sent") {
     const label = (
       <span className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-violet-700 bg-violet-500/10">
-        <KanbanSquare size={11} /> In TC
+        <KanbanSquare size={11} /> {iconOnly ? null : "In TC"}
       </span>
     );
     if (!state.caseUrl) {
@@ -110,6 +116,21 @@ export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButton
     }
   };
 
+  const hoverLabel = disabledReason ?? "Open or update this patient's Treatment Coordinator case";
+
+  // Icon-only (worklist Actions column): the same button, minus the word. The label moves
+  // to a real tooltip rather than a title attribute so it matches the other row actions.
+  if (iconOnly) {
+    return (
+      <IconAction
+        label={sending ? "Sending to TC…" : disabledReason ? `Send to TC — ${disabledReason}` : "Send to TC"}
+        icon={sending ? <Loader2 size={13} className="animate-spin" /> : <KanbanSquare size={13} />}
+        disabled={sending || disabledReason !== null}
+        onClick={send}
+      />
+    );
+  }
+
   return (
     <Button
       size="sm"
@@ -117,7 +138,7 @@ export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButton
       className={className}
       disabled={sending || disabledReason !== null}
       onClick={send}
-      title={disabledReason ?? "Open or update this patient's Treatment Coordinator case"}
+      title={hoverLabel}
     >
       {sending
         ? <><Loader2 size={compact ? 11 : 12} className="animate-spin" /> Sending…</>
