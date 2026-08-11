@@ -52,12 +52,14 @@ const cleanups = [];
 test.afterEach(async () => { while (cleanups.length) await cleanups.pop()(); });
 
 /** The router mounted with a session/tenant already attached, as server.js does upstream. */
-async function startApp() {
+async function startApp({ role = 'office' } = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.user = { name: 'Front Desk', email: 'desk@example.com' };
     req.tenant = { id: 'tenant-test' };
+    // Roles PR A: tenantContext attaches this upstream in the real app.
+    req.userRole = role;
     next();
   });
   app.use('/api/mango', mangoRouter);

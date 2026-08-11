@@ -37,6 +37,14 @@ function giveOfficesTestCredentials() {
 
 const SESSION_USER = { name: 'Sarah Front', email: 'sarah@carein.ai' };
 
+/**
+ * The caller's app_user.role (Roles PR A). tenantContext attaches this upstream
+ * in the real app; these harnesses mount the router directly, so they stamp it
+ * themselves. Defaults to 'admin' and is reset per test; the role-gating tests
+ * below reassign it to check a specific refusal.
+ */
+let sessionRole = 'admin';
+
 let server;
 let baseUrl;
 let originalRequestPersist;
@@ -53,6 +61,7 @@ function clearStore() {
 }
 
 beforeEach(async () => {
+  sessionRole = 'admin';
   originalRequestPersist = unifiedCallStore.requestPersist;
   unifiedCallStore.requestPersist = () => {};
   clearStore();
@@ -100,6 +109,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.use((req, _res, next) => {
     req.user = SESSION_USER;
+    req.userRole = sessionRole;
     req.tenant = { id: 'tenant-test' };
     next();
   });

@@ -20,6 +20,7 @@ const express = require('express');
 
 const registry = require('../../platform/registry');
 const tenantDb = require('../../platform/tenantDb');
+const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
@@ -266,24 +267,59 @@ class FakeTenantDb {
   }
 }
 
-const REGISTRY_KEYS = ['getUserByEmail', 'getTenantById', 'getTenantClinics', 'getEnabledModules'];
+const REGISTRY_KEYS = [
+  'getUserByEmail',
+  'getTenantById',
+  'getTenantClinics',
+  'getEnabledModules',
+  'getPlatformAdminByEmail',
+  'touchUserLogin',
+];
 
 /**
  * Boot the real /api/tc stack over an ephemeral HTTP server.
  *
- * @param {{ modules?: string[], user?: { email: string, name?: string, tenantId?: string } | null, db?: FakeTenantDb }} [opts]
+ * `role` is the caller's app_user.role (Roles PR A). It defaults to 'admin' so
+ * every pre-roles test keeps exercising the full surface; the role-gating tests
+ * pass 'hygiene' / 'tc' to check the tc.full vs tc.hygiene split.
+ *
+ * @param {{
+ *   modules?: string[],
+ *   user?: { email: string, name?: string, tenantId?: string } | null,
+ *   role?: 'admin'|'office'|'tc'|'hygiene',
+ *   superAdmin?: boolean,
+ *   db?: FakeTenantDb
+ * }} [opts]
  * @returns {Promise<{ baseUrl: string, db: FakeTenantDb, close: () => Promise<void> }>}
  */
-async function bootTcApp({ modules = ['tc'], user = { email: 'tc@carein.ai', name: 'TC User', tenantId: 'x' }, db = new FakeTenantDb() } = {}) {
+async function bootTcApp({
+  modules = ['tc'],
+  user = { email: 'tc@carein.ai', name: 'TC User', tenantId: 'x' },
+  role = 'admin',
+  superAdmin = false,
+  db = new FakeTenantDb(),
+} = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
     withTenantDb: tenantDb.withTenantDb,
   };
 
-  registry.getUserByEmail = async () => ({ user_id: 'U1', tenant_id: 'T1', email: user && user.email, role: 'admin' });
+  registry.getUserByEmail = async () => ({
+    user_id: 'U1',
+    tenant_id: 'T1',
+    email: user && user.email,
+    role,
+    status: 'active',
+  });
   registry.getTenantById = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN', status: 'active' });
   registry.getTenantClinics = async () => [];
   registry.getEnabledModules = async () => modules;
+  registry.getPlatformAdminByEmail = async () =>
+    superAdmin ? { email: (user && user.email) || '', status: 'active', created_at: new Date() } : null;
+  registry.touchUserLogin = async () => {};
+  // The identity cache is process-wide; a stale entry from a previous boot
+  // would answer this app's lookups with the previous test's role.
+  userContext.clearCache();
   tenantDb.withTenantDb = async (_req, fn) => fn(db);
 
   const app = express();

@@ -5,12 +5,15 @@ const test = require('node:test');
 const { afterEach } = test;
 
 const registry = require('../platform/registry');
+const userContext = require('../platform/userContext');
 const {
   tenantContext,
+  resolveUserContext,
   requireEntitledClinic,
   requireModule,
   isEntitledModule,
   CAREIN_FALLBACK,
+  FALLBACK_ROLE,
 } = require('./tenantContext');
 
 // --- test doubles ----------------------------------------------------------
@@ -48,12 +51,26 @@ const REGISTRY_KEYS = [
   'getTenantBySlug',
   'getTenantClinics',
   'getEnabledModules',
+  'getPlatformAdminByEmail',
+  'touchUserLogin',
 ];
 const original = {};
 for (const k of REGISTRY_KEYS) original[k] = registry[k];
 
+// The identity read is cached (platform/userContext, 60s TTL) and is shared
+// process-wide, so it MUST be cleared between tests or one test's stubbed user
+// answers the next test's lookup. Roles PR A.
+test.beforeEach(() => {
+  userContext.clearCache();
+  // Sensible defaults for the two Roles PR A lookups, so tests that predate
+  // roles (and care only about tenant resolution) don't have to stub them.
+  registry.getPlatformAdminByEmail = async () => null;
+  registry.touchUserLogin = async () => {};
+});
+
 afterEach(() => {
   for (const k of REGISTRY_KEYS) registry[k] = original[k];
+  userContext.clearCache();
 });
 
 const CLINICS = [
@@ -285,3 +302,156 @@ test('requireModule: empty module name throws at construction (misuse is loud)',
 // NOTE: the slot-markers route is now thin and delegates to odAccess; its
 // clinic-entitlement + connector-forwarding behavior is covered in
 // platform/odAccess.test.js.
+
+// --- role attachment (Roles PR A) ------------------------------------------
+
+/** Wire the registry for one user and run tenantContext over a /calls request. */
+async function runWithUser({ appUser, platformAdmin = null, email, tid = CAREIN_FALLBACK.entraTenantId }) {
+  registry.getUserByEmail = async () => appUser;
+  registry.getTenantById = async (id) => ({ tenant_id: id, slug: 'carein', display_name: 'CareIN Dental LLC' });
+  registry.getTenantBySlug = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN Dental LLC' });
+  registry.getTenantClinics = async () => CLINICS;
+  registry.getEnabledModules = async () => ['voice'];
+  registry.getPlatformAdminByEmail = async () => platformAdmin;
+
+  const mw = tenantContext();
+  const req = { path: '/calls', user: { email, tenantId: tid } };
+  const res = makeRes();
+  const next = makeNext();
+  await mw(req, res, next);
+  return { req, res, next };
+}
+
+test('roles: a seeded user gets their app_user role on req.userRole', async () => {
+  const { req, next } = await runWithUser({
+    email: 'hyg@carein.ai',
+    appUser: { user_id: 'U9', tenant_id: 'T1', email: 'hyg@carein.ai', role: 'hygiene', status: 'active' },
+  });
+
+  assert.equal(next.calls.count, 1);
+  assert.equal(req.userRole, 'hygiene');
+  assert.equal(req.isSuperAdmin, false);
+});
+
+test('roles: a DISABLED app_user resolves a tenant but NO role (denied every action)', async () => {
+  const { req, next } = await runWithUser({
+    email: 'gone@carein.ai',
+    appUser: { user_id: 'U8', tenant_id: 'T1', email: 'gone@carein.ai', role: 'admin', status: 'disabled' },
+  });
+
+  // The tenant still resolves, so the user gets an honest per-action 403 rather
+  // than a confusing "no tenant is mapped to this account".
+  assert.equal(next.calls.count, 1);
+  assert.equal(req.tenant.slug, 'carein');
+  assert.equal(req.userRole, null);
+});
+
+test('roles: an active platform_admin sets req.isSuperAdmin', async () => {
+  const { req } = await runWithUser({
+    email: 'admin@carein.ai',
+    appUser: { user_id: 'U1', tenant_id: 'T1', email: 'admin@carein.ai', role: 'admin', status: 'active' },
+    platformAdmin: { email: 'admin@carein.ai', status: 'active', created_at: new Date() },
+  });
+
+  assert.equal(req.userRole, 'admin');
+  assert.equal(req.isSuperAdmin, true);
+});
+
+test('roles: a disabled platform_admin row does NOT grant super_admin', async () => {
+  const { req } = await runWithUser({
+    email: 'ex@carein.ai',
+    appUser: { user_id: 'U7', tenant_id: 'T1', email: 'ex@carein.ai', role: 'office', status: 'active' },
+    platformAdmin: { email: 'ex@carein.ai', status: 'disabled', created_at: new Date() },
+  });
+
+  assert.equal(req.isSuperAdmin, false);
+});
+
+test('roles: the PR A fallback degrades an unseeded @carein.ai user to office, and warns once', async () => {
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (msg) => warnings.push(String(msg));
+  try {
+    const first = await runWithUser({ email: 'unseeded@carein.ai', appUser: null });
+    assert.equal(first.next.calls.count, 1);
+    assert.equal(first.req.tenant.slug, 'carein');
+    assert.equal(first.req.userRole, FALLBACK_ROLE);
+    assert.equal(first.req.userRole, 'office', 'the fallback must never be admin');
+
+    // A second request from the same user goes through the fallback again and
+    // must not warn a second time.
+    const second = await runWithUser({ email: 'unseeded@carein.ai', appUser: null });
+    assert.equal(second.req.userRole, FALLBACK_ROLE);
+  } finally {
+    console.warn = realWarn;
+  }
+
+  const roleWarnings = warnings.filter((w) => w.includes('NO app_user ROW'));
+  assert.equal(roleWarnings.length, 1, 'exactly one warning per user per process');
+  assert.match(roleWarnings[0], /unseeded@carein\.ai/);
+});
+
+test('roles: a super_admin with no app_user row still gets isSuperAdmin via the fallback', async () => {
+  const { req } = await runWithUser({
+    email: 'platform@carein.ai',
+    appUser: null,
+    platformAdmin: { email: 'platform@carein.ai', status: 'active', created_at: new Date() },
+  });
+
+  assert.equal(req.userRole, FALLBACK_ROLE);
+  assert.equal(req.isSuperAdmin, true);
+});
+
+test('roles: last_login_at is stamped at most once per cache TTL, and a failure does not fail the request', async () => {
+  let stamps = 0;
+  registry.touchUserLogin = async () => {
+    stamps += 1;
+    throw new Error('control db write failed');
+  };
+
+  const appUser = { user_id: 'U5', tenant_id: 'T1', email: 'stamp@carein.ai', role: 'office', status: 'active' };
+  const a = await runWithUser({ email: 'stamp@carein.ai', appUser });
+  registry.touchUserLogin = async () => {
+    stamps += 1;
+    throw new Error('control db write failed');
+  };
+  const b = await runWithUser({ email: 'stamp@carein.ai', appUser });
+
+  await new Promise((r) => setTimeout(r, 5));
+
+  assert.equal(a.next.calls.count, 1, 'a failing stamp must not fail the request');
+  assert.equal(b.next.calls.count, 1);
+  assert.equal(stamps, 1, 'throttled to one write per TTL despite two requests');
+});
+
+test('roles: a control-DB failure during role resolution still fails CLOSED (503)', async () => {
+  registry.getUserByEmail = async () => {
+    throw new Error('control db down');
+  };
+  registry.getPlatformAdminByEmail = async () => null;
+
+  const mw = tenantContext();
+  const req = { path: '/calls', user: { email: 'a@carein.ai', tenantId: CAREIN_FALLBACK.entraTenantId } };
+  const res = makeRes();
+  const next = makeNext();
+  await mw(req, res, next);
+
+  assert.equal(next.calls.count, 0);
+  assert.equal(res.statusCode, 503);
+  assert.equal(req.userRole, undefined);
+});
+
+test('roles: resolveUserContext returns tenant + role + isSuperAdmin together', async () => {
+  registry.getUserByEmail = async () => ({
+    user_id: 'U1', tenant_id: 'T1', email: 'x@carein.ai', role: 'tc', status: 'active',
+  });
+  registry.getTenantById = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN Dental LLC' });
+  registry.getPlatformAdminByEmail = async () => null;
+
+  const resolved = await resolveUserContext({ email: 'x@carein.ai', tenantId: 'whatever' });
+
+  assert.equal(resolved.tenant.slug, 'carein');
+  assert.equal(resolved.role, 'tc');
+  assert.equal(resolved.isSuperAdmin, false);
+  assert.equal(resolved.viaFallback, false);
+});

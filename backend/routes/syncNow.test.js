@@ -29,6 +29,14 @@ const audit = require('../platform/audit');
 
 const SESSION_USER = { name: 'Sarah Front', email: 'sarah@carein.ai' };
 
+/**
+ * The caller's app_user.role (Roles PR A). tenantContext attaches this upstream
+ * in the real app; these harnesses mount the router directly, so they stamp it
+ * themselves. Defaults to 'admin' and is reset per test; the role-gating tests
+ * below reassign it to check a specific refusal.
+ */
+let sessionRole = 'admin';
+
 let server;
 let baseUrl;
 let original;
@@ -37,6 +45,7 @@ let auditRows;
 let calls;
 
 beforeEach(async () => {
+  sessionRole = 'admin';
   manualSyncThrottle.reset();
   auditRows = [];
   calls = { retell: 0, mango: 0 };
@@ -64,6 +73,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.use((req, _res, next) => {
     req.user = SESSION_USER;
+    req.userRole = sessionRole;
     req.tenant = { id: 'tenant-test' };
     next();
   });

@@ -18,6 +18,7 @@ const { randomUUID } = require('node:crypto');
 
 const { contract, requireOffice, actorEmail, actorName, parseBody, h, auditTc, notFound } = require('./helpers');
 const { withTenantTx } = require('./tx');
+const { requirePermission } = require('../../config/permissions');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
 
@@ -223,8 +224,14 @@ router.get(
 
 // ── POST /:caseId/claim — TC takes the case out of the inbox ────────────────
 
+// The one route in this router that is NOT part of the hygiene grant. Claiming
+// assigns the caller as the case's TC and moves it to pending_tc — a TC action
+// that happens to live on a Hygiene-nav page. A hygienist can watch the inbox;
+// they cannot make themselves the coordinator on a case. tc.full narrows the
+// mount's tc.hygiene (index.js).
 router.post(
   '/:caseId/claim',
+  requirePermission('tc.full'),
   h(async (req, res) => {
     const parsed = Uuid.safeParse(req.params.caseId);
     if (!parsed.success) return notFound(res, 'case');

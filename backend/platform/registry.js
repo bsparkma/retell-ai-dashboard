@@ -56,7 +56,16 @@ const { loadSecrets } = require('../config/secrets');
  * @property {string} user_id
  * @property {string} tenant_id
  * @property {string} email
- * @property {string} role
+ * @property {string} role            'admin' | 'office' | 'tc' | 'hygiene' (legacy rows may say 'staff')
+ * @property {string} status          'active' | 'disabled'
+ * @property {Date|null} last_login_at
+ */
+
+/**
+ * @typedef {Object} PlatformAdmin
+ * @property {string} email           lowercased
+ * @property {string} status          'active' | 'disabled'
+ * @property {Date}   created_at
  */
 
 /** @type {import('pg').Pool | null} */
@@ -238,13 +247,153 @@ async function getTenantDbRef(tenantId) {
  */
 async function getUserByEmail(email) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
        FROM app_user
       WHERE lower(email) = lower($1)
       LIMIT 1`,
     [email]
   );
   return rows[0] || null;
+}
+
+// --- platform tier (super_admin) --------------------------------------------
+
+/**
+ * Look up a platform admin by email (case-insensitive; the column is stored
+ * lowercased and CHECK-constrained to stay that way).
+ *
+ * Returns the row whatever its status — callers decide what 'disabled' means.
+ * The one caller that grants authority (tenantContext) requires status
+ * 'active' explicitly, so a disabled row can never read as a super_admin by
+ * omission.
+ * @param {string} email
+ * @returns {Promise<PlatformAdmin|null>}
+ */
+async function getPlatformAdminByEmail(email) {
+  const { rows } = await query(
+    `SELECT email, status, created_at
+       FROM platform_admin
+      WHERE email = lower($1)
+      LIMIT 1`,
+    [email]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * List every platform admin, ordered by email.
+ * @returns {Promise<PlatformAdmin[]>}
+ */
+async function listPlatformAdmins() {
+  const { rows } = await query(
+    `SELECT email, status, created_at
+       FROM platform_admin
+      ORDER BY email`
+  );
+  return rows;
+}
+
+/**
+ * Grant super_admin. Idempotent; re-granting a disabled admin re-activates it.
+ * @param {string} email
+ * @returns {Promise<PlatformAdmin>}
+ */
+async function addPlatformAdmin(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) throw new Error('[registry] addPlatformAdmin: email is required');
+  const { rows } = await query(
+    `INSERT INTO platform_admin (email, status)
+          VALUES ($1, 'active')
+     ON CONFLICT (email) DO UPDATE SET status = 'active'
+       RETURNING email, status, created_at`,
+    [normalized]
+  );
+  return rows[0];
+}
+
+/**
+ * THE LAST-SUPER-ADMIN RULE, enforced here rather than in a route.
+ *
+ * The last remaining ACTIVE super_admin can never be disabled or removed —
+ * doing so would lock every human out of the platform tier with no in-app way
+ * back. No mutation endpoint ships in PR A, but the rule lives at the
+ * data-access layer on purpose: PR C's platform console, a migration, and an
+ * ops one-liner all go through these functions, and none of them can forget a
+ * check they cannot reach around.
+ *
+ * Both statements are single UPDATE/DELETEs whose WHERE clause contains the
+ * count subquery, so the check and the write are atomic — two concurrent
+ * "remove the other one" calls cannot both succeed.
+ *
+ * @param {string} email
+ * @returns {Promise<boolean>} true if the row changed; false if it did not exist
+ * @throws {Error} if the write would leave zero active super_admins
+ */
+async function setPlatformAdminDisabled(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  const { rows } = await query(
+    `UPDATE platform_admin
+        SET status = 'disabled'
+      WHERE email = $1
+        AND status = 'active'
+        AND (SELECT count(*) FROM platform_admin WHERE status = 'active') > 1
+      RETURNING email`,
+    [normalized]
+  );
+  if (rows.length > 0) return true;
+  return assertNotLastActiveAdmin(normalized, 'disable');
+}
+
+/**
+ * Revoke super_admin entirely. Subject to the same last-admin rule.
+ * @param {string} email
+ * @returns {Promise<boolean>} true if a row was deleted; false if none existed
+ * @throws {Error} if the delete would leave zero active super_admins
+ */
+async function removePlatformAdmin(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  const { rows } = await query(
+    `DELETE FROM platform_admin
+      WHERE email = $1
+        AND (status <> 'active'
+             OR (SELECT count(*) FROM platform_admin WHERE status = 'active') > 1)
+      RETURNING email`,
+    [normalized]
+  );
+  if (rows.length > 0) return true;
+  return assertNotLastActiveAdmin(normalized, 'remove');
+}
+
+/**
+ * Shared no-op-vs-refusal disambiguation for the two guarded writes above.
+ * The write's WHERE clause already refused; this decides which of the two
+ * reasons it was, so the caller gets a truthful answer instead of a silent
+ * false. Never invent a third outcome: either the row was absent (false) or
+ * the last-admin rule fired (throw).
+ * @param {string} normalizedEmail
+ * @param {'disable'|'remove'} verb
+ * @returns {Promise<false>}
+ */
+async function assertNotLastActiveAdmin(normalizedEmail, verb) {
+  const existing = await getPlatformAdminByEmail(normalizedEmail);
+  if (!existing) return false;
+  if (existing.status !== 'active') return false; // already disabled — nothing to do
+  throw new Error(
+    `[registry] refusing to ${verb} ${normalizedEmail}: it is the last active super_admin. ` +
+      'Grant super_admin to another account first.'
+  );
+}
+
+/**
+ * Stamp app_user.last_login_at. Best-effort by contract: the caller treats a
+ * rejection as "not stamped this window" and serves the request anyway — a
+ * bookkeeping column must never be able to fail a sign-in.
+ * @param {string} userId
+ * @param {Date} [at]
+ * @returns {Promise<void>}
+ */
+async function touchUserLogin(userId, at = new Date()) {
+  await query(`UPDATE app_user SET last_login_at = $2 WHERE user_id = $1`, [userId, at]);
 }
 
 /**
@@ -366,5 +515,11 @@ module.exports = {
   getEnabledModules,
   getTenantDbRef,
   getUserByEmail,
+  getPlatformAdminByEmail,
+  listPlatformAdmins,
+  addPlatformAdmin,
+  setPlatformAdminDisabled,
+  removePlatformAdmin,
+  touchUserLogin,
   close,
 };

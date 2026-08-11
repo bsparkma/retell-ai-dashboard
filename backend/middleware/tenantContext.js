@@ -26,6 +26,23 @@
  */
 
 const registry = require('../platform/registry');
+const userContext = require('../platform/userContext');
+
+/**
+ * Role the bootstrap fallback grants an authenticated @carein.ai user who has
+ * no app_user row (Roles PR A).
+ *
+ * WHY 'office' and not null: the seed roster is a list of addresses typed from
+ * memory. If a real teammate's address differs by a letter, failing closed
+ * would lock them out of the product mid-shift; granting 'admin' would hand a
+ * stranger the scheduler stop button. 'office' is everything except /api/admin —
+ * inconvenienced if we guessed wrong, never silently privileged.
+ *
+ * This is the ONE thing PR B flips off, after every seeded user has verified
+ * their sign-in. Until then, every user who lands here is logged once by name
+ * (userContext.warnUnseededOnce) so the list of addresses to fix is visible.
+ */
+const FALLBACK_ROLE = 'office';
 
 /**
  * TEMPORARY Phase 1 bootstrap mapping.
@@ -69,19 +86,64 @@ async function buildRequestTenant(tenant) {
  * @returns {Promise<{ tenant_id: string, slug: string, display_name?: string } | null>}
  */
 async function resolveTenantForUser(user) {
-  const email = user && user.email;
-  if (!email) return null;
+  const resolved = await resolveUserContext(user);
+  return resolved.tenant;
+}
 
-  const appUser = await registry.getUserByEmail(email);
+/**
+ * Resolve BOTH the tenant and the role for an authenticated user, from one
+ * cached identity read.
+ *
+ * Tenant and role come from the same app_user row, so splitting them into two
+ * lookups would mean two queries and a window in which they could disagree.
+ * The identity read goes through userContext's 60s TTL cache, which is what
+ * makes a role change take effect without re-login and without putting
+ * anything role-related into the session JWT.
+ *
+ * Roles resolve as:
+ *   app_user row, status 'active'    → its role
+ *   app_user row, status 'disabled'  → null (denied everything; tenant still
+ *                                      resolves so the user gets an honest 403
+ *                                      per action rather than a confusing
+ *                                      "no tenant" error)
+ *   no app_user row, careindent fallback → FALLBACK_ROLE, logged once
+ *
+ * `isSuperAdmin` is independent of all of that: it comes from platform_admin
+ * and is true even for an email with no app_user row.
+ *
+ * @param {{ email?: string, tenantId?: string, tid?: string }} user
+ * @returns {Promise<{
+ *   tenant: { tenant_id: string, slug: string, display_name?: string } | null,
+ *   role: string | null,
+ *   isSuperAdmin: boolean,
+ *   viaFallback: boolean
+ * }>}
+ */
+async function resolveUserContext(user) {
+  const empty = { tenant: null, role: null, isSuperAdmin: false, viaFallback: false };
+  const email = user && user.email;
+  if (!email) return empty;
+
+  const { appUser, isSuperAdmin } = await userContext.getUserContext(email);
+
   if (appUser) {
     const t = await registry.getTenantById(appUser.tenant_id);
-    if (t) return t;
+    if (t) {
+      const active = appUser.status !== 'disabled';
+      if (active) userContext.stampLoginIfDue(appUser);
+      return {
+        tenant: t,
+        role: active ? appUser.role : null,
+        isSuperAdmin,
+        viaFallback: false,
+      };
+    }
   }
 
   // --- TEMPORARY Phase 1 bootstrap fallback -----------------------------
-  // TODO(phase-2): remove once Entra External ID + explicit app_user
-  // provisioning lands. A careindent @carein.ai user with no app_user row is
-  // mapped to tenant 'carein' so the existing deployment keeps working.
+  // TODO(roles-pr-b): remove. A careindent @carein.ai user with no app_user row
+  // is mapped to tenant 'carein' and degraded to FALLBACK_ROLE so the existing
+  // deployment keeps working while the roster addresses are being verified.
   const entraTid = String(user.tenantId || user.tid || '').toLowerCase();
   if (
     entraTid === CAREIN_FALLBACK.entraTenantId &&
@@ -89,17 +151,13 @@ async function resolveTenantForUser(user) {
   ) {
     const t = await registry.getTenantBySlug(CAREIN_FALLBACK.slug);
     if (t) {
-      console.warn(
-        `[tenantContext] BOOTSTRAP FALLBACK: mapped ${email} (no app_user row) ` +
-          `to tenant '${CAREIN_FALLBACK.slug}'. Remove after Entra External ID + ` +
-          'app_user provisioning (Phase 2).'
-      );
-      return t;
+      userContext.warnUnseededOnce(email);
+      return { tenant: t, role: FALLBACK_ROLE, isSuperAdmin, viaFallback: true };
     }
   }
   // --- end temporary fallback -------------------------------------------
 
-  return null;
+  return { ...empty, isSuperAdmin };
 }
 
 function tenantContext({ exempt = [] } = {}) {
@@ -121,7 +179,7 @@ function tenantContext({ exempt = [] } = {}) {
     }
 
     try {
-      const tenant = await resolveTenantForUser(user);
+      const { tenant, role, isSuperAdmin } = await resolveUserContext(user);
       if (!tenant) {
         return res.status(403).json({
           success: false,
@@ -131,6 +189,11 @@ function tenantContext({ exempt = [] } = {}) {
       }
 
       req.tenant = await buildRequestTenant(tenant);
+      // Role context for requirePermission(). `null` means "no role" — a
+      // disabled account, or a legacy row with a role that holds nothing — and
+      // requirePermission denies it everything.
+      req.userRole = role;
+      req.isSuperAdmin = isSuperAdmin;
       return next();
     } catch (err) {
       // Registry/DB failure — still fail closed (never proceed without tenant).
@@ -224,6 +287,8 @@ function requireModule(name, { exempt = [] } = {}) {
 module.exports = {
   tenantContext,
   resolveTenantForUser,
+  resolveUserContext,
+  FALLBACK_ROLE,
   requireEntitledClinic,
   isEntitledModule,
   requireModule,

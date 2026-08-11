@@ -32,7 +32,9 @@ const { requireDashboardAuth } = require('../middleware/auth');
 
 const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
-const RECORDINGS_MOUNT_RX = /app\.use\(\s*'\/api\/mango\/recordings'[^\n]*/g;
+// Matches the whole app.use(...) CALL, not just its first line — the mount now
+// carries a module guard AND a permission guard and is wrapped across lines.
+const RECORDINGS_MOUNT_RX = /app\.use\(\s*'\/api\/mango\/recordings'[\s\S]*?\);/g;
 
 test('server.js: recordings static mount exists exactly once', () => {
   const matches = serverSrc.match(RECORDINGS_MOUNT_RX) || [];
