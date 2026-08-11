@@ -46,3 +46,113 @@ test('malformed expression returns null (not a crash)', () => {
   assert.equal(nextRun('not a cron', new Date()), null);
   assert.equal(nextRun('*/5 * * *', new Date()), null); // only 4 fields
 });
+
+// --- next automatic sync (Sync now's freshness caption) ---------------------
+//
+// "next auto 1:15 PM" has to account for BOTH cadences: the Mango cron and the 15-minute
+// Retell interval. Quoting only the cron would promise a later time than the list will
+// actually refresh at.
+
+test('with no cron job armed, the next auto sync is the Retell tick', () => {
+  const before = { cronJob: sched.cronJob, nextRetellSync: sched.nextRetellSync };
+  try {
+    sched.cronJob = null;
+    sched.nextRetellSync = '2026-08-11T18:00:00.000Z';
+    assert.equal(sched.getNextAutoSync(), '2026-08-11T18:00:00.000Z');
+  } finally {
+    Object.assign(sched, before);
+  }
+});
+
+test('the sooner of the two cadences wins', () => {
+  const before = { cronJob: sched.cronJob, nextRetellSync: sched.nextRetellSync };
+  try {
+    // A truthy stand-in for a live cron job: getNextAutoSync only checks that one exists
+    // before computing the real next fire from the configured schedule.
+    sched.cronJob = { stop() {} };
+    const cronNext = sched.computeNextCronRun(require('../config/mango').sync.schedule, new Date());
+    assert.ok(cronNext, 'the configured Mango schedule should have a next fire');
+
+    // Retell an hour after the cron → the cron wins.
+    sched.nextRetellSync = new Date(cronNext.getTime() + 3_600_000).toISOString();
+    assert.equal(sched.getNextAutoSync(), cronNext.toISOString());
+
+    // Retell a minute before the cron → Retell wins.
+    const sooner = new Date(cronNext.getTime() - 60_000).toISOString();
+    sched.nextRetellSync = sooner;
+    assert.equal(sched.getNextAutoSync(), sooner);
+  } finally {
+    Object.assign(sched, before);
+  }
+});
+
+test('nothing scheduled at all → null, not a fabricated time', () => {
+  const before = { cronJob: sched.cronJob, nextRetellSync: sched.nextRetellSync };
+  try {
+    sched.cronJob = null;
+    sched.nextRetellSync = null;
+    assert.equal(sched.getNextAutoSync(), null);
+  } finally {
+    Object.assign(sched, before);
+  }
+});
+
+// --- the honest per-source states the manual sync reports -------------------
+
+test("Mango ingestion off returns the MANGO_OFF skip code, not a failure", async () => {
+  const before = process.env.MANGO_INGEST_MODE;
+  try {
+    // mangoConfig reads MANGO_INGEST_MODE at require time, so drive the module the
+    // scheduler actually consults rather than the env var.
+    const mangoConfig = require('../config/mango');
+    const priorMode = mangoConfig.ingestMode;
+    mangoConfig.ingestMode = 'off';
+    try {
+      const result = await sched.runSync({ trigger: 'manual', actor: 'sarah@carein.ai' });
+      assert.equal(result.success, false);
+      assert.equal(result.code, sched.SYNC_SKIP_OFF);
+    } finally {
+      mangoConfig.ingestMode = priorMode;
+    }
+  } finally {
+    if (before === undefined) delete process.env.MANGO_INGEST_MODE;
+    else process.env.MANGO_INGEST_MODE = before;
+  }
+});
+
+test('a sync already in flight returns the ALREADY_RUNNING skip code', async () => {
+  const mangoConfig = require('../config/mango');
+  const priorMode = mangoConfig.ingestMode;
+  const priorRunning = sched.isRunning;
+  try {
+    mangoConfig.ingestMode = 'api';
+    sched.isRunning = true;
+    const result = await sched.runSync({ trigger: 'manual', actor: 'sarah@carein.ai' });
+    assert.equal(result.success, false);
+    assert.equal(result.code, sched.SYNC_SKIP_RUNNING);
+  } finally {
+    mangoConfig.ingestMode = priorMode;
+    sched.isRunning = priorRunning;
+  }
+});
+
+test('getMangoMode reports disabled / off / api', () => {
+  const mangoConfig = require('../config/mango');
+  const priorMode = mangoConfig.ingestMode;
+  const priorDisabled = process.env.MANGO_SYNC_DISABLED;
+  try {
+    process.env.MANGO_SYNC_DISABLED = 'true';
+    assert.equal(sched.getMangoMode(), 'disabled');
+
+    delete process.env.MANGO_SYNC_DISABLED;
+    mangoConfig.ingestMode = 'off';
+    assert.equal(sched.getMangoMode(), 'off');
+
+    mangoConfig.ingestMode = 'api';
+    assert.equal(sched.getMangoMode(), 'api');
+  } finally {
+    mangoConfig.ingestMode = priorMode;
+    if (priorDisabled === undefined) delete process.env.MANGO_SYNC_DISABLED;
+    else process.env.MANGO_SYNC_DISABLED = priorDisabled;
+  }
+});
