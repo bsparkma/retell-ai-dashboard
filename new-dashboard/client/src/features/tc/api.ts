@@ -14,6 +14,7 @@
  * They resolve with the server's persisted row or throw — callers toast
  * success ONLY after the promise resolves and keep dialogs open on rejection.
  */
+import { handleUnauthorized } from "@/lib/api";
 import type { z } from "zod";
 import type {
   CaseCategory,
@@ -143,6 +144,12 @@ async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T>
     headers: { "Content-Type": "application/json", ...authHeaders },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+
+  // TC has its own transport (office is a mandatory query param, and errors
+  // carry a typed TC shape), so the shared client's 401 reaction has to be
+  // invoked explicitly here — otherwise a session that expires while someone is
+  // in the TC module fails silently and forever. Roles PR B.
+  if (res.status === 401) handleUnauthorized();
 
   let parsed: unknown = null;
   try {
@@ -550,14 +557,23 @@ export interface TcIntakeSubmit {
   insuranceNoted?: string;
   patientInterestLevel: z.infer<typeof PatientInterestLevel>;
   flagUrgent: boolean;
+  /**
+   * Who actually did the visit (Roles PR B). Optional: the server falls back to
+   * the signed-in user's display name, which is what every pre-PR-B submission
+   * already carried.
+   */
+  hygienistName?: string;
 }
 
 export interface TcMyIntake {
   intakeId: string;
   caseId: string;
   officeId: OfficeId;
+  /** WHO WAS SIGNED IN — audit identity. */
   submittedBy: string;
   submittedByName: string;
+  /** WHO DID THE VISIT — clinical attribution, what the filters key on. */
+  hygienistName: string;
   submittedAt: string;
   visitDate: string | null;
   chiefConcern: string;
@@ -574,6 +590,8 @@ export interface TcInboxIntake {
   officeId: OfficeId;
   submittedBy: string;
   submittedByName: string;
+  /** WHO DID THE VISIT — shown on the inbox card. */
+  hygienistName: string;
   submittedAt: string;
   visitDate: string | null;
   chiefConcern: string;
@@ -601,6 +619,7 @@ interface IntakeRowBase {
   office_id: OfficeId;
   submitted_by: string;
   submitted_by_name: string;
+  hygienist_name: string;
   submitted_at: string;
   operatory: string;
   visit_date: string | null;
@@ -640,6 +659,7 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       officeId: row.office_id,
       submittedBy: row.submitted_by,
       submittedByName: row.submitted_by_name,
+      hygienistName: row.hygienist_name || row.submitted_by_name,
       submittedAt: row.submitted_at,
       visitDate: row.visit_date,
       chiefConcern: row.chief_concern,
@@ -650,6 +670,60 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       caseStatus: row.case_status,
     })),
   );
+}
+
+/** One entry in the intake form's hygienist picker. */
+export interface TcHygienistOption {
+  email: string;
+  /** Derived from the address' local part — app_user has no name column. */
+  label: string;
+}
+
+/**
+ * The tenant's active hygiene-role users, for the intake form's picker.
+ * A convenience, never a constraint: the form also accepts free text.
+ */
+export function hygienistRoster(office: OfficeId): Promise<TcHygienistOption[]> {
+  return tcRequest<{ hygienists: TcHygienistOption[] }>("/tc/hygiene-intakes/hygienists", {
+    office,
+  }).then((r) => r.hygienists);
+}
+
+/**
+ * The office's submissions, optionally filtered by hygienist ATTRIBUTION
+ * (Roles PR B). `hygienists` is the distinct set present in the unfiltered
+ * data — the filter chips are built from it, so selecting one never erases the
+ * others.
+ */
+export function hygieneSubmissions(
+  office: OfficeId,
+  hygienist?: string,
+): Promise<{ intakes: TcMyIntake[]; hygienists: string[] }> {
+  return tcRequest<{
+    intakes: (IntakeRowBase & { patient_name: string; case_status: CaseStatusId })[];
+    hygienists: string[];
+  }>("/tc/hygiene-intakes", {
+    office,
+    ...(hygienist ? { params: { hygienist } } : {}),
+  }).then((r) => ({
+    intakes: r.intakes.map((row) => ({
+      intakeId: row.intake_id,
+      caseId: row.case_id,
+      officeId: row.office_id,
+      submittedBy: row.submitted_by,
+      submittedByName: row.submitted_by_name,
+      hygienistName: row.hygienist_name || row.submitted_by_name,
+      submittedAt: row.submitted_at,
+      visitDate: row.visit_date,
+      chiefConcern: row.chief_concern,
+      suspectedTreatment: row.suspected_treatment,
+      flagUrgent: row.flag_urgent,
+      patientInterestLevel: row.patient_interest_level,
+      patientName: row.patient_name,
+      caseStatus: row.case_status,
+    })),
+    hygienists: r.hygienists,
+  }));
 }
 
 export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
@@ -669,6 +743,7 @@ export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
       officeId: row.office_id,
       submittedBy: row.submitted_by,
       submittedByName: row.submitted_by_name,
+      hygienistName: row.hygienist_name || row.submitted_by_name,
       submittedAt: row.submitted_at,
       visitDate: row.visit_date,
       chiefConcern: row.chief_concern,

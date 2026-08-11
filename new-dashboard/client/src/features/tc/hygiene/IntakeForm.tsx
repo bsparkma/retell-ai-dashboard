@@ -13,7 +13,7 @@
  * The chairside path still works with no OD at all — the fields stay typed by
  * hand, and every prefilled field remains editable.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 import {
@@ -48,7 +48,14 @@ import {
   Urgency,
   type OfficeId,
 } from "@shared/tc/contract";
-import { submitHygieneIntake, tcErrorMessage, type OdPatient, type TcIntakeSubmit } from "../api";
+import {
+  hygienistRoster,
+  submitHygieneIntake,
+  tcErrorMessage,
+  type OdPatient,
+  type TcHygienistOption,
+  type TcIntakeSubmit,
+} from "../api";
 import { URGENCY_LABELS, type UrgencyId } from "../status";
 import { OdPatientSearch } from "../od/OdShell";
 import { fieldsFromOdPatient } from "../od/odPatient";
@@ -101,6 +108,12 @@ interface IntakeDraft {
   phone: string;
   email: string;
   diagnosingProvider: string;
+  /**
+   * WHO DID THE VISIT (Roles PR B). Distinct from the SSO identity the server
+   * stamps: temp@carein.ai is one shared account, so without this every temp's
+   * work would be indistinguishable. Free text, pre-filled from the picker.
+   */
+  hygienistName: string;
   category: CaseCategoryId;
   urgency: UrgencyId;
   caseType: string;
@@ -130,6 +143,7 @@ function emptyDraft(): IntakeDraft {
     email: "",
     odPatientId: null,
     diagnosingProvider: "",
+    hygienistName: "",
     category: "single_tooth",
     urgency: "medium",
     caseType: "",
@@ -194,8 +208,33 @@ export function IntakeForm({ office }: IntakeFormProps) {
 
   const [draft, setDraft] = useState<IntakeDraft>(emptyDraft);
   const [odPatient, setOdPatient] = useState<OdPatient | null>(null);
+  // The picker's suggestions. A failed roster fetch is not an error worth
+  // showing: the field is free text, so an empty list costs the user nothing.
+  const [roster, setRoster] = useState<TcHygienistOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState<string | null>(null);
+
+  // Default the attribution to the signed-in user, and load the roster the
+  // datalist offers. Both are conveniences; neither blocks the form.
+  useEffect(() => {
+    if (submitterName) {
+      setDraft((d) => (d.hygienistName ? d : { ...d, hygienistName: submitterName }));
+    }
+  }, [submitterName]);
+
+  useEffect(() => {
+    let active = true;
+    hygienistRoster(office)
+      .then((list) => {
+        if (active) setRoster(list);
+      })
+      .catch(() => {
+        if (active) setRoster([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [office]);
 
   const set = <K extends keyof IntakeDraft>(key: K, value: IntakeDraft[K]) => {
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -279,6 +318,8 @@ export function IntakeForm({ office }: IntakeFormProps) {
       insuranceNoted: draft.insuranceNoted.trim(),
       patientInterestLevel: draft.patientInterestLevel,
       flagUrgent: draft.flagUrgent,
+      // Empty is fine — the server falls back to the signed-in display name.
+      hygienistName: draft.hygienistName.trim(),
     };
 
     setSubmitting(true);
@@ -286,7 +327,10 @@ export function IntakeForm({ office }: IntakeFormProps) {
       await submitHygieneIntake(office, payload);
       toast.success("Sent to TC inbox");
       setLastSubmitted(patientName);
-      setDraft(emptyDraft());
+      // Keep the hygienist across submissions: it's the same person seeing the
+      // next patient, and re-picking it every time is the kind of friction that
+      // makes people stop filling a field in.
+      setDraft({ ...emptyDraft(), hygienistName: draft.hygienistName });
       setOdPatient(null);
     } catch (e) {
       // Keep the form values so nothing typed chairside is lost.
@@ -380,6 +424,30 @@ export function IntakeForm({ office }: IntakeFormProps) {
               onChange={(e) => set("diagnosingProvider", e.target.value)}
               placeholder="Dr. …"
             />
+          </div>
+          {/* Who did the hygiene visit. Its own field because the signed-in
+              account is not always the person — temp@ is shared. */}
+          <div className="sm:col-span-2 space-y-1.5">
+            <Label htmlFor={fid("hygienist")}>Hygienist</Label>
+            <Input
+              id={fid("hygienist")}
+              list={fid("hygienist-roster")}
+              value={draft.hygienistName}
+              onChange={(e) => set("hygienistName", e.target.value)}
+              placeholder="Who saw this patient?"
+              data-testid="intake-hygienist"
+            />
+            {/* A datalist, not a <select>: it offers the roster AND accepts a
+                name that isn't on it, which is exactly the temp case. */}
+            <datalist id={fid("hygienist-roster")}>
+              {roster.map((h) => (
+                <option key={h.email} value={h.label} />
+              ))}
+            </datalist>
+            <p className="text-xs text-muted-foreground">
+              Defaults to you. If you&apos;re on a shared login, type your own name so your
+              handoffs are yours.
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label>Category *</Label>
