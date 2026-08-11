@@ -256,6 +256,164 @@ async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
+// --- tenant user management (Roles PR B) ------------------------------------
+
+/**
+ * List a tenant's users, newest sign-in first then email.
+ *
+ * Tenant-scoped by construction: every caller passes req.tenant.id, and there
+ * is no unscoped variant to reach for by mistake.
+ * @param {string} tenantId
+ * @returns {Promise<AppUser[]>}
+ */
+async function listTenantUsers(tenantId) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1
+      ORDER BY email`,
+    [tenantId]
+  );
+  return rows;
+}
+
+/**
+ * Look up ONE user inside a tenant. The tenant scope is part of the lookup, not
+ * a check the caller performs afterwards — an admin of tenant A must not be
+ * able to name a row in tenant B and have it found.
+ * @param {string} tenantId
+ * @param {string} email
+ * @returns {Promise<AppUser|null>}
+ */
+async function getTenantUser(tenantId, email) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+      LIMIT 1`,
+    [tenantId, email]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Pre-provision a user. Creating the row grants NOTHING by itself — Entra still
+ * authenticates the person, and until they sign in the row simply waits.
+ *
+ * Returns null when the email already exists in this tenant, so the caller can
+ * answer 409 rather than silently overwriting a role somebody set deliberately.
+ * @param {string} tenantId
+ * @param {string} email
+ * @param {string} role
+ * @returns {Promise<AppUser|null>}
+ */
+async function createTenantUser(tenantId, email, role) {
+  const { rows } = await query(
+    `INSERT INTO app_user (tenant_id, email, role, status)
+          VALUES ($1, lower($2), $3, 'active')
+     ON CONFLICT (tenant_id, email) DO NOTHING
+       RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+    [tenantId, email, role]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * THE LAST-ADMIN RULE, enforced here rather than in a route.
+ *
+ * A tenant must always keep at least one ACTIVE user with role 'admin'.
+ * Demoting or deactivating the last one would leave nobody able to manage the
+ * tenant's users — recoverable only by a super_admin or a DBA, which is not a
+ * state a UI should be able to create by accident.
+ *
+ * The count check lives INSIDE the UPDATE's WHERE clause, so check-and-write
+ * are one atomic statement: two admins concurrently demoting each other cannot
+ * both succeed. (Same construction as the last-super-admin rule above.)
+ *
+ * `patch` may carry role, status, or both. Returns the updated row, or null if
+ * nothing changed — the caller then asks WHY via getTenantUser.
+ *
+ * @param {string} tenantId
+ * @param {string} email
+ * @param {{ role?: string, status?: string }} patch
+ * @returns {Promise<AppUser|null>}
+ */
+async function updateTenantUser(tenantId, email, patch) {
+  const sets = [];
+  const params = [tenantId, email];
+  if (typeof patch.role === 'string') {
+    params.push(patch.role);
+    sets.push(`role = $${params.length}`);
+  }
+  if (typeof patch.status === 'string') {
+    params.push(patch.status);
+    sets.push(`status = $${params.length}`);
+  }
+  if (sets.length === 0) throw new Error('[registry] updateTenantUser: nothing to update');
+
+  // Would this write remove the tenant's last active admin? Only if the row is
+  // itself an active admin AND the patch stops it being one. Expressed in SQL
+  // so the count is evaluated against the same snapshot as the write.
+  const losesAdmin =
+    (typeof patch.role === 'string' && patch.role !== 'admin') ||
+    (typeof patch.status === 'string' && patch.status !== 'active');
+
+  const guard = losesAdmin
+    ? `AND (
+         role <> 'admin' OR status <> 'active'
+         OR (SELECT count(*) FROM app_user
+              WHERE tenant_id = $1 AND role = 'admin' AND status = 'active') > 1
+       )`
+    : '';
+
+  const { rows } = await query(
+    `UPDATE app_user
+        SET ${sets.join(', ')}
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+        ${guard}
+      RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+    params
+  );
+  return rows[0] || null;
+}
+
+/**
+ * How many ACTIVE admins does this tenant have? Used to explain a refusal, not
+ * to authorize one — the authorization is the guard inside updateTenantUser.
+ * @param {string} tenantId
+ * @returns {Promise<number>}
+ */
+async function countActiveTenantAdmins(tenantId) {
+  const { rows } = await query(
+    `SELECT count(*)::int AS n
+       FROM app_user
+      WHERE tenant_id = $1 AND role = 'admin' AND status = 'active'`,
+    [tenantId]
+  );
+  return rows[0] ? rows[0].n : 0;
+}
+
+/**
+ * A tenant's active users holding `role`, for in-app pickers.
+ *
+ * app_user has no display-name column (Entra owns names and we do not sync
+ * them), so callers that need a label derive one from the address. Returning
+ * the raw rows keeps that decision at the edge instead of guessing here.
+ * @param {string} tenantId
+ * @param {string} role
+ * @returns {Promise<AppUser[]>}
+ */
+async function listTenantUsersByRole(tenantId, role) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1 AND role = $2 AND status = 'active'
+      ORDER BY email`,
+    [tenantId, role]
+  );
+  return rows;
+}
+
 // --- platform tier (super_admin) --------------------------------------------
 
 /**
@@ -515,6 +673,12 @@ module.exports = {
   getEnabledModules,
   getTenantDbRef,
   getUserByEmail,
+  listTenantUsers,
+  listTenantUsersByRole,
+  getTenantUser,
+  createTenantUser,
+  updateTenantUser,
+  countActiveTenantAdmins,
   getPlatformAdminByEmail,
   listPlatformAdmins,
   addPlatformAdmin,
