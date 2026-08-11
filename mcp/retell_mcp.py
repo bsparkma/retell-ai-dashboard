@@ -541,6 +541,11 @@ async def retell_list_calls(params: ListCallsInput) -> str:
 
     Returns:
         str: JSON array of call objects with metadata.
+
+    Note:
+        /v3/list-calls omits transcript, transcript_object, and transcript_with_tool_calls
+        by design (they dominate the payload size). call_analysis and disconnection_reason
+        are still returned. Use retell_get_call for a transcript.
     """
     try:
         body: Dict[str, Any] = {"limit": params.limit}
@@ -549,8 +554,13 @@ async def retell_list_calls(params: ListCallsInput) -> str:
         elif params.filter_criteria:
             body["filter_criteria"] = params.filter_criteria
 
-        data = await _api_request("POST", "/list-calls", body=body)
-        calls = data if isinstance(data, list) else data.get("calls", [])
+        data = await _api_request("POST", "/v3/list-calls", body=body)
+        # v3 replaced the legacy /list-calls (removed 2026-06-15) and answers with an
+        # { items, pagination_key, has_more } envelope rather than a bare array.
+        if isinstance(data, list):
+            calls = data
+        else:
+            calls = data.get("items") or data.get("calls") or []
         return json.dumps({"count": len(calls), "calls": calls}, indent=2)
     except Exception as e:
         return _handle_error(e)
@@ -634,8 +644,13 @@ async def retell_list_phone_numbers(params: ListPhoneNumbersInput) -> str:
         str: JSON array of phone number objects.
     """
     try:
-        data = await _api_request("GET", "/list-phone-numbers")
-        numbers = data if isinstance(data, list) else data.get("phone_numbers", [])
+        data = await _api_request("GET", "/v2/list-phone-numbers")
+        # v2 replaced the unversioned /list-phone-numbers (removed 2026-06-15) and answers
+        # with an { items, pagination_key, has_more } envelope rather than a bare array.
+        if isinstance(data, list):
+            numbers = data
+        else:
+            numbers = data.get("items") or data.get("phone_numbers") or []
         numbers = numbers[: params.limit]
         return json.dumps({"count": len(numbers), "phone_numbers": numbers}, indent=2)
     except Exception as e:
@@ -766,8 +781,13 @@ async def retell_list_llms(params: ListLLMsInput) -> str:
         str: JSON array of LLM objects.
     """
     try:
-        data = await _api_request("GET", "/list-retell-llms")
-        llms = data if isinstance(data, list) else data.get("llms", [])
+        data = await _api_request("GET", "/v2/list-retell-llms")
+        # v2 replaced the unversioned /list-retell-llms (removed 2026-06-15) and answers
+        # with an { items, pagination_key, has_more } envelope rather than a bare array.
+        if isinstance(data, list):
+            llms = data
+        else:
+            llms = data.get("items") or data.get("llms") or []
         llms = llms[: params.limit]
         return json.dumps({"count": len(llms), "llms": llms}, indent=2)
     except Exception as e:
