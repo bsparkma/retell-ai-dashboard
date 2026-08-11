@@ -23,8 +23,9 @@ import {
 } from "lucide-react";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
-  type TranscribeResult,
+  type TranscribeResult, type SyncStatus,
 } from "@/lib/api";
+import { syncToast, syncCaption, SYNC_COOLDOWN_SECONDS } from "@/lib/sync";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
@@ -97,6 +98,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  /** Freshness caption data (null until the first /sync-status read lands). */
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  /** Seconds left on the manual-sync cooldown; 0 = the button is live. */
+  const [cooldown, setCooldown] = useState(0);
 
   const [view, setView] = useState<"needs" | "all">("needs");
   const [search, setSearch] = useState("");
@@ -130,6 +135,29 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   }, [office]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Freshness caption. Polled on a slow interval so "next auto 1:15 PM" stays true after
+  // an automatic pull lands — nobody presses Sync now just to find out the list is fresh.
+  // A failed read leaves the previous caption rather than blanking it; the data is a
+  // nicety, and an empty toolbar mid-shift reads like something broke.
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      api.getSyncStatus()
+        .then((s) => { if (!cancelled) setSyncStatus(s); })
+        .catch(() => { /* keep the last known caption */ });
+    };
+    read();
+    const timer = setInterval(read, 60_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  // Cooldown countdown — one tick per second while the server would refuse another sync.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => setCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
   /**
    * Open Dental connectivity PER CALL, not per selected tab.
@@ -301,18 +329,51 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     });
   };
 
+  // "Sync now" pulls BOTH sources. A refusal is not a failure: the cooldown parks the
+  // button with a countdown, and a source that is off or already mid-run says so.
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const res = await api.syncRetell({ limit: 1000 });
-      toast.success(res.message ?? "Sync complete");
+      const res = await api.syncNow();
+
+      if (res.kind === "cooldown") {
+        // Deliberately no error toast — the button already tells the story.
+        setCooldown(res.retryAfter);
+        setSyncStatus((prev) => (prev ? { ...prev, lastSyncedAt: res.lastSyncedAt } : prev));
+        return;
+      }
+
+      const t = syncToast(res);
+      if (t.kind === "error") toast.error(t.message, { duration: 8000 });
+      else toast.success(t.message);
+
+      setSyncStatus((prev) => ({
+        lastSyncedAt: res.lastSyncedAt,
+        nextAutoSync: res.nextAutoSync,
+        // The run itself reveals whether Mango is live here, so the tooltip is right
+        // immediately rather than after the next poll. A source error proves nothing
+        // about the switch, so that case keeps what we already knew. The 'off' vs
+        // 'disabled' nuance is reconciled by the poll and is identical to the UI.
+        mangoMode:
+          res.mango.status === "off" ? "off"
+            : res.mango.status === "error" ? (prev?.mangoMode ?? "api")
+              : "api",
+      }));
+      // The server refuses another run for a minute; show that rather than let the
+      // next click bounce off a 429.
+      setCooldown(SYNC_COOLDOWN_SECONDS);
       load();
-    } catch {
-      toast.error("Sync failed", { duration: 8000 });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Sync failed", { duration: 8000 });
     } finally {
       setSyncing(false);
     }
   };
+
+  const caption = useMemo(
+    () => syncCaption(syncStatus?.lastSyncedAt ?? null, syncStatus?.nextAutoSync ?? null),
+    [syncStatus],
+  );
 
   const GRID = "2.2fr 1.7fr 1.3fr 1.9fr";
 
@@ -414,9 +475,35 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           ))}
         </div>
 
-        <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
-          <RefreshCw size={14} className={`mr-1.5 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing…" : "Sync"}
-        </Button>
+        {/* Sync now + freshness. The caption is what lets someone answer "is this list
+            current?" without pressing anything. */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={syncing || cooldown > 0}
+            title={
+              cooldown > 0
+                ? "A sync just ran — give it a moment"
+                : syncStatus && syncStatus.mangoMode !== "api"
+                  // Say it before the click, not only after: in an environment where
+                  // Mango is dark this button can only ever pull Retell.
+                  ? "Pull new calls from Retell now (Mango ingestion is off in this environment)"
+                  : "Pull new calls from Mango and Retell now"
+            }
+          >
+            <RefreshCw size={14} className={`mr-1.5 ${syncing ? "animate-spin" : ""}`} />
+            {syncing
+              ? "Syncing…"
+              : cooldown > 0
+                ? `Synced ${Math.max(1, SYNC_COOLDOWN_SECONDS - cooldown)}s ago`
+                : "Sync now"}
+          </Button>
+          {caption && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap">{caption}</span>
+          )}
+        </div>
       </div>
 
       {/* Disposition chips (also filters) */}

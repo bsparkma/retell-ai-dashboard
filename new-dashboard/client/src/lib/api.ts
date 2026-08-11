@@ -103,6 +103,51 @@ export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong
  */
 export type MangoWorklistMode = "all" | "flagged";
 
+// --- Sync now: one button, both sources -------------------------------------
+
+/** How long the client waits for a manual sync before giving up (both sources, one pull). */
+const SYNC_NOW_TIMEOUT_MS = 90_000;
+
+/**
+ * What happened to ONE source in a manual sync. 'off' and 'already_running' are honest
+ * states, NOT errors — the UI must never render them red. Switching on this union means
+ * a new state added by the backend becomes a compile error here rather than a shrug.
+ */
+export type SyncSourceResult =
+  | { status: "ok"; added?: number; fetched?: number; found?: number; imported?: number }
+  | { status: "off" }
+  | { status: "already_running" }
+  | { status: "error"; message?: string };
+
+/** The sync-now response body (HTTP 200, or 502 when BOTH sources failed). */
+export interface SyncNowResponse {
+  retell: SyncSourceResult;
+  mango: SyncSourceResult;
+  lastSyncedAt: string | null;
+  nextAutoSync: string | null;
+}
+
+/** The 429 body: a sync ran moments ago, try again in `retryAfter` seconds. */
+export interface SyncCooldown {
+  retryAfter: number;
+  lastSyncedAt: string | null;
+}
+
+/** `syncNow()` returns the refusal as data — a cooldown is not an error. */
+export type SyncNowResult =
+  | ({ kind: "result" } & SyncNowResponse)
+  | ({ kind: "cooldown" } & SyncCooldown);
+
+/** How Mango ingestion is configured in THIS environment (staging runs it dark). */
+export type MangoIngestMode = "api" | "off" | "disabled";
+
+/** GET /unified-calls/sync-status — everything the freshness caption needs. */
+export interface SyncStatus {
+  lastSyncedAt: string | null;
+  nextAutoSync: string | null;
+  mangoMode: MangoIngestMode;
+}
+
 // --- Slice M4: on-demand transcription --------------------------------------
 
 /**
@@ -852,11 +897,70 @@ export const api = {
     return request<{ bySource?: Record<string, number>; lastSync?: Record<string, string> }>("/unified-calls/stats");
   },
 
+  /**
+   * @deprecated Superseded by `syncNow()`, which pulls Mango as well and reports each
+   * source honestly. The endpoint still exists this release; nothing in the UI calls this.
+   */
   async syncRetell(options?: { limit?: number; offset?: number }) {
     return request<{ message?: string; added?: number }>("/unified-calls/sync-retell", {
       method: "POST",
       body: JSON.stringify(options ?? {}),
     });
+  },
+
+  /**
+   * Pull BOTH call sources on demand.
+   *
+   * Never throws on a per-source refusal — "Mango ingestion is off here" and "the hourly
+   * autosync already has it" are answers the caller renders differently, not failures.
+   * The cooldown (429) is returned as data too, so a button-mash produces a countdown
+   * rather than a red toast. Only a transport/parse failure throws.
+   *
+   * A full Retell page walk plus a Mango pull can legitimately take a while, so the
+   * request gets 90s before the client gives up on it.
+   */
+  async syncNow(): Promise<SyncNowResult> {
+    let res: Response;
+    try {
+      res = await apiFetch("/unified-calls/sync-now", {
+        method: "POST",
+        signal: AbortSignal.timeout(SYNC_NOW_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // The abort surfaces as a DOMException whose message ("signal timed out") means
+      // nothing at a front desk. Say what actually happened, and that the sync may well
+      // still be finishing on the server.
+      if (err instanceof DOMException && err.name === "TimeoutError") {
+        throw new ApiError("Sync is taking longer than usual — check back in a minute", 0, "SYNC_TIMEOUT");
+      }
+      throw err;
+    }
+    const body = (await res.json().catch(() => null)) as Partial<SyncNowResponse & SyncCooldown> | null;
+
+    if (res.status === 429) {
+      return {
+        kind: "cooldown",
+        retryAfter: typeof body?.retryAfter === "number" ? body.retryAfter : 60,
+        lastSyncedAt: body?.lastSyncedAt ?? null,
+      };
+    }
+    // A 502 still carries per-source detail (both failed, and why) — surface it as a
+    // result so the toast can name the sources instead of saying "something went wrong".
+    if (body && body.retell && body.mango) {
+      return {
+        kind: "result",
+        retell: body.retell,
+        mango: body.mango,
+        lastSyncedAt: body.lastSyncedAt ?? null,
+        nextAutoSync: body.nextAutoSync ?? null,
+      };
+    }
+    throw new ApiError(`Sync failed (HTTP ${res.status})`, res.status, null);
+  },
+
+  /** Freshness caption data: when the list last refreshed and when it next will. */
+  async getSyncStatus(): Promise<SyncStatus> {
+    return request<SyncStatus>("/unified-calls/sync-status");
   },
 
   async getCallbacks(params?: { status?: string; priority?: string }) {

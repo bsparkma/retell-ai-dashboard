@@ -12,6 +12,8 @@ const retellService = require('../config/retell');
 const openDentalSync = require('../services/openDentalSync');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const audit = require('../platform/audit');
+const syncScheduler = require('../services/syncScheduler');
+const manualSyncThrottle = require('../services/manualSyncThrottle');
 const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
 const mangoConfig = require('../config/mango');
@@ -349,6 +351,146 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// --- Sync now: one button, both sources ------------------------------------
+//
+// The worklist used to offer a Retell-only "Sync" that reported a generic "Sync
+// complete", so a staff-answered Mango call sat invisible until the hourly :15 cron.
+// These two routes replace that: one pull of BOTH sources with per-source outcomes,
+// plus a cheap status read the caption polls.
+
+/**
+ * Turn a syncScheduler.runSync() return value into the honest per-source state the UI
+ * renders. The scheduler swallows its own errors and hands back a history entry, so a
+ * failed run has to be recognized by `status`, not by a thrown exception.
+ * @param {object} result
+ * @returns {{status: 'ok'|'off'|'already_running'|'error', found?: number, imported?: number, message?: string}}
+ */
+function describeMangoResult(result) {
+  if (!result) return { status: 'error', message: 'Mango sync returned nothing' };
+
+  // Declined to run. "Ingestion is off" and "the autosync already has it" are answers,
+  // not failures — reporting them as errors is what made the old button untrustworthy.
+  // Anything else that declined IS a failure, including a refusal with no code: an
+  // unrecognized shape must never fall through and be counted as a successful zero-call
+  // sync.
+  if (result.success === false) {
+    if (result.code === syncScheduler.SYNC_SKIP_RUNNING) return { status: 'already_running' };
+    if (result.code === syncScheduler.SYNC_SKIP_OFF || result.code === syncScheduler.SYNC_SKIP_DISABLED) {
+      return { status: 'off' };
+    }
+    return { status: 'error', message: result.message || 'Mango sync declined to run' };
+  }
+
+  if (result.status === 'failed') {
+    return { status: 'error', message: (result.errors && result.errors[0]) || 'Mango sync failed' };
+  }
+
+  return {
+    status: 'ok',
+    found: result.calls_found ?? 0,
+    imported: result.calls_imported ?? 0,
+  };
+}
+
+/**
+ * POST /api/unified-calls/sync-now
+ *
+ * Pull Retell AND Mango, right now, because somebody pressed the button. Both run
+ * concurrently and are reported separately: a source that is switched off or already
+ * mid-run is NOT an error, and one source failing never hides the other's success.
+ * 502 is reserved for the case where BOTH sources failed — the only outcome in which
+ * pressing the button accomplished nothing at all.
+ *
+ * Throttled to one run per minute per process (429 + retryAfter), so a button-mash
+ * costs one sync and a polite wait rather than N overlapping API walks.
+ */
+router.post('/sync-now', async (req, res) => {
+  const claim = manualSyncThrottle.begin();
+  if (!claim.allowed) {
+    res.set('Retry-After', String(claim.retryAfter));
+    return res.status(429).json({
+      code: 'SYNC_COOLDOWN',
+      error: 'A sync just ran — give it a moment',
+      retryAfter: claim.retryAfter,
+      lastSyncedAt: syncScheduler.getLastSyncedAt(),
+    });
+  }
+
+  // `actor` is who to credit in the sync history. 'api-token' covers the bearer-token
+  // path, where there is no SSO session and therefore no email.
+  const actor = req.user?.email ?? 'api-token';
+
+  try {
+    const [retellSettled, mangoSettled] = await Promise.allSettled([
+      syncScheduler.runRetellSync({ limit: 1000 }),
+      syncScheduler.runSync({ trigger: 'manual', actor }),
+    ]);
+
+    // runRetellSync DOES throw on failure (deliberately — see its comment), so it is the
+    // one source whose rejection has to be unwrapped.
+    const retell = retellSettled.status === 'fulfilled'
+      ? { status: 'ok', added: retellSettled.value?.added ?? 0, fetched: retellSettled.value?.fetched ?? 0 }
+      : { status: 'error', message: retellSettled.reason?.message ?? 'Retell sync failed' };
+
+    const mango = mangoSettled.status === 'fulfilled'
+      ? describeMangoResult(mangoSettled.value)
+      : { status: 'error', message: mangoSettled.reason?.message ?? 'Mango sync failed' };
+
+    const body = {
+      retell,
+      mango,
+      lastSyncedAt: syncScheduler.getLastSyncedAt(),
+      nextAutoSync: syncScheduler.getNextAutoSync(),
+    };
+
+    // Append-only trail for an operator-initiated data pull. `action` is CHECK-constrained
+    // to the four CRUD verbs, and there is no detail column, so the verb lives in
+    // resource_type and the per-source outcome in resource_id — counts and status words,
+    // never PHI.
+    await audit.audit(req, {
+      action: 'UPDATE',
+      resourceType: 'voice.sync.manual',
+      resourceId:
+        `retell=${retell.status}${retell.status === 'ok' ? `:${retell.added}` : ''};` +
+        `mango=${mango.status}${mango.status === 'ok' ? `:${mango.imported}` : ''}`,
+      result: retell.status === 'error' && mango.status === 'error' ? 'ERROR' : 'SUCCESS',
+    });
+
+    // Both dead → the button did nothing, and it must not claim otherwise.
+    const bothFailed = retell.status === 'error' && mango.status === 'error';
+    return res.status(bothFailed ? 502 : 200).json(body);
+  } catch (error) {
+    console.error('Error running manual sync:', error);
+    return res.status(500).json({ error: 'Sync failed', code: 'SYNC_FAILED' });
+  } finally {
+    // Starts the cooldown and clears the in-flight claim — in `finally` so a thrown
+    // audit write can't wedge the button until the next deploy.
+    manualSyncThrottle.end();
+  }
+});
+
+/**
+ * GET /api/unified-calls/sync-status
+ *
+ * The freshness caption's data source: when the list last got fresh calls, when the next
+ * automatic pull lands, and whether Mango ingestion is on in this environment. No PHI, so
+ * no audit — and deliberately NOT /api/admin/sync-status, which is heading behind a role
+ * gate that the front desk will not have. Registered before /:id so "sync-status" isn't
+ * captured as a call id.
+ */
+router.get('/sync-status', (req, res) => {
+  try {
+    res.json({
+      lastSyncedAt: syncScheduler.getLastSyncedAt(),
+      nextAutoSync: syncScheduler.getNextAutoSync(),
+      mangoMode: syncScheduler.getMangoMode(),
+    });
+  } catch (error) {
+    console.error('Error reading sync status:', error);
+    res.status(500).json({ error: 'Failed to read sync status' });
+  }
+});
+
 /**
  * GET /api/unified-calls/offices
  * The office roster for the global office selector (agent→office config, with
@@ -517,7 +659,11 @@ router.get('/phone/:phoneNumber', async (req, res) => {
 
 /**
  * POST /api/unified-calls/sync-retell
- * Manually trigger a sync from Retell API
+ * Manually trigger a sync from Retell API.
+ *
+ * @deprecated Superseded by POST /sync-now, which pulls Retell AND Mango and reports
+ * each honestly. Kept working this release so anything still calling it (scripts, an
+ * older cached bundle) doesn't break; remove once nothing does.
  */
 router.post('/sync-retell', async (req, res) => {
   try {

@@ -20,6 +20,18 @@ const { isMangoSyncDisabled } = require('../middleware/envGuards');
 // volume — and it bounds a runaway cursor. Hitting the cap is logged, never silent.
 const RETELL_SYNC_MAX_PAGES = 5;
 
+// How often the automatic Retell pull fires. Owned here (rather than as a bare
+// setInterval in server.js) so the scheduler can answer "when does the next automatic
+// sync land?" — the freshness caption on the worklist is only honest if one object
+// knows both cadences.
+const RETELL_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+
+// Why a manual Mango sync declined to run. These are ANSWERS, not errors: the sync-now
+// route reports them per source and still returns 200 when the other source succeeded.
+const SYNC_SKIP_DISABLED = 'MANGO_DISABLED';   // MANGO_SYNC_DISABLED=true
+const SYNC_SKIP_OFF = 'MANGO_OFF';             // MANGO_INGEST_MODE=off
+const SYNC_SKIP_RUNNING = 'ALREADY_RUNNING';   // the :15 autosync is mid-flight
+
 // Last sync result — read by admin health endpoint
 const _syncState = {
   lastRunAt: null,
@@ -105,6 +117,16 @@ class SyncScheduler {
     this.nextSync = null;
     this.syncHistory = [];
     this.maxHistorySize = 50;
+    /** Retell auto-sync timer + the ISO time of its next fire (null until started). */
+    this.retellTimer = null;
+    this.nextRetellSync = null;
+    /**
+     * When a Retell pull last COMPLETED — not when a Retell call last arrived. The store's
+     * own `lastRetellSync` stat is stamped per stored call, so a quiet hour leaves it
+     * frozen; a freshness caption built on it would claim the list is stale when it is
+     * merely uneventful.
+     */
+    this.lastRetellSync = null;
   }
 
   /**
@@ -149,30 +171,41 @@ class SyncScheduler {
   }
 
   /**
-   * Run a sync job (can be called manually or by scheduler)
+   * Run a sync job (can be called manually or by scheduler).
+   *
+   * @param {{ maxCalls?: number, trigger?: 'scheduled'|'manual', actor?: string|null }} options
+   *   `trigger`/`actor` are recorded on the history entry so /api/admin/sync/history can
+   *   answer "was this the :15 cron or did someone press Sync now, and who?". They change
+   *   nothing about what the sync does.
+   * @returns {Promise<object>} the history entry, or `{ success: false, code, message }`
+   *   when the sync declined to run (see SYNC_SKIP_*).
    */
   async runSync(options = {}) {
     if (isMangoSyncDisabled()) {
       console.log('⏸️  Mango sync skipped (MANGO_SYNC_DISABLED=true)');
-      return { success: false, message: 'Mango sync disabled in this environment' };
+      return { success: false, code: SYNC_SKIP_DISABLED, message: 'Mango sync disabled in this environment' };
     }
     if (mangoConfig.ingestMode === 'off') {
       console.log('⏸️  Mango sync skipped (MANGO_INGEST_MODE=off)');
-      return { success: false, message: 'Mango ingestion is off (MANGO_INGEST_MODE=off)' };
+      return { success: false, code: SYNC_SKIP_OFF, message: 'Mango ingestion is off (MANGO_INGEST_MODE=off)' };
     }
     if (this.isRunning) {
       console.log('⚠️ Sync already in progress, skipping...');
-      return { success: false, message: 'Sync already in progress' };
+      return { success: false, code: SYNC_SKIP_RUNNING, message: 'Sync already in progress' };
     }
 
     this.isRunning = true;
     const startTime = Date.now();
-    
+
     const syncLog = {
       id: `sync_${Date.now()}`,
       started_at: new Date().toISOString(),
       completed_at: null,
       status: 'running',
+      // Who/what asked for this run. Defaults describe the cron, which is the only
+      // caller that passes neither.
+      trigger: options.trigger === 'manual' ? 'manual' : 'scheduled',
+      actor: options.actor ?? null,
       calls_found: 0,
       calls_imported: 0,
       calls_transcribed: 0,
@@ -373,6 +406,7 @@ class SyncScheduler {
       }
 
       await unifiedCallStore.persist();
+      this.lastRetellSync = new Date().toISOString();
       console.log(
         `✅ Retell sync complete: ${addedCount} calls stored/updated (${fetched} fetched across ${pages} page(s))`
       );
@@ -412,6 +446,91 @@ class SyncScheduler {
       }
     }
     return matched;
+  }
+
+  /**
+   * Start the periodic Retell pull (every 15 minutes) and remember when it next fires.
+   *
+   * This used to be a bare `setInterval` in server.js. It moved here unchanged in cadence
+   * so that ONE object knows both automatic schedules — the worklist's "next auto 1:15 PM"
+   * caption is a lie unless the next Retell tick is knowable, and an interval anchored to
+   * process start is not derivable from a cron expression.
+   */
+  startRetellAutoSync() {
+    if (this.retellTimer) {
+      console.log('⚠️ Retell auto-sync already running');
+      return;
+    }
+    const arm = () => { this.nextRetellSync = new Date(Date.now() + RETELL_SYNC_INTERVAL_MS).toISOString(); };
+    arm();
+    this.retellTimer = setInterval(() => {
+      arm();
+      this.runRetellSync({ limit: 1000 }).catch((err) =>
+        console.error('Periodic Retell sync error:', err.message)
+      );
+    }, RETELL_SYNC_INTERVAL_MS);
+    console.log(`⏰ Retell auto-sync scheduled every ${RETELL_SYNC_INTERVAL_MS / 60000} minutes`);
+  }
+
+  /** Stop the periodic Retell pull (tests / shutdown). */
+  stopRetellAutoSync() {
+    if (this.retellTimer) {
+      clearInterval(this.retellTimer);
+      this.retellTimer = null;
+      this.nextRetellSync = null;
+    }
+  }
+
+  /**
+   * When the next AUTOMATIC pull lands, from either source — the sooner of the next Mango
+   * cron fire and the next Retell tick. Either side may be absent (Mango is dark on
+   * staging; the Retell interval isn't armed under test), in which case the other wins.
+   * @returns {string|null} ISO timestamp, or null when nothing is scheduled at all.
+   */
+  getNextAutoSync() {
+    const candidates = [];
+    if (this.cronJob) {
+      // Computed fresh rather than read off this.nextSync, which is only refreshed when a
+      // sync completes — a caption built from a stale value drifts into the past.
+      const next = computeNextCronRun(mangoConfig.sync.schedule, new Date());
+      if (next) candidates.push(next.getTime());
+    }
+    if (this.nextRetellSync) candidates.push(new Date(this.nextRetellSync).getTime());
+    if (candidates.length === 0) return null;
+    return new Date(Math.min(...candidates)).toISOString();
+  }
+
+  /**
+   * When call data was last pulled from ANY source — the most recent of the two syncs.
+   * The persisted store stats are included as a floor so a fresh process reports the
+   * truth from disk instead of "never synced" until its first run lands.
+   * @returns {string|null} ISO timestamp, or null if nothing has ever synced.
+   */
+  getLastSyncedAt() {
+    const storeStats = unifiedCallStore.getStats().lastSync || {};
+    const times = [
+      this.lastRetellSync,
+      this.lastSync ? this.lastSync.toISOString() : null,
+      storeStats.retell,
+      storeStats.mango,
+    ]
+      .filter(Boolean)
+      .map((t) => new Date(t).getTime())
+      .filter((t) => Number.isFinite(t));
+    if (times.length === 0) return null;
+    return new Date(Math.max(...times)).toISOString();
+  }
+
+  /**
+   * How Mango ingestion is configured right now, for the freshness caption:
+   *   'disabled' — MANGO_SYNC_DISABLED=true (env kill switch)
+   *   'off'      — MANGO_INGEST_MODE is not 'api' (staging is dark by design)
+   *   'api'      — ingestion is live
+   * @returns {'disabled'|'off'|'api'}
+   */
+  getMangoMode() {
+    if (isMangoSyncDisabled()) return 'disabled';
+    return mangoConfig.ingestMode === 'api' ? 'api' : 'off';
   }
 
   /**
@@ -462,5 +581,10 @@ _instance.getSyncState = getSyncState;
 // Exposed for unit tests (pure cron math, no scheduler state).
 _instance.computeNextCronRun = computeNextCronRun;
 _instance.cronFieldMatches = cronFieldMatches;
+// Skip codes — the sync-now route maps these to honest per-source states.
+_instance.SYNC_SKIP_DISABLED = SYNC_SKIP_DISABLED;
+_instance.SYNC_SKIP_OFF = SYNC_SKIP_OFF;
+_instance.SYNC_SKIP_RUNNING = SYNC_SKIP_RUNNING;
+_instance.RETELL_SYNC_INTERVAL_MS = RETELL_SYNC_INTERVAL_MS;
 module.exports = _instance;
 
