@@ -314,14 +314,10 @@ async function bootstrap() {
       console.error('Initial Retell sync error:', err.message)
     );
 
-    // 2. Periodic Retell sync every 15 minutes
-    const RETELL_SYNC_INTERVAL_MS = 15 * 60 * 1000;
-    setInterval(() => {
-      syncScheduler.runRetellSync({ limit: 1000 }).catch(err =>
-        console.error('Periodic Retell sync error:', err.message)
-      );
-    }, RETELL_SYNC_INTERVAL_MS);
-    console.log('⏰ Retell auto-sync scheduled every 15 minutes');
+    // 2. Periodic Retell sync every 15 minutes. Same cadence as before; the timer now
+    //    lives in the scheduler so it can report when the next automatic pull lands
+    //    (the worklist's "next auto …" caption reads it via /unified-calls/sync-status).
+    syncScheduler.startRetellAutoSync();
 
     // 3. Start Mango sync scheduler (cron-based, default: every hour at :15)
     syncScheduler.start();
