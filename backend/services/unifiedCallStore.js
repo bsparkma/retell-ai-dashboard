@@ -471,6 +471,18 @@ class UnifiedCallStore {
       // Map Retell-specific fields to our unified schema
       caller_number: call.caller_number || call.from_number || 'Unknown',
       call_date: call.call_date || call.start_timestamp || new Date().toISOString(),
+      // Preserve the transcript and recording across re-adds. POST /v3/list-calls
+      // deliberately omits transcript / transcript_object / transcript_with_tool_calls
+      // AND recording_url (they dominate the payload size), and addRetellCall rebuilds
+      // the record while addCallInternal REPLACES the stored call — so without
+      // inheriting these, the 15-minute poller would wipe what the call_analyzed webhook
+      // already delivered, every run. Same rationale as the od_*/triage_*/tc_* fields
+      // below; mangoApiClient does the same for the Mango side. Both come back from
+      // GET /v2/get-call when a call genuinely needs re-hydrating.
+      transcript: call.transcript ?? existing?.transcript ?? null,
+      transcript_json:
+        call.transcript_json ?? call.transcript_object ?? existing?.transcript_json ?? null,
+      recording_url: call.recording_url ?? existing?.recording_url ?? null,
       // Preserve OD commlog sync state across re-adds: a raw webhook re-delivery or the
       // 15-min poller payload has no od_* fields, so carry them from the existing record
       // (the incoming value wins only when explicitly set). This is what keeps the
