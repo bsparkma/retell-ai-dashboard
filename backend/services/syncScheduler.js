@@ -15,6 +15,11 @@ const retellService = require('../config/retell');
 const mangoConfig = require('../config/mango');
 const { isMangoSyncDisabled } = require('../middleware/envGuards');
 
+// Hard cap on how many /v3/list-calls pages one Retell sync will walk. At the default
+// limit of 1000 per page that is 5000 calls per run — far beyond a practice's 15-minute
+// volume — and it bounds a runaway cursor. Hitting the cap is logged, never silent.
+const RETELL_SYNC_MAX_PAGES = 5;
+
 // Last sync result — read by admin health endpoint
 const _syncState = {
   lastRunAt: null,
@@ -313,33 +318,69 @@ class SyncScheduler {
 
   /**
    * Run a Retell API sync — pulls recent calls and stores them in the unified store.
-   * Also transcribes any Mango calls that have local recordings but no transcript.
+   *
+   * Pages through POST /v3/list-calls with the returned pagination_key. v3 replaced the
+   * legacy POST /v2/list-calls (removed 2026-06-15) and answers with an
+   * { items, pagination_key, has_more } envelope instead of a bare array.
    */
   async runRetellSync(options = {}) {
     const limit = options.limit || 1000;
-    console.log(`🔄 Retell sync: fetching up to ${limit} calls...`);
+    console.log(`🔄 Retell sync: fetching up to ${limit} calls per page (max ${RETELL_SYNC_MAX_PAGES} pages)...`);
 
     try {
-      const apiResponse = await retellService.getCalls({ limit, sort_order: 'descending' });
+      let addedCount = 0;
+      let fetched = 0;
+      let pages = 0;
+      let paginationKey = null;
+      let hasMore = true;
 
-      if (!apiResponse || !Array.isArray(apiResponse)) {
-        console.warn('⚠️ Retell API returned no data');
-        return { success: false, added: 0, message: 'No data from Retell API' };
+      while (hasMore && pages < RETELL_SYNC_MAX_PAGES) {
+        const page = await retellService.getCallsPage({
+          limit,
+          sort_order: 'descending',
+          ...(paginationKey ? { pagination_key: paginationKey } : {}),
+        });
+
+        // Fail loudly. The old code console.warn'd and returned { success: false }, so a
+        // changed API contract read as "quiet day" — the dashboard went stale while the
+        // sync history stayed green. Throwing surfaces it in PM2 logs and marks the run
+        // failed, which is the whole point of migrating off the deprecated endpoint.
+        if (!page || typeof page !== 'object' || !Array.isArray(page.items)) {
+          throw new Error(
+            'Retell POST /v3/list-calls returned an unexpected shape (expected { items: [...] })'
+          );
+        }
+
+        for (const call of page.items) {
+          const stored = unifiedCallStore.addRetellCall(call);
+          if (stored) addedCount++;
+        }
+
+        fetched += page.items.length;
+        pages++;
+
+        paginationKey = page.pagination_key || null;
+        // Stop when the API says there is no more, and also when it claims more but hands
+        // back no cursor — without that guard we would re-request page 1 forever.
+        hasMore = Boolean(page.has_more) && Boolean(paginationKey);
       }
 
-      let addedCount = 0;
-      for (const call of apiResponse) {
-        const stored = unifiedCallStore.addRetellCall(call);
-        if (stored) addedCount++;
+      if (hasMore) {
+        console.warn(
+          `⚠️ Retell sync stopped at the ${RETELL_SYNC_MAX_PAGES}-page cap with more results still available — ` +
+          `${fetched} calls fetched; the remainder will be picked up on the next run.`
+        );
       }
 
       await unifiedCallStore.persist();
-      console.log(`✅ Retell sync complete: ${addedCount} calls stored/updated (${apiResponse.length} fetched)`);
+      console.log(
+        `✅ Retell sync complete: ${addedCount} calls stored/updated (${fetched} fetched across ${pages} page(s))`
+      );
 
-      return { success: true, added: addedCount, fetched: apiResponse.length };
+      return { success: true, added: addedCount, fetched };
     } catch (error) {
       console.error('❌ Retell sync failed:', error.message);
-      return { success: false, added: 0, message: error.message };
+      throw error;
     }
   }
 

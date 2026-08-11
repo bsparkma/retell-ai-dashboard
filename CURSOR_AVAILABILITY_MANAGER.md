@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Instructs an agent to connect directly to Open Dental MySQL and assumes one office. Both are retired. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Cursor Prompt — CareIN Availability Manager (OD Blockout Integration)
 
 ## CONTEXT

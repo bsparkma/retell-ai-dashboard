@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Describes deploying by SSHing a droplet and running `pm2 restart`. The ship path is now `feature/*` -> PR -> `develop` -> CI. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Development Workflow - Retell AI Dashboard
 
 **Complete guide for developing, testing, and deploying updates to your production Retell AI Dashboard.**

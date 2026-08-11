@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** States that commlog auto-logging is on in Azure prod. `COMMLOG_AUTO_WRITE` defaults to off -- CareIN is review-then-send, and a human sends every chart note. See [../CLAUDE.md](../CLAUDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Slice A: Webhook Commlog Hardening — CC-ready PRD
 
 _Drafted 2026-06-06. Harden the live `call_analyzed` webhook → Open Dental commlog path so it can't

@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Describes single global Open Dental credentials with a MySQL fallback, and predates the corrected parameter and enum shapes in `OD_API_CONTRACT.md`. See [../CLAUDE.md](../CLAUDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Open Dental Calendar — Backend API Contract Spec
 
 This document defines the **middleware API contract** between the CareIn dashboard frontend and the backend. The backend proxies and normalizes Open Dental (API or direct DB). All calendar-related requests from the frontend go to `GET/POST /api/opendental/...`.

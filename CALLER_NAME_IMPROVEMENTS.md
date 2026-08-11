@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Written in the present tense about the deprecated `frontend/` UI. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Caller Name Extraction and Patient Identification Improvements
 
 ## Overview

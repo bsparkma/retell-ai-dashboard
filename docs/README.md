@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Indexes 3 of ~60 docs and claims the Open Dental calendar specs are the source of truth. `docs/OD_API_CONTRACT.md` is now authoritative for Open Dental and contradicts them. See [../CLAUDE.md](../CLAUDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # CareIn Dashboard — Docs
 
 ## Open Dental calendar integration

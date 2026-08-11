@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** The target architecture it describes did ship, but its phase table still places the system at 'Phase 0 -- single-tenant on-prem' with Azure as future work. Phase 3 completed 2026-06-06. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # CareIN Platform — Multi-Tenant SaaS Architecture & Roadmap
 
 _Drafted 2026-06-02. Target: turn CareIN from a single on-prem deployment into a multi-tenant, Azure-hosted platform sellable to other practices, hosting CareIN + the TC app + the RCM posting app as modules._

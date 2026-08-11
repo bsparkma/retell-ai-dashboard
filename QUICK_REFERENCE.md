@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Every command targets a retired DigitalOcean droplet over SSH + PM2. That host is gone. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Quick Reference - Retell AI Dashboard
 
 **⚡ Instant access to essential commands and information for production operations.**

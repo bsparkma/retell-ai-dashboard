@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** PM2 commands against the on-prem LAN box. That is no longer how anything is operated. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Running under PM2:
 
 carein-backend → port 5003, PID 15544, online

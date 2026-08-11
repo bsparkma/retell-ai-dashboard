@@ -1,131 +1,186 @@
-# NOTES — CareIN AI Call Dashboard
+# new-dashboard — Conventions and decisions
 
-## Architecture Decisions
+Why the code looks the way it does. Verified against `origin/develop`, August 2026.
+For what the app currently does, see [HANDOFF.md](HANDOFF.md). For backend contracts, see
+[../CLAUDE.md](../CLAUDE.md).
 
-### Stack conformance
-The task spec suggested Next.js + Prisma; the existing repo uses Vite + React +
-Express. Conformed to the existing stack. No Prisma — data is persisted to
-`data/calls.json` via fs (same pattern as the rest of the repo). This is noted
-here per the addendum instructions.
+The previous version of this file described a deferred "Call Log unification" and a
+localhost-port world that no longer exists. It has been replaced.
 
-### Two-server design (development)
-The new-dashboard already runs two services in dev:
-- **Vite dev server** on port 3005 (client hot-reload)
-- **CareIN server** (`server/index.ts`) on port 3000 (API + static in prod)
+---
 
-The existing real backend (port 5000) is unchanged. The CareIN client (`careInApi`)
-defaults to `http://localhost:3000/api` and is separate from the existing `api`
-object that talks to port 5000. If you want a single URL, set
-`VITE_CAREIN_API_URL` in `.env`.
+## 1. The OfficeContext pattern
 
-### No PHI in fixtures
-All 15 seed calls use invented names and numbers. No patient data from any real
-system is included.
+`client/src/contexts/OfficeContext.tsx`.
 
-### MockCommlogWriter always active
-There is no live Open Dental commlog integration. `createCommlogWriter()` always
-returns `MockCommlogWriter` because `OPENDENTAL_API_URL` is never set. A real
-implementation would replace the `// Live implementation would go here` comment
-in `server/lib/commlog.ts`. This decision is tracked here per the addendum.
+```ts
+{ offices, office, setOffice, selected, loading }
+```
 
-### "Improve, don't rebuild" applied to Calls.tsx
-Rather than replacing the existing Calls page, a third tab ("CareIN Log") was
-added. The existing "Call Log" (Retell + Mango unified calls) and "Callbacks"
-tabs are untouched. CareIN-specific calls render in the new tab.
+It is a **real, writable, localStorage-persisted selector** (`carein.office`, sentinel
+`ALL_OFFICES = "all"`), rendered as a dropdown in the sidebar. It is mounted **inside**
+`RequireAuth`, so `useOffice()` throws outside the provider. A failed roster load degrades
+to an empty list rather than throwing.
 
-### Route namespace
-CareIN call detail pages use the `/carein-calls/:id` route to avoid colliding
-with the existing `/calls/:id` (CallDetail.tsx). If unification is desired later,
-the two detail pages can be merged — write it up as a follow-up task.
+The rule that matters is not "the picker is cosmetic" — it is:
 
-### Office mapping
-Inbound DNIS (`to_number`) is mapped to office names in
-`server/lib/ingestion.ts::OFFICE_BY_NUMBER`. In production this should move to
-a config file or database table. Currently hardcoded to 4 synthetic offices.
+> **The selector scopes reads. Writes take their office from the call.**
 
-### Quality score heuristic
-Quality score (0–100) is derived from sentiment + call_successful flag +
-duration. It is purely a heuristic and should be validated against actual
-practice outcomes before being used for performance reviews.
+- Reads pass it as a filter: `api.getUnifiedCalls({ office_id: office === ALL_OFFICES ? undefined : office })`.
+- Actions do **not** consult it. `odConnectedForCall` resolves connectivity per row from
+  `call.officeId`, because the old rule read the *selected* office and therefore offered the
+  full action set on every row in the "All calls" view. Each call now answers for itself,
+  from the office the **server** resolved for it.
+- Every office-bearing write sends `office_id` as an **assertion the server can refuse**,
+  taken from the server's own response for that call — never from `useOffice()`. See
+  `SendToChartDialog.tsx`, `PickPatientModal.tsx`, `SendToTcButton.tsx`.
 
-## New Dependencies Added
-- `@vitest/coverage-v8@2.1.9` (devDependency) — required for coverage reporting.
-  Matches the existing `vitest@2.1.9` version exactly.
+That is what makes a stale screen structurally unable to file a note into the wrong
+practice: the client cannot name the target, only guess it and be corrected.
 
-## Things Deliberately NOT Changed
-- Existing API client (`api`) and all existing page logic
-- `components/`, `features/`, `hooks/`, `contexts/` directories
-- `vite.config.ts`, `tsconfig.json` (no structural changes needed)
-- Backend at port 5000 (root-level backend) — completely untouched
-- `DashboardLayout`, routing for existing pages
-- Any file outside `new-dashboard/`
+The office picker is hidden on TC "shared" routes.
 
-## Production Cutover (2026-05-24)
+**TC layers a second concept on top.** The backend has no all-offices query — TC's
+`requireOffice` rejects anything non-concrete — so `ALL_OFFICES` inside TC is a
+**client-side fan-out** over concrete offices, tolerant of partial failure, with
+`showOfficeBadges` gating the presentational `<OfficeBadge>`. `OfficeBadge` reads no context
+on purpose so list components stay testable without a provider.
 
-The CareIN webhook server is now the production dashboard:
+---
 
-- PM2 `carein-dashboard` runs `new-dashboard/dist/index.js` (built bundle)
-  on port 3005 with `NODE_ENV=production`. Replaces the earlier `vite --host`
-  dev server. SPA + CareIN API + webhook ingestion are served by one process.
-- Built client uses `${window.location.origin}/api` as the CareIN base URL
-  in production, so the bundle is origin-agnostic (works behind LAN IP,
-  hostname, or a future TLS reverse proxy) without rebuilding.
-- Existing backend on port 5003 (`carein-backend`) is unchanged.
+## 2. HTTP clients — there are three
 
-### Bug fixed during cutover
+This is the single most common source of confusion in this package. They do not share
+error handling.
 
-The store data dir resolved differently in dev vs prod (esbuild moved the
-`__dirname` anchor). It's now resolved from `process.cwd()` and can be
-overridden with `CAREIN_DATA_DIR`. The dev/prod stores both live at
-`new-dashboard/data/calls.json`. The orphan write at the project root
-(`data/calls.json` from the broken path) was renamed to
-`data/calls.json.orphan-bak` — safe to delete once verified.
+### `api` — `client/src/lib/api.ts` (the main backend)
 
-### Empty-on-empty in production
+```ts
+const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
+```
 
-Production never auto-seeds. If `data/calls.json` is empty (or missing),
-the dashboard shows an empty CareIN Log tab — by design, so synthetic
-seed calls don't masquerade as real ones. Set `USE_SEED_DATA=true` only
-for demo/dev environments.
+`apiFetch` resolves `path` against `new URL(..., window.location.origin)`. That is what
+makes a **relative** `VITE_API_URL=/api` work identically by hostname, LAN IP, or behind
+the Azure ingress. It requires the env var to be set — the `localhost:5000` default is a
+dev fallback and matches no deployment.
 
-## Step 3 — Call Log unification: DEFERRED
+Every request sends `credentials: "include"` (the HttpOnly Entra SSO cookie) plus
+`Authorization: Bearer <VITE_DASHBOARD_API_TOKEN>` when that variable is non-empty. Auth
+routes are separate: `client/src/lib/auth.ts` derives `AUTH_BASE` by stripping a trailing
+`/api`.
 
-Two tabs surface call data from different pipelines:
+```ts
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+}
+```
 
-| Tab | Source | How | Schema |
-|---|---|---|---|
-| Call Log | backend:5003 | Retell sync API poll + Mango | basic (caller, time, transcript) |
-| CareIN Log | dashboard:3005 | Retell webhook push (real-time) | rich (tag, routing, sentiment, commlog status, quality score) |
+Shape is exactly `{ name: "ApiError", message, status, code }` — no body, no issues. The
+message falls back through `err.message → err.error → res.statusText → HTTP <status>`.
+`ApiError` still extends `Error` deliberately, so the many
+`err instanceof Error ? err.message` call sites keep working unchanged.
 
-Right now Retell is still pointed at the existing backend on 5003. The
-CareIN store will stay empty until the webhook URL is repointed. Until
-then, unifying the tabs would be a guess at which schema wins.
+Two handling tiers:
 
-### Cutover checklist (when you're ready to switch Retell)
+- **Default** — `toast.error(err instanceof Error ? err.message : "…", { duration: 8000 })`,
+  and on failure, reload from the server rather than patching local state optimistically.
+- **Precise** — narrow with `err instanceof ApiError` and branch on `.code`, then `.status`.
+  `SendToTcButton.tsx` is the reference implementation and currently the only one.
 
-1. Set `RETELL_API_KEY=key_live_xxxx` in `new-dashboard/.env`.
-2. In the Retell dashboard, change the agent webhook URL to:
-   `http://10.20.30.160:3005/api/webhook/retell`
-   (or your public HTTPS endpoint if exposed). Enable `call_ended` and
-   `call_analyzed` events.
-3. `pm2 restart carein-dashboard --update-env` so the new env loads and
-   signature verification activates.
-4. Make a test call; check the CareIN Log tab in the dashboard.
-5. Let it run for ~3–5 days alongside the existing sync flow.
-6. Compare the two tabs against the same calls. Then decide:
-   - Canonicalize on CareIN schema (richer; deprecate Call Log tab)
-   - Or canonicalize on the existing backend (drop the new server)
-   - Or merge (write the cross-schema mapping)
+**There is no retry, no backoff, no timeout, and no `AbortController` in `api.ts`.**
+Cancellation is done ad hoc by callers with `let cancelled = false` closures. The
+`retryAfterMinutes` field on `TranscribeResult` is informational; no code acts on it.
 
-## Open Questions for Your Input
-1. **Office mapping config**: Should `OFFICE_BY_NUMBER` be a config file or
-   come from the real backend? Currently hardcoded.
-2. **Data consolidation**: ⏸ DEFERRED — see "Step 3" above; needs real
-   webhook data on both sides before deciding.
-3. **Commlog retries**: The retry button is wired to the mock writer. When a
-   real Open Dental writer is added, the retry flow is already in place.
-4. **Webhook authentication**: ✅ RESOLVED (2026-05-24). `Retell.verify()` from
-   `retell-sdk` is used. Set `RETELL_API_KEY` in `.env` to enable enforcement.
-   Without it: server warns at startup and accepts all payloads (dev-safe).
-5. **Data retention**: `data/calls.json` grows unbounded. Add a TTL or max-size
-   limit once the data volume is known.
+The one escape hatch: `transcribeMangoCall` uses raw `apiFetch` rather than the throwing
+`request<T>` wrapper, because budget-spent / recording-not-ready / already-running are
+**answers, not errors** and must reach the UI as a typed body.
+
+### `careInApi` — same file, weaker contract
+
+`CAREIN_BASE` falls back to `${window.location.origin}/api` in production builds. Its
+wrapper `careInRequest` has **no credentials, no bearer token, and no `ApiError`** — it
+throws a bare `Error`. It talks to the local Express sub-server in `server/index.ts`, not
+the main backend. Consumers: the "CareIN Log" tab, `Analytics.tsx`, `CareInCallDetail.tsx`.
+
+### `TcApiError` — `client/src/features/tc/api.ts`
+
+`/api/tc` errors carry `{ success, error, code }` with the message under `error`, so the
+main wrapper would surface "HTTP 403" instead of `MODULE_NOT_ENTITLED`. `TcApiError` adds
+`feature` (for 501 `FEATURE_DISABLED`) and `issues` (validation).
+
+Standing rule for that module: **none of the TC api functions toast.** They resolve with
+the server's persisted row or throw; callers toast success *only* after the promise
+resolves and keep dialogs open on rejection.
+
+> Naming collision to watch: `tcErrorMessage` exists in **both** `lib/sendToTc.ts`
+> (signature `(status, code)`) and `features/tc/api.ts` (signature `(err: unknown)`). They
+> are unrelated.
+
+---
+
+## 3. Testing conventions
+
+Runner config is `vitest.config.ts`, **separate** from `vite.config.ts`.
+
+- `esbuild: { jsx: "automatic" }` — required because the app tsconfig uses
+  `jsx: "preserve"` and vitest runs without `@vitejs/plugin-react`.
+- Default environment is `node`; **`.tsx` files get jsdom** via `environmentMatchGlobs`.
+  The extension is what buys you a DOM.
+- `include` is `tests/**/*.test.ts(x)` — a flat directory, no colocated tests.
+- Aliases `@` and `@shared` mirror `vite.config.ts`.
+- Tests are excluded from `tsc --noEmit`.
+
+Pattern to follow: put decision logic in a pure module under `lib/` (`worklist.ts`,
+`transcribe.ts`, `sendToTc.ts`) and test it as `.test.ts` with no DOM; test the rendered
+affordance separately as `.test.tsx`. `send-to-tc.test.tsx` and `send-to-tc-reactivity.test.tsx`
+are a good example of the split — the second exists specifically to pin a bug where the
+button needed a page refresh to appear.
+
+Every fixture is synthetic. Do not introduce a real patient name, phone, or DOB.
+
+---
+
+## 4. Decisions worth not re-litigating
+
+**Closed unions over string checks.** `TranscribeStatus` is a closed union of the backend's
+ten outcomes so a new outcome is a compile error, not a silent generic toast. Same
+motivation for `CallLinkRole`. If the backend adds an outcome, the type is where you find
+out.
+
+**A failure never reads as success.** No optimistic patching on any office- or chart-bearing
+write. A 2xx without the expected payload is treated as a failure. Error copy on those paths
+ends in "nothing was sent" on purpose.
+
+**Confirmations, not lockouts.** Re-transcribing a `no_speech` call and transcribing a
+duplicate leg both cost money and are both occasionally correct. The UI asks; it does not
+refuse.
+
+**A failed attempt does not consume the affordance.** Any transcribe outcome other than
+`completed` / `exists` / `no_speech` returns the button to `idle`.
+
+**Concurrency guards use refs, not state.** A double-click must be a no-op *before* the next
+render, which state cannot guarantee.
+
+**`transferred_leg` is deliberately unbadged and unhidden.** Only `duplicate_leg` is hidden
+from "Needs attention" and badged "Answered by CareIN AI". A transferred leg contains the
+human half of the conversation, which the AI transcript does not.
+
+**`FILEABLE_OFFICES` is hardcoded** to `{roland, valley}` in `lib/sendToTc.ts`. When a third
+office is added to the backend registry, this set must be updated too — it will not follow
+automatically.
+
+---
+
+## 5. Known rough edges
+
+- `hasLinkedTwin()` in `lib/worklist.ts` is exported but unused.
+- `CallWorklist.tsx` has literal `backgroundColor: "white"` on the sort and source toggles,
+  which is the exact pattern `dark-mode-contrast.test.ts` scans for.
+- `socket.io-client` is still a dependency but nothing under `client/src` imports it.
+  `activity.md` references a `contexts/SocketContext.tsx` that does not exist.
+- `package.json` declares `vitest ^2.1.4` and `@vitest/coverage-v8 ^2.1.9`; they resolve to
+  the same version in the lockfile, but the declared ranges do not match.
+- `CHANGELOG.md`, `activity.md`, `plan.md`, and `ideas.md` are all frozen around May 2026
+  and contain stale ports (5000, 5001) and a `SocketContext` that was never built. Treat
+  them as history.
