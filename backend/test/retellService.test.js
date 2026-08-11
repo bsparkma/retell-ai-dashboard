@@ -375,3 +375,72 @@ test('runRetellSync handles an empty first page without error', async () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Transcript preservation across a v3 re-add
+// ---------------------------------------------------------------------------
+
+/**
+ * v3 list responses carry neither transcript nor recording_url, and addRetellCall
+ * rebuilds the record while addCallInternal replaces it in the Map. Without an explicit
+ * inherit, the 15-minute poller would blank both of the things the call_analyzed webhook
+ * already delivered — every run, for every Retell call. These pin that it does not.
+ */
+test('a v3 re-add preserves the transcript and recording delivered by the webhook', () => {
+  const callId = 'call_media_guard';
+
+  // 1. The webhook lands with the full payload (v2/get-call shape).
+  unifiedCallStore.addRetellCall({
+    call_id: callId,
+    from_number: '+15015550123',
+    start_timestamp: '2026-08-10T15:00:00.000Z',
+    transcript: 'Agent: Thanks for calling. User: I need to reschedule.',
+    transcript_object: [{ role: 'agent', content: 'Thanks for calling.' }],
+    recording_url: 'https://retell.example/recordings/call_media_guard.mp3',
+    call_analysis: { call_summary: 'Caller wants to reschedule.' },
+  });
+
+  const afterWebhook = unifiedCallStore.getCall(callId);
+  assert.match(afterWebhook.transcript, /reschedule/);
+  assert.ok(afterWebhook.transcript_json, 'transcript_json populated from transcript_object');
+  assert.match(afterWebhook.recording_url, /call_media_guard\.mp3$/);
+
+  // 2. The poller re-adds the SAME call from a v3 list payload — no transcript, no
+  //    recording_url. v3 omits both by design.
+  unifiedCallStore.addRetellCall({
+    call_id: callId,
+    from_number: '+15015550123',
+    start_timestamp: '2026-08-10T15:00:00.000Z',
+    call_analysis: { call_summary: 'Caller wants to reschedule.' },
+    disconnection_reason: 'user_hangup',
+  });
+
+  const afterPoll = unifiedCallStore.getCall(callId);
+  assert.match(afterPoll.transcript, /reschedule/, 'transcript must survive the v3 re-add');
+  assert.ok(afterPoll.transcript_json, 'transcript_json must survive too');
+  assert.match(
+    afterPoll.recording_url,
+    /call_media_guard\.mp3$/,
+    'recording_url must survive — the audio player has no other source for it'
+  );
+  assert.equal(afterPoll.disconnection_reason, 'user_hangup', 'and new v3 fields still land');
+});
+
+test('an incoming transcript or recording_url still wins over the stored one', () => {
+  const callId = 'call_media_update';
+
+  unifiedCallStore.addRetellCall({
+    call_id: callId,
+    transcript: 'first pass',
+    recording_url: 'https://retell.example/old.mp3',
+  });
+  unifiedCallStore.addRetellCall({
+    call_id: callId,
+    transcript: 'corrected transcript',
+    recording_url: 'https://retell.example/new.mp3',
+  });
+
+  const stored = unifiedCallStore.getCall(callId);
+  assert.equal(stored.transcript, 'corrected transcript');
+  assert.equal(stored.recording_url, 'https://retell.example/new.mp3', 'a re-signed URL wins');
+});
