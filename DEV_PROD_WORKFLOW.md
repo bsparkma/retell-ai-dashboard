@@ -1,140 +1,303 @@
 # Dev / Prod Workflow
 
-Two folders on this workstation, two roles. Don't mix them up.
+**Production runs on Azure Container Apps.** Deploys happen through GitHub Actions, not by
+pulling on a workstation. The two-folder PM2 arrangement below still exists on the Windows
+box, but its role has changed: the prod folder is now a local mirror and rollback path, not
+the thing serving the team.
 
-| | PROD | DEV |
-|---|---|---|
-| Folder | `c:\Users\beau\carein cursor dashboard` | `c:\Users\beau\carein cursor dashboard-dev` |
-| Backend port | 5003 | 5103 |
-| Dashboard port | 3005 | 3105 |
-| URL the team uses | `http://10.20.30.160:3005` | `http://localhost:3105` (you only) |
-| Process manager | PM2 (auto-starts on logon) | None — start manually when developing |
-| Branch tracked | `main` | any feature branch |
-| Edits in Cursor? | **NEVER** | Yes |
-| OD writes / agent publish / Mango cron | Enabled | **Disabled by env flags** |
+Verified against `origin/develop`, August 2026.
 
 ---
 
-## Day-to-day: working on a new feature
+## 1. The deploy pipeline
 
-```powershell
-# 1. Start dev (only when you're actively developing)
-cd "c:\Users\beau\carein cursor dashboard-dev"
-git checkout -b feature/my-thing       # or switch to an existing branch
-git pull origin main --rebase          # bring in latest prod fixes
+| | **Staging** | **Production** |
+| --- | --- | --- |
+| Workflow | `.github/workflows/staging.yml` | `.github/workflows/prod.yml` |
+| Trigger | push to `develop` (+ `workflow_dispatch`) | push to `main` (+ `workflow_dispatch`) |
+| Path filters | none — every push builds | none |
+| Approval | **none — auto-deploys** | **required reviewer on the `production` environment** |
+| Concurrency | `staging-${{ github.ref }}`, `cancel-in-progress: true` | `prod-${{ github.ref }}`, **`cancel-in-progress: false`** — never cancel a half-done prod rollout |
+| Auth | secretless OIDC (`azure/login@v2`, GitHub *variables*, no client secret) | same |
 
-# 2. Start dev backend + dashboard in two terminals
-#    Terminal A:
-cd "c:\Users\beau\carein cursor dashboard-dev\backend"
-npm run dev
+Jobs run in the same order in both:
 
-#    Terminal B:
-cd "c:\Users\beau\carein cursor dashboard-dev\new-dashboard"
-npm run dev
+1. **`build-test`** — the gate. No Azure access.
+2. **`publish`** — `az acr build` for the backend and Caddy images, tagged
+   `${GITHUB_SHA::7}`. On prod this job deliberately carries **no** `environment:`, because
+   it only builds into the shared ACR and mutates nothing in prod, so it runs pre-gate.
+3. **`migrate`** — starts the Container Apps migrate job and polls 60 × 10 s (10 min
+   ceiling), failing on `Failed | Degraded | Canceled`. **This is the gated job on prod**
+   (`environment: production`). It is a no-op when the release carries no new migrations.
+4. **`deploy`** — `az containerapp update --image ...` for backend and Caddy, then a
+   management-plane verify that `provisioningState == Provisioned` and the running image
+   ends in the expected SHA. Prod's `deploy` also carries no `environment:` — the single
+   approval on `migrate` already gated the whole prod-mutating sequence, and re-prompting
+   would stall a rollout mid-flight.
 
-# 3. Open http://localhost:3105 — your dev dashboard, isolated from prod
+CI does not curl the app after deploying: staging's Caddy ingress is IP-restricted to the
+admin workstation, so a runner curl would correctly get a 403.
 
-# 4. When done for the day, Ctrl+C both terminals.
-#    Prod keeps running under PM2; the team is unaffected.
+> **The prod gate is a reference, not a rule.** `environment: production` in the YAML only
+> names a GitHub environment. The "required reviewers" protection lives in repo Settings →
+> Environments and is **not** in this repository. If that environment has no reviewers
+> configured, every push to `main` deploys to prod unattended. Check it if you have not
+> recently.
+
+`staging.yml` also contains a `deploy-prod` job that is permanently disabled
+(`if: ${{ false }}`) — a Step-5 placeholder superseded by `prod.yml`. It can be deleted.
+
+### The gate, exactly
+
+```
+actions/checkout@v4
+actions/setup-node@v4          node-version: 22
+corepack enable
+pnpm install --frozen-lockfile          (cwd new-dashboard)
+pnpm run check                          tsc --noEmit
+pnpm run test                           vitest run, whole suite
+npm ci                                  (cwd backend)
+node --check server.js                  syntax only
+node --test                             backend unit tests
+psql                                    ephemeral DB: role carein_app, db carein_t_carein
+node scripts/migrate.js up
+node scripts/migrate-tenant.js up --tenant carein
+node scripts/smoke-spine.js             12/12
 ```
 
-Open Cursor in the **dev** folder. Treat the prod folder as read-only.
+Note the asymmetry: **the dashboard uses pnpm, the backend uses npm.** There is no lint
+step anywhere — no lint script, no eslint dependency.
 
 ---
 
-## Day-to-day: shipping a feature to prod
+## 2. Branching
 
-```powershell
-# In dev folder
-cd "c:\Users\beau\carein cursor dashboard-dev"
-git add ...
-git commit -m "..."
-git push origin feature/my-thing
-
-# Open PR on GitHub, review, merge into main.
-
-# Deploy to prod (do this when team isn't on calls):
-cd "c:\Users\beau\carein cursor dashboard"
-git pull origin main
-
-# Only if package.json changed:
-cd backend && npm install && cd ..
-cd new-dashboard && npm install && cd ..
-
-pm2 restart all
-curl http://10.20.30.160:5003/api/health   # confirm backend healthy
+```bash
+git fetch origin
+git checkout -b feature/my-thing origin/develop
 ```
 
+- Branch off **`origin/develop`**, always. Not off `main`, not off a branch you already
+  merged.
+- **A merged branch is dead.** Once its PR lands, delete it locally and cut a fresh one.
+  Continuing to commit onto a merged branch is how work ends up rebased on top of itself.
+- **One clone, one session.** Two agents sharing a working tree will fight over the index
+  and the branch pointer. For parallel work use a worktree:
+  ```bash
+  git worktree add ../carein-<slice> -b feature/<slice> origin/develop
+  ```
+- Prefixes: `feature/`, `fix/`, `docs/`. Commit messages in imperative present tense.
+
+Ship path: `feature/*` → PR → `develop` → staging auto-deploys → merge `develop` → `main`
+→ prod deploys after approval.
+
 ---
 
-## PM2 cheat sheet (prod only)
+## 3. Local development
 
-```powershell
-pm2 status                       # what's running
-pm2 logs carein-backend          # tail backend logs
-pm2 logs carein-dashboard        # tail dashboard logs
-pm2 restart carein-backend       # restart one app (after .env change)
-pm2 restart all                  # restart everything
-pm2 stop all                     # stop until next logon (or until pm2 start)
-pm2 save                         # rerun after adding/removing apps
+Run everything locally against local Postgres. Do not point a dev box at Azure.
+
+```bash
+# backend
+cd backend && npm ci && npm run dev        # :5103
+
+# dashboard
+cd new-dashboard && pnpm install --frozen-lockfile && pnpm run dev   # :3005
 ```
 
-Logs also live at `logs/backend-*.log` and `logs/dashboard-*.log`.
+Before pushing:
 
----
+```bash
+cd new-dashboard && pnpm run check && pnpm run test
+cd ../backend && node --check server.js && node --test
+```
 
-## Safety flags (dev backend `.env`)
+The typecheck script is **`check`**, not `typecheck`. There is no `npm test` in `backend/` —
+`node --test` is invoked directly.
 
-These are set to `true` in the dev `.env` and unset in prod. They make the
-dev backend safe to run against shared external services:
+`dev/local/README.md` describes the local Docker Postgres hosting `carein_control`,
+`carein_t_carein`, and the least-privilege `carein_app` role. That is still the dev model.
+
+### Safety flags — set these in the dev `.env`
 
 | Flag | Blocks |
-|---|---|
-| `OPENDENTAL_WRITE_DISABLED=true` | All POST/PUT/PATCH/DELETE on `/api/opendental/appointments`, `/api/opendental/ai/smart-book`, and `/api/retell-tools/book_appointment`. Returns 403 with `code: OD_WRITE_DISABLED`. |
-| `RETELL_AGENT_PUBLISH_DISABLED=true` | `PATCH /api/agents/:id` (which would push a new prompt to the live phone-answering agent). Returns 403 with `code: AGENT_PUBLISH_DISABLED`. |
-| `MANGO_SYNC_DISABLED=true` | Mango cron job + manual `runSync` calls (which would log into the Mango portal and could conflict with prod's session). |
+| --- | --- |
+| `OPENDENTAL_WRITE_DISABLED=true` | Every OD mutation → 403 `OD_WRITE_DISABLED` |
+| `RETELL_AGENT_PUBLISH_DISABLED=true` | `PATCH /api/agents/:id`, which would push a prompt to the live phone-answering agent → 403 `AGENT_PUBLISH_DISABLED` |
+| `MANGO_SYNC_DISABLED=true` | The Mango cron **and** manual `runSync` — prevents a dev box contending for the shared portal session |
 
-Verify in dev:
+Verify:
+
 ```powershell
 curl -X PATCH -H "Content-Type: application/json" -d "{\"agent_name\":\"x\"}" http://localhost:5103/api/agents/test
-# Expect: {"success":false,"error":"Retell agent publishing disabled..."}
+# Expect: 403 AGENT_PUBLISH_DISABLED
 ```
 
----
+### Still shared between dev and prod
 
-## Things that stay shared between dev and prod
+- **Retell API key** — same account. Dev pulls the same call data read-only. Don't hammer it.
+- **Open Dental** — dev reads the same practice data. Writes are blocked by the flag above.
+- **Azure OpenAI / Azure Speech** — same subscription, same bill.
+- **Mango portal credentials** — same login; the flag is what keeps dev from logging in
+  concurrently.
+- **Retell webhooks** point at prod only. Dev never receives live webhook events — test
+  with synthetic payloads.
 
-These are not isolated — be aware:
-
-- **Retell API key** — same key. Dev pulls call data (read-only) from the same account. Don't hammer it.
-- **Open Dental connector + API** — dev reads the same practice data. Writes are blocked by the safety flag above.
-- **Deepgram / OpenAI** — dev usage bills your same accounts. Keep dev volume reasonable.
-- **Retell webhooks** — only point at prod (`http://10.20.30.160:5003`). Dev won't receive live webhook events; test with synthetic payloads.
-- **Mango portal credentials** — same login. The flag prevents dev from logging in concurrently.
-
----
-
-## Things that are isolated
-
-- `data/` directory (call store, callbacks JSON, configs, access logs) — separate per folder
-- `backend/recordings/` — separate
-- `node_modules/` — separate
-- `logs/` (PM2) — only the prod folder has these
-- Git working tree and branch state — completely independent
+Isolated per folder: `data/`, `backend/recordings/`, `node_modules/`, `logs/`, and git
+state.
 
 ---
 
-## When something goes wrong
+## 4. The Windows workstation folders
 
-**Team reports the dashboard is offline:**
-1. `pm2 status` — both apps should be `online`. If not, `pm2 restart all`.
-2. `curl http://10.20.30.160:5003/api/health` — should return JSON.
-3. `pm2 logs carein-backend --lines 50` — look for stack traces.
+| | PROD folder | DEV folder |
+| --- | --- | --- |
+| Path | `c:\Users\beau\carein cursor dashboard` | `c:\Users\beau\carein cursor dashboard-dev` |
+| Backend / dashboard port | 5003 / 3005 | 5103 / 3105 |
+| Process manager | PM2 (`ecosystem.config.cjs`) | none — start manually |
+| Branch | should track `main` | feature branches |
+| Edit here? | **NEVER** | Yes |
 
-**Prod backend won't start after a deploy:**
-1. `pm2 logs carein-backend --err --lines 50` — read the error.
-2. If it's a code bug introduced by the deploy: `cd "c:\Users\beau\carein cursor dashboard" && git log --oneline -5`, then `git revert <bad-commit>` or `git reset --hard <previous-good-commit>` (only if you know nothing else has been pushed).
-3. `pm2 restart all`.
+Open the editor in the **dev** folder. Treat the prod folder as read-only.
 
-**Dev port already in use:**
-A previous `npm run dev` is still running. `netstat -ano | findstr :5103` to find the PID, then `Stop-Process -Id <pid> -Force` in PowerShell.
+Two live gotchas on this box:
+
+- **`ecosystem.config.js` is stale and conflicts with `ecosystem.config.cjs`.** Both define
+  `carein-backend` and `carein-dashboard`, but the `.js` sets `PORT 5000` and
+  `NODE_ENV=production`, neither of which matches anything else in the repo. Caddy proxies
+  to `:5003`. Always `pm2 start ecosystem.config.cjs`. The `.js` should be deleted.
+- **The `.cjs` deliberately does not set `NODE_ENV=production`** — that keeps secrets coming
+  from `backend/.env` (no Key Vault certificate dependency) and cookies at `Secure=false`,
+  which is safe only because Caddy terminates TLS and is the only ingress. PM2 injects env
+  *before* `dotenv.config()` runs, so these override `backend/.env`. It is a documented,
+  dated deviation with a "harden later" note — not the intended end state.
+
+`carein-dashboard` runs the esbuild bundle at `new-dashboard/dist/index.js`, so
+`pnpm build` must precede `pm2 reload`.
+
+### PM2 cheat sheet
+
+```powershell
+pm2 status
+pm2 logs carein-backend --lines 50
+pm2 restart carein-backend
+pm2 save
+```
+
+Logs also land in `logs/backend-*.log` and `logs/dashboard-*.log`.
+
+---
+
+## 5. Gotchas
+
+### Deploy races — do not mutate a container app during an in-flight CD run
+
+`prod.yml` sets `cancel-in-progress: false`, so a prod rollout always runs to completion.
+Meanwhile several runbooks in this repo tell you to fix things with a manual
+`az containerapp update --set-env-vars ...` against the same apps the `deploy` job mutates.
+Running both at once produces interleaved revisions: your env change can land on a revision
+the pipeline immediately supersedes, or the pipeline's image can land on a revision that
+loses your env change.
+
+**Rule: check Actions for a running workflow before any `az containerapp` mutation, and
+don't push to `develop`/`main` while you're hand-editing an app.** After a manual mutation,
+confirm the active revision carries both your change and the expected image SHA.
+
+> Not previously documented in this repo — added here as operating guidance, not as a
+> recovered fact.
+
+### `az containerapp` YAML export pins the image tag
+
+`az containerapp show -o yaml` captures the image reference that was live at export time.
+Feeding that file back with `az containerapp update --yaml` re-applies that tag — silently
+reverting a newer deploy. If you edit an app via a YAML round-trip, re-check the `image:`
+line against the SHA you actually want before applying, or prefer targeted
+`--set-env-vars` / `--image` flags over whole-file updates.
+
+> Operator-supplied guidance. Not documented elsewhere in this repo and not verifiable from
+> the code — treat it as a caution, not a citation.
+
+### Reading staging and prod logs
+
+No log-reading procedure is documented anywhere in this repo — every existing log
+instruction is PM2-based and applies to the retired on-prem box.
+
+For Container Apps, prefer a **Log Analytics history query** over a live tail. A live tail
+(`az containerapp logs show --follow`) only shows what arrives after you attach, so on an
+app that restarted or on a low-traffic staging environment you will sit and watch nothing
+while the evidence you need is already several minutes in the past. Query the workspace for
+a time window instead. The staging workspace is `log-carein-staging`; **the prod workspace
+name is not recorded anywhere in this repo — get it from the portal or
+`az monitor log-analytics workspace list -g rg-carein-prod`.**
+
+> Also new guidance. The reasoning is sound and generic to Container Apps, but the exact
+> queries have not been exercised against these workspaces.
+
+### Deploys wipe the call store where there is no volume
+
+Prod mounts an AzureFile volume at `/data` with `CALLSTORE_DIR=/data`. **Staging has no
+volume by design**, so `unified_calls.json` rides the ephemeral container layer and is wiped
+on every image deploy. That is why staging must stay `MANGO_INGEST_MODE=off` except for a
+bounded test session — otherwise each deploy triggers a full re-ingest and re-transcription
+of the lookback window, which is a real Azure Speech bill.
+
+### The closed-hours deploy rule is still in force
+
+`backend/services/COST_FIX_RUNBOOK.md` states the rule stays in force *"until
+deploy-survival is demonstrated, NOT assumed"* — and the three-step proof it asks for still
+has blank fields. **Deploy to prod when the team is not on calls.**
+
+### Git-Bash mangles `az` subscription paths
+
+Any `az` argument starting with `/subscriptions/...` gets rewritten by MSYS path
+conversion. Prefix with `MSYS_NO_PATHCONV=1`. This is what caused the early
+`MissingSubscription` and `--registry-identity` failures.
+
+### The prod LAN certificate
+
+`deploy/Caddyfile` loads externally-managed Posh-ACME PEM files (Caddy does not run ACME
+itself) valid through **2026-09-01**, renewed manually via DNS-01. It only matters if the
+LAN box is used as a rollback target — but if it is, check the cert first.
+
+---
+
+## 6. Rollback
+
+- **Prod:** reactivate the prior Container Apps revision, or redeploy the previous image
+  tag. `prod.yml` names this as the rollback path.
+- **On-prem fallback (only if the LAN box is still current):** flip `dashboard.carein.ai`
+  DNS back to an A record at `10.20.30.160`. Note the repo contains **two** live
+  definitions of that hostname — confirm real DNS before relying on either.
+
+---
+
+## 7. When something goes wrong
+
+**Chart notes stopped appearing but calls still show in the dashboard.**
+Pull and push are independent. The 15-minute poll fills the dashboard; only the
+`call_analyzed` webhook writes a commlog. Check whether `call_started` reached the backend
+at the real call-start timestamp. Historic causes, in order of frequency: the Retell API key
+lacked the webhook badge (401), the wrong agent was edited, the fix landed on an
+unpublished draft (live calls run the published version; the Test button uses the draft), or
+the inbound number was pinned to an older agent version.
+
+**The Mango sync reports success but nothing new arrives.**
+Check `MANGO_INGEST_MODE`. Only the literal `api` enables ingestion — every other value,
+including `scraper` and typos, silently resolves to `off`. Then check
+`MANGO_SYNC_SCHEDULE`: an invalid cron makes the scheduler return without scheduling, with
+no further complaint.
+
+**Transcription refuses.**
+Read the `status` in the response, not the HTTP code. `budget_exhausted` carries `resetsAt`;
+the daily cap defaults to 120 minutes on an `America/Chicago` day boundary and is persisted,
+so a container restart does not reset it.
+
+**An OD operation 409s or 503s.**
+`OFFICE_UNKNOWN` means the Mango DID is not in the office map. `OFFICE_NOT_OD_CONNECTED`
+means the office is switched off. `OFFICE_OD_KEY_MISSING` means the per-office customer key
+is absent — the system will not fall back to another office's key. `OFFICE_MISMATCH` means
+`assertOfficeMatch` refused a cross-office operation, which is working as designed.
+
+**`tc-contract-bundle` fails locally.**
+Local toolchain drift, not a code bug. Reinstall with `--frozen-lockfile` and regenerate
+the bundle with the pinned esbuild — see [CLAUDE.md](CLAUDE.md) §5.

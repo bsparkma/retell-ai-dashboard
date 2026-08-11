@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Opens by stating the backend persists app data in `data/*.json` and is effectively single-tenant. Per-tenant Postgres shipped; the migration tooling described below is still accurate. See [../CLAUDE.md](../CLAUDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Control Plane Database (`carein_control`)
 
 The control plane is a Postgres database that will hold the cross-cutting state

@@ -1,234 +1,229 @@
-# HANDOFF — CareIN AI Call Dashboard
+# new-dashboard — Handoff
 
-**Date:** 2026-05-24 (production cutover)
-**Branch:** `main`
+The active CareIN UI. Verified against `origin/develop`, August 2026.
 
----
-
-## Session 4 — Production Cutover (2026-05-24, evening)
-
-Three concrete deployment improvements landed:
-
-1. **PM2 now serves the built bundle, not `vite dev`.**
-   `ecosystem.config.cjs` was updated so `carein-dashboard` runs
-   `new-dashboard/dist/index.js` on port 3005 with `NODE_ENV=production`.
-   That single Node process serves the built SPA AND handles the CareIN
-   API + Retell webhook ingestion. Build command:
-   `cd new-dashboard && pnpm build && pm2 reload carein-dashboard`.
-
-2. **CareIN client base URL is now origin-agnostic in production.**
-   `api.ts` falls back to `${window.location.origin}/api` when built for
-   production — no `localhost:3000` baked into assets. Same bundle works
-   for LAN IP, hostname, or future HTTPS reverse-proxy access without a
-   rebuild.
-
-3. **Store path bug fixed; production never auto-seeds.**
-   `server/lib/store.ts` now resolves the data dir from `process.cwd()`
-   (overridable via `CAREIN_DATA_DIR`) — fixes a quirk where `dist/index.js`
-   resolved `__dirname/../../data` to the project root instead of
-   `new-dashboard/data`. `server/index.ts` now only auto-seeds in
-   non-production; an empty store stays empty in prod so synthetic seed
-   calls don't show up as real data. Orphan project-root `data/calls.json`
-   moved to `data/calls.json.orphan-bak` (safe to delete once verified).
-
-**Step 3 (unifying the two Call Log tabs) is deliberately deferred** until
-Retell is repointed at the new webhook URL and real CareIN data accumulates
-on both sides. See NOTES.md "Step 3" for the cutover checklist.
-
-### Production state right now
-
-| Component | Status |
-|---|---|
-| `carein-backend` (port 5003) | ✅ unchanged, running |
-| `carein-dashboard` (port 3005) | ✅ built bundle, NODE_ENV=production |
-| Team URL `http://10.20.30.160:3005` | ✅ HTTP 200 |
-| CareIN store | empty (0 calls) — awaits webhook repoint |
-| Retell webhook target | still pointed at port 5003 (no traffic to new server yet) |
-| `RETELL_API_KEY` in `.env` | not yet set (signature verification disabled) |
+The previous version of this file described the "CareIN Log" sub-feature as if it were the
+whole app, and predated per-office Open Dental, on-demand transcription, Send to TC, and
+twin linking. It has been replaced. For backend contracts see [../CLAUDE.md](../CLAUDE.md);
+for frontend conventions see [NOTES.md](NOTES.md).
 
 ---
 
-## Session 3 Changes (2026-05-24) — Live Integration
+## Stack
 
-### What was wired
+| | |
+| --- | --- |
+| React | 19.2.1 |
+| Vite | 7 (`vite --host`, dev port 3005) |
+| TypeScript | 5.6.3, **`strict: true`** |
+| Styling | Tailwind **v4** via `@tailwindcss/vite` (a Vite plugin, not PostCSS) |
+| Components | shadcn/ui "new-york" on Radix — 60 primitives in `client/src/components/ui/` |
+| Routing | wouter 3.7.1, **patched** (`patches/wouter@3.7.1.patch` injects route paths into `window.__WOUTER_ROUTES__`) |
+| Charts | Recharts 2 |
+| Validation | zod **v4** |
+| Tests | Vitest 2 + jsdom 30 + Testing Library 16 |
+| Package manager | **pnpm** (the backend uses npm — don't mix them) |
 
-**`server/index.ts`** — the only file changed in this session:
+There is **no state or query library.** No react-query, no zustand, no redux. State is
+`useState` + `useEffect` plus four hand-rolled contexts: `AuthContext`, `ModuleContext`,
+`OfficeContext`, `ThemeContext`.
 
-- **Retell webhook signature verification** (Q4 from NOTES.md, now resolved):
-  - Added `retell-sdk` dependency; uses `Retell.verify(rawBodyString, RETELL_API_KEY, signatureHeader)`.
-  - Webhook route is now registered **before** `app.use(express.json())`. The route uses `express.raw({ type: "*/*" })` to capture the raw body as a Buffer, then converts to string for `Retell.verify()`.
-  - When `RETELL_API_KEY` is set: verifies `x-retell-signature` header; rejects with `401` if invalid.
-  - When `RETELL_API_KEY` is absent: emits `[WARN]` at startup and accepts all payloads (safe for dev/curl testing).
+The wouter patch is why `pnpm.patchedDependencies` exists. Migrating this package to npm
+would silently drop it.
 
-- **`USE_SEED_DATA` flag**:
-  - `USE_SEED_DATA=true` → always load seed fixtures on startup (dev/demo mode).
-  - Default (unset): load persisted `data/calls.json`; seed only if empty (correct for production).
-
-- **`.env.example`**: documented `RETELL_API_KEY`, `VITE_CAREIN_API_URL`, `USE_SEED_DATA`.
-
-### Gate B live flow (validated)
+## Layout
 
 ```
-POST http://localhost:3002/api/webhook/retell  (no RETELL_API_KEY set → accepted)
-Body: tests/fixtures/retell-webhook-call-ended.json
-
-Response: { received: true, processed: true, id: "call_fixture_call_001" }
-
-GET /api/calls → 16 calls (15 seed + 1 ingested)
-call_fixture_call_001:
-  callerName:    "Sarah Mitchell"
-  office:        "Downtown Dental"
-  tag:           "appointment_scheduled"
-  routedTo:      "Rover (AI)"
-  sentiment:     "positive"
-  commlogStatus: "written"   ← MockCommlogWriter, OD writes DRY-RUN
-  qualityScore:  100
+new-dashboard/
+  client/src/          the app
+    pages/             route components (calls/, tc/, …)
+    components/        shared + ui/ (shadcn)
+    features/          tc/ (~90 files), calendar/
+    contexts/          Auth, Module, Office, Theme
+    hooks/             useTranscribeCall, …
+    lib/               api.ts, worklist.ts, transcribe.ts, sendToTc.ts, auth.ts
+  server/              the CareIN-log Express sub-server (esbuild bundle)
+  shared/tc/           zod contract shared with the backend
+  tests/               45 files, ~590 cases, flat (no colocated tests)
 ```
 
-### What is live vs mocked
+## Scripts
 
-| Component | Status |
-|---|---|
-| Retell webhook ingestion | ✅ **LIVE** — ready to receive real Retell payloads |
-| Signature verification | ✅ **LIVE** — enforced when `RETELL_API_KEY` is set |
-| Call store (`data/calls.json`) | ✅ **LIVE** — persists real calls |
-| Open Dental commlog writes | 🔒 **DRY-RUN** — `MockCommlogWriter` always; display only |
-| Office mapping (`OFFICE_BY_NUMBER`) | ⚠️ Hardcoded (see NOTES.md Q1) |
-
----
-
-## Session 1+2 Changes — Original Build
-
-## What Changed (High Level)
-
-Added a fully self-contained CareIN AI call dashboard layer to the existing
-`new-dashboard` package. The existing application is completely untouched.
-New code lives in:
-
-| Location | What it is |
-|---|---|
-| `server/lib/` | Types, ingestion, store, commlog interface, analytics (all pure/testable) |
-| `server/index.ts` | Extended with 6 new API routes |
-| `client/src/pages/CareInCallDetail.tsx` | New page: `/carein-calls/:id` |
-| `client/src/pages/Calls.tsx` (additions) | Third tab: CareIN Log |
-| `client/src/pages/Analytics.tsx` (additions) | CareIN analytics section |
-| `client/src/lib/api.ts` (additions) | `careInApi` client + types |
-| `tests/` | 136 tests across 4 test files + fixture payload |
-| `NOTES.md`, `CHANGELOG.md` | Architecture decisions + change log |
-
----
-
-## Final Status
-
-| Check | Result |
-|---|---|
-| TypeScript (`tsc --noEmit`) | ✅ 0 errors |
-| Vite build | ✅ Builds cleanly (pre-existing chunk size warning, not new) |
-| Tests | ✅ 136/136 pass |
-| Coverage — analytics.ts | ✅ 100% (stmt/branch/fn/line) |
-| Coverage — ingestion.ts | ✅ 98.54% stmt, 90% branch, 91.66% fn |
-| Coverage — commlog.ts | ✅ 93.93% stmt, 92.3% branch, 100% fn |
-| Coverage — overall | ✅ 98.71% (target: 75%) |
-| Lint | ✅ No errors |
-| No live credentials required | ✅ Runs entirely on seed data |
-| No PHI in fixtures | ✅ All synthetic names/numbers |
-
----
-
-## Commands to Install / Run / Test (updated)
-
-```powershell
-# From: new-dashboard/
-
-# 1. Install dependencies (already done if you cloned fresh)
-pnpm install
-
-# 2. Set your Retell API key in .env (copy from .env.example)
-#    RETELL_API_KEY=key_live_xxxx
-#    Without it the server starts but verification is disabled (warning logged).
-
-# 3. Start the CareIN API server (port 3000, live data mode)
-npx tsx server/index.ts
-
-# 3a. OR start in seed/demo mode (resets data to 15 fixtures on every restart)
-#     $env:USE_SEED_DATA = "true"; npx tsx server/index.ts
-
-# 3. In a second terminal: start the Vite dev server (port 3005)
-pnpm dev
-
-# 4. Open http://localhost:3005
-# → Navigate to Calls → "CareIN Log" tab to see ingested calls
-# → Navigate to Analytics → scroll down for CareIN analytics section
-
-# 5. Run tests
-pnpm test
-
-# 6. Run tests with coverage report
-pnpm test:coverage
-
-# 7. Test the webhook manually (no RETELL_API_KEY set = signature skipped)
-curl -X POST http://localhost:3000/api/webhook/retell \
-  -H "Content-Type: application/json" \
-  -d @tests/fixtures/retell-webhook-call-ended.json
-
-# 7a. In production Retell will sign requests; set RETELL_API_KEY and
-#     signature verification enforces automatically.
-
-# 8. Point Retell to your server
-#    In Retell dashboard → Agent → Webhook URL: https://your-host/api/webhook/retell
-#    Events to enable: call_ended, call_analyzed
-
-# 8. Seed reset (if data gets polluted in dev)
-curl -X POST http://localhost:3000/api/dev/seed
+```bash
+pnpm install --frozen-lockfile
+pnpm run dev            # vite --host, port 3005
+pnpm run build          # vite build + esbuild the server bundle → dist/
+pnpm run check          # tsc --noEmit   ← the typecheck script is `check`
+pnpm run test           # vitest run
+pnpm run test:coverage  # vitest run --coverage
+pnpm run format         # prettier --write .
 ```
 
----
+There is **no `typecheck` script and no lint script.** CI runs `pnpm run check` then
+`pnpm run test`.
 
-## What I Deliberately Did NOT Touch
-
-- **All existing pages**: Dashboard, Admin, AgentBuilder, Scheduling, Calendar,
-  Callbacks — zero changes.
-- **Existing API client** (`api` object in `api.ts`) — all methods untouched.
-- **Real backend** (port 5000) — not touched. The CareIN server is independent.
-- **`vite.config.ts`**, **`tsconfig.json`** — no structural changes.
-- **`components/`**, **`features/`**, **`hooks/`**, **`contexts/`** — untouched.
-- **`Callbacks.tsx`** — The existing Callbacks tab in Calls.tsx was not modified.
-- **`CallDetail.tsx`** — The existing call detail page was not modified. A new
-  `CareInCallDetail.tsx` handles CareIN calls at a separate route.
+Tests are **excluded from `tsc --noEmit`** (`tsconfig.json:3`), so a type error inside
+`tests/` will not fail `check`.
 
 ---
 
-## Decisions & Assumptions
+## Worklist features
 
-1. **Stack**: Conformed to existing Vite + React + Express instead of Next.js +
-   Prisma as the spec suggested. See `NOTES.md` for rationale.
+The worklist is `client/src/pages/calls/CallWorklist.tsx`, rendered as the first tab of
+`pages/Calls.tsx`. Pure decision rules live in `client/src/lib/worklist.ts` so they can be
+tested without a DOM.
 
-2. **Two-tab approach**: CareIN Log is a third tab in the existing Calls page
-   rather than a separate page. This preserves all existing functionality while
-   adding the new view.
+Shell: a "Needs attention" / "All calls" toggle with a count badge, search, newest/oldest
+sort (persisted to `carein.worklist.sort`), a source filter (All / CareIN AI / Staff), a
+`Sync` button, five disposition chips that double as filters, and an "Oldest unhandled: Nd"
+nudge once the backlog passes two days. Four columns: Caller, Patient, Signals, Triage.
 
-3. **No proxy change**: The `careInApi` client fetches directly from
-   `http://localhost:3000` (configurable via `VITE_CAREIN_API_URL`). No Vite
-   proxy changes were needed.
+### Twin badges
 
-4. **MockCommlogWriter always active**: `createCommlogWriter()` always returns
-   the mock. A live writer placeholder exists in `commlog.ts`.
+There is **one** twin badge: **"Answered by CareIN AI"** (`lib/transcribe.ts:110`,
+`ANSWERED_BY_AI_BADGE`). It renders **only for `link_role === 'duplicate_leg'`**, as a link
+to the twin Retell call, with `stopPropagation` so it isn't swallowed by the row link.
 
-5. **File store**: Data persists to `data/calls.json`. No migrations needed.
-   Server initializes with seed data on first run if the file doesn't exist.
+The same string is also the fifth disposition chip and the only member of
+`ALL_CALLS_ONLY_CHIPS` — selecting it force-switches the view to "All calls", because the
+default view hides those rows. It is deliberately excluded from the per-row Signals cell so
+it can't render twice.
+
+**`transferred_leg` gets no badge at all** and stays in the worklist like any other staff
+call. That is intentional: its recording is the *human* half of a conversation the AI's
+transcript does not contain, so hiding it would hide real work.
+
+`hasLinkedTwin()` exists in `lib/worklist.ts` but is not consumed by any component today.
+
+### Link-only
+
+`client/src/pages/calls/PickPatientModal.tsx`, dialog titled **Match patient**. The button
+is **`Link`** (in-flight: `Linking…`), calling
+`api.resolvePatient(call.id, { patientId, linkOnly: true, office_id })`.
+
+Result: the row moves to **matched-but-not-sent** — `odPatientId` set, `odSyncStatus` not
+`synced`, **nothing written to the chart**. The patient cell then shows `Matched: {name}`
+plus two independent buttons, `Send to chart` and `Send to TC`.
+
+The same modal hosts the not-a-patient close-out (`Close out` + a reason: spam, solicitor,
+vendor, lab, wrong number, other), which is a separate call with `{ notAPatient: true }`.
+
+Patient-cell states: OD-not-connected (two variants — unknown office vs named office),
+`Not a patient · reason`, `Sent · {name}`, `Matched: {name}`, and unmatched, labelled
+`Needs match (N)` when stored candidates exist, else `Unmatched`.
+
+### Send to TC
+
+`components`: `client/src/pages/calls/SendToTcButton.tsx`; pure logic in
+`client/src/lib/sendToTc.ts`. Used in the worklist (both the `synced` and `matched`
+branches) and in the call-detail patient panel with `variant="panel"`.
+
+Visibility, in order (`sendToTcState`):
+
+| Condition | Result |
+| --- | --- |
+| Tenant lacks the `tc` module | `hidden` |
+| No `odPatientId` | `hidden` |
+| `officeId` not in `FILEABLE_OFFICES` (`{roland, valley}`, hardcoded) | `hidden` |
+| `tcCaseId` already set | `sent` |
+| `odPatientName` blank | `disabled`, reason "patient name unavailable" |
+| otherwise | `ready` |
+
+States: `Send to TC` → `Sending…` → a success toast that distinguishes *already in TC* /
+*added to an existing case* / *case created*, with an "Open in TC" action → the button
+becomes a passive violet **`In TC`** pill.
+
+`office_id` is sent as an **assertion**, not a selector — the server resolves the real
+office from the call and refuses on mismatch.
+
+This is the app's canonical `ApiError` consumer: it narrows on `err instanceof ApiError`
+and maps `.code` then `.status` to specific copy (`MODULE_NOT_ENTITLED`, `OFFICE_MISMATCH`,
+`OFFICE_UNKNOWN`, `NO_MATCHED_PATIENT`, `PATIENT_NAME_UNAVAILABLE`, default). Every message
+ends in "nothing was sent". Nothing is patched optimistically; a 2xx without a `caseId` is
+treated as a failure.
+
+### Transcribe states
+
+The UI switches on the response's **`status` field, never the HTTP code**. `TranscribeStatus`
+in `lib/api.ts:103` is a closed union of ten values so that a new backend outcome is a
+compile error rather than a silent "something went wrong" toast:
+
+| `status` | Toast |
+| --- | --- |
+| `completed` | Transcribed and summarized (X.X min of audio). |
+| `exists` | This call already has a transcript — nothing was re-run. |
+| `in_progress` | This call is already being transcribed — hang tight. |
+| `budget_exhausted` | Daily transcription budget is used up — resets at {time}. |
+| `recording_not_ready` | Recording isn't ready yet — try again in a few minutes. |
+| `recording_unavailable` | Recording is no longer available from the phone system. |
+| `no_speech` | No speech was detected in this recording. |
+| `unavailable` | Transcription isn't set up in this environment yet. |
+| `not_found` | That call is no longer in the worklist. |
+| `error` | Transcription failed — nothing was saved. Try again. |
+
+Error toasts last 8 s, others 4 s. Button state: `completed`/`exists` → `done`,
+`no_speech` → `no_speech`, everything else → `idle` — *a failed attempt never consumes the
+affordance.*
+
+Two confirmation dialogs guard spend, and both are **confirmations, not lockouts**
+(`components/calls/TranscribeRebillDialog.tsx`): re-transcribing a `no_speech` call, and
+transcribing a `duplicate_leg` whose AI twin already has a transcript. The duplicate-leg
+check runs first and offers an "Open the AI call" link.
+
+Concurrency is guarded by a `useRef<Set<string>>` rather than state, so a fast double-click
+is a no-op before any render.
+
+Labels differ by placement: `Transcribe` in the worklist row, **`Transcribe & Summarize`**
+on the call detail page.
 
 ---
 
-## Open Questions (Need Your Input)
+## Test status
 
-See `NOTES.md` for full details. Summary:
+`pnpm run test` — **45 files, 593 cases, all green** (verified 2026-08-10, alongside a clean
+`pnpm run check`). (The old "136 tests across 4 files" line
+referred to the original CareIN-server tests, which are still there but are now a
+minority: `ingestion` 59, `analytics` 51, `fixture-ingestion` 15, `commlog` 11.)
 
-1. **Office mapping**: Should `OFFICE_BY_NUMBER` in `ingestion.ts` become a
-   config file? Currently hardcoded.
-2. **Data unification**: Merge CareIN Log tab with existing Call Log tab, or
-   keep separate? They pull from different data stores.
-3. **Webhook auth**: Should the `/api/webhook/retell` endpoint validate a
-   Retell webhook secret header before production?
-4. **Commlog writer**: When is a real Open Dental commlog writer needed? The
-   interface is ready; just implement `write()` in `commlog.ts`.
-5. **Data retention**: `calls.json` grows forever. Add TTL or size cap?
+Coverage thresholds (75%) apply only to `test:coverage`, which CI does not run, and the
+`include` list is just three `server/lib/*.ts` files — the number says nothing about client
+coverage.
+
+Notable suites: `worklist`, `transcribe` + `transcribe-button`, `twin-link`,
+`link-patient-only`, `send-to-tc` + `send-to-tc-reactivity`, `per-location-office`,
+`modules`, `module-home`, and ~25 TC suites. `tc-contract-bundle` is a drift guard against
+the backend's committed contract bundle — see [../CLAUDE.md](../CLAUDE.md) §5 if it goes
+red locally.
+
+`dark-mode-contrast.test.ts` is unusual: it is a **source scanner**, not a runtime test. It
+greps for hardcoded light backgrounds that would bypass the dark-mode token flip. Worth
+knowing that `CallWorklist.tsx` still has literal `backgroundColor: "white"` on the sort and
+source toggles.
+
+Fixtures are synthetic by construction. Never introduce a real patient name.
+
+---
+
+## Deployed shape
+
+The built SPA is served by Caddy (`root * /srv`, `try_files {path} /index.html`); `/api/*`,
+`/auth/*`, and `/socket.io/*` are reverse-proxied to the backend. Build with
+`VITE_API_URL=/api` so the bundle resolves the API against `window.location.origin` and the
+same artifact works by hostname, LAN IP, or behind the Azure ingress.
+
+On the PM2 workstation, `carein-dashboard` runs the **esbuild bundle** at `dist/index.js`,
+so `pnpm build` must precede `pm2 reload`. Note that PM2 gives that process port **3005** —
+the same port the Vite dev server wants. They cannot both run.
+
+### About hard refreshes after deploy
+
+Assets are content-hashed by Vite (stock `assets/[name]-[hash].js`), and **there is no
+service worker**, so stale JS is not a real failure mode. The one genuine exposure is
+`index.html`: Caddy's `file_server` sends `ETag` and `Last-Modified` but **no
+`Cache-Control`**, which leaves it to browser heuristic caching. If you ever want to
+guarantee no hard refresh is needed, add `header /index.html Cache-Control "no-cache"` to
+both `deploy/Caddyfile` and `deploy/container/Caddyfile`. Nothing in the repo documents a
+hard-refresh requirement today.
+
+(The `no-cache, no-store` block you may find in the repo-root `nginx.conf` serves the
+deprecated `frontend/` app, not this one.)

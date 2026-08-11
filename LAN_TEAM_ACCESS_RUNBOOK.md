@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Presents the on-prem LAN workstation at `10.20.30.160` as the production deployment. Production moved to Azure Container Apps on 2026-06-06. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # LAN Team Access — HTTPS Single-Origin Deployment
 
 _How to serve the SSO-gated CareIN dashboard to office staff over the LAN. Drafted 2026-06-03. This is effectively the prod deployment; do the localhost smoke-test (PHASE1_SWITCHON_RUNBOOK §1) first._

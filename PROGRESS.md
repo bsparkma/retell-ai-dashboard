@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Marks as complete a Puppeteer DOM scraper for Mango, Deepgram transcription, and the `frontend/` UI. Ingestion is API-only, transcription is Azure Speech, and the active UI is `new-dashboard/`. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # CareIn Dashboard V2 - Progress Tracker
 
 ## Last Updated: January 12, 2026

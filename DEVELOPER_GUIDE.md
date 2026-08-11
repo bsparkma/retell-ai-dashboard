@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Onboards against the retired DigitalOcean deployment and the deprecated `frontend/` UI. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Developer Guide - Retell AI Dashboard
 
 **Comprehensive guide for development, testing, and production deployment**

@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** Describes an 'office' as an agent-visibility filter. An office is a separate Open Dental database with its own customer key and CommLog DefNum. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # Office-Specific Agent Deployment Guide
 
 **Configure agent visibility for different office deployments**

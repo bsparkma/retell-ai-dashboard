@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-08) — kept as history, not as instructions.** States the backend default port is 5000. It is 5003 in production and 5103 in dev. See [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 # CORS Fix — Cursor Build Prompt
 
 > **Instructions for Claude in Cursor:** Read this entire file before editing. This is a 3-file change, ~5 minutes. No code changes, no typecheck needed — just config + a stale doc note.
