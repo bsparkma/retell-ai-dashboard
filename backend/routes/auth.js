@@ -5,7 +5,8 @@
  *
  *   GET  /auth/login     -> redirect to Microsoft sign-in (auth-code + PKCE)
  *   GET  /auth/callback  -> exchange code, enforce tenant+domain, set session cookie
- *   GET  /auth/me        -> { authenticated, user? } from the session cookie
+ *   GET  /auth/me        -> { authenticated, user?, tenant?, role, isSuperAdmin,
+ *                            permissions[] } from the session cookie
  *   POST /auth/logout    -> clear the session cookie (JSON)
  *   GET  /auth/logout    -> clear cookie + redirect (browser convenience)
  *
@@ -14,7 +15,8 @@
 
 const express = require('express');
 const sso = require('../config/sso');
-const { resolveTenantForUser } = require('../middleware/tenantContext');
+const { resolveUserContext } = require('../middleware/tenantContext');
+const { permissionsForRole } = require('../config/permissions');
 const registry = require('../platform/registry');
 
 const router = express.Router();
@@ -129,29 +131,43 @@ router.get('/me', async (req, res) => {
   }
 
   // Surface the tenant (practice) so the SPA can show its name, plus its
-  // enabled modules so the shell knows which products to render. Degrades to
-  // null if the control DB is unreachable — auth status must not depend on it.
-  // (UI hiding only: the backend requireModule() 403 is the source of truth.)
+  // enabled modules so the shell knows which products to render, plus the
+  // caller's role and the actions it holds so the shell can hide what they
+  // cannot do. Degrades to null/[] if the control DB is unreachable — auth
+  // status must not depend on it.
+  //
+  // ALL OF THIS IS UI HIDING ONLY. The server-side requireModule() and
+  // requirePermission() 403s are the source of truth; a client that ignores
+  // `permissions` gains nothing.
   let tenant = null;
+  let role = null;
+  let isSuperAdmin = false;
   try {
-    const t = await resolveTenantForUser({ email: claims.email, tenantId: claims.tid });
-    if (t) {
+    const resolved = await resolveUserContext({ email: claims.email, tenantId: claims.tid });
+    role = resolved.role;
+    isSuperAdmin = resolved.isSuperAdmin;
+    if (resolved.tenant) {
       let modules = [];
       try {
-        modules = await registry.getEnabledModules(t.tenant_id);
+        modules = await registry.getEnabledModules(resolved.tenant.tenant_id);
       } catch (_err) {
         // modules lookup failed — degrade to an empty list, keep auth working
       }
-      tenant = { slug: t.slug, displayName: t.display_name, modules };
+      tenant = { slug: resolved.tenant.slug, displayName: resolved.tenant.display_name, modules };
     }
   } catch (_err) {
-    // control plane unavailable — return the user without a tenant name
+    // control plane unavailable — return the user without tenant/role context.
+    // permissions below is then [], which hides everything rather than
+    // optimistically showing actions the server would refuse.
   }
 
   return res.json({
     authenticated: true,
     user: { name: claims.name, email: claims.email, tenantId: claims.tid },
     tenant,
+    role,
+    isSuperAdmin,
+    permissions: permissionsForRole(role, { isSuperAdmin }),
   });
 });
 
