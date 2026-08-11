@@ -39,6 +39,7 @@ import {
   Heart,
   CreditCard,
   LibraryBig,
+  Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { logout } from "@/lib/auth";
@@ -47,6 +48,7 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute } from "@/features/tc/officeScope";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
+import { canVisit } from "@/lib/permissions";
 import type { ModuleId } from "@/lib/modules";
 
 const LOGO_URL = "/carein-logo.webp";
@@ -60,6 +62,23 @@ interface NavItem {
 interface NavGroup {
   title: string;
   items: NavItem[];
+}
+
+/**
+ * Hide the nav items this user cannot open, and drop any group left empty
+ * (Roles PR B).
+ *
+ * UX ONLY — the server 403 is the gate. This exists so a hygienist isn't shown
+ * eleven links that all fail, not to keep anyone out of anything.
+ *
+ * The required action per route lives in ONE map (lib/permissions.ts), keyed by
+ * route prefix, so a new nav item inherits its permission from its path instead
+ * of needing a second declaration someone can forget to update.
+ */
+export function visibleNav(groups: NavGroup[], permissions: readonly string[] | undefined): NavGroup[] {
+  return groups
+    .map((group) => ({ ...group, items: group.items.filter((i) => canVisit(permissions, i.path)) }))
+    .filter((group) => group.items.length > 0);
 }
 
 /**
@@ -84,6 +103,9 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       items: [
         { path: "/analytics", label: "Analytics", icon: BarChart3 },
         { path: "/admin", label: "Admin", icon: Settings },
+        // Tenant user management. Sits under /admin so it inherits admin.all
+        // from ROUTE_PERMISSIONS' prefix match — one place decides.
+        { path: "/admin/users", label: "Users", icon: Users },
       ],
     },
   ],
@@ -106,7 +128,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       items: [
         { path: "/tc/hygiene/inbox", label: "TC Inbox", icon: Inbox },
         { path: "/tc/hygiene", label: "Intake", icon: ClipboardList },
-        { path: "/tc/hygiene/submissions", label: "My Submissions", icon: ClipboardCheck },
+        { path: "/tc/hygiene/submissions", label: "Submissions", icon: ClipboardCheck },
       ],
     },
     {
@@ -192,8 +214,28 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     setSidebarOpen(false);
   };
 
-  const navGroups = NAV_BY_MODULE[activeModule] ?? NAV_BY_MODULE.voice ?? [];
+  // Which module's nav to render. The ROUTE wins over the stored selection:
+  // standing on /tc/hygiene/inbox and being shown the Voice sidebar is wrong
+  // however you got there, and it became reachable in Roles PR B because a
+  // hygienist lands on a TC route with 'voice' still remembered in
+  // localStorage — which filtered to an empty sidebar.
+  const routeModule: ModuleId | null = isTcRoute ? "tc" : null;
+  // Role-scoped nav (Roles PR B). While /auth/me is still in flight the
+  // permission list is undefined, which filters everything out — correct, and
+  // invisible in practice because RequireAuth holds the app on a spinner until
+  // the fetch settles.
+  const permissions = auth.status === "authenticated" ? auth.user.permissions : undefined;
+  const navModule = routeModule ?? activeModule;
+  const navGroups = visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions);
   const activePath = activeNavPath(location, navGroups);
+
+  // Only offer a module this user has at least one page in. The practice's
+  // entitlement still decides what EXISTS (`modules` comes from /auth/me); this
+  // narrows the switcher to what the person can actually open, so a hygienist
+  // cannot switch to Voice and land on an empty sidebar with no way back.
+  const switchableModules = modules.filter(
+    (m) => visibleNav(NAV_BY_MODULE[m.id] ?? [], permissions).length > 0,
+  );
 
   // Patient-facing presentation mode renders chrome-free (legacy /present).
   // The module hub is also chrome-free — the sidebar nav belongs to a module,
@@ -249,9 +291,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </button>
         </div>
 
-        {/* Module switcher — only rendered when the tenant has >1 renderable
-            module, so today's Voice-only tenant sees an unchanged shell. */}
-        {modules.length > 1 && (
+        {/* Module switcher — only rendered when this USER has >1 module they
+            can actually open. A Voice-only tenant sees an unchanged shell, and
+            so does a hygienist (whose only module is TC). */}
+        {switchableModules.length > 1 && (
           <div className="px-3 py-3 border-b" style={{ borderColor: "var(--sidebar-border)" }}>
             <button
               onClick={() => setModuleDropOpen(!moduleDropOpen)}
@@ -264,7 +307,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </button>
             {moduleDropOpen && (
               <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.11 0.015 250)" }}>
-                {modules.map((m) => (
+                {switchableModules.map((m) => (
                   <button
                     key={m.id}
                     onClick={() => {
