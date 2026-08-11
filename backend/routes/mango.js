@@ -18,6 +18,13 @@ const unifiedCallStore = require('../services/unifiedCallStore');
 const openDentalSyncService = require('../services/openDentalSync');
 const onDemandTranscription = require('../services/onDemandTranscription');
 const audit = require('../platform/audit');
+const { requirePermission } = require('../config/permissions');
+
+/**
+ * Transcription is metered and billed per minute (Azure Speech), so it gets its
+ * own action rather than riding on the general voice.write the mount applies.
+ */
+const canTranscribe = requirePermission('voice.transcribe');
 
 /**
  * The acting user, from the SSO session attached by the auth middleware — the same
@@ -115,7 +122,7 @@ router.get('/calls/:callId/recording', async (req, res) => {
  *   503 { status: 'unavailable' }                            Azure Speech not configured
  *   500/502 { status: 'error' }                              nothing was saved
  */
-router.post('/calls/:callId/transcribe', async (req, res) => {
+router.post('/calls/:callId/transcribe', canTranscribe, async (req, res) => {
   const { callId } = req.params;
   try {
     const result = await onDemandTranscription.transcribeCall(callId, { actor: actorFrom(req) });

@@ -23,15 +23,22 @@ const path = require('node:path');
 
 const express = require('express');
 const registry = require('../platform/registry');
+const userContext = require('../platform/userContext');
 const { tenantContext, requireModule } = require('../middleware/tenantContext');
 
 // --- 1. source scan ---------------------------------------------------------
 
 const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
-/** Grab the single app.use line for a mount path from server.js. */
+/**
+ * Grab the whole app.use(...) CALL for a mount path from server.js.
+ *
+ * Not just the first line: since Roles PR A most mounts carry a module guard
+ * AND a permission guard and are wrapped across several lines, and a
+ * line-limited match would silently stop seeing the guards it is here to check.
+ */
 function mountLine(mountPath) {
-  const rx = new RegExp(`app\\.use\\(\\s*'${mountPath.replace(/[/-]/g, '\\$&')}'[^\\n]*`);
+  const rx = new RegExp(`app\\.use\\(\\s*'${mountPath.replace(/[/-]/g, '\\$&')}'[\\s\\S]*?\\);`);
   const m = serverSrc.match(rx);
   assert.ok(m, `server.js has no mount for ${mountPath}`);
   return m[0];
@@ -83,11 +90,28 @@ test("server.js: /api/mango guard exempts the tenant-exempt dev seeder", () => {
 
 // --- 2. behavioral ----------------------------------------------------------
 
-const REGISTRY_KEYS = ['getUserByEmail', 'getTenantById', 'getTenantClinics', 'getEnabledModules'];
+const REGISTRY_KEYS = [
+  'getUserByEmail',
+  'getTenantById',
+  'getTenantClinics',
+  'getEnabledModules',
+  'getPlatformAdminByEmail',
+  'touchUserLogin',
+];
 const original = {};
 for (const k of REGISTRY_KEYS) original[k] = registry[k];
+
+// Roles PR A: the identity read is cached process-wide and now also asks
+// platform_admin. Both need resetting or one test's user answers the next.
+test.beforeEach(() => {
+  userContext.clearCache();
+  registry.getPlatformAdminByEmail = async () => null;
+  registry.touchUserLogin = async () => {};
+});
+
 afterEach(() => {
   for (const k of REGISTRY_KEYS) registry[k] = original[k];
+  userContext.clearCache();
 });
 
 /** Boot a mini app wired like server.js and return { baseUrl, close }. */
