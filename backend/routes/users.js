@@ -41,11 +41,32 @@ const registry = require('../platform/registry');
 const userContext = require('../platform/userContext');
 const { audit } = require('../platform/audit');
 const { TENANT_ROLES } = require('../config/permissions');
+const { getAllOfficeConfigs, UNMAPPED_OFFICE } = require('../config/officeAgents');
 
 const router = express.Router();
 
 /** app_user.status vocabulary (the CHECK constraint from PR A). */
 const STATUSES = Object.freeze(['active', 'disabled']);
+
+/**
+ * The offices a person can be assigned a HOME OFFICE in.
+ *
+ * Read from config at call time, not frozen at module load, so opening an
+ * office stays the one-line config change config/odOffices.js promises. The
+ * 'unknown' bucket is excluded twice over — getAllOfficeConfigs already drops
+ * it, and the filter below says so out loud: it is where Mango calls on an
+ * unmapped phone line land, not a place anybody works, and a home office
+ * pointing at it would resolve to no practice at all.
+ *
+ * This is also why home_office has no database CHECK — the valid set lives
+ * here, with the roster, rather than in a migration.
+ * @returns {Array<{ officeId: string, officeName: string }>}
+ */
+function assignableOffices() {
+  return getAllOfficeConfigs()
+    .filter((o) => o.officeId !== UNMAPPED_OFFICE)
+    .map((o) => ({ officeId: o.officeId, officeName: o.officeName }));
+}
 
 /**
  * Deliberately permissive: one @, no whitespace, a dot in the domain. Real
@@ -66,6 +87,10 @@ function toDto(row) {
     role: row.role,
     status: row.status,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null,
+    // A DEFAULT for their office picker, never a restriction — see the
+    // home_office migration. null (or a blank column) means "no home office",
+    // which is the right answer for a shared account like temp@.
+    homeOffice: row.home_office || null,
   };
 }
 
@@ -129,6 +154,9 @@ router.get('/', async (req, res) => {
       // The SPA renders these as the role picker's options and marks the
       // caller's own row, so it never has to hardcode either.
       roles: TENANT_ROLES,
+      // Same reasoning for the home-office picker: the page must not carry its
+      // own copy of the office list.
+      offices: assignableOffices(),
       actor: actorEmail(req),
     });
   } catch (err) {
@@ -183,7 +211,7 @@ router.patch('/:email', async (req, res) => {
   const target = String(req.params.email || '').trim().toLowerCase();
   const body = req.body || {};
 
-  /** @type {{ role?: string, status?: string }} */
+  /** @type {{ role?: string, status?: string, home_office?: string|null }} */
   const patch = {};
   if (body.role !== undefined) {
     const role = String(body.role).trim();
@@ -199,8 +227,27 @@ router.patch('/:email', async (req, res) => {
     }
     patch.status = status;
   }
+  if (body.homeOffice !== undefined) {
+    // null (or an empty string from a "—" select) CLEARS it. That is a real
+    // choice, not a missing value: temp@ is meant to have no home office.
+    if (body.homeOffice === null || body.homeOffice === '') {
+      patch.home_office = null;
+    } else {
+      const office = String(body.homeOffice);
+      const known = assignableOffices().map((o) => o.officeId);
+      if (!known.includes(office)) {
+        return fail(
+          res,
+          400,
+          `Home office must be one of: ${known.join(', ')}`,
+          'INVALID_HOME_OFFICE'
+        );
+      }
+      patch.home_office = office;
+    }
+  }
   if (Object.keys(patch).length === 0) {
-    return fail(res, 400, 'Nothing to change — send a role or a status', 'EMPTY_PATCH');
+    return fail(res, 400, 'Nothing to change — send a role, a status or a home office', 'EMPTY_PATCH');
   }
 
   try {

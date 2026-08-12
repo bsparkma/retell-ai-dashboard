@@ -144,11 +144,12 @@ async function resolveTenantForUser(user) {
  *   tenant: { tenant_id: string, slug: string, display_name?: string } | null,
  *   role: string | null,
  *   isSuperAdmin: boolean,
- *   viaFallback: boolean
+ *   viaFallback: boolean,
+ *   homeOffice: string | null
  * }>}
  */
 async function resolveUserContext(user) {
-  const empty = { tenant: null, role: null, isSuperAdmin: false, viaFallback: false };
+  const empty = { tenant: null, role: null, isSuperAdmin: false, viaFallback: false, homeOffice: null };
   const email = user && user.email;
   if (!email) return empty;
 
@@ -164,6 +165,10 @@ async function resolveUserContext(user) {
         role: active ? appUser.role : null,
         isSuperAdmin,
         viaFallback: false,
+        // Read from the SAME identity row as the role, so the two can never
+        // disagree. A DEFAULT for the office picker and nothing more — it
+        // grants and denies nothing (see the home_office migration).
+        homeOffice: appUser.home_office || null,
       };
     }
   }
@@ -189,11 +194,15 @@ async function resolveUserContext(user) {
   ) {
     const t = await registry.getTenantBySlug(CAREIN_FALLBACK.slug);
     if (t) {
+      // No app_user row means no home office to read. null, not a guess: the
+      // fallback already grants a role this person was never assigned, and
+      // stacking an invented office on top of that would file their work under
+      // a practice nobody chose.
       if (!bootstrapFallbackEnabled()) {
-        return { tenant: t, role: null, isSuperAdmin, viaFallback: false };
+        return { tenant: t, role: null, isSuperAdmin, viaFallback: false, homeOffice: null };
       }
       userContext.warnUnseededOnce(email);
-      return { tenant: t, role: FALLBACK_ROLE, isSuperAdmin, viaFallback: true };
+      return { tenant: t, role: FALLBACK_ROLE, isSuperAdmin, viaFallback: true, homeOffice: null };
     }
   }
   // --- end bootstrap fallback -------------------------------------------

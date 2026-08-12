@@ -27,7 +27,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, ApiError } from "@/lib/api";
-import type { TenantUser, TenantUserRole, TenantUserStatus } from "@/lib/api";
+import type { TenantUser, TenantUserRole, TenantUserStatus, TenantUsersResponse } from "@/lib/api";
+
+type TenantOffice = TenantUsersResponse["offices"][number];
 import { useAuth } from "@/contexts/AuthContext";
 
 /** What each role means, in the words an office manager would use. */
@@ -155,16 +157,22 @@ function UserRow({
   user,
   isSelf,
   roles,
+  offices,
   onChanged,
 }: {
   user: TenantUser;
   isSelf: boolean;
   roles: TenantUserRole[];
+  offices: TenantOffice[];
   onChanged: (user: TenantUser) => void;
 }) {
   const [busy, setBusy] = useState(false);
 
-  const patch = async (body: { role?: TenantUserRole; status?: TenantUserStatus }) => {
+  const patch = async (body: {
+    role?: TenantUserRole;
+    status?: TenantUserStatus;
+    homeOffice?: string | null;
+  }) => {
     setBusy(true);
     try {
       const updated = await api.updateUser(user.email, body);
@@ -215,6 +223,30 @@ function UserRow({
         </select>
       </td>
 
+      <td className="px-3 py-2.5 align-middle">
+        {/* A DEFAULT for their office picker, not a restriction: every office
+            stays reachable from every surface, because staff float between
+            locations. Editable on your OWN row too — unlike role and status,
+            this cannot lock anybody out of anything. */}
+        <select
+          className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          value={user.homeOffice ?? ""}
+          disabled={busy}
+          onChange={(e) => void patch({ homeOffice: e.target.value === "" ? null : e.target.value })}
+          aria-label={`Home office for ${user.email}`}
+          data-testid={`home-office-${user.email}`}
+        >
+          {/* "None" is a real choice, not a placeholder — a shared temp login
+              is meant to have no home office. */}
+          <option value="">—</option>
+          {offices.map((o) => (
+            <option key={o.officeId} value={o.officeId}>
+              {o.officeName}
+            </option>
+          ))}
+        </select>
+      </td>
+
       <td className="px-3 py-2.5 align-middle text-sm text-muted-foreground">
         {formatLastLogin(user.lastLoginAt)}
       </td>
@@ -255,6 +287,9 @@ export default function AdminUsers() {
   const auth = useAuth();
   const [users, setUsers] = useState<TenantUser[]>([]);
   const [roles, setRoles] = useState<TenantUserRole[]>(ROLE_ORDER);
+  // Starts EMPTY, not with a guessed pair. The office list is server config;
+  // rendering a hardcoded one would quietly omit a newly-opened office.
+  const [offices, setOffices] = useState<TenantOffice[]>([]);
   const [actor, setActor] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -273,6 +308,7 @@ export default function AdminUsers() {
       const data = await api.listUsers();
       setUsers(data.users);
       if (data.roles.length > 0) setRoles(data.roles);
+      setOffices(data.offices ?? []);
       setActor(data.actor);
     } catch (e) {
       setUsers([]);
@@ -334,6 +370,7 @@ export default function AdminUsers() {
               <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2 font-medium">Person</th>
                 <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 font-medium">Home office</th>
                 <th className="px-3 py-2 font-medium">Last signed in</th>
                 <th className="px-3 py-2 font-medium">Status</th>
                 <th className="px-3 py-2" />
@@ -346,12 +383,13 @@ export default function AdminUsers() {
                   user={u}
                   isSelf={u.email.toLowerCase() === actor.toLowerCase()}
                   roles={roles}
+                  offices={offices}
                   onChanged={replace}
                 />
               ))}
               {users.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-10 text-center text-sm text-muted-foreground">
                     Nobody here yet.
                   </td>
                 </tr>

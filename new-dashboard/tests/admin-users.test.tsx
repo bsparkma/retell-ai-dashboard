@@ -40,7 +40,13 @@ vi.mock("sonner", () => ({
 }));
 
 const server = vi.hoisted(() => ({
-  users: [] as Array<{ email: string; role: string; status: string; lastLoginAt: string | null }>,
+  users: [] as Array<{
+    email: string;
+    role: string;
+    status: string;
+    lastLoginAt: string | null;
+    homeOffice: string | null;
+  }>,
   patchError: null as { message: string } | null,
   patched: [] as Array<{ email: string; patch: unknown }>,
   created: [] as Array<{ email: string; role: string }>,
@@ -55,11 +61,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
       listUsers: vi.fn(async () => ({
         users: server.users,
         roles: ["admin", "office", "tc", "hygiene"],
+        offices: [
+          { officeId: "roland", officeName: "Roland" },
+          { officeId: "valley", officeName: "Valley Fort Smith" },
+        ],
         actor: authState.email,
       })),
       createUser: vi.fn(async (email: string, role: string) => {
         server.created.push({ email, role });
-        return { email, role, status: "active", lastLoginAt: null };
+        return { email, role, status: "active", lastLoginAt: null, homeOffice: null };
       }),
       updateUser: vi.fn(async (email: string, patch: Record<string, string>) => {
         server.patched.push({ email, patch });
@@ -76,9 +86,9 @@ import AdminUsers from "@/pages/AdminUsers";
 
 beforeEach(() => {
   server.users = [
-    { email: "boss@carein.ai", role: "admin", status: "active", lastLoginAt: "2026-08-10T12:00:00.000Z" },
-    { email: "front@carein.ai", role: "office", status: "active", lastLoginAt: null },
-    { email: "hyg@carein.ai", role: "hygiene", status: "disabled", lastLoginAt: null },
+    { email: "boss@carein.ai", role: "admin", status: "active", lastLoginAt: "2026-08-10T12:00:00.000Z", homeOffice: "roland" },
+    { email: "front@carein.ai", role: "office", status: "active", lastLoginAt: null, homeOffice: null },
+    { email: "hyg@carein.ai", role: "hygiene", status: "disabled", lastLoginAt: null, homeOffice: "valley" },
   ];
   server.patchError = null;
   server.patched = [];
@@ -192,5 +202,71 @@ describe("Users page", () => {
     expect(await screen.findByText(/won't be able to sign in/i)).toBeTruthy();
     // The Add button stays live — practices do hire people with other addresses.
     expect(screen.getByRole("button", { name: /^add$/i }).hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("Home office column", () => {
+  it("shows each person's home office, and an em dash for nobody's", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    expect(
+      (screen.getByTestId("home-office-boss@carein.ai") as HTMLSelectElement).value,
+    ).toBe("roland");
+    // temp/shared accounts are MEANT to have none — the office picker is their
+    // "which office are you at today?" prompt, so "" is a real answer.
+    expect(
+      (screen.getByTestId("home-office-front@carein.ai") as HTMLSelectElement).value,
+    ).toBe("");
+  });
+
+  it("offers the server's office list, never a hardcoded one", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    const select = screen.getByTestId("home-office-front@carein.ai") as HTMLSelectElement;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toEqual(["", "roland", "valley"]);
+  });
+
+  it("patches homeOffice on change", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+
+    fireEvent.change(screen.getByTestId("home-office-front@carein.ai"), {
+      target: { value: "valley" },
+    });
+
+    await waitFor(() => expect(server.patched.length).toBe(1));
+    expect(server.patched[0]).toEqual({
+      email: "front@carein.ai",
+      patch: { homeOffice: "valley" },
+    });
+  });
+
+  it("clearing it sends null, not an empty string", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    fireEvent.change(screen.getByTestId("home-office-boss@carein.ai"), {
+      target: { value: "" },
+    });
+
+    await waitFor(() => expect(server.patched.length).toBe(1));
+    expect(server.patched[0].patch).toEqual({ homeOffice: null });
+  });
+
+  it("is editable on your OWN row — a home office locks nobody out", async () => {
+    // Role and status are disabled for yourself because they are one-way doors.
+    // A home office only seeds a picker that still offers every office, so
+    // spreading that lock to it would be friction with no safety behind it.
+    renderPage();
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    const own = screen.getByTestId("home-office-boss@carein.ai") as HTMLSelectElement;
+    expect(own.disabled).toBe(false);
+    expect((screen.getByTestId("role-select-boss@carein.ai") as HTMLSelectElement).disabled).toBe(
+      true,
+    );
   });
 });
