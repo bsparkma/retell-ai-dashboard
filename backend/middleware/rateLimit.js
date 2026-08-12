@@ -39,6 +39,7 @@
  */
 
 const rateLimit = require('express-rate-limit');
+const { safeEqual } = require('./auth');
 
 const WINDOW_MS = 15 * 60 * 1000;
 
@@ -122,11 +123,16 @@ function principalOf(req) {
   // Shared dashboard bearer token: a legitimate non-browser principal (scripts, the
   // send-to-TC loopback). It gets the authenticated budget but its OWN bucket, so a
   // runaway script cannot spend a person's allowance or vice versa.
+  //
+  // Compared with the auth gate's own constant-time helper, not `===`. This runs on
+  // EVERY request and BEFORE the gate, so a plain comparison here would be an earlier,
+  // more frequently reached timing oracle on the same secret the gate protects
+  // carefully — the weakest check on a secret is the one that defines its strength.
   const header = req.get && req.get('authorization');
   const expected = (process.env.DASHBOARD_API_TOKEN || '').trim();
   if (expected && header && /^Bearer\s+/i.test(header)) {
     const presented = header.replace(/^Bearer\s+/i, '').trim();
-    if (presented === expected) return { kind: 'token', key: 'token:dashboard' };
+    if (safeEqual(presented, expected)) return { kind: 'token', key: 'token:dashboard' };
   }
 
   // Nobody we recognize. `req.ip` is only as good as `trust proxy`, which is exactly

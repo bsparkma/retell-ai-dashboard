@@ -173,6 +173,12 @@ test('principalOf distinguishes user, shared token, and anonymous', () => {
       principalOf(mk({ get: (h) => (h === 'authorization' ? 'Bearer wrong' : undefined) })),
       { kind: 'anon', key: 'ip:203.0.113.9' }
     );
+    // Same LENGTH, different value — the case a length check alone would wave through,
+    // and the one the constant-time comparison actually has to decide.
+    assert.deepEqual(
+      principalOf(mk({ get: (h) => (h === 'authorization' ? 'Bearer test-shared-tokeX' : undefined) })),
+      { kind: 'anon', key: 'ip:203.0.113.9' }
+    );
     assert.deepEqual(principalOf(mk({})), { kind: 'anon', key: 'ip:203.0.113.9' });
   } finally {
     if (prior === undefined) delete process.env.DASHBOARD_API_TOKEN;
