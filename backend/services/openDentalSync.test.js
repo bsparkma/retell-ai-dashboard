@@ -153,6 +153,50 @@ test('formatCommLogEntry: contentType "transcript" appends the full transcript',
   assert.match(note, /Hello this is Sam calling about my bill\./);
 });
 
+// ── Full summary in the chart note ───────────────────────────────────────────
+// The team reported the chart note didn't match what the call page shows: the note
+// carried only the compact block, never the full call.summary the app displays.
+
+test('formatCommLogEntry: the full summary is appended in BOTH content types', () => {
+  const call = {
+    id: 's1', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    caller_name: 'Sam Rivera', call_reason: 'Reschedule cleaning',
+    action_needed: 'Call back to confirm Tue 2:30', callback_number: '4795551234',
+    summary: 'Caller wants to move her Tuesday cleaning to the following week. '
+      + 'She is available mornings and asked for a call back to confirm.',
+    transcript: 'Hi, this is Sam, I need to reschedule my cleaning.',
+  };
+
+  const summaryNote = sync.formatCommLogEntry(call, { contentType: 'summary' }).Note;
+  assert.match(summaryNote, /^Summary:$/m);
+  assert.match(summaryNote, /Caller wants to move her Tuesday cleaning/);
+  assert.match(summaryNote, /asked for a call back to confirm\./);
+  // The compact block is still there, and still above the summary.
+  assert.match(summaryNote, /^Caller: Sam Rivera$/m);
+  assert.ok(summaryNote.indexOf('Callback #:') < summaryNote.indexOf('Summary:'));
+  assert.ok(!/Full transcript/.test(summaryNote));
+
+  // Transcript mode: compact block + summary + transcript, in that order.
+  const transcriptNote = sync.formatCommLogEntry(call, { contentType: 'transcript' }).Note;
+  assert.match(transcriptNote, /^Summary:$/m);
+  assert.match(transcriptNote, /Caller wants to move her Tuesday cleaning/);
+  assert.match(transcriptNote, /--- Full transcript ---/);
+  assert.ok(transcriptNote.indexOf('Summary:') < transcriptNote.indexOf('--- Full transcript ---'));
+});
+
+test('formatCommLogEntry: no Summary section when Reason already fell back to it', () => {
+  // With no call_reason, the Reason line IS call.summary. Printing the same
+  // paragraph again reads like a formatting bug in the chart.
+  const note = sync.formatCommLogEntry({
+    id: 's2', source: 'mango', call_date: '2026-07-23T19:30:00.000Z',
+    caller_name: 'Pat', summary: 'Caller asked about Saturday hours.',
+    transcript: 'Are you open Saturdays?',
+  }, {}).Note;
+  assert.match(note, /^Reason: Caller asked about Saturday hours\.$/m);
+  assert.ok(!/^Summary:$/m.test(note), 'summary written twice');
+  assert.equal(note.match(/Caller asked about Saturday hours\./g).length, 1);
+});
+
 test('formatCommLogEntry: no-content call writes the minimal stub (item 5)', () => {
   // Missed/voicemail call — no transcript.
   const note = sync.formatCommLogEntry({
@@ -161,6 +205,7 @@ test('formatCommLogEntry: no-content call writes the minimal stub (item 5)', () 
   }, {}).Note;
   assert.match(note, /^Call received .+, no recording available\.$/);
   assert.ok(!/Caller:/.test(note), 'no compact block for a no-content call');
+  assert.ok(!/Summary:/.test(note), 'no summary section on the stub either');
 
   // Empty-string transcript is also "no content".
   const note2 = sync.formatCommLogEntry({

@@ -264,6 +264,32 @@ test('commlog-preview returns the exact note the send will write', async () => {
   assert.equal(body.patientName, 'Stedi Test 2');
 });
 
+test('preview shows the full summary, and it is byte-for-byte what lands in OD', async () => {
+  // The whole point of the fix: what the confirm dialog shows and what the chart
+  // gets are the same string, and both now carry the summary the call page shows.
+  seedCall('c-full-summary', { call_analysis: {} });
+  unifiedCallStore.updateCall('c-full-summary', {
+    od_patient_id: 12827, od_patient_name: 'Stedi Test 2',
+    call_reason: 'Reschedule cleaning',
+    summary: 'Caller wants to move her Tuesday cleaning to the following week; '
+      + 'mornings work best and she asked for a call back to confirm.',
+  });
+
+  const preview = await fetch(`${baseUrl}/api/unified-calls/c-full-summary/commlog-preview`);
+  assert.equal(preview.status, 200);
+  const { note } = await preview.json();
+  assert.match(note, /^Reason: Reschedule cleaning$/m);
+  assert.match(note, /^Summary:$/m);
+  assert.match(note, /mornings work best and she asked for a call back to confirm\./);
+
+  const res = await resolve('c-full-summary', { patientId: 12827 }); // unedited send
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(lastNoteOverride, note, 'OD receives exactly the previewed note');
+  assert.equal(body.call.sent_note, note);
+  assert.equal(body.call.note_edited, false);
+});
+
 test('edited note is sanitized and is exactly what lands; note_edited=true', async () => {
   seedCall('c-edit', { call_analysis: { call_summary: 'Reschedule cleaning.' } });
   unifiedCallStore.updateCall('c-edit', { od_patient_id: 12827, summary: 'Reschedule cleaning.' });
