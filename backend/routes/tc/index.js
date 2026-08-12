@@ -19,6 +19,8 @@
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
  *   /library          per-office library config (server-owned settings)
+ *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
+ *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
  *                     plans, unaccepted finder, COB + insurance, next appointment
  *
@@ -66,6 +68,13 @@ router.use('/gallery', tcFull, require('./gallery'));
 router.use('/smile-sim', tcFull, require('./smileSim'));
 router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
+// MUST precede the /od mount, for the same registration-order reason as
+// /cases/from-call above: registering it first is what keeps the attach search
+// on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing
+// it the other way — dropping tcFull from /od and re-applying it route by
+// route — would make the next route added to od.js hygiene-readable by
+// omission. See odPatientSearch.js for the full reasoning.
+router.use('/od/patient-search', requirePermission('tc.hygiene'), require('./odPatientSearch'));
 router.use('/od', tcFull, require('./od'));
 
 module.exports = router;

@@ -550,3 +550,54 @@ test('flag: off suppresses the unseeded warning — there is nothing left to fix
   }
   assert.equal(warnings.filter((w) => w.includes('NO app_user ROW')).length, 0);
 });
+
+// --- home office -------------------------------------------------------------
+//
+// resolveUserContext is what /auth/me reads, so the home office has to come out
+// of the SAME identity read as the role. Splitting it into a second lookup
+// would mean two queries and a window in which they could disagree.
+
+test('roles: resolveUserContext carries the home office off the app_user row', async () => {
+  registry.getUserByEmail = async () => ({
+    user_id: 'U1', tenant_id: 'T1', email: 'x@carein.ai', role: 'hygiene', status: 'active',
+    home_office: 'valley',
+  });
+  registry.getTenantById = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN' });
+  registry.getPlatformAdminByEmail = async () => null;
+  userContext.clearCache();
+
+  const resolved = await resolveUserContext({ email: 'x@carein.ai', tenantId: 'whatever' });
+  assert.equal(resolved.homeOffice, 'valley');
+});
+
+test('roles: no home office resolves to null, never to a guessed office', async () => {
+  // The shared temp@ account is MEANT to have none — the office picker is its
+  // "which office are you at today?" prompt. Inventing a default here would
+  // silently file a temp's work under the wrong practice.
+  registry.getUserByEmail = async () => ({
+    user_id: 'U1', tenant_id: 'T1', email: 'temp@carein.ai', role: 'hygiene', status: 'active',
+    home_office: null,
+  });
+  registry.getTenantById = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN' });
+  registry.getPlatformAdminByEmail = async () => null;
+  userContext.clearCache();
+
+  const resolved = await resolveUserContext({ email: 'temp@carein.ai', tenantId: 'whatever' });
+  assert.equal(resolved.homeOffice, null);
+});
+
+test('roles: an unseeded user on the bootstrap fallback has no home office', async () => {
+  // There is no row to read one from. null is the honest answer; the fallback
+  // grants a ROLE so the team keeps working, and inventing an office on top of
+  // that would be a second guess stacked on the first.
+  registry.getUserByEmail = async () => null;
+  registry.getTenantBySlug = async () => ({ tenant_id: 'T1', slug: 'carein', display_name: 'CareIN' });
+  registry.getPlatformAdminByEmail = async () => null;
+  userContext.clearCache();
+
+  const resolved = await resolveUserContext({
+    email: 'nobody@carein.ai',
+    tenantId: CAREIN_FALLBACK.entraTenantId,
+  });
+  assert.equal(resolved.homeOffice, null);
+});

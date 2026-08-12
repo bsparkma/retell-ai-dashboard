@@ -84,7 +84,7 @@ test('server.js: tenant-exempt mounts carry NO permission gate', () => {
   }
 });
 
-test('server.js: the two documented permission exemptions are present', () => {
+test('server.js: the documented permission exemptions are present', () => {
   const mango = mount('/api/mango');
   assert.match(
     mango,
@@ -95,28 +95,50 @@ test('server.js: the two documented permission exemptions are present', () => {
   const unified = mount('/api/unified-calls');
   assert.match(
     unified,
-    /exempt:\s*\[\/\^\\\/sync-status\$\/\]/,
+    /exempt:\s*\[[\s\S]*?\/\^\\\/sync-status\$\/[\s\S]*?\]/,
     `GET /unified-calls/sync-status must stay open to any authenticated user: ${unified}`
+  );
+  // The office roster is the shell's own config read. A hygienist holds no
+  // voice permission, so without this exemption every hygiene page renders the
+  // zero-office dead end instead of the office picker.
+  assert.match(
+    unified,
+    /exempt:\s*\[[\s\S]*?\/\^\\\/offices\$\/[\s\S]*?\]/,
+    `GET /unified-calls/offices must stay open to any authenticated user: ${unified}`
   );
 });
 
 test('server.js: /api/tc mounts the TC router, whose gates live in routes/tc/index.js', () => {
   const tcIndex = fs.readFileSync(path.join(__dirname, '..', 'routes', 'tc', 'index.js'), 'utf8');
 
-  // Every sub-router is gated, and hygiene-intakes is the only tc.hygiene one.
+  // Every sub-router is gated, and the tc.hygiene grant is exactly these two
+  // mounts — nothing else in the TC surface may carry it.
   // Alternation order matters: the requirePermission(...) form must be tried
   // before the bare-identifier form, or [A-Za-z]+ swallows its name.
   const uses = [...tcIndex.matchAll(/router\.use\('([^']+)',\s*(requirePermission\('[^']+'\)|[A-Za-z]+)/g)];
-  assert.ok(uses.length >= 12, `expected every /api/tc sub-router to be gated, saw ${uses.length}`);
+  assert.ok(uses.length >= 13, `expected every /api/tc sub-router to be gated, saw ${uses.length}`);
 
-  const hygiene = uses.find(([, p]) => p === '/hygiene-intakes');
-  assert.ok(hygiene, '/hygiene-intakes must be mounted');
-  assert.equal(hygiene[2], "requirePermission('tc.hygiene')");
+  const HYGIENE_MOUNTS = ['/hygiene-intakes', '/od/patient-search'];
+  for (const p of HYGIENE_MOUNTS) {
+    const found = uses.find(([, mountPath]) => mountPath === p);
+    assert.ok(found, `${p} must be mounted`);
+    assert.equal(found[2], "requirePermission('tc.hygiene')", `${p} is the hygiene grant`);
+  }
 
   for (const [, mountPath, guard] of uses) {
-    if (mountPath === '/hygiene-intakes') continue;
+    if (HYGIENE_MOUNTS.includes(mountPath)) continue;
     assert.equal(guard, 'tcFull', `${mountPath} must be gated on tc.full, saw ${guard}`);
   }
+
+  // Registration order is load-bearing: '/od' mounted first would swallow
+  // '/od/patient-search' and put it behind tc.full.
+  const searchAt = tcIndex.indexOf("router.use('/od/patient-search'");
+  const odAt = tcIndex.indexOf("router.use('/od',");
+  assert.ok(searchAt > -1 && odAt > -1);
+  assert.ok(
+    searchAt < odAt,
+    '/od/patient-search must be registered BEFORE /od, or the tc.full mount captures it'
+  );
 });
 
 test('routes/tc/hygiene.js: claim is the one route narrowed to tc.full', () => {
@@ -187,11 +209,13 @@ function bootApp({ role = 'office', status = 'active', superAdmin = false } = {}
   app.use(
     '/api/unified-calls',
     voiceModule,
-    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/sync-status$/] }),
+    // Mirrors server.js exactly — the source scan above is what pins that.
+    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/sync-status$/, /^\/offices$/] }),
     express
       .Router()
       .get('/', ok('list'))
       .get('/sync-status', ok('sync-status'))
+      .get('/offices', ok('offices'))
       .patch('/:id/triage', ok('triage'))
       .post('/sync-now', requirePermission('voice.sync'), ok('sync-now'))
       .post('/:id/resolve-patient', requirePermission('voice.chart_write'), ok('resolve-patient'))
@@ -304,6 +328,37 @@ test('GET /unified-calls/sync-status stays open to every authenticated role', as
     } finally {
       await app.close();
     }
+  }
+});
+
+test('GET /unified-calls/offices stays open to every authenticated role', async () => {
+  // The office roster is non-PHI tenant config that EVERY signed-in user's
+  // shell needs before it can render anything office-scoped. Gating it on
+  // voice.read is what made every hygiene page show "No offices configured".
+  for (const role of ['admin', 'office', 'tc', 'hygiene']) {
+    const app = await bootApp({ role });
+    try {
+      const res = await app.get('/api/unified-calls/offices');
+      assert.equal(res.status, 200, `the office roster must stay open for ${role}`);
+      assert.deepEqual(await res.json(), { ok: true, route: 'offices' });
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('the roster exemption does NOT leak the rest of /unified-calls to hygiene', async () => {
+  // An exemption is a hole in a gate; this asserts the hole is exactly one
+  // path wide. If a future edit widened the regex, the worklist itself would
+  // open up and this fails.
+  const app = await bootApp({ role: 'hygiene' });
+  try {
+    assert.equal((await app.get('/api/unified-calls/offices')).status, 200);
+    for (const p of ['/api/unified-calls/', '/api/unified-calls/offices-and-more']) {
+      assert.equal((await app.get(p)).status, 403, `hygiene must still be refused ${p}`);
+    }
+  } finally {
+    await app.close();
   }
 });
 

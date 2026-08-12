@@ -247,7 +247,7 @@ async function getTenantDbRef(tenantId) {
  */
 async function getUserByEmail(email) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role, status, last_login_at
+    `SELECT user_id, tenant_id, email, role, status, last_login_at, home_office
        FROM app_user
       WHERE lower(email) = lower($1)
       LIMIT 1`,
@@ -268,7 +268,7 @@ async function getUserByEmail(email) {
  */
 async function listTenantUsers(tenantId) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role, status, last_login_at
+    `SELECT user_id, tenant_id, email, role, status, last_login_at, home_office
        FROM app_user
       WHERE tenant_id = $1
       ORDER BY email`,
@@ -287,7 +287,7 @@ async function listTenantUsers(tenantId) {
  */
 async function getTenantUser(tenantId, email) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role, status, last_login_at
+    `SELECT user_id, tenant_id, email, role, status, last_login_at, home_office
        FROM app_user
       WHERE tenant_id = $1 AND lower(email) = lower($2)
       LIMIT 1`,
@@ -312,7 +312,7 @@ async function createTenantUser(tenantId, email, role) {
     `INSERT INTO app_user (tenant_id, email, role, status)
           VALUES ($1, lower($2), $3, 'active')
      ON CONFLICT (tenant_id, email) DO NOTHING
-       RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+       RETURNING user_id, tenant_id, email, role, status, last_login_at, home_office`,
     [tenantId, email, role]
   );
   return rows[0] || null;
@@ -330,12 +330,18 @@ async function createTenantUser(tenantId, email, role) {
  * are one atomic statement: two admins concurrently demoting each other cannot
  * both succeed. (Same construction as the last-super-admin rule above.)
  *
- * `patch` may carry role, status, or both. Returns the updated row, or null if
- * nothing changed — the caller then asks WHY via getTenantUser.
+ * `patch` may carry role, status, home_office, or any combination. Returns the
+ * updated row, or null if nothing changed — the caller then asks WHY via
+ * getTenantUser.
+ *
+ * `home_office` is keyed on PRESENCE, not truthiness: null is a meaningful
+ * value there (clear it), unlike role and status where null means "leave it".
+ * It plays no part in the last-admin guard below — it grants nothing and can
+ * lock nobody out, so it can never be the reason a write is refused.
  *
  * @param {string} tenantId
  * @param {string} email
- * @param {{ role?: string, status?: string }} patch
+ * @param {{ role?: string, status?: string, home_office?: string|null }} patch
  * @returns {Promise<AppUser|null>}
  */
 async function updateTenantUser(tenantId, email, patch) {
@@ -348,6 +354,10 @@ async function updateTenantUser(tenantId, email, patch) {
   if (typeof patch.status === 'string') {
     params.push(patch.status);
     sets.push(`status = $${params.length}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'home_office')) {
+    params.push(patch.home_office === null ? null : String(patch.home_office));
+    sets.push(`home_office = $${params.length}`);
   }
   if (sets.length === 0) throw new Error('[registry] updateTenantUser: nothing to update');
 
@@ -371,7 +381,7 @@ async function updateTenantUser(tenantId, email, patch) {
         SET ${sets.join(', ')}
       WHERE tenant_id = $1 AND lower(email) = lower($2)
         ${guard}
-      RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+      RETURNING user_id, tenant_id, email, role, status, last_login_at, home_office`,
     params
   );
   return rows[0] || null;
@@ -405,7 +415,7 @@ async function countActiveTenantAdmins(tenantId) {
  */
 async function listTenantUsersByRole(tenantId, role) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role, status, last_login_at
+    `SELECT user_id, tenant_id, email, role, status, last_login_at, home_office
        FROM app_user
       WHERE tenant_id = $1 AND role = $2 AND status = 'active'
       ORDER BY email`,

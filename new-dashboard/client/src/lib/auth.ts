@@ -61,6 +61,15 @@ export interface AuthUser {
    * PR A ships the type; PR B is what consumes it in the nav.
    */
   permissions: string[];
+  /**
+   * The office this person usually works at (app_user.home_office), or null.
+   *
+   * A DEFAULT, not a restriction: it seeds the office picker and nothing else.
+   * Every office stays reachable, because staff float between locations (see
+   * contexts/OfficeContext.tsx). Shared accounts — temp@ — deliberately have
+   * none, which makes the picker their "which office are you at today?" prompt.
+   */
+  homeOffice: string | null;
 }
 
 /** Narrow an unknown `tenant` object into TenantInfo (or null). No `any`. */
@@ -99,6 +108,9 @@ export function parseAuthUser(value: unknown): AuthUser | null {
       permissions: Array.isArray(body.permissions)
         ? body.permissions.filter((p): p is string => typeof p === "string")
         : [],
+      // Absent (older backend) or blank reads as "no home office" — which means
+      // "all offices", the widest default. Nothing is denied either way.
+      homeOffice: typeof body.homeOffice === "string" && body.homeOffice !== "" ? body.homeOffice : null,
     };
   }
   return null;

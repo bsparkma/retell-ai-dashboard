@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Clock,
   Inbox,
+  Link2,
   Loader2,
   Phone,
   RefreshCw,
@@ -206,6 +207,15 @@ function InboxList({
                   )}
                   <UrgencyBadge urgency={r.urgency} />
                   {showOfficeBadges && <OfficeBadge officeId={r.officeId} />}
+                  {r.odPatientId !== null && (
+                    // The hygienist already identified this person in Open
+                    // Dental — say so, so the TC doesn't look them up again.
+                    // The office is on the row too: a PatNum without its
+                    // practice points at a different patient.
+                    <Badge variant="outline" className="gap-1 text-[10px]">
+                      <Link2 className="w-3 h-3" /> OD #{r.odPatientId}
+                    </Badge>
+                  )}
                   <span
                     className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${interest.cls}`}
                   >

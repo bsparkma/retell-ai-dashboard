@@ -92,6 +92,9 @@ beforeEach(() => {
     }
     if (typeof patch.role === 'string') row.role = patch.role;
     if (typeof patch.status === 'string') row.status = patch.status;
+    // home_office is present-and-null when it is being CLEARED, so the check is
+    // key PRESENCE, not truthiness — mirrors the real SQL builder.
+    if ('home_office' in patch) row.home_office = patch.home_office;
     return row;
   };
 
@@ -437,6 +440,120 @@ test('GUARD self: REACTIVATING yourself is not blocked (it cannot lock anyone ou
   try {
     const res = await app.patch('/api/users/boss@carein.ai', { status: 'active' });
     assert.equal(res.status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+// --- home office ------------------------------------------------------------
+//
+// A DEFAULT, not a restriction: it seeds someone's office picker and nothing
+// else. Nothing below grants or denies access on the strength of it — the tests
+// are about who may SET it and what values are accepted.
+
+test('home office: an admin can set it, and it comes back on the row', async () => {
+  const app = await boot();
+  try {
+    const res = await app.patch('/api/users/front@carein.ai', { homeOffice: 'valley' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.user.homeOffice, 'valley');
+
+    const list = await app.get('/api/users');
+    assert.equal(list.body.users.find((u) => u.email === 'front@carein.ai').homeOffice, 'valley');
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: GET / carries the office roster so the picker never hardcodes it', async () => {
+  const app = await boot();
+  try {
+    const res = await app.get('/api/users');
+    assert.ok(Array.isArray(res.body.offices), 'the page must not invent the office list');
+    const ids = res.body.offices.map((o) => o.officeId);
+    assert.ok(ids.includes('roland') && ids.includes('valley'));
+    // 'unknown' is the system bucket for unmapped phone lines, not a place
+    // anybody works. Offering it would let an admin assign a home office that
+    // resolves to no practice at all.
+    assert.ok(!ids.includes('unknown'), `the unmapped bucket is not an office: ${ids.join()}`);
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: an unknown office key is refused, and nothing is written', async () => {
+  const app = await boot();
+  try {
+    for (const bad of ['sneaky', 'unknown', 'ROLAND', 'roland ']) {
+      const res = await app.patch('/api/users/front@carein.ai', { homeOffice: bad });
+      assert.equal(res.status, 400, `'${bad}' must be refused`);
+      assert.equal(res.body.code, 'INVALID_HOME_OFFICE');
+    }
+    assert.equal(rows.find((r) => r.email === 'front@carein.ai').home_office, undefined);
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: null clears it — temp accounts are meant to have none', async () => {
+  const app = await boot();
+  try {
+    await app.patch('/api/users/hyg@carein.ai', { homeOffice: 'roland' });
+    const cleared = await app.patch('/api/users/hyg@carein.ai', { homeOffice: null });
+    assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+    assert.equal(cleared.body.user.homeOffice, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: setting it alone is a valid patch (not an EMPTY_PATCH)', async () => {
+  const app = await boot();
+  try {
+    const res = await app.patch('/api/users/front@carein.ai', { homeOffice: 'roland' });
+    assert.notEqual(res.body.code, 'EMPTY_PATCH');
+    assert.equal(res.status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: the change is audited like a role change', async () => {
+  const app = await boot();
+  try {
+    await app.patch('/api/users/front@carein.ai', { homeOffice: 'valley' });
+    const row = auditRows.find((r) => r.resourceType === 'app_user' && r.result === 'SUCCESS');
+    assert.ok(row, 'a home-office change must leave a trail');
+    assert.equal(row.action, 'UPDATE');
+    assert.equal(row.resourceId, 'front@carein.ai');
+  } finally {
+    await app.close();
+  }
+});
+
+test('home office: a non-admin cannot set anyone’s — including their own', async () => {
+  for (const role of ['office', 'tc', 'hygiene']) {
+    const app = await boot({ role, actor: 'front@carein.ai' });
+    try {
+      const other = await app.patch('/api/users/hyg@carein.ai', { homeOffice: 'valley' });
+      assert.equal(other.status, 403, `${role} must not set another person's home office`);
+      const self = await app.patch('/api/users/front@carein.ai', { homeOffice: 'valley' });
+      assert.equal(self.status, 403, `${role} must not reach /api/users at all`);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('home office: setting it on YOURSELF is allowed — it locks nobody out', async () => {
+  // Unlike role and status, a home office cannot strand anyone: it only seeds a
+  // picker that still offers every office. The self-change guard must not
+  // spread to it.
+  const app = await boot({ actor: 'boss@carein.ai' });
+  try {
+    const res = await app.patch('/api/users/boss@carein.ai', { homeOffice: 'roland' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.user.homeOffice, 'roland');
   } finally {
     await app.close();
   }

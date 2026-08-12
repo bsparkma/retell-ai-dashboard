@@ -11,7 +11,7 @@ import { Link } from "wouter";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Gauge, Mail, Phone, Presentation, RefreshCcw, UserRound } from "lucide-react";
+import { Gauge, Link2, Mail, Phone, Presentation, RefreshCcw, UserRound } from "lucide-react";
 import { formatCents } from "../money";
 import { CaseStatusBadge, UrgencyBadge } from "../components/TcShell";
 import { OdNextAppointment } from "../od/OdNextAppointment";
@@ -60,6 +60,15 @@ export function CaseCommandBar({ office, tcCase, onChangeStatus }: CaseCommandBa
               <span className="inline-flex items-center gap-1">
                 <Gauge size={14} /> Readiness {tcCase.readinessScore}/100
               </span>
+              {tcCase.odPatientId !== null && (
+                // Named WITH its office on purpose. PatNum numbering restarts in
+                // every Open Dental database — 7115 is the Riley test patient
+                // and a different, real person in Roland — so the number alone
+                // is not an identifier anyone should act on.
+                <span className="inline-flex items-center gap-1" title="Linked Open Dental patient">
+                  <Link2 size={14} /> OD #{tcCase.odPatientId} · {tcCase.officeId}
+                </span>
+              )}
               <OdNextAppointment office={office} patNum={tcCase.odPatientId} />
             </div>
           </div>
