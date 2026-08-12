@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
+const { apiRateLimiter } = require('./middleware/rateLimit');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
@@ -98,14 +98,15 @@ async function bootstrap() {
   // Initialize Socket.IO event handlers
   initializeSocketHandlers(io);
 
-  // Trust proxy for rate limiting
-  app.set('trust proxy', 1);
-
-  // Rate limiting - higher limits for development
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: process.env.NODE_ENV === 'production' ? 100 : 1000 // Higher limit for development
-  });
+  // Trust proxy — how many hops sit in front of this process.
+  //
+  // Prod is Container Apps ingress → Caddy → backend, i.e. TWO proxies, and the old
+  // value of 1 was one short: req.ip resolved to Caddy's internal address, so every
+  // user in the practice shared one rate-limit bucket (see middleware/rateLimit.js).
+  // Env-overridable because this is a deployment topology detail, not a code constant —
+  // if a proxy is added or removed, that should not need a release.
+  const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? '2', 10);
+  app.set('trust proxy', Number.isFinite(trustProxyHops) ? trustProxyHops : 2);
 
   // Middleware (relax Helmet cross-origin so dashboard on 3005 can read API responses)
   app.use(helmet({
@@ -147,7 +148,6 @@ async function bootstrap() {
     next();
   });
 
-  app.use(limiter);
   // Capture raw body for HMAC signature verification (e.g. Retell webhooks).
   // Without this, signature verification cannot use the raw body Retell signed.
   app.use(express.json({
@@ -158,6 +158,12 @@ async function bootstrap() {
   app.use(express.urlencoded({ extended: true }));
   // Parse cookies so the Entra SSO session cookie is available to /auth and the gate.
   app.use(cookieParser());
+
+  // Rate limiting. Mounted AFTER cookieParser — it buckets per signed-in user, and the
+  // identity lives in the SSO session cookie. Mounted BEFORE /auth and /api so sign-in
+  // traffic is covered too; it exempts webhooks, health and the live Retell tools path
+  // itself (see middleware/rateLimit.js), rather than relying on where it sits.
+  app.use(apiRateLimiter);
 
   // Entra SSO routes (sign-in/callback/logout/me). Mounted OUTSIDE the /api
   // bearer gate so unauthenticated users can reach the sign-in flow.

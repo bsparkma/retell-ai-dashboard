@@ -37,7 +37,15 @@ function getExpectedToken() {
   return (process.env[ENV_KEY] || '').trim();
 }
 
-/** Constant-time comparison to avoid timing attacks. */
+/**
+ * Constant-time comparison to avoid timing attacks.
+ *
+ * Exported because the rate limiter also has to recognise the shared dashboard token,
+ * and it runs BEFORE this gate on every request. Anything that compares the same secret
+ * with `===` would hand back a timing signal on a path that is reached earlier and more
+ * often than the gate itself — so both sides use this one helper rather than each having
+ * their own idea of how careful to be.
+ */
 function safeEqual(a, b) {
   const bufA = Buffer.from(a || '');
   const bufB = Buffer.from(b || '');
@@ -212,4 +220,4 @@ function socketAuth(socket, next) {
   return next();
 }
 
-module.exports = { requireDashboardToken, requireDashboardAuth, socketAuth };
+module.exports = { requireDashboardToken, requireDashboardAuth, socketAuth, safeEqual };
