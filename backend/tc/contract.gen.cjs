@@ -15208,8 +15208,30 @@ var TcCaseEvent = import_zod2.z.object({
   sourceCallId: import_zod2.z.string().max(200).nullable().default(null)
 });
 var TcHygieneIntake = import_zod2.z.object({
+  /**
+   * WHO WAS SIGNED IN. Audit identity, server-stamped from the SSO session —
+   * never client-supplied, never edited.
+   */
   submittedBy: ShortText.min(1),
   submittedByName: ShortText,
+  /**
+   * WHO ACTUALLY DID THE HYGIENE VISIT. Clinical attribution, chosen in the
+   * intake form (Roles PR B).
+   *
+   * Separate from submittedBy on purpose. temp@carein.ai is one deliberately
+   * shared, rotated account for temp hygienists, so `submittedBy` collapses
+   * every temp's work into a single identity — useless for "show me Raegan's
+   * handoffs" and worse than useless for a clinical question about a specific
+   * visit. This field carries the name the person picked.
+   *
+   * A NAME SNAPSHOT, not a reference: it is the name as of the visit and does
+   * not follow a later roster change, matching how this codebase snapshots
+   * patient and provider names elsewhere.
+   *
+   * Defaulted to '' so every pre-PR-B construction site stays valid; the
+   * migration backfills existing rows from submittedByName.
+   */
+  hygienistName: ShortText.default(""),
   submittedAt: IsoTimestamp,
   operatory: ShortText,
   visitDate: IsoDate.nullable(),
@@ -15586,6 +15608,9 @@ function caseToRows(tcCase, newId) {
     office_id: office,
     submitted_by: c.hygieneIntake.submittedBy,
     submitted_by_name: c.hygieneIntake.submittedByName,
+    // Falls back to the signed-in user's display name when the form did not
+    // carry a pick, so a row is never attributed to nobody.
+    hygienist_name: c.hygieneIntake.hygienistName || c.hygieneIntake.submittedByName,
     submitted_at: c.hygieneIntake.submittedAt,
     operatory: c.hygieneIntake.operatory,
     visit_date: c.hygieneIntake.visitDate,

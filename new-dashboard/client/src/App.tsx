@@ -1,11 +1,16 @@
+import { useEffect } from "react";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
 import { Redirect, Route, Switch } from "wouter";
+import { setUnauthorizedHandler } from "@/lib/api";
+import { login } from "@/lib/auth";
 import Home from "@/pages/Home";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import { AuthProvider } from "./contexts/AuthContext";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { canVisit, homeForRole } from "@/lib/permissions";
 import { ModuleProvider } from "./contexts/ModuleContext";
 import { OfficeProvider } from "./contexts/OfficeContext";
 import RequireAuth from "./components/RequireAuth";
@@ -18,6 +23,7 @@ import AgentBuilder from "./pages/AgentBuilder";
 import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
+import AdminUsers from "./pages/AdminUsers";
 import Callbacks from "./pages/Callbacks";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
@@ -49,16 +55,43 @@ import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvide
 // Exported for the routing tests (tests/module-home.test.tsx).
 export function Router() {
   const [location] = useLocation();
+  const auth = useAuth();
+  const permissions = auth.status === "authenticated" ? auth.user.permissions : undefined;
+  const role = auth.status === "authenticated" ? auth.user.role : null;
+  const home = homeForRole(role);
   // The COB scratchpad floats over every TC page except the patient-facing deck.
   const showFloatingCalc =
     (location === "/tc" || location.startsWith("/tc/")) && !location.startsWith("/tc/present");
+
+  // Roles PR B — CLIENT-SIDE COURTESY, not a gate. A hygienist who types
+  // /analytics gets their own home instead of a page whose every request 403s.
+  // The API refusal is the real boundary; this only avoids a broken screen.
+  //
+  // Deliberately requires a NON-EMPTY permission list. An empty or absent one
+  // means we don't know what this user may do — auth still settling, or a
+  // frontend deployed ahead of a backend that doesn't send `permissions` yet —
+  // and bouncing someone off every page on a guess would turn a deploy skew
+  // into an outage. A courtesy that can lock people out is not a courtesy.
+  // (A user who genuinely holds nothing never reaches here: RequireAuth shows
+  // them the access-request screen above this.)
+  const knowPermissions = Array.isArray(permissions) && permissions.length > 0;
+  if (
+    auth.status === "authenticated" &&
+    knowPermissions &&
+    !canVisit(permissions, location) &&
+    location !== home
+  ) {
+    return <Redirect to={home} replace />;
+  }
+
   return (
     <DashboardLayout>
       <Switch>
         {/* Hub-first: login lands on the SPA origin, so "/" always redirects
-            to the module hub. Deep links to module pages are untouched. */}
+            to the user's home — the module hub for office/admin, and the one
+            page they can actually use for tc/hygiene. */}
         <Route path="/">
-          <Redirect to="/home" replace />
+          <Redirect to={home} replace />
         </Route>
         <Route path="/home" component={Home} />
         <Route path="/dashboard" component={Dashboard} />
@@ -70,6 +103,7 @@ export function Router() {
         <Route path="/scheduling" component={Scheduling} />
         <Route path="/analytics" component={Analytics} />
         <Route path="/admin" component={Admin} />
+        <Route path="/admin/users" component={AdminUsers} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />
@@ -106,7 +140,27 @@ export function Router() {
   );
 }
 
+/**
+ * Wire the api client's 401 reaction once, at the root (Roles PR B).
+ *
+ * Registered here rather than inside lib/api so that module stays importable
+ * from the node-environment tests without dragging in a toast library or a
+ * `window`. The redirect is a full page navigation on purpose: the SSO flow
+ * ends in a server redirect, and a client-side route change would leave stale
+ * React state (and a stale AuthContext) behind it.
+ */
+function useUnauthorizedRedirect(): void {
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      toast.error("Signed out — sign in again");
+      login();
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+}
+
 function App() {
+  useUnauthorizedRedirect();
   return (
     <ErrorBoundary>
       <ThemeProvider defaultTheme="light" switchable>

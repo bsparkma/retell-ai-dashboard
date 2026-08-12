@@ -18,7 +18,21 @@ const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeCon
 const odOffices = require('../config/odOffices');
 const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
+const { requirePermission } = require('../config/permissions');
 const tcCaseClient = require('../services/tcCaseClient');
+
+/**
+ * Per-route permission gates (Roles PR A).
+ *
+ * The mount in server.js already applies voice.read to GETs and voice.write to
+ * mutations. These NARROW that for the three things a worklist mutation is not:
+ * spending money, writing to a patient's chart, and handing a case to another
+ * module. Naming them here keeps the action next to the route it guards while
+ * the role lists stay in the one map (backend/config/permissions.js).
+ */
+const canSync = requirePermission('voice.sync');
+const canChartWrite = requirePermission('voice.chart_write');
+const canSendToTc = requirePermission('voice.send_to_tc');
 
 /**
  * The office roster for the UI, with EFFECTIVE Open Dental connectivity.
@@ -404,7 +418,7 @@ function describeMangoResult(result) {
  * Throttled to one run per minute per process (429 + retryAfter), so a button-mash
  * costs one sync and a polite wait rather than N overlapping API walks.
  */
-router.post('/sync-now', async (req, res) => {
+router.post('/sync-now', canSync, async (req, res) => {
   const claim = manualSyncThrottle.begin();
   if (!claim.allowed) {
     res.set('Retry-After', String(claim.retryAfter));
@@ -665,7 +679,7 @@ router.get('/phone/:phoneNumber', async (req, res) => {
  * each honestly. Kept working this release so anything still calling it (scripts, an
  * older cached bundle) doesn't break; remove once nothing does.
  */
-router.post('/sync-retell', async (req, res) => {
+router.post('/sync-retell', canSync, async (req, res) => {
   try {
     const { limit = 1000, start_time, end_time } = req.body;
 
@@ -831,7 +845,7 @@ router.patch('/:id/triage', async (req, res) => {
  *
  * Both stamp resolve attribution (resolved_by / resolved_at) from the session.
  */
-router.post('/:id/resolve-patient', async (req, res) => {
+router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
   try {
     const { id } = req.params;
     const body = req.body || {};
@@ -1116,7 +1130,7 @@ router.post('/:id/resolve-patient', async (req, res) => {
  * so this path deliberately does NOT require an OD-connected office. It does
  * require a REAL office ('unknown' has no practice to file a case under).
  */
-router.post('/:id/send-to-tc', async (req, res) => {
+router.post('/:id/send-to-tc', canSendToTc, async (req, res) => {
   try {
     const { id } = req.params;
     const body = req.body || {};

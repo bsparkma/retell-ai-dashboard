@@ -124,6 +124,9 @@ const INTAKE_COLS = [
   'office_id',
   'submitted_by',
   'submitted_by_name',
+  // Clinical attribution (Roles PR B) — who did the visit, as distinct from
+  // who was signed in. See the 1786536000000_hygienist_attribution migration.
+  'hygienist_name',
   'submitted_at',
   'operatory',
   'visit_date',

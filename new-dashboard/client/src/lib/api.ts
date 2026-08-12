@@ -39,12 +39,53 @@ async function apiFetch(
   const authHeaders: Record<string, string> = DASHBOARD_TOKEN
     ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` }
     : {};
-  return fetch(url.toString(), {
+  const res = await fetch(url.toString(), {
     ...init,
     // Send the Entra SSO session cookie (HttpOnly) alongside any bearer token.
     credentials: "include",
     headers: { "Content-Type": "application/json", ...authHeaders, ...init.headers },
   });
+  if (res.status === 401) handleUnauthorized();
+  return res;
+}
+
+/** Set by the app shell so this module can toast without importing the UI. */
+let onUnauthorized: (() => void) | null = null;
+
+/**
+ * Register the app's 401 reaction (Roles PR B).
+ *
+ * Injected rather than imported so `lib/api` stays free of `sonner` and
+ * `window` — the pure-node tests import this module and must not drag a toast
+ * library or a DOM in with it.
+ */
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
+/**
+ * The 8-hour SSO session expires, or the container restarts and drops the
+ * signing key. Before this, every in-flight call turned into an unexplained
+ * red toast and the page just stopped working until someone thought to reload.
+ *
+ * ONLY 401 — "we do not know who you are". A 403 means we know exactly who you
+ * are and the answer is no; signing a user out for it would be both wrong and
+ * infuriating, so 403s stay ordinary errors that pages render as permission
+ * states.
+ *
+ * Guarded so a page firing six parallel requests against a dead session
+ * produces one sign-out, not six.
+ */
+let unauthorizedFired = false;
+export function handleUnauthorized(): void {
+  if (unauthorizedFired) return;
+  unauthorizedFired = true;
+  if (onUnauthorized) onUnauthorized();
+}
+
+/** Test seam — lets a test observe a second 401 after asserting the first. */
+export function _resetUnauthorizedLatch(): void {
+  unauthorizedFired = false;
 }
 
 /**
@@ -82,6 +123,28 @@ async function request<T>(
 // ---------------------------------------------------------------------------
 // Backend response types (minimal)
 // ---------------------------------------------------------------------------
+
+// --- tenant user management (Roles PR B) ------------------------------------
+
+export type TenantUserRole = "admin" | "office" | "tc" | "hygiene";
+export type TenantUserStatus = "active" | "disabled";
+
+/** One row of the tenant's `app_user` table, as /api/users renders it. */
+export interface TenantUser {
+  email: string;
+  role: TenantUserRole;
+  status: TenantUserStatus;
+  /** null until the person has actually signed in at least once. */
+  lastLoginAt: string | null;
+}
+
+export interface TenantUsersResponse {
+  users: TenantUser[];
+  /** The server's role vocabulary — the picker's options come from here. */
+  roles: TenantUserRole[];
+  /** The signed-in admin's own address, so the UI can mark their row. */
+  actor: string;
+}
 
 // --- Slice B: triage worklist + patient review queue ------------------------
 
@@ -1267,6 +1330,34 @@ export const api = {
     }>("/opendental/ai/schedule-overview", {
       params: params as Record<string, string | number | boolean | undefined>,
     });
+  },
+
+  // --- tenant user management (Roles PR B, /api/users) ----------------------
+
+  /** List this tenant's users. Server-gated `admin.all`. */
+  async listUsers(): Promise<TenantUsersResponse> {
+    return request<TenantUsersResponse>("/users");
+  },
+
+  /** Pre-provision a user. Entra still authenticates them; this grants the role. */
+  async createUser(email: string, role: TenantUserRole): Promise<TenantUser> {
+    const data = await request<{ user: TenantUser }>("/users", {
+      method: "POST",
+      body: JSON.stringify({ email, role }),
+    });
+    return data.user;
+  },
+
+  /** Change a user's role and/or status. Server enforces every guard. */
+  async updateUser(
+    email: string,
+    patch: { role?: TenantUserRole; status?: TenantUserStatus },
+  ): Promise<TenantUser> {
+    const data = await request<{ user: TenantUser }>(`/users/${encodeURIComponent(email)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return data.user;
   },
 };
 

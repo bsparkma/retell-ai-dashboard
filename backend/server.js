@@ -54,6 +54,7 @@ async function bootstrap() {
   const syncScheduler = require('./services/syncScheduler');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
+  const { requirePermission, requireReadWrite } = require('./config/permissions');
 
   const app = express();
   // Default ports: 5003 in production, 5103 in dev. PORT env var overrides both.
@@ -205,30 +206,77 @@ async function bootstrap() {
   //   /api/mango/dev/seed staging-only seeder (tenant-exempt upstream)
   const voiceModule = requireModule('voice');
 
+  // Role gating (Roles PR A). Module entitlement answers "does this PRACTICE
+  // buy the product?"; permissions answer "may this PERSON do this?". Both are
+  // fail-closed and both run before any handler.
+  //
+  // The voice surface is gated read-vs-write at the mount so the 'tc' role is
+  // genuinely read-only across all of it rather than on the routes someone
+  // remembered to decorate. Routes that cost money (sync, transcribe), write to
+  // Open Dental, or cross into TC carry their OWN stronger gate inside their
+  // router — the specific gate narrows this one, never the reverse.
+  //
+  // Action names live in ONE map (backend/config/permissions.js). No role
+  // literal appears in this file or in any route file.
+  const voiceSurface = requireReadWrite('voice.read', 'voice.write');
+
   // Legacy on-disk Mango recordings (MP3, scraper-era; current playback uses the
   // proxy GET /api/mango/calls/:callId/recording). Recordings are PHI audio, so
   // this static mount sits BELOW the auth gate + tenant context and carries the
   // voice module guard like the rest of /api/mango. It must never be registered
   // above the auth gate — that served recordings unauthenticated on the public
   // hostname (see backend/test/recordingsAuthGate.test.js).
-  app.use('/api/mango/recordings', voiceModule, express.static(path.join(__dirname, 'recordings', 'mango')));
+  app.use(
+    '/api/mango/recordings',
+    voiceModule,
+    voiceSurface,
+    express.static(path.join(__dirname, 'recordings', 'mango'))
+  );
 
-  app.use('/api/calls', voiceModule, callsRouter);
-  app.use('/api/agents', voiceModule, agentsRouter);
-  app.use('/api/opendental', voiceModule, openDentalRouter);
-  app.use('/api/opendental-sync', voiceModule, openDentalSyncRouter);
+  app.use('/api/calls', voiceModule, voiceSurface, callsRouter);
+  app.use('/api/agents', voiceModule, voiceSurface, agentsRouter);
+  app.use('/api/opendental', voiceModule, voiceSurface, openDentalRouter);
+  // Triggering an OD sync is a sync action, not ordinary bookkeeping.
+  app.use(
+    '/api/opendental-sync',
+    voiceModule,
+    requireReadWrite('voice.read', 'voice.sync'),
+    openDentalSyncRouter
+  );
   app.use('/api/webhooks', webhooksRouter);
-  app.use('/api/live-calls', voiceModule, liveCallsRouter);
-  app.use('/api/admin', voiceModule, adminRouter);
-  app.use('/api/mango', requireModule('voice', { exempt: [/^\/dev\/seed$/] }), mangoRouter);
-  app.use('/api/callbacks', voiceModule, callbacksRouter);
-  app.use('/api/unified-calls', voiceModule, unifiedCallsRouter);
-  app.use('/api/analytics', voiceModule, analyticsRouter);
+  app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
+  // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
+  // 'admin' only — this is the one surface 'office' does not get.
+  app.use('/api/admin', voiceModule, requirePermission('admin.all'), adminRouter);
+  // Tenant user management (Roles PR B). Deliberately NOT behind the voice
+  // module guard: managing who works here is a property of the practice, not
+  // of any product they bought. A TC-only tenant still needs a Users page.
+  app.use('/api/users', requirePermission('admin.all'), require('./routes/users'));
+  // /dev/seed is tenant-exempt upstream, so it has no req.userRole to check and
+  // must be permission-exempt for the same reason (it is ALLOW_MANGO_DEV_SEED-
+  // gated and 403s in prod on its own).
+  app.use(
+    '/api/mango',
+    requireModule('voice', { exempt: [/^\/dev\/seed$/] }),
+    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/dev\/seed$/] }),
+    mangoRouter
+  );
+  app.use('/api/callbacks', voiceModule, voiceSurface, callbacksRouter);
+  // GET /sync-status is exempt: it is the "last synced" caption, carries no PHI,
+  // and every signed-in user's shell polls it. Everything else here is gated,
+  // and the paid/PHI-writing routes carry stronger gates inside the router.
+  app.use(
+    '/api/unified-calls',
+    voiceModule,
+    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/sync-status$/] }),
+    unifiedCallsRouter
+  );
+  app.use('/api/analytics', voiceModule, voiceSurface, analyticsRouter);
   app.use('/api/retell-tools', retellToolsRouter);
-  app.use('/api/retell-tools-config', voiceModule, retellToolsConfigRouter);
-  app.use('/api/agent-config', voiceModule, agentConfigRouter);
-  app.use('/api/notifications-config', voiceModule, notificationsConfigRouter);
-  app.use('/api/slot-markers', voiceModule, slotMarkersRouter);
+  app.use('/api/retell-tools-config', voiceModule, voiceSurface, retellToolsConfigRouter);
+  app.use('/api/agent-config', voiceModule, voiceSurface, agentConfigRouter);
+  app.use('/api/notifications-config', voiceModule, voiceSurface, notificationsConfigRouter);
+  app.use('/api/slot-markers', voiceModule, voiceSurface, slotMarkersRouter);
 
   // TC (Treatment Coordinator) module — Slice 3 backend port. ONE mount for
   // the whole /api/tc/* surface, behind its own module guard. Ships DARK: no

@@ -16,16 +16,32 @@ const express = require('express');
 
 const sso = require('../config/sso');
 const registry = require('../platform/registry');
+const userContext = require('../platform/userContext');
+const { PERMISSIONS } = require('../config/permissions');
 const authRouter = require('./auth');
 
-const REGISTRY_KEYS = ['getUserByEmail', 'getTenantById', 'getTenantBySlug', 'getEnabledModules'];
+const REGISTRY_KEYS = [
+  'getUserByEmail',
+  'getTenantById',
+  'getTenantBySlug',
+  'getEnabledModules',
+  'getPlatformAdminByEmail',
+  'touchUserLogin',
+];
 const originalRegistry = {};
 for (const k of REGISTRY_KEYS) originalRegistry[k] = registry[k];
 const originalVerifySession = sso.verifySession;
 
+test.beforeEach(() => {
+  userContext.clearCache();
+  registry.getPlatformAdminByEmail = async () => null;
+  registry.touchUserLogin = async () => {};
+});
+
 afterEach(() => {
   for (const k of REGISTRY_KEYS) registry[k] = originalRegistry[k];
   sso.verifySession = originalVerifySession;
+  userContext.clearCache();
 });
 
 const CLAIMS = { name: 'Beau', email: 'admin@carein.ai', tid: 'entra-tid' };
@@ -34,12 +50,13 @@ function stubSession() {
   sso.verifySession = (token) => (token === 'good-token' ? CLAIMS : null);
 }
 
-function stubTenant({ modules }) {
+function stubTenant({ modules, role = 'admin', status = 'active', superAdmin = false }) {
   registry.getUserByEmail = async () => ({
     user_id: 'U1',
     tenant_id: 'T1',
     email: CLAIMS.email,
-    role: 'admin',
+    role,
+    status,
   });
   registry.getTenantById = async () => ({
     tenant_id: 'T1',
@@ -48,6 +65,8 @@ function stubTenant({ modules }) {
     status: 'active',
   });
   registry.getEnabledModules = modules;
+  registry.getPlatformAdminByEmail = async () =>
+    superAdmin ? { email: CLAIMS.email, status: 'active', created_at: new Date() } : null;
 }
 
 /** Minimal req.cookies shim so the test doesn't depend on cookie-parser. */
@@ -130,6 +149,78 @@ test('/auth/me: no/invalid session cookie → 401 { authenticated: false }', asy
       const body = await res.json();
       assert.equal(body.authenticated, false);
     }
+  } finally {
+    await close();
+  }
+});
+
+// --- role payload (Roles PR A) ---------------------------------------------
+
+test('/auth/me: returns the role, super_admin flag, and the derived permissions', async () => {
+  stubSession();
+  stubTenant({ modules: async () => ['voice', 'tc'], role: 'hygiene' });
+
+  const { me, close } = await boot();
+  try {
+    const body = await (await me('good-token')).json();
+    assert.equal(body.role, 'hygiene');
+    assert.equal(body.isSuperAdmin, false);
+    // A hygienist can reach exactly one action.
+    assert.deepEqual(body.permissions, ['tc.hygiene']);
+  } finally {
+    await close();
+  }
+});
+
+test('/auth/me: a super_admin reports every action', async () => {
+  stubSession();
+  stubTenant({ modules: async () => ['voice'], role: 'office', superAdmin: true });
+
+  const { me, close } = await boot();
+  try {
+    const body = await (await me('good-token')).json();
+    assert.equal(body.role, 'office');
+    assert.equal(body.isSuperAdmin, true);
+    assert.deepEqual(body.permissions, Object.keys(PERMISSIONS).sort());
+    assert.ok(body.permissions.includes('admin.all'), 'super_admin holds admin.all even as tenant office');
+  } finally {
+    await close();
+  }
+});
+
+test('/auth/me: a disabled account reports no role and no permissions', async () => {
+  stubSession();
+  stubTenant({ modules: async () => ['voice'], role: 'admin', status: 'disabled' });
+
+  const { me, close } = await boot();
+  try {
+    const res = await me('good-token');
+    // Still authenticated — the SESSION is valid. What they may DO is empty.
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.authenticated, true);
+    assert.equal(body.role, null);
+    assert.deepEqual(body.permissions, []);
+  } finally {
+    await close();
+  }
+});
+
+test('/auth/me: a control-plane failure hides everything rather than guessing', async () => {
+  stubSession();
+  registry.getUserByEmail = async () => {
+    throw new Error('control db down');
+  };
+
+  const { me, close } = await boot();
+  try {
+    const res = await me('good-token');
+    assert.equal(res.status, 200, 'auth status must not depend on the control DB');
+    const body = await res.json();
+    assert.equal(body.authenticated, true);
+    assert.equal(body.tenant, null);
+    assert.equal(body.role, null);
+    assert.deepEqual(body.permissions, [], 'degrade to hiding, never to allowing');
   } finally {
     await close();
   }

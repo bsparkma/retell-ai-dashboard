@@ -101,6 +101,12 @@ function requireDashboardToken({ exempt = [] } = {}) {
       });
     }
 
+    // Record HOW this request authenticated. requirePermission() needs to tell a
+    // machine caller (shared token, no identity, no role to look up) from a
+    // signed-in human. Only set on a VERIFIED token — the dev-mode
+    // "no token configured" branch above returns before this point, so an
+    // unauthenticated dev request is never mistaken for a machine caller.
+    req.authMethod = 'token';
     return next();
   };
 }
@@ -130,6 +136,7 @@ function requireDashboardAuth({ exempt = [] } = {}) {
         const claims = sso.verifySession(token);
         if (claims) {
           req.user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+          req.authMethod = 'session';
           return next();
         }
       }

@@ -29,12 +29,38 @@ export interface TenantInfo {
   modules: string[];
 }
 
+/**
+ * The signed-in user's tenant role (app_user.role), locked 2026-08-11:
+ *   admin    everything, including the Admin page
+ *   office   everything except the Admin page
+ *   tc       TC module + read-only voice
+ *   hygiene  hygiene intake/submissions/inbox only
+ *
+ * `null` means no role resolved — a disabled account, or the control plane was
+ * unreachable when /auth/me answered.
+ */
+export type TenantRole = "admin" | "office" | "tc" | "hygiene";
+
+const TENANT_ROLES: readonly string[] = ["admin", "office", "tc", "hygiene"];
+
 export interface AuthUser {
   name: string;
   email: string;
   tenantId: string;
   /** Resolved practice, or null if not mapped / control DB unreachable. */
   tenant: TenantInfo | null;
+  /** Tenant role, or null if none resolved. */
+  role: TenantRole | null;
+  /** Platform tier — acts as `admin` in every tenant. */
+  isSuperAdmin: boolean;
+  /**
+   * Action names this user holds (e.g. "voice.sync", "tc.hygiene"), from the
+   * server's permission map. UI HIDING ONLY — the backend 403 is the source of
+   * truth, and an empty list means "hide everything" rather than "allow".
+   *
+   * PR A ships the type; PR B is what consumes it in the nav.
+   */
+  permissions: string[];
 }
 
 /** Narrow an unknown `tenant` object into TenantInfo (or null). No `any`. */
@@ -60,9 +86,27 @@ export function parseAuthUser(value: unknown): AuthUser | null {
   if (typeof user !== "object" || user === null) return null;
   const u = user as Record<string, unknown>;
   if (typeof u.name === "string" && typeof u.email === "string" && typeof u.tenantId === "string") {
-    return { name: u.name, email: u.email, tenantId: u.tenantId, tenant: parseTenant(body.tenant) };
+    return {
+      name: u.name,
+      email: u.email,
+      tenantId: u.tenantId,
+      tenant: parseTenant(body.tenant),
+      // A backend that predates Roles PR A sends none of these three. Absent
+      // reads as "no role, no permissions" — the hiding direction, never the
+      // granting one.
+      role: parseRole(body.role),
+      isSuperAdmin: body.isSuperAdmin === true,
+      permissions: Array.isArray(body.permissions)
+        ? body.permissions.filter((p): p is string => typeof p === "string")
+        : [],
+    };
   }
   return null;
+}
+
+/** Narrow an unknown `role` into TenantRole (or null). No `any`. */
+export function parseRole(value: unknown): TenantRole | null {
+  return typeof value === "string" && TENANT_ROLES.includes(value) ? (value as TenantRole) : null;
 }
 
 /** Returns the signed-in user, or null if the session is missing/expired. */

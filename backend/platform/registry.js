@@ -56,7 +56,16 @@ const { loadSecrets } = require('../config/secrets');
  * @property {string} user_id
  * @property {string} tenant_id
  * @property {string} email
- * @property {string} role
+ * @property {string} role            'admin' | 'office' | 'tc' | 'hygiene' (legacy rows may say 'staff')
+ * @property {string} status          'active' | 'disabled'
+ * @property {Date|null} last_login_at
+ */
+
+/**
+ * @typedef {Object} PlatformAdmin
+ * @property {string} email           lowercased
+ * @property {string} status          'active' | 'disabled'
+ * @property {Date}   created_at
  */
 
 /** @type {import('pg').Pool | null} */
@@ -238,13 +247,311 @@ async function getTenantDbRef(tenantId) {
  */
 async function getUserByEmail(email) {
   const { rows } = await query(
-    `SELECT user_id, tenant_id, email, role
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
        FROM app_user
       WHERE lower(email) = lower($1)
       LIMIT 1`,
     [email]
   );
   return rows[0] || null;
+}
+
+// --- tenant user management (Roles PR B) ------------------------------------
+
+/**
+ * List a tenant's users, newest sign-in first then email.
+ *
+ * Tenant-scoped by construction: every caller passes req.tenant.id, and there
+ * is no unscoped variant to reach for by mistake.
+ * @param {string} tenantId
+ * @returns {Promise<AppUser[]>}
+ */
+async function listTenantUsers(tenantId) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1
+      ORDER BY email`,
+    [tenantId]
+  );
+  return rows;
+}
+
+/**
+ * Look up ONE user inside a tenant. The tenant scope is part of the lookup, not
+ * a check the caller performs afterwards — an admin of tenant A must not be
+ * able to name a row in tenant B and have it found.
+ * @param {string} tenantId
+ * @param {string} email
+ * @returns {Promise<AppUser|null>}
+ */
+async function getTenantUser(tenantId, email) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+      LIMIT 1`,
+    [tenantId, email]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Pre-provision a user. Creating the row grants NOTHING by itself — Entra still
+ * authenticates the person, and until they sign in the row simply waits.
+ *
+ * Returns null when the email already exists in this tenant, so the caller can
+ * answer 409 rather than silently overwriting a role somebody set deliberately.
+ * @param {string} tenantId
+ * @param {string} email
+ * @param {string} role
+ * @returns {Promise<AppUser|null>}
+ */
+async function createTenantUser(tenantId, email, role) {
+  const { rows } = await query(
+    `INSERT INTO app_user (tenant_id, email, role, status)
+          VALUES ($1, lower($2), $3, 'active')
+     ON CONFLICT (tenant_id, email) DO NOTHING
+       RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+    [tenantId, email, role]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * THE LAST-ADMIN RULE, enforced here rather than in a route.
+ *
+ * A tenant must always keep at least one ACTIVE user with role 'admin'.
+ * Demoting or deactivating the last one would leave nobody able to manage the
+ * tenant's users — recoverable only by a super_admin or a DBA, which is not a
+ * state a UI should be able to create by accident.
+ *
+ * The count check lives INSIDE the UPDATE's WHERE clause, so check-and-write
+ * are one atomic statement: two admins concurrently demoting each other cannot
+ * both succeed. (Same construction as the last-super-admin rule above.)
+ *
+ * `patch` may carry role, status, or both. Returns the updated row, or null if
+ * nothing changed — the caller then asks WHY via getTenantUser.
+ *
+ * @param {string} tenantId
+ * @param {string} email
+ * @param {{ role?: string, status?: string }} patch
+ * @returns {Promise<AppUser|null>}
+ */
+async function updateTenantUser(tenantId, email, patch) {
+  const sets = [];
+  const params = [tenantId, email];
+  if (typeof patch.role === 'string') {
+    params.push(patch.role);
+    sets.push(`role = $${params.length}`);
+  }
+  if (typeof patch.status === 'string') {
+    params.push(patch.status);
+    sets.push(`status = $${params.length}`);
+  }
+  if (sets.length === 0) throw new Error('[registry] updateTenantUser: nothing to update');
+
+  // Would this write remove the tenant's last active admin? Only if the row is
+  // itself an active admin AND the patch stops it being one. Expressed in SQL
+  // so the count is evaluated against the same snapshot as the write.
+  const losesAdmin =
+    (typeof patch.role === 'string' && patch.role !== 'admin') ||
+    (typeof patch.status === 'string' && patch.status !== 'active');
+
+  const guard = losesAdmin
+    ? `AND (
+         role <> 'admin' OR status <> 'active'
+         OR (SELECT count(*) FROM app_user
+              WHERE tenant_id = $1 AND role = 'admin' AND status = 'active') > 1
+       )`
+    : '';
+
+  const { rows } = await query(
+    `UPDATE app_user
+        SET ${sets.join(', ')}
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+        ${guard}
+      RETURNING user_id, tenant_id, email, role, status, last_login_at`,
+    params
+  );
+  return rows[0] || null;
+}
+
+/**
+ * How many ACTIVE admins does this tenant have? Used to explain a refusal, not
+ * to authorize one — the authorization is the guard inside updateTenantUser.
+ * @param {string} tenantId
+ * @returns {Promise<number>}
+ */
+async function countActiveTenantAdmins(tenantId) {
+  const { rows } = await query(
+    `SELECT count(*)::int AS n
+       FROM app_user
+      WHERE tenant_id = $1 AND role = 'admin' AND status = 'active'`,
+    [tenantId]
+  );
+  return rows[0] ? rows[0].n : 0;
+}
+
+/**
+ * A tenant's active users holding `role`, for in-app pickers.
+ *
+ * app_user has no display-name column (Entra owns names and we do not sync
+ * them), so callers that need a label derive one from the address. Returning
+ * the raw rows keeps that decision at the edge instead of guessing here.
+ * @param {string} tenantId
+ * @param {string} role
+ * @returns {Promise<AppUser[]>}
+ */
+async function listTenantUsersByRole(tenantId, role) {
+  const { rows } = await query(
+    `SELECT user_id, tenant_id, email, role, status, last_login_at
+       FROM app_user
+      WHERE tenant_id = $1 AND role = $2 AND status = 'active'
+      ORDER BY email`,
+    [tenantId, role]
+  );
+  return rows;
+}
+
+// --- platform tier (super_admin) --------------------------------------------
+
+/**
+ * Look up a platform admin by email (case-insensitive; the column is stored
+ * lowercased and CHECK-constrained to stay that way).
+ *
+ * Returns the row whatever its status — callers decide what 'disabled' means.
+ * The one caller that grants authority (tenantContext) requires status
+ * 'active' explicitly, so a disabled row can never read as a super_admin by
+ * omission.
+ * @param {string} email
+ * @returns {Promise<PlatformAdmin|null>}
+ */
+async function getPlatformAdminByEmail(email) {
+  const { rows } = await query(
+    `SELECT email, status, created_at
+       FROM platform_admin
+      WHERE email = lower($1)
+      LIMIT 1`,
+    [email]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * List every platform admin, ordered by email.
+ * @returns {Promise<PlatformAdmin[]>}
+ */
+async function listPlatformAdmins() {
+  const { rows } = await query(
+    `SELECT email, status, created_at
+       FROM platform_admin
+      ORDER BY email`
+  );
+  return rows;
+}
+
+/**
+ * Grant super_admin. Idempotent; re-granting a disabled admin re-activates it.
+ * @param {string} email
+ * @returns {Promise<PlatformAdmin>}
+ */
+async function addPlatformAdmin(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) throw new Error('[registry] addPlatformAdmin: email is required');
+  const { rows } = await query(
+    `INSERT INTO platform_admin (email, status)
+          VALUES ($1, 'active')
+     ON CONFLICT (email) DO UPDATE SET status = 'active'
+       RETURNING email, status, created_at`,
+    [normalized]
+  );
+  return rows[0];
+}
+
+/**
+ * THE LAST-SUPER-ADMIN RULE, enforced here rather than in a route.
+ *
+ * The last remaining ACTIVE super_admin can never be disabled or removed —
+ * doing so would lock every human out of the platform tier with no in-app way
+ * back. No mutation endpoint ships in PR A, but the rule lives at the
+ * data-access layer on purpose: PR C's platform console, a migration, and an
+ * ops one-liner all go through these functions, and none of them can forget a
+ * check they cannot reach around.
+ *
+ * Both statements are single UPDATE/DELETEs whose WHERE clause contains the
+ * count subquery, so the check and the write are atomic — two concurrent
+ * "remove the other one" calls cannot both succeed.
+ *
+ * @param {string} email
+ * @returns {Promise<boolean>} true if the row changed; false if it did not exist
+ * @throws {Error} if the write would leave zero active super_admins
+ */
+async function setPlatformAdminDisabled(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  const { rows } = await query(
+    `UPDATE platform_admin
+        SET status = 'disabled'
+      WHERE email = $1
+        AND status = 'active'
+        AND (SELECT count(*) FROM platform_admin WHERE status = 'active') > 1
+      RETURNING email`,
+    [normalized]
+  );
+  if (rows.length > 0) return true;
+  return assertNotLastActiveAdmin(normalized, 'disable');
+}
+
+/**
+ * Revoke super_admin entirely. Subject to the same last-admin rule.
+ * @param {string} email
+ * @returns {Promise<boolean>} true if a row was deleted; false if none existed
+ * @throws {Error} if the delete would leave zero active super_admins
+ */
+async function removePlatformAdmin(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  const { rows } = await query(
+    `DELETE FROM platform_admin
+      WHERE email = $1
+        AND (status <> 'active'
+             OR (SELECT count(*) FROM platform_admin WHERE status = 'active') > 1)
+      RETURNING email`,
+    [normalized]
+  );
+  if (rows.length > 0) return true;
+  return assertNotLastActiveAdmin(normalized, 'remove');
+}
+
+/**
+ * Shared no-op-vs-refusal disambiguation for the two guarded writes above.
+ * The write's WHERE clause already refused; this decides which of the two
+ * reasons it was, so the caller gets a truthful answer instead of a silent
+ * false. Never invent a third outcome: either the row was absent (false) or
+ * the last-admin rule fired (throw).
+ * @param {string} normalizedEmail
+ * @param {'disable'|'remove'} verb
+ * @returns {Promise<false>}
+ */
+async function assertNotLastActiveAdmin(normalizedEmail, verb) {
+  const existing = await getPlatformAdminByEmail(normalizedEmail);
+  if (!existing) return false;
+  if (existing.status !== 'active') return false; // already disabled — nothing to do
+  throw new Error(
+    `[registry] refusing to ${verb} ${normalizedEmail}: it is the last active super_admin. ` +
+      'Grant super_admin to another account first.'
+  );
+}
+
+/**
+ * Stamp app_user.last_login_at. Best-effort by contract: the caller treats a
+ * rejection as "not stamped this window" and serves the request anyway — a
+ * bookkeeping column must never be able to fail a sign-in.
+ * @param {string} userId
+ * @param {Date} [at]
+ * @returns {Promise<void>}
+ */
+async function touchUserLogin(userId, at = new Date()) {
+  await query(`UPDATE app_user SET last_login_at = $2 WHERE user_id = $1`, [userId, at]);
 }
 
 /**
@@ -366,5 +673,17 @@ module.exports = {
   getEnabledModules,
   getTenantDbRef,
   getUserByEmail,
+  listTenantUsers,
+  listTenantUsersByRole,
+  getTenantUser,
+  createTenantUser,
+  updateTenantUser,
+  countActiveTenantAdmins,
+  getPlatformAdminByEmail,
+  listPlatformAdmins,
+  addPlatformAdmin,
+  setPlatformAdminDisabled,
+  removePlatformAdmin,
+  touchUserLogin,
   close,
 };
