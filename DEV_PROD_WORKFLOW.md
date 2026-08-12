@@ -226,12 +226,56 @@ For Container Apps, prefer a **Log Analytics history query** over a live tail. A
 (`az containerapp logs show --follow`) only shows what arrives after you attach, so on an
 app that restarted or on a low-traffic staging environment you will sit and watch nothing
 while the evidence you need is already several minutes in the past. Query the workspace for
-a time window instead. The staging workspace is `log-carein-staging`; **the prod workspace
-name is not recorded anywhere in this repo — get it from the portal or
-`az monitor log-analytics workspace list -g rg-carein-prod`.**
+a time window instead.
 
-> Also new guidance. The reasoning is sound and generic to Container Apps, but the exact
-> queries have not been exercised against these workspaces.
+Workspaces: staging is `log-carein-staging`, prod is **`log-carein-prod`** (workspace GUID
+`7e97dcf4-17f9-42b7-84cd-6329f79ecfbf`, 30-day retention). Confirm with
+`az monitor log-analytics workspace list -g rg-carein-prod --query "[].{name:name,customerId:customerId}"`.
+
+#### ⚠️ Do NOT use `az monitor log-analytics query` — it silently drops your KQL
+
+On the CLI build in use here, `az monitor log-analytics query --analytics-query "<KQL>"`
+**ignores everything after the table name and returns an unfiltered dump.** No error, no
+warning — just plausible-looking rows that do not match what you asked for. Proven
+2026-08-12 while investigating a prod incident:
+
+| What was asked | What came back |
+| --- | --- |
+| `ContainerAppSystemLogs_CL \| summarize n=count()` | raw rows, every column |
+| `… \| where TimeGenerated > ago(48h)` | rows from a month earlier |
+| `… \| where ContainerAppName_s == 'ca-carein-prod-backend'` | every app in the environment |
+
+Its `--timespan` help even says it defaults to querying *all available* data. Between that
+and the arg-quoting layer mangling embedded quotes, parentheses and `!in(...)`, an
+investigation run this way reads unfiltered history and draws confident wrong conclusions.
+
+**Use the REST API instead.** The query travels in a JSON body file, so nothing is
+arg-parsed:
+
+```powershell
+$body = @{ query = "<KQL>"; timespan = "PT48H" } | ConvertTo-Json -Compress
+[IO.File]::WriteAllText("$env:TEMP\q.json", $body)
+az rest --method post `
+  --url "https://api.loganalytics.io/v1/workspaces/7e97dcf4-17f9-42b7-84cd-6329f79ecfbf/query" `
+  --resource "https://api.loganalytics.io" `
+  --headers "Content-Type=application/json" `
+  --body "@$env:TEMP\q.json" -o json
+```
+
+The response is `.tables[0]` with `columns[].name` and `rows[][]` — zip them into objects.
+Verified: the same `summarize n=count()` returns **816** (true 48h) via REST versus **5398**
+(a month, all apps) via the CLI.
+
+Two adjacent traps in the same workflow:
+
+- **Escaped regex breaks the JSON body.** `extract('Probe of (\\w+)',1,Log_s)` fails to
+  round-trip; filter client-side instead of using regex in KQL.
+- **Timestamp conversion double-shifts.** `[datetime]::Parse($s)` on a `…Z` string yields
+  a local `DateTime`, and converting it again lands an hour or five off. Either use
+  `[Globalization.DateTimeStyles]::RoundtripKind` before `ConvertTimeFromUtc`, or do it in
+  KQL with `datetime_utc_to_local(TimeGenerated,'America/Chicago')`. **Sanity-check one
+  known anchor before trusting a whole converted timeline** — e.g. a replica's
+  `createdTime` from `az containerapp replica list`.
 
 ### Deploys wipe the call store where there is no volume
 

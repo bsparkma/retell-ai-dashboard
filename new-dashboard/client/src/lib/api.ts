@@ -96,12 +96,32 @@ export function _resetUnauthorizedLatch(): void {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
-  constructor(message: string, status: number, code: string | null) {
+  /** Seconds the server asked us to wait, from `Retry-After` (429 only). */
+  readonly retryAfter: number | null;
+  constructor(
+    message: string,
+    status: number,
+    code: string | null,
+    retryAfter: number | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
+}
+
+/**
+ * Is this "the server is throttling us" rather than "the server is unreachable"?
+ *
+ * The difference matters to whoever is looking at the screen: throttled means wait a
+ * moment and it will come back on its own; offline means something is broken and their
+ * work may not be saving. The dashboard rendered both as "Backend is offline", which
+ * sent people to reload a backend that was answering perfectly well.
+ */
+export function isRateLimited(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.status === 429;
 }
 
 async function request<T>(
@@ -110,11 +130,22 @@ async function request<T>(
 ): Promise<T> {
   const res = await apiFetch(path, options);
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { message?: string; error?: string; code?: string };
+    const err = (await res.json().catch(() => ({}))) as {
+      message?: string; error?: string; code?: string; retryAfter?: number;
+    };
+    // Prefer the header (the HTTP contract) and fall back to the body. Optional-chained
+    // because not every Response-shaped thing carries headers — a bare `{ ok, json }`
+    // stub is a perfectly reasonable thing for a caller or a test to hand us, and a
+    // missing header must not turn an ordinary error into a TypeError.
+    const headerRetry = Number.parseInt(res.headers?.get?.("retry-after") ?? "", 10);
+    const retryAfter = Number.isFinite(headerRetry)
+      ? headerRetry
+      : typeof err.retryAfter === "number" ? err.retryAfter : null;
     throw new ApiError(
       err.message ?? err.error ?? res.statusText ?? `HTTP ${res.status}`,
       res.status,
       err.code ?? null,
+      retryAfter,
     );
   }
   return res.json() as Promise<T>;
@@ -1074,6 +1105,16 @@ export const api = {
     return list.map(normalizeLiveCall);
   },
 
+  /**
+   * Unprivileged liveness probe — also what the offline banner polls.
+   *
+   * Deliberately `/api/health`, NOT `/api/admin/health`:
+   *  - it needs no permission, so it answers "can I reach the backend?" for every user.
+   *    The admin endpoint is behind `admin.all`, so for a hygienist it returned 403 on
+   *    every poll and pinned the offline banner on permanently;
+   *  - it is exempt from rate limiting, so a throttled window cannot make a healthy
+   *    backend look dead — which is exactly what happened on 2026-08-12.
+   */
   async getHealth() {
     return request<{ status?: string; services?: unknown; realtime?: { active_calls?: number } }>("/health");
   },
