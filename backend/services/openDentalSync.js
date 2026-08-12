@@ -452,6 +452,18 @@ class OpenDentalSyncService {
         `Callback #: ${callbackNum}`,
       ].join('\n');
 
+      // The call page shows call.summary; the chart note showed only the compact block,
+      // so the note and the app disagreed about the same call. Append the full summary
+      // verbatim in BOTH content types.
+      //
+      // Skipped when Reason already IS the summary: with no call_reason, `reason` falls
+      // back to call.summary above, and printing the same paragraph twice reads like a
+      // formatting bug in the chart.
+      const summaryText = nonEmpty(call.summary) ? call.summary.trim() : '';
+      if (summaryText && summaryText !== String(reason).trim()) {
+        note += `\n\nSummary:\n${summaryText}`;
+      }
+
       // Transcript sends (item 4, contentType 'transcript') append the full transcript —
       // deliberately a large note. Legacy includeTranscript flag honored for compatibility.
       if ((options.contentType === 'transcript' || options.includeTranscript) && nonEmpty(call.transcript)) {
