@@ -265,30 +265,45 @@ None appeared.
 
 Two things strengthen this beyond a quiet-window fluke:
 
-- **It survived a real deploy.** A `staging-cd` run at 16:50Z rolled the app to image
-  `d3d3a51` (revision `--0000084`). The probes came through intact — CD calls
-  `az containerapp update --image`, which patches only the image and leaves the rest of the
-  template alone. **Probe config is not clobbered by CI/CD**, so this does not need
-  re-applying after every release.
-- The zero-failure run therefore spans **two revisions and one deploy**, not a single
+- **It survived three real deploys.** `staging-cd` runs at 16:50Z, 21:31Z and 21:43Z rolled
+  the app forward to `d3d3a51` and then `5898582` (through revision `--0000086`). The probes
+  came through every one intact — CD calls `az containerapp update --image`, which patches
+  only the image and leaves the rest of the template alone. **Probe config is not clobbered
+  by CI/CD**, so it does not need re-applying after a release, including after a
+  develop→main promotion.
+- The zero-failure run therefore spans **four revisions and three deploys**, not a single
   undisturbed container.
 
 Restarts over the same period: **0**.
 
 ### Production — `ca-carein-prod-backend`
 
-Baseline measured, change **not yet applied** — deliberately deferred to an off-hours
-window rather than applied mid-practice-day.
+Applied 2026-08-12 22:15Z / 17:15 Central (revision `--0000029`), after the practice day
+ended and with no CD run in flight.
 
-| | Before |
-| --- | --- |
-| Window | 7 days to 2026-08-12 |
-| `ProbeFailed` events | **716** |
-| Rate | ~4.3/hr average; 137–174/day recently (~5.7–7.3/hr) |
+| | Before | After |
+| --- | --- | --- |
+| Window | 7 days to 22:15Z | 22:20Z → 23:10Z |
+| `ProbeFailed` events | **716** | **0** |
+| Rate | ~4.3/hr avg; 137–174/day recently (~5.7–7.3/hr) | 0/hr |
+| Expected at old rate | — | ~5 |
 
-Prod carries ~360 requests/hour through the practice day and drops to ~15–20/hour before
-07:00 Central, which is the window to use. Update this section with the after-count once
-applied.
+Restarts over the same period: **0**. The rollover was a clean rolling swap — revision 28
+kept serving until 29 reported `Healthy`, and prod logged 234 lines in the first minute
+after, so it never stopped answering.
+
+**A quiet-hours zero is not an artifact of low traffic here.** Probe failures on prod were
+distributed around the clock, not concentrated in business hours:
+
+```
+hour-of-day (UTC), ProbeFailed over 7 days
+03Z 47   06Z 37   09Z 23   12Z 28   15Z 41   18Z 32   21Z 46
+04Z 39   07Z 22   10Z 21   13Z 26   16Z 29   19Z 38   22Z 42
+05Z 35   08Z 28   11Z 26   14Z 31   17Z 14   20Z 43   23Z 29
+```
+
+The overnight trough still ran 3–5/hr, and the 22Z hour specifically averaged ~6/hr. So
+the after-window is a fair comparison, not a quiet-period illusion.
 
 ---
 
