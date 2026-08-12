@@ -50,6 +50,94 @@ test('submit creates the case (hygiene_review) + intake in one transaction', asy
   }
 });
 
+/**
+ * FakeTenantDb refuses JOINs without an override — a harness that silently
+ * faked one would pass tests the real database fails. This is the queue join
+ * the three list routes share: it must project every column they select,
+ * including od_patient_id.
+ */
+function stubQueueJoin(db) {
+  db.onQuery(/FROM tc_hygiene_intakes i JOIN tc_cases c/i, (text, params) => {
+    const cases = new Map(db.table('tc_cases').map((c) => [c.case_id, c]));
+    let intakes = db.table('tc_hygiene_intakes').filter((i) => i.office_id === params[0]);
+    if (/i\.submitted_by = \$2/.test(text)) intakes = intakes.filter((i) => i.submitted_by === params[1]);
+    if (/c\.status = 'hygiene_review'/.test(text)) {
+      intakes = intakes.filter((i) => cases.get(i.case_id).status === 'hygiene_review');
+    }
+    return {
+      rows: intakes.map((i) => {
+        const c = cases.get(i.case_id);
+        return {
+          ...i,
+          patient_name: c.patient_name,
+          patient_age: c.patient_age,
+          phone: c.phone,
+          category: c.category,
+          urgency: c.urgency,
+          diagnosing_provider: c.diagnosing_provider,
+          od_patient_id: c.od_patient_id,
+          case_status: c.status,
+        };
+      }),
+    };
+  });
+}
+
+test('an attached Open Dental patient is stored WITH its office, and surfaces on the queues', async () => {
+  // A PatNum is meaningless without the database it came from — 7115 is the
+  // Riley test patient and a different, real person in Roland. The case's
+  // office_id IS that qualifier: od_patient_id and office_id are written in the
+  // same row, by the same insert, from the validated ?office=. The name is
+  // snapshotted alongside so the case still reads correctly when nobody can
+  // reach Open Dental.
+  const { baseUrl, db, close } = await bootTcApp();
+  try {
+    stubQueueJoin(db);
+    const res = await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=valley', {
+      ...INTAKE,
+      patientName: 'Stedi TestValley',
+      odPatientId: 7115,
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.case.odPatientId, 7115);
+    assert.equal(res.body.case.officeId, 'valley');
+
+    const [row] = db.table('tc_cases');
+    assert.equal(row.od_patient_id, 7115);
+    assert.equal(row.office_id, 'valley', 'the PatNum is only meaningful with its office');
+    assert.equal(row.patient_name, 'Stedi TestValley');
+
+    // The TC has to be able to SEE the link before claiming, or they will look
+    // the patient up a second time.
+    const inbox = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/inbox?office=valley');
+    assert.equal(inbox.status, 200, JSON.stringify(inbox.body));
+    assert.equal(inbox.body.inbox[0].od_patient_id, 7115);
+
+    const mine = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/mine?office=valley');
+    assert.equal(mine.body.intakes[0].od_patient_id, 7115);
+
+    const all = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley');
+    assert.equal(all.body.intakes[0].od_patient_id, 7115);
+  } finally {
+    await close();
+  }
+});
+
+test('an intake with NO Open Dental patient still submits — a new patient is not in OD yet', async () => {
+  const { baseUrl, db, close } = await bootTcApp();
+  try {
+    const res = await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=valley', {
+      ...INTAKE,
+      patientName: 'Walk In',
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.case.odPatientId, null);
+    assert.equal(db.table('tc_cases')[0].patient_name, 'Walk In');
+  } finally {
+    await close();
+  }
+});
+
 test('submit rejects missing diagnosingProvider and bad clinical enums', async () => {
   const { baseUrl, db, close } = await bootTcApp();
   try {
@@ -101,29 +189,7 @@ test('claim assigns the SSO identity, moves to pending_tc, and works only once',
 test('mine and inbox are office-scoped queue reads (joined to tc_cases)', async () => {
   const { baseUrl, db, close } = await bootTcApp();
   try {
-    db.onQuery(/FROM tc_hygiene_intakes i JOIN tc_cases c/i, (text, params) => {
-      const cases = new Map(db.table('tc_cases').map((c) => [c.case_id, c]));
-      let intakes = db.table('tc_hygiene_intakes').filter((i) => i.office_id === params[0]);
-      if (/i\.submitted_by = \$2/.test(text)) intakes = intakes.filter((i) => i.submitted_by === params[1]);
-      if (/c\.status = 'hygiene_review'/.test(text)) {
-        intakes = intakes.filter((i) => cases.get(i.case_id).status === 'hygiene_review');
-      }
-      return {
-        rows: intakes.map((i) => {
-          const c = cases.get(i.case_id);
-          return {
-            ...i,
-            patient_name: c.patient_name,
-            patient_age: c.patient_age,
-            phone: c.phone,
-            category: c.category,
-            urgency: c.urgency,
-            diagnosing_provider: c.diagnosing_provider,
-            case_status: c.status,
-          };
-        }),
-      };
-    });
+    stubQueueJoin(db);
 
     const first = await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=valley', INTAKE);
     await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=valley', {

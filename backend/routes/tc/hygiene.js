@@ -236,7 +236,7 @@ router.get(
     const rows = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `SELECT ${store.INTAKE_COLS.map((c) => `i.${c}`).join(', ')},
-                c.patient_name, c.status AS case_status
+                c.patient_name, c.status AS case_status, c.od_patient_id
            FROM tc_hygiene_intakes i
            JOIN tc_cases c ON c.case_id = i.case_id AND c.office_id = i.office_id
           WHERE i.office_id = $1 ${filter}
@@ -265,6 +265,10 @@ router.get(
         ...store.normalizeIntakeRow(r),
         patient_name: r.patient_name,
         case_status: r.case_status,
+        // The attached Open Dental patient, if any. Only meaningful together
+        // with office_id (already on the row) — PatNum numbering restarts in
+        // every OD database.
+        od_patient_id: r.od_patient_id ?? null,
       })),
       hygienists: names.rows.map((r) => r.hygienist_name),
     });
@@ -279,7 +283,7 @@ router.get(
     const rows = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `SELECT ${store.INTAKE_COLS.map((c) => `i.${c}`).join(', ')},
-                c.patient_name, c.status AS case_status
+                c.patient_name, c.status AS case_status, c.od_patient_id
            FROM tc_hygiene_intakes i
            JOIN tc_cases c ON c.case_id = i.case_id AND c.office_id = i.office_id
           WHERE i.office_id = $1 AND i.submitted_by = $2
@@ -296,6 +300,10 @@ router.get(
         ...store.normalizeIntakeRow(r),
         patient_name: r.patient_name,
         case_status: r.case_status,
+        // The attached Open Dental patient, if any. Only meaningful together
+        // with office_id (already on the row) — PatNum numbering restarts in
+        // every OD database.
+        od_patient_id: r.od_patient_id ?? null,
       })),
     });
   })
@@ -310,7 +318,7 @@ router.get(
       pool.query(
         `SELECT ${store.INTAKE_COLS.map((c) => `i.${c}`).join(', ')},
                 c.patient_name, c.patient_age, c.phone, c.category, c.urgency,
-                c.diagnosing_provider
+                c.diagnosing_provider, c.od_patient_id
            FROM tc_hygiene_intakes i
            JOIN tc_cases c ON c.case_id = i.case_id AND c.office_id = i.office_id
           WHERE i.office_id = $1 AND c.status = 'hygiene_review'
@@ -331,6 +339,9 @@ router.get(
         category: r.category,
         urgency: r.urgency,
         diagnosing_provider: r.diagnosing_provider,
+        // Lets the TC see the patient is already linked, instead of looking
+        // them up in Open Dental a second time before claiming.
+        od_patient_id: r.od_patient_id ?? null,
       })),
     });
   })

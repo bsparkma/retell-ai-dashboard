@@ -121,7 +121,9 @@ class FakeTenantDb {
         const [, col] = m;
         return (r) => r[col] != null;
       }
-      if ((m = term.match(/^(\w+) != '([^']*)'$/))) {
+      // Both spellings of "not equal": Postgres accepts <> and !=, and the
+      // routes use both. Supporting only one left a real query unrunnable here.
+      if ((m = term.match(/^(\w+) (?:!=|<>) '([^']*)'$/))) {
         const [, col, lit] = m;
         return (r) => r[col] !== lit;
       }
