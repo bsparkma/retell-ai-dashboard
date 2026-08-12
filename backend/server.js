@@ -248,6 +248,10 @@ async function bootstrap() {
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
   // 'admin' only — this is the one surface 'office' does not get.
   app.use('/api/admin', voiceModule, requirePermission('admin.all'), adminRouter);
+  // Tenant user management (Roles PR B). Deliberately NOT behind the voice
+  // module guard: managing who works here is a property of the practice, not
+  // of any product they bought. A TC-only tenant still needs a Users page.
+  app.use('/api/users', requirePermission('admin.all'), require('./routes/users'));
   // /dev/seed is tenant-exempt upstream, so it has no req.userRole to check and
   // must be permission-exempt for the same reason (it is ALLOW_MANGO_DEV_SEED-
   // gated and 403s in prod on its own).

@@ -14,6 +14,8 @@ const {
   isEntitledModule,
   CAREIN_FALLBACK,
   FALLBACK_ROLE,
+  FALLBACK_ENV_KEY,
+  bootstrapFallbackEnabled,
 } = require('./tenantContext');
 
 // --- test doubles ----------------------------------------------------------
@@ -454,4 +456,97 @@ test('roles: resolveUserContext returns tenant + role + isSuperAdmin together', 
   assert.equal(resolved.role, 'tc');
   assert.equal(resolved.isSuperAdmin, false);
   assert.equal(resolved.viaFallback, false);
+});
+
+// --- bootstrap fallback flag (Roles PR B) -----------------------------------
+
+/** Set/restore ROLES_BOOTSTRAP_FALLBACK around one assertion. */
+async function withFlag(value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, FALLBACK_ENV_KEY);
+  const previous = process.env[FALLBACK_ENV_KEY];
+  if (value === undefined) delete process.env[FALLBACK_ENV_KEY];
+  else process.env[FALLBACK_ENV_KEY] = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) process.env[FALLBACK_ENV_KEY] = previous;
+    else delete process.env[FALLBACK_ENV_KEY];
+  }
+}
+
+test('flag: unset means ON — the fallback still grants office', async () => {
+  await withFlag(undefined, async () => {
+    assert.equal(bootstrapFallbackEnabled(), true);
+    const { req } = await runWithUser({ email: 'unset@carein.ai', appUser: null });
+    assert.equal(req.userRole, FALLBACK_ROLE);
+  });
+});
+
+test('flag: off → an unseeded user resolves a TENANT but no role', async () => {
+  await withFlag('off', async () => {
+    assert.equal(bootstrapFallbackEnabled(), false);
+    const { req, next } = await runWithUser({ email: 'locked@carein.ai', appUser: null });
+
+    // next() is still called: the request proceeds with a tenant so the SPA can
+    // render the access-request screen. What they may DO is nothing.
+    assert.equal(next.calls.count, 1);
+    assert.equal(req.tenant.slug, 'carein');
+    assert.equal(req.userRole, null);
+  });
+});
+
+test('flag: off does NOT affect a user who HAS an app_user row', async () => {
+  await withFlag('off', async () => {
+    const { req } = await runWithUser({
+      email: 'seeded@carein.ai',
+      appUser: { user_id: 'U3', tenant_id: 'T1', email: 'seeded@carein.ai', role: 'hygiene', status: 'active' },
+    });
+    assert.equal(req.userRole, 'hygiene');
+  });
+});
+
+test('flag: off still grants super_admin — the lockdown must not lock Beau out', async () => {
+  await withFlag('off', async () => {
+    const { req } = await runWithUser({
+      email: 'platform@carein.ai',
+      appUser: null,
+      platformAdmin: { email: 'platform@carein.ai', status: 'active', created_at: new Date() },
+    });
+    assert.equal(req.userRole, null);
+    assert.equal(req.isSuperAdmin, true, 'a super_admin can always get back in to fix the roster');
+  });
+});
+
+test('flag: every off-ish spelling turns it off; anything else leaves it ON', async () => {
+  for (const off of ['off', 'OFF', ' off ', 'false', '0', 'no', 'disabled']) {
+    await withFlag(off, () => assert.equal(bootstrapFallbackEnabled(), false, `${off} should be off`));
+  }
+  // A typo must fail toward "team keeps working", never toward a surprise
+  // lockout. The lockdown is deliberate and should need a deliberate value.
+  for (const on of ['on', 'true', '1', 'yes', 'offf', 'Off!', '']) {
+    await withFlag(on, () => assert.equal(bootstrapFallbackEnabled(), true, `${on} should be on`));
+  }
+});
+
+test('flag: read PER REQUEST — flipping it takes effect with no restart', async () => {
+  await withFlag('on', async () => {
+    const first = await runWithUser({ email: 'flip@carein.ai', appUser: null });
+    assert.equal(first.req.userRole, FALLBACK_ROLE);
+  });
+  await withFlag('off', async () => {
+    const second = await runWithUser({ email: 'flip@carein.ai', appUser: null });
+    assert.equal(second.req.userRole, null, 'the same process must honor the new value');
+  });
+});
+
+test('flag: off suppresses the unseeded warning — there is nothing left to fix a role for', async () => {
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (msg) => warnings.push(String(msg));
+  try {
+    await withFlag('off', () => runWithUser({ email: 'quiet@carein.ai', appUser: null }));
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(warnings.filter((w) => w.includes('NO app_user ROW')).length, 0);
 });

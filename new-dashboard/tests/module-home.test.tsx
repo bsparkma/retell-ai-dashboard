@@ -45,6 +45,22 @@ vi.mock("@/lib/auth", async (importOriginal) => {
       email: "beau@carein.ai",
       tenantId: "tenant-1",
       tenant: { slug: "carein", displayName: "CareIN Dental", modules: authState.modules },
+      // Roles PR B: an admin, so the role-scoped nav/redirects behave as they
+      // did before roles existed and these routing assertions stay about
+      // ROUTING rather than about permissions.
+      role: "admin" as const,
+      isSuperAdmin: false,
+      permissions: [
+        "admin.all",
+        "tc.full",
+        "tc.hygiene",
+        "voice.chart_write",
+        "voice.read",
+        "voice.send_to_tc",
+        "voice.sync",
+        "voice.transcribe",
+        "voice.write",
+      ],
     })),
   };
 });
