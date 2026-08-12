@@ -32,6 +32,7 @@ import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import { callNeedsAttention, isAiDuplicateLeg, rowPrimaryAction } from "@/lib/worklist";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { usePolling } from "@/hooks/usePolling";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
@@ -142,17 +143,17 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   // an automatic pull lands — nobody presses Sync now just to find out the list is fresh.
   // A failed read leaves the previous caption rather than blanking it; the data is a
   // nicety, and an empty toolbar mid-shift reads like something broke.
-  useEffect(() => {
-    let cancelled = false;
-    const read = () => {
-      api.getSyncStatus()
-        .then((s) => { if (!cancelled) setSyncStatus(s); })
-        .catch(() => { /* keep the last known caption */ });
-    };
-    read();
-    const timer = setInterval(read, 60_000);
-    return () => { cancelled = true; clearInterval(timer); };
+  //
+  // usePolling, not setInterval: this ran in every background tab and was one of the
+  // pollers that exhausted the API rate limit on 2026-08-12. A caption nobody is looking
+  // at does not need refreshing.
+  const readSyncStatus = useCallback(() => {
+    api.getSyncStatus()
+      .then((s) => setSyncStatus(s))
+      .catch(() => { /* keep the last known caption */ });
   }, []);
+
+  usePolling(readSyncStatus, 60_000);
 
   // Cooldown countdown — one tick per second while the server would refuse another sync.
   useEffect(() => {

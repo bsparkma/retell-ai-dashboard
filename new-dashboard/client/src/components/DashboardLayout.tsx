@@ -3,7 +3,7 @@
  * Fixed deep-navy sidebar + top header bar + main content area
  * Sidebar: 240px fixed, navy background, teal active indicators
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
@@ -40,8 +40,10 @@ import {
   CreditCard,
   LibraryBig,
   Users,
+  Loader2,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, isRateLimited } from "@/lib/api";
+import { usePolling } from "@/hooks/usePolling";
 import { logout } from "@/lib/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
@@ -193,22 +195,41 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const isTcRoute = location === "/tc" || location.startsWith("/tc/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  // Starts true: we have no evidence of trouble yet, and opening every session with a
+  // red banner that clears a second later trains people to ignore it.
+  const [isConnected, setIsConnected] = useState(true);
+  /** Reachable but throttling us — a passing condition, not an outage. */
+  const [isBusy, setIsBusy] = useState(false);
   const userEmail = auth.status === "authenticated" ? auth.user.email : undefined;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const check = () => {
-      api.getAdminHealth()
-        .then(() => { if (!cancelled) setIsConnected(true); })
-        .catch(() => { if (!cancelled) setIsConnected(false); });
-    };
-
-    check();
-    const interval = setInterval(check, 30_000);
-    return () => { cancelled = true; clearInterval(interval); };
+  // Connectivity probe.
+  //
+  // Three things were wrong with the old version and all three showed the same false
+  // "Backend is offline" banner:
+  //   - it polled /api/admin/health, which is behind `admin.all`, so every non-admin got
+  //     a 403 every 30s and the banner never went away for them;
+  //   - it treated a 429 as "offline", so being throttled looked like an outage;
+  //   - it ran at 30s in every background tab, which is what exhausted the rate limit in
+  //     the first place.
+  // Now: an unprivileged, rate-limit-exempt endpoint, at a calmer cadence, only while
+  // the tab is visible, and throttling is reported as "busy" rather than "down".
+  const check = useCallback(() => {
+    api.getHealth()
+      .then(() => { setIsConnected(true); setIsBusy(false); })
+      .catch((err) => {
+        if (isRateLimited(err)) {
+          // Reachable and answering — just asking us to slow down. Never the offline
+          // banner: nothing is at risk and the next poll clears it.
+          setIsBusy(true);
+          setIsConnected(true);
+          return;
+        }
+        setIsBusy(false);
+        setIsConnected(false);
+      });
   }, []);
+
+  usePolling(check, 60_000);
 
   const handleNavClick = () => {
     setSidebarOpen(false);
@@ -489,12 +510,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
         </header>
 
-        {!isConnected && (
+        {!isConnected ? (
           <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
             <WifiOff size={13} />
             <span>Backend is offline — changes won't save until reconnected.</span>
           </div>
-        )}
+        ) : isBusy ? (
+          <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-sky-50 border-b border-sky-200 text-sky-800 text-xs">
+            <Loader2 size={13} className="animate-spin" />
+            <span>Busy — the dashboard is retrying. Nothing is lost.</span>
+          </div>
+        ) : null}
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto">
