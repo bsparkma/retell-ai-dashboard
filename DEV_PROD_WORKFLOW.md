@@ -228,9 +228,13 @@ app that restarted or on a low-traffic staging environment you will sit and watc
 while the evidence you need is already several minutes in the past. Query the workspace for
 a time window instead.
 
-Workspaces: staging is `log-carein-staging`, prod is **`log-carein-prod`** (workspace GUID
-`7e97dcf4-17f9-42b7-84cd-6329f79ecfbf`, 30-day retention). Confirm with
+Workspaces: staging is `log-carein-staging` (GUID `8474c8cc-8a77-4da3-aac2-4e06636e07ee`),
+prod is **`log-carein-prod`** (GUID `7e97dcf4-17f9-42b7-84cd-6329f79ecfbf`, 30-day
+retention). Confirm with
 `az monitor log-analytics workspace list -g rg-carein-prod --query "[].{name:name,customerId:customerId}"`.
+
+Only three tables carry data: `ContainerAppConsoleLogs_CL` (stdout/stderr),
+`ContainerAppSystemLogs_CL` (platform events — probes, restarts, revisions), and `Usage`.
 
 #### ⚠️ Do NOT use `az monitor log-analytics query` — it silently drops your KQL
 
@@ -276,6 +280,18 @@ Two adjacent traps in the same workflow:
   KQL with `datetime_utc_to_local(TimeGenerated,'America/Chicago')`. **Sanity-check one
   known anchor before trusting a whole converted timeline** — e.g. a replica's
   `createdTime` from `az containerapp replica list`.
+
+A refinement on the regex trap, from exercising this against both workspaces on
+2026-08-12: the blocker is the **backslash**, not KQL string matching in general. A
+single-quoted KQL literal containing a double quote round-trips through the JSON body
+intact — `where Log_s contains 'HTTP/1.1" 429 '` survives verbatim, and is what
+`alert-prod-429-storm` runs on. So prefer `contains` / `has_any` over `matches regex`
+rather than pulling the filter client-side; you only lose the filter when you need an
+escape sequence.
+
+The probe settings, the alert inventory with its thresholds, and a bash flavour of the
+same `az rest` recipe are in
+[docs/PROBES_AND_ALERTS.md](docs/PROBES_AND_ALERTS.md).
 
 ### Deploys wipe the call store where there is no volume
 
