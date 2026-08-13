@@ -16,6 +16,113 @@ const openDentalService = require('../config/openDental');
 const onDemandLedger = require('../services/onDemandTranscriptionLedger');
 const mangoConfig = require('../config/mango');
 const { getConnectedClientCount } = require('../socket/socketHandler');
+const unifiedCallStore = require('../services/unifiedCallStore');
+const retentionConfig = require('../config/retention');
+const retentionScheduler = require('../services/retentionScheduler');
+const legacyPurge = require('../services/legacyPurge');
+const audit = require('../platform/audit');
+const { requireSuperAdmin } = require('../config/permissions');
+
+/**
+ * Call-store retention (2026-08-13).
+ *
+ * These routes sit behind requireSuperAdmin() ON TOP OF the tenant 'admin.all'
+ * gate the /api/admin mount already applies. Everything else under /api/admin
+ * reconfigures or restarts something; two of these DESTROY RECORDS, which is a
+ * platform-tier decision rather than an office-manager one. This is the first
+ * place requireSuperAdmin() is actually mounted — it was built and tested in
+ * Roles PR A ahead of a caller.
+ */
+const platformOnly = requireSuperAdmin();
+
+/**
+ * GET /api/admin/call-store/retention
+ *
+ * What the policy is and what it has done so far. Read-only, so it stays on the
+ * ordinary admin gate — an office manager should be able to see why a call from
+ * two months ago has no transcript without needing platform access.
+ */
+router.get('/call-store/retention', (req, res) => {
+  const stats = unifiedCallStore.getStats();
+  res.json({
+    success: true,
+    enabled: retentionConfig.isEnabled(),
+    retentionDays: retentionConfig.retentionDays(),
+    schedule: retentionConfig.schedule(),
+    timezone: retentionConfig.timezone(),
+    scheduler: retentionScheduler.getStatus(),
+    store: {
+      totalCalls: stats.totalCalls,
+      liveCalls: stats.liveCalls,
+      prunedCalls: stats.prunedCalls,
+    },
+  });
+});
+
+/**
+ * POST /api/admin/call-store/prune
+ *
+ * Run the nightly prune now. Idempotent — triggering it after the scheduled run
+ * simply finds nothing to do — but it is still the destructive job, so it is
+ * platform-tier.
+ */
+router.post('/call-store/prune', platformOnly, async (req, res) => {
+  try {
+    const result = await retentionScheduler.runNow();
+    await audit.audit(req, {
+      action: 'DELETE',
+      resourceType: 'call_store',
+      resourceId: null,
+      result: 'SUCCESS',
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[retention] manual prune failed:', error.message);
+    res.status(500).json({ success: false, error: error.message, code: 'PRUNE_FAILED' });
+  }
+});
+
+/**
+ * POST /api/admin/call-store/purge-legacy
+ *
+ * The one-shot legacy purge. DRY RUN BY DEFAULT: an empty body reports the count
+ * and deletes nothing. A live run needs BOTH `dryRun: false` and
+ * `confirm: 'DELETE'`, and the service refuses to start without a backup on disk.
+ *
+ * The response carries counts, ids, and dates — never a caller name or number —
+ * because the whole point of the dry run is that its output gets pasted into a
+ * PR and read by someone before the live run happens.
+ */
+router.post('/call-store/purge-legacy', platformOnly, async (req, res) => {
+  const dryRun = req.body?.dryRun !== false;
+  try {
+    const result = await legacyPurge.runLegacyPurge(unifiedCallStore, {
+      dryRun,
+      confirm: req.body?.confirm ?? null,
+    });
+
+    // A dry run READS the store; only the live run destroys. Recording them
+    // under the same verb would make the audit trail unable to answer "when was
+    // it actually run?" — which is the one question it exists for here.
+    await audit.audit(req, {
+      action: dryRun ? 'READ' : 'DELETE',
+      resourceType: 'call_store',
+      resourceId: null,
+      result: 'SUCCESS',
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.code === 'PURGE_NOT_CONFIRMED') {
+      return res.status(400).json({ success: false, error: error.message, code: error.code });
+    }
+    if (error.code === 'BACKUP_FAILED') {
+      return res.status(500).json({ success: false, error: error.message, code: error.code });
+    }
+    console.error('[retention] legacy purge failed:', error.message);
+    res.status(500).json({ success: false, error: error.message, code: 'PURGE_FAILED' });
+  }
+});
 
 /**
  * GET /api/admin/health

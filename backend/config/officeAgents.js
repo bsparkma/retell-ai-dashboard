@@ -135,6 +135,16 @@ const getAgentId = (call) => {
  * @returns {string} officeId
  */
 const getOfficeForCall = (call) => {
+  // A pruned record carries the office FROZEN at prune time. Re-deriving is not an
+  // option: a stub has neither called_number nor handler_id, so every Mango stub
+  // would fall to 'unknown' and every Retell stub to the Roland fallback — silently
+  // reattributing pruned calls in the office-filtered views. Compared as a literal
+  // rather than through services/callRetention.isStub because that module imports
+  // THIS one, and a require cycle would be worse than one duplicated constant.
+  if (call && call.record_kind === 'stub') {
+    return call.office || UNMAPPED_OFFICE;
+  }
+
   // Mango staff calls have no Retell agent id — attribute by the called line.
   if (call && call.source === 'mango') {
     const line = normalizeE164(call.called_number);
