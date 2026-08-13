@@ -204,6 +204,38 @@ export type TriageOutcome =
   | "called_back" | "scheduled" | "left_voicemail" | "no_answer" | "no_action_needed";
 export type NotAPatientReason = "spam" | "solicitor" | "vendor" | "lab" | "wrong_number" | "other";
 
+// --- Call dispositions + internal notes -------------------------------------
+
+/**
+ * WHAT KIND of call this was, for the calls that need neither a chart note nor a
+ * TC case — a lab confirming a case, a supply vendor, a pharmacy. Closed union on
+ * purpose: the backend validates against the same seven values
+ * (backend/utils/callDispositions.js), so a value added there has to be added
+ * here too, and that is a compile error rather than a chip that never renders.
+ *
+ * Distinct from NotAPatientReason despite the overlap: that one answers "is the
+ * caller a patient?" and gates the review queue.
+ */
+export type CallDisposition =
+  | "lab" | "vendor" | "pharmacy" | "insurance" | "personal" | "spam" | "other";
+
+/** One internal note on a call. Append-only — there is no edit route. */
+export interface CallNote {
+  id: string;
+  text: string;
+  /** From the SSO session at write time; null only on a dev box with no session. */
+  author: CallActor | null;
+  createdAt: string;
+}
+
+/** The wire shape of a note (the store speaks snake_case). */
+export interface BackendCallNote {
+  id: string;
+  text: string;
+  author?: CallActor | null;
+  created_at?: string;
+}
+
 /**
  * Worklist behaviour for Mango staff calls (PRD D1, backend-owned via MANGO_WORKLIST_MODE).
  * 'all' = every Mango call demands attention like a Retell call; 'flagged' = only
@@ -397,6 +429,12 @@ export interface BackendUnifiedCall {
   not_a_patient_reason?: NotAPatientReason | null;
   resolved_by?: CallActor | null;
   resolved_at?: string | null;
+  // Call disposition + internal notes. A disposition finishes a call without
+  // touching Open Dental or TC; notes are append-only free text.
+  disposition?: CallDisposition | null;
+  disposition_by?: CallActor | null;
+  disposition_at?: string | null;
+  notes?: BackendCallNote[] | null;
   // Slice B.1 — who sent the chart note + when
   sent_by?: CallActor | null;
   sent_at?: string | null;
@@ -699,6 +737,24 @@ function extractNameFromText(transcript?: string, summary?: string): string | nu
   return null;
 }
 
+/**
+ * Notes, newest FIRST — the order they are read in. The store keeps them in the
+ * order they were written (append-only), so the display order is this mapper's
+ * job rather than every consumer's.
+ */
+export function normalizeCallNotes(notes: BackendCallNote[] | null | undefined): CallNote[] {
+  if (!Array.isArray(notes)) return [];
+  return notes
+    .filter((n): n is BackendCallNote => Boolean(n && typeof n.id === "string" && typeof n.text === "string"))
+    .map((n) => ({
+      id: n.id,
+      text: n.text,
+      author: n.author ?? null,
+      createdAt: n.created_at ?? "",
+    }))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
 export function normalizeUnifiedCall(c: BackendUnifiedCall) {
   const date = c.call_date ?? (c as unknown as { start_timestamp?: string }).start_timestamp ?? new Date().toISOString();
   const duration = c.duration_seconds ?? (c.duration as number) ?? 0;
@@ -756,6 +812,13 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     resolvedAt: c.resolved_at ?? null,
     sentBy: (c.sent_by ?? null) as CallActor | null,
     sentAt: c.sent_at ?? null,
+
+    // Call disposition + notes. `disposition` non-null = somebody decided what this
+    // call was and finished it, with no OD or TC write involved.
+    disposition: (c.disposition ?? null) as CallDisposition | null,
+    dispositionBy: (c.disposition_by ?? null) as CallActor | null,
+    dispositionAt: c.disposition_at ?? null,
+    notes: normalizeCallNotes(c.notes),
 
     // Slice M4 — on-demand transcription. transcribeLastOutcome === 'no_speech' means the
     // last attempt billed Azure Speech and found nothing, so the button must confirm
@@ -873,6 +936,39 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     });
+  },
+
+  /**
+   * Set (or clear, with `null`) a call's disposition. Author + timestamp come from
+   * the session server-side — there is nothing to send but the value.
+   *
+   * Writes NOTHING to Open Dental or TC. Returns the updated raw call record.
+   */
+  async setCallDisposition(id: string, disposition: CallDisposition | null): Promise<BackendUnifiedCall> {
+    return request<BackendUnifiedCall>(`/unified-calls/${encodeURIComponent(id)}/disposition`, {
+      method: "PUT",
+      body: JSON.stringify({ disposition }),
+    });
+  },
+
+  /** Append one internal note to a call. The author is the session user. */
+  async addCallNote(id: string, text: string): Promise<{ note: BackendCallNote; call: BackendUnifiedCall }> {
+    return request<{ success: boolean; note: BackendCallNote; call: BackendUnifiedCall }>(
+      `/unified-calls/${encodeURIComponent(id)}/notes`,
+      { method: "POST", body: JSON.stringify({ text }) },
+    );
+  },
+
+  /**
+   * Delete one note. The server allows this for the note's author or an admin and
+   * 403s otherwise — the UI hides the button in the same cases, but the refusal is
+   * the source of truth.
+   */
+  async deleteCallNote(id: string, noteId: string): Promise<{ call: BackendUnifiedCall }> {
+    return request<{ success: boolean; call: BackendUnifiedCall }>(
+      `/unified-calls/${encodeURIComponent(id)}/notes/${encodeURIComponent(noteId)}`,
+      { method: "DELETE" },
+    );
   },
 
   /**

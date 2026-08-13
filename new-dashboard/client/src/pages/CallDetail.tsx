@@ -9,12 +9,18 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
-  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck, Loader2, Sparkles, VolumeX
+  User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck, Loader2, Sparkles, VolumeX,
+  StickyNote
 } from "lucide-react";
 import {
   api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
-  type CallActor, type OdSyncStatus, type TranscribeResult,
+  type CallActor, type OdSyncStatus, type TranscribeResult, type CallDisposition,
+  normalizeUnifiedCall, normalizeCallNotes,
 } from "@/lib/api";
+import { DispositionPicker, DispositionBadge } from "@/components/calls/DispositionControl";
+import { CallNotesPanel } from "@/components/calls/CallNotesPanel";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
@@ -328,6 +334,7 @@ function PatientFoundView({ patient, source }: { patient: OdPatient; source: Pat
 
 export default function CallDetail() {
   const { id } = useParams<{ id: string }>();
+  const auth = useAuth();
   const [call, setCall] = useState<UnifiedCall | null | "loading">("loading");
   const [error, setError] = useState<string | null>(null);
 
@@ -405,6 +412,48 @@ export default function CallDetail() {
   const handleNotPatient = useCallback((reason: NotAPatientReason) => {
     setCall((prev) => (prev && prev !== "loading" ? { ...prev, notAPatient: true, notAPatientReason: reason } : prev));
   }, []);
+
+  // --- disposition + notes ---------------------------------------------------
+  // Neither writes to Open Dental or TC. Both take the SERVER's record rather than
+  // patching what we assume changed: the server owns the attribution, the note ids
+  // and the timestamps, so echoing its response is what keeps a reload agreeing
+  // with the page. Each rethrows so the control can stop spinning on failure.
+  const handleDisposition = useCallback(async (disposition: CallDisposition | null) => {
+    if (!id) return;
+    try {
+      const updated = await api.setCallDisposition(id, disposition);
+      setCall((prev) => (prev && prev !== "loading" ? { ...prev, ...normalizeUnifiedCall(updated) } : prev));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save the disposition", { duration: 8000 });
+      throw err;
+    }
+  }, [id]);
+
+  const handleAddNote = useCallback(async (text: string) => {
+    if (!id) return;
+    try {
+      const { call: updated } = await api.addCallNote(id, text);
+      setCall((prev) => (prev && prev !== "loading"
+        ? { ...prev, notes: normalizeCallNotes(updated.notes) }
+        : prev));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add the note", { duration: 8000 });
+      throw err;
+    }
+  }, [id]);
+
+  const handleDeleteNote = useCallback(async (noteId: string) => {
+    if (!id) return;
+    try {
+      const { call: updated } = await api.deleteCallNote(id, noteId);
+      setCall((prev) => (prev && prev !== "loading"
+        ? { ...prev, notes: normalizeCallNotes(updated.notes) }
+        : prev));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete the note", { duration: 8000 });
+      throw err;
+    }
+  }, [id]);
 
   // (M4) On-demand transcription. Auto-transcription is off, so a staff call shows only
   // metadata until someone decides it matters. The page reflects the transcript ONLY after
@@ -527,6 +576,10 @@ export default function CallDetail() {
   }
 
   const displayCall = call;
+  // Defensive default for the same reason the worklist row has one: a hand-built
+  // fixture (tests) may not carry `notes`, and a page that throws is worse than a
+  // page showing none. Server records always carry an array.
+  const callNotes = displayCall.notes ?? [];
 
   const transcript = buildTranscript(displayCall);
   const analysis = {
@@ -858,6 +911,54 @@ export default function CallDetail() {
             call={displayCall}
             onSentToTc={handleSentToTc}
           />
+
+          {/* Notes — internal, append-only, never sent anywhere. The same panel the
+              worklist row shows in a popover, so there is one thing to learn. */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <StickyNote size={14} className="text-primary" /> Notes
+                  {callNotes.length > 0 && (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {callNotes.length}
+                    </span>
+                  )}
+                </CardTitle>
+                {/* The disposition lives beside the notes on purpose: they are the two
+                    things a call needs when it needs neither a chart note nor a TC case. */}
+                <DispositionPicker
+                  current={displayCall.disposition}
+                  onPick={handleDisposition}
+                  variant="button"
+                />
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {displayCall.disposition && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <DispositionBadge disposition={displayCall.disposition} />
+                  {displayCall.dispositionBy && (
+                    <span>
+                      {displayCall.dispositionBy.name || displayCall.dispositionBy.email}
+                      {displayCall.dispositionAt ? ` · ${formatTimeAgo(displayCall.dispositionAt)}` : ""}
+                    </span>
+                  )}
+                </div>
+              )}
+              <CallNotesPanel
+                notes={callNotes}
+                onAdd={handleAddNote}
+                onDelete={handleDeleteNote}
+                actorEmail={auth.status === "authenticated" ? auth.user.email : null}
+                actorIsAdmin={
+                  auth.status === "authenticated"
+                  && (auth.user.isSuperAdmin || can(auth.user.permissions, "admin.all"))
+                }
+                maxListHeight="20rem"
+              />
+            </CardContent>
+          </Card>
 
           {/* Call metadata */}
           <Card>
