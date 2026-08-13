@@ -260,6 +260,37 @@ live-call tools but not this path — it's webhook-driven.)
 **DB-mode untouched:** `insertCommLogToDatabase` and `formatCommLogEntry`'s integer shape are
 unchanged, so direct-DB tenants behave exactly as before; only the api-mode path is new.
 
+### 10.1 The commlog-type catalogue (`GET /definitions?Category=27`)
+
+The office default above is no longer the only type a send can write — the user may pick
+from the office's own list (`backend/services/commlogTypes.js`). The category is **not a
+guess**: the commlogs doc says *"CommType: Optional. definition.DefNum where
+definition.Category=27"*, and every returned row carries `Category: 27,
+category: "CommLogTypes"`.
+
+**`GET /definitions` real contract** (https://www.opendental.com/site/apidefinitions.html):
+
+- **Params:** `Category` (**integer** DefCat), `category` (string DefCat name, v26.2.1+),
+  `includeHidden` (`"true"`/`"false"`, **default `false`**).
+- **Doc'd fields:** `DefNum, Category, category, ItemOrder, ItemName, ItemValue, IsHidden, Supp`.
+
+⚠️ **Two live deltas from the doc**, probed against both practices 2026-08-13:
+
+- The hidden flag comes back as lowercase **`isHidden`** carrying the **string `"false"`**,
+  not the doc's `IsHidden` boolean. Code written from the doc reads `undefined` and lets
+  everything through; code written for a boolean reads `"false"` — truthy — and drops
+  everything. `isHiddenRow()` handles both spellings and both types.
+- **No `ItemOrder` on this resource**, so there is no OD-given display order; the picker
+  sorts by name.
+
+Live result, and the reason validation is per office rather than against any global list:
+
+| DefNum | Roland | Riley/valley |
+| --- | --- | --- |
+| 486 | `CareIN AI Call` | *absent* |
+| 451 | *absent* | `CareIN AI Call` |
+| 401 | `ODHQ` | `Crown by Moolah` |
+
 ---
 
 ## Summary of contract-driven fixes (feeds the PRD / STEP 1)

@@ -63,6 +63,70 @@ test("CommType comes from the OFFICE, so one practice's DefNum never reaches ano
   assert.notEqual(valley.CommType, 486);
 });
 
+// ── The chart-note type picker (commTypeDefNum) ──────────────────────────────
+// A user may pick a type from the office's own commlog-type list at the send
+// step. The value reaching buildCommLogApiPayload has ALREADY been checked
+// against that office's list (commlogTypes.assertAllowed); these assert only
+// that the picked value is what lands, and — the important half — that omitting
+// it changes nothing.
+
+test('a picked commlog type is what gets written', () => {
+  const entry = { CommDateTime: '2026-06-04 15:30:00', Mode_: 3, SentOrReceived: 1, Note: 'x' };
+
+  // 227 = "Recall" in Roland's own definitions.
+  const payload = sync.buildCommLogApiPayload(1001, entry, fakeOd({ commTypeDefNum: 486 }), 227);
+  assert.equal(payload.CommType, 227);
+});
+
+test('omitting a type is byte-for-byte the pre-picker payload', () => {
+  const entry = { CommDateTime: '2026-06-04T15:30:00.000Z', Mode_: 3, SentOrReceived: 1, Note: 'x', CommType: 2 };
+  const od = fakeOd({ commTypeDefNum: 486 });
+
+  // The three ways a caller can decline to pick, against the shape that shipped
+  // before the option existed (a 3-argument call).
+  const baseline = sync.buildCommLogApiPayload(1001, entry, od);
+  assert.deepEqual(sync.buildCommLogApiPayload(1001, entry, od, null), baseline);
+  assert.deepEqual(sync.buildCommLogApiPayload(1001, entry, od, undefined), baseline);
+  assert.equal(baseline.CommType, 486);
+});
+
+test('a non-integer choice can never reach the payload as a CommType', () => {
+  const entry = { CommDateTime: '2026-06-04 15:30:00', Mode_: 3, SentOrReceived: 1, Note: 'x' };
+  const od = fakeOd({ commTypeDefNum: 486 });
+
+  // Belt and braces behind assertAllowed: even handed junk directly, the write
+  // falls back to the office default rather than posting NaN into a chart.
+  for (const junk of ['227', 1.5, NaN, {}, 'abc']) {
+    assert.equal(sync.buildCommLogApiPayload(1001, entry, od, junk).CommType, 486);
+  }
+});
+
+test('createCommLog applies a picked type on the DB path too', async () => {
+  const inserted = [];
+  const client = {
+    useDatabase: true,
+    pool: {
+      execute: async (q, values) => {
+        if (String(q).startsWith('SHOW COLUMNS')) {
+          return [[{ Field: 'PatNum' }, { Field: 'CommDateTime' }, { Field: 'Note' }, { Field: 'CommType' }]];
+        }
+        inserted.push({ q, values });
+        return [{ insertId: 42 }];
+      },
+    },
+  };
+  const od = fakeOd({ client, commTypeDefNum: 486 });
+  const entry = { CommDateTime: '2026-06-04 15:30:00', Note: 'x', CommType: 2 };
+
+  await sync.createCommLog(1001, entry, od, { commTypeDefNum: 227 });
+  assert.equal(inserted[0].values.at(-1), 227);
+
+  // …and leaves the legacy DB shape exactly as it was when nothing is picked.
+  inserted.length = 0;
+  await sync.createCommLog(1001, entry, od);
+  assert.equal(inserted[0].values.at(-1), 2);
+});
+
 test('createCommLog POSTs /commlogs with the API payload when in api mode', async () => {
   const calls = [];
   const client = {

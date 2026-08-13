@@ -16,6 +16,9 @@ const syncScheduler = require('../services/syncScheduler');
 const manualSyncThrottle = require('../services/manualSyncThrottle');
 const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
+// Aliased: `commlogTypes` is the response FIELD name in the preview handler, and
+// shadowing the module inside it would be a trap for the next reader.
+const commlogTypeCatalogue = require('../services/commlogTypes');
 const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
 const { requirePermission, roleHasPermission, isMachineCaller } = require('../config/permissions');
@@ -616,6 +619,15 @@ router.get('/:id/patient-search', async (req, res) => {
  * send path uses (openDentalSync.syncCallToCommLog → formatCommLogEntry, no
  * transcript). The note is call-derived PHI → audited READ. Registered before
  * /:id so "commlog-preview" isn't captured as an id (distinct path depth anyway).
+ *
+ * Also carries the chart-note TYPES this call's office offers, so the confirm
+ * dialog can show a picker instead of always writing the one office default. It
+ * rides this response rather than getting its own endpoint because the office is
+ * already derived server-side HERE, from the call — a separate
+ * /commlog-types?office_id=… would have re-introduced the client-named office
+ * this whole slice exists to avoid. `commlogTypes.available: false` (OD
+ * unreachable, office not connected, direct-DB tenant) is a normal state, not an
+ * error: the dialog falls back to the default alone and Send stays usable.
  */
 router.get('/:id/commlog-preview', async (req, res) => {
   try {
@@ -628,6 +640,9 @@ router.get('/:id/commlog-preview', async (req, res) => {
     const contentType = req.query.content_type === 'transcript' ? 'transcript' : 'summary';
     const entry = openDentalSync.formatCommLogEntry(call, { contentType });
     const officeKey = getOfficeForCall(call);
+    // Config, not PHI, and never a reason to fail the preview — listForOfficeKey
+    // reports an unavailable catalogue rather than throwing.
+    const commlogTypes = await commlogTypeCatalogue.listForOfficeKey(officeKey);
     await audit.audit(req, {
       action: 'READ', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
     });
@@ -638,6 +653,10 @@ router.get('/:id/commlog-preview', async (req, res) => {
       // Which chart this note is about to land in — shown in the confirm dialog so
       // the operator sees the practice, not just the patient, before sending.
       office: odOffices.describeOffice(officeKey),
+      // The chart-note types THIS office offers, plus its default. The list is
+      // this practice's own Open Dental definitions — DefNums are not portable
+      // between practices, so it is only ever meaningful next to the office above.
+      commlogTypes,
     });
   } catch (error) {
     console.error('Error building commlog preview:', error);
@@ -1207,6 +1226,46 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       });
     }
 
+    // ---- The chart-note TYPE, checked against THIS office's own list ---------
+    //
+    // Optional. Absent, the write uses the office's configured default and
+    // behaves exactly as it did before the picker existed.
+    //
+    // Checked HERE, before linkCallToPatient, so a refused type leaves the call
+    // untouched rather than linked-but-unsent. syncCallToCommLog re-asserts it
+    // anyway (a service-level guard no future caller can skip) — this is the
+    // early refusal, not the only one.
+    //
+    // A DefNum is only meaningful inside one practice's database: 486 is
+    // "CareIN AI Call" in Roland and nothing at all in Riley, while 401 is a
+    // valid type in BOTH and names something different in each. So the check is
+    // membership in the CALL's office's list — the office resolved above from
+    // the call, never from the body.
+    let commTypeDefNum;
+    if (body.commTypeDefNum !== undefined && body.commTypeDefNum !== null) {
+      try {
+        const odHandle = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+        commTypeDefNum = await commlogTypeCatalogue.assertAllowed(odHandle, body.commTypeDefNum);
+      } catch (err) {
+        // A rejected type is a chart write that was asked for and refused —
+        // recorded like the office refusals above, so the trail shows the attempt.
+        await audit.audit(req, {
+          action: 'CREATE',
+          resourceType: 'commlog',
+          resourceId: id,
+          office: officeKey,
+          result: err.code === 'COMMLOG_TYPE_UNVERIFIABLE' ? 'ERROR' : 'UNAUTHORIZED',
+        });
+        const typeStatus = commlogTypeCatalogue.httpStatusFor(err);
+        return res.status(typeStatus === 500 ? odOffices.httpStatusFor(err) : typeStatus).json({
+          success: false,
+          error: err.publicMessage || 'That chart note type is not valid for this office',
+          code: err.code,
+          office: odOffices.describeOffice(officeKey),
+        });
+      }
+    }
+
     // Link the call to the patient (validates the patient exists in OD). We pass
     // syncNow:false so we can drive the idempotent, NON-forced commlog write
     // ourselves — linkCallToPatient's own syncNow path forces the write and would
@@ -1244,9 +1303,15 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
     const syncResult = await openDentalSync.syncCallToCommLog(id, {
       noteOverride: sentNote,
       expectOfficeKey: officeKey,
+      ...(commTypeDefNum === undefined ? {} : { commTypeDefNum }),
     });
     if (!syncResult.success) {
-      return res.status(syncResult.officeBlocked ? odOffices.httpStatusFor({ code: syncResult.code }) : 422).json({
+      const failStatus = syncResult.officeBlocked
+        ? odOffices.httpStatusFor({ code: syncResult.code })
+        : syncResult.commlogTypeBlocked
+          ? commlogTypeCatalogue.httpStatusFor({ code: syncResult.code })
+          : 422;
+      return res.status(failStatus).json({
         success: false,
         error: syncResult.error || 'CommLog write failed',
         code: syncResult.code,
