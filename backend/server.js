@@ -53,9 +53,10 @@ async function bootstrap() {
   const unifiedCallStore = require('./services/unifiedCallStore');
   const syncScheduler = require('./services/syncScheduler');
   const retentionScheduler = require('./services/retentionScheduler');
+  const retentionConfig = require('./config/retention');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
-  const { requirePermission, requireReadWrite } = require('./config/permissions');
+  const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
 
   const app = express();
   // Default ports: 5003 in production, 5103 in dev. PORT env var overrides both.
@@ -259,6 +260,13 @@ async function bootstrap() {
   // module guard: managing who works here is a property of the practice, not
   // of any product they bought. A TC-only tenant still needs a Users page.
   app.use('/api/users', requirePermission('admin.all'), require('./routes/users'));
+  // The Platform Console (PR C): the tenant catalog, module entitlements, and
+  // the call-store retention policy. NO module guard, deliberately — entitlement
+  // answers "did this practice buy the product?", and this is the surface that
+  // decides the answer, so gating it on a module would be circular. Tenant
+  // 'admin' is not enough: requireSuperAdmin() is the platform tier, and it does
+  // not admit the shared machine token either.
+  app.use('/api/platform', requireSuperAdmin(), require('./routes/platform'));
   // /dev/seed is tenant-exempt upstream, so it has no req.userRole to check and
   // must be permission-exempt for the same reason (it is ALLOW_MANGO_DEV_SEED-
   // gated and 403s in prod on its own).
@@ -391,6 +399,14 @@ async function bootstrap() {
     //    Kept separate from syncScheduler on purpose — see services/retentionScheduler.js.
     //    NOT run at startup: a container restart must never be the thing that
     //    destroys records, and the store has just finished loading.
+    //
+    //    The stored window is read from the control plane BEFORE start(), which
+    //    decides whether to schedule at all: with a stored window of 60 and
+    //    CALL_RETENTION_DAYS=0 in the environment, starting first would read the
+    //    environment's kill switch and never arm the job. Awaited for the same
+    //    reason. A failure here is not fatal — refreshFromDb() never throws, and
+    //    runNow() refuses to prune on an unknown policy.
+    await retentionConfig.refreshFromDb();
     retentionScheduler.start();
 
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on

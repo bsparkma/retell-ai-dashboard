@@ -52,7 +52,58 @@ async function audit(req, entry) {
     // Without a tenant there is no per-tenant audit store to write to.
     throw new AuditError('cannot audit without req.tenant.id');
   }
+  // Still routed through withTenantDb: it re-derives the id from the same req,
+  // so a caller cannot pass one tenant's request and another tenant's id.
+  return writeRow(req, tenantId, entry, (sql, params) =>
+    tenantDb.withTenantDb(req, (pool) => pool.query(sql, params))
+  );
+}
 
+/**
+ * Write one audit row into a NAMED tenant's log, rather than the caller's own.
+ *
+ * For the platform console (PR C) and nothing else. A super_admin toggling a
+ * module for Smith Dental is signed in under CareIN, so `req.tenant.id` is
+ * CareIN — but the event belongs in Smith Dental's trail, because that is the
+ * log Smith Dental's own admins read when they ask why TC vanished on Tuesday.
+ * Filing it under the operator's tenant would make it invisible to the only
+ * people it happened to.
+ *
+ * `tenantId` MUST be an id the registry returned, never one taken from a
+ * request body — the route validates it against the tenant catalog before
+ * calling this. That is the same rule `tenantDb.getTenantPool` documents, and
+ * it is why this takes an id rather than accepting a hand-built `req` shim: a
+ * shim would let a caller quietly redirect an audit row anywhere.
+ *
+ * Fail-closed exactly like audit(): a failed write throws.
+ *
+ * @param {import('express').Request & { user?: any }} req the ACTING request (actor, IP, endpoint)
+ * @param {string} tenantId the tenant whose log to write to
+ * @param {Parameters<typeof audit>[1]} entry
+ * @returns {Promise<void>}
+ */
+async function auditForTenant(req, tenantId, entry) {
+  if (!tenantId || typeof tenantId !== 'string') {
+    throw new AuditError('auditForTenant requires a registry-resolved tenant id');
+  }
+  return writeRow(req, tenantId, entry, async (sql, params) => {
+    const pool = await tenantDb.getTenantPool(tenantId);
+    return pool.query(sql, params);
+  });
+}
+
+/**
+ * The shared row builder + insert. Split out so audit() and auditForTenant()
+ * cannot drift in what they record — the only thing that differs between them
+ * is WHICH log the row lands in.
+ *
+ * @param {import('express').Request & { user?: any }} req
+ * @param {string} tenantId the tenant recorded in the row AND whose log it lands in
+ * @param {Parameters<typeof audit>[1]} entry
+ * @param {(sql: string, params: unknown[]) => Promise<unknown>} run how to reach that log
+ * @returns {Promise<void>}
+ */
+async function writeRow(req, tenantId, entry, run) {
   // Actor + source — NOT patient PHI.
   const userId = (req.user && (req.user.email || req.user.oid || req.user.sub)) || null;
   const ip = (req.ip || (req.socket && req.socket.remoteAddress)) || null;
@@ -70,13 +121,11 @@ async function audit(req, entry) {
   const sourceRef = entry.sourceRef != null ? String(entry.sourceRef) : null;
 
   try {
-    await tenantDb.withTenantDb(req, (pool) =>
-      pool.query(
-        `INSERT INTO audit_log
-            (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, source_ref)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, sourceRef]
-      )
+    await run(
+      `INSERT INTO audit_log
+          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, source_ref)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, sourceRef]
     );
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
@@ -112,4 +161,4 @@ async function assertReady() {
   console.log(`[audit] audit store reachable for ${active.length} active tenant(s)`);
 }
 
-module.exports = { audit, assertReady, AuditError };
+module.exports = { audit, auditForTenant, assertReady, AuditError };
