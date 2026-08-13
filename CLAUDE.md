@@ -386,19 +386,54 @@ so `'new'` wins.
 Regression coverage is `backend/services/unifiedCallStore.test.js` and
 `callTwinsStore.test.js`. **Add a test there whenever you add a locally-set field.**
 
-#### No delete primitive
+#### Retention: the delete and stub primitives
 
-Confirmed: there is no `delete`/`remove`/`purge`/`evict`/`prune` on the store. The only
-removal path is `clear()`, doc-commented *"for testing"*, whose only non-test caller is a
-test. **There is no retention or eviction** — the store grows monotonically across
-restarts.
+The store used to have no removal path beyond `clear()` ("for testing") and grew
+monotonically across restarts. It now has two primitives, and the difference between them
+is the whole design:
 
-Note that `backend/migrations-tenant/1786500000000_tc_voice_handoff.js:12` asserts *"The
-voice side prunes call records on its own schedule"* as the justification for snapshotting
-summary text into the handoff event. **That pruning does not exist.** The snapshot design
-is right either way, but don't repeat the premise.
+| Primitive | What it does | Who calls it |
+| --- | --- | --- |
+| `stubCalls(ids)` | Replaces a record **in place** with a thin audit stub, same id | The nightly pruner |
+| `deleteCalls(ids)` | Removes the record entirely and **tombstones** the id | The one-shot legacy purge only |
 
-`getStats()` returns `totalCalls`, `todayCalls`, `bySource`, `byHandler`, `sentiment`,
+**Retention window: 30 days** (`CALL_RETENTION_DAYS`; `0` = never prune). Past it, a call's
+transcript, summary, recording refs, caller name/number, notes and disposition detail are
+gone, replaced by `{ id, record_kind: 'stub', source, office, call_date, pruned_at,
+linked_call_id, link_role, actions[] }`. `actions` records what people DID —
+`{action, actor, at}` — never content. **A stub carries no PHI**, pinned by a test that
+asserts the absence of every content field.
+
+Rules that hold everywhere:
+
+- **Twins age out as a unit.** `expandTwins` pulls in the other leg for both primitives, so
+  a `linked_call_id` never points at nothing.
+- **No resurrection.** `addCallInternal` returns `null` for a stub and for a tombstoned id,
+  so the watermark overlap and webhook re-delivery cannot un-prune a call or revive a
+  purged one. `updateCall` refuses on a stub, and `routes/unifiedCalls.js` turns that into
+  **409 `CALL_PRUNED`** — never a 404, which would mean something different.
+- **The office is frozen at prune time.** `getOfficeForCall` returns `call.office` for a
+  stub rather than re-deriving it from `called_number`/`handler_id`, which a stub drops.
+- **`purgedIds` is bounded by design** — only the one-shot purge writes to it; the nightly
+  pruner stubs and never deletes.
+
+The legacy purge (`services/legacyPurge.js`) targets Mango rows whose called line was never
+in `MANGO_LINE_OFFICE` (office `unknown`). It is **dry-run by default**, needs
+`confirm: 'DELETE'` to run live, **refuses to proceed without a backup on disk**, and skips
+twinned rows rather than dragging an attributable Retell call down with them. Exposed as
+`POST /api/admin/call-store/purge-legacy` behind `requireSuperAdmin()` — the first place
+that gate is actually mounted.
+
+`persist()` logs `[callstore] persist ok calls=N bytes=B ms=T`. That line is the
+before/after measurement for the readiness-probe work, and a test pins its format because
+the runbook greps it.
+
+`backend/migrations-tenant/1786500000000_tc_voice_handoff.js:12` justifies snapshotting
+summary text into the handoff event with *"The voice side prunes call records on its own
+schedule"*. As of this slice **that is now true** — and it is exactly why TC must keep
+snapshotting rather than dereferencing a call.
+
+`getStats()` returns `totalCalls`, `prunedCalls`, `liveCalls`, `todayCalls`, `bySource`, `byHandler`, `sentiment`,
 `emergencyCalls`, `callbacksNeeded`, `lastSync`, and `twins`. The `twins.transferDisconnects`
 counter is a **tripwire**: while it reads 0, every linked Mango leg is a pure duplicate of
 an AI-completed call, which is the premise the hide-from-worklist behavior rests on.
@@ -495,7 +530,7 @@ from Key Vault, never from a `.env`.
 | `OPENDENTAL_WRITE_DISABLED` | `'true'` blocks every OD mutation → 403 `OD_WRITE_DISABLED`. **Set this in dev.** |
 | `OPENDENTAL_ALLOW_MOCK` | `'true'` **and** `NODE_ENV !== 'production'`. Cannot be enabled in prod. |
 | `COMMLOG_AUTO_WRITE` | Only the literal `'true'` auto-writes a chart note from the webhook. Default off = review-then-send. |
-| `OFFICE_TIMEZONE` | `America/Chicago`. Day boundaries for OD sync. **Distinct from `TRANSCRIPTION_BUDGET_TZ`.** |
+| `OFFICE_TIMEZONE` | `America/Chicago`. Day boundaries for OD sync, **and** the zone `CALL_RETENTION_SCHEDULE` is read in (passed explicitly to node-cron, so it does not depend on a container `TZ`). **Distinct from `TRANSCRIPTION_BUDGET_TZ`.** |
 
 ### Retell
 
@@ -513,7 +548,9 @@ from Key Vault, never from a `.env`.
 | --- | --- | --- |
 | `PORT` | `5003` prod / `5103` otherwise | Backend listen port. |
 | `NODE_ENV` | unset | `production` turns on Key Vault secret loading, `cookieSecure`, and the per-tenant audit startup gate, and refuses the OD mock. |
-| `CALLSTORE_DIR` | `<repo>/data` | Where `unified_calls.json` and the small durable-state docs live. **Prod sets `/data`** to land on the AzureFile volume. Unset in a container = wiped on every image deploy. |
+| `CALLSTORE_DIR` | `<repo>/data` | Where `unified_calls.json` and the small durable-state docs live. **Prod sets `/data`** to land on the AzureFile volume. Unset in a container = wiped on every image deploy. Purge backups are written here too. |
+| `CALL_RETENTION_DAYS` | `30` | How long a call keeps its full record before being reduced to an audit stub. **`0` = never prune** (the kill switch). A non-numeric value falls back to 30 rather than to NaN, which would silently disable retention. |
+| `CALL_RETENTION_SCHEDULE` | `30 3 * * *` | Cron for the nightly prune. Unlike `MANGO_SYNC_SCHEDULE`, an **invalid** expression falls back to the default rather than leaving the job unscheduled — a job that destroys data must not silently never run. |
 | `DASHBOARD_API_TOKEN` 🔒 | — | Shared bearer for `/api` and the Socket.IO handshake. Required in production; the server 503s without it. |
 | `INTERNAL_API_BASE_URL` | derived from `PORT` | Only needed if the modules are ever split across containers. Unset is the norm. |
 | `AZURE_KEY_VAULT_NAME`, `AZURE_USE_MANAGED_IDENTITY`, `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | The managed-identity branch needs all three. |

@@ -22,7 +22,7 @@ import {
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
   CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
-  FileText, VolumeX, RotateCcw, MessageSquare,
+  FileText, VolumeX, RotateCcw, MessageSquare, Archive,
 } from "lucide-react";
 import { ActionTooltip, IconAction, ACTION_HEIGHT, ICON_ACTION_CLASS } from "@/components/calls/IconAction";
 import { DispositionBadge, DispositionPicker } from "@/components/calls/DispositionControl";
@@ -692,9 +692,17 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
             </div>
           ) : (
             visibleCalls.map((call) => (
+              // A pruned call gets its OWN row rather than the normal one with empty
+              // cells. The normal row would render "Unknown", a "Staff · Mango" chip
+              // and six action buttons over a record that has none of that — it would
+              // read as a data bug, and every button would come back 409 CALL_PRUNED.
+              call.isPruned ? (
+                <PrunedRow key={call.id} call={call} gridTemplateColumns={GRID} wide={wide} />
+              ) : (
               <div
                 key={call.id}
                 data-testid="worklist-row"
+                data-pruned="false"
                 data-disposition={call.disposition ?? ""}
                 // A dispositioned call reads as handled at a glance: dimmed, badged, and
                 // still THERE. It is never removed from the list — it drops out of the
@@ -792,6 +800,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   actorIsAdmin={actorIsAdmin}
                 />
               </div>
+              )
             ))
           )}
         </CardContent>
@@ -841,6 +850,71 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
  *
  * Rendered as its own column on wide viewports and folded under the name below ~1100px.
  */
+/**
+ * A call past the 30-day retention window.
+ *
+ * Its full record — transcript, summary, caller name and number, notes — was
+ * replaced by a thin audit stub, so there is nothing here to read and nothing to
+ * do. The row states that plainly instead of rendering the ordinary layout with
+ * every cell empty, which would read as a bug rather than as policy.
+ *
+ * What survives is the shape of the work: who transcribed it, who filed it to the
+ * chart, who dispositioned it, and when. That is what the stub is FOR, so it is
+ * what the row shows.
+ *
+ * Not a Link: there is a detail page and it renders the same honest state, but
+ * the row deliberately carries no controls at all — every mutation against a stub
+ * comes back 409 CALL_PRUNED, and offering a button that cannot work is worse
+ * than offering none.
+ */
+function PrunedRow({
+  call, gridTemplateColumns, wide,
+}: { call: UnifiedCall; gridTemplateColumns: string; wide: boolean }) {
+  const who = call.retentionActions.length;
+  return (
+    <div
+      data-testid="worklist-row"
+      data-pruned="true"
+      className="grid gap-3 px-4 py-3 border-b border-border/50 items-center opacity-70"
+      style={{ gridTemplateColumns }}
+    >
+      <Link href={`/calls/${call.id}`} className="min-w-0 flex items-center gap-2.5 cursor-pointer">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-muted">
+          <Archive size={13} className="text-muted-foreground" />
+        </div>
+        <div className="min-w-0">
+          <div
+            data-testid="pruned-badge"
+            className="text-sm font-medium text-muted-foreground truncate"
+          >
+            Pruned call
+          </div>
+          <div data-testid="pruned-date" className="text-[11px] text-muted-foreground/70">
+            {formatTimeAgo(call.date)}
+          </div>
+        </div>
+      </Link>
+
+      <div className="min-w-0 text-xs text-muted-foreground">
+        Details removed under the 30-day retention policy.
+      </div>
+
+      {/* The Signals column only exists on wide viewports — below ~1100px the grid
+          has three tracks, and a fourth child would wrap onto its own line. */}
+      {wide && (
+        <div className="min-w-0 text-[11px] text-muted-foreground/70">
+          {who > 0
+            ? `${who} recorded action${who === 1 ? "" : "s"}`
+            : "No actions were taken on this call"}
+        </div>
+      )}
+
+      {/* Actions: deliberately empty, so the row still lines up with every other row. */}
+      <div />
+    </div>
+  );
+}
+
 function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: string }) {
   return (
     <div className={`flex flex-wrap items-center gap-1 ${className}`}>

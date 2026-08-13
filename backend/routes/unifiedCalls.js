@@ -37,6 +37,35 @@ const canSync = requirePermission('voice.sync');
 const canChartWrite = requirePermission('voice.chart_write');
 const canSendToTc = requirePermission('voice.send_to_tc');
 
+/** Methods that only read. Everything else is a write against the call. */
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Refuse every WRITE aimed at a call that has been reduced to its audit stub.
+ *
+ * Mounted ONCE, above the handlers, rather than repeated inside each of them:
+ * there are eight mutation routes under /:id and the failure mode of forgetting
+ * one is silent — the store would refuse the write and the handler would answer
+ * 404 "Call not found", which is not what happened.
+ *
+ * 409, NOT 404, and that distinction is the point. "There is no such call" and
+ * "this call is past the retention window, so its content is gone" are different
+ * facts about the world, and the person at the front desk has to be able to tell
+ * them apart. GETs pass through untouched so the UI can still render the stub.
+ */
+router.use('/:id', (req, res, next) => {
+  if (READ_METHODS.has(req.method)) return next();
+  const { id } = req.params;
+  if (id && unifiedCallStore.isPruned(id)) {
+    return res.status(409).json({
+      success: false,
+      error: 'This call is past the retention window, so its details are no longer stored',
+      code: 'CALL_PRUNED',
+    });
+  }
+  return next();
+});
+
 /**
  * The office roster for the UI, with EFFECTIVE Open Dental connectivity.
  *

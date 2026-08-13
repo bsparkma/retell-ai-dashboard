@@ -372,8 +372,40 @@ export interface OfficeConfig {
  */
 export type CallLinkRole = "primary" | "duplicate_leg" | "transferred_leg";
 
+/**
+ * One thing somebody did to a call, as it survives on the audit stub.
+ *
+ * The action and the actor and the time — never what the call was ABOUT. A note
+ * contributes `note_added` with its author; its text is gone.
+ */
+export interface BackendRetentionAction {
+  action:
+    | "transcribed" | "triaged" | "sent_to_chart" | "sent_to_tc"
+    | "dispositioned" | "resolved" | "note_added";
+  actor: CallActor | null;
+  at: string;
+}
+
+/**
+ * Is this a full call record, or the thin audit stub left behind after the
+ * 30-day retention window?
+ *
+ * A closed union on purpose, exactly like TranscribeStatus: a third kind of
+ * record should be a compile error here, not a row that renders as blank.
+ */
+export type CallRecordKind = "call" | "stub";
+
 export interface BackendUnifiedCall {
   id: string;
+  /**
+   * Absent on every row written before retention shipped, which is why the
+   * normalizer treats "missing" as "call" rather than as unknown.
+   */
+  record_kind?: CallRecordKind;
+  /** When the record was reduced to a stub. Only present on a stub. */
+  pruned_at?: string | null;
+  /** What was done to the call while it still had content. Only on a stub. */
+  actions?: BackendRetentionAction[];
   source?: "retell" | "mango";
   caller_number?: string;
   // The office line the caller dialed (Mango DID). Present on Mango staff calls.
@@ -759,16 +791,36 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
   const date = c.call_date ?? (c as unknown as { start_timestamp?: string }).start_timestamp ?? new Date().toISOString();
   const duration = c.duration_seconds ?? (c.duration as number) ?? 0;
   const summary = c.call_summary ?? c.call_analysis?.call_summary ?? c.summary ?? "";
+
+  /**
+   * Past the retention window this call's content is gone and only its audit
+   * stub remains. Rows written before retention shipped carry no `record_kind`
+   * at all, so ABSENT means "call" — a missing marker must not turn the whole
+   * back-catalogue into stubs.
+   */
+  const recordKind: CallRecordKind = c.record_kind === "stub" ? "stub" : "call";
+  const isPruned = recordKind === "stub";
+
   return {
     id: c.id,
+    recordKind,
+    isPruned,
+    prunedAt: c.pruned_at ?? null,
+    retentionActions: (c.actions ?? []) as BackendRetentionAction[],
     source: (c.source === "mango" ? "mango" : "retell") as "retell" | "mango",
     agentName: c.source === "mango" ? "Staff" : "Rover",
-    fromNumber: c.caller_number ?? "Unknown",
-    // Server-resolved office; 'unknown' → the dialed line isn't mapped yet.
+    // A stub has no caller number, and the "Unknown" fallback would read as a data
+    // bug rather than as a retention outcome. Empty means "there is nothing here",
+    // which is the truth, and the row renders its pruned state instead.
+    fromNumber: isPruned ? "" : (c.caller_number ?? "Unknown"),
+    // Server-resolved office; 'unknown' → the dialed line isn't mapped yet. On a
+    // stub this is the office FROZEN at prune time, not a re-derivation.
     officeId: (c.office_id as string | undefined) ?? null,
     calledNumber: (c.called_number as string | undefined) ?? null,
     mangoCallId: (c.mango_call_id as string | undefined) ?? null,
-    patientName: (c.caller_name as string) || extractNameFromText(c.transcript, c.call_summary ?? c.call_analysis?.call_summary ?? c.summary) || c.caller_number || "Unknown",
+    patientName: isPruned
+      ? ""
+      : (c.caller_name as string) || extractNameFromText(c.transcript, c.call_summary ?? c.call_analysis?.call_summary ?? c.summary) || c.caller_number || "Unknown",
     patientId: (c.metadata as Record<string, string> | undefined)?.patient_id ?? "",
     duration,
     status: (c.metadata as Record<string, string> | undefined)?.call_status ?? "completed",
@@ -776,9 +828,9 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     sentiment: (c.sentiment as "positive" | "neutral" | "negative") ?? "neutral",
     outcome: "",
     date,
-    hasRecording: Boolean(c.recording_url),
-    hasTranscript: Boolean(c.transcript || (c.transcript_object && c.transcript_object.length > 0)),
-    summary,
+    hasRecording: !isPruned && Boolean(c.recording_url),
+    hasTranscript: !isPruned && Boolean(c.transcript || (c.transcript_object && c.transcript_object.length > 0)),
+    summary: isPruned ? "" : summary,
     isEmergency: c.is_emergency ?? (c.metadata as Record<string, boolean> | undefined)?.is_emergency ?? false,
     transcript: c.transcript,
     transcript_object: c.transcript_object,
