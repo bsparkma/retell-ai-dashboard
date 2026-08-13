@@ -65,9 +65,14 @@ jobs:
       - name: backend syntax check
         working-directory: backend
         run: node --check server.js
+      # Serial on purpose. Node 22.15's parallel test runner intermittently dies with
+      # "Unable to deserialize cloned data due to invalid or unsupported version"
+      # (ERR_TEST_FAILURE) and blames an arbitrary file — it is a function of the test
+      # FILE COUNT, not of any one test. --test-concurrency=1 removes the flake at the
+      # cost of a longer run. Do not drop this to "speed CI up".
       - name: backend unit tests
         working-directory: backend
-        run: node --test
+        run: node --test --test-concurrency=1
 
       # --- spine smoke test (12/12) against an ephemeral Postgres ---
       - name: prepare ephemeral DB (carein_app role + tenant DB)
