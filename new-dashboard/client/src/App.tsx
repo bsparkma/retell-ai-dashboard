@@ -24,6 +24,7 @@ import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
+import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
@@ -104,6 +105,12 @@ export function Router() {
         <Route path="/analytics" component={Analytics} />
         <Route path="/admin" component={Admin} />
         <Route path="/admin/users" component={AdminUsers} />
+        {/* Platform console. Deliberately absent from ROUTE_PERMISSIONS: the
+            platform tier is not a permission action, and leaving it unlisted
+            means the courtesy redirect above lets a non-super_admin ARRIVE, so
+            the page can explain itself instead of bouncing them silently. Every
+            endpoint behind it is requireSuperAdmin()-gated regardless. */}
+        <Route path="/platform" component={Platform} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />
