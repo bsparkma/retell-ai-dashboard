@@ -4,9 +4,12 @@
 **Open Dental docs snapshot:** `opendental.com/site/api*.html`, read 2026-08-13
 **Live practice build:** Roland `ProgramVersion 25.4.48.0` / `DataBaseVersion 25.4.45.0` (verified, §Probe F)
 **Method:** documentation review + **read-only GET** verification against the live Roland
-Open Dental database. **Zero writes were performed.** No POST, PUT, PATCH or DELETE was
+Open Dental database. **Spike 0a performed zero writes** — no POST, PUT, PATCH or DELETE was
 issued against any Open Dental resource, including against test patients. Live write
-verification is Spike 0b and is proposed, not executed, at the end of this document.
+verification is Spike 0b, planned in §4 and **partially executed** — see
+[Spike 0b results](#spike-0b-results-2026-08-13--partial-run) at the end of this document.
+Sections 1–4 below are the 0a analysis, amended in place where 0b changed an evidence class;
+the 0b section is the write transcript.
 
 Companion to [`TC_OD_READS.md`](TC_OD_READS.md), which proves the **read** side and is
 cited here rather than re-proven. Same legend, same discipline.
@@ -28,15 +31,18 @@ Every claim in this document carries one, and they are not interchangeable.
 | Class | Means |
 |---|---|
 | **documented** | Stated on an Open Dental API doc page, cited by URL. Not exercised. |
-| **verified** ✅ | Proven by a read-only GET against live Roland OD on 2026-08-13. Transcript below. |
-| **inferred** ⚠️ | Reasoned from adjacent facts. **Not a fact.** Every inferred row is a Spike 0b test. |
+| **verified** ✅ | Proven against live Roland OD on 2026-08-13 — by read-only GET (0a) or by an executed write (0b). Transcripts below. |
+| **inferred** ⚠️ | Reasoned from adjacent facts. **Not a fact.** Every remaining inferred row is an outstanding Spike 0b test. |
 
-A GET returning 200 proves the **resource** is entitled to this developer/customer key
-pair. It does **not** prove the write verbs on that resource are entitled — Open Dental
-entitles GET and POST/PUT/DELETE separately, per resource, per pricing tier
+A GET returning 200 proves the **resource** is readable with this developer/customer key
+pair. It does **not** prove the write verbs on it are entitled — Open Dental entitles reads
+and writes separately, by **permission group**, per pricing tier
 ([API Permissions](https://www.opendental.com/site/apipermissions.html)). **No read-only
-probe can establish write entitlement.** That is Spike 0b test 0 and it gates everything
-else in this document.
+probe can establish write entitlement**, which is why Spike 0b opened with test 0.
+
+**Test 0 has since passed:** Insurance, Documents and AllOthers are enabled on this key;
+ApiPayments is not. The insurance posting path lives under **Insurance**, so Branch A's
+critical path is entitled. See §9 and **G11**.
 
 ---
 
@@ -117,8 +123,8 @@ however, three purpose-built helpers:
 | `POST /claimprocs/Supplemental` | 25.2.7 | **yes** | Second payment on an already-received procedure. Required `ClaimProcNum`, optional `InsPayAmt` (default 0) |
 | `POST /claimprocs/InsAdjust` | 23.2.5 | **yes** | Set `insUsed` / `deductibleUsed` at the `PatPlanNum` level — benefit-used tracking |
 | `PUT /claimprocs/InsAdjust` | 21.1 | **yes** | Same, update form. *"If the insUsed passed in exactly equals payments already in Open Dental, then any existing adjustment will be deleted."* Returns **200 regardless of outcome** — a success status here does not mean what you asked for happened |
-| `POST` / `PUT /claimprocs/{n}/PendingSupplemental` | **TBA** | ⚠️ **presumed no** | Version listed as "TBA". Roland is 25.4.48. Do not design against it without a Spike 0b existence check |
-| `DELETE /claimprocs/{n}` | **TBA** | ⚠️ **presumed no** | Same. Also restricted: cannot delete if attached to a ClaimPayment or OrthoCase, if a Supplemental references it, or if it is the last claimproc on a claim |
+| `POST` / `PUT /claimprocs/{n}/PendingSupplemental` | **TBA** | ❌ **no** ✅verified | **Spike 0b test 12** — `400 "claimprocs POST PendingSupplemental is not a valid method."` Absent on 25.4.48 |
+| `DELETE /claimprocs/{n}` | **TBA** | ❌ **no** ✅verified | **Spike 0b test 12** — `400 "claimprocs DELETE  is not a valid method."` Absent on 25.4.48. The documented restrictions are moot while the verb itself does not exist |
 
 **Blocking restrictions on `PUT /claimprocs/{n}`, all documented:**
 
@@ -179,9 +185,12 @@ none is supplied, and it is a per-office value.
 | Attach to a procedure | **full** | documented | `ProcNum` — the procedure must belong to the patient; `ProcDate` auto-updates to the procedure's date |
 | Resource reachable | **full** ✅verified | §Probe A | |
 
-**Sign rule, documented:** `AdjType` is a DefNum where `definition.Category = 1` and
-`ItemValue` is `"+"` or `"-"`, and **`AdjAmt`'s sign must agree** — positive amount requires
-a `"+"` type, negative requires `"-"`. A sign/type mismatch is a 400, not a silent flip.
+**Sign rule — documented and now ✅verified (Spike 0b test 8):** `AdjType` is a DefNum where
+`definition.Category = 1` and `ItemValue` is `"+"` or `"-"`, and **`AdjAmt`'s sign must
+agree**. Proven live: DefNum 12 (`-`) with `AdjAmt: -1.00` → **201**; the same DefNum with
+`AdjAmt: +1.00` → **400 `"AdjAmt must be negative for this AdjType."`** A sign/type mismatch
+is a hard refusal, not a silent flip — so a posting bug that inverts a write-off surfaces
+immediately rather than corrupting a ledger.
 
 **The per-office DefNum warning is not theoretical here — it is the largest surface in this
 matrix.** Roland has **39** adjustment types (✅verified, §Probe C). The ones RCM would
@@ -210,7 +219,7 @@ differently.
 
 | Destination | Coverage | Evidence | Citation |
 |---|---|---|---|
-| **Patient's images** (chart) | **full** | documented | [`POST /documents/Upload`](https://www.opendental.com/site/apidocuments.html) v21.1 — required `PatNum`, **`rawBase64`**, `extension`; optional `Description`, `DateCreated`, `DocCategory`, `ImgType`, `ProvNum`. `.pdf` is explicitly a supported type |
+| **Patient's images** (chart) | **full** | documented ✅verified | [`POST /documents/Upload`](https://www.opendental.com/site/apidocuments.html) v21.1 — required `PatNum`, **`rawBase64`**, `extension`; optional `Description`, `DateCreated`, `DocCategory`, `ImgType`, `ProvNum`. `.pdf` is explicitly a supported type. **Spike 0b test 9:** 1 / 5 / 10 MB PDFs all accepted (201) into `DocCategory 131` and all deleted cleanly. ⚠️ `DateCreated` requires `"yyyy-MM-dd HH:mm:ss"`, unlike the rest of the API |
 | **The check record** (`eobattach`, where OD's own front office looks) | **partial → effectively none** | documented | [`POST /eobattaches/UploadSftp`](https://www.opendental.com/site/apieobattaches.html) v24.3.7 is the **only** write path, and it requires `SftpAddress` / `SftpUsername` / `SftpPassword` — OD pulls the file from an SFTP server **we** would have to run and expose |
 
 Reinforcing this, `POST /claimpayments` states outright that it *"Does not link Deposits or
@@ -298,9 +307,11 @@ be allowed to starve the commlog path.
 
 | Finding | Class | Why it matters |
 |---|---|---|
-| **Write entitlement is separately licensed and unverifiable read-only** | documented | Tiers: Free = *Read All only*; $15 = Comm/Documents/InsuranceSimple/Setup/Queries; $30 = all **except Payments/PayPlans**; $35 = all. **Posting needs the $35 tier, per location.** Charges begin when keys are enabled. **This is a commercial dependency, not just a technical one, and it is the single largest unknown in this spike** |
-| Audit attribution of API writes is unclear | documented | *"The normal Open Dental permissions are used for logging API actions"* — but the page does not say which OD user account a write is recorded under. The H0 spike already found API notes signing as "CareIN" rather than the acting human. Assume the same limitation applies to posted payments until Spike 0b shows otherwise |
+| **Write entitlement is licensed per permission group** — and the insurance posting path is **not** under Payments | ✅verified (Spike 0b test 0) | Entitlement is granted per **permission group**, not per HTTP verb on a resource. On this key pair **Insurance, Documents and AllOthers are enabled; ApiPayments is NOT.** The whole insurance-posting path — `/claims`, `/claimprocs`, `/claimpayments`, `/eobattaches` — sits under **Insurance**, so Branch A's critical path is entitled today. What ApiPayments gates is `/payments` and `/paysplits`, i.e. the **patient-portion** flow the PRD already defers. Tier pricing is per location and charges begin when keys are enabled |
+| API writes are attributed to the **key's OD user**, not the acting human | ✅verified (Spike 0b test 13) | Every API-written row logs `UserNum: 0`, `LogSource: "API"`, and a `LogText` reading **`"Created by Sparkman DDS through API."`** — the OD user bound to the developer key. Open Dental's audit trail therefore cannot distinguish *which* CareIN operator posted a payment; that attribution exists only in our own `audit_log`. Same limitation the H0 spike found for chart notes. **Design the RCM audit trail assuming OD's is single-identity** |
 | `?category=<string>` on `/definitions` is **silently ignored** | ✅verified | `?category=InsurancePaymentType` and `?category=NotARealCategory` both returned the same unfiltered 100-row page spanning Categories 0–6. **Always use the numeric `Category=`.** A string filter is a lie, not a 400 |
+| …and it is a **pattern**, not a one-off | ✅verified | Two more list filters are silently ignored: **`/securitylogs?PatNum=`** (returns the same 100 rows for 12827, 12828 and a nonsense PatNum — every row `PatNum: 0`) and **`/procedurecodes?ProcCode=`** (`D0140`, `D0120` and `D0220` all returned `CodeNum: 1`, "periodic oral evaluation"). **Never trust an OD list filter you have not proven returns a different result for a different value.** An unrecognized filter yields a plausible wrong answer, not an error |
+| A missing **write verb** returns `400`, not `404` — and this is safely probeable | ✅verified (Spike 0b test 12) | Three distinct signals, all confirmed: missing row → `404 "ClaimProc not found."`; missing resource → `404 "notaresource is not a valid resource."`; **missing method → `400 "claimprocs DELETE  is not a valid method."`** Because the method check precedes the row lookup, **write-verb existence can be probed against a non-existent id with zero risk to data** — that is how test 12 was run |
 | Booleans come back as **strings** | ✅verified | `IsPartial: "false"`, `isHidden: "false"`. Same trap the commlog-type picker hit. `if (row.IsPartial)` is true for `"false"` |
 | `ClinicNum` on Roland is `0` everywhere | ✅verified (in `TC_OD_READS.md`) | The customer key already scopes to one practice database. Leave `ClinicNum` unset on writes unless a multi-clinic database appears |
 | `/claimprocs` filters usable for reconciliation | ✅verified | `ClaimPaymentNum=`, `ClaimNum=`, `DateCP=`, `Status=`, `Offset=` all 200. `?ClaimPaymentNum=<n>` returning exactly the lines on a check is the natural post-write verification read |
@@ -308,7 +319,8 @@ be allowed to starve the commlog path.
 | `/claimtrackings` exists; Roland has 11 custom tracking statuses (Category 31) | ✅verified | *Denied*, *Resubmitting*, *Claim Rejected*, *Information Needed*, *Clm paid, awaiting EOB*… The denial workflow has a native home in OD already |
 | `ClaimAdjReasonCodes` is read-only and empty on Roland | ✅verified | 0 of 100 Received claimprocs carry one. CARC/RARC denial codes cannot be written back, and are not being captured today |
 | `/etranss` requires `PatNum` | ✅verified | `?ClaimNum=` alone → 400 *"PatNum is required."* Rules out an ERA-side sweep by claim |
-| Version gates on this build | ✅verified | 25.4.48.0 / DB 25.4.45.0. Everything ≤ 25.4.x is present; **26.2.1 endpoints are not** (`GET /definitions/{DefNum}`, `PUT /definitions`), and the two **"TBA"** endpoints — `DELETE /claimprocs`, `*/PendingSupplemental` — must be treated as absent |
+| Version gates on this build | ✅verified | 25.4.48.0 / DB 25.4.45.0. Everything ≤ 25.4.x is present; **26.2.1 endpoints are not** (`GET /definitions/{DefNum}`, `PUT /definitions`), and the two **"TBA"** endpoints — `DELETE /claimprocs`, `*/PendingSupplemental` — are **confirmed absent** (Spike 0b test 12), not merely presumed |
+| `DateCreated` demands a **datetime**, not a date | ✅verified (Spike 0b test 9) | `POST /documents/Upload` with `DateCreated: "2026-08-13"` → `400 "DateCreated format must be yyyy-MM-dd HH:mm:ss."` The doc page lists the field without stating the format, and the rest of the API uses bare `yyyy-MM-dd`. Per-field, not per-API |
 
 ---
 
@@ -322,12 +334,13 @@ Each gap names the concrete posting operation that becomes impossible or degrade
 | G2 | **`DateCP` is not writable** | Backdating adjudication to the carrier's EOB date | Low | OD sets it. Accept OD's value; keep the carrier date in `Note`/`ClaimNote`. Real cost: a back-dated EOB posts with today's `DateCP`, which shifts YTD-benefit rollups that key on `DateCP` |
 | G3 | **`ClaimAdjReasonCodes` is read-only** | Writing CARC/RARC denial codes back to the claimproc | Medium | Denial reason → `Remarks` on the claimproc, `ReasonUnderPaid`/`ClaimNote` on the claim, and/or a `/claimtrackings` status. Structured codes stay in our database only |
 | G4 | **No transactions** | All-or-nothing posting of a multi-line EOB | **High** | Cannot be worked around anywhere — a connector doing the same REST calls has the identical problem. Mitigate with ordering + a resumable queue (§8) |
-| G5 | **No `POST`/`DELETE` on `/paysplits`** | Hand-built arbitrary split sets | Low | `POST /payments` (+`procNums`) and `PUT /payments/{n}/Partial` cover the real cases |
-| G6 | **No `DELETE /payments`, no `DELETE /adjustments`** | Voiding a mis-posted entry | Medium | `POST /payments/Refund` for payments; offsetting adjustment for adjustments. Matches how OD itself expects corrections |
-| G7 | **Negative amounts unproven at the API layer** | Recoupments / takebacks as negative supplementals | **Unknown — must be resolved** | Documented in the manual, silent in the API docs, no live precedent. Fallback that *is* documented: adjustment DefNum 477 |
-| G8 | **Write entitlement + $35/location tier unconfirmed** | *Everything* | **Blocking** | Confirm in the OD developer portal before any Spike 0b write |
-| G9 | **No documented `rawBase64` size limit** | Uploading a large multi-page EOB scan | Medium | Unknown until tested |
-| G10 | **Posted work is largely irreversible via API** | Rolling back a bad batch | Medium | `DELETE /claims` refuses status R; `DELETE /claimpayments` refuses once an EOB or deposit is attached; `DELETE /claimprocs` is "TBA". **Review-then-post is not a nicety here — it is the only correction opportunity** |
+| G5 | **No `POST`/`DELETE` on `/paysplits`** | Hand-built arbitrary split sets | Low | `POST /payments` (+`procNums`) and `PUT /payments/{n}/Partial` cover the real cases — **but see G11: `/payments` is not entitled on this key today** |
+| G6 | **No `DELETE /payments`, no `DELETE /adjustments`** | Voiding a mis-posted entry | Medium | `POST /payments/Refund` for payments; offsetting adjustment for adjustments. ✅**Verified working** (Spike 0b test 8): a `-1.00` DefNum 12 adjustment reversed by a `+1.00` DefNum 260 nets the ledger to zero |
+| G7 | **Negative amounts unproven at the API layer** | Recoupments / takebacks as negative supplementals | **Unknown — must be resolved** | Documented in the manual, silent in the API docs, no live precedent. Fallback that *is* documented: adjustment DefNum 477. **Spike 0b tests 6 and 7 — pending a claim-bearing test fixture** |
+| G8 | ~~Write entitlement unconfirmed~~ → **RESOLVED for the posting path** | — | ~~Blocking~~ **cleared** | Insurance + Documents + AllOthers are enabled on this key (Spike 0b test 0). The Branch A critical path is entitled. Superseded by G11 |
+| G9 | ~~No documented `rawBase64` size limit~~ → **RESOLVED** | — | **cleared** | ✅**10 MB accepted** (13.3 MB base64 on the wire, 201 in 11.3 s), as were 1 MB and 5 MB; all three deleted cleanly. No ceiling found at or below 10 MB — comfortably above any real EOB scan (Spike 0b test 9) |
+| G10 | **Posted work is largely irreversible via API** | Rolling back a bad batch | **Medium → High** | `DELETE /claims` refuses status R; `DELETE /claimpayments` refuses once an EOB or deposit is attached; and `DELETE /claimprocs` is now **confirmed not to exist at all** (test 12), so a wrongly-posted claimproc cannot be removed by any means. **Review-then-post is not a nicety here — it is the only correction opportunity** |
+| G11 | **`ApiPayments` is not enabled on this key** | `POST /payments`, `PUT /payments/{n}/Partial`, `/paysplits` — the entire **patient-portion** posting flow | Low *today*, blocking if scope changes | New, from test 0. Insurance posting is unaffected. If the PRD's deferred patient-responsibility flow is ever pulled forward, the ApiPayments group must be enabled first — a portal + billing change, not a code change |
 
 ---
 
@@ -515,3 +528,143 @@ DataBaseVersion = 25.4.45.0
   evidence the practice has never posted one — not evidence the API would refuse one.
 - **Nothing about Valley.** Every DefNum above is Roland's. Valley's must be read from
   Valley's own database before any office beyond Roland is enabled.
+
+---
+
+## Spike 0b results (2026-08-13) — partial run
+
+Live **write** verification against the Roland Open Dental database, executing the §4 plan.
+Roland only; PatNum **12827** (`Test 2, Stedi`) only; ≥1.3 s between every call.
+
+**Test 0 — entitlement: PASS, with a correction to §9.** Beau confirmed in the OD developer
+portal that **Insurance, Documents and AllOthers** are enabled on this key pair and
+**ApiPayments is not**. The insurance posting path sits under **Insurance**, not Payments, so
+Branch A's critical path is entitled today; what is missing gates only the deferred
+patient-portion flow. Recorded as **G11**.
+
+### Status
+
+| # | Test | Verdict |
+|---|---|---|
+| 0 | Write entitlement | ✅ **confirmed** — Insurance/Documents/AllOthers on, ApiPayments off |
+| 1 | Create disposable claim | ⛔ **blocked** — no runnable fixture, see below |
+| 2 | `PUT /claimprocs` money fields + `DateCP` read-back | ⛔ blocked on test 1 |
+| 3 | `PUT /claims` → `R` | ⛔ blocked on test 1 |
+| 4 | `POST /claimpayments` matching `CheckAmt` | ⛔ blocked on test 1 |
+| 5 | `POST /claimpayments` **wrong** `CheckAmt` | ⛔ blocked on test 1 |
+| 6 | **Negative supplemental `InsPayAmt` (G7)** | ⛔ blocked on test 1 |
+| 7 | Negative `CheckAmt` (G7) | ⛔ blocked on test 1 |
+| 8 | `POST /adjustments` sign rule | ✅ **confirmed** |
+| 9 | `rawBase64` ceiling | ✅ **confirmed** — no ceiling ≤10 MB |
+| 10 | `POST /claimpayments/Batch` | ⛔ blocked on test 1 |
+| 11 | `PUT /claimprocs` on a check-attached line | ⛔ blocked on test 1 |
+| 12 | `"TBA"` endpoint existence | ✅ **confirmed absent** |
+| 13 | `/securitylogs` attribution | ✅ **confirmed** |
+
+**Nothing in the 0a matrix was refuted.** Four rows moved ⚠️inferred/presumed → ✅verified;
+G8 and G9 closed; G10 hardened; G11 opened.
+
+### Why tests 1–7, 10 and 11 are blocked
+
+Neither designated test patient can carry a claim, established read-only before any write:
+
+| PatNum | Insurance | Procedures | Usable as a claim target? |
+|---|---|---|---|
+| 12827 `Test 2, Stedi` | **0 patplans** | 0 | No — no coverage to bill |
+| 12828 `Test, MangoTest` | 2 patplans, but **both subscriptions expired** (`DateTerm` 2024-12-31 and 2025-12-31) | 0 | Degraded — coverage lapsed 20 months ago |
+
+`POST /claims` requires `procNums[]`, so test 1 additionally needs a procedure created by
+`POST /procedurelogs` — a **write type not enumerated in the §4 plan**. Compounding it,
+`DELETE /procedurelogs` refuses once a procedure is *"attached to claim, insurance payment,
+patient payment, adjustment…"*, `DELETE /claims` refuses at status `R`, and `DELETE
+/claimprocs` does not exist at all (test 12) — so the disposable claim would in practice be
+**permanently undeletable**, contradicting the plan's own cleanup discipline.
+
+Rather than expand the approved write surface on a live production database, the run stopped
+here and Beau elected to add active coverage to a test patient first. **Tests 1–7, 10 and 11
+are deferred, not abandoned** — the resolution is a two-minute fixture change, and tests 5
+and 6 remain the highest-value outstanding results.
+
+### Test 8 — `POST /adjustments`, sign rule ✅ CONFIRMED
+
+| Sent (PatNum 12827) | Status | Read-back |
+|---|---|---|
+| `{AdjType: 12 ("Insurance Write-off", ItemValue "-"), AdjAmt: -1.00, AdjDate: "2026-08-13"}` | **201** | `AdjNum=19109`, `AdjAmt=-1`, `adjType: "Insurance Write-off"` |
+| `{AdjType: 12, AdjAmt: +1.00}` — deliberate sign mismatch | **400** | `"AdjAmt must be negative for this AdjType."` |
+| *cleanup* `{AdjType: 260 ("Insurance Adjustment", "+"), AdjAmt: +1.00}` | **201** | `AdjNum=19110` |
+
+Read-back `GET /adjustments?PatNum=12827` → 2 rows, **`AdjAmt` sum = 0.00**. The sign rule is
+enforced server-side, and the offsetting-adjustment reversal pattern (G6) works.
+
+### Test 9 — `rawBase64` ceiling ✅ CONFIRMED, no ceiling ≤10 MB
+
+| Payload | Base64 on the wire | Status | Elapsed |
+|---|---|---|---|
+| 1 MB PDF | 1,398,104 chars (1.3 MB) | **201** `DocNum=309575` | 3.3 s |
+| 5 MB PDF | 6,990,508 chars (6.7 MB) | **201** `DocNum=309576` | 7.6 s |
+| 10 MB PDF | 13,981,016 chars (13.3 MB) | **201** `DocNum=309577` | 11.3 s |
+
+All three landed in `DocCategory 131` ("Insurance") and all three were deleted immediately
+(`DELETE /documents/{DocNum}` → 200). Final read-back: **0 documents remain on 12827**.
+**G9 closed** — 10 MB is far above any realistic EOB scan, so EOB-to-chart is unconstrained
+in practice.
+
+Two incidental findings: `DateCreated` must be `"yyyy-MM-dd HH:mm:ss"` (a bare date is a
+400), and the created row came back with `FileName: "x"` rather than a derived name.
+
+### Test 12 — do the two `"TBA"` endpoints exist? ✅ CONFIRMED ABSENT
+
+Fired at `ClaimProcNum 999999999` — **no such row, so no data could be affected**:
+
+```
+DELETE /claimprocs/999999999                     -> 400  "claimprocs DELETE  is not a valid method."
+POST   /claimprocs/999999999/PendingSupplemental -> 400  "claimprocs POST PendingSupplemental is not a valid method."
+GET    /claimprocs/999999999      (control)      -> 404  "ClaimProc not found."
+GET    /notaresource/999999999    (control)      -> 404  "notaresource is not a valid resource."
+```
+
+Both `"TBA"` endpoints are **absent on 25.4.48**, upgrading §1's presumption to fact. The
+controls establish three distinct signals — missing **method** is a `400`, missing **row** and
+missing **resource** are both `404` with different bodies. Because the method check runs
+*before* the row lookup, **write-verb existence is probeable against a non-existent id at zero
+risk**, which is a reusable technique for the rest of this API.
+
+### Test 13 — audit attribution ✅ CONFIRMED
+
+```
+GET /securitylogs -> 200, 100 rows
+  distinct UserNum   : [0]
+  distinct LogSource : [API]
+  distinct PermType  : [AdjustmentCreate, InsuranceVerification, UserQuery]
+  rows for PatNum 12827: 2   (the two test-8 adjustments)
+    08/13/2026 4:46:15 PM  UserNum=0  AdjustmentCreate  API :: "Created by Sparkman DDS through API."
+    08/13/2026 4:46:11 PM  UserNum=0  AdjustmentCreate  API :: "Created by Sparkman DDS through API."
+```
+
+**Every API write is attributed to the single OD user bound to the developer key** —
+`UserNum: 0`, `LogSource: "API"`, and the human name only as free text in `LogText`. Open
+Dental's audit trail cannot distinguish which CareIN operator posted a payment. That
+attribution exists **only in our own `audit_log`**, which makes the platform's audit row the
+system of record for "who posted this", not OD's.
+
+⚠️ The plan's method for this test — *"read `/securitylogs` for the affected patient"* — does
+**not** work: `?PatNum=` is silently ignored (every row returns `PatNum: 0`, and a nonsense
+PatNum returns the same 100 rows). The rows above were found by scanning client-side. The
+endpoint also returns *only this developer key's own* activity, so it cannot be used to audit
+the practice at large.
+
+### Cleanup ledger
+
+| Row created | Disposition |
+|---|---|
+| `adjustment AdjNum=19109` (−1.00, DefNum 12) | **Offset** by AdjNum 19110 |
+| `adjustment AdjNum=19110` (+1.00, DefNum 260) | Reversal entry; **patient ledger nets 0.00** ✅ |
+| `document DocNum=309575` (1 MB PDF) | **DELETED** ✅ |
+| `document DocNum=309576` (5 MB PDF) | **DELETED** ✅ |
+| `document DocNum=309577` (10 MB PDF) | **DELETED** ✅ |
+
+Two adjustment rows remain on PatNum 12827 by design — no `DELETE /adjustments` exists, so
+the specced offsetting entry is the reversal. **Net financial effect on the test patient:
+zero.** No claim, claimproc, claimpayment, procedure or EOB attachment was created. No real
+patient's chart was touched, and no write of any kind was issued against any patient other
+than 12827.
