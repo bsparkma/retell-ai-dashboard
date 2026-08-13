@@ -234,14 +234,10 @@ test('getStatus reports OD service state without exposing the cloud singleton', 
   odCloud.apiUrl = OD_API_BASE;
   const saved = {
     useDatabase: odCloud.useDatabase,
-    lastSyncTime: odCloud.lastSyncTime,
-    syncInterval: odCloud.syncInterval,
     conflicts: odCloud.conflicts,
   };
   stubCloud('isEnabled', () => true);
   odCloud.useDatabase = false;
-  odCloud.lastSyncTime = '2026-06-02T00:00:00.000Z';
-  odCloud.syncInterval = {}; // truthy → syncActive
   odCloud.conflicts = new Map([['k', 'v']]);
 
   try {
@@ -249,16 +245,34 @@ test('getStatus reports OD service state without exposing the cloud singleton', 
     assert.equal(status.enabled, true);
     assert.equal(status.useDatabase, false);
     assert.equal(status.apiBase, OD_API_BASE);
-    assert.equal(status.lastSyncTime, '2026-06-02T00:00:00.000Z');
-    assert.equal(status.syncActive, true);
     assert.deepEqual(status.conflicts, [['k', 'v']]);
     assert.equal(status.mode, 'api');
   } finally {
     odCloud.useDatabase = saved.useDatabase;
-    odCloud.lastSyncTime = saved.lastSyncTime;
-    odCloud.syncInterval = saved.syncInterval;
     odCloud.conflicts = saved.conflicts;
   }
+});
+
+test('the removed 3-minute loop leaves no seam: no performSync, no lastSyncTime/syncActive', async () => {
+  registry.getTenantConnector = async () => apiConnector();
+  odCloud.apiUrl = OD_API_BASE;
+  stubCloud('isEnabled', () => true);
+
+  const status = await odAccess.getStatus(REQ);
+
+  // Both fields were written ONLY by the background loop. Reporting them after
+  // its removal would have meant `syncActive: false, lastSync: null` forever,
+  // which reads as a broken sync rather than an absent one. Whether OD can
+  // actually be reached is now answered per office by services/odHealthCheck.js.
+  assert.equal('lastSyncTime' in status, false);
+  assert.equal('syncActive' in status, false);
+
+  // The seam itself is gone, so a new route cannot re-arm the dead work by
+  // reaching for a wrapper that still exists.
+  assert.equal(typeof odAccess.performSync, 'undefined');
+  assert.equal(typeof odCloud.performSync, 'undefined');
+  assert.equal(typeof odCloud.startRealTimeSync, 'undefined');
+  assert.equal(typeof odCloud.getSyncData, 'undefined');
 });
 
 test('api mode: bookAppointment (write) delegates to the cloud client', async () => {

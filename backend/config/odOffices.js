@@ -257,9 +257,13 @@ function describeOffice(officeKey) {
  * Roland reuses the existing env-configured singleton (its env config IS
  * Roland's config), so Roland's behaviour — including the shared request
  * throttle and 429 backoff — is byte-for-byte what it is today. Any other
- * office gets its own instance built from its own customer key, with the
- * background sync loop OFF (that loop is a Roland-singleton concern and must
- * not be duplicated per office).
+ * office gets its own instance built from its own customer key.
+ *
+ * There is no longer a background loop to opt out of: the client polled itself
+ * every 3 minutes into an event nobody listened for, and that loop is gone. An
+ * OpenDentalService now makes a request only when asked. Per-office
+ * reachability is watched by services/odHealthCheck.js, which probes THROUGH
+ * this function so it observes exactly the clients the real operations use.
  *
  * @param {string} officeKey
  * @returns {OdOfficeHandle}
@@ -290,7 +294,7 @@ function getOdOffice(officeKey) {
   const client =
     odCloudSingleton.customerKey && odCloudSingleton.customerKey === customerKey
       ? odCloudSingleton
-      : new OpenDentalService({ customerKey, officeKey: key, autoSync: false });
+      : new OpenDentalService({ customerKey, officeKey: key });
 
   /** @type {OdOfficeHandle} */
   const handle = Object.freeze({

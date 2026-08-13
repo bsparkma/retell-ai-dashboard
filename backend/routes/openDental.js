@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const odAccess = require('../platform/odAccess');
+const odHealth = require('../services/odHealthCheck');
 const { requireOdWriteEnabled } = require('../middleware/envGuards');
 
 // All Open Dental access in this router goes through odAccess(req, ...), which
@@ -24,10 +25,15 @@ router.get('/health', async (req, res) => {
       status: connectionTest.success ? 'connected' : 'error',
       connectionType: connectionTest.connectionType || 'unknown',
       message: connectionTest.message,
-      lastSync: status.lastSyncTime,
       lastCheck: new Date().toISOString(),
       useDatabase: status.useDatabase,
-      patientCount: connectionTest.patientCount
+      patientCount: connectionTest.patientCount,
+      // Per-office reachability, as last OBSERVED by the background health
+      // check — not a fresh probe. This handler already makes a live
+      // testConnection call for the tenant; the office rows are the cheap,
+      // continuously-maintained view that covers every office rather than
+      // whichever one the tenant's primary connector happens to be.
+      offices: odHealth.snapshot()
     });
   } catch (error) {
     // Health stays 200 with a degraded payload (existing contract).
@@ -36,55 +42,60 @@ router.get('/health', async (req, res) => {
       status: 'error',
       message: error.publicMessage || error.message,
       lastCheck: new Date().toISOString(),
-      useDatabase: false
+      useDatabase: false,
+      offices: odHealth.snapshot()
     });
   }
 });
 
-// Get sync status and data
-router.get('/sync/status', async (req, res) => {
-  try {
-    const status = await odAccess.getStatus(req);
-    res.json({
-      enabled: status.enabled,
-      lastSync: status.lastSyncTime,
-      isActive: status.syncActive,
-      conflicts: status.conflicts,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(odAccess.httpStatusFor(error)).json({
-      success: false,
-      error: 'Failed to get sync status',
-      message: error.publicMessage || error.message
-    });
-  }
+/**
+ * Open Dental reachability, per office.
+ *
+ * This REPLACED "sync status". The old handler reported `lastSync` and
+ * `isActive` from the 3-minute background loop that has been removed — with the
+ * loop gone those fields could only ever have said `null` and `false`, which
+ * reads as a broken sync rather than an absent one.
+ *
+ * What the endpoint is actually asked is "can we talk to Open Dental right
+ * now", and that is what it answers now: one row per office, with the status,
+ * when it last changed, and how the last failure failed. No OD call is made
+ * here — the background checker maintains the state.
+ */
+router.get('/sync/status', (req, res) => {
+  res.json({
+    success: true,
+    ...odHealth.getStatus(),
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Force immediate sync
+/**
+ * Probe every office NOW instead of waiting for the next cycle.
+ *
+ * Replaces the old POST /sync/trigger, which called `performSync` — ~50 OD
+ * calls whose only product was an event with no listeners, behind a response
+ * that said "Sync triggered successfully". This costs one cheap read per office
+ * and returns the state it just measured, so the answer is about something that
+ * demonstrably happened.
+ *
+ * Safe to hammer: `checkOffice` refuses to start a second probe for an office
+ * that already has one in flight, so the cost is bounded by the offices, not by
+ * the clicks.
+ */
 router.post('/sync/trigger', async (req, res) => {
   try {
-    const status = await odAccess.getStatus(req);
-    if (!status.enabled) {
-      return res.status(503).json({
-        success: false,
-        message: 'Open Dental integration not configured'
-      });
-    }
-
-    await odAccess.performSync(req);
-
+    await odHealth.runCycle();
     res.json({
       success: true,
-      message: 'Sync triggered successfully',
+      message: 'Open Dental health probe complete',
+      ...odHealth.getStatus(),
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    console.error('Manual sync error:', error);
-    res.status(odAccess.httpStatusFor(error)).json({
+    console.error('OD health probe error:', error);
+    res.status(500).json({
       success: false,
-      message: 'Sync failed',
+      message: 'Open Dental health probe failed',
       error: error.message
     });
   }
@@ -102,7 +113,10 @@ router.get('/calendar', async (req, res) => {
     const viewMode = view || 'provider';
 
     // Get appointments, providers, operatories, and last-sync metadata.
-    const [appointments, providers, operatories, status] = await Promise.all([
+    // `odAccess.getStatus(req)` was in this Promise.all for exactly one field —
+    // `lastSyncTime` — which the removed background loop was the only writer of.
+    // Dropped along with it, saving a connector resolution per calendar load.
+    const [appointments, providers, operatories] = await Promise.all([
       odAccess.getCalendarAppointments(req, {
         date: targetDate,
         view: viewMode,
@@ -110,8 +124,7 @@ router.get('/calendar', async (req, res) => {
         operatoryIds: operatoryIds ? operatoryIds.split(',').map(id => parseInt(id)) : undefined
       }),
       odAccess.getProviders(req),
-      odAccess.getOperatories(req),
-      odAccess.getStatus(req)
+      odAccess.getOperatories(req)
     ]);
 
     res.json({
@@ -121,8 +134,7 @@ router.get('/calendar', async (req, res) => {
       appointments: appointments || [],
       providers: providers || [],
       operatories: operatories || [],
-      totalAppointments: appointments ? appointments.length : 0,
-      lastSync: status.lastSyncTime
+      totalAppointments: appointments ? appointments.length : 0
     });
 
   } catch (error) {
@@ -791,14 +803,14 @@ router.get('/ai/schedule-overview', async (req, res) => {
     const { date, providerId } = req.query;
     const targetDate = date || new Date().toISOString().split('T')[0];
 
-    const [appointments, providers, operatories, status] = await Promise.all([
+    // getStatus dropped here too — see the calendar handler above.
+    const [appointments, providers, operatories] = await Promise.all([
       odAccess.getCalendarAppointments(req, {
         date: targetDate,
         providerIds: providerId ? [parseInt(providerId)] : undefined
       }),
       odAccess.getProviders(req),
-      odAccess.getOperatories(req),
-      odAccess.getStatus(req)
+      odAccess.getOperatories(req)
     ]);
 
     // Calculate availability metrics
@@ -818,8 +830,7 @@ router.get('/ai/schedule-overview', async (req, res) => {
         bookedSlots,
         availabilityPercentage: Math.round(availabilityPercentage),
         hasAvailability: availabilityPercentage > 0
-      },
-      lastSync: status.lastSyncTime
+      }
     });
 
   } catch (error) {

@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 
 const { OpenDentalService } = require('./openDental');
 
-// A disabled, freshly-constructed instance (no env → enabled=false → no timers/axios).
+// A disabled, freshly-constructed instance (no env → enabled=false → no axios).
 // We drive it directly and stub `this.client` to assert request construction.
 function makeService(overrides = {}) {
   const svc = new OpenDentalService();
@@ -19,9 +19,11 @@ function makeService(overrides = {}) {
   svc.useDatabase = false;
   // Force strict (no-mock) mode regardless of the runner's env.
   svc.allowMock = () => false;
-  // Neutralize the post-write `setTimeout(() => performSync(), 1000)` so write tests
-  // don't leave a deferred timer firing against the stub after the test ends.
-  svc.performSync = async () => {};
+  // A `svc.performSync = async () => {}` stub used to live here, to neutralize
+  // the post-write `setTimeout(() => performSync(), 1000)` so a deferred timer
+  // couldn't fire against the stub after a test ended. Both the timer and
+  // performSync are gone with the 3-minute loop — an OpenDentalService now
+  // starts no work of its own, so there is nothing left to neutralize.
   Object.assign(svc, overrides);
   return svc;
 }

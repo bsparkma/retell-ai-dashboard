@@ -75,9 +75,25 @@ test('the two offices get genuinely distinct clients', () => {
   assert.notEqual(odOffices.getOdOffice('roland').client, odOffices.getOdOffice('valley').client);
 });
 
-test('a per-office client does not start its own background sync loop', () => {
-  // One 3-minute sync loop per connected office would multiply OD load for nothing.
-  assert.equal(odOffices.getOdOffice('valley').client.syncInterval, null);
+test('no OD client starts a background loop — not the singleton, not a per-office one', () => {
+  // This used to assert only that a PER-OFFICE client opted out (autoSync:false),
+  // because the singleton's own 3-minute loop was still running. That loop has
+  // been removed: it made ~25,000 OD calls a day into a `syncComplete` event
+  // with no listeners. An OpenDentalService is now passive — it makes a request
+  // when something asks it to and never on its own initiative — so the
+  // assertion is now the stronger one, across every client.
+  const clients = [
+    odOffices.getOdOffice('roland').client,
+    odOffices.getOdOffice('valley').client,
+  ];
+  for (const client of clients) {
+    assert.equal(client.syncInterval, undefined, 'no interval handle');
+    assert.equal(typeof client.startRealTimeSync, 'undefined');
+    assert.equal(typeof client.performSync, 'undefined');
+  }
+  // And nothing is listening for the event the loop used to emit, which is what
+  // made the loop pure waste. Per-office reachability is services/odHealthCheck.js.
+  assert.equal(odOffices.getOdOffice('roland').client.listenerCount('syncComplete'), 0);
 });
 
 // ── Fail closed, per office ─────────────────────────────────────────────────

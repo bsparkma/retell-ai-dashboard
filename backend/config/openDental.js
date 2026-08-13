@@ -17,20 +17,21 @@ function computeOdBackoffMs(attempt, retryAfterSec) {
 
 class OpenDentalService extends EventEmitter {
   /**
-   * @param {{ customerKey?: string, officeKey?: string|null, autoSync?: boolean }} [options]
+   * @param {{ customerKey?: string, officeKey?: string|null }} [options]
    *   Per-office overrides (per-location slice). Constructed with NO arguments
-   *   the behaviour is exactly what it always was — env credentials, background
-   *   sync on — so the singleton below and every existing caller (including the
-   *   TC module's odAccess path) are untouched. Only the office-keyed registry
-   *   config/odOffices.js passes options.
+   *   the behaviour is env credentials, exactly as the process-wide singleton
+   *   below and the TC module's odAccess path expect. Only the office-keyed
+   *   registry config/odOffices.js passes options.
    *
    *   - customerKey: bind this instance to ONE practice's OD database instead of
    *     the process-wide OPENDENTAL_CUSTOMER_KEY.
    *   - officeKey: the office this instance serves — carried so a client can be
    *     checked against the office an operation is for (odOffices.assertOfficeMatch).
-   *   - autoSync: false skips startRealTimeSync(). Per-office instances set this;
-   *     the 3-minute sync loop is a singleton concern and must not be duplicated
-   *     once per connected office.
+   *
+   *   There is no `autoSync` option any more, and no background loop for it to
+   *   switch off. An OpenDentalService is now a PASSIVE client: it makes a
+   *   request when something asks it to and never on its own initiative.
+   *   Per-office reachability is watched by services/odHealthCheck.js.
    */
   constructor(options = {}) {
     super();
@@ -73,8 +74,6 @@ class OpenDentalService extends EventEmitter {
       ? !!this.dbUrl
       : !!(this.apiUrl && (this.apiKey || (this.developerKey && this.customerKey)));
     
-    this.syncInterval = null;
-    this.lastSyncTime = null;
     this.conflicts = new Map(); // Track scheduling conflicts
     this.bookingQueue = []; // Queue for booking operations
     this.pool = null;
@@ -111,13 +110,6 @@ class OpenDentalService extends EventEmitter {
           headers
         });
         this.setupInterceptors();
-      }
-      
-      // Start real-time sync. Per-office instances opt out (autoSync:false) —
-      // one background loop per connected office would multiply OD load for no
-      // benefit; the loop belongs to the process-wide singleton.
-      if (options.autoSync !== false) {
-        this.startRealTimeSync();
       }
     }
   }
@@ -164,7 +156,13 @@ class OpenDentalService extends EventEmitter {
           this._odNextSlotAt = Math.max(now, this._odNextSlotAt) + MIN_INTERVAL_MS;
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
-        console.log(`[OD API] ${config.method?.toUpperCase()} ${config.url}`);
+        // `__odQuiet` is set by apiGetRaw({ quiet: true }) and today has exactly
+        // one user: the per-office health probe. It still THROTTLES and still
+        // RETRIES like every other request — only the per-request log lines are
+        // suppressed. A monitor that runs every 5 minutes forever must not be
+        // the loudest thing in the log, or it drowns the transitions it exists
+        // to report. Health state changes are logged by services/odHealthCheck.js.
+        if (!config.__odQuiet) console.log(`[OD API] ${config.method?.toUpperCase()} ${config.url}`);
         return config;
       },
       (error) => {
@@ -177,7 +175,9 @@ class OpenDentalService extends EventEmitter {
     const MAX_RETRIES = parseInt(process.env.OD_API_MAX_RETRIES || '4', 10);
     this.client.interceptors.response.use(
       (response) => {
-        console.log(`[OD API] Response: ${response.status} ${response.config.url}`);
+        if (!response.config?.__odQuiet) {
+          console.log(`[OD API] Response: ${response.status} ${response.config.url}`);
+        }
         return response;
       },
       async (error) => {
@@ -192,13 +192,23 @@ class OpenDentalService extends EventEmitter {
             const retryAfterSec = parseInt(error.response.headers?.['retry-after'], 10);
             const backoffMs = computeOdBackoffMs(config.__odRetry, retryAfterSec);
             const jitter = Math.floor(Math.random() * 250);
-            console.warn(`[OD API] 429 rate-limited on ${config.url} — retry ${config.__odRetry}/${MAX_RETRIES} in ${backoffMs + jitter}ms`);
+            if (!config.__odQuiet) {
+              console.warn(`[OD API] 429 rate-limited on ${config.url} — retry ${config.__odRetry}/${MAX_RETRIES} in ${backoffMs + jitter}ms`);
+            }
             await new Promise((r) => setTimeout(r, backoffMs + jitter));
             return this.client(config);
           }
-          console.error(`[OD API] 429 rate-limited on ${config.url} — retries exhausted (${MAX_RETRIES})`);
+          if (!config.__odQuiet) {
+            console.error(`[OD API] 429 rate-limited on ${config.url} — retries exhausted (${MAX_RETRIES})`);
+          }
         }
-        console.error('[OD API] Response Error:', error.response?.data || error.message);
+        // A quiet request reports its own failure through its caller's state
+        // machine. Logging every failed probe here is exactly the per-failure
+        // spam the health check was built to replace: an office that is down
+        // stays down, and would otherwise print a line every 5 minutes forever.
+        if (!config?.__odQuiet) {
+          console.error('[OD API] Response Error:', error.response?.data || error.message);
+        }
         this.handleApiError(error);
         return Promise.reject(error);
       }
@@ -225,77 +235,28 @@ class OpenDentalService extends EventEmitter {
   }
 
   // ============================================================================
-  // REAL-TIME SYNC FUNCTIONALITY
+  // REMOVED: the 3-minute background "real-time sync" loop
+  //
+  // `startRealTimeSync()` armed a setInterval in the constructor that called
+  // `performSync()` every 3 minutes. Each pass fetched a day of appointments
+  // (plus one patient lookup per unique PatNum on it), all providers, all
+  // operatories and recently-changed patients — roughly 50 Open Dental API
+  // calls, 480 times a day, ~25,000 calls — and published the result as a
+  // `syncComplete` event with ZERO listeners in the process. `getSyncData`,
+  // `getRecentPatientUpdates` and `lastSyncTime` existed only to feed it.
+  //
+  // It was not merely waste: it was also, by accident, the only thing that
+  // noticed an Open Dental outage, because its error spam was visible in the
+  // container log when Roland's eConnector went down. That job is now done
+  // deliberately and per office by services/odHealthCheck.js, which sees BOTH
+  // offices, names the one that is down, says since when, and costs ~576 calls
+  // a day instead of ~25,000.
+  //
+  // Do not reintroduce a client-owned polling loop here. A client that polls
+  // itself cannot be scoped to an office (the singleton has no office), cannot
+  // be stopped on SIGTERM by anything but a shutdown hook, and multiplies by
+  // the number of connected practices.
   // ============================================================================
-
-  startRealTimeSync(intervalMinutes = 3) {
-    if (!this.enabled) return;
-    
-    console.log(`[OD Sync] Starting real-time sync every ${intervalMinutes} minutes`);
-    
-    // Initial sync
-    this.performSync();
-    
-    // Set up interval
-    this.syncInterval = setInterval(() => {
-      this.performSync();
-    }, intervalMinutes * 60 * 1000);
-  }
-
-  stopRealTimeSync() {
-    if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = null;
-      console.log('[OD Sync] Real-time sync stopped');
-    }
-  }
-
-  async performSync() {
-    try {
-      console.log('[OD Sync] Starting sync operation...');
-      
-      const syncData = await this.getSyncData();
-      
-      // Update last sync time
-      this.lastSyncTime = new Date().toISOString();
-      
-      // Emit sync event with data
-      this.emit('syncComplete', {
-        timestamp: this.lastSyncTime,
-        data: syncData
-      });
-      
-      console.log('[OD Sync] Sync completed successfully');
-      
-    } catch (error) {
-      console.error('[OD Sync] Sync failed:', error.message);
-      this.emit('syncError', {
-        timestamp: new Date().toISOString(),
-        error: error.message
-      });
-    }
-  }
-
-  async getSyncData() {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    const [appointments, providers, operatories, patients] = await Promise.all([
-      this.getAppointmentsForDateRange(today, tomorrow),
-      this.getProviders(),
-      this.getOperatories(),
-      this.getRecentPatientUpdates()
-    ]);
-
-    return {
-      appointments,
-      providers,
-      operatories,
-      patients,
-      lastSync: this.lastSyncTime
-    };
-  }
 
   // ============================================================================
   // ENHANCED CALENDAR DATA RETRIEVAL
@@ -832,8 +793,10 @@ class OpenDentalService extends EventEmitter {
         timestamp: new Date().toISOString()
       });
 
-      // Trigger immediate sync
-      setTimeout(() => this.performSync(), 1000);
+      // REMOVED: `setTimeout(() => this.performSync(), 1000)`. It re-pulled the
+      // whole day (~50 OD calls) after every appointment write so that the dead
+      // `syncComplete` event would carry fresh data. Nothing consumed it, so the
+      // write's own response was — and remains — the only thing a caller sees.
 
       return {
         success: true,
@@ -925,8 +888,10 @@ class OpenDentalService extends EventEmitter {
         timestamp: new Date().toISOString()
       });
 
-      // Trigger immediate sync
-      setTimeout(() => this.performSync(), 1000);
+      // REMOVED: `setTimeout(() => this.performSync(), 1000)`. It re-pulled the
+      // whole day (~50 OD calls) after every appointment write so that the dead
+      // `syncComplete` event would carry fresh data. Nothing consumed it, so the
+      // write's own response was — and remains — the only thing a caller sees.
 
       return {
         success: true,
@@ -988,8 +953,10 @@ class OpenDentalService extends EventEmitter {
         timestamp: new Date().toISOString()
       });
 
-      // Trigger immediate sync
-      setTimeout(() => this.performSync(), 1000);
+      // REMOVED: `setTimeout(() => this.performSync(), 1000)`. It re-pulled the
+      // whole day (~50 OD calls) after every appointment write so that the dead
+      // `syncComplete` event would carry fresh data. Nothing consumed it, so the
+      // write's own response was — and remains — the only thing a caller sees.
 
       return {
         success: true,
@@ -1504,6 +1471,9 @@ class OpenDentalService extends EventEmitter {
       const response = await this.client.get(path, {
         params: clean,
         ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        // Carried through to the interceptors, which skip their per-request
+        // console lines when it is set. See setupInterceptors().
+        ...(opts.quiet ? { __odQuiet: true } : {}),
       });
       return { ok: true, status: response.status, data: response.data };
     } catch (error) {
@@ -1751,31 +1721,13 @@ class OpenDentalService extends EventEmitter {
   // MISSING HELPER METHODS
   // ============================================================================
 
-  async getRecentPatientUpdates() {
-    // Get patients updated in the last sync period
-    if (!this.enabled) return [];
-    
-    try {
-      // OD has no `updatedSince` param (it 400s). The changed-since mechanism is the
-      // DateTStamp filter ("yyyy-MM-dd HH:mm:ss") on GET /patients/Simple, paired with
-      // the serverDateTime cursor returned by OD. See OD_API_CONTRACT §6/§7.
-      const since = moment(this.lastSyncTime || Date.now() - 24 * 60 * 60 * 1000)
-        .format('YYYY-MM-DD HH:mm:ss');
-      const response = await this.client.get('/patients/Simple', {
-        params: { DateTStamp: since }
-      });
+  // REMOVED with the 3-minute loop: `getRecentPatientUpdates()`. Its only caller
+  // was `getSyncData()`, and its `since` cursor was `this.lastSyncTime` — a field
+  // only `performSync()` ever wrote. With the loop gone it had no caller and no
+  // cursor. The changed-since mechanism it documented (the DateTStamp filter on
+  // GET /patients/Simple; there is no `updatedSince` param, it 400s) is recorded
+  // in docs/OD_API_CONTRACT.md §6/§7 for whoever needs it next.
 
-      const list = Array.isArray(response.data)
-        ? response.data
-        : (response.data?.value?.data ?? response.data?.data ?? []);
-      return this.transformPatientData(Array.isArray(list) ? list : []);
-    } catch (error) {
-      // Background sync read — log and degrade to empty (no longer a guaranteed 400),
-      // rather than aborting the whole sync cycle.
-      console.error('[OD Patients] Recent patient updates failed:', error.message);
-      return [];
-    }
-  }
 
   async getSchedulingRules() {
     // Get office scheduling preferences and rules
@@ -1954,8 +1906,9 @@ class OpenDentalService extends EventEmitter {
   }
 
   async shutdown() {
-    this.stopRealTimeSync();
-    
+    // No timer to clear any more — this client owns no background work. The one
+    // periodic OD job in the process is services/odHealthCheck.js, and server.js
+    // stops it on SIGTERM/SIGINT alongside the retention scheduler.
     if (this.pool) {
       try {
         await this.pool.end();
