@@ -167,12 +167,26 @@ export interface TenantUser {
   status: TenantUserStatus;
   /** null until the person has actually signed in at least once. */
   lastLoginAt: string | null;
+  /**
+   * The office this person usually works at, or null for none.
+   *
+   * A DEFAULT for their office picker — it grants and denies nothing, and every
+   * office stays reachable. null is a real answer, not a gap: shared accounts
+   * (temp@) are meant to have none.
+   */
+  homeOffice: string | null;
 }
 
 export interface TenantUsersResponse {
   users: TenantUser[];
   /** The server's role vocabulary — the picker's options come from here. */
   roles: TenantUserRole[];
+  /**
+   * The offices a home office may be set to, from the server's config. The
+   * page must not carry its own copy: opening an office is a config change,
+   * and a hardcoded list would silently omit the new one.
+   */
+  offices: { officeId: string; officeName: string }[];
   /** The signed-in admin's own address, so the UI can mark their row. */
   actor: string;
 }
@@ -1389,10 +1403,13 @@ export const api = {
     return data.user;
   },
 
-  /** Change a user's role and/or status. Server enforces every guard. */
+  /**
+   * Change a user's role, status and/or home office. Server enforces every
+   * guard. `homeOffice: null` CLEARS it — an explicit null, not an omitted key.
+   */
   async updateUser(
     email: string,
-    patch: { role?: TenantUserRole; status?: TenantUserStatus },
+    patch: { role?: TenantUserRole; status?: TenantUserStatus; homeOffice?: string | null },
   ): Promise<TenantUser> {
     const data = await request<{ user: TenantUser }>(`/users/${encodeURIComponent(email)}`, {
       method: "PATCH",

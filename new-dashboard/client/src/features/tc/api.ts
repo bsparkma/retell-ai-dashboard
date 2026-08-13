@@ -582,6 +582,11 @@ export interface TcMyIntake {
   patientInterestLevel: z.infer<typeof PatientInterestLevel>;
   patientName: string;
   caseStatus: CaseStatusId;
+  /**
+   * The Open Dental patient attached at intake, or null. Only meaningful with
+   * `officeId` — PatNum numbering restarts in every OD database.
+   */
+  odPatientId: number | null;
 }
 
 export interface TcInboxIntake {
@@ -611,6 +616,12 @@ export interface TcInboxIntake {
   category: z.infer<typeof CaseCategory>;
   urgency: UrgencyId;
   diagnosingProvider: string | null;
+  /**
+   * The Open Dental patient attached at intake, or null. Shown on the card so
+   * the TC does not look the same person up a second time before claiming.
+   * Only meaningful with `officeId`.
+   */
+  odPatientId: number | null;
 }
 
 interface IntakeRowBase {
@@ -649,7 +660,13 @@ export function submitHygieneIntake(
 }
 
 export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
-  return tcRequest<{ intakes: (IntakeRowBase & { patient_name: string; case_status: CaseStatusId })[] }>(
+  return tcRequest<{
+    intakes: (IntakeRowBase & {
+      patient_name: string;
+      case_status: CaseStatusId;
+      od_patient_id: number | null;
+    })[];
+  }>(
     "/tc/hygiene-intakes/mine",
     { office },
   ).then((r) =>
@@ -668,6 +685,7 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       patientInterestLevel: row.patient_interest_level,
       patientName: row.patient_name,
       caseStatus: row.case_status,
+      odPatientId: row.od_patient_id ?? null,
     })),
   );
 }
@@ -700,7 +718,11 @@ export function hygieneSubmissions(
   hygienist?: string,
 ): Promise<{ intakes: TcMyIntake[]; hygienists: string[] }> {
   return tcRequest<{
-    intakes: (IntakeRowBase & { patient_name: string; case_status: CaseStatusId })[];
+    intakes: (IntakeRowBase & {
+      patient_name: string;
+      case_status: CaseStatusId;
+      od_patient_id: number | null;
+    })[];
     hygienists: string[];
   }>("/tc/hygiene-intakes", {
     office,
@@ -721,6 +743,7 @@ export function hygieneSubmissions(
       patientInterestLevel: row.patient_interest_level,
       patientName: row.patient_name,
       caseStatus: row.case_status,
+      odPatientId: row.od_patient_id ?? null,
     })),
     hygienists: r.hygienists,
   }));
@@ -735,6 +758,7 @@ export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
       category: z.infer<typeof CaseCategory>;
       urgency: UrgencyId;
       diagnosing_provider: string | null;
+      od_patient_id: number | null;
     })[];
   }>("/tc/hygiene-intakes/inbox", { office }).then((r) =>
     r.inbox.map((row) => ({
@@ -763,6 +787,7 @@ export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
       category: row.category,
       urgency: row.urgency,
       diagnosingProvider: row.diagnosing_provider,
+      odPatientId: row.od_patient_id ?? null,
     })),
   );
 }
@@ -1249,6 +1274,57 @@ export function odSearchPatients(
     office,
     params: { q: query, limit },
   });
+}
+
+/** The subset `GET /tc/od/patient-search` serves. See odAttachSearch below. */
+interface OdPatientBrief {
+  patNum: number;
+  firstName: string;
+  lastName: string;
+  displayName: string;
+  birthdate: string;
+}
+
+/**
+ * Patient search for ATTACHING a patient to a record — the one Open Dental read
+ * the `hygiene` role holds.
+ *
+ * Differs from odSearchPatients above in two ways that both matter:
+ *
+ *  - It is gated `tc.hygiene`, so a hygienist can use it. Everything else under
+ *    /tc/od (treatment plans, unaccepted money, COB, insurance) stays tc.full.
+ *  - The server resolves the Open Dental client PER OFFICE, so it works at
+ *    Riley as well as Roland. odSearchPatients goes through the tenant-level
+ *    seam and is Roland-only.
+ *
+ * It deliberately returns LESS: PatNum, name and date of birth — what it takes
+ * to attach the right person and to tell two same-named patients apart.
+ * Phone/email/status come back as empty strings so the shared `OdPatient` shape
+ * stays ONE type across the module. Callers must therefore read a blank as "not
+ * fetched", never as "not on file", and must not overwrite typed values with it
+ * (see hygiene/IntakeForm.tsx).
+ *
+ * ⚠️ OD matches name fields by PREFIX — "Smith" also returns "Smithson" — so
+ * the caller must show DOB and let a human choose. Never auto-select result[0].
+ */
+export function odAttachSearch(
+  office: OfficeId,
+  query: string,
+  limit?: number,
+): Promise<OdPatientSearchResult> {
+  return tcRequest<{
+    success: true;
+    query: string;
+    matchMode: string;
+    patients: OdPatientBrief[];
+    truncated: boolean;
+  }>("/tc/od/patient-search", { office, params: { q: query, limit } }).then((r) => ({
+    query: r.query,
+    matchMode: r.matchMode,
+    truncated: r.truncated,
+    notes: [],
+    patients: r.patients.map((p) => ({ ...p, phone: "", email: "", status: "" })),
+  }));
 }
 
 export function odGetPatient(office: OfficeId, patNum: number): Promise<OdPatient> {

@@ -177,6 +177,17 @@ export interface OdPatientSearchProps {
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
+  /**
+   * Which search endpoint to use. Defaults to the tc.full `odSearchPatients`.
+   * The hygiene intake passes `odAttachSearch` instead: same picker, a route a
+   * hygienist may actually reach, resolved per office. The component is
+   * identical either way — a brief result simply has blank phone/email, and the
+   * rows below already omit those when empty.
+   */
+  search?: (office: OfficeId, query: string) => Promise<{
+    patients: OdPatient[];
+    truncated: boolean;
+  }>;
 }
 
 /**
@@ -197,6 +208,7 @@ export function OdPatientSearch({
   placeholder = "Last name, or first name",
   autoFocus = false,
   className,
+  search = odSearchPatients,
 }: OdPatientSearchProps) {
   const [term, setTerm] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
@@ -220,7 +232,7 @@ export function OdPatientSearch({
       }
       setLoading(true);
       setError(null);
-      odSearchPatients(office, q.trim())
+      search(office, q.trim())
         .then((res) => {
           if (seq !== requestSeq.current) return;
           setResults(res.patients);
@@ -243,7 +255,7 @@ export function OdPatientSearch({
           if (seq === requestSeq.current) setLoading(false);
         });
     },
-    [office],
+    [office, search],
   );
 
   useEffect(() => {

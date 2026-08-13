@@ -50,6 +50,7 @@ import {
 } from "@shared/tc/contract";
 import {
   hygienistRoster,
+  odAttachSearch,
   submitHygieneIntake,
   tcErrorMessage,
   type OdPatient,
@@ -244,10 +245,23 @@ export function IntakeForm({ office }: IntakeFormProps) {
    * Link an Open Dental patient. Prefills the identity fields but does NOT lock
    * them — a chairside correction (a preferred name, a better phone number) is a
    * normal thing to make, and the PatNum link survives it.
+   *
+   * PREFILL, NOT OVERWRITE. The hygiene-safe search returns only PatNum, name
+   * and DOB, so phone and email come back blank. A blank means "not fetched",
+   * never "not on file" — writing it over a number the hygienist just typed
+   * would silently destroy chairside work. Only non-empty OD values are applied.
    */
   const linkOdPatient = (p: OdPatient) => {
     setOdPatient(p);
-    setDraft((prev) => ({ ...prev, ...fieldsFromOdPatient(p) }));
+    setDraft((prev) => {
+      const next = { ...prev, odPatientId: p.patNum };
+      for (const [key, value] of Object.entries(fieldsFromOdPatient(p))) {
+        if (typeof value === "string" && value !== "") {
+          (next as Record<string, unknown>)[key] = value;
+        }
+      }
+      return next;
+    });
   };
 
   const unlinkOdPatient = () => {
@@ -363,12 +377,16 @@ export function IntakeForm({ office }: IntakeFormProps) {
         title="Patient"
         subtitle={submitterName ? `Submitting as ${submitterName}` : undefined}
       >
-        {/* Read-only OD link. Optional: the chairside path works without it. */}
+        {/* Read-only OD link. Optional: the chairside path works without it.
+            `odAttachSearch` rather than the tc.full search — this form is the
+            hygiene surface, and it resolves the OD client per office so Riley
+            works as well as Roland. */}
         <OdPatientSearch
           office={office}
           selected={odPatient}
           onSelect={linkOdPatient}
           onClear={unlinkOdPatient}
+          search={odAttachSearch}
           label="Link an Open Dental patient (optional)"
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

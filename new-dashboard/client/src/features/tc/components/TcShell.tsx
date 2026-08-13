@@ -12,7 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Building2, Loader2 } from "lucide-react";
+import { AlertTriangle, Building2, Loader2 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { CASE_STATUSES, PREAUTH_STATUSES, URGENCY_BADGE, URGENCY_LABELS } from "../status";
 import type { CaseStatusId, PreauthStatusId, UrgencyId } from "../status";
@@ -35,20 +35,51 @@ export function useTcOffice(): OfficeId | null {
 }
 
 /**
- * Inline prompt, not an error. Three states:
+ * Inline prompt, not an error. Four states:
  *  - loading: the office roster hasn't arrived yet
- *  - no TC offices at all: honest dead end (genuine zero-office gate)
+ *  - the roster FETCH FAILED: an error, with a retry
+ *  - the roster loaded and is genuinely empty: honest dead end
  *  - otherwise: pick one of this tenant's offices (also the escape hatch on
  *    routes where the sidebar picker is hidden — see TC_SHARED_ROUTES)
+ *
+ * The failed/empty split is load-bearing, not tidiness. When the roster
+ * endpoint 403'd for the hygiene role, this gate reported "No offices
+ * configured" on every hygiene page — a sentence about SETUP describing an
+ * AUTHORIZATION bug, which is why it survived unnoticed. A fetch that failed
+ * must say so and offer a retry; only a roster that actually came back empty
+ * may claim the practice has no offices.
  */
 export function TcOfficeGate({ loading = false }: { loading?: boolean }) {
-  const { offices, setOffice } = useOffice();
+  const { offices, setOffice, loading: rosterLoading, error, reload } = useOffice();
   const tcOffices = offices.filter((o) => OfficeId.safeParse(o.officeId).success);
 
-  if (loading && tcOffices.length === 0) {
+  if ((loading || rosterLoading) && tcOffices.length === 0 && !error) {
     return (
       <div className="flex items-center justify-center py-24 text-muted-foreground">
         <Loader2 className="w-5 h-5 animate-spin" />
+      </div>
+    );
+  }
+
+  if (error && tcOffices.length === 0) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center gap-4 py-24 text-center"
+        data-testid="tc-office-roster-error"
+      >
+        <AlertTriangle size={32} className="text-muted-foreground" />
+        <div>
+          <h2 className="text-lg font-semibold text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
+            Couldn&apos;t load your offices
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+            {error} — this is a problem loading the office list, not a sign that your practice has
+            none set up.
+          </p>
+        </div>
+        <Button variant="outline" onClick={reload}>
+          Try again
+        </Button>
       </div>
     );
   }
@@ -62,7 +93,7 @@ export function TcOfficeGate({ loading = false }: { loading?: boolean }) {
             No offices configured
           </h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-            Treatment Coordinator has no offices set up for this practice yet.
+            Your practice has no offices set up for Treatment Coordinator yet.
           </p>
         </div>
       </div>

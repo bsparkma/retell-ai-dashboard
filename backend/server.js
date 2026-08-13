@@ -268,13 +268,23 @@ async function bootstrap() {
     mangoRouter
   );
   app.use('/api/callbacks', voiceModule, voiceSurface, callbacksRouter);
-  // GET /sync-status is exempt: it is the "last synced" caption, carries no PHI,
-  // and every signed-in user's shell polls it. Everything else here is gated,
-  // and the paid/PHI-writing routes carry stronger gates inside the router.
+  // Two exempt paths, both SHELL CONFIG rather than call data:
+  //
+  //   /sync-status  the "last synced" caption, polled by every signed-in shell.
+  //   /offices      the office roster (key, display name, odConnected). Every
+  //                 office-scoped surface in the product has to know the
+  //                 practice's offices before it can render a picker — including
+  //                 the TC and hygiene pages, whose users hold no voice
+  //                 permission at all. Gating this on voice.read is what made
+  //                 every hygiene page show the zero-office dead end.
+  //
+  // Neither carries PHI. Everything else here is gated, and the paid/PHI-writing
+  // routes carry stronger gates inside the router. The MODULE guard still applies
+  // to both: this opens the roster to every USER, not to every tenant.
   app.use(
     '/api/unified-calls',
     voiceModule,
-    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/sync-status$/] }),
+    requireReadWrite('voice.read', 'voice.write', { exempt: [/^\/sync-status$/, /^\/offices$/] }),
     unifiedCallsRouter
   );
   app.use('/api/analytics', voiceModule, voiceSurface, analyticsRouter);

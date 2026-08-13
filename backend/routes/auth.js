@@ -5,7 +5,7 @@
  *
  *   GET  /auth/login     -> redirect to Microsoft sign-in (auth-code + PKCE)
  *   GET  /auth/callback  -> exchange code, enforce tenant+domain, set session cookie
- *   GET  /auth/me        -> { authenticated, user?, tenant?, role, isSuperAdmin,
+ *   GET  /auth/me        -> { authenticated, user?, tenant?, role, isSuperAdmin, homeOffice,
  *                            permissions[] } from the session cookie
  *   POST /auth/logout    -> clear the session cookie (JSON)
  *   GET  /auth/logout    -> clear cookie + redirect (browser convenience)
@@ -142,10 +142,12 @@ router.get('/me', async (req, res) => {
   let tenant = null;
   let role = null;
   let isSuperAdmin = false;
+  let homeOffice = null;
   try {
     const resolved = await resolveUserContext({ email: claims.email, tenantId: claims.tid });
     role = resolved.role;
     isSuperAdmin = resolved.isSuperAdmin;
+    homeOffice = resolved.homeOffice;
     if (resolved.tenant) {
       let modules = [];
       try {
@@ -168,6 +170,10 @@ router.get('/me', async (req, res) => {
     role,
     isSuperAdmin,
     permissions: permissionsForRole(role, { isSuperAdmin }),
+    // Which office to DEFAULT their picker to. Unlike `permissions` this hides
+    // nothing and grants nothing — every office stays reachable, so a client
+    // that ignores it simply starts on "all offices".
+    homeOffice,
   });
 });
 
