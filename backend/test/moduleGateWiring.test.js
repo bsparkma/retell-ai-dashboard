@@ -80,6 +80,22 @@ test('server.js: every tenant-scoped voice mount carries the voice module guard'
   }
 });
 
+test('server.js: /api/platform carries the platform gate and NO module guard', () => {
+  const line = mountLine('/api/platform');
+  // Circular otherwise: the console is the surface that decides which modules a
+  // practice has, so it cannot itself be gated on having one.
+  assert.ok(
+    !/requireModule|voiceModule/.test(line),
+    `/api/platform must carry no module guard — it is the surface that sets entitlements: ${line}`
+  );
+  // Tenant 'admin' is not enough, and requireSuperAdmin() additionally refuses
+  // the shared machine token (config/permissions.js).
+  assert.ok(
+    /requireSuperAdmin\(\)/.test(line),
+    `/api/platform must be behind requireSuperAdmin(): ${line}`
+  );
+});
+
 test("server.js: /api/mango guard exempts the tenant-exempt dev seeder", () => {
   const line = mountLine('/api/mango');
   assert.ok(

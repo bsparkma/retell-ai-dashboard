@@ -92,6 +92,29 @@ class RetentionScheduler {
    * @returns {Promise<{stubbed: number, skipped?: string}>}
    */
   async runNow() {
+    // Re-read the stored window FIRST, every time. The console can change it
+    // between two nightly runs, and a job that destroyed an extra 60 days of
+    // records because it was holding a boot-time snapshot of "30" is precisely
+    // the bug this refresh exists to make impossible. Cheap: one indexed row
+    // from the control plane, once a night.
+    await config.refreshFromDb();
+
+    // Never read the policy successfully since boot ⇒ we cannot rule out a
+    // stored window that disagrees with the environment, and the disagreement
+    // is measured in months of records. Refuse rather than guess.
+    if (!config.policyKnown()) {
+      console.warn(
+        '[retention] SKIPPED — the retention window could not be read from the control ' +
+          'plane, so the current policy is unknown. Nothing was pruned.'
+      );
+      return {
+        skipped: 'RETENTION_POLICY_UNKNOWN',
+        scanned: 0,
+        stubbed: 0,
+        alreadyStubbed: 0,
+      };
+    }
+
     if (!config.isEnabled()) {
       return { skipped: 'RETENTION_DISABLED', scanned: 0, stubbed: 0, alreadyStubbed: 0 };
     }
@@ -107,7 +130,20 @@ class RetentionScheduler {
     return result;
   }
 
-  /** @returns {{running: boolean, schedule: string, timezone: string, retentionDays: number, lastRun: object|null}} */
+  /**
+   * A SNAPSHOT, not a fresh read. `runNow()` is the only thing that refreshes
+   * from the control plane, because that is the only place a stale number could
+   * destroy something; a status panel showing a value a few seconds old costs
+   * nothing, and making a status endpoint hit the control DB would put a
+   * database round trip behind every poll of the admin page.
+   *
+   * `source` and `policyKnown` are surfaced so the panel can say WHY the number
+   * is what it is — "the environment says 30 because nobody has chosen" reads
+   * very differently from "somebody set 30 last Tuesday".
+   *
+   * @returns {{running: boolean, schedule: string, timezone: string, retentionDays: number,
+   *            enabled: boolean, source: string, policyKnown: boolean, lastRun: object|null}}
+   */
   getStatus() {
     return {
       running: Boolean(this.job),
@@ -115,6 +151,8 @@ class RetentionScheduler {
       timezone: config.timezone(),
       retentionDays: config.retentionDays(),
       enabled: config.isEnabled(),
+      source: config.retentionSource(),
+      policyKnown: config.policyKnown(),
       lastRun: this.lastRun,
     };
   }

@@ -63,6 +63,7 @@ Middleware order in `backend/server.js`: `/auth` (outside `/api` entirely) →
 | `/api/calls`, `/api/agents`, `/api/opendental`, `/api/opendental-sync`, `/api/live-calls`, `/api/admin`, `/api/callbacks`, `/api/unified-calls`, `/api/analytics`, `/api/retell-tools-config`, `/api/agent-config`, `/api/notifications-config`, `/api/slot-markers` | `voice` |
 | `/api/mango` | `voice`, exempting `/dev/seed` |
 | `/api/tc` | `tc` — **ships dark**, no tenant is entitled yet, so everything 403s by design |
+| `/api/platform` | **none** — the platform console (PR C). No module guard is deliberate: this is the surface that *sets* entitlements, so gating it on one would be circular. Behind `requireSuperAdmin()`, which a tenant `admin` and the shared machine token both fail. See [docs/PLATFORM_CONSOLE.md](docs/PLATFORM_CONSOLE.md) |
 | `/api/webhooks` | **none** — HMAC-verified, carries no tenant |
 | `/api/retell-tools` | **none** — Retell HMAC-verified, live agent path |
 | `/api/health` | none |
@@ -568,7 +569,7 @@ from Key Vault, never from a `.env`.
 | `PORT` | `5003` prod / `5103` otherwise | Backend listen port. |
 | `NODE_ENV` | unset | `production` turns on Key Vault secret loading, `cookieSecure`, and the per-tenant audit startup gate, and refuses the OD mock. |
 | `CALLSTORE_DIR` | `<repo>/data` | Where `unified_calls.json` and the small durable-state docs live. **Prod sets `/data`** to land on the AzureFile volume. Unset in a container = wiped on every image deploy. Purge backups are written here too. |
-| `CALL_RETENTION_DAYS` | `30` | How long a call keeps its full record before being reduced to an audit stub. **`0` = never prune** (the kill switch). A non-numeric value falls back to 30 rather than to NaN, which would silently disable retention. |
+| `CALL_RETENTION_DAYS` | `30` | How long a call keeps its full record before being reduced to an audit stub. **`0` = never prune** (the kill switch). A non-numeric value falls back to 30 rather than to NaN, which would silently disable retention. **Now a FALLBACK, not the top of the chain**: `platform_setting['call_retention_days']` outranks it when a row exists (the platform console writes that row; the migration seeds none, so an untouched environment behaves exactly as before). Full precedence in [docs/PLATFORM_CONSOLE.md](docs/PLATFORM_CONSOLE.md). If the control plane has never been readable since boot, the nightly prune **skips** rather than falling back to this value. |
 | `CALL_RETENTION_SCHEDULE` | `30 3 * * *` | Cron for the nightly prune. Unlike `MANGO_SYNC_SCHEDULE`, an **invalid** expression falls back to the default rather than leaving the job unscheduled — a job that destroys data must not silently never run. |
 | `DASHBOARD_API_TOKEN` 🔒 | — | Shared bearer for `/api` and the Socket.IO handshake. Required in production; the server 503s without it. |
 | `INTERNAL_API_BASE_URL` | derived from `PORT` | Only needed if the modules are ever split across containers. Unset is the norm. |
@@ -662,6 +663,7 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 | Call lifecycle diagram, environments table, office model | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Deploy pipeline, gotchas, dev/prod folder rules | [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) |
 | Module entitlement | [docs/MODULES.md](docs/MODULES.md) |
+| Platform console, retention window precedence | [docs/PLATFORM_CONSOLE.md](docs/PLATFORM_CONSOLE.md) |
 | Per-office OD proof and validation | [docs/PER_LOCATION_OD_VALIDATION.md](docs/PER_LOCATION_OD_VALIDATION.md) |
 | OD cloud API contract (authoritative) | [docs/OD_API_CONTRACT.md](docs/OD_API_CONTRACT.md) |
 | Mango ingestion + transcription | [docs/MANGO_TRANSCRIPTION.md](docs/MANGO_TRANSCRIPTION.md) |
