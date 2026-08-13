@@ -186,3 +186,153 @@ test('re-running the live purge is a harmless no-op', async () => {
 
   assert.equal(second.deleted, 0);
 });
+
+// --- the backup, on a filesystem that refuses copyFile -----------------------
+//
+// The staging rehearsal of the live purge failed with
+//   BACKUP_FAILED: could not back up the call store: EPERM: operation not permitted
+// out of fs.copyFile against the AzureFile (CIFS) mount at /data. Fail-closed did
+// its job — nothing was deleted — but the purge could not run at all.
+//
+// copyFile leans on kernel copy / permission-preservation paths that the mount
+// refuses. Plain readFile/writeFile to that same directory demonstrably work:
+// persist() does exactly that, constantly, in prod.
+
+/** Patch one method on node:fs/promises for the duration of a test. */
+function patchFs(name, impl) {
+  const real = fs[name];
+  fs[name] = impl(real);
+  return () => { fs[name] = real; };
+}
+
+/** Is this the backup file (as opposed to the store persist() writes)? */
+const isBackup = (p) => String(p).includes('unified_calls.backup-');
+
+test('the backup never uses copyFile — the AzureFile mount refuses it (EPERM)', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  // Reproduce the mount's behaviour exactly: copyFile is simply not available.
+  const restore = patchFs('copyFile', () => async () => {
+    const err = new Error('EPERM: operation not permitted, copyfile');
+    err.code = 'EPERM';
+    throw err;
+  });
+
+  try {
+    const result = await legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' });
+
+    assert.equal(result.deleted, 1, 'the purge must complete on a mount with no copyFile');
+    const backup = JSON.parse(await fs.readFile(result.backupPath, 'utf-8'));
+    assert.equal(backup.calls.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('the backup round-trips the whole store, byte for byte', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  seedUnknown('mango_call_0002', '2026-02-05T15:00:00.000Z');
+  seedUnknown('mango_call_0003', '2026-03-05T15:00:00.000Z');
+
+  const result = await legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' });
+
+  const original = await fs.readFile(store.persistPath, 'utf-8');
+  const backup = await fs.readFile(result.backupPath, 'utf-8');
+  assert.notEqual(original, backup, 'the store was rewritten by the purge; the backup was not');
+
+  const parsed = JSON.parse(backup);
+  assert.deepEqual(
+    parsed.calls.map((c) => c.id).sort(),
+    ['mango_call_0001', 'mango_call_0002', 'mango_call_0003'],
+    'the backup holds every pre-purge record'
+  );
+  assert.deepEqual(parsed.purgedIds, [], 'and the pre-purge tombstone, so a restore is complete');
+});
+
+test('a failed backup WRITE aborts the purge and deletes nothing', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  // Fail only the backup write. persist() must keep working, or this would be
+  // testing the flush rather than the backup.
+  const restore = patchFs('writeFile', (real) => async (file, ...rest) => {
+    if (isBackup(file)) {
+      const err = new Error('EPERM: operation not permitted, open');
+      err.code = 'EPERM';
+      throw err;
+    }
+    return real(file, ...rest);
+  });
+
+  try {
+    await assert.rejects(
+      () => legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' }),
+      /BACKUP_FAILED/
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(store.calls.size, 1, 'nothing may be deleted without a backup');
+});
+
+test('a TRUNCATED backup aborts the purge — an unverified backup is no backup', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  // The write "succeeds" but only half the bytes land — the failure mode a
+  // network filesystem actually produces, and the one a bare write cannot see.
+  const restore = patchFs('writeFile', (real) => async (file, data, ...rest) =>
+    isBackup(file) ? real(file, String(data).slice(0, 20), ...rest) : real(file, data, ...rest)
+  );
+
+  try {
+    await assert.rejects(
+      () => legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' }),
+      /BACKUP_FAILED/
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(store.calls.size, 1);
+});
+
+test('a ZERO-BYTE backup aborts the purge', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  const restore = patchFs('writeFile', (real) => async (file, data, ...rest) =>
+    isBackup(file) ? real(file, '', ...rest) : real(file, data, ...rest)
+  );
+
+  try {
+    await assert.rejects(
+      () => legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' }),
+      /BACKUP_FAILED/
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(store.calls.size, 1);
+});
+
+test('a backup with no calls array aborts the purge', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+  // Parseable JSON, but not a store. Checking "did it parse?" alone would pass
+  // this, and we would have deleted 1,660 records against a backup of `{}`.
+  const restore = patchFs('writeFile', (real) => async (file, data, ...rest) =>
+    isBackup(file) ? real(file, '{"savedAt":"2026-08-13T00:00:00.000Z"}', ...rest) : real(file, data, ...rest)
+  );
+
+  try {
+    await assert.rejects(
+      () => legacyPurge.runLegacyPurge(store, { dryRun: false, confirm: 'DELETE' }),
+      /BACKUP_FAILED/
+    );
+  } finally {
+    restore();
+  }
+  assert.equal(store.calls.size, 1);
+});
+
+test('a dry run writes no backup file at all', async () => {
+  seedUnknown('mango_call_0001', '2026-01-05T15:00:00.000Z');
+
+  const result = await legacyPurge.runLegacyPurge(store);
+
+  assert.equal(result.backupPath, null);
+  const written = (await fs.readdir(tmpDir)).filter(isBackup);
+  assert.deepEqual(written, [], 'a dry run must not touch the backup path');
+});

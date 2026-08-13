@@ -108,6 +108,25 @@ function summarize(store, ids) {
  * delete from rather than whatever the last debounced write happened to catch.
  * Any failure throws BACKUP_FAILED — the caller must not proceed.
  *
+ * NOT `fs.copyFile`. The staging rehearsal of the live purge died on exactly
+ * that call:
+ *
+ *   BACKUP_FAILED: could not back up the call store: EPERM: operation not permitted
+ *
+ * `/data` is an AzureFile (CIFS) mount, and copyFile reaches for kernel copy and
+ * permission-preservation paths the mount refuses. Reading the bytes and writing
+ * them back is the operation the mount does support — it is what persist() does
+ * on that same directory, continuously, in production. Fail-closed held and
+ * nothing was deleted, but the purge could not run at all.
+ *
+ * THE BACKUP IS THEN VERIFIED, and that is not belt-and-braces. The whole reason
+ * this function exists is that the next line of the purge destroys ~1,660
+ * records; "the write call returned without throwing" is a weaker claim than it
+ * sounds on a network filesystem, where a short write is a real outcome. So we
+ * read the file back, parse it, and confirm it actually holds a `calls` array.
+ * A zero-byte, truncated, or structurally wrong backup is a FAILED backup and
+ * throws like any other.
+ *
  * @param {{persistPath: string, isDirty: boolean, persist: () => Promise<void>}} store
  * @param {{ now?: Date }} [opts]
  * @returns {Promise<string>} the backup path
@@ -118,13 +137,32 @@ async function backupStore(store, { now = new Date() } = {}) {
   const backupPath = path.join(dir, `unified_calls.backup-${stamp}.json`);
 
   try {
-    // Flush pending in-memory changes so the file we copy is current. On a clean
-    // store persist() returns immediately, and the file already matches.
+    // Flush pending in-memory changes so the bytes we copy are current. On a
+    // clean store persist() returns immediately and the file already matches.
     store.isDirty = true;
     await store.persist();
-    await fs.copyFile(store.persistPath, backupPath);
+
+    const bytes = await fs.readFile(store.persistPath);
+    await fs.writeFile(backupPath, bytes);
   } catch (err) {
     throw new PurgeError('BACKUP_FAILED', `could not back up the call store: ${err.message}`);
+  }
+
+  // Read it back and prove it is a store before anything is deleted.
+  let verified;
+  try {
+    verified = JSON.parse(await fs.readFile(backupPath, 'utf-8'));
+  } catch (err) {
+    throw new PurgeError(
+      'BACKUP_FAILED',
+      `the backup at ${backupPath} could not be read back and parsed: ${err.message}`
+    );
+  }
+  if (!verified || !Array.isArray(verified.calls)) {
+    throw new PurgeError(
+      'BACKUP_FAILED',
+      `the backup at ${backupPath} does not contain a calls array — refusing to purge against it`
+    );
   }
 
   return backupPath;
