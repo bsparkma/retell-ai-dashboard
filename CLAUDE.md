@@ -289,8 +289,27 @@ no office. Prefer the call-scoped one for anything new.
 | --- | --- |
 | `{ notAPatient: true, reason }` | Closes out, **no OD call**. Reasons: `spam, solicitor, vendor, lab, wrong_number, other` |
 | `{ patientId, linkOnly: true }` | **Link-only** — sets `od_patient_id` + `od_sync_status: 'matched'`; `sent_by`/`sent_at` stay null; **writes nothing to the chart** |
-| `{ patientId, note?, content_type? }` | Link **then** write the commlog |
+| `{ patientId, note?, content_type?, commTypeDefNum? }` | Link **then** write the commlog |
 | any of the above on an already-`synced` call | Idempotent no-op returning the existing `commLogNum` |
+
+`commTypeDefNum` is the chart-note TYPE, picked at the send step. **Omitted, the write is
+byte-for-byte what it was before the picker existed** (the office default from
+`odOffices.js`). Supplied, `backend/services/commlogTypes.js` checks it against the CALL's
+office's own `GET /definitions?Category=27` list and refuses anything else — **400
+`COMMLOG_TYPE_INVALID`**, including the other practice's perfectly valid DefNum. That is
+what turns the 486/451 never-cross rule from a convention into an enforced check.
+
+Two facts, live-verified 2026-08-13, that the design rests on: 486 does not exist in
+Riley's list and 451 does not exist in Roland's, so list membership IS the cross-office
+check; and **DefNum 401 is valid in BOTH** — `ODHQ` in Roland, `Crown by Moolah` in Riley
+— so there is no global allowlist and the question is only ever answerable per office.
+
+A definitions read can never block a chart write: the office's own default is accepted
+without consulting the list, so a non-default choice is the only thing that needs it
+(**503 `COMMLOG_TYPE_UNVERIFIABLE`** when it cannot be produced). The catalogue is cached
+per office for an hour and served STALE on a failed refresh. The offered list rides `GET
+/api/unified-calls/:id/commlog-preview` as `commlogTypes`, so the office stays
+server-derived from the call.
 
 Why link-only exists (`unifiedCalls.js:768-779`): *"Identifying who called and filing a
 note about it are two different decisions, and they were welded together."* The mechanism
