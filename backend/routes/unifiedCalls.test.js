@@ -24,6 +24,7 @@ const openDentalSync = require('../services/openDentalSync');
 const odOffices = require('../config/odOffices');
 const { OFFICES, MANGO_LINE_OFFICE } = require("../config/officeAgents");
 const audit = require('../platform/audit');
+const { DISPOSITIONS, NOTE_MAX_LENGTH } = require('../utils/callDispositions');
 
 // Since the per-location slice, resolve-patient refuses an OD write for an office
 // with no credentials (fail closed, per office). These tests are about triage and
@@ -189,6 +190,180 @@ test('triage done+scheduled stamps outcome + actor attribution', async () => {
   assert.equal(call.triage_note, 'Booked hygiene');
   assert.deepEqual(call.triage_by, SESSION_USER);
   assert.ok(call.triage_at, 'triage_at is stamped');
+});
+
+// --- disposition + notes ---------------------------------------------------
+//
+// The third way to finish a call, and the only one that writes nowhere: no Open
+// Dental call and no TC call happens anywhere in these paths. The OD stubs above
+// count every write, so `commlogWrites === 0` is a real assertion here, not a
+// hopeful one.
+
+const setDisposition = (id, body) =>
+  fetch(`${baseUrl}/api/unified-calls/${id}/disposition`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const addNote = (id, body) =>
+  fetch(`${baseUrl}/api/unified-calls/${id}/notes`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const deleteNote = (id, noteId) =>
+  fetch(`${baseUrl}/api/unified-calls/${id}/notes/${noteId}`, { method: 'DELETE' });
+
+test('disposition rejects an unknown value', async () => {
+  seedCall('d1');
+  const res = await setDisposition('d1', { disposition: 'banana' });
+  assert.equal(res.status, 400);
+  assert.equal(unifiedCallStore.getCall('d1').disposition, null, 'nothing was written');
+});
+
+test('disposition 404s for an unknown call', async () => {
+  const res = await setDisposition('nope', { disposition: 'lab' });
+  assert.equal(res.status, 404);
+});
+
+test('disposition stamps the value + actor attribution from the SESSION', async () => {
+  seedCall('d2');
+  const res = await setDisposition('d2', { disposition: 'lab' });
+  assert.equal(res.status, 200);
+  const call = await res.json();
+  assert.equal(call.disposition, 'lab');
+  assert.deepEqual(call.disposition_by, SESSION_USER);
+  assert.ok(call.disposition_at, 'disposition_at is stamped');
+  assert.equal(commlogWrites, 0, 'a disposition writes nothing to Open Dental');
+});
+
+test('the body cannot forge who dispositioned a call', async () => {
+  seedCall('d3');
+  await setDisposition('d3', {
+    disposition: 'vendor',
+    disposition_by: { name: 'Somebody Else', email: 'somebody@example.com' },
+  });
+  assert.deepEqual(unifiedCallStore.getCall('d3').disposition_by, SESSION_USER);
+});
+
+test('every one of the seven dispositions is accepted', async () => {
+  for (const disposition of DISPOSITIONS) {
+    const id = `d-each-${disposition}`;
+    seedCall(id);
+    const res = await setDisposition(id, { disposition });
+    assert.equal(res.status, 200, `${disposition} must be accepted`);
+    assert.equal((await res.json()).disposition, disposition);
+  }
+});
+
+test('disposition: null clears the value and its attribution', async () => {
+  seedCall('d4');
+  await setDisposition('d4', { disposition: 'pharmacy' });
+  const res = await setDisposition('d4', { disposition: null });
+  assert.equal(res.status, 200);
+  const call = await res.json();
+  assert.equal(call.disposition, null);
+  assert.equal(call.disposition_by, null);
+  assert.equal(call.disposition_at, null);
+});
+
+test('a note is appended with author + timestamp from the session', async () => {
+  seedCall('n1');
+  const res = await addNote('n1', { text: '  Lab called about the crown case  ' });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.equal(body.note.text, 'Lab called about the crown case', 'text is trimmed');
+  assert.deepEqual(body.note.author, SESSION_USER);
+  assert.ok(body.note.id);
+  assert.ok(body.note.created_at);
+  // The response carries the whole call so a row can re-render without a refetch.
+  assert.equal(body.call.notes.length, 1);
+  assert.equal(commlogWrites, 0, 'a note writes nothing to Open Dental');
+});
+
+test('notes append rather than replace, and the store agrees with the response', async () => {
+  seedCall('n2');
+  await addNote('n2', { text: 'first' });
+  const second = await addNote('n2', { text: 'second' });
+  const body = await second.json();
+  assert.equal(body.call.notes.length, 2);
+  assert.deepEqual(
+    unifiedCallStore.getCall('n2').notes.map((n) => n.text),
+    ['first', 'second'],
+    'persisted in the order they were written',
+  );
+});
+
+test('an empty or whitespace-only note is refused', async () => {
+  seedCall('n3');
+  assert.equal((await addNote('n3', { text: '' })).status, 400);
+  assert.equal((await addNote('n3', { text: '   \n  ' })).status, 400);
+  assert.equal((await addNote('n3', {})).status, 400);
+  assert.equal((await addNote('n3', { text: 42 })).status, 400);
+  assert.equal(unifiedCallStore.getCall('n3').notes.length, 0);
+});
+
+test('a note over the length cap is refused, and the cap itself is accepted', async () => {
+  seedCall('n4');
+  const tooLong = 'x'.repeat(NOTE_MAX_LENGTH + 1);
+  assert.equal((await addNote('n4', { text: tooLong })).status, 400);
+  const atCap = await addNote('n4', { text: 'y'.repeat(NOTE_MAX_LENGTH) });
+  assert.equal(atCap.status, 201);
+});
+
+test('notes 404 for an unknown call', async () => {
+  assert.equal((await addNote('nope', { text: 'hello' })).status, 404);
+  assert.equal((await deleteNote('nope', 'whatever')).status, 404);
+});
+
+test('the author can delete their own note', async () => {
+  seedCall('n5');
+  const created = await (await addNote('n5', { text: 'mine to remove' })).json();
+  const res = await deleteNote('n5', created.note.id);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).call.notes.length, 0);
+});
+
+test("a non-author, non-admin cannot delete someone else's note", async () => {
+  seedCall('n6');
+  // Written by somebody else entirely (straight into the store, as if by another user).
+  const { note } = unifiedCallStore.addNote('n6', 'not yours', { name: 'Dana Desk', email: 'dana@carein.ai' });
+  // The session user is 'office' here — full worklist rights, but not an admin.
+  sessionRole = 'office';
+
+  const res = await deleteNote('n6', note.id);
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).code, 'NOTE_DELETE_FORBIDDEN');
+  assert.equal(unifiedCallStore.getCall('n6').notes.length, 1, 'the note is untouched');
+});
+
+test("an admin can delete someone else's note", async () => {
+  seedCall('n7');
+  const { note } = unifiedCallStore.addNote('n7', 'not yours', { name: 'Dana Desk', email: 'dana@carein.ai' });
+  sessionRole = 'admin';
+
+  const res = await deleteNote('n7', note.id);
+  assert.equal(res.status, 200);
+  assert.equal(unifiedCallStore.getCall('n7').notes.length, 0);
+});
+
+test('deleting a note that does not exist is a 404, not a silent success', async () => {
+  seedCall('n8');
+  await addNote('n8', { text: 'still here' });
+  const res = await deleteNote('n8', 'no-such-note-id');
+  assert.equal(res.status, 404);
+  assert.equal(unifiedCallStore.getCall('n8').notes.length, 1);
+});
+
+test('author matching is case-insensitive on the email, not the display name', async () => {
+  seedCall('n9');
+  // Same person, different casing + a different display name than the session's.
+  const { note } = unifiedCallStore.addNote('n9', 'mine', { name: 'S. Front', email: 'SARAH@CareIN.ai' });
+  sessionRole = 'office';
+  const res = await deleteNote('n9', note.id);
+  assert.equal(res.status, 200, 'the same email in different case is the same author');
 });
 
 // --- resolve-patient idempotency + not-a-patient ---------------------------

@@ -14,6 +14,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { normalizeTranscriptJson } = require('../utils/transcriptShape');
+const { normalizeNotes, makeNote, normalizeActor } = require('../utils/callDispositions');
 const callTwins = require('./callTwins');
 
 function normalizeCallDate(value) {
@@ -436,6 +437,22 @@ class UnifiedCallStore {
       linked_call_id: call.linked_call_id ?? null,
       link_role: call.link_role ?? null,
 
+      // Call disposition + internal notes — MUST survive re-normalization for exactly
+      // the reason od_*/triage_*/tc_* above do: the hourly Mango sync re-ingests inside
+      // the watermark overlap and every Retell webhook event re-adds the AI row. Without
+      // carrying these through, a call somebody dispositioned as a lab or a vendor would
+      // read as untouched backlog again within the hour, and the notes the team wrote on
+      // it would be gone — worse than never having offered the field.
+      //
+      // `disposition` is the closed enum in utils/callDispositions.js; _by/_at are set and
+      // cleared WITH it, so "handled by nobody at no time" is not a representable state.
+      disposition: call.disposition ?? null,
+      disposition_by: call.disposition_by ?? null,
+      disposition_at: call.disposition_at ?? null,
+      // Append-only free text. normalizeNotes is idempotent by contract (this runs on
+      // every re-ingest) and drops malformed entries rather than storing half a note.
+      notes: normalizeNotes(call.notes),
+
       // Retell's own reason the call ended. Captured on the call_ended webhook since day
       // one and thrown away here ever since — this whitelist is the only reason it never
       // reached the store. It is the ONLY honest basis for telling an AI-completed call
@@ -527,6 +544,16 @@ class UnifiedCallStore {
       linked_call_id: call.linked_call_id ?? existing?.linked_call_id ?? null,
       link_role: call.link_role ?? existing?.link_role ?? null,
       disconnection_reason: call.disconnection_reason ?? existing?.disconnection_reason ?? null,
+      // Disposition + notes — same rationale one more time. This layer matters on its
+      // own: unlike addMangoCalls (which merges the EXISTING record into the payload
+      // before normalizing), this path rebuilds from the incoming Retell payload alone,
+      // so a field the payload never mentions is only preserved if it is inherited HERE.
+      // Layer A's default for notes is [] — without this line every webhook re-delivery
+      // would hand normalizeCall an empty array and the notes would be gone.
+      disposition: call.disposition ?? existing?.disposition ?? null,
+      disposition_by: call.disposition_by ?? existing?.disposition_by ?? null,
+      disposition_at: call.disposition_at ?? existing?.disposition_at ?? null,
+      notes: call.notes ?? existing?.notes ?? [],
     };
 
     this.noteTransferDisconnect(normalizedCall, existing);
@@ -937,6 +964,62 @@ class UnifiedCallStore {
     this.requestPersist();
 
     return updatedCall;
+  }
+
+  /**
+   * Set (or clear) a call's disposition, with attribution.
+   *
+   * The three fields move TOGETHER — `null` clears all three — so the store can
+   * never hold "dispositioned by nobody at no time", and clearing a disposition
+   * leaves no stale attribution behind for the UI to render.
+   *
+   * @param {string} id
+   * @param {string|null} disposition one of DISPOSITIONS, or null to clear
+   * @param {{ name: string|null, email: string|null }|null} actor
+   * @returns {object|null} the updated call, or null if the call is unknown
+   */
+  setDisposition(id, disposition, actor) {
+    if (!this.calls.has(id)) return null;
+    return this.updateCall(id, disposition
+      ? { disposition, disposition_by: normalizeActor(actor), disposition_at: new Date().toISOString() }
+      : { disposition: null, disposition_by: null, disposition_at: null });
+  }
+
+  /**
+   * Append one note to a call. Append-only: existing notes are never rewritten.
+   *
+   * The read-modify-write is deliberately SYNCHRONOUS with no await between the
+   * read and the write, so two requests landing in the same tick cannot each
+   * build their new array from the same pre-existing one and drop a note.
+   *
+   * @param {string} id
+   * @param {string} text validated + trimmed by the caller
+   * @param {{ name: string|null, email: string|null }|null} author
+   * @returns {{ call: object, note: import('../utils/callDispositions').CallNote }|null}
+   */
+  addNote(id, text, author) {
+    const call = this.calls.get(id);
+    if (!call) return null;
+    const note = makeNote(text, author);
+    const updated = this.updateCall(id, { notes: [...normalizeNotes(call.notes), note] });
+    return { call: updated, note };
+  }
+
+  /**
+   * Remove one note by id. WHO may do that is decided by the route (author or
+   * admin) — this is only the mechanism.
+   *
+   * @param {string} id
+   * @param {string} noteId
+   * @returns {object|null} the updated call, or null if call/note is unknown
+   */
+  removeNote(id, noteId) {
+    const call = this.calls.get(id);
+    if (!call) return null;
+    const notes = normalizeNotes(call.notes);
+    const remaining = notes.filter((n) => n.id !== noteId);
+    if (remaining.length === notes.length) return null;
+    return this.updateCall(id, { notes: remaining });
   }
 
   /**

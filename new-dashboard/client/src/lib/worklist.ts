@@ -38,13 +38,20 @@ export function hasLinkedTwin(c: UnifiedCall): boolean {
  * hidden from this view, NOT deleted: it stays in "All calls" and under the "Answered by
  * AI" chip, and retention owns deletion later.
  *
+ * A DISPOSITIONED call is finished too, for the same reason a not-a-patient close-out is:
+ * somebody looked at it and said what it was. That is the whole point of the field — a lab
+ * confirming a case or a supply vendor needs neither a chart note nor a TC case, so before
+ * this existed the only two ways to finish a call both wrote somewhere, and those rows sat
+ * in "Needs attention" forever. Like every other close-out here the row is NOT removed: it
+ * stays in "All calls", keeps its badge, and one click clears the disposition to undo.
+ *
  * PRD D1 relief valve: when MANGO_WORKLIST_MODE is 'flagged', a Mango (staff) call only
  * demands attention if it's an emergency / requested an appointment / needs a callback.
  * Un-flagged Mango calls stay visible in "All calls" and remain sendable, but drop out of
  * the attention count and default view. Retell calls are never affected by the mode.
  */
 export function callNeedsAttention(c: UnifiedCall, mangoWorklistMode: MangoWorklistMode): boolean {
-  if (c.triageStatus === "done" || c.notAPatient) return false;
+  if (c.triageStatus === "done" || c.notAPatient || c.disposition) return false;
   if (isAiDuplicateLeg(c)) return false;
   if (c.source === "mango" && mangoWorklistMode === "flagged") {
     return Boolean(c.isEmergency || c.appointmentRequested || c.appointmentBooked || c.callbackRequested);
