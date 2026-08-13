@@ -18,8 +18,11 @@ const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeCon
 const odOffices = require('../config/odOffices');
 const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
-const { requirePermission } = require('../config/permissions');
+const { requirePermission, roleHasPermission, isMachineCaller } = require('../config/permissions');
 const tcCaseClient = require('../services/tcCaseClient');
+const {
+  DISPOSITIONS, NOTE_MAX_LENGTH, isDisposition, canDeleteNote,
+} = require('../utils/callDispositions');
 
 /**
  * Per-route permission gates (Roles PR A).
@@ -825,6 +828,162 @@ router.patch('/:id/triage', async (req, res) => {
   } catch (error) {
     console.error('Error updating triage:', error);
     res.status(500).json({ error: 'Failed to update triage' });
+  }
+});
+
+/**
+ * PUT /api/unified-calls/:id/disposition
+ *
+ * Mark WHAT KIND of call this was — lab, vendor, pharmacy, insurance, personal,
+ * spam, other — or clear it with `{ disposition: null }`.
+ *
+ * This is the third way to finish a call, and the only one that touches neither
+ * Open Dental nor TC. It exists because the other two both write somewhere: a
+ * lab confirming a case, a supply rep, a pharmacy needed a chart note nobody
+ * wanted and a TC case nobody wanted, so those rows simply never left the
+ * worklist. NOTHING in this handler reaches OD or TC.
+ *
+ * Attribution is derived from the session, never from the body — the same rule
+ * triage and send-to-chart follow. The enum is validated against ONE list
+ * (utils/callDispositions.js), shared with the store's normalizer.
+ *
+ * Body: { disposition: 'lab'|'vendor'|'pharmacy'|'insurance'|'personal'|'spam'|'other'|null }
+ */
+router.put('/:id/disposition', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { disposition } = req.body || {};
+
+    // null/absent = clear. Anything else must be one of the seven.
+    const clearing = disposition === null || disposition === undefined;
+    if (!clearing && !isDisposition(disposition)) {
+      return res.status(400).json({
+        error: `disposition must be null or one of: ${DISPOSITIONS.join(', ')}`,
+      });
+    }
+
+    if (!unifiedCallStore.getCall(id)) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    const updatedCall = unifiedCallStore.setDisposition(
+      id,
+      clearing ? null : disposition,
+      actorFrom(req),
+    );
+    if (!updatedCall) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    await audit.audit(req, { action: 'UPDATE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
+    res.json(updatedCall);
+  } catch (error) {
+    console.error('Error setting call disposition:', error);
+    res.status(500).json({ error: 'Failed to set the disposition' });
+  }
+});
+
+/**
+ * POST /api/unified-calls/:id/notes
+ *
+ * Append one internal note to a call. Append-only: there is no edit route, so a
+ * note reads as what was written at the time it was written. The id, timestamp
+ * and author are all the SERVER's — a client-supplied author would make the log
+ * worthless, and a client-supplied timestamp would let it lie.
+ *
+ * Body: { text: string }  (trimmed, non-empty, <= NOTE_MAX_LENGTH)
+ */
+router.post('/:id/notes', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text } = req.body || {};
+
+    if (typeof text !== 'string') {
+      return res.status(400).json({ error: 'text must be a string' });
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return res.status(400).json({ error: 'text must not be empty' });
+    }
+    if (trimmed.length > NOTE_MAX_LENGTH) {
+      return res.status(400).json({ error: `text must be <= ${NOTE_MAX_LENGTH} characters` });
+    }
+
+    if (!unifiedCallStore.getCall(id)) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    // Report success only AFTER the note is in the store — the same rule the
+    // transcription path follows. A success we cannot show back is a lie.
+    const added = unifiedCallStore.addNote(id, trimmed, actorFrom(req));
+    if (!added) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+
+    await audit.audit(req, { action: 'CREATE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
+    res.status(201).json({ success: true, note: added.note, call: added.call });
+  } catch (error) {
+    console.error('Error adding a call note:', error);
+    res.status(500).json({ error: 'Failed to add the note' });
+  }
+});
+
+/**
+ * DELETE /api/unified-calls/:id/notes/:noteId
+ *
+ * Remove one note. Author-or-admin: anyone may write a note, only the person who
+ * wrote it (matched on the SSO email) or a tenant admin may take it back.
+ *
+ * "Admin" here is `admin.all` rather than a new admin-only action, because the
+ * role model says office ≡ admin except for the /api/admin surface (see
+ * config/permissions.js) — so admin.all IS this codebase's definition of "is a
+ * tenant admin", and inventing an admin-only voice.* action would contradict
+ * that model rather than express it. Still no role literal in this file.
+ */
+router.delete('/:id/notes/:noteId', async (req, res) => {
+  try {
+    const { id, noteId } = req.params;
+
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ error: 'Call not found' });
+    }
+    const note = (Array.isArray(call.notes) ? call.notes : []).find((n) => n && n.id === noteId);
+    if (!note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const actorIsAdmin =
+      req.isSuperAdmin === true ||
+      isMachineCaller(req) ||
+      roleHasPermission(req.userRole, 'admin.all');
+
+    if (!canDeleteNote(note, actorFrom(req), actorIsAdmin)) {
+      // Honest refusal: the note exists, you may not remove it. Never a 404
+      // pretending otherwise — the caller can see the note on the row.
+      await audit.audit(req, {
+        action: 'DELETE', resourceType: 'call', resourceId: id, result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'Only the author of a note or an admin can delete it',
+        code: 'NOTE_DELETE_FORBIDDEN',
+      });
+    }
+
+    const updatedCall = unifiedCallStore.removeNote(id, noteId);
+    if (!updatedCall) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    await audit.audit(req, { action: 'DELETE', resourceType: 'call', resourceId: id, result: 'SUCCESS' });
+
+    res.json({ success: true, call: updatedCall });
+  } catch (error) {
+    console.error('Error deleting a call note:', error);
+    res.status(500).json({ error: 'Failed to delete the note' });
   }
 });
 

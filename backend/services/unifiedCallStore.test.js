@@ -235,6 +235,133 @@ test('a call never handed to TC has null tc_* fields (no phantom linkage)', () =
   assert.equal(stored.tc_sent_by, null);
 });
 
+// --- disposition + notes preservation --------------------------------------
+//
+// The recurring bug class in this store: normalizeCall rebuilds the record from
+// scratch and addCallInternal REPLACES the stored call, so a field nobody named
+// in the whitelist is gone by the next re-ingest. For this slice that would mean
+// a call somebody dispositioned reading as untouched backlog within the hour,
+// and the notes the team wrote on it silently disappearing. Both layers are
+// covered, because they are not the same list: addMangoCalls merges the existing
+// record into the payload before normalizing (Layer A), while addRetellCall
+// rebuilds from the incoming payload alone and must INHERIT (Layer B).
+
+test('disposition + notes survive a Retell re-add (Layer B whitelist)', () => {
+  unifiedCallStore.addRetellCall({
+    call_id: 'call_disposition_preserve',
+    from_number: '+14795551717',
+    start_timestamp: '2026-08-12T15:00:00.000Z',
+  });
+
+  const author = { name: 'Sarah Front', email: 'sarah@carein.ai' };
+  unifiedCallStore.setDisposition('call_disposition_preserve', 'lab', author);
+  const { note } = unifiedCallStore.addNote('call_disposition_preserve', 'Crown case ready Thursday', author);
+  const dispositionAt = unifiedCallStore.getCall('call_disposition_preserve').disposition_at;
+
+  // A webhook re-delivery / the 15-min poller re-adds the call with a bare payload
+  // that mentions neither field.
+  const readded = unifiedCallStore.addRetellCall({
+    call_id: 'call_disposition_preserve',
+    from_number: '+14795551717',
+    start_timestamp: '2026-08-12T15:00:00.000Z',
+  });
+
+  assert.equal(readded.disposition, 'lab');
+  assert.deepEqual(readded.disposition_by, author);
+  assert.equal(readded.disposition_at, dispositionAt);
+  assert.equal(readded.notes.length, 1, 'the note survived the re-add');
+  assert.deepEqual(readded.notes[0], note, 'and survived byte-for-byte, id included');
+});
+
+test('disposition + notes survive an addMangoCalls re-ingest (Layer A whitelist)', () => {
+  const rawMango = {
+    source: 'mango',
+    external_id: 'mango_call_disposition',
+    mango_call_id: 'disposition',
+    call_date: '2026-08-12T15:00:00.000Z',
+    caller_number: '+14795551818',
+    called_number: '+14795550000',
+    duration_seconds: 95,
+    outcome: 'answered',
+  };
+  const [added] = unifiedCallStore.addMangoCalls([rawMango]);
+  const id = added.id;
+
+  const author = { name: 'Sarah Front', email: 'sarah@carein.ai' };
+  unifiedCallStore.setDisposition(id, 'vendor', author);
+  unifiedCallStore.addNote(id, 'Supply rep — left catalog, no action', author);
+  unifiedCallStore.addNote(id, 'Told them to email instead', author);
+
+  // The next hourly sync re-ingests the SAME call inside the watermark overlap.
+  unifiedCallStore.addMangoCalls([rawMango]);
+  const stored = unifiedCallStore.getCall(id);
+
+  assert.equal(stored.disposition, 'vendor');
+  assert.deepEqual(stored.disposition_by, author);
+  assert.ok(stored.disposition_at);
+  assert.equal(stored.notes.length, 2, 'both notes survived');
+  assert.equal(stored.notes[0].text, 'Supply rep — left catalog, no action');
+  assert.equal(stored.notes[1].text, 'Told them to email instead');
+  // And the re-ingested fields still apply.
+  assert.equal(stored.duration_seconds, 95);
+});
+
+test('a call nobody dispositioned has no disposition and an empty note list', () => {
+  const stored = unifiedCallStore.addRetellCall({
+    call_id: 'call_no_disposition',
+    from_number: '+14795551919',
+    start_timestamp: '2026-08-12T15:00:00.000Z',
+  });
+  assert.equal(stored.disposition, null);
+  assert.equal(stored.disposition_by, null);
+  assert.equal(stored.disposition_at, null);
+  assert.deepEqual(stored.notes, []);
+});
+
+test('clearing a disposition clears its attribution too (no orphan "handled by")', () => {
+  unifiedCallStore.addRetellCall({
+    call_id: 'call_disposition_clear',
+    from_number: '+14795552020',
+    start_timestamp: '2026-08-12T15:00:00.000Z',
+  });
+  unifiedCallStore.setDisposition('call_disposition_clear', 'spam', { name: 'Sarah Front', email: 'sarah@carein.ai' });
+  const cleared = unifiedCallStore.setDisposition('call_disposition_clear', null, { name: 'Sarah Front', email: 'sarah@carein.ai' });
+
+  assert.equal(cleared.disposition, null);
+  assert.equal(cleared.disposition_by, null, 'attribution goes with it');
+  assert.equal(cleared.disposition_at, null);
+});
+
+test('notes are append-only and removeNote takes exactly one', () => {
+  unifiedCallStore.addRetellCall({
+    call_id: 'call_notes_append',
+    from_number: '+14795552121',
+    start_timestamp: '2026-08-12T15:00:00.000Z',
+  });
+  const first = unifiedCallStore.addNote('call_notes_append', 'first', { name: 'A', email: 'a@carein.ai' }).note;
+  const second = unifiedCallStore.addNote('call_notes_append', 'second', { name: 'B', email: 'b@carein.ai' }).note;
+
+  assert.notEqual(first.id, second.id, 'each note gets its own id');
+  assert.equal(unifiedCallStore.getCall('call_notes_append').notes.length, 2);
+
+  const afterDelete = unifiedCallStore.removeNote('call_notes_append', first.id);
+  assert.equal(afterDelete.notes.length, 1);
+  assert.equal(afterDelete.notes[0].id, second.id);
+  // A second removal of the same note is not a silent success.
+  assert.equal(unifiedCallStore.removeNote('call_notes_append', first.id), null);
+});
+
+test('normalizeNotes is idempotent and drops malformed entries', () => {
+  const { normalizeNotes } = require('../utils/callDispositions');
+  const good = { id: 'n1', text: 'real note', author: { name: 'A', email: 'a@carein.ai' }, created_at: '2026-08-12T15:00:00.000Z' };
+  const once = normalizeNotes([good, { id: 'n2' }, { text: 'no id' }, null, 'nope']);
+  assert.equal(once.length, 1, 'only the well-formed note is kept');
+  // Re-running over already-canonical data must be a no-op — normalizeCall does
+  // exactly this on every watermark-overlap re-ingest.
+  assert.deepEqual(normalizeNotes(once), once);
+  assert.deepEqual(normalizeNotes(undefined), []);
+});
+
 test('Mango called_number (office DID) survives store normalization → correct office attribution (day-1 bug)', () => {
   const { getOfficeForCall } = require('../config/officeAgents');
   // RAW format Mango actually returns for the office party (see live diagnostic):

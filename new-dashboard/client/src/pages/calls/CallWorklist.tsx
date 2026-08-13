@@ -1,11 +1,11 @@
 /**
  * Call Worklist (Slice B) — turns the call log into a worklist you work.
  *
- * Default "Needs attention" view (triage != done AND not a spam/close-out),
- * office scoping (real agent→office config, remembered in localStorage), a
- * patient-identity cell that surfaces Slice-A od_sync_status + the Pick Patient
- * modal, per-row triage with outcome flavors + SSO attribution, and disposition
- * chips that double as filters.
+ * Default "Needs attention" view (triage != done AND not a spam/close-out AND not
+ * dispositioned), office scoping (real agent→office config, remembered in
+ * localStorage), a patient-identity cell that surfaces Slice-A od_sync_status +
+ * the Pick Patient modal, per-row triage with outcome flavors + SSO attribution,
+ * signal chips that double as filters, and per-call dispositions + notes.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -17,20 +17,29 @@ import {
   Popover, PopoverContent, PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
   CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
-  FileText, VolumeX, RotateCcw,
+  FileText, VolumeX, RotateCcw, MessageSquare,
 } from "lucide-react";
 import { ActionTooltip, IconAction, ACTION_HEIGHT, ICON_ACTION_CLASS } from "@/components/calls/IconAction";
+import { DispositionBadge, DispositionPicker } from "@/components/calls/DispositionControl";
+import { CallNotesPanel } from "@/components/calls/CallNotesPanel";
+import {
+  DISPOSITIONS, matchesDispositionFilter, type DispositionFilter,
+} from "@/lib/dispositions";
 import {
   api, type UnifiedCall, type TriageOutcome, type NotAPatientReason, type MangoWorklistMode,
-  type TranscribeResult, type SyncStatus,
+  type TranscribeResult, type SyncStatus, type CallDisposition, normalizeCallNotes,
 } from "@/lib/api";
 import { syncToast, syncCaption, SYNC_COOLDOWN_SECONDS } from "@/lib/sync";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import { callNeedsAttention, isAiDuplicateLeg, rowPrimaryAction } from "@/lib/worklist";
+import { can } from "@/lib/permissions";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { usePolling } from "@/hooks/usePolling";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
@@ -64,7 +73,7 @@ interface Chip {
   bg: string;
   match: (c: UnifiedCall) => boolean;
 }
-const CHIPS: Chip[] = [
+const SIGNAL_CHIPS: Chip[] = [
   { key: "emergency", label: "Emergency", icon: AlertTriangle, color: "oklch(0.55 0.20 25)", bg: "oklch(0.62 0.22 25 / 0.12)", match: (c) => c.isEmergency },
   { key: "booked", label: "Booked", icon: CalendarCheck, color: "oklch(0.48 0.16 155)", bg: "oklch(0.65 0.18 155 / 0.12)", match: (c) => c.appointmentBooked },
   { key: "new", label: "New patient", icon: UserPlus, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: (c) => c.isNewPatient },
@@ -111,6 +120,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const [activeChips, setActiveChips] = useState<Set<string>>(new Set());
   // Source filter (All / CareIN AI / Staff·Mango). Mango calls arrived with the slice.
   const [sourceFilter, setSourceFilter] = useState<"all" | "retell" | "mango">("all");
+  // Disposition filter: any / none / dispositioned / one of the seven.
+  const [dispositionFilter, setDispositionFilter] = useState<DispositionFilter>("any");
   // Backend-owned worklist behaviour for Mango calls (PRD D1); default 'all'.
   const [mangoWorklistMode, setMangoWorklistMode] = useState<MangoWorklistMode>("all");
   // Front-desk mental model: newest-first by default; toggle persists per browser.
@@ -186,15 +197,23 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   }, []);
 
+  /** The signed-in user as the store records an actor, or null. */
+  const actor = auth.status === "authenticated"
+    ? { name: auth.user.name, email: auth.user.email }
+    : null;
+  // May this person delete somebody ELSE's note? Same action the server checks
+  // (admin.all) — UI hiding only; the 403 is the boundary. `can()` is the shared
+  // helper, so a session that predates the permissions field reads as "not admin"
+  // (hide) rather than throwing.
+  const actorIsAdmin = auth.status === "authenticated"
+    && (auth.user.isSuperAdmin || can(auth.user.permissions, "admin.all"));
+
   const applyTriage = async (
     call: UnifiedCall,
     status: "needs_action" | "done",
     outcome?: TriageOutcome,
     note?: string,
   ) => {
-    const actor = auth.status === "authenticated"
-      ? { name: auth.user.name, email: auth.user.email }
-      : null;
     // Optimistic update.
     patchCall(call.id, {
       triageStatus: status,
@@ -216,6 +235,60 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   };
 
   const reopen = (call: UnifiedCall) => applyTriage(call, "needs_action");
+
+  /**
+   * Set or clear a call's disposition — the third way to finish a call, and the
+   * only one that writes nowhere.
+   *
+   * Optimistic like triage, and reconciled the same way: a failure toasts and
+   * reloads, so a call cannot sit there looking handled because the request died.
+   * Rethrows so the picker stops spinning and keeps itself open.
+   */
+  const applyDisposition = async (call: UnifiedCall, disposition: CallDisposition | null) => {
+    const previous = {
+      disposition: call.disposition,
+      dispositionBy: call.dispositionBy,
+      dispositionAt: call.dispositionAt,
+    };
+    patchCall(call.id, {
+      disposition,
+      dispositionBy: disposition ? actor : null,
+      dispositionAt: disposition ? new Date().toISOString() : null,
+    });
+    try {
+      await api.setCallDisposition(call.id, disposition);
+    } catch (err) {
+      patchCall(call.id, previous);
+      toast.error(err instanceof Error ? err.message : "Failed to save the disposition", { duration: 8000 });
+      load();
+      throw err;
+    }
+  };
+
+  /**
+   * Append a note. NOT optimistic: the server owns the note's id, author and
+   * timestamp, so the row shows the note it actually stored rather than a local
+   * guess that might differ from what a reload would show.
+   */
+  const addNote = async (call: UnifiedCall, text: string) => {
+    try {
+      const { call: updated } = await api.addCallNote(call.id, text);
+      patchCall(call.id, { notes: normalizeCallNotes(updated.notes) });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add the note", { duration: 8000 });
+      throw err;
+    }
+  };
+
+  const deleteNote = async (call: UnifiedCall, noteId: string) => {
+    try {
+      const { call: updated } = await api.deleteCallNote(call.id, noteId);
+      patchCall(call.id, { notes: normalizeCallNotes(updated.notes) });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete the note", { duration: 8000 });
+      throw err;
+    }
+  };
 
   // (M4) On-demand transcription. Auto-transcription is off, so a Mango call arrives with
   // metadata only until somebody decides it's worth reading. NOTHING is patched optimistically
@@ -303,6 +376,9 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     if (sourceFilter !== "all") {
       list = list.filter((c) => c.source === sourceFilter);
     }
+    if (dispositionFilter !== "any") {
+      list = list.filter((c) => matchesDispositionFilter(c, dispositionFilter));
+    }
     if (q) {
       list = list.filter((c) =>
         c.patientName.toLowerCase().includes(q) ||
@@ -312,14 +388,14 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
     }
     if (activeChips.size > 0) {
       const keys = Array.from(activeChips);
-      list = list.filter((c) => keys.every((k) => CHIPS.find((chip) => chip.key === k)?.match(c)));
+      list = list.filter((c) => keys.every((k) => SIGNAL_CHIPS.find((chip) => chip.key === k)?.match(c)));
     }
     return [...list].sort((a, b) =>
       sortDir === "oldest"
         ? new Date(a.date).getTime() - new Date(b.date).getTime()
         : new Date(b.date).getTime() - new Date(a.date).getTime()
     );
-  }, [calls, view, search, activeChips, sortDir, sourceFilter, needsAttention]);
+  }, [calls, view, search, activeChips, sortDir, sourceFilter, dispositionFilter, needsAttention]);
 
   const toggleChip = (key: string) => {
     // Turning on a chip that only matches rows the attention view hides has to take you
@@ -494,6 +570,29 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           ))}
         </div>
 
+        {/* Disposition filter. "No disposition" is the one that matters day to day: it
+            is the true backlog, now that a dispositioned call stops demanding attention. */}
+        <Select
+          value={dispositionFilter}
+          onValueChange={(v) => setDispositionFilter(v as DispositionFilter)}
+        >
+          <SelectTrigger
+            className="h-9 w-[170px] text-xs"
+            aria-label="Filter by disposition"
+            title="Filter by what kind of call it was"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any disposition</SelectItem>
+            <SelectItem value="none">No disposition</SelectItem>
+            <SelectItem value="dispositioned">Dispositioned</SelectItem>
+            {DISPOSITIONS.map((d) => (
+              <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         {/* Sync now + freshness. The caption is what lets someone answer "is this list
             current?" without pressing anything. */}
         <div className="flex items-center gap-2">
@@ -525,9 +624,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
         </div>
       </div>
 
-      {/* Disposition chips (also filters) */}
+      {/* Signal chips (also filters). These are FACTS the analyzer found — emergency,
+          booked, new patient — not the call's disposition, which lives per row. */}
       <div className="flex flex-wrap items-center gap-2">
-        {CHIPS.map((chip) => {
+        {SIGNAL_CHIPS.map((chip) => {
           const active = activeChips.has(chip.key);
           const Icon = chip.icon;
           return (
@@ -594,7 +694,16 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
             visibleCalls.map((call) => (
               <div
                 key={call.id}
-                className="grid gap-3 px-4 py-3 border-b border-border/50 hover:bg-muted/20 transition-colors items-center"
+                data-testid="worklist-row"
+                data-disposition={call.disposition ?? ""}
+                // A dispositioned call reads as handled at a glance: dimmed, badged, and
+                // still THERE. It is never removed from the list — it drops out of the
+                // attention count (see callNeedsAttention) but "All calls" and the
+                // disposition filter both still show it, and clearing takes one click.
+                // Full opacity returns on hover so a dim row is still readable.
+                className={`grid gap-3 px-4 py-3 border-b border-border/50 hover:bg-muted/20 transition-colors items-center ${
+                  call.disposition ? "opacity-60 hover:opacity-100" : ""
+                }`}
                 style={{ gridTemplateColumns: GRID }}
               >
                 {/* Caller */}
@@ -676,6 +785,11 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                   onFollowUp={() => applyTriage(call, "needs_action")}
                   onDone={applyTriage}
                   onReopen={() => reopen(call)}
+                  onDisposition={(disposition) => applyDisposition(call, disposition)}
+                  onAddNote={(text) => addNote(call, text)}
+                  onDeleteNote={(noteId) => deleteNote(call, noteId)}
+                  actorEmail={actor?.email ?? null}
+                  actorIsAdmin={actorIsAdmin}
                 />
               </div>
             ))
@@ -720,19 +834,32 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 // ---------------------------------------------------------------------------
 
 /**
- * The passive half of a row: disposition chips, the transcript indicator, and the
- * resolved triage outcome. Everything here states a FACT about the call — nothing is
- * clickable, so none of it competes with the patient's name or the Actions column.
+ * The passive half of a row: signal chips, the disposition badge, the transcript
+ * indicator, and the resolved triage outcome. Everything here states a FACT about the
+ * call — nothing is clickable, so none of it competes with the patient's name or the
+ * Actions column.
  *
  * Rendered as its own column on wide viewports and folded under the name below ~1100px.
  */
 function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: string }) {
   return (
     <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {/* The disposition goes FIRST: on a dispositioned row it is the thing that
+          explains why the row looks finished. The action that sets it lives in the
+          Actions column; this is only the resulting state. */}
+      {call.disposition && (
+        <DispositionBadge
+          disposition={call.disposition}
+          title={call.dispositionBy
+            ? `${call.disposition} · ${formatAttribution(call.dispositionBy.name, call.dispositionAt)}`
+            : undefined}
+        />
+      )}
+
       {/* Filter-only chips are excluded here — "Answered by CareIN AI" already
           renders as its own linked badge next to the caller, and showing it
           twice on the same row would just be noise. */}
-      {CHIPS.filter((chip) => !ALL_CALLS_ONLY_CHIPS.has(chip.key) && chip.match(call)).map((chip) => {
+      {SIGNAL_CHIPS.filter((chip) => !ALL_CALLS_ONLY_CHIPS.has(chip.key) && chip.match(call)).map((chip) => {
         const Icon = chip.icon;
         return (
           <span
@@ -745,6 +872,15 @@ function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: s
           </span>
         );
       })}
+
+      {/* Attribution for the disposition, on its own line for the same reason the
+          triage attribution below is: a long name must not push chips out of the
+          column. Only shown when the row is not ALSO showing "Done · someone". */}
+      {call.disposition && call.dispositionBy && call.triageStatus !== "done" && (
+        <span className="w-full text-[10px] text-muted-foreground">
+          {formatAttribution(call.dispositionBy.name, call.dispositionAt)}
+        </span>
+      )}
 
       {/* (M4) A staff call that has already been read. The ACTION that produces it lives
           in the Actions column; this is only the resulting state. */}
@@ -780,15 +916,90 @@ function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: s
 }
 
 /**
+ * Notes on a row: the count, and the panel to read and write them.
+ *
+ * Deliberately a popover rather than a link to the call page. Jotting "lab says the
+ * crown is ready Thursday" is a five-second act done while looking at the list; making
+ * it cost a page navigation and a trip back is how a notes field goes unused. The same
+ * panel component renders on the call-detail page, so there is one affordance to learn.
+ */
+function NotesAction({
+  call, onAdd, onDelete, actorEmail, actorIsAdmin,
+}: {
+  call: UnifiedCall;
+  onAdd: (text: string) => Promise<void>;
+  onDelete: (noteId: string) => Promise<void>;
+  actorEmail: string | null;
+  actorIsAdmin: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  // Defensive default: every server record carries `notes` (normalizeUnifiedCall
+  // guarantees an array), but hand-built fixtures in the test suites do not, and a
+  // row that throws is a worse outcome than a row showing zero notes.
+  const notes = call.notes ?? [];
+  const count = notes.length;
+  const label = count === 0
+    ? "Add a note about this call"
+    : `${count} note${count === 1 ? "" : "s"} — read or add`;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <ActionTooltip label={label}>
+        <PopoverTrigger asChild>
+          <Button
+            size="sm"
+            variant={count > 0 ? "secondary" : "outline"}
+            className={`${ICON_ACTION_CLASS} relative`}
+            aria-label={label}
+            data-testid="notes-action"
+          >
+            <MessageSquare size={13} />
+            {/* The count rides the icon rather than taking a column of its own —
+                the Actions track is a fixed width and already full. */}
+            {count > 0 && (
+              <span
+                className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full text-[9px] font-semibold leading-[14px] text-primary-foreground bg-primary"
+                aria-hidden="true"
+              >
+                {count > 9 ? "9+" : count}
+              </span>
+            )}
+          </Button>
+        </PopoverTrigger>
+      </ActionTooltip>
+      <PopoverContent align="end" className="w-80 p-3">
+        <div className="text-xs font-semibold text-muted-foreground pb-2">
+          Notes · internal only
+        </div>
+        <CallNotesPanel
+          notes={notes}
+          onAdd={onAdd}
+          onDelete={onDelete}
+          actorEmail={actorEmail}
+          actorIsAdmin={actorIsAdmin}
+          maxListHeight="14rem"
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
  * Every action a row offers, in one right-aligned column, in a stable order:
- * Send to chart · Transcribe · Send to TC · Follow up · Done (or Reopen).
+ * Send to chart · Transcribe · Send to TC · Notes · Disposition · Follow up · Done
+ * (or Reopen).
  *
  * AT MOST ONE carries a word — `rowPrimaryAction` picks it from the call's state. The
  * rest are icons with tooltips. This is purely about width: the guards, handlers and
  * confirmations below are the same ones the old Patient / Signals / Triage cells used.
+ *
+ * Notes and Disposition are offered on EVERY row, including rows with no Open Dental
+ * connection and close-outs. That is the point of them — they are the two things that
+ * work when nothing else on the row does.
  */
 function RowActions({
   call, odConnected, transcribeRunning, onTranscribe, onSend, onSentToTc, onFollowUp, onDone, onReopen,
+  onDisposition, onAddNote, onDeleteNote, actorEmail, actorIsAdmin,
 }: {
   call: UnifiedCall;
   odConnected: boolean;
@@ -800,6 +1011,11 @@ function RowActions({
   onFollowUp: () => void;
   onDone: (call: UnifiedCall, status: "done", outcome: TriageOutcome, note?: string) => void;
   onReopen: () => void;
+  onDisposition: (disposition: CallDisposition | null) => Promise<void>;
+  onAddNote: (text: string) => Promise<void>;
+  onDeleteNote: (noteId: string) => Promise<void>;
+  actorEmail: string | null;
+  actorIsAdmin: boolean;
 }) {
   const primary = rowPrimaryAction(call, odConnected);
 
@@ -853,6 +1069,16 @@ function RowActions({
       )}
 
       {canOfferTc && <SendToTcButton call={call} onSent={onSentToTc} variant="icon" />}
+
+      <NotesAction
+        call={call}
+        onAdd={onAddNote}
+        onDelete={onDeleteNote}
+        actorEmail={actorEmail}
+        actorIsAdmin={actorIsAdmin}
+      />
+
+      <DispositionPicker current={call.disposition} onPick={onDisposition} />
 
       <TriageActions call={call} onFollowUp={onFollowUp} onDone={onDone} onReopen={onReopen} />
     </div>
