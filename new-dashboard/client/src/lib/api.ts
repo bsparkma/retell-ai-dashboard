@@ -191,6 +191,161 @@ export interface TenantUsersResponse {
   actor: string;
 }
 
+// --- platform console (PR C, /api/platform) ---------------------------------
+
+/**
+ * A module namespace. Mirrors `backend/config/modules.js`, which mirrors the
+ * tenant_module CHECK constraint — a union rather than `string` so a namespace
+ * the database would refuse cannot be typed into a request here either.
+ */
+export type ModuleName = "voice" | "tc" | "rcm" | "scheduling";
+
+/** One module's state for one practice, with the copy the console renders. */
+export interface PracticeModule {
+  module: ModuleName;
+  label: string;
+  blurb: string;
+  enabled: boolean;
+}
+
+/** One row of the tenant catalog. */
+export interface Practice {
+  tenantId: string;
+  slug: string;
+  displayName: string;
+  status: string;
+  createdAt: string | null;
+  /** Every app_user row, active and disabled — the roster size. */
+  userCount: number;
+  /** Always all four namespaces; one with no DB row reads as `enabled: false`. */
+  modules: PracticeModule[];
+}
+
+/** One practice's roster. READ-ONLY here — writes live on /admin/users. */
+export interface PracticeUsersResponse {
+  users: TenantUser[];
+  roles: TenantUserRole[];
+  /** Where the writes actually are, so this page can link rather than fork. */
+  manageAt: string;
+}
+
+/** The vocabularies audit_log's CHECK constraints admit. */
+export type AuditAction = "READ" | "CREATE" | "UPDATE" | "DELETE";
+export type AuditResult = "SUCCESS" | "UNAUTHORIZED" | "ERROR";
+
+/** One audit row. IDs and actors only — this table never holds a PHI value. */
+export interface AuditEntry {
+  auditId: string;
+  ts: string | null;
+  actor: string | null;
+  action: AuditAction;
+  resourceType: string;
+  resourceId: string | null;
+  ip: string | null;
+  result: AuditResult;
+  endpoint: string | null;
+  office: string | null;
+  sourceRef: string | null;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** Total matching the CURRENT filters, not the table size. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditFilters {
+  action?: AuditAction;
+  result?: AuditResult;
+  resourceType?: string;
+  resourceId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Where the effective retention window came from.
+ *
+ * `db` a super_admin chose it · `env` CALL_RETENTION_DAYS is set and no row
+ * exists · `default` neither. The console shows this because "30 because nobody
+ * has chosen" and "30 because somebody chose it" are different facts.
+ */
+export type RetentionSource = "db" | "env" | "default";
+
+export interface RetentionPolicy {
+  days: number;
+  source: RetentionSource;
+  enabled: boolean;
+  /**
+   * False when the control plane has never been readable since boot. The
+   * nightly prune SKIPS in that state rather than falling back to the
+   * environment — see docs/PLATFORM_CONSOLE.md.
+   */
+  policyKnown: boolean;
+  dbDays: number | null;
+  envDays: number;
+  envDaysIsSet: boolean;
+  /** The windows a click may choose. Rendered from here, never hardcoded. */
+  options: number[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface RetentionSchedulerStatus {
+  running: boolean;
+  schedule: string;
+  timezone: string;
+  retentionDays: number;
+  enabled: boolean;
+  source: RetentionSource;
+  policyKnown: boolean;
+  lastRun: { at?: string; stubbed?: number; scanned?: number; skipped?: string } | null;
+}
+
+export interface RetentionState {
+  policy: RetentionPolicy;
+  scheduler: RetentionSchedulerStatus;
+  store: { totalCalls: number; liveCalls: number; prunedCalls: number };
+  /** Non-null when the control plane could not be read on this request. */
+  controlPlaneError?: string | null;
+}
+
+/** What shortening (or extending) to `days` would cost, computed server-side. */
+export interface RetentionImpact {
+  days: number;
+  currentDays: number;
+  shortening: boolean;
+  /** Live calls that would fall outside the proposed window at the next run. */
+  wouldPrune: number;
+  alreadyPruned: number;
+}
+
+/** The nightly prune's result, from POST /api/admin/call-store/prune. */
+export interface PruneResult {
+  scanned?: number;
+  stubbed?: number;
+  alreadyStubbed?: number;
+  cutoff?: string | null;
+  durationMs?: number;
+  skipped?: string;
+}
+
+/** The legacy purge's result. Counts and ids only — never a caller name. */
+export interface PurgeResult {
+  dryRun: boolean;
+  count: number;
+  bySource?: Record<string, number>;
+  ids: string[];
+  skippedTwinned: string[];
+  deleted: number;
+  /** Where the pre-delete backup landed. Null on a dry run. */
+  backupPath: string | null;
+}
+
 // --- Slice B: triage worklist + patient review queue ------------------------
 
 /** Who performed a triage/resolve action (from the SSO session). */
@@ -1611,6 +1766,103 @@ export const api = {
       body: JSON.stringify(patch),
     });
     return data.user;
+  },
+
+  // --- platform console (PR C, /api/platform) -------------------------------
+  // Every one of these 403s for anyone who is not a platform super_admin. The
+  // page hides them from everyone else, but that is courtesy: the refusal is
+  // the boundary.
+
+  /** The tenant catalog, with each practice's module state and roster size. */
+  async listPractices(): Promise<Practice[]> {
+    const data = await request<{ practices: Practice[] }>("/platform/practices");
+    return data.practices;
+  },
+
+  /**
+   * Turn one module on or off for one practice.
+   *
+   * Returns the practice's modules AS THE DATABASE NOW HAS THEM, not the value
+   * sent — the console renders the readback so a write that silently did
+   * nothing cannot look like a success.
+   */
+  async setPracticeModule(
+    tenantId: string,
+    module: ModuleName,
+    enabled: boolean,
+  ): Promise<PracticeModule[]> {
+    const data = await request<{ modules: PracticeModule[] }>(
+      `/platform/practices/${encodeURIComponent(tenantId)}/modules/${encodeURIComponent(module)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+    return data.modules;
+  },
+
+  /** One practice's roster. Read-only; `manageAt` says where the writes live. */
+  async listPracticeUsers(tenantId: string): Promise<PracticeUsersResponse> {
+    return request<PracticeUsersResponse>(
+      `/platform/practices/${encodeURIComponent(tenantId)}/users`,
+    );
+  },
+
+  /** A page of one practice's audit log, newest first. Paginated server-side. */
+  async listPracticeAudit(tenantId: string, filters: AuditFilters = {}): Promise<AuditPage> {
+    // Empty strings are dropped rather than sent: the server treats an absent
+    // filter as "no filter", and `?action=` would otherwise read as one.
+    const params: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(filters)) {
+      if (v === undefined || v === null || v === "") continue;
+      params[k] = v as string | number;
+    }
+    return request<AuditPage>(
+      `/platform/practices/${encodeURIComponent(tenantId)}/audit`,
+      { params },
+    );
+  },
+
+  /** The call-store retention window, where it came from, and the store counts. */
+  async getRetention(): Promise<RetentionState> {
+    return request<RetentionState>("/platform/retention");
+  },
+
+  /** Store a new window (30 | 60 | 90). Takes effect at the next nightly run. */
+  async setRetentionDays(days: number): Promise<RetentionState> {
+    return request<RetentionState>("/platform/retention", {
+      method: "PUT",
+      body: JSON.stringify({ days }),
+    });
+  },
+
+  /**
+   * How many live calls a proposed window would prune. Server-computed with the
+   * pruner's own selector, so the number shown before you confirm is the number
+   * that will actually happen.
+   */
+  async getRetentionImpact(days: number): Promise<RetentionImpact> {
+    return request<RetentionImpact>("/platform/retention/impact", { params: { days } });
+  },
+
+  // --- call-store jobs (existing /api/admin endpoints, super_admin-gated) ----
+  // Deliberately NOT re-homed under /api/platform: forking a job that destroys
+  // records would mean two copies of its safety rules.
+
+  /** Run the nightly prune now. Idempotent. */
+  async runCallStorePrune(): Promise<PruneResult> {
+    return request<PruneResult>("/admin/call-store/prune", { method: "POST" });
+  },
+
+  /**
+   * The one-shot legacy purge of unmapped-office Mango rows.
+   *
+   * DRY RUN BY DEFAULT. A live run needs `dryRun: false` AND `confirm: 'DELETE'`,
+   * and the server refuses to start without writing a backup first — those rules
+   * are enforced server-side, not by this signature.
+   */
+  async purgeLegacyCalls(opts: { dryRun: boolean; confirm?: string }): Promise<PurgeResult> {
+    return request<PurgeResult>("/admin/call-store/purge-legacy", {
+      method: "POST",
+      body: JSON.stringify({ dryRun: opts.dryRun, confirm: opts.confirm ?? null }),
+    });
   },
 };
 
