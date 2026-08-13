@@ -610,6 +610,7 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 | OD cloud API contract (authoritative) | [docs/OD_API_CONTRACT.md](docs/OD_API_CONTRACT.md) |
 | Mango ingestion + transcription | [docs/MANGO_TRANSCRIPTION.md](docs/MANGO_TRANSCRIPTION.md) |
 | Audit log schema | [docs/AUDIT.md](docs/AUDIT.md) |
+| Health probes, Azure Monitor alerts, reading Log Analytics | [docs/PROBES_AND_ALERTS.md](docs/PROBES_AND_ALERTS.md) |
 | Secrets and Key Vault | [docs/SECRETS.md](docs/SECRETS.md) |
 | TC module | [docs/TC_SCHEMA.md](docs/TC_SCHEMA.md), [docs/TC_IMPORT.md](docs/TC_IMPORT.md), [docs/TC_OD_READS.md](docs/TC_OD_READS.md) |
 | Dashboard conventions | [new-dashboard/HANDOFF.md](new-dashboard/HANDOFF.md), [new-dashboard/NOTES.md](new-dashboard/NOTES.md) |
