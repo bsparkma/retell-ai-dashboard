@@ -51,6 +51,10 @@ export function hasLinkedTwin(c: UnifiedCall): boolean {
  * the attention count and default view. Retell calls are never affected by the mode.
  */
 export function callNeedsAttention(c: UnifiedCall, mangoWorklistMode: MangoWorklistMode): boolean {
+  // A pruned call cannot be worked: there is no transcript to read, no name to
+  // match, and every mutation against it is refused with 409 CALL_PRUNED. Asking
+  // someone to action it would be asking them to do something impossible.
+  if (c.isPruned) return false;
   if (c.triageStatus === "done" || c.notAPatient || c.disposition) return false;
   if (isAiDuplicateLeg(c)) return false;
   if (c.source === "mango" && mangoWorklistMode === "flagged") {

@@ -52,6 +52,7 @@ async function bootstrap() {
   const { initializeSocketHandlers } = require('./socket/socketHandler');
   const unifiedCallStore = require('./services/unifiedCallStore');
   const syncScheduler = require('./services/syncScheduler');
+  const retentionScheduler = require('./services/retentionScheduler');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite } = require('./config/permissions');
@@ -386,6 +387,12 @@ async function bootstrap() {
     // 3. Start Mango sync scheduler (cron-based, default: every hour at :15)
     syncScheduler.start();
 
+    // 4. Start the nightly retention prune (default 3:30am America/Chicago).
+    //    Kept separate from syncScheduler on purpose — see services/retentionScheduler.js.
+    //    NOT run at startup: a container restart must never be the thing that
+    //    destroys records, and the store has just finished loading.
+    retentionScheduler.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -399,12 +406,14 @@ async function bootstrap() {
   // Graceful shutdown
   process.on('SIGTERM', async () => {
     console.log('Received SIGTERM, shutting down gracefully...');
+    retentionScheduler.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
 
   process.on('SIGINT', async () => {
     console.log('Received SIGINT, shutting down gracefully...');
+    retentionScheduler.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
   User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck, Loader2, Sparkles, VolumeX,
-  StickyNote
+  StickyNote, Archive
 } from "lucide-react";
 import {
   api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
@@ -332,6 +332,96 @@ function PatientFoundView({ patient, source }: { patient: OdPatient; source: Pat
   );
 }
 
+/** How each recorded action reads to a human. */
+const RETENTION_ACTION_LABEL: Record<string, string> = {
+  transcribed: "Transcribed",
+  triaged: "Triaged",
+  sent_to_chart: "Sent to the patient's chart",
+  sent_to_tc: "Sent to Treatment Coordinator",
+  dispositioned: "Dispositioned",
+  resolved: "Resolved",
+  note_added: "Note added",
+};
+
+/**
+ * A call past the 30-day retention window.
+ *
+ * The whole page is this panel. The call's content — transcript, summary,
+ * recording, caller, notes — was replaced by a thin audit stub, so there is
+ * nothing to read and nothing that can be done: every write against a stub is
+ * refused with 409 CALL_PRUNED.
+ *
+ * What the stub keeps is the shape of the work: who did what, and when. That is
+ * the point of keeping a stub at all rather than deleting the row, so it is the
+ * only thing this page has to show. Note there is no caller name or number
+ * anywhere below — there is none to show, by design.
+ */
+function PrunedCallDetail({ call }: { call: UnifiedCall }) {
+  return (
+    <div className="p-6 space-y-6" data-testid="pruned-detail">
+      <Link href="/calls"><Button variant="ghost" size="sm"><ArrowLeft size={14} className="mr-1" /> Back to Calls</Button></Link>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Archive size={16} className="text-muted-foreground" />
+            This call was pruned
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <p className="text-sm text-muted-foreground">
+            Calls keep their full details for 30 days. This call took place{" "}
+            {formatTimeAgo(call.date)}, so its transcript, summary, recording and notes
+            were removed under the retention policy
+            {call.prunedAt ? ` on ${new Date(call.prunedAt).toLocaleDateString()}` : ""}.
+            {" "}What people did with it is kept below.
+          </p>
+
+          <div>
+            <div className="text-xs font-medium text-foreground mb-2">Recorded actions</div>
+            {call.retentionActions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No recorded actions — nobody transcribed, filed, or dispositioned this call
+                before it aged out.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {call.retentionActions.map((entry, i) => (
+                  <li
+                    key={`${entry.action}-${entry.at}-${i}`}
+                    data-testid="pruned-action"
+                    className="flex flex-wrap items-baseline gap-x-2 text-sm"
+                  >
+                    <span className="text-foreground">
+                      {RETENTION_ACTION_LABEL[entry.action] ?? entry.action}
+                    </span>
+                    <span className="text-muted-foreground">
+                      by {entry.actor?.name || entry.actor?.email || "an unknown user"}
+                    </span>
+                    <span className="text-xs text-muted-foreground/70">
+                      {new Date(entry.at).toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* If this call was filed to a chart, the note itself is still in Open
+              Dental — the stub does not carry the commlog number, but the chart is
+              the record, not this page. Say so rather than leaving a dead end. */}
+          {call.retentionActions.some((a) => a.action === "sent_to_chart") && (
+            <p className="text-xs text-muted-foreground border-t border-border pt-4">
+              A chart note was filed for this call. The note itself lives in Open Dental
+              and was not affected by pruning.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function CallDetail() {
   const { id } = useParams<{ id: string }>();
   const auth = useAuth();
@@ -573,6 +663,15 @@ export default function CallDetail() {
         <p className="text-muted-foreground">{error ?? "Call not found."}</p>
       </div>
     );
+  }
+
+  // Past the 30-day retention window the record is an audit stub: no transcript, no
+  // summary, no recording, no caller. This returns EARLY rather than threading an
+  // `isPruned` check through the panels below — every one of them would otherwise
+  // render its own empty state, and a page full of empty panels reads as an outage
+  // rather than as the retention policy working correctly.
+  if (call.isPruned) {
+    return <PrunedCallDetail call={call} />;
   }
 
   const displayCall = call;

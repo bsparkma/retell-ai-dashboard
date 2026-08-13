@@ -16,6 +16,7 @@ const path = require('path');
 const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 const { normalizeNotes, makeNote, normalizeActor } = require('../utils/callDispositions');
 const callTwins = require('./callTwins');
+const retention = require('./callRetention');
 
 function normalizeCallDate(value) {
   if (value instanceof Date) {
@@ -171,6 +172,21 @@ class UnifiedCallStore {
     // already reported, so a repeated condition logs once per process rather than per call.
     this.warnedTransferReasons = new Set();
     this.warnedAmbiguousTwins = new Set();
+
+    /**
+     * Ids of calls DELETED outright (the one-shot legacy purge), persisted with the
+     * store so the deletion survives a restart.
+     *
+     * This is a tombstone, and it exists because deletion alone is not durable
+     * against ingestion: the Mango walk re-reads a window on every sync and a gap
+     * drain can reach much further back, so a purged row would simply come back.
+     * Ids only — a Mango/Retell call id is an identifier, never PHI.
+     *
+     * BOUNDED BY DESIGN, and that is the whole reason the two primitives differ:
+     * the scheduled pruner STUBS (it never deletes), so nothing but the one-shot
+     * purge ever adds to this set. It does not grow with time the way the store did.
+     */
+    this.purgedIds = new Set();
   }
 
   /**
@@ -186,14 +202,20 @@ class UnifiedCallStore {
       try {
         const data = await fs.readFile(this.persistPath, 'utf-8');
         const parsed = JSON.parse(data);
-        
+
+        // Restore the purge tombstone BEFORE the calls: it is what refuses a
+        // purged row, so loading it second would let one back in from the file.
+        if (Array.isArray(parsed.purgedIds)) {
+          this.purgedIds = new Set(parsed.purgedIds);
+        }
+
         // Restore calls
         if (parsed.calls) {
           for (const call of parsed.calls) {
             this.addCallInternal(call, false);
           }
         }
-        
+
         // Restore stats
         if (parsed.stats) {
           this.stats = { ...this.stats, ...parsed.stats };
@@ -233,29 +255,89 @@ class UnifiedCallStore {
       console.error('Call missing ID, skipping');
       return null;
     }
-    
+
+    // RETENTION GUARD 1 — the tombstone. A call deleted by the one-shot legacy
+    // purge stays deleted. Without this the Mango walk (or a gap drain reaching
+    // back into old history) would hand the row straight back and the purge would
+    // undo itself on the next sync.
+    if (this.purgedIds.has(id)) {
+      return null;
+    }
+
+    // RETENTION GUARD 2 — no resurrection. A pruned call is a stub forever. This
+    // path runs on every webhook re-delivery and every watermark-overlap
+    // re-ingest, so without it a call would be un-pruned within the hour and its
+    // content (transcript, summary, caller name) would be fetched back in.
+    //
+    // Returns null — the same "refused" answer as the tombstone — so callers
+    // count and act on what they actually stored. Handing the stub back would
+    // make addMangoCalls report it as newly added and then feed it to the Open
+    // Dental matcher, which is the one place a pruned row must never reach.
+    if (retention.isStub(this.calls.get(id))) {
+      return null;
+    }
+
+    // A stub being replayed from disk on startup. It must NOT go through
+    // normalizeCall — that rebuilds a full record from a field whitelist, so a
+    // stub would come back as a live call with every content field set to null,
+    // which reads as "we have this call, it just has nothing in it" rather than
+    // "this call was pruned".
+    if (retention.isStub(call)) {
+      this.calls.set(id, call);
+      this.indexCall(call, { caller: false });
+      if (markDirty) {
+        this.isDirty = true;
+        this.requestPersist();
+      }
+      return call;
+    }
+
     // Normalize the call structure
     const normalizedCall = this.normalizeCall(call);
     normalizedCall.id = id;
-    
+
     // Store in main map
     this.calls.set(id, normalizedCall);
-    
-    // Update source index
-    const source = normalizedCall.source || 'retell';
+
+    this.indexCall(normalizedCall, { caller: true });
+
+    if (markDirty) {
+      this.isDirty = true;
+      this.requestPersist();
+    }
+
+    return normalizedCall;
+  }
+
+  /**
+   * Add one record to the lookup indexes.
+   *
+   * `caller: false` indexes everything EXCEPT the two caller-number indexes,
+   * which is what a stub needs: a stub has no caller_number, and leaving a stale
+   * entry in byCallerKey would offer it to the twin matcher as a candidate.
+   *
+   * @param {{id: string, source?: string, call_date?: string, caller_number?: string}} call
+   * @param {{ caller?: boolean }} [opts]
+   */
+  indexCall(call, { caller = true } = {}) {
+    const id = call.id;
+
+    const source = call.source || 'retell';
     if (this.bySource[source]) {
       this.bySource[source].add(id);
     }
-    
-    // Update date index
-    const dateKey = normalizedCall.call_date.split('T')[0];
-    if (!this.byDate.has(dateKey)) {
-      this.byDate.set(dateKey, new Set());
+
+    if (typeof call.call_date === 'string' && call.call_date) {
+      const dateKey = call.call_date.split('T')[0];
+      if (!this.byDate.has(dateKey)) {
+        this.byDate.set(dateKey, new Set());
+      }
+      this.byDate.get(dateKey).add(id);
     }
-    this.byDate.get(dateKey).add(id);
-    
-    // Update caller number index
-    const phone = normalizedCall.caller_number;
+
+    if (!caller) return;
+
+    const phone = call.caller_number;
     if (phone) {
       if (!this.byCallerNumber.has(phone)) {
         this.byCallerNumber.set(phone, new Set());
@@ -263,7 +345,7 @@ class UnifiedCallStore {
       this.byCallerNumber.get(phone).add(id);
     }
 
-    // Update the normalized caller index (M7 twin lookup).
+    // The normalized caller index (M7 twin lookup).
     const callerKey = callTwins.callerKey(phone);
     if (callerKey) {
       if (!this.byCallerKey.has(callerKey)) {
@@ -271,13 +353,164 @@ class UnifiedCallStore {
       }
       this.byCallerKey.get(callerKey).add(id);
     }
+  }
 
-    if (markDirty) {
+  /**
+   * Drop one id from an index map, removing the bucket entirely when it empties.
+   *
+   * Emptying the bucket matters: `byCallerNumber.has(phone)` is how "have we ever
+   * seen this number?" is answered, and a bucket left behind as an empty Set
+   * would answer yes for a number whose only call has been deleted.
+   *
+   * @param {Map<string, Set<string>>} index
+   * @param {string|null|undefined} key
+   * @param {string} id
+   */
+  dropFromIndex(index, key, id) {
+    if (!key) return;
+    const bucket = index.get(key);
+    if (!bucket) return;
+    bucket.delete(id);
+    if (bucket.size === 0) index.delete(key);
+  }
+
+  /**
+   * Remove a record's caller-number entries. Used both when deleting a record and
+   * when reducing one to a stub (a stub keeps its date, never its number).
+   * @param {{id: string, caller_number?: string}} call
+   */
+  deindexCaller(call) {
+    this.dropFromIndex(this.byCallerNumber, call.caller_number, call.id);
+    this.dropFromIndex(this.byCallerKey, callTwins.callerKey(call.caller_number), call.id);
+  }
+
+  /**
+   * Remove a record from every index. Only deletion uses this — stubbing keeps
+   * the source and date entries, because the store still holds that id.
+   * @param {{id: string, source?: string, call_date?: string, caller_number?: string}} call
+   */
+  deindexCall(call) {
+    const id = call.id;
+    const source = call.source || 'retell';
+    if (this.bySource[source]) this.bySource[source].delete(id);
+    if (typeof call.call_date === 'string' && call.call_date) {
+      this.dropFromIndex(this.byDate, call.call_date.split('T')[0], id);
+    }
+    this.deindexCaller(call);
+  }
+
+  /**
+   * Expand a set of ids to include the other leg of any twin among them.
+   *
+   * TWIN PAIRS AGE OUT AS A UNIT. If only one leg went, the survivor would hold a
+   * `linked_call_id` pointing at a record that no longer exists — and on the
+   * Mango side that link is what HIDES a duplicate leg from the worklist, so a
+   * half-pruned pair would either resurface as clutter or reference nothing.
+   *
+   * @param {Iterable<string>} ids ids known to be in the store
+   * @returns {Set<string>}
+   */
+  expandTwins(ids) {
+    const targets = new Set();
+    for (const id of ids) {
+      targets.add(id);
+      const call = this.calls.get(id);
+      const twinId = call && call.linked_call_id;
+      if (twinId && this.calls.has(twinId)) targets.add(twinId);
+    }
+    return targets;
+  }
+
+  /**
+   * Delete records outright — the ONLY primitive that destroys data.
+   *
+   * Reserved for the one-shot legacy purge; the scheduled pruner stubs instead.
+   * Goes through the in-memory store and the normal persist path, never the file:
+   * a graceful shutdown writes the in-memory state back over unified_calls.json,
+   * so a direct file edit would be silently undone.
+   *
+   * Idempotent: an unknown id is REPORTED in `missing`, never thrown, so re-running
+   * a purge after a partial one is safe.
+   *
+   * @param {Iterable<string>|string} ids
+   * @returns {{ deleted: number, missing: string[], ids: string[] }}
+   */
+  deleteCalls(ids) {
+    const requested = typeof ids === 'string' ? [ids] : Array.from(ids || []);
+    const missing = [];
+    const present = [];
+    for (const id of requested) {
+      (this.calls.has(id) ? present : missing).push(id);
+    }
+
+    const targets = this.expandTwins(present);
+    for (const id of targets) {
+      const call = this.calls.get(id);
+      this.deindexCall(call);
+      this.calls.delete(id);
+      this.purgedIds.add(id);
+    }
+
+    if (targets.size > 0) {
       this.isDirty = true;
       this.requestPersist();
     }
-    
-    return normalizedCall;
+
+    return { deleted: targets.size, missing, ids: Array.from(targets) };
+  }
+
+  /**
+   * Reduce records to their audit stubs — the retention primitive.
+   *
+   * Idempotent (a stub restubs to itself, counted in `alreadyStubbed`) and
+   * RESUMABLE: each record is swapped in a single synchronous assignment, so a
+   * process that dies mid-run leaves every record either fully live or fully
+   * stubbed. There is no half-stubbed state to recover from.
+   *
+   * @param {Iterable<string>|string} ids
+   * @param {{ now?: Date }} [opts]
+   * @returns {{ stubbed: number, alreadyStubbed: number, missing: string[], ids: string[] }}
+   */
+  stubCalls(ids, { now = new Date() } = {}) {
+    const requested = typeof ids === 'string' ? [ids] : Array.from(ids || []);
+    const missing = [];
+    const present = [];
+    for (const id of requested) {
+      (this.calls.has(id) ? present : missing).push(id);
+    }
+
+    const targets = this.expandTwins(present);
+    const stubbedIds = [];
+    let alreadyStubbed = 0;
+
+    for (const id of targets) {
+      const call = this.calls.get(id);
+      if (retention.isStub(call)) {
+        alreadyStubbed++;
+        continue;
+      }
+      const stub = retention.toStub(call, { now });
+      this.deindexCaller(call);
+      this.calls.set(id, stub);
+      stubbedIds.push(id);
+    }
+
+    if (stubbedIds.length > 0) {
+      this.isDirty = true;
+      this.requestPersist();
+    }
+
+    return { stubbed: stubbedIds.length, alreadyStubbed, missing, ids: stubbedIds };
+  }
+
+  /**
+   * Is this id held as a pruned stub? Routes use it to answer a mutation with an
+   * honest 409 instead of a 404 that would read as "no such call".
+   * @param {string} id
+   * @returns {boolean}
+   */
+  isPruned(id) {
+    return retention.isStub(this.calls.get(id));
   }
 
   /**
@@ -560,7 +793,9 @@ class UnifiedCallStore {
 
     const stored = this.addCallInternal(normalizedCall);
 
-    if (!existing) {
+    // `stored` is null when the call is tombstoned by the legacy purge — counting
+    // it would inflate totalRetell on every poll for a call that is not there.
+    if (stored && !existing) {
       this.stats.totalRetell++;
     }
     this.stats.lastRetellSync = new Date().toISOString();
@@ -590,6 +825,12 @@ class UnifiedCallStore {
         source: 'mango',
         handler_type: 'staff',
       };
+
+      // NOTE (retention): the upsert branch below needs no tombstone/stub guard of
+      // its own. It is reached only via findByExternalId, and neither a deleted
+      // record nor a stub carries an external_id — so both fall through to
+      // addCallInternal, where the two guards live. Adding a second copy here
+      // would be unreachable code pretending to be a safety net.
 
       // If it already exists, update it with any new fields (recording_url/path/transcript/etc)
       if (existingId) {
@@ -681,6 +922,10 @@ class UnifiedCallStore {
    */
   linkTwinFor(call) {
     if (!call || (call.source !== 'mango' && call.source !== 'retell')) return false;
+    // A stub has no caller number to correlate on and its pairing was already
+    // settled before it was pruned. The startup backlog pass runs over the whole
+    // store, so this is the guard that keeps it off pruned rows.
+    if (retention.isStub(call)) return false;
 
     const key = callTwins.callerKey(call.caller_number);
     if (!key) return false;
@@ -952,7 +1197,15 @@ class UnifiedCallStore {
     if (!call) {
       return null;
     }
-    
+
+    // A pruned call is read-only. Every worklist mutation funnels through here
+    // (triage, disposition, notes, OD sync state), so one guard closes all of
+    // them — and writing a triage decision onto a record whose content is gone
+    // would be recording a judgement about something nobody can look at.
+    if (retention.isStub(call)) {
+      return null;
+    }
+
     const updatedCall = {
       ...call,
       ...updates,
@@ -1002,6 +1255,11 @@ class UnifiedCallStore {
     if (!call) return null;
     const note = makeNote(text, author);
     const updated = this.updateCall(id, { notes: [...normalizeNotes(call.notes), note] });
+    // A refused write (today: the call is a pruned stub) must not hand back a note
+    // that was never stored — the route would answer 201 with a note nobody can
+    // read back, which is exactly the "a success we cannot show again is a lie"
+    // failure the on-demand transcription path was built to avoid.
+    if (!updated) return null;
     return { call: updated, note };
   }
 
@@ -1046,8 +1304,15 @@ class UnifiedCallStore {
     const aiCalls = allCalls.filter(c => c.handler_type === 'ai').length;
     const staffCalls = allCalls.filter(c => c.handler_type === 'staff').length;
     
+    // Retention split. `totalCalls` still means "records the store holds", so the
+    // number stays comparable across the cutover; `prunedCalls` is what makes the
+    // difference legible instead of looking like calls went missing.
+    const prunedCalls = allCalls.filter(retention.isStub).length;
+
     return {
       totalCalls: this.calls.size,
+      prunedCalls,
+      liveCalls: this.calls.size - prunedCalls,
       todayCalls: todayCalls.length,
       bySource: {
         retell: retellCalls,
@@ -1120,10 +1385,12 @@ class UnifiedCallStore {
           this.persistRequeued = false;
           this.isDirty = false; // clear before snapshot — any new write while
                                 // we're serializing will re-set it
+          const startedAt = Date.now();
           const snapshot = JSON.stringify(
             {
               calls: Array.from(this.calls.values()),
               stats: this.stats,
+              purgedIds: Array.from(this.purgedIds),
               savedAt: new Date().toISOString(),
             },
             null,
@@ -1131,9 +1398,21 @@ class UnifiedCallStore {
           );
           await fs.writeFile(this.tempPath, snapshot);
           await fs.rename(this.tempPath, this.persistPath);
+          // Structured + greppable, because this line is the measurement the
+          // retention slice exists to move. persist() serializes the WHOLE store
+          // synchronously onto an AzureFile mount, and its duration is the prime
+          // suspect behind the chronic >5s readiness-probe timeouts. Without a
+          // number here, "the store is smaller now" is a claim, not evidence.
+          // Structured and greppable, because this line is the measurement the
+          // retention slice exists to move. The prod runbook parses ms= and
+          // bytes= out of Log Analytics to compare before and after the purge —
+          // renaming this prefix silently breaks that comparison.
+          console.log(
+            `[callstore] persist ok calls=${this.calls.size} ` +
+            `bytes=${Buffer.byteLength(snapshot)} ms=${Date.now() - startedAt}`
+          );
           // Loop again only if another write came in during this iteration.
         } while (this.persistRequeued || this.isDirty);
-        console.log(`💾 Saved ${this.calls.size} calls to disk`);
       } catch (error) {
         // On failure, mark dirty again so the next interval picks it up.
         this.isDirty = true;
@@ -1190,6 +1469,7 @@ class UnifiedCallStore {
     this.byCallerKey.clear();
     this.warnedTransferReasons.clear();
     this.warnedAmbiguousTwins.clear();
+    this.purgedIds.clear();
     this.stats = {
       totalRetell: 0,
       totalMango: 0,
