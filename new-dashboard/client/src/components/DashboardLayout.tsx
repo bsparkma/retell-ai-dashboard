@@ -151,6 +151,24 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
 };
 
 /**
+ * The platform console's nav group (PR C).
+ *
+ * NOT in NAV_BY_MODULE, because it belongs to no module — it is the surface that
+ * decides which modules a practice has. It is appended to whichever module nav
+ * is showing, so a super_admin can reach it from anywhere in the shell.
+ *
+ * Gated on the platform TIER, not on a permission, which is why it is added
+ * outside `visibleNav`: `/platform` is deliberately absent from
+ * ROUTE_PERMISSIONS (a super_admin is not a role holding an action), so
+ * `canVisit` would wave it through for everyone. UX only either way — every
+ * endpoint behind the page is `requireSuperAdmin()`-gated.
+ */
+const PLATFORM_GROUP: NavGroup = {
+  title: "Platform",
+  items: [{ path: "/platform", label: "Platform Console", icon: ShieldCheck }],
+};
+
+/**
  * Longest-prefix active match so "/tc/hygiene" doesn't light up while the
  * user is on "/tc/hygiene/inbox". "/tc" only matches exactly, except it also
  * claims case-detail pages (they belong to Pipeline).
@@ -247,7 +265,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // the fetch settles.
   const permissions = auth.status === "authenticated" ? auth.user.permissions : undefined;
   const navModule = routeModule ?? activeModule;
-  const navGroups = visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions);
+  // Appended AFTER the permission filter — see PLATFORM_GROUP. Reads false while
+  // /auth/me is still in flight, which hides it for a moment rather than
+  // flashing it at someone who turns out not to hold it.
+  const isSuperAdmin = auth.status === "authenticated" && auth.user.isSuperAdmin === true;
+  const navGroups = [
+    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions),
+    ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
+  ];
   const activePath = activeNavPath(location, navGroups);
 
   // Only offer a module this user has at least one page in. The practice's
