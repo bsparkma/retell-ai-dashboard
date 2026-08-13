@@ -359,6 +359,36 @@ export interface OfficeConfig {
   odBlockedReason?: string | null;
 }
 
+/** One chart-note type an office offers, from that office's own Open Dental. */
+export interface CommlogTypeOption {
+  defNum: number;
+  name: string;
+}
+
+/**
+ * The chart-note types available at the send step, for ONE office.
+ *
+ * A `defNum` is only meaningful inside the practice it came from — 486 is
+ * "CareIN AI Call" in Roland and does not exist in Riley, while 401 is a valid
+ * type in both and names a different thing in each. So this always travels next
+ * to the office it belongs to and is never cached across offices client-side.
+ *
+ * `available: false` is a normal state, not an error: the office may not be
+ * OD-connected, or Open Dental may simply not have answered. The dialog then
+ * offers the default alone and Send stays fully usable — a chart write must
+ * never depend on a definitions lookup.
+ */
+export interface CommlogTypeCatalogue {
+  available: boolean;
+  options: CommlogTypeOption[];
+  /** What a send with no explicit choice writes. Null when the office has no OD. */
+  defaultDefNum: number | null;
+  /** The default's name in this office, or null when it isn't in the list. */
+  defaultName: string | null;
+  /** The list is a served-stale copy — Open Dental didn't answer the refresh. */
+  stale: boolean;
+}
+
 /**
  * Which leg of a twinned conversation a call row is (slice M7).
  *
@@ -1036,13 +1066,18 @@ export const api = {
    * office_id is which office the UI BELIEVES this call belongs to. The server
    * resolves the real office from the call itself and refuses on a mismatch —
    * this can only cause a refusal, never redirect a write to another practice.
+   *
+   * commTypeDefNum is the chart-note type picked at the send step. Omit it and
+   * the office's default is written, exactly as before the picker existed. The
+   * server checks it against that office's OWN commlog types and 400s on
+   * anything else — including the other practice's perfectly valid DefNum.
    */
   async resolvePatient(
     id: string,
     body:
       | { patientId: number; linkOnly: true; office_id?: string }
       // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
-      | { patientId: number; note?: string; content_type?: "summary" | "transcript"; office_id?: string }
+      | { patientId: number; note?: string; content_type?: "summary" | "transcript"; commTypeDefNum?: number; office_id?: string }
       | { notAPatient: true; reason: NotAPatientReason }
   ): Promise<{ success: boolean; linked?: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
@@ -1094,7 +1129,19 @@ export const api = {
   async getCommlogPreview(
     id: string,
     contentType: "summary" | "transcript" = "summary",
-  ): Promise<{ note: string; patientId: number | null; patientName: string | null; office?: OfficeConfig }> {
+  ): Promise<{
+    note: string;
+    patientId: number | null;
+    patientName: string | null;
+    office?: OfficeConfig;
+    /**
+     * The chart-note types THIS call's office offers. Rides the preview rather
+     * than having its own endpoint because the office is derived server-side
+     * from the call here — asking for a list by office id would have handed the
+     * client the office selection this whole path keeps away from it.
+     */
+    commlogTypes?: CommlogTypeCatalogue;
+  }> {
     const q = contentType === "transcript" ? "?content_type=transcript" : "";
     return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q}`);
   },

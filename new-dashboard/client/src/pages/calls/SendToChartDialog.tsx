@@ -13,8 +13,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Send, Loader2, RotateCcw, Building2 } from "lucide-react";
-import { api, normalizeUnifiedCall, type UnifiedCall, type OfficeConfig } from "@/lib/api";
+import {
+  api, normalizeUnifiedCall,
+  type UnifiedCall, type OfficeConfig, type CommlogTypeCatalogue,
+} from "@/lib/api";
 import { toast } from "sonner";
 
 interface SendToChartDialogProps {
@@ -47,12 +53,19 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
   const [sending, setSending] = useState(false);
   // Which practice's chart this note is headed for, per the server.
   const [office, setOffice] = useState<OfficeConfig | null>(null);
+  // The chart-note types THIS office offers, and which one is selected. Both
+  // come from the server's preview response, so the list belongs to the same
+  // office the note is headed for — a DefNum from anywhere else is meaningless.
+  const [types, setTypes] = useState<CommlogTypeCatalogue | null>(null);
+  const [typeDefNum, setTypeDefNum] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setGenerated(null);
     setText("");
     setOffice(null);
+    setTypes(null);
+    setTypeDefNum(null);
     setLoadingPreview(true);
     let cancelled = false;
     api.getCommlogPreview(call.id, contentType)
@@ -61,11 +74,27 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
         setGenerated(res.note);
         setText(res.note);
         setOffice(res.office ?? null);
+        setTypes(res.commlogTypes ?? null);
+        // Preselect the office default: the picker changes nothing unless the
+        // user deliberately picks something else.
+        setTypeDefNum(res.commlogTypes?.defaultDefNum ?? null);
       })
       .catch(() => { if (!cancelled) { setGenerated(null); setText(""); } })
       .finally(() => { if (!cancelled) setLoadingPreview(false); });
     return () => { cancelled = true; };
   }, [open, call.id, contentType]);
+
+  // Offer the list when there is one; otherwise the default alone, so the row
+  // still says which type will be written instead of hiding the fact.
+  const defaultDefNum = types?.defaultDefNum ?? null;
+  const typeOptions =
+    types?.available && types.options.length > 0
+      ? types.options
+      : defaultDefNum != null
+        ? [{ defNum: defaultDefNum, name: types?.defaultName ?? "Office default" }]
+        : [];
+  // Nothing to choose between = nothing to choose. Disabled, not hidden.
+  const typePickerDisabled = typeOptions.length < 2;
 
   const edited = generated != null && text.trim() !== generated.trim();
 
@@ -78,6 +107,10 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
         patientId,
         note: text,
         content_type: contentType,
+        // Send the type the user is looking at, so what was confirmed is what is
+        // written. Omitted only when the server offered no default at all — then
+        // the server picks, exactly as it did before this dialog had a picker.
+        ...(typeDefNum != null ? { commTypeDefNum: typeDefNum } : {}),
         // Assert the office the UI thinks it is writing to. The server resolves the
         // real one from the call and refuses on a mismatch, so a stale screen can
         // never send a note to the wrong practice — it gets an error instead.
@@ -123,6 +156,56 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
               {patientId ? <> · PatNum {patientId}</> : null}
             </span>
           </div>
+        )}
+
+        {/* WHICH kind of commlog this lands as, from the office's own Open Dental
+            list. Preselected to the office default, so leaving it alone writes
+            exactly what a send wrote before this control existed. */}
+        {typeOptions.length > 0 && (
+          <div className="flex items-center gap-3">
+            <label
+              htmlFor="commlog-type"
+              className="text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap"
+            >
+              Note type
+            </label>
+            <Select
+              value={typeDefNum != null ? String(typeDefNum) : undefined}
+              onValueChange={(v) => setTypeDefNum(Number(v))}
+              disabled={typePickerDisabled || loadingPreview || sending}
+            >
+              <SelectTrigger id="commlog-type" className="h-8 text-xs flex-1" data-testid="commlog-type-select">
+                <SelectValue placeholder="Office default" />
+              </SelectTrigger>
+              <SelectContent>
+                {typeOptions.map((t) => (
+                  <SelectItem key={t.defNum} value={String(t.defNum)} className="text-xs">
+                    {t.name}
+                    {/* Only worth marking when there is something to mark it
+                        against — the fallback row is already named "Office
+                        default" and would otherwise read "· default" twice. */}
+                    {t.defNum === defaultDefNum && !typePickerDisabled && (
+                      <span className="text-muted-foreground"> · default</span>
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {/* The list is this practice's configuration, so say so plainly rather
+            than leaving a disabled control unexplained. Never an error state:
+            Send works throughout. */}
+        {typeOptions.length > 0 && typePickerDisabled && (
+          <p className="text-[11px] text-muted-foreground -mt-1">
+            Open Dental's note types aren't available right now — sending with this office's default.
+          </p>
+        )}
+        {types?.stale && !typePickerDisabled && (
+          <p className="text-[11px] text-muted-foreground -mt-1">
+            Showing the last note types read from Open Dental; the list may be out of date.
+          </p>
         )}
 
         <div className="flex items-center justify-between">

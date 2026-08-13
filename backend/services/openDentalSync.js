@@ -10,6 +10,7 @@ const { sanitizeForOd } = require('../utils/sanitizeForOd');
 const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 const { getOfficeForCall } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
+const commlogTypes = require('./commlogTypes');
 
 /**
  * Seconds → `m:ss`, for the per-line timestamp in a transcript chart note.
@@ -273,10 +274,15 @@ class OpenDentalSyncService {
    * only ever cause a refusal, never redirect the write, so a request that names the
    * wrong office is rejected rather than obeyed.
    *
+   * `options.commTypeDefNum` is the chart-note TYPE the user picked at the send
+   * step. Omitted, the office's configured default is written — byte-for-byte
+   * today's behaviour. Supplied, it is checked against THIS office's own commlog
+   * types before anything is written; see commlogTypes.assertAllowed.
+   *
    * @param {string} callId
    * @param {{ force?: boolean, allowUnmatched?: boolean, noteOverride?: string,
    *           contentType?: string, includeTranscript?: boolean,
-   *           expectOfficeKey?: string }} [options]
+   *           expectOfficeKey?: string, commTypeDefNum?: number }} [options]
    */
   async syncCallToCommLog(callId, options = {}) {
     const call = unifiedCallStore.getCall(callId);
@@ -305,6 +311,24 @@ class OpenDentalSyncService {
         code: err.code,
         officeBlocked: true,
       };
+    }
+
+    // Resolve the chart-note TYPE before touching a chart. The check lives here
+    // rather than only in the route for the same reason expectOfficeKey does: a
+    // new caller of the send path cannot forget it. Omitted → null → the office's
+    // configured default, exactly as before this option existed.
+    let commTypeDefNum = null;
+    if (options.commTypeDefNum !== undefined && options.commTypeDefNum !== null) {
+      try {
+        commTypeDefNum = await commlogTypes.assertAllowed(od, options.commTypeDefNum);
+      } catch (err) {
+        return {
+          success: false,
+          error: err.publicMessage || err.message,
+          code: err.code,
+          commlogTypeBlocked: true,
+        };
+      }
     }
 
     // Match to patient if not already matched
@@ -357,7 +381,7 @@ class OpenDentalSyncService {
       if (typeof options.noteOverride === 'string' && options.noteOverride.trim()) {
         commLogEntry.Note = options.noteOverride;
       }
-      const result = await this.createCommLog(patientId, commLogEntry, od);
+      const result = await this.createCommLog(patientId, commLogEntry, od, { commTypeDefNum });
 
       if (!result.success) {
         throw new Error(result.error || 'CommLog create failed');
@@ -591,8 +615,19 @@ class OpenDentalSyncService {
    * called insertCommLogToDatabase directly, which silently failed in api mode
    * ("Database pool not available") so call summaries never reached OD on api-mode
    * tenants. See docs/OD_API_CONTRACT.md §10.
+   *
+   * `options.commTypeDefNum` is an ALREADY-VALIDATED chart-note type (see
+   * commlogTypes.assertAllowed). This method does not validate — it is the
+   * transport, and a caller that reaches it with an unchecked DefNum would be a
+   * bug in the caller, not something to paper over here. Omitted, the office's
+   * configured default is written.
+   *
+   * @param {string|number} patientId
+   * @param {Record<string, unknown>} commLogEntry
+   * @param {import('../config/odOffices').OdOfficeHandle} od
+   * @param {{ commTypeDefNum?: number|null }} [options]
    */
-  async createCommLog(patientId, commLogEntry, od) {
+  async createCommLog(patientId, commLogEntry, od, options = {}) {
     // An office-bound connection is REQUIRED. There is no "default office" for a
     // chart write — a caller that cannot say which practice this note belongs in
     // must not be allowed to guess.
@@ -605,13 +640,23 @@ class OpenDentalSyncService {
     if (commLogEntry && typeof commLogEntry.Note === 'string') {
       commLogEntry = { ...commLogEntry, Note: sanitizeForOd(commLogEntry.Note) };
     }
+
+    const chosenDefNum = Number.isInteger(options.commTypeDefNum) ? options.commTypeDefNum : null;
+
     if (od.client.useDatabase && od.client.pool) {
-      return this.insertCommLogToDatabase(patientId, commLogEntry, od);
+      // Direct-DB mode's CommType has always come off the entry (the legacy
+      // getCommType heuristic). A user's explicit pick overrides it; with no
+      // pick, that path is left exactly as it was.
+      return this.insertCommLogToDatabase(
+        patientId,
+        chosenDefNum === null ? commLogEntry : { ...commLogEntry, CommType: chosenDefNum },
+        od
+      );
     }
 
     if (od.client.client) {
       try {
-        const payload = this.buildCommLogApiPayload(patientId, commLogEntry, od);
+        const payload = this.buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum);
         const response = await od.client.client.post('/commlogs', payload);
         return {
           success: true,
@@ -633,8 +678,14 @@ class OpenDentalSyncService {
    * integers); CommDateTime is "yyyy-MM-dd HH:mm:ss"; CommType is a definition.DefNum
    * (Category=27). These are CareIN inbound call summaries, so Mode_="Phone" and
    * SentOrReceived="Received" by intent. See docs/OD_API_CONTRACT.md §10.
+   *
+   * @param {string|number} patientId
+   * @param {Record<string, unknown>} commLogEntry
+   * @param {import('../config/odOffices').OdOfficeHandle} od
+   * @param {number|null} [chosenDefNum] a validated user-picked commlog type;
+   *   null/omitted writes this office's configured default.
    */
-  buildCommLogApiPayload(patientId, commLogEntry, od) {
+  buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum = null) {
     const modeEnum = { 0: 'None', 1: 'Email', 2: 'Text', 3: 'Phone', 4: 'In Person', 5: 'Mail' };
     const Mode_ = typeof commLogEntry.Mode_ === 'string'
       ? commLogEntry.Mode_
@@ -646,9 +697,12 @@ class OpenDentalSyncService {
       CommDateTime: od.client.formatODDateTime(commLogEntry.CommDateTime),
       Mode_,
       SentOrReceived: 'Received', // inbound call summaries are always received
-      // THIS OFFICE's "CareIN AI Call" DefNum. Roland's 486 is not a CommLogType in
-      // Riley's database at all (Riley's is 451), so it can never be sent there.
-      CommType: od.commTypeDefNum
+      // The type the user picked at the send step, else THIS OFFICE's "CareIN AI
+      // Call" DefNum. Either way it is a DefNum from this practice's own database:
+      // Roland's 486 is not a CommLogType in Riley's at all (Riley's is 451), and a
+      // picked value only reaches here after commlogTypes.assertAllowed confirmed
+      // it is in THIS office's list.
+      CommType: Number.isInteger(chosenDefNum) ? chosenDefNum : od.commTypeDefNum
     };
   }
 

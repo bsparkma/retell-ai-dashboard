@@ -24,7 +24,32 @@ const { beforeEach, afterEach } = test;
 const sync = require('./openDentalSync');
 const unifiedCallStore = require('./unifiedCallStore');
 const odOffices = require('../config/odOffices');
+const commlogTypes = require('./commlogTypes');
 const { MANGO_LINE_OFFICE } = require('../config/officeAgents');
+
+/**
+ * Each practice's commlog-type list, as `GET /definitions?Category=27` really
+ * answered on 2026-08-13. Same twelve concepts, twelve different DefNums —
+ * "CareIN AI Call" is 486 in Roland and 451 in Riley, and neither number exists
+ * in the other's database. That is what makes a picked type a cross-office
+ * question and not just a dropdown.
+ */
+const OFFICE_COMMLOG_DEFS = {
+  roland: [
+    [224, 'ApptRelated'], [225, 'Insurance'], [226, 'Financial'], [478, 'Treatment Coordinator'],
+    [228, 'Misc'], [476, 'Lab Cases'], [401, 'ODHQ'], [465, 'Crown by Moolah'],
+    [227, 'Recall'], [441, 'Text'], [427, 'FHIR'], [486, 'CareIN AI Call'],
+  ],
+  valley: [
+    [235, 'ApptRelated'], [236, 'Insurance'], [237, 'Financial'], [436, 'Treatment Coordinator'],
+    [239, 'Misc'], [437, 'Lab Cases'], [298, 'ODHQ'], [401, 'Crown by Moolah'],
+    [238, 'Recall'], [375, 'Text'], [360, 'FHIR'], [451, 'CareIN AI Call'],
+  ],
+};
+
+const defsFor = (officeKey) => (OFFICE_COMMLOG_DEFS[officeKey] || []).map(
+  ([DefNum, ItemName]) => ({ DefNum, ItemName, Category: 27, category: 'CommLogTypes', isHidden: 'false' })
+);
 
 // Real DIDs from the line map, so these calls attribute exactly the way production
 // attributes them rather than through a test-only shortcut.
@@ -45,6 +70,8 @@ const ROLAND_PATIENT = { id: 7115, firstName: 'Different', lastName: 'RolandPati
 let saved;
 /** Every OD interaction any office made, in order: {office, op, arg}. */
 let odCalls;
+/** Flip inside a test to take the definitions read away from every office. */
+let odDefinitionsDown = false;
 /** Instance methods we overwrote, so afterEach can put them back. */
 let stubbedClients;
 
@@ -77,6 +104,7 @@ function stubOfficeClients() {
         isEnabled: c.isEnabled,
         searchPatients: c.searchPatients,
         getPatientDetails: c.getPatientDetails,
+        apiGetRaw: c.apiGetRaw,
         client: c.client,
       },
     });
@@ -91,6 +119,14 @@ function stubOfficeClients() {
     c.getPatientDetails = async (id) => {
       odCalls.push({ office: officeKey, op: 'getPatientDetails', arg: id });
       return Number(id) === patient.id ? patient : null;
+    };
+    // The commlog-type catalogue read. Each office answers with ITS OWN list, so
+    // a picked DefNum is checked against the practice it is headed for.
+    c.apiGetRaw = async (path, params) => {
+      odCalls.push({ office: officeKey, op: 'GET ' + path, arg: params });
+      if (path !== '/definitions') return { ok: false, status: 404, data: null, error: 'not stubbed' };
+      if (odDefinitionsDown) return { ok: false, status: 503, data: null, error: 'OD unreachable' };
+      return { ok: true, status: 200, data: defsFor(officeKey) };
     };
     c.client = {
       post: async (url, body) => {
@@ -146,6 +182,10 @@ beforeEach(() => {
   // Assert the machinery, not whichever value the switch currently ships with.
   odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
   odOffices.resetOdOfficeCache();
+  odDefinitionsDown = false;
+  // Per-office catalogues are cached across calls in the app; a test must not
+  // inherit the previous test's list (or its absence).
+  commlogTypes.resetCommlogTypeCache();
   stubOfficeClients();
 });
 
@@ -157,6 +197,7 @@ afterEach(() => {
   set('OPENDENTAL_CUSTOMER_KEY_VALLEY', saved.valley);
   odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = saved.valleyEnabled;
   odOffices.resetOdOfficeCache();
+  commlogTypes.resetCommlogTypeCache();
   clearStore();
 });
 
@@ -291,6 +332,100 @@ test('a roland call writes to roland, with roland\'s DefNum — never 451', asyn
   assert.equal(write.office, 'roland');
   assert.equal(write.arg.CommType, 486);
   assert.notEqual(write.arg.CommType, 451);
+});
+
+// ── Call site: syncCallToCommLog with a PICKED chart-note type ──────────────
+//
+// The picker lets a user choose the commlog type instead of always getting the
+// office default. That turns "which DefNum?" into a question a request can now
+// influence, so the same rule that governs the office governs the type: the
+// value is checked against the CALL's own practice, and a number from the other
+// practice is refused rather than written.
+
+const commlogWrites = () => odCalls.filter((c) => c.op === 'POST /commlogs');
+
+test("a picked type from the office's own list is what gets written", async () => {
+  seedCall('t1', ROLAND_DID, { od_patient_id: 7115, od_patient_office: 'roland', od_sync_status: 'matched' });
+  // 227 = "Recall" in Roland's definitions.
+  const result = await sync.syncCallToCommLog('t1', { commTypeDefNum: 227 });
+
+  assert.equal(result.success, true);
+  const write = commlogWrites()[0];
+  assert.equal(write.office, 'roland');
+  assert.equal(write.arg.CommType, 227);
+});
+
+test("valley picks from valley's list — 238 Recall, not Roland's 227", async () => {
+  seedCall('t2', VALLEY_DID, { od_patient_id: 7115, od_patient_office: 'valley', od_sync_status: 'matched' });
+  const result = await sync.syncCallToCommLog('t2', { commTypeDefNum: 238 });
+
+  assert.equal(result.success, true);
+  assert.equal(commlogWrites()[0].arg.CommType, 238);
+  assert.deepEqual(touchedOffices(), ['valley'], "Roland's definitions are never consulted for a valley call");
+});
+
+test("Riley's CareIN DefNum (451) is refused on a roland call, before any write", async () => {
+  seedCall('t3', ROLAND_DID, { od_patient_id: 7115, od_patient_office: 'roland', od_sync_status: 'matched' });
+  const result = await sync.syncCallToCommLog('t3', { commTypeDefNum: 451 });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'COMMLOG_TYPE_INVALID');
+  assert.equal(commlogWrites().length, 0, 'a refused type must not reach a chart');
+  assert.equal(unifiedCallStore.getCall('t3').od_sync_status, 'matched', 'and must not mark the call sent');
+});
+
+test("Roland's CareIN DefNum (486) is refused on a valley call, before any write", async () => {
+  seedCall('t4', VALLEY_DID, { od_patient_id: 7115, od_patient_office: 'valley', od_sync_status: 'matched' });
+  const result = await sync.syncCallToCommLog('t4', { commTypeDefNum: 486 });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'COMMLOG_TYPE_INVALID');
+  assert.equal(commlogWrites().length, 0);
+});
+
+test('DefNum 401 is accepted by BOTH offices — and means something different in each', async () => {
+  // The case a naive "is this number one of ours?" check gets wrong in both
+  // directions: 401 is "ODHQ" in Roland and "Crown by Moolah" in Riley. Each
+  // office may legitimately pick it; neither is picking the other's type.
+  seedCall('t5', ROLAND_DID, { od_patient_id: 7115, od_patient_office: 'roland', od_sync_status: 'matched' });
+  seedCall('t6', VALLEY_DID, { od_patient_id: 7115, od_patient_office: 'valley', od_sync_status: 'matched' });
+
+  assert.equal((await sync.syncCallToCommLog('t5', { commTypeDefNum: 401 })).success, true);
+  assert.equal((await sync.syncCallToCommLog('t6', { commTypeDefNum: 401 })).success, true);
+
+  const writes = commlogWrites();
+  assert.deepEqual(writes.map((w) => w.office), ['roland', 'valley']);
+  assert.deepEqual(writes.map((w) => w.arg.CommType), [401, 401]);
+});
+
+test('omitting the type writes the office default — unchanged from before the picker', async () => {
+  seedCall('t7', VALLEY_DID, { od_patient_id: 7115, od_patient_office: 'valley', od_sync_status: 'matched' });
+  const result = await sync.syncCallToCommLog('t7', {});
+
+  assert.equal(result.success, true);
+  assert.equal(commlogWrites()[0].arg.CommType, 451);
+  assert.equal(
+    odCalls.some((c) => c.op === 'GET /definitions'), false,
+    'a send with no pick must not add a definitions read to the write path'
+  );
+});
+
+test('with definitions unreadable, the default still sends and a pick fails closed', async () => {
+  odDefinitionsDown = true;
+  seedCall('t8', ROLAND_DID, { od_patient_id: 7115, od_patient_office: 'roland', od_sync_status: 'matched' });
+  seedCall('t9', ROLAND_DID, { od_patient_id: 7115, od_patient_office: 'roland', od_sync_status: 'matched' });
+
+  // Naming the office's own default never needs the catalogue.
+  const withDefault = await sync.syncCallToCommLog('t8', { commTypeDefNum: 486 });
+  assert.equal(withDefault.success, true);
+  assert.equal(commlogWrites()[0].arg.CommType, 486);
+
+  // A different type cannot be checked, so it is refused honestly rather than
+  // written on a guess — and NOT reported as an invalid choice.
+  const withPick = await sync.syncCallToCommLog('t9', { commTypeDefNum: 227 });
+  assert.equal(withPick.success, false);
+  assert.equal(withPick.code, 'COMMLOG_TYPE_UNVERIFIABLE');
+  assert.equal(commlogWrites().length, 1, 'only the default send reached a chart');
 });
 
 test('a send that names the wrong office is refused before any write', async () => {
