@@ -552,6 +552,33 @@ from Key Vault, never from a `.env`.
 | `COMMLOG_AUTO_WRITE` | Only the literal `'true'` auto-writes a chart note from the webhook. Default off = review-then-send. |
 | `OFFICE_TIMEZONE` | `America/Chicago`. Day boundaries for OD sync, **and** the zone `CALL_RETENTION_SCHEDULE` is read in (passed explicitly to node-cron, so it does not depend on a container `TZ`). **Distinct from `TRANSCRIPTION_BUDGET_TZ`.** |
 
+### Open Dental health check
+
+`backend/services/odHealthCheck.js` probes **each office** with one cheap read
+(`GET /preferences?PrefName=ProgramVersion`) and reports `up | down | unknown`.
+It replaced the 3-minute self-polling loop inside the OD client, which made
+~25,000 OD calls/day into a `syncComplete` event with zero listeners and whose
+error spam was nonetheless the only outage detector we had.
+
+Unlike most switches here, **an unparseable value falls back to the default
+rather than disabling the job** — a health checker that silently never runs is
+worse than none, because its silence reads as "everything is fine". (Contrast
+`MANGO_SYNC_SCHEDULE`, where an invalid cron quietly disables the sync.)
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `OD_HEALTH_CHECK_DISABLED` | unset | Only the literal `'true'` turns the checker off. Set it on a dev box that must not talk to a live practice server. |
+| `OD_HEALTH_INTERVAL_MINUTES` | `5` | Probe cadence. 5 min ⇒ 288 probes/office/day. `0`, negatives and garbage all fall back. |
+| `OD_HEALTH_TIMEOUT_MS` | `10000` | Well under the client's 30s, so a hung eConnector is classified `timeout` rather than stalling a cycle. |
+| `OD_HEALTH_FAILURE_THRESHOLD` | `2` | Consecutive failures before an office is called **down** (~10 min at the default interval). One success always calls it **up**. |
+| `OD_HEALTH_HEARTBEAT_MINUTES` | `60` | One `[odhealth] heartbeat …` line per window, so silence can be told from a dead checker. |
+
+Logging is **transition-only**: one line down, one line up, nothing while
+steady — the 899-email eConnector flood is the anti-pattern. Grep `[odhealth]`.
+State is exposed on `GET /api/opendental/sync/status`, `GET /api/admin/health`
+(`services.openDental.offices`), and per office in the worklist roster
+(`odHealth`). The checker only **observes** — it gates no OD operation.
+
 ### Retell
 
 | Var | Effect |

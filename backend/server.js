@@ -54,6 +54,7 @@ async function bootstrap() {
   const syncScheduler = require('./services/syncScheduler');
   const retentionScheduler = require('./services/retentionScheduler');
   const retentionConfig = require('./config/retention');
+  const odHealthCheck = require('./services/odHealthCheck');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -409,6 +410,17 @@ async function bootstrap() {
     await retentionConfig.refreshFromDb();
     retentionScheduler.start();
 
+    // 5. Start the per-office Open Dental health check (default every 5 min).
+    //    This is the DELIBERATE replacement for the 3-minute self-polling loop
+    //    that used to live inside the OD client — a loop that made ~25,000 OD
+    //    calls a day into an event with no listeners, and whose error spam was
+    //    nonetheless our only outage detector. See services/odHealthCheck.js.
+    //
+    //    Started here rather than from the client's constructor so it can be
+    //    stopped on SIGTERM like every other scheduled job, and so it covers
+    //    EVERY office rather than whichever one the singleton happens to hold.
+    odHealthCheck.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -423,6 +435,7 @@ async function bootstrap() {
   process.on('SIGTERM', async () => {
     console.log('Received SIGTERM, shutting down gracefully...');
     retentionScheduler.stop();
+    odHealthCheck.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -430,6 +443,7 @@ async function bootstrap() {
   process.on('SIGINT', async () => {
     console.log('Received SIGINT, shutting down gracefully...');
     retentionScheduler.stop();
+    odHealthCheck.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

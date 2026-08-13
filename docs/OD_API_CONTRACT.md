@@ -167,9 +167,11 @@ cursor:
    `DateTStamp`.
 
 **Code deltas**
-- `getRecentPatientUpdates` (openDental.js:1469) sends `updatedSince` → OD 400. Either **drop it
-  from `performSync`/`getSyncData`** (openDental.js:206–216) or re-implement against
-  `GET /patients/Simple?DateTStamp=…` (§7) and store the `serverDateTime` cursor.
+- ~~`getRecentPatientUpdates` sends `updatedSince` → OD 400~~ — **moot as of 2026-08-13.**
+  `getRecentPatientUpdates`, `performSync` and `getSyncData` were deleted along with the
+  3-minute background loop they existed to feed (its `syncComplete` event had zero
+  listeners). The `DateTStamp` mechanism above is still the correct one for whoever
+  builds a real incremental sync — there is simply no caller today.
 - Same `DateTStamp` cursor applies to `GET /appointments` for incremental appointment sync.
 
 ---

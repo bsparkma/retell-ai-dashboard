@@ -19,6 +19,7 @@ const { getConnectedClientCount } = require('../socket/socketHandler');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const retentionConfig = require('../config/retention');
 const retentionScheduler = require('../services/retentionScheduler');
+const odHealth = require('../services/odHealthCheck');
 const legacyPurge = require('../services/legacyPurge');
 const audit = require('../platform/audit');
 const { requireSuperAdmin } = require('../config/permissions');
@@ -143,6 +144,12 @@ router.get('/health', async (req, res) => {
       odStatus = openDentalService.useDatabase ? 'database' : 'api';
     }
 
+    // Read the health snapshot ONCE. Reading it per-field would be three
+    // independent reads of a state another task is allowed to replace between
+    // them, and a payload that said "running: true" next to a stale office row
+    // would be exactly the torn read the checker is built to prevent.
+    const odHealthStatus = odHealth.getStatus();
+
     const health = {
       status: 'healthy',
       timestamp: new Date().toISOString(),
@@ -166,7 +173,18 @@ router.get('/health', async (req, res) => {
         openDental: {
           status: odEnabled ? 'configured' : 'not_configured',
           connection_type: odStatus,
-          last_sync: openDentalService.lastSyncTime || null,
+          // `last_sync` is gone with the 3-minute background loop that was the
+          // only thing that ever set it. What replaces it is better than a
+          // timestamp: whether each office can actually be REACHED, observed
+          // continuously. `checker` covers the case the office rows cannot —
+          // a checker that never started would otherwise leave every office
+          // sitting at 'unknown' with nothing to explain why.
+          checker: {
+            running: odHealthStatus.running,
+            enabled: odHealthStatus.enabled,
+            interval_minutes: odHealthStatus.intervalMinutes,
+          },
+          offices: odHealthStatus.offices,
         },
         transcription: {
           status: transcriptionService.isAvailable() ? 'available' : 'unavailable',
@@ -186,6 +204,13 @@ router.get('/health', async (req, res) => {
       health.status = 'degraded';
     }
     if (!callAnalyzer.isAvailable()) {
+      health.status = 'degraded';
+    }
+    // An office whose Open Dental cannot be reached is a degraded system, and
+    // saying so here is the point of the whole slice: the previous way to learn
+    // this was to notice error spam in the container log. 'unknown' is NOT
+    // degraded — not having asked yet is not the same as having asked and failed.
+    if (odHealthStatus.offices.some((o) => o.status === 'down')) {
       health.status = 'degraded';
     }
 

@@ -500,6 +500,47 @@ export interface OdMatchCandidate {
   name: string;
 }
 
+/**
+ * How a probe failed, when one did. `timeout` is the eConnector-down
+ * signature — the practice's on-premises connector stopped answering.
+ */
+export type OdHealthFailureKind =
+  | "timeout"
+  | "network"
+  | "auth"
+  | "rate_limited"
+  | "server_error"
+  | "unexpected_response"
+  | "not_configured";
+
+/**
+ * Whether an office's Open Dental can be REACHED right now, as last observed by
+ * the backend's per-office health check (one cheap read every few minutes).
+ *
+ * `"unknown"` is a real state and must render as unknown, never as up: it means
+ * nobody has asked yet, which is what a checker that failed to start also looks
+ * like. Showing that as healthy is the exact failure this replaced.
+ */
+export interface OdOfficeHealth {
+  officeKey: string;
+  officeName: string;
+  status: "up" | "down" | "unknown";
+  /** Is the office OD-configured at all, and therefore worth probing? */
+  eligible: boolean;
+  ineligibleReason: string | null;
+  lastCheckedAt: string | null;
+  lastOkAt: string | null;
+  /** When `status` last changed — how long an outage has been running. */
+  lastTransitionAt: string | null;
+  consecutiveFailures: number;
+  lastFailureKind: OdHealthFailureKind | null;
+  lastFailureDetail: string | null;
+  lastLatencyMs: number | null;
+  probes: number;
+  /** OD server version, read from the probe itself. */
+  serverVersion: string | null;
+}
+
 /** One office in the worklist selector (from the real agent→office config). */
 export interface OfficeConfig {
   officeId: string;
@@ -508,10 +549,20 @@ export interface OfficeConfig {
    * EFFECTIVE Open Dental connectivity: the office is switched on AND its
    * credentials are present. An office switched on without its customer key
    * reports false here, so the UI never offers actions that would fail.
+   *
+   * This is a CONFIGURATION fact and is deliberately separate from `odHealth`
+   * below: a five-minute network blip must not silently take away a practice's
+   * ability to file chart notes.
    */
   odConnected: boolean;
   /** Why OD is unavailable for this office, in words a human can act on. */
   odBlockedReason?: string | null;
+  /**
+   * Whether OD is REACHABLE, observed rather than configured. Optional so an
+   * older backend (or a payload built before this shipped) renders as "we don't
+   * know" instead of as healthy.
+   */
+  odHealth?: OdOfficeHealth | null;
 }
 
 /** One chart-note type an office offers, from that office's own Open Dental. */

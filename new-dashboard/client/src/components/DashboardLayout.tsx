@@ -41,6 +41,7 @@ import {
   LibraryBig,
   Users,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -51,6 +52,7 @@ import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute } from "@/features/tc/officeScope";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { canVisit } from "@/lib/permissions";
+import { officeHealthDisplay } from "@/lib/odHealth";
 import type { ModuleId } from "@/lib/modules";
 
 const LOGO_URL = "/carein-logo.webp";
@@ -205,6 +207,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // Global office selection (shared across pages) — the real agent→office roster.
   const { offices, office, setOffice, selected } = useOffice();
   const selectedOfficeName = office === ALL_OFFICES ? "All Offices" : (selected?.officeName ?? "All Offices");
+  // Open Dental reachability for the office currently in the picker, so an
+  // outage is visible in the collapsed control rather than only in the dropdown.
+  const selectedOfficeHealth = selected ? officeHealthDisplay(selected) : null;
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
   // DentaFlow SHARED_ROUTES port: routes whose content isn't scoped by the
   // office picker hide it entirely (pages that still need one office prompt
@@ -384,22 +389,62 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           >
             <Building2 size={14} className="flex-shrink-0" style={{ color: "oklch(0.65 0.1 186)" }} />
             <span className="truncate flex-1 text-left text-xs font-medium">{selectedOfficeName}</span>
+            {/*
+              An Open Dental outage is worth seeing WITHOUT opening the dropdown —
+              it is the difference between "my Send to chart button is broken" and
+              "the office's connector is down". Only the selected office's alarm
+              surfaces here; the per-office detail is one click away below.
+            */}
+            {selectedOfficeHealth?.tone === "down" && (
+              <AlertTriangle
+                size={12}
+                className="flex-shrink-0"
+                style={{ color: "oklch(0.75 0.15 70)" }}
+                aria-label="Open Dental unreachable"
+                data-testid="office-od-down"
+              />
+            )}
             <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${officeDropOpen ? "rotate-180" : ""}`} />
           </button>
           {officeDropOpen && (
             <div className="mt-1 rounded-md overflow-hidden" style={{ backgroundColor: "oklch(0.11 0.015 250)" }}>
-              {[{ officeId: ALL_OFFICES, officeName: "All Offices", odConnected: true }, ...offices].map((o) => (
+              {[{ officeId: ALL_OFFICES, officeName: "All Offices", odConnected: true }, ...offices].map((o) => {
+                // "All Offices" is a filter, not a practice — it has no Open
+                // Dental of its own to be reachable, so it gets no verdict.
+                const health = o.officeId === ALL_OFFICES ? null : officeHealthDisplay(o);
+                return (
                 <button
                   key={o.officeId}
                   onClick={() => { setOffice(o.officeId); setOfficeDropOpen(false); }}
-                  title={o.odConnected ? undefined : "OD not connected for this office yet"}
+                  title={health?.title}
                   className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors"
                   style={{ color: o.officeId === office ? "oklch(0.75 0.08 186)" : "oklch(0.65 0.01 250)" }}
                 >
                   <span className="flex-1 truncate">{o.officeName}</span>
-                  {!o.odConnected && <PlugZap size={11} className="opacity-60 flex-shrink-0" />}
+                  {/*
+                    Two different problems, two different glyphs. A plug is a
+                    CONFIGURATION gap somebody has to go and fix; a warning
+                    triangle is a practice whose Open Dental is not answering
+                    right now. Collapsing them into one icon would send an
+                    operator to the wrong place. 'unknown' and 'up' both show
+                    nothing — the tooltip still distinguishes them, because a
+                    glyph for "we have not asked yet" would cry wolf every
+                    deploy.
+                  */}
+                  {health?.tone === "not_connected" && (
+                    <PlugZap size={11} className="opacity-60 flex-shrink-0" />
+                  )}
+                  {health?.tone === "down" && (
+                    <AlertTriangle
+                      size={11}
+                      className="flex-shrink-0"
+                      style={{ color: "oklch(0.75 0.15 70)" }}
+                      data-testid={`office-od-down-${o.officeId}`}
+                    />
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

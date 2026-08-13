@@ -16,6 +16,7 @@ const syncScheduler = require('../services/syncScheduler');
 const manualSyncThrottle = require('../services/manualSyncThrottle');
 const { filterCallsForOffice, getOfficeForCall, getOfficeConfig, getAllOfficeConfigs } = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
+const odHealth = require('../services/odHealthCheck');
 // Aliased: `commlogTypes` is the response FIELD name in the preview handler, and
 // shadowing the module inside it would be a trap for the next reader.
 const commlogTypeCatalogue = require('../services/commlogTypes');
@@ -78,8 +79,28 @@ router.use('/:id', (req, res, next) => {
  * rather than appearing live and failing at the moment someone clicks Send.
  * @returns {Array<{officeId: string, officeName: string, odConnected: boolean, odBlockedReason: string|null}>}
  */
+/**
+ * The office list the worklist and the sidebar selector render.
+ *
+ * `odConnected` and `odHealth` answer two DIFFERENT questions and are kept
+ * apart on purpose:
+ *
+ *   odConnected — MAY we use Open Dental for this office? Configuration: the
+ *                 voice module's switch is on and the customer key is present.
+ *                 Pure, synchronous, no network. It gates the action buttons.
+ *   odHealth    — CAN we reach it right now? An observation, maintained in the
+ *                 background by services/odHealthCheck.js.
+ *
+ * An office can be connected and down (eConnector outage) or disconnected and
+ * therefore never probed. Folding the observation into the entitlement flag
+ * would mean a five-minute network blip silently removed a practice's ability
+ * to file chart notes, which is a far worse failure than showing a warning.
+ */
 const officeRoster = () =>
-  getAllOfficeConfigs().map((o) => odOffices.describeOffice(o.officeId));
+  getAllOfficeConfigs().map((o) => ({
+    ...odOffices.describeOffice(o.officeId),
+    odHealth: odHealth.getOfficeHealth(o.officeId),
+  }));
 
 // --- Slice B: triage worklist + patient review queue -----------------------
 
