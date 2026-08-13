@@ -221,6 +221,138 @@ async function getEnabledModules(tenantId) {
 }
 
 /**
+ * Every tenant_module ROW for a tenant — enabled and disabled alike.
+ *
+ * Distinct from getEnabledModules() on purpose. That one answers the request
+ * path's question ("what may this practice reach?") and so returns only what is
+ * on. The platform console asks a different question — "what is the state of
+ * each module?" — and needs the off ones too.
+ *
+ * A module absent from the result is DISABLED, not unknown: the caller composes
+ * this against config/modules.js rather than trusting the table to hold a row
+ * for every namespace, because a practice that has never had RCM has no RCM row.
+ *
+ * @param {string} tenantId
+ * @returns {Promise<Array<{ module: string, enabled: boolean }>>}
+ */
+async function listTenantModules(tenantId) {
+  const { rows } = await query(
+    `SELECT module, enabled
+       FROM tenant_module
+      WHERE tenant_id = $1
+      ORDER BY module`,
+    [tenantId]
+  );
+  return rows;
+}
+
+/**
+ * Turn one module on or off for one tenant.
+ *
+ * UPSERT, because a practice that has never had a module has no row for it and
+ * the console must still be able to switch it on. The RETURNING clause is what
+ * the caller reports back to the UI — the console renders the DATABASE's answer,
+ * never the value it optimistically sent, so a write that silently did nothing
+ * cannot look like a success.
+ *
+ * The caller validates `module` against config/modules.js first; the CHECK
+ * constraint is the backstop, and reaching it is a 500, not a user-facing
+ * refusal.
+ *
+ * @param {string} tenantId
+ * @param {string} module
+ * @param {boolean} enabled
+ * @returns {Promise<{ module: string, enabled: boolean }|null>}
+ */
+async function setTenantModule(tenantId, module, enabled) {
+  const { rows } = await query(
+    `INSERT INTO tenant_module (tenant_id, module, enabled)
+          VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, module) DO UPDATE
+            SET enabled = EXCLUDED.enabled
+       RETURNING module, enabled`,
+    [tenantId, module, enabled]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * The practice catalog for the platform console: identity plus roster size.
+ *
+ * The user count is a correlated subquery rather than a GROUP BY join so a
+ * tenant with no users still appears, with 0. It counts every app_user row,
+ * active and disabled alike — the console shows the roster size, and hiding
+ * disabled accounts from a number labelled "users" would make it disagree with
+ * the list one click away.
+ *
+ * @returns {Promise<Array<{ tenant_id: string, slug: string, display_name: string,
+ *                           status: string, created_at: Date, user_count: number }>>}
+ */
+async function listTenantsWithUserCounts() {
+  const { rows } = await query(
+    `SELECT t.tenant_id,
+            t.slug,
+            t.display_name,
+            t.status,
+            t.created_at,
+            (SELECT count(*) FROM app_user u WHERE u.tenant_id = t.tenant_id) AS user_count
+       FROM tenant t
+      ORDER BY t.display_name`
+  );
+  // count(*) is a bigint, which pg hands back as a string.
+  return rows.map((r) => ({ ...r, user_count: Number(r.user_count) }));
+}
+
+// --- platform settings (Platform Console, PR C) -----------------------------
+
+/**
+ * Read one platform-wide setting.
+ *
+ * Returns null when no row exists, and that is a MEANINGFUL answer rather than
+ * a failure: "nobody has chosen" is what makes the environment variable the
+ * documented fallback. See migrations/1786752000000_platform_setting.js.
+ *
+ * @param {string} key
+ * @returns {Promise<{ key: string, value: unknown, updated_at: Date, updated_by: string|null }|null>}
+ */
+async function getPlatformSetting(key) {
+  const { rows } = await query(
+    `SELECT key, value, updated_at, updated_by
+       FROM platform_setting
+      WHERE key = $1`,
+    [key]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Write one platform-wide setting, stamping who changed it and when.
+ *
+ * `updated_at` is refreshed on every write, including one that stores the value
+ * already there: "somebody reaffirmed this today" is information the console
+ * shows, and an upsert that skipped the timestamp would report the wrong date
+ * for it.
+ *
+ * @param {string} key
+ * @param {unknown} value JSON-serialisable
+ * @param {string|null} [updatedBy] actor email, or null for a runbook write
+ * @returns {Promise<{ key: string, value: unknown, updated_at: Date, updated_by: string|null }>}
+ */
+async function setPlatformSetting(key, value, updatedBy = null) {
+  const { rows } = await query(
+    `INSERT INTO platform_setting (key, value, updated_by)
+          VALUES ($1, $2::jsonb, $3)
+     ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = now()
+       RETURNING key, value, updated_at, updated_by`,
+    [key, JSON.stringify(value), updatedBy]
+  );
+  return rows[0];
+}
+
+/**
  * Get the per-tenant app DB reference (KV secret NAME + db name).
  * @param {string} tenantId
  * @returns {Promise<TenantDbRef|null>}
@@ -678,9 +810,14 @@ module.exports = {
   getTenantById,
   listTenants,
   createTenant,
+  listTenantsWithUserCounts,
   getTenantConnector,
   getTenantClinics,
   getEnabledModules,
+  listTenantModules,
+  setTenantModule,
+  getPlatformSetting,
+  setPlatformSetting,
   getTenantDbRef,
   getUserByEmail,
   listTenantUsers,

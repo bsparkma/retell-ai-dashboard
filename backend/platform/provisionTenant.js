@@ -33,8 +33,19 @@ const registry = require('./registry');
 
 /** Non-secret OD cloud API base (same for all OD-cloud tenants). */
 const OD_API_BASE_DEFAULT = 'https://api.opendental.com/api/v1';
-/** Product modules; only 'carein' is enabled for a new tenant. */
-const MODULES = ['carein', 'tc', 'rcm'];
+/**
+ * Product modules; only 'voice' is enabled for a new tenant.
+ *
+ * Read from config/modules.js rather than restated here. The local copy this
+ * replaces still said `['carein', 'tc', 'rcm']` — 'carein' was renamed to
+ * 'voice' by migration 1785369600000, whose CHECK constraint would have
+ * rejected the row, so provisioning the next tenant would have failed on a name
+ * no longer in the vocabulary. One list, one place to be wrong.
+ */
+const { MODULE_NAMES } = require('../config/modules');
+const MODULES = MODULE_NAMES;
+/** The one module a brand-new tenant starts with switched on. */
+const DEFAULT_ENABLED_MODULE = 'voice';
 
 /**
  * @param {string[]} argv process.argv.slice(2)
@@ -280,7 +291,7 @@ async function main() {
     kvDbSecret: names.kvDbSecret,
     dbName: names.dbName,
     clinics: args.clinics,
-    modules: MODULES.map((m) => ({ module: m, enabled: m === 'carein' })),
+    modules: MODULES.map((m) => ({ module: m, enabled: m === DEFAULT_ENABLED_MODULE })),
   };
 
   // 1) control-plane rows
