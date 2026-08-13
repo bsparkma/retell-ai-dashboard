@@ -325,10 +325,12 @@ function findAvailableSlotsForDay(req, appointmentData, targetDate) {
 function getSchedulingRules(req) {
   return viaPrimary(req, 'getSchedulingRules', []);
 }
-/** @param {TenantReq} req */
-function performSync(req) {
-  return viaPrimary(req, 'performSync', []);
-}
+// REMOVED: performSync(req). It forwarded to the OD client's `performSync`,
+// which pulled a day of appointments + providers + operatories + changed
+// patients (~50 OD calls) and emitted a `syncComplete` event with no listeners.
+// Its only route was POST /api/opendental/sync/trigger, which therefore reported
+// "Sync triggered successfully" for work that produced nothing observable.
+
 /** @param {TenantReq} req */
 function testConnection(req) {
   return viaPrimary(req, 'testConnection', []);
@@ -391,8 +393,16 @@ function cancelAppointment(req, appointmentId, reason = '') {
 /**
  * Read-only status snapshot for admin/health introspection (no OD network call).
  * Lets routes report OD service state without referencing the cloud singleton.
+ *
+ * `lastSyncTime` and `syncActive` were REMOVED with the 3-minute background loop
+ * that was the only thing that ever set them. Keeping them would have meant
+ * reporting `syncActive: false, lastSync: null` forever, which reads as "the
+ * sync is broken" rather than "there is no such sync". Whether Open Dental can
+ * actually be REACHED — the question those fields were being used to answer —
+ * is now answered per office by services/odHealthCheck.js.
+ *
  * @param {TenantReq} req
- * @returns {Promise<{ enabled: boolean, useDatabase: boolean, apiBase: string|undefined, lastSyncTime: any, syncActive: boolean, conflicts: Array<any>, mode: string }>}
+ * @returns {Promise<{ enabled: boolean, useDatabase: boolean, apiBase: string|undefined, conflicts: Array<any>, mode: string }>}
  */
 async function getStatus(req) {
   const { connector } = await resolveConnector(req);
@@ -401,8 +411,6 @@ async function getStatus(req) {
     enabled: client.isEnabled(),
     useDatabase: !!client.useDatabase,
     apiBase: client.apiUrl,
-    lastSyncTime: client.lastSyncTime || null,
-    syncActive: !!client.syncInterval,
     conflicts: client.conflicts ? Array.from(client.conflicts.entries()) : [],
     mode: connector.od_primary_mode,
   };
@@ -521,7 +529,6 @@ module.exports = {
   getOperatories,
   getProviderWorkingHours,
   getSchedulingRules,
-  performSync,
   testConnection,
   // writes (audited)
   bookAppointment: withAudit('bookAppointment', bookAppointment),
