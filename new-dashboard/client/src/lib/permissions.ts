@@ -17,6 +17,8 @@ import type { TenantRole } from "@/lib/auth";
 /** Every action the backend map defines. Keep sorted, keep in sync. */
 export const ACTIONS = [
   "admin.all",
+  "rcm.read",
+  "rcm.write",
   "tc.full",
   "tc.hygiene",
   "voice.chart_write",
@@ -89,6 +91,9 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/tc": "tc.full",
   // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
   "/tc/hygiene": "tc.hygiene",
+  // RCM is read-gated at the route; the mutations it will grow are gated on
+  // rcm.write server-side, which no page needs to know about to render.
+  "/rcm": "rcm.read",
 };
 
 /** The action a path requires, or null if it is unrestricted. */

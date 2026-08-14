@@ -42,6 +42,7 @@ import {
   Users,
   Loader2,
   AlertTriangle,
+  Receipt,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -111,6 +112,15 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // from ROUTE_PERMISSIONS' prefix match — one place decides.
         { path: "/admin/users", label: "Users", icon: Users },
       ],
+    },
+  ],
+  /* RCM (Slice 3): one page. The group exists now so the module switcher can
+     see a nav item for it — switchableModules filters on exactly this, so a
+     module with an empty nav is unreachable from the switcher. */
+  rcm: [
+    {
+      title: "Revenue Cycle",
+      items: [{ path: "/rcm", label: "Overview", icon: Receipt }],
     },
   ],
   /* Ordered to match DentaFlow's sidebar (Dashboard → Pipeline → Nurture →
@@ -216,6 +226,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // inline via <TcOfficeGate />).
   const hideOfficePicker = isTcSharedRoute(location);
   const isTcRoute = location === "/tc" || location.startsWith("/tc/");
+  const isRcmRoute = location === "/rcm" || location.startsWith("/rcm/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   // Starts true: we have no evidence of trouble yet, and opening every session with a
@@ -263,7 +274,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // however you got there, and it became reachable in Roles PR B because a
   // hygienist lands on a TC route with 'voice' still remembered in
   // localStorage — which filtered to an empty sidebar.
-  const routeModule: ModuleId | null = isTcRoute ? "tc" : null;
+  const routeModule: ModuleId | null = isTcRoute ? "tc" : isRcmRoute ? "rcm" : null;
   // Role-scoped nav (Roles PR B). While /auth/me is still in flight the
   // permission list is undefined, which filters everything out — correct, and
   // invisible in practice because RequireAuth holds the app on a spinner until

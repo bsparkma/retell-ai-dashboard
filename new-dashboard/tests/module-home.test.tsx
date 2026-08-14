@@ -156,8 +156,12 @@ describe("Home module tiles", () => {
     expect(screen.getByTestId("module-tiles").children).toHaveLength(1);
   });
 
+  // 'scheduling' is the remaining entitled-but-unregistered module: it is in
+  // the backend catalog and the tenant_module CHECK constraint, and has no
+  // client registry entry because it has no pages. ('rcm' held this slot until
+  // Slice 3 registered it — see rcm-mount.test.tsx.)
   it("renders no tile for an entitled module with no registry entry yet", async () => {
-    authState.modules = ["rcm"];
+    authState.modules = ["scheduling"];
     renderWithProviders(<Home />, "/home");
     await waitFor(() => {
       expect(screen.getByText(/No modules are enabled/)).toBeTruthy();

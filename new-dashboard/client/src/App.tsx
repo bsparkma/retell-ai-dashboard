@@ -26,6 +26,7 @@ import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
+import RcmOverview from "./pages/rcm/RcmOverview";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
@@ -111,6 +112,9 @@ export function Router() {
             the page can explain itself instead of bouncing them silently. Every
             endpoint behind it is requireSuperAdmin()-gated regardless. */}
         <Route path="/platform" component={Platform} />
+        {/* RCM module — entitlement-gated server-side (requireModule('rcm')).
+            One page in Slice 3; the module's routes grow under /rcm/*. */}
+        <Route path="/rcm" component={RcmOverview} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />
