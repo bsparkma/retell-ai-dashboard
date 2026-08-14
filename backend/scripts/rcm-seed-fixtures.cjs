@@ -86,8 +86,9 @@
  * here. Per the Slice 2 brief it therefore seeds a documented minimal set of
  * three fixture identities on the reserved .invalid TLD (RFC 2606 — guaranteed
  * non-deliverable), overridable with --user-map. Mapping fixture rows onto real
- * platform identities is a Slice 3 concern, once RCM is mounted behind the
- * roles spine.
+ * platform identities is a SLICE 6 concern (PM ruling): Slice 3 mounts RCM
+ * behind the roles spine, but the crosswalk is not needed until posting has a
+ * real actor to attribute.
  *
  * NO PHI. Every name, subscriber id, claim number, payer, trace number and
  * amount below is invented. The patient names are the OD test records the

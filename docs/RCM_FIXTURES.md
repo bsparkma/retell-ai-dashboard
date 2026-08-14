@@ -197,8 +197,10 @@ the same shape TC's importer took, and TC left the same question open. The three
 identities always survive an override, because every fixture row attributes to
 `fixture-poster` or `fixture-lead` and removing them would leave those rows unattributable.
 
-**Open for Slice 3:** mapping fixture rows onto real platform identities, once RCM is mounted
-behind Entra SSO and the roles spine. Nothing should be decided about it here.
+**Open for Slice 6** (PM ruling, 2026-08-14): mapping fixture rows onto real platform
+identities. Slice 3 mounts RCM behind Entra SSO and the roles spine, but the crosswalk is not
+needed until posting attributes a real actor — so it waits for the slice that posts. Nothing
+should be decided about it here.
 
 ---
 
