@@ -8,14 +8,19 @@
  * to 'rcm' yet, so every route below 403s MODULE_NOT_ENTITLED in every
  * environment until Beau flips the entitlement from the Platform Console.
  *
- * This slice is PLUMBING. Two endpoints exist to prove the chain end to end and
+ * Slice 3 was PLUMBING. Two endpoints existed to prove the chain end to end and
  * to give Slices 4–7 a door to build behind:
- *   GET /summary   per-office counts across claims / batches / posting queue
- *   GET /claims    office-scoped claim list, paginated
+ *   GET  /summary   per-office counts across claims / batches / posting queue
+ *   GET  /claims    office-scoped claim list, paginated
  *
- * NOT here, and not in this slice: EOB upload, ERA parsing, posting, the work
- * queue UI, and any Open Dental client usage. This module writes nothing —
- * every route is a GET, and the only tables it touches are rcm_*.
+ * Slice 4 added EOB ingestion, and with it the module's first mutation:
+ *   POST /eob       multipart PDF → Blob + rcm_eob_uploads row + queued extraction
+ *   GET  /eob       office-scoped upload list + the extraction cost-breaker state
+ *
+ * NOT here, and not yet: ERA/835 parsing (Slice 5), posting (Slice 6), the
+ * review/approval UI (Slice 7), and any Open Dental client usage in ANY slice
+ * of this module before 6. The only tables anything under this mount touches
+ * are rcm_* and the platform audit_log.
  */
 
 const express = require('express');
@@ -49,5 +54,10 @@ router.use(requireOffice);
 
 router.use('/summary', require('./summary'));
 router.use('/claims', require('./claims'));
+// Slice 4. The module's first WRITE surface — POST /eob is what the unused
+// rcm.write action at the server.js mount has been waiting for. It stores a PDF
+// and queues an extraction; the extraction produces PROPOSAL rows in rcm_*.
+// Still no Open Dental anywhere under this mount (eobNoOdImports.test.js).
+router.use('/eob', require('./eob'));
 
 module.exports = router;

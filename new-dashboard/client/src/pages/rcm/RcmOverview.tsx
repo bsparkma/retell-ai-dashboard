@@ -1,10 +1,10 @@
 /**
- * /rcm — the RCM module's landing page (Slice 3).
+ * /rcm — the RCM module's landing page (Slice 3, extended by Slice 4).
  *
- * Deliberately thin: a heading and the numbers GET /api/rcm/summary returns,
- * one card per office in scope. No worklist, no filters, no actions — those are
- * Slices 4–7, and shipping a shell of them now would be a promise the module
- * cannot keep.
+ * Still deliberately thin: the numbers GET /api/rcm/summary returns, one card
+ * per office in scope, and — since Slice 4 — one EOB upload panel per office.
+ * No worklist, no filters, no review, no posting: those are Slices 5–7, and
+ * shipping a shell of them now would be a promise the module cannot keep.
  *
  * Honest states, in the order they are checked:
  *   roster loading  → spinner (not "no offices", which reads as misconfigured)
@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import { AlertCircle, FileText, Layers, ListChecks, Loader2 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
+import EobUploadPanel from "./EobUploadPanel";
 import {
   getRcmSummary,
   RcmApiError,
@@ -78,11 +79,34 @@ export default function RcmOverview() {
           body="None of this practice's offices are set up for revenue cycle work yet."
         />
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-office-cards">
-          {scope.offices.map((office) => (
-            <OfficeSummaryCard key={office} office={office} />
-          ))}
-        </div>
+        <>
+          <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-office-cards">
+            {scope.offices.map((office) => (
+              <OfficeSummaryCard key={office} office={office} />
+            ))}
+          </div>
+
+          {/* Slice 4. One panel per office in scope, because uploading is an
+              office-scoped act — there is no "upload to whichever practice"
+              affordance, by design. */}
+          <div className="mt-8">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              EOB ingestion
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Upload an EOB PDF and it is read into a <strong>proposal</strong> — claims and
+              procedure lines waiting for a human. Nothing here is posted to a patient chart.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-eob-panels">
+              {scope.offices.map((office) => (
+                <EobUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
