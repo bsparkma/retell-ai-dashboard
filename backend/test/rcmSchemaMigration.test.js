@@ -133,7 +133,7 @@ test('additive only: up() creates and grants, it never alters or drops an existi
 
 // --- office_id: part of the data model, not an attribute --------------------
 
-test('every table except the documented tenant-global one has office_id NOT NULL', () => {
+test('every table except the documented tenant-global ones has office_id NOT NULL', () => {
   const pgm = runUp();
   for (const { name, cols } of pgm.calls.createTable) {
     if (migration.TENANT_GLOBAL_TABLES.includes(name)) {
@@ -148,7 +148,34 @@ test('every table except the documented tenant-global one has office_id NOT NULL
     );
     assert.equal(cols.office_id.type, 'text', `${name}.office_id must be text`);
   }
-  assert.deepEqual(migration.TENANT_GLOBAL_TABLES, ['rcm_user_map']);
+  // Exactly two exceptions, both tenant-global for a stated reason: staff work
+  // across offices, and one Stedi account covers both.
+  assert.deepEqual(migration.TENANT_GLOBAL_TABLES, ['rcm_user_map', 'rcm_stedi_poll_state']);
+});
+
+test('the Stedi poll cursor is a tenant-global singleton, not one row per office', () => {
+  const pgm = runUp();
+  const cols = pgm.calls.createTable.find((t) => t.name === 'rcm_stedi_poll_state').cols;
+
+  // One Stedi account covers both offices; a per-office cursor would have each
+  // row walking the same feed.
+  assert.ok(!cols.office_id, 'the poll cursor belongs to the Stedi account, not an office');
+  // The PK is a constant, so a second cursor row is a constraint violation
+  // rather than a silent second reader.
+  assert.equal(cols.poll_state_id.primaryKey, true);
+  assert.equal(cols.poll_state_id.default, 'stedi');
+  const singleton = pgm.calls.addConstraint.find(
+    (c) => c.name === 'rcm_stedi_poll_state_singleton_check'
+  );
+  assert.ok(singleton, 'the singleton CHECK must exist');
+  assert.equal(singleton.opts.check, "poll_state_id = 'stedi'");
+
+  // Office attribution is not lost — it lives one layer down, on the rows that
+  // actually carry a payee.
+  for (const attributed of ['rcm_stedi_events', 'rcm_stedi_transactions']) {
+    const t = pgm.calls.createTable.find((x) => x.name === attributed).cols;
+    assert.equal(t.office_id.notNull, true, `${attributed} must still carry office_id`);
+  }
 });
 
 test('every table with office_id constrains it to the frozen office keys', () => {

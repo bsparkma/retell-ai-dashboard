@@ -27,8 +27,18 @@ Every `rcm_*` table therefore carries `office_id TEXT NOT NULL` with
 `CHECK (office_id IN ('roland','valley'))`, identical to `tc_schema`. The `'__default__'`
 sentinel does not survive the port.
 
-**One documented exception:** `rcm_user_map` is tenant-global — billing staff work across
-both offices. This is the same exception `tc_legacy_user_map` takes, for the same reason.
+**Two documented exceptions, both tenant-global:**
+
+- **`rcm_user_map`** — billing staff work across both offices. The same exception
+  `tc_legacy_user_map` takes, for the same reason.
+- **`rcm_stedi_poll_state`** — one Stedi **account** covers both offices, so the poll cursor
+  belongs to the account, not to a practice. Two per-office rows would each walk the same
+  feed and double-poll it. Office attribution is not lost, it happens one layer down: an
+  inbound 835 is attributed by payee onto `rcm_stedi_events` / `rcm_stedi_transactions`, both
+  of which keep their `office_id`. The cursor records *how far we have read*; those rows
+  record *whose money arrived*. The table is a singleton by construction — its primary key is
+  a constant (`poll_state_id = 'stedi'`), so a second cursor row is a constraint violation
+  rather than a silent second reader.
 
 ### 2. The remittance key is the dedupe primitive — and it is now office-scoped
 
@@ -191,11 +201,11 @@ drops the exact reverse.
 
 | # | `rcm_*` table | Source table | Notes |
 | --- | --- | --- | --- |
-| 1 | `rcm_user_map` | *(replaces `users`)* | **Tenant-global** — the one table without `office_id` |
+| 1 | `rcm_user_map` | *(replaces `users`)* | **Tenant-global** — staff work across both offices |
 | 2 | `rcm_payer_rules` | `payerRules` | `UNIQUE(payerName)` → `UNIQUE(office_id, payer_name)` |
 | 3 | `rcm_office_settings` | `officeSettings` | `office_id` is now the PK; `'__default__'` is gone |
 | 4 | `rcm_vcc_processor_patterns` | `vccProcessorPatterns` | Unique now `(office_id, pattern_type, pattern)` |
-| 5 | `rcm_stedi_poll_state` | `stediPollState` | Singleton → one row per office ⚠️ see Open questions |
+| 5 | `rcm_stedi_poll_state` | `stediPollState` | **Tenant-global** singleton — the cursor belongs to the Stedi account |
 | 6 | `rcm_stedi_events` | `stediEvents` | `event_id` unique (vendor-global id) |
 | 7 | `rcm_stedi_transactions` | `stediTransactions` | `batch_id` FK added after `rcm_payment_batches` (mutual reference) |
 | 8 | `rcm_bank_transactions` | `bankTransactions` | **"The deposit."** `matchedClaimIds` dropped — see below |
@@ -287,11 +297,8 @@ never appears in the emitted SQL.
 
 ## Open questions for Slice 2 / 3
 
-1. **`rcm_stedi_poll_state` shape.** The source is a single-row singleton; this port gives it
-   one row per office, per the office-on-every-table rule. If the tenant actually runs **one**
-   Stedi connection spanning both offices, the drain must pick an office rather than polling
-   twice — or the table should collapse to tenant-global like `rcm_user_map`. **Slice 2 must
-   settle this before the first poll runs.**
+1. ~~**`rcm_stedi_poll_state` shape.**~~ **Settled in PM review of PR #81:** one Stedi account
+   covers both offices, so the cursor is tenant-global and singleton. See §1.
 2. **`deposit_id` vs `match_id`** on `rcm_approval_requests` resolve to the same bank
    transaction. Both are typed; collapsing them is a Slice 3 call.
 3. **`rcm_claims.stedi_transaction_id` / `stedi_event_id`** are now real FKs to the vendor

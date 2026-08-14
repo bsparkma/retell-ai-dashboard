@@ -20,8 +20,10 @@
  *    persisted on transactional rows, so today everything resolves to the
  *    '__default__' row". Office is part of this data model from row one; the
  *    '__default__' sentinel does not survive the port.
- *    Exception: rcm_user_map is tenant-global (staff work across both offices) —
- *    the same documented exception tc_legacy_user_map takes.
+ *    TWO documented exceptions, both tenant-global: rcm_user_map (billing staff
+ *    work across both offices — the same exception tc_legacy_user_map takes) and
+ *    rcm_stedi_poll_state (one Stedi ACCOUNT covers both offices, so the poll
+ *    cursor belongs to the account; two per-office rows would double-poll it).
  *
  *  - MONEY IS INTEGER CENTS (*_cents columns), widened from the source's
  *    `integer` to `bigint` to match the platform convention and to put the
@@ -168,8 +170,14 @@ const RCM_TABLES = [
   'rcm_posting_queue_line',
 ];
 
-/** The ONE table without office_id — tenant-global, like tc_legacy_user_map. */
-const TENANT_GLOBAL_TABLES = ['rcm_user_map'];
+/**
+ * The tables without office_id — tenant-global, documented exceptions.
+ *  - rcm_user_map: billing staff work across both offices (the same exception
+ *    tc_legacy_user_map takes).
+ *  - rcm_stedi_poll_state: ONE Stedi account covers both offices, so the poll
+ *    cursor belongs to the account. Two per-office rows would double-poll it.
+ */
+const TENANT_GLOBAL_TABLES = ['rcm_user_map', 'rcm_stedi_poll_state'];
 
 /** Shared column fragments (spread into createTable). */
 function officeCol() {
@@ -277,20 +285,30 @@ exports.up = (pgm) => {
   });
 
   // ── rcm_stedi_poll_state ─────────────────────────────────────────────────
-  // Last pageToken for polling recovery. The source is a single-row singleton;
-  // office_id is the PK here, one cursor per office.
-  // ⚠️ Slice 2 must confirm the shape: if the tenant runs ONE Stedi connection
-  // spanning both offices, this collapses to a single row and the drain must
-  // pick an office rather than polling twice. Flagged in the PR.
+  // Last pageToken for polling recovery.
+  //
+  // TENANT-GLOBAL — the second documented exception to office-id-on-every-table,
+  // and the only one that is not about staff. ONE Stedi account covers both
+  // offices (confirmed by Beau, PM review of PR #81), and the cursor belongs to
+  // that ACCOUNT, not to a practice. Two per-office rows would each walk the
+  // same feed and double-poll it.
+  //
+  // Office attribution is not lost, it just happens one layer down: an inbound
+  // 835 is attributed by payee onto rcm_stedi_events / rcm_stedi_transactions,
+  // both of which keep their office_id. The cursor says HOW FAR we have read;
+  // those rows say WHOSE money arrived.
+  //
+  // Singleton by construction: the PK is a constant, so a second cursor row is
+  // a constraint violation rather than a silent second reader.
   pgm.createTable('rcm_stedi_poll_state', {
-    office_id: { type: 'text', primaryKey: true },
+    poll_state_id: { type: 'text', primaryKey: true, default: 'stedi' },
     page_token: { type: 'text', notNull: true },
     last_poll_at: { type: 'timestamptz', notNull: true, default: pgm.func('now()') },
     transactions_processed: { type: 'integer', notNull: true, default: 0 },
     ...timestamps(pgm),
   });
-  pgm.addConstraint('rcm_stedi_poll_state', 'rcm_stedi_poll_state_office_check', {
-    check: OFFICE_CHECK,
+  pgm.addConstraint('rcm_stedi_poll_state', 'rcm_stedi_poll_state_singleton_check', {
+    check: "poll_state_id = 'stedi'",
   });
 
   // ── rcm_stedi_events ─────────────────────────────────────────────────────
