@@ -310,6 +310,23 @@ async function bootstrap() {
   // entitlement flips (intentional — see routes/tc/index.js).
   app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
 
+  // RCM (Revenue Cycle Management) module — Slice 3 mount. ONE mount for the
+  // whole /api/rcm/* surface. Ships DARK for the same reason TC did: no tenant
+  // is entitled to 'rcm' yet, so everything under it 403s MODULE_NOT_ENTITLED
+  // until the entitlement flips from the Platform Console.
+  //
+  // requireReadWrite rather than a single read gate, even though this slice
+  // mounts GETs only: the first mutation this module grows must demand
+  // rcm.write, and that needs to be true by construction rather than by
+  // whoever adds it remembering. Office scoping is router-wide one level down
+  // — see routes/rcm/index.js for the ordering constraint that keeps it so.
+  app.use(
+    '/api/rcm',
+    requireModule('rcm'),
+    requireReadWrite('rcm.read', 'rcm.write'),
+    require('./routes/rcm')
+  );
+
   // Health check endpoint
   app.get('/api/health', async (req, res) => {
     const liveCallManager = require('./services/liveCallManager');

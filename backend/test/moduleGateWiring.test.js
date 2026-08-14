@@ -80,6 +80,22 @@ test('server.js: every tenant-scoped voice mount carries the voice module guard'
   }
 });
 
+test('server.js: every non-voice module mount carries its OWN module guard', () => {
+  // These were missing from the scan above, which only knew about voice. A
+  // module mount with no guard is entitlement bypass for that whole product.
+  const guarded = [
+    { mount: '/api/tc', module: 'tc' },
+    { mount: '/api/rcm', module: 'rcm' },
+  ];
+  for (const { mount, module } of guarded) {
+    const line = mountLine(mount);
+    assert.ok(
+      new RegExp(`requireModule\\('${module}'\\)`).test(line),
+      `${mount} must be guarded by requireModule('${module}'): ${line}`
+    );
+  }
+});
+
 test('server.js: /api/platform carries the platform gate and NO module guard', () => {
   const line = mountLine('/api/platform');
   // Circular otherwise: the console is the surface that decides which modules a
