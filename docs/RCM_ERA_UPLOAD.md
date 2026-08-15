@@ -242,16 +242,16 @@ serves nothing, and the download proxy is Slice 7's.
 ## 6. Porting notes — deviations from the source
 
 Every one of these is deliberate and commented at its site in
-[`eraParser.js`](../backend/services/rcm/eraParser.js). **D4 and D5 are open questions for
-the PM, not settled calls**, and both are flagged at runtime rather than decided silently.
+[`eraParser.js`](../backend/services/rcm/eraParser.js). D4 and D5 were escalated and
+**ruled on in Slice 5 review**; both rulings are recorded below.
 
 | | Deviation | Why |
 | --- | --- | --- |
 | D1 | `x12-parser` dependency → internal [`x12.js`](../backend/services/rcm/x12.js); `parse835` is synchronous | The backend is CommonJS with no build step; a streaming ESM dependency is a compat risk for ~60 lines of splitting, and the stream forced a Promise around a pure function |
 | D2 | **The payment date never falls back to today** — `null`, and the route refuses | The source's `new Date()` invented a check date that disagreed with the bank *and* fed the remittance key, making the dedupe primitive time-dependent |
 | D3 | **One remittance per ST/BPR transaction** (`remittances[]`) | The source merged every transaction into one check — summing all amounts while keeping only the first trace number, which describes no real payment |
-| D4 | ⚠ **SVC06 read as the ORIGINAL SUBMITTED code (X12 spec)** | See below |
-| D5 | ⚠ **An implausible CARC token is flagged, never invented** | See below |
+| D4 | **SVC06 read as the ORIGINAL SUBMITTED code (X12 spec)** | Ruled: the spec wins. See below |
+| D5 | **An implausible CARC token is flagged, never invented** | Ruled: production behaviour. See below |
 | D6 | `subscriber_id` from NM1*IL/QC element 9; `group_number` from `REF*1L` | The source read `REF*1L` (Group or Policy Number) as the subscriber id and hardcoded the group to the string `"N/A"` |
 | D7 | Provider NPI falls back to NM1*82 element 9 | Every file in the corpus is this case; the source returned `"0000000000"` |
 | D8 | **CLP02 is surfaced** | The source parsed the claim status into a variable it never read, so a denial and a reversal were indistinguishable from a clean payment. Honest states are not implementable without it |
@@ -264,38 +264,43 @@ Also: `claims.source` is `'manual_upload'`, not the source app's `'clearinghouse
 document is a clearinghouse artifact but the ingestion is a human act, and that is the
 thing that will differ from the future Stedi path when Slice 8 reconciles them.
 
-### ⚠ D4 — Downcodes: the corpus and X12 disagree
+### D4 — Downcodes: the spec wins (PM ruling, Slice 5 review)
 
 X12 005010X221A1 defines **SVC01 as the ADJUDICATED code and SVC06 as the ORIGINAL
 SUBMITTED one**, present only when the payer changed it. The parser follows the
-specification, because real payer files do and Slice 6 posts real money against whichever
-code we recorded.
+specification.
 
-Both downcode fixtures are written the other way round, and
-[`fixtures/rcm/README.md`](../backend/test/fixtures/rcm/README.md) describes them that way
-("a paid code (`AD:D0120`) different from the billed code (`AD:D0150`)"):
+Two fixtures were **authored transposed** — the submitted code in SVC01, the downgraded one
+in SVC06:
 
 ```
 Test_Cigna_Downcode.edi      SVC*AD:D0150*102*57***AD:D0120
 Test_Bundled_Downgraded.edi  SVC*AD:D2740*1258*485***AD:D2791
 ```
 
-Their reading is the clinically sensible direction — a comprehensive exam downcoded to a
-periodic one, a porcelain crown downgraded to full cast — so the corpus is coherent with
-itself and merely non-conformant to X12.
+The author's intent is legible — a comprehensive exam downcoded to a periodic one, a
+porcelain crown downgraded to full cast — but it is not what the bytes say.
+
+> **Ruling.** The parser's job is to read *real* payer files correctly, and real payers
+> follow X12. The parser stays spec-correct; the fixture **bytes stay frozen** (the corpus
+> rule protects bytes, not authoring mistakes); the corpus README is corrected, because it
+> is documentation rather than a fixture. Slice 6 posts money against whichever code we
+> recorded, so recording per spec is the only defensible choice.
 
 **Consequence:** against those two files the parser reports `billedCode=D0120 /
-paidCode=D0150` and `billedCode=D2791 / paidCode=D2740` — inverted relative to the README,
-deliberately and visibly. The test that pins this says so in its own name.
+paidCode=D0150` and `billedCode=D2791 / paidCode=D2740` — spec positions, not the original
+author's intent. The tests assert exactly that, and
+[`fixtures/rcm/README.md`](../backend/test/fixtures/rcm/README.md) now records it.
 
-**`isDowncoded` is symmetric** (the codes differ), so detection, the line flag, and the
-claim's review reason are unaffected either way. Only which column each code lands in is at
-stake — and that matters when Slice 6 posts.
+**`isDowncoded` is symmetric** (the codes differ), so detection, the `downcode` line flag
+and the `procedure_downcoded` review reason were correct either way; only which column each
+code lands in was ever at stake.
 
-**Resolving it** means either a **new** spec-conformant fixture (the corpus is fixed; no
-file may be edited) or a PM ruling that the corpus convention is the intended one.
+A spec-conformant downcode scenario is a **new fixture file**, never an edit to these two.
 
-### ⚠ D5 — `Test_Mixed_Adjustments.edi` has a malformed CAS
+### D5 — A malformed CAS is flagged, not guessed (PM ruling, Slice 5 review)
+
+`Test_Mixed_Adjustments.edi` has a malformed CAS.
 
 CAS repeats as reason/amount/**quantity** triples — CAS02-03-04, CAS05-06-07. The fixture
 writes:
@@ -319,6 +324,12 @@ silently loses $25.50 of patient responsibility with no trace.
 A test renders the same shape written to specification and shows it parses as intended,
 which is the evidence for reading the fixture as mis-authored rather than the parser as
 wrong. **A corrected fixture would need to be a new file.**
+
+> **Ruling.** This is the **production** behaviour, not a fixture workaround. Real payer
+> files are malformed too, and validating the reason token rather than trusting it is the
+> honest-states law applied to parsing. The flag must stay visible on the review path: it
+> reaches `rcm_claims.needs_review_reasons`, holds the batch at `open`, and Slice 7 renders
+> it.
 
 ---
 

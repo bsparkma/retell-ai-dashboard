@@ -495,20 +495,21 @@ test('corpus: a clean file raises no flags and no review reasons at all', () => 
 
 // ─── The two places the corpus and the specification disagree ───────────────
 
-test('DOWNCODE: SVC06 is read as the ORIGINAL SUBMITTED code (X12), which INVERTS the fixtures', () => {
-  // ⚠ OPEN QUESTION FOR THE PM — see the NOTE ON DOWNCODES in eraParser.js.
+test('DOWNCODE: SVC06 is the ORIGINAL SUBMITTED code (X12) — the two transposed fixtures read inverted', () => {
+  // SETTLED by PM ruling in Slice 5 review: THE SPEC WINS. See the NOTE ON
+  // DOWNCODES in eraParser.js and the section in fixtures/rcm/README.md.
   //
   // X12 005010X221A1: SVC01 is the ADJUDICATED code, SVC06 the ORIGINAL
-  // SUBMITTED one. Both corpus fixtures are written the other way round, and
-  // fixtures/rcm/README.md describes them that way:
+  // SUBMITTED one. These two fixtures were AUTHORED TRANSPOSED:
   //
   //   Test_Cigna_Downcode.edi      SVC*AD:D0150*102*57***AD:D0120
   //   Test_Bundled_Downgraded.edi  SVC*AD:D2740*1258*485***AD:D2791
   //
   // The parser follows the specification, because real payer files do and
-  // Slice 6 posts real money against whichever code we recorded. That makes
-  // these two assertions read backwards as dental downgrades — deliberately,
-  // and visibly, rather than by silently adopting a non-conformant reading.
+  // Slice 6 posts real money against whichever code we recorded. So these two
+  // assertions record SPEC POSITIONS, not the original author's intent — and
+  // the fixture bytes stay frozen, because the corpus rule protects bytes
+  // rather than authoring mistakes.
   const cigna = parse835(fixture('Test_Cigna_Downcode.edi')).claims[0].procedures[0];
   assert.equal(cigna.billedCode, 'D0120', 'SVC06 — original submitted, per X12');
   assert.equal(cigna.paidCode, 'D0150', 'SVC01 — adjudicated, per X12');
@@ -532,7 +533,9 @@ test('a line with no SVC06 has no paid code, and is not a downcode', () => {
 });
 
 test('CAS PAIRS: an implausible CARC token is flagged, never invented', () => {
-  // ⚠ See the NOTE ON CAS PAIRS in eraParser.js.
+  // SETTLED by PM ruling in Slice 5 review: this is PRODUCTION behaviour, not
+  // a fixture workaround — real payer files are malformed too. See the NOTE ON
+  // CAS PAIRS in eraParser.js.
   //
   // Test_Mixed_Adjustments.edi writes `CAS*PR*1*50*2*25.50`. CAS repeats as
   // reason/amount/QUANTITY triples, so per the specification that is

@@ -313,9 +313,10 @@ test('a downcode is recorded on the line and raises review on the claim', async 
 
     const downcoded = app.db.table('rcm_procedure_lines').filter((l) => l.is_downcoded);
     assert.equal(downcoded.length, 1);
-    // Which code lands in which column is the open PM question — see the
-    // DOWNCODE test in services/rcm/eraParser.test.js. That the two DIFFER,
-    // and that the claim is held for review, is settled either way.
+    // Which code lands in which column follows the X12 spec, per the Slice 5
+    // PM ruling — see the DOWNCODE test in services/rcm/eraParser.test.js.
+    // That the two DIFFER, and that the claim is held for review, holds
+    // regardless of that reading.
     assert.notEqual(downcoded[0].billed_code, downcoded[0].paid_code);
     assert.ok(downcoded[0].flags.includes('downcode'));
     assert.ok(app.db.table('rcm_claims')[0].needs_review_reasons.includes('procedure_downcoded'));
@@ -323,19 +324,43 @@ test('a downcode is recorded on the line and raises review on the claim', async 
   });
 });
 
-test('an unreadable CAS pair is flagged on the line, not written as a fabricated code', async () => {
+test('an unreadable CAS pair is flagged all the way to the review path, not written as a fabricated code', async () => {
+  // PM ruling (Slice 5 review): this is production behaviour, and the flag must
+  // SURFACE — Slice 7 renders it. So the assertions walk the whole path, not
+  // just the parse: line flag → claim reason → batch held open → API response
+  // → the claims list Slice 7 reads.
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', fixture835('Test_Mixed_Adjustments.edi'), {
-      filename: 'mixed.edi',
-    });
+    const res = await postRaw(
+      app.baseUrl,
+      '/api/rcm/era?office=roland',
+      fixture835('Test_Mixed_Adjustments.edi'),
+      { filename: 'mixed.edi' }
+    );
+    assert.equal(res.status, 201);
 
     assert.ok(
       app.db.table('rcm_procedure_adjustments').every((a) => a.reason_code !== '25.50'),
       'a token that cannot be a CARC must never reach reason_code'
     );
+
+    // 1 — the line says an adjustment could not be read.
     const flagged = app.db.table('rcm_procedure_lines').filter((l) => l.flags.includes('unexplained_adj'));
     assert.equal(flagged.length, 1);
-    assert.ok(app.db.table('rcm_claims')[0].needs_review_reasons.includes('unparseable_cas'));
+
+    // 2 — the claim carries the machine-readable reason.
+    const [claim] = app.db.table('rcm_claims');
+    assert.ok(claim.needs_review_reasons.includes('unparseable_cas'));
+
+    // 3 — the batch is therefore NOT ready to act on.
+    assert.equal(app.db.table('rcm_payment_batches')[0].status, 'open');
+
+    // 4 — the uploader is told, in the response to their own upload.
+    assert.ok(res.body.remittances[0].claims[0].needsReviewReasons.includes('unparseable_cas'));
+
+    // 5 — and it is on the claims list, which is where Slice 7 will find it.
+    const claims = await api(app.baseUrl, 'GET', '/api/rcm/claims?office=roland');
+    assert.equal(claims.status, 200);
+    assert.ok(claims.body.claims[0].needsReviewReasons.includes('unparseable_cas'));
   });
 });
 

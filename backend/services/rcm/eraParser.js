@@ -26,8 +26,8 @@
  * ─── Deviations from the source, all deliberate ────────────────────────────
  *
  * Every one of these is written up in `docs/RCM_ERA_UPLOAD.md` §"Porting
- * notes". Two of them (D4, D5) are open questions for the PM, not settled
- * calls, and both are FLAGGED at runtime rather than decided silently.
+ * notes". D4 and D5 were escalated to the PM and RULED ON in Slice 5 review;
+ * both rulings are recorded at their notes below.
  *
  *  D1 `x12-parser` → `./x12.js`, and `parse835` is synchronous. See x12.js.
  *  D2 **The payment date never falls back to today.** The source's last-resort
@@ -41,8 +41,8 @@
  *     while keeping only the FIRST trace number, which describes no real
  *     payment. `remittances[]` keeps them separate so each gets its own
  *     remittance key. The merged top-level fields remain for the ported tests.
- *  D4 **SVC06 is read as the ORIGINAL SUBMITTED code (X12 spec).** ⚠ This
- *     contradicts the repository fixture corpus — see NOTE ON DOWNCODES below.
+ *  D4 **SVC06 is read as the ORIGINAL SUBMITTED code (X12 spec)**, which two
+ *     fixtures were authored the other way round. See NOTE ON DOWNCODES below.
  *  D5 **An implausible CARC token is flagged, never invented.** See NOTE ON
  *     CAS PAIRS below.
  *  D6 `subscriber_id` comes from NM1*IL/NM1*QC element 9; `group_number` from
@@ -69,36 +69,39 @@
  *      name, date of birth, or subscriber id. In a multi-claim file — the
  *      primary real-world shape — that is a PHI mix-up, not a cosmetic bug.
  *
- * ─── NOTE ON DOWNCODES (D4) — needs a PM ruling before Slice 6 posts ───────
+ * ─── NOTE ON DOWNCODES (D4) — SETTLED: THE SPEC WINS ──────────────────────
  *
  * X12 005010X221A1 defines SVC01 as the ADJUDICATED procedure code and SVC06
  * as the ORIGINAL SUBMITTED code, present only when the payer changed it. This
- * parser follows the specification, because real payer files do and Slice 6
- * posts real money against whichever code we recorded.
+ * parser follows the specification.
  *
- * Both downcode fixtures in the repository corpus are written the other way
- * round — SVC01 carries the submitted code and SVC06 the downgraded one:
+ * Two fixtures in the repository corpus were AUTHORED TRANSPOSED — the
+ * submitted code in SVC01 and the downgraded one in SVC06:
  *
  *     Test_Cigna_Downcode.edi     SVC*AD:D0150*102*57***AD:D0120
  *     Test_Bundled_Downgraded.edi SVC*AD:D2740*1258*485***AD:D2791
  *
- * and `backend/test/fixtures/rcm/README.md` describes them that way
- * ("a paid code (AD:D0120) different from the billed code (AD:D0150)"). Their
- * reading is the clinically sensible direction — a comprehensive exam
- * downcoded to a periodic one, a porcelain crown downgraded to full cast —
- * so the corpus is coherent with itself and merely non-conformant to X12.
+ * The author's intent is legible — a comprehensive exam downcoded to a
+ * periodic one, a porcelain crown downgraded to full cast — but it is not what
+ * the bytes say.
  *
- * The consequence is visible and pinned in `eraParser.test.js`: against those
- * two files this parser reports billedCode=D0120/paidCode=D0150 and
- * billedCode=D2791/paidCode=D2740 — inverted relative to the README.
- * `isDowncoded` is symmetric (the codes differ), so DETECTION is unaffected
- * either way; only which column each code lands in is at stake.
+ * PM RULING (Slice 5 review): the parser's job is to read REAL payer files
+ * correctly, and real payers follow X12. The parser stays spec-correct, the
+ * fixture BYTES stay frozen (the corpus rule protects bytes, not authoring
+ * mistakes), and the corpus README records the transposition. Slice 6 posts
+ * money against whichever code we recorded, so recording per spec is the only
+ * defensible choice.
  *
- * Fixtures are a fixed corpus and may not be edited. Resolving this means a
- * NEW spec-conformant fixture file, or a PM ruling that the corpus convention
- * is the intended one. Flagged, not improvised.
+ * The consequence is pinned in `eraParser.test.js`: against those two files
+ * this parser reports billedCode=D0120/paidCode=D0150 and
+ * billedCode=D2791/paidCode=D2740 — spec positions, not the author's intent.
+ * `isDowncoded` is symmetric (the codes differ), so DETECTION is correct
+ * either way; only which column each code lands in was ever at stake.
  *
- * ─── NOTE ON CAS PAIRS (D5) ────────────────────────────────────────────────
+ * A spec-conformant downcode scenario is a NEW fixture file, never an edit to
+ * these two.
+ *
+ * ─── NOTE ON CAS PAIRS (D5) — SETTLED: THIS IS PRODUCTION BEHAVIOUR ───────
  *
  * CAS repeats as reason/amount/QUANTITY triples: CAS02-03-04, CAS05-06-07,
  * CAS08-09-10. `Test_Mixed_Adjustments.edi` writes
@@ -117,6 +120,13 @@
  * two alternatives were both worse: writing `reason_code = '25.50'` puts a
  * fabricated code in front of billing staff, and dropping it silently loses
  * $25.50 of patient responsibility with no trace.
+ *
+ * PM RULING (Slice 5 review): this is the PRODUCTION behaviour, not a fixture
+ * workaround. Real payer files are malformed too, and validating the token
+ * rather than trusting it is the honest-states law applied to parsing. The
+ * flag must remain visible on the review path — it reaches
+ * `rcm_claims.needs_review_reasons`, holds the batch at 'open', and Slice 7
+ * renders it.
  */
 
 const { parseSegments, subElement, X12FormatError } = require('./x12');
