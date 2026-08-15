@@ -1,9 +1,10 @@
 /**
- * /rcm — the RCM module's landing page (Slice 3, extended by Slice 4).
+ * /rcm — the RCM module's landing page (Slice 3, extended by Slices 4 and 5).
  *
  * Still deliberately thin: the numbers GET /api/rcm/summary returns, one card
- * per office in scope, and — since Slice 4 — one EOB upload panel per office.
- * No worklist, no filters, no review, no posting: those are Slices 5–7, and
+ * per office in scope, plus one EOB panel and one remittance (835) panel per
+ * office — the two ingestion doors, side by side.
+ * No worklist, no filters, no review, no posting: those are Slices 6–7, and
  * shipping a shell of them now would be a promise the module cannot keep.
  *
  * Honest states, in the order they are checked:
@@ -19,6 +20,7 @@ import { AlertCircle, FileText, Layers, ListChecks, Loader2 } from "lucide-react
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
 import EobUploadPanel from "./EobUploadPanel";
+import EraUploadPanel from "./EraUploadPanel";
 import {
   getRcmSummary,
   RcmApiError,
@@ -103,6 +105,28 @@ export default function RcmOverview() {
             <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-eob-panels">
               {scope.offices.map((office) => (
                 <EobUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+
+          {/* Slice 5. Beside EOB ingestion rather than merged into it: an EOB
+              PDF must be READ by a model and can be wrong, an 835 is PARSED and
+              can only be malformed. Same per-office shape, same reason. */}
+          <div className="mt-8">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              Remittance files (835)
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Upload a carrier's 835 and it is parsed into a <strong>proposal</strong> — payment
+              batches, claims and service lines waiting for a human. Uploading the same
+              remittance twice is refused, per office.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-era-panels">
+              {scope.offices.map((office) => (
+                <EraUploadPanel key={office} office={office} />
               ))}
             </div>
           </div>

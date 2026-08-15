@@ -31,6 +31,8 @@ const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 const { requireReadWrite } = require('../../config/permissions');
 const { requireDashboardAuth } = require('../../middleware/auth');
+// Namespace import so bootRcmApp can patch it — see the note at the patch site.
+const eraFileStore = require('../../services/rcm/eraFileStore');
 
 /**
  * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
@@ -46,6 +48,7 @@ const PRIMARY_KEYS = Object.freeze({
   rcm_batch_claim_payments: 'batch_claim_payment_id',
   rcm_bank_transactions: 'bank_transaction_id',
   rcm_posting_queue: 'queue_id',
+  rcm_remittance_keys: 'remittance_key_id',
 });
 
 /**
@@ -101,10 +104,20 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
-        // A literal, e.g. the startup sweep's `status = 'processing'`.
+        // A literal, e.g. the startup sweep's `status = 'processing'`, or the
+        // remittance-key protocol re-asserting the status it expects inside its
+        // own WHERE — which is what makes a take-over or a release atomic
+        // rather than a read-then-write.
         if ((m = term.match(/^(\w+) = '([^']*)'$/))) {
           const [, col, literal] = m;
           return (r) => r[col] === literal;
+        }
+        // `era_file_key = ANY($2::text[])` — era.js's list joins a page of
+        // uploads back to the batches they produced.
+        if ((m = term.match(/^(\w+) = ANY\(\$(\d+)(?:::\w+\[\])?\)$/))) {
+          const [, col, idx] = m;
+          const list = params[idx - 1];
+          return (r) => Array.isArray(list) && list.includes(r[col]);
         }
         throw new Error(`FakeRcmDb: unsupported WHERE term: ${term}`);
       });
@@ -147,6 +160,42 @@ class FakeRcmDb {
     // appears in the tuple (`… , 'uploaded')`), and binding by ordinal quietly
     // handed such a column `undefined` — which reads as a route that forgot to
     // set a NOT NULL field rather than as a fake that cannot parse SQL.
+
+    // INSERT … ON CONFLICT (cols) DO NOTHING [RETURNING col] — the remittance
+    // key's reservation, and the ONE place the fake has to enforce a UNIQUE
+    // constraint. Without it the second upload of a file would silently insert
+    // a second key and the dedupe test, the point of Slice 5, would pass
+    // against a broken guard.
+    if (
+      (m = text.match(
+        /^INSERT INTO (\w+) \(([^)]+)\) VALUES \(([\s\S]+?)\) ON CONFLICT \(([^)]+)\) DO NOTHING(?: RETURNING (.+))?$/i
+      ))
+    ) {
+      const [, table, colList, valueList, conflictCols, returning] = m;
+      const cols = colList.split(',').map((s) => s.trim());
+      const values = splitTopLevel(valueList).map((s) => s.trim());
+      if (values.length !== cols.length) {
+        throw new Error(`FakeRcmDb: ${table} lists ${cols.length} columns but ${values.length} values`);
+      }
+      const row = {};
+      cols.forEach((c, i) => {
+        row[c] = literalOrParam(values[i], params);
+      });
+
+      const unique = conflictCols.split(',').map((s) => s.trim());
+      if (this.table(table).some((r) => unique.every((c) => r[c] === row[c]))) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      const pk = PRIMARY_KEYS[table];
+      if (pk && row[pk] === undefined) row[pk] = require('crypto').randomUUID();
+      this.table(table).push(row);
+      return {
+        rows: returning ? [project(row, returning)] : [],
+        rowCount: 1,
+      };
+    }
+
     if ((m = text.match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES (.+)$/i))) {
       const cols = m[2].split(',').map((s) => s.trim());
       const tuple = m[3].match(/^\(([\s\S]*?)\)(?:\s+RETURNING|$)/);
@@ -197,7 +246,7 @@ class FakeRcmDb {
       const rows = this.table(m[1]).filter(this.wherePredicate(m[3], params));
       for (const row of rows) {
         for (const { col, value } of assignments) {
-          row[col] = literalOrParam(value, params);
+          row[col] = literalOrParam(value, params, row);
         }
       }
       return {
@@ -248,6 +297,31 @@ class FakeRcmDb {
           return out;
         }),
       };
+    }
+
+    // era.js's three shapes, which the patterns above do not cover: an
+    // ORDER BY with no LIMIT (the batches for a page of uploads), a literal
+    // LIMIT with no ORDER BY (the remittance-key lookups), and a WHERE
+    // containing parentheses (`… = ANY($2::uuid[])`).
+    //
+    // AFTER the narrower shapes above so they still win, and BEFORE the bare
+    // fallback below, which would swallow a trailing ORDER BY into the WHERE.
+    if (
+      (m = text.match(
+        /^SELECT (.+?) FROM (\w+) WHERE (.+?)(?: ORDER BY ([\w, ]+?(?: (?:ASC|DESC)(?: NULLS LAST)?)?))?(?: LIMIT (\$?\d+))?(?: OFFSET (\$?\d+))?$/i
+      ))
+    ) {
+      const [, colList, table, where, order, limitTok, offsetTok] = m;
+      let rows = this.table(table).filter(this.wherePredicate(where, params));
+      if (order) rows = this.applyOrder(rows, order);
+
+      const bound = (tok, fallback) => {
+        if (!tok) return fallback;
+        return tok.startsWith('$') ? Number(params[Number(tok.slice(1)) - 1]) : Number(tok);
+      };
+      const offset = bound(offsetTok, 0);
+      const limit = bound(limitTok, rows.length);
+      return { rows: rows.slice(offset, offset + limit).map((r) => project(r, colList)) };
     }
 
     // eobExtractionWorker's single-row read: SELECT <cols> FROM t WHERE <terms>.
@@ -316,13 +390,35 @@ function splitTopLevel(clause) {
   return parts;
 }
 
-/** Resolve the right-hand side of a SET assignment. */
-function literalOrParam(value, params) {
+/**
+ * Resolve the right-hand side of a SET assignment, or one item of a VALUES
+ * tuple. `row` is the row being updated, needed only by COALESCE.
+ */
+function literalOrParam(value, params, row) {
   if (/^\$\d+$/.test(value)) return params[Number(value.slice(1)) - 1] ?? null;
   if (/^NULL$/i.test(value)) return null;
   if (/^now\(\)$/i.test(value)) return new Date();
+  if (/^CURRENT_DATE$/i.test(value)) return new Date().toISOString().slice(0, 10);
+  if (/^-?\d+$/.test(value)) return Number(value);
+  if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
   const quoted = value.match(/^'(.*)'$/);
   if (quoted) return quoted[1];
+
+  // `COALESCE($3, batch_id)` — finalizeRemittanceKey links the batch it
+  // produced without clobbering one already recorded.
+  let m;
+  if ((m = value.match(/^COALESCE\((.+)\)$/i))) {
+    const args = splitTopLevel(m[1]).map((s) => s.trim());
+    const first = literalOrParam(args[0], params, row);
+    return first == null ? (row ? row[args[1]] : null) : first;
+  }
+  // `array_append(needs_review_reasons, $3)` — a review reason discovered while
+  // writing rather than while parsing.
+  if ((m = value.match(/^array_append\((\w+), (.+)\)$/i))) {
+    const existing = row && Array.isArray(row[m[1]]) ? row[m[1]] : [];
+    return [...existing, literalOrParam(m[2].trim(), params, row)];
+  }
+
   throw new Error(`FakeRcmDb: unsupported SET value: ${value}`);
 }
 
@@ -347,9 +443,12 @@ const REGISTRY_KEYS = [
  *   user?: { email: string, name?: string, tenantId?: string } | null,
  *   role?: 'admin'|'office'|'tc'|'hygiene',
  *   superAdmin?: boolean,
- *   db?: FakeRcmDb
+ *   db?: FakeRcmDb,
+ *   eraStore?: { isConfigured?: () => boolean, putEraFile?: Function } | null
  * }} [opts] `user: null` boots WITHOUT the fake identity layer, so the real auth
- *   gate answers — that is how the anonymous 401 is tested.
+ *   gate answers — that is how the anonymous 401 is tested. `eraStore: null`
+ *   leaves the real (unconfigured) blob module in place, which is how the 503
+ *   is tested.
  */
 async function bootRcmApp({
   modules = ['rcm'],
@@ -357,12 +456,23 @@ async function bootRcmApp({
   role = 'admin',
   superAdmin = false,
   db = new FakeRcmDb(),
+  eraStore = defaultEraStoreStub(),
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
     withTenantDb: tenantDb.withTenantDb,
     token: process.env.DASHBOARD_API_TOKEN,
+    eraStore: { isConfigured: eraFileStore.isConfigured, putEraFile: eraFileStore.putEraFile },
   };
+
+  // Patched on the MODULE OBJECT, not swapped for a new one: routes/rcm/era.js
+  // imports the namespace (`require('…/eraFileStore')`) precisely so a stub can
+  // be installed here. A destructured import would pin the real function at
+  // require time and no test could reach it.
+  if (eraStore) {
+    if (eraStore.isConfigured) eraFileStore.isConfigured = eraStore.isConfigured;
+    if (eraStore.putEraFile) eraFileStore.putEraFile = eraStore.putEraFile;
+  }
 
   registry.getUserByEmail = async () => ({
     user_id: 'U1',
@@ -420,6 +530,8 @@ async function bootRcmApp({
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
             tenantDb.withTenantDb = originals.withTenantDb;
+            eraFileStore.isConfigured = originals.eraStore.isConfigured;
+            eraFileStore.putEraFile = originals.eraStore.putEraFile;
             if (originals.token === undefined) delete process.env.DASHBOARD_API_TOKEN;
             else process.env.DASHBOARD_API_TOKEN = originals.token;
             server.close(r);
@@ -493,4 +605,47 @@ function auditRows(db) {
   return db.table('audit_log');
 }
 
-module.exports = { FakeRcmDb, bootRcmApp, api, auditRows, filePart, syntheticPdf };
+/**
+ * A blob store that records what it was handed instead of reaching Azure.
+ *
+ * Keys are shaped like the real ones — `tenant/<slug>/rcm/era/<uuid>.edi` — so
+ * a test can assert the opaqueness rule (no filename, no patient name, no
+ * office in the path) against the same string production would produce.
+ */
+function defaultEraStoreStub() {
+  const crypto = require('crypto');
+  const puts = [];
+  return {
+    puts,
+    isConfigured: () => true,
+    putEraFile: async ({ tenantSlug, bytes, contentType }) => {
+      const put = {
+        key: `tenant/${tenantSlug}/rcm/era/${crypto.randomUUID()}.edi`,
+        bytes: bytes.length,
+        hash: crypto.createHash('sha256').update(bytes).digest('hex'),
+        contentType,
+      };
+      puts.push(put);
+      return put;
+    },
+  };
+}
+
+/** Read a fixture 835 from backend/test/fixtures/rcm. */
+function fixture835(name) {
+  return require('fs').readFileSync(
+    require('path').join(__dirname, '..', '..', 'test', 'fixtures', 'rcm', name),
+    'utf8'
+  );
+}
+
+module.exports = {
+  FakeRcmDb,
+  bootRcmApp,
+  api,
+  auditRows,
+  filePart,
+  syntheticPdf,
+  defaultEraStoreStub,
+  fixture835,
+};
