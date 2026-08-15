@@ -101,6 +101,11 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
+        // A literal, e.g. the startup sweep's `status = 'processing'`.
+        if ((m = term.match(/^(\w+) = '([^']*)'$/))) {
+          const [, col, literal] = m;
+          return (r) => r[col] === literal;
+        }
         throw new Error(`FakeRcmDb: unsupported WHERE term: ${term}`);
       });
     return (r) => checks.every((c) => c(r));
@@ -182,8 +187,8 @@ class FakeRcmDb {
       return { rows: [out], rowCount: 1 };
     }
 
-    // UPDATE t SET a = $n | 'literal' | NULL | now() WHERE <terms>
-    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+)$/i))) {
+    // UPDATE t SET a = $n | 'literal' | NULL | now() WHERE <terms> [RETURNING <cols>]
+    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (.+))?$/i))) {
       const assignments = splitTopLevel(m[2]).map((raw) => {
         const [, col, value] = raw.trim().match(/^(\w+) = (.+)$/) || [];
         if (!col) throw new Error(`FakeRcmDb: unsupported SET term: ${raw}`);
@@ -195,7 +200,10 @@ class FakeRcmDb {
           row[col] = literalOrParam(value, params);
         }
       }
-      return { rows: [], rowCount: rows.length };
+      return {
+        rows: m[4] ? rows.map((r) => project(r, m[4])) : [],
+        rowCount: rows.length,
+      };
     }
 
     // summary.js: SELECT status, COUNT(*)::int AS n FROM t WHERE … GROUP BY status

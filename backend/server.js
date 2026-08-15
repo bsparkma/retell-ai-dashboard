@@ -387,6 +387,18 @@ async function bootstrap() {
     res.status(404).json({ message: 'Route not found' });
   });
 
+  // Retire EOB extractions a previous process was running when it died. A row
+  // left at 'processing' claims work is happening when the in-process queue that
+  // owned it no longer exists.
+  //
+  // MUST stay ABOVE server.listen(): the sweep marks EVERY 'processing' row
+  // failed, so running it once the port is open would let it race an extraction
+  // this process had just started. It also depends on maxReplicas=1 — see
+  // services/rcm/eobStartupSweep.js. Never blocks startup.
+  await require('./services/rcm/eobStartupSweep')
+    .sweepInterruptedExtractions()
+    .catch((err) => console.warn('[rcm/eob] startup sweep failed:', err && err.message));
+
   // Initialize unified call store and start server
   await unifiedCallStore.initialize().then(async () => {
     server.listen(PORT, () => {

@@ -22,10 +22,19 @@
  *     BullMQ queue would give, so behavior does not change under the swap.
  *
  * What is genuinely LOST versus BullMQ, stated rather than papered over: jobs do
- * not survive a process restart. That is why a re-POST of the same PDF
- * re-enqueues an upload still sitting at 'uploaded' (routes/rcm/eob.js) — the
- * recovery path is a human action, not a background scan. See
- * docs/RCM_EOB_INGESTION.md.
+ * not survive a process restart. Two things cover that, and neither is a
+ * background scan:
+ *   - a re-POST of the same PDF re-enqueues an upload still sitting at
+ *     'uploaded' (routes/rcm/eob.js) — the recovery path is a human action;
+ *   - anything caught mid-attempt is marked 'failed' on the next boot by
+ *     services/rcm/eobStartupSweep.js, so no row is left claiming that work is
+ *     happening when this queue no longer holds it.
+ * See docs/RCM_EOB_INGESTION.md.
+ *
+ * The Redis question is SETTLED, not deferred: no broker, now or for Slices 5/6.
+ * Slice 5's 835 parse needs no queue, and Slice 6's posting queue is Postgres —
+ * rcm_posting_queue IS the durable queue, decided in Slice 1 for this reason.
+ * Revisit only at a ca-carein-rcm worker split, if one ever happens.
  *
  * NO BACKGROUND SCANNING AND NO EXTERNAL POLLING. The only thing that puts work
  * in here is an upload. The only timer that exists is the budget-deferral one

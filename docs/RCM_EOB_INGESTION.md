@@ -112,6 +112,35 @@ do. The POST dedups on `(office_id, file_hash)`:
 That last case is also how a process restart recovers: the in-process queue does not
 survive one, so anything left waiting is restarted by a person re-uploading it.
 
+### The startup sweep
+
+A restart also kills anything that was mid-attempt, and that row still says `processing` —
+a claim that work is happening when the queue that owned it no longer exists. On boot,
+`sweepInterruptedExtractions()` (`backend/services/rcm/eobStartupSweep.js`) marks every
+`processing` row `failed` with:
+
+> Extraction was interrupted — the server restarted while this document was processing.
+> Upload it again to retry.
+
+Nothing else is touched: an `uploaded` row waiting on the cost cap keeps its pause, an
+`extracted` proposal is left alone, and an already-`failed` row keeps its own reason.
+
+Two conditions make this safe, and both are load-bearing:
+
+1. **It runs above `server.listen()`** — so no request served by this process can have set
+   a row to `processing` yet. `eobStartupSweep.test.js` asserts that ordering against
+   `server.js` source, because a mount-order constraint living only in prose is one waiting
+   to be broken.
+2. **`maxReplicas = 1`.** Under a second replica this sweep is actively harmful: replica B
+   booting would mark replica A's genuinely in-flight extraction `failed`, and A would then
+   commit a proposal against a row that says it failed. A "older than my boot" timestamp
+   filter does **not** fix that — A's row was set to `processing` before B booted. The real
+   fix is a lease/heartbeat on the row, and that is work to do **before** raising
+   maxReplicas, not after.
+
+It never blocks startup. An unreachable tenant database is logged and skipped — refusing to
+start the app because one tenant's housekeeping failed would trade a stale row for an outage.
+
 ---
 
 ## 3. The daily cost breaker (decision D-4)
@@ -238,10 +267,27 @@ Batches are created `'open'`, never `'ready'` — `ready` means a human has look
    It is never silently routed to a vision model. See `eobDocumentText.js` for why: the
    platform's Azure OpenAI deployment is a text/JSON deployment, and the source repo's
    base64-PDF-as-`image_url` trick is not a documented Azure capability.
-2. **PDF only.** The source also accepted PNG and JPEG. Those need vision, so they are out
-   until (1) is solved.
-3. **The queue does not survive a restart.** See §2 "Retrying".
+
+   **FOLLOW-UP SLICE — an OCR pre-step.** Faxed and photographed EOBs are common in dental
+   offices, so this gap is real rather than theoretical. The intended shape is **Azure
+   Document Intelligence** (BAA-covered under the same Azure Product Terms as Speech and
+   OpenAI, and purpose-built for exactly this) as a **pre-step** that turns page images into
+   text, feeding the *same* extraction engine — not a second extraction path and not a
+   vision model. The seam already exists: `eobDocumentText.extractPdfText()` is the only
+   place a PDF becomes a string, so OCR is a fallback inside that one function.
+
+   **Not built now, deliberately.** It should be sized once real usage shows what fraction
+   of uploads are image-only, and it carries its own cost rail question (Document
+   Intelligence is priced per page, so it needs to be accounted against the same daily cap
+   rather than beside it). Until then, `NO_EXTRACTABLE_TEXT` with guidance is the honest
+   answer, and the *count* of that failure reason is the measurement that sizes the slice.
+2. **PDF only.** The source also accepted PNG and JPEG. Those need (1), so they are out
+   until it lands — at which point they become nearly free, since OCR takes an image either
+   way.
+3. **The queue does not survive a restart.** See §2 "Retrying" and "The startup sweep".
 4. **Charging is post-hoc.** See §3.
+5. **Single replica.** The startup sweep assumes `maxReplicas = 1`; raising it needs a
+   lease on `processing` rows first. See §2 "The startup sweep".
 
 ---
 
@@ -341,6 +387,9 @@ Container logs show one line per extraction with the token count and the running
 - **Dedup.** Upload the same file twice — one row, `duplicate: true`, no second spend.
 - **The non-PDF refusal.** `curl -b "$COOKIE" -F "file=@something.png"` → 415 `NOT_A_PDF`.
 - **Office scoping.** Upload to `valley`, then confirm `?office=roland` does not list it.
+- **The startup sweep.** Point the app at an unreachable Azure OpenAI endpoint so an upload
+  parks at `processing`, then `az containerapp revision restart`. After the restart that row
+  must read `failed` with the "server restarted" reason — never a permanent `processing`.
 
 ---
 
@@ -352,6 +401,7 @@ Container logs show one line per extraction with the token count and the running
 | Pure extraction engine (schema, prompt, normalization, review reasons) | `backend/services/rcm/eobExtraction.js` |
 | Extraction worker (blob → LLM → rows, one transaction) | `backend/services/rcm/eobExtractionWorker.js` |
 | Queue seam | `backend/services/rcm/eobExtractionQueue.js` |
+| Startup sweep (interrupted → failed) | `backend/services/rcm/eobStartupSweep.js` |
 | Cost breaker | `backend/services/rcm/extractionBudget.js` |
 | Blob store (opaque keys) | `backend/services/rcm/eobBlobStore.js` |
 | PDF text | `backend/services/rcm/eobDocumentText.js` |
