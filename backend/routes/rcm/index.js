@@ -8,14 +8,28 @@
  * to 'rcm' yet, so every route below 403s MODULE_NOT_ENTITLED in every
  * environment until Beau flips the entitlement from the Platform Console.
  *
- * This slice is PLUMBING. Two endpoints exist to prove the chain end to end and
+ * Slice 3 was PLUMBING. Two endpoints existed to prove the chain end to end and
  * to give Slices 4–7 a door to build behind:
- *   GET /summary   per-office counts across claims / batches / posting queue
- *   GET /claims    office-scoped claim list, paginated
+ *   GET  /summary   per-office counts across claims / batches / posting queue
+ *   GET  /claims    office-scoped claim list, paginated
  *
- * NOT here, and not in this slice: EOB upload, ERA parsing, posting, the work
- * queue UI, and any Open Dental client usage. This module writes nothing —
- * every route is a GET, and the only tables it touches are rcm_*.
+ * Slice 4 added EOB ingestion, and with it the module's first mutation:
+ *   POST /eob       multipart PDF → Blob + rcm_eob_uploads row + queued extraction
+ *   GET  /eob       office-scoped upload list + the extraction cost-breaker state
+ *
+ * Slice 5 added the machine-readable source alongside it:
+ *   POST /era       multipart 835 → Blob + parsed proposals, deduplicated by
+ *                   the office-scoped remittance key
+ *   GET  /era       office-scoped upload list with each remittance's dedupe state
+ *
+ * The two are deliberately siblings rather than one endpoint: an EOB PDF must
+ * be READ by a model and can be wrong, an 835 is PARSED and can only be
+ * malformed. They produce the same rcm_* proposal rows and share nothing else.
+ *
+ * NOT here, and not yet: posting (Slice 6), the review/approval UI (Slice 7),
+ * and any Open Dental client usage in ANY slice of this module before 6. The
+ * only tables anything under this mount touches are rcm_* and the platform
+ * audit_log.
  */
 
 const express = require('express');
@@ -49,10 +63,16 @@ router.use(requireOffice);
 
 router.use('/summary', require('./summary'));
 router.use('/claims', require('./claims'));
-// Slice 5: manual 835 upload. The first MUTATION in this module — it needs no
-// gate of its own because the mount's requireReadWrite already demands
-// rcm.write for every non-GET method, which is exactly the property the pair
-// was introduced for. Office still comes from requireOffice above.
+// Slice 4. The module's first WRITE surface — POST /eob is what the unused
+// rcm.write action at the server.js mount has been waiting for. It stores a PDF
+// and queues an extraction; the extraction produces PROPOSAL rows in rcm_*.
+// Still no Open Dental anywhere under this mount (eobNoOdImports.test.js).
+router.use('/eob', require('./eob'));
+// Slice 5. The same shape for the machine-readable source: an 835 is parsed
+// rather than read by a model, so it needs no extraction queue — but it lands
+// in the same rcm_* proposal tables, behind the same rcm.write demanded by the
+// mount's requireReadWrite for every non-GET method, and the same
+// requireOffice above. Still no Open Dental (eraNoOdImports covers this one).
 router.use('/era', require('./era'));
 
 module.exports = router;

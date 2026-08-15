@@ -37,16 +37,21 @@
  * they just uploaded — and re-uploading a superset of an already-processed file
  * is far more often a mistake than an intent.
  *
- * ─── Why the body is raw bytes, not multipart ─────────────────────────────
+ * ─── Same transport as POST /eob ──────────────────────────────────────────
  *
- * This repository has no multipart middleware and no `multer` dependency, and
- * adding one for a single route is a larger change than the route. A browser
- * can POST a `File` object directly as the request body, so the client sends
- * the bytes and puts the name in `X-RCM-Filename`. If a second upload route
- * ever needs true multipart, that is the moment to take the dependency.
+ * multipart/form-data, file in a field named `file`, via the `multer` instance
+ * Slice 4 introduced. Two upload endpoints in one module with two different
+ * transports would be a wart, and the shared shape means the client, the tests
+ * and the error vocabulary are the same for both.
+ *
+ * Bytes are held in memory, never on disk — the container filesystem is
+ * ephemeral, and the one mounted volume in prod is the AzureFile share the call
+ * store lives on. An 835 full of patient names spooled to either is a copy of
+ * PHI nobody scheduled for deletion. It goes buffer → Blob → out of scope.
  */
 
 const express = require('express');
+const multer = require('multer');
 
 const tenantDb = require('../../platform/tenantDb');
 const { audit } = require('../../platform/audit');
@@ -65,8 +70,17 @@ const router = express.Router();
  */
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
+/** Smaller than the shortest legal 835. A truncated download, not a remittance. */
+const MIN_UPLOAD_BYTES = 64;
+
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
+
+/** Memory storage — see the transport note in the header. */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+});
 
 /** Columns returned by the list endpoint. Named explicitly — no SELECT *. */
 const UPLOAD_COLUMNS = [
@@ -99,24 +113,31 @@ const BATCH_COLUMNS = [
 
 const KEY_COLUMNS = ['batch_id', 'remittance_key', 'status', 'posted_at'].join(', ');
 
-/**
- * Accept the file as bytes whatever the browser labelled it.
- *
- * `type: () => true` is deliberate: an .edi upload arrives as
- * application/edi-x12, application/octet-stream, or text/plain depending
- * entirely on the operating system's guess, and refusing on that basis would
- * reject valid files for a reason the uploader cannot see or fix. The content
- * is validated by PARSING it, which is the only check that means anything.
- *
- * The one exception is application/json, which the global `express.json()`
- * upstream has already consumed — so raw() would hand back an empty buffer and
- * the failure would look like an empty file. Refused explicitly below.
- */
-const rawBody = express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES });
-
 /** A structured refusal, in the shape the rest of /api/rcm uses. */
 function refuse(res, status, code, error, extra) {
   return res.status(status).json({ success: false, error, code, ...(extra || {}) });
+}
+
+/**
+ * Turn multer's own errors into the module's structured shape — the same
+ * treatment, and the same codes, POST /eob gives them.
+ */
+function receiveFile(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return refuse(
+        res,
+        413,
+        'FILE_TOO_LARGE',
+        `That file is larger than the ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB limit.`
+      );
+    }
+    if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return refuse(res, 400, 'INVALID_UPLOAD', 'Send exactly one file, in a multipart field named "file".');
+    }
+    return refuse(res, 400, 'INVALID_UPLOAD', 'Could not read the uploaded file.');
+  });
 }
 
 /**
@@ -131,15 +152,7 @@ function refuse(res, status, code, error, extra) {
  * @returns {string}
  */
 function safeFilename(raw) {
-  let name = typeof raw === 'string' ? raw : '';
-  // The client percent-encodes, because a header value must be Latin-1 and
-  // `fetch` refuses an accented character outright. A caller that did not
-  // encode still works — decodeURIComponent only throws on a malformed escape.
-  try {
-    name = decodeURIComponent(name);
-  } catch {
-    /* not percent-encoded; use it as sent */
-  }
+  const name = typeof raw === 'string' ? raw : '';
   const cleaned = Array.from(name)
     .filter((ch) => ch.codePointAt(0) >= 0x20 && ch.codePointAt(0) !== 0x7f)
     .join('')
@@ -158,25 +171,35 @@ function parseBound(raw, fallback, max) {
 
 router.post(
   '/',
-  rawBody,
+  receiveFile,
   h(async (req, res) => {
     const office = req.rcmOffice;
-    const contentType = String(req.get('content-type') || '').toLowerCase();
+    const uploaded = req.file;
 
-    if (contentType.includes('application/json')) {
+    if (!uploaded || !Buffer.isBuffer(uploaded.buffer) || uploaded.buffer.length === 0) {
       return refuse(
         res,
-        415,
-        'ERA_BODY_NOT_RAW',
-        'Send the 835 as raw bytes (Content-Type: application/edi-x12 or text/plain), not JSON'
+        400,
+        'NO_FILE',
+        'No file was attached. Send the 835 as a multipart field named "file".'
       );
     }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return refuse(res, 400, 'ERA_EMPTY_UPLOAD', 'No file content received');
+    if (uploaded.buffer.length < MIN_UPLOAD_BYTES) {
+      return refuse(
+        res,
+        400,
+        'FILE_TOO_SMALL',
+        `That file is only ${uploaded.buffer.length} bytes — too small to be an 835.`
+      );
     }
 
-    const bytes = req.body;
-    const filename = safeFilename(req.get('x-rcm-filename'));
+    const bytes = uploaded.buffer;
+    const filename = safeFilename(uploaded.originalname);
+    // The browser's guess for a .edi is usually application/octet-stream or
+    // text/plain, and neither is worth refusing on: the content is validated by
+    // PARSING it, which is the only check that means anything here. (POST /eob
+    // checks magic bytes instead, because a PDF has some; an 835 does not.)
+    const contentType = uploaded.mimetype || 'application/edi-x12';
 
     // ── Parse first. Nothing is stored, reserved, or written until the file
     //    has proven to be an 835 — a blob write for an unparseable upload is
@@ -247,7 +270,7 @@ router.post(
     const stored = await eraFileStore.putEraFile({
       tenantSlug: req.tenant.slug,
       bytes,
-      contentType: contentType || 'application/edi-x12',
+      contentType,
     });
 
     const file = {
@@ -255,7 +278,7 @@ router.post(
       key: stored.key,
       hash: stored.hash,
       sizeBytes: stored.bytes,
-      contentType: contentType || 'application/edi-x12',
+      contentType,
     };
 
     // ── One transaction: reserve, write, finalize. A failure anywhere leaves

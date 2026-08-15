@@ -1,11 +1,11 @@
 /**
  * The ERA (835) upload affordance and remittance list, per office (Slice 5).
  *
- * Deliberately minimal, and deliberately INSIDE the office card: office is a
- * correctness boundary in this module, not a filter, and a single upload
- * control with an office dropdown beside it is exactly the shape that lets
- * someone file Roland's check under Valley. One control per office, labelled
- * with that office, cannot be aimed at the wrong one.
+ * Same shape as Slice 4's EobUploadPanel and sitting beside it: one panel per
+ * office, labelled with that office. Office is a correctness boundary in this
+ * module, not a filter, and a single upload control with an office dropdown
+ * beside it is exactly the shape that lets someone file Roland's check under
+ * Valley. One control per office cannot be aimed at the wrong one.
  *
  * Honest states, in the order they are checked:
  *   uploading       → the button says so and refuses a second file
@@ -133,10 +133,15 @@ export default function EraUploadPanel({ office }: { office: RcmOfficeId }) {
   const busy = state.kind === "uploading";
 
   return (
-    <div className="mt-5 border-t border-border pt-4" data-testid={`rcm-era-panel-${office}`}>
+    <div
+      className="rounded-xl border border-border bg-card p-5 shadow-sm"
+      data-testid={`rcm-era-panel-${office}`}
+    >
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Remittance files (835)</h3>
+          <h3 className="text-base font-semibold text-foreground">
+            {RCM_OFFICE_LABELS[office]} — remittance files
+          </h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Uploads land in {RCM_OFFICE_LABELS[office]}. Nothing is posted to Open Dental.
           </p>

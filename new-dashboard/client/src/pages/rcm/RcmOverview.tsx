@@ -1,10 +1,11 @@
 /**
- * /rcm — the RCM module's landing page (Slice 3).
+ * /rcm — the RCM module's landing page (Slice 3, extended by Slices 4 and 5).
  *
- * Deliberately thin: a heading and the numbers GET /api/rcm/summary returns,
- * one card per office in scope. No worklist, no filters, no actions — those are
- * Slices 4–7, and shipping a shell of them now would be a promise the module
- * cannot keep.
+ * Still deliberately thin: the numbers GET /api/rcm/summary returns, one card
+ * per office in scope, plus one EOB panel and one remittance (835) panel per
+ * office — the two ingestion doors, side by side.
+ * No worklist, no filters, no review, no posting: those are Slices 6–7, and
+ * shipping a shell of them now would be a promise the module cannot keep.
  *
  * Honest states, in the order they are checked:
  *   roster loading  → spinner (not "no offices", which reads as misconfigured)
@@ -18,6 +19,7 @@ import { useEffect, useState } from "react";
 import { AlertCircle, FileText, Layers, ListChecks, Loader2 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
+import EobUploadPanel from "./EobUploadPanel";
 import EraUploadPanel from "./EraUploadPanel";
 import {
   getRcmSummary,
@@ -79,11 +81,56 @@ export default function RcmOverview() {
           body="None of this practice's offices are set up for revenue cycle work yet."
         />
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-office-cards">
-          {scope.offices.map((office) => (
-            <OfficeSummaryCard key={office} office={office} />
-          ))}
-        </div>
+        <>
+          <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-office-cards">
+            {scope.offices.map((office) => (
+              <OfficeSummaryCard key={office} office={office} />
+            ))}
+          </div>
+
+          {/* Slice 4. One panel per office in scope, because uploading is an
+              office-scoped act — there is no "upload to whichever practice"
+              affordance, by design. */}
+          <div className="mt-8">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              EOB ingestion
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Upload an EOB PDF and it is read into a <strong>proposal</strong> — claims and
+              procedure lines waiting for a human. Nothing here is posted to a patient chart.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-eob-panels">
+              {scope.offices.map((office) => (
+                <EobUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+
+          {/* Slice 5. Beside EOB ingestion rather than merged into it: an EOB
+              PDF must be READ by a model and can be wrong, an 835 is PARSED and
+              can only be malformed. Same per-office shape, same reason. */}
+          <div className="mt-8">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              Remittance files (835)
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Upload a carrier's 835 and it is parsed into a <strong>proposal</strong> — payment
+              batches, claims and service lines waiting for a human. Uploading the same
+              remittance twice is refused, per office.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2" data-testid="rcm-era-panels">
+              {scope.offices.map((office) => (
+                <EraUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -163,13 +210,6 @@ function OfficeSummaryCard({ office }: { office: RcmOfficeId }) {
           {state.summary.claims.byStatus.pending_review === 1 ? "" : "s"} pending review.
         </p>
       )}
-
-      {/*
-        Slice 5. Inside the office card on purpose: office is a correctness
-        boundary here, and one upload control per office cannot be aimed at the
-        wrong one the way a single control with a dropdown can.
-      */}
-      <EraUploadPanel office={office} />
     </div>
   );
 }

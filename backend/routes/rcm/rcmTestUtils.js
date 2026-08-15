@@ -35,6 +35,23 @@ const { requireDashboardAuth } = require('../../middleware/auth');
 const eraFileStore = require('../../services/rcm/eraFileStore');
 
 /**
+ * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
+ * uuid for THESE columns on insert (as `gen_random_uuid()` would) and for no
+ * others — see the RETURNING branch in query().
+ */
+const PRIMARY_KEYS = Object.freeze({
+  rcm_eob_uploads: 'upload_id',
+  rcm_claims: 'claim_id',
+  rcm_procedure_lines: 'line_id',
+  rcm_procedure_adjustments: 'adjustment_id',
+  rcm_payment_batches: 'batch_id',
+  rcm_batch_claim_payments: 'batch_claim_payment_id',
+  rcm_bank_transactions: 'bank_transaction_id',
+  rcm_posting_queue: 'queue_id',
+  rcm_remittance_keys: 'remittance_key_id',
+});
+
+/**
  * An in-memory stand-in for the tenant pg Pool that understands exactly the
  * query shapes routes/rcm issues. Anything else throws by design: a fake that
  * silently answers a query it does not understand turns a broken route into a
@@ -46,6 +63,18 @@ class FakeRcmDb {
     this.tables = new Map();
     /** @type {Array<{ sql: string, params: unknown[] }>} */
     this.log = [];
+    /**
+     * Snapshot taken at BEGIN and restored at ROLLBACK.
+     *
+     * Transactions are SIMULATED, not faked away, and that is the point: Slice
+     * 4 commits a claim, its lines, its adjustments, the batch, the batch links
+     * AND the upload's 'extracted' flip together. "All of that is atomic" is
+     * only a testable claim if a rollback actually undoes it here.
+     * @type {Map<string, Array<Record<string, unknown>>>|null}
+     */
+    this.snapshot = null;
+    /** Query index at which to throw, for atomicity tests. @type {null|((sql: string) => boolean)} */
+    this.failWhen = null;
   }
 
   /** Seed rows into a table (created on first touch). */
@@ -75,15 +104,16 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
-        // `status = 'failed'` — the remittance-key protocol re-asserts the
-        // status it expects inside its own WHERE, which is what makes a
-        // take-over or a release atomic rather than a read-then-write.
+        // A literal, e.g. the startup sweep's `status = 'processing'`, or the
+        // remittance-key protocol re-asserting the status it expects inside its
+        // own WHERE — which is what makes a take-over or a release atomic
+        // rather than a read-then-write.
         if ((m = term.match(/^(\w+) = '([^']*)'$/))) {
-          const [, col, value] = m;
-          return (r) => r[col] === value;
+          const [, col, literal] = m;
+          return (r) => r[col] === literal;
         }
-        // `era_file_key = ANY($2::text[])` — the list endpoint's join back from
-        // a page of uploads to the batches they produced.
+        // `era_file_key = ANY($2::text[])` — era.js's list joins a page of
+        // uploads back to the batches they produced.
         if ((m = term.match(/^(\w+) = ANY\(\$(\d+)(?:::\w+\[\])?\)$/))) {
           const [, col, idx] = m;
           const list = params[idx - 1];
@@ -94,191 +124,134 @@ class FakeRcmDb {
     return (r) => checks.every((c) => c(r));
   }
 
-  /**
-   * A pooled client. Slice 5's upload runs `BEGIN … COMMIT/ROLLBACK` around the
-   * whole ingest, so the fake has to implement transactions for real: a test
-   * that could not observe a rollback could not tell an atomic write path from
-   * one that leaves half a remittance behind.
-   *
-   * The snapshot is taken on BEGIN and restored on ROLLBACK. Rows are copied
-   * one level deep, which is enough because every mutation here replaces column
-   * values rather than mutating a nested object in place.
-   */
   async connect() {
-    let snapshot = null;
-    return {
-      query: async (sql, params) => {
-        const verb = String(sql).trim().toUpperCase();
-        if (verb === 'BEGIN') {
-          snapshot = new Map(
-            [...this.tables].map(([name, rows]) => [name, rows.map((r) => ({ ...r }))])
-          );
-          this.log.push({ sql: 'BEGIN', params: [] });
-          return { rows: [], rowCount: 0 };
-        }
-        if (verb === 'COMMIT') {
-          snapshot = null;
-          this.log.push({ sql: 'COMMIT', params: [] });
-          return { rows: [], rowCount: 0 };
-        }
-        if (verb === 'ROLLBACK') {
-          if (snapshot) this.tables = snapshot;
-          snapshot = null;
-          this.log.push({ sql: 'ROLLBACK', params: [] });
-          return { rows: [], rowCount: 0 };
-        }
-        return this.query(sql, params);
-      },
-      release() {},
-    };
-  }
-
-  /**
-   * Evaluate one item of a VALUES list. Routes mix bound parameters with SQL
-   * literals (`'pending_review'`, `now()`, `CURRENT_DATE`, `0`), so a
-   * positional params[i] mapping would silently misalign every column after the
-   * first literal — which is exactly the class of bug this fake exists to catch.
-   */
-  static literal(token, params) {
-    const t = token.trim();
-    let m;
-    if ((m = t.match(/^\$(\d+)$/))) {
-      const v = params[Number(m[1]) - 1];
-      return v === undefined ? null : v;
-    }
-    if (/^'(.*)'$/.test(t)) return t.slice(1, -1);
-    if (/^-?\d+$/.test(t)) return Number(t);
-    if (/^(now\(\)|CURRENT_TIMESTAMP)$/i.test(t)) return new Date();
-    if (/^CURRENT_DATE$/i.test(t)) return new Date().toISOString().slice(0, 10);
-    if (/^NULL$/i.test(t)) return null;
-    if (/^(true|false)$/i.test(t)) return t.toLowerCase() === 'true';
-    throw new Error(`FakeRcmDb: unsupported VALUES item: ${t}`);
-  }
-
-  /** Split a parenthesised list on TOP-LEVEL commas (nested calls survive). */
-  static splitTopLevel(list) {
-    const out = [];
-    let depth = 0;
-    let quoted = false;
-    let current = '';
-    for (const ch of list) {
-      if (ch === "'") quoted = !quoted;
-      if (!quoted && ch === '(') depth += 1;
-      if (!quoted && ch === ')') depth -= 1;
-      if (!quoted && depth === 0 && ch === ',') {
-        out.push(current);
-        current = '';
-        continue;
-      }
-      current += ch;
-    }
-    if (current.trim()) out.push(current);
-    return out.map((s) => s.trim());
-  }
-
-  /** Primary-key column per table, so RETURNING can hand one back. */
-  static primaryKey(table) {
-    return {
-      rcm_remittance_keys: 'remittance_key_id',
-      rcm_payment_batches: 'batch_id',
-      rcm_claims: 'claim_id',
-      rcm_batch_claim_payments: 'batch_claim_payment_id',
-      rcm_procedure_lines: 'line_id',
-      rcm_procedure_adjustments: 'adjustment_id',
-      rcm_eob_uploads: 'upload_id',
-    }[table];
-  }
-
-  /**
-   * The UNIQUE constraints Slice 5 depends on. `ON CONFLICT DO NOTHING` is only
-   * meaningful if the fake actually enforces one — otherwise the duplicate test,
-   * the whole point of the slice, would pass against a broken guard.
-   */
-  static uniqueColumns(table) {
-    return { rcm_remittance_keys: ['office_id', 'remittance_key'] }[table] || null;
+    return { query: (sql, params) => this.query(sql, params), release() {} };
   }
 
   async query(sql, params = []) {
     const text = sql.replace(/\s+/g, ' ').trim();
     this.log.push({ sql: text, params: params || [] });
 
+    if (this.failWhen && this.failWhen(text)) {
+      throw new Error(`FakeRcmDb: injected failure on: ${text.slice(0, 60)}`);
+    }
+
     let m;
 
-    // INSERT INTO t (cols) VALUES (items) [ON CONFLICT (…) DO NOTHING] [RETURNING col]
+    // ── Transaction control ─────────────────────────────────────────────────
+    if (/^BEGIN$/i.test(text)) {
+      this.snapshot = new Map([...this.tables].map(([t, rows]) => [t, rows.map((r) => ({ ...r }))]));
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^COMMIT$/i.test(text)) {
+      this.snapshot = null;
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^ROLLBACK$/i.test(text)) {
+      if (this.snapshot) this.tables = this.snapshot;
+      this.snapshot = null;
+      return { rows: [], rowCount: 0 };
+    }
+
+    // The audit row (platform/audit.js) and every rcm_* INSERT.
+    //
+    // Each column is bound to ITS OWN slot in the VALUES tuple, not to its
+    // ordinal position in the column list. Those differ the moment a literal
+    // appears in the tuple (`… , 'uploaded')`), and binding by ordinal quietly
+    // handed such a column `undefined` — which reads as a route that forgot to
+    // set a NOT NULL field rather than as a fake that cannot parse SQL.
+
+    // INSERT … ON CONFLICT (cols) DO NOTHING [RETURNING col] — the remittance
+    // key's reservation, and the ONE place the fake has to enforce a UNIQUE
+    // constraint. Without it the second upload of a file would silently insert
+    // a second key and the dedupe test, the point of Slice 5, would pass
+    // against a broken guard.
     if (
       (m = text.match(
-        /^INSERT INTO (\w+) \(([^)]+)\) VALUES \((.+?)\)(?: ON CONFLICT \(([^)]+)\) DO NOTHING)?(?: RETURNING (\w+))?$/i
+        /^INSERT INTO (\w+) \(([^)]+)\) VALUES \(([\s\S]+?)\) ON CONFLICT \(([^)]+)\) DO NOTHING(?: RETURNING (.+))?$/i
       ))
     ) {
-      const [, table, colList, valueList, , returning] = m;
+      const [, table, colList, valueList, conflictCols, returning] = m;
       const cols = colList.split(',').map((s) => s.trim());
-      const values = FakeRcmDb.splitTopLevel(valueList);
-      if (cols.length !== values.length) {
-        throw new Error(
-          `FakeRcmDb: ${table} INSERT has ${cols.length} columns and ${values.length} values`
-        );
+      const values = splitTopLevel(valueList).map((s) => s.trim());
+      if (values.length !== cols.length) {
+        throw new Error(`FakeRcmDb: ${table} lists ${cols.length} columns but ${values.length} values`);
       }
-
-      /** @type {Record<string, unknown>} */
       const row = {};
       cols.forEach((c, i) => {
-        row[c] = FakeRcmDb.literal(values[i], params);
+        row[c] = literalOrParam(values[i], params);
       });
 
-      const unique = FakeRcmDb.uniqueColumns(table);
-      if (unique && this.table(table).some((r) => unique.every((c) => r[c] === row[c]))) {
-        // ON CONFLICT DO NOTHING: no row inserted, no rows returned. Without
-        // the constraint the second upload of a file would succeed silently.
+      const unique = conflictCols.split(',').map((s) => s.trim());
+      if (this.table(table).some((r) => unique.every((c) => r[c] === row[c]))) {
         return { rows: [], rowCount: 0 };
       }
 
-      const pk = FakeRcmDb.primaryKey(table);
+      const pk = PRIMARY_KEYS[table];
       if (pk && row[pk] === undefined) row[pk] = require('crypto').randomUUID();
-      // Column defaults the routes rely on but do not name in their INSERTs.
-      const now = new Date();
-      for (const [col, value] of [
-        ['created_at', now],
-        ['updated_at', now],
-        ['archived_at', null],
-      ]) {
-        if (row[col] === undefined) row[col] = value;
-      }
-      if (table === 'rcm_eob_uploads' && row.uploaded_at === undefined) row.uploaded_at = now;
-      if (table === 'rcm_remittance_keys' && row.posted_at === undefined) row.posted_at = now;
-
       this.table(table).push(row);
       return {
-        rows: returning ? [{ [returning]: row[returning] }] : [],
+        rows: returning ? [project(row, returning)] : [],
         rowCount: 1,
       };
     }
 
-    // UPDATE t SET a = …, b = … WHERE … [RETURNING col]
-    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (\w+))?$/i))) {
-      const [, table, setList, where, returning] = m;
-      const assignments = FakeRcmDb.splitTopLevel(setList).map((pair) => {
-        const eq = pair.indexOf('=');
-        return [pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()];
+    if ((m = text.match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES (.+)$/i))) {
+      const cols = m[2].split(',').map((s) => s.trim());
+      const tuple = m[3].match(/^\(([\s\S]*?)\)(?:\s+RETURNING|$)/);
+      if (!tuple) throw new Error(`FakeRcmDb: cannot parse VALUES of: ${text}`);
+      const values = splitTopLevel(tuple[1]).map((s) => s.trim());
+      if (values.length !== cols.length) {
+        throw new Error(
+          `FakeRcmDb: ${m[1]} lists ${cols.length} columns but ${values.length} values`
+        );
+      }
+      const row = {};
+      cols.forEach((c, i) => {
+        row[c] = literalOrParam(values[i], params);
       });
-      const matched = this.table(table).filter(this.wherePredicate(where, params));
-      for (const row of matched) {
-        for (const [col, expr] of assignments) {
-          let inner;
-          if ((inner = expr.match(/^COALESCE\((.+)\)$/i))) {
-            const args = FakeRcmDb.splitTopLevel(inner[1]);
-            const first = FakeRcmDb.literal(args[0], params);
-            row[col] = first == null ? row[args[1].trim()] : first;
-          } else if ((inner = expr.match(/^array_append\((\w+), (.+)\)$/i))) {
-            const existing = Array.isArray(row[inner[1]]) ? row[inner[1]] : [];
-            row[col] = [...existing, FakeRcmDb.literal(inner[2], params)];
-          } else {
-            row[col] = FakeRcmDb.literal(expr, params);
-          }
+      this.table(m[1]).push(row);
+
+      const returning = m[3].match(/RETURNING (.+)$/i);
+      if (!returning) return { rows: [], rowCount: 1 };
+
+      // Fill the columns pg would have DEFAULTED, so a route reading
+      // `RETURNING upload_id` gets an id rather than undefined.
+      //
+      // Only the declared PRIMARY KEY gets a generated uuid. Minting one for
+      // every `*_id` column would hand back a `result_claim_id` on a row that
+      // has not been extracted — i.e. it would fabricate the exact linkage this
+      // slice is careful never to claim before it exists.
+      const out = {};
+      for (const col of returning[1].split(',').map((s) => s.trim())) {
+        if (col in row) {
+          out[col] = row[col];
+          continue;
+        }
+        if (PRIMARY_KEYS[m[1]] === col) row[col] = require('crypto').randomUUID();
+        else if (/_at$/.test(col)) row[col] = new Date();
+        else row[col] = null;
+        out[col] = row[col];
+      }
+      return { rows: [out], rowCount: 1 };
+    }
+
+    // UPDATE t SET a = $n | 'literal' | NULL | now() WHERE <terms> [RETURNING <cols>]
+    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (.+))?$/i))) {
+      const assignments = splitTopLevel(m[2]).map((raw) => {
+        const [, col, value] = raw.trim().match(/^(\w+) = (.+)$/) || [];
+        if (!col) throw new Error(`FakeRcmDb: unsupported SET term: ${raw}`);
+        return { col, value: value.trim() };
+      });
+      const rows = this.table(m[1]).filter(this.wherePredicate(m[3], params));
+      for (const row of rows) {
+        for (const { col, value } of assignments) {
+          row[col] = literalOrParam(value, params, row);
         }
       }
       return {
-        rows: returning ? matched.map((r) => ({ [returning]: r[returning] })) : [],
-        rowCount: matched.length,
+        rows: m[4] ? rows.map((r) => project(r, m[4])) : [],
+        rowCount: rows.length,
       };
     }
 
@@ -297,29 +270,24 @@ class FakeRcmDb {
       return { rows: [{ n: rows.length }] };
     }
 
-    // SELECT <cols> FROM t WHERE … [ORDER BY …] [LIMIT …] [OFFSET …]
-    //
-    // Covers claims.js's paginated page, era.js's upload page and its two
-    // follow-up lookups, and the remittance-key protocol's `LIMIT 1` reads.
-    // ORDER BY / LIMIT / OFFSET are each optional and each may be a bound
-    // parameter or a literal.
+    // eob.js dedup probe: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT <n>
+    if ((m = text.match(/^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT (\d+)$/i))) {
+      let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
+      rows = this.applyOrder(rows, m[4]);
+      return { rows: rows.slice(0, Number(m[5])).map((r) => project(r, m[1])) };
+    }
+
+    // claims.js: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT $n OFFSET $n
     if (
       (m = text.match(
-        /^SELECT (.+?) FROM (\w+) WHERE (.+?)(?: ORDER BY (.+?))?(?: LIMIT (\$\d+|\d+))?(?: OFFSET (\$\d+|\d+))?$/i
+        /^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT \$(\d+) OFFSET \$(\d+)$/i
       ))
     ) {
-      const [, colList, table, where, order, limitTok, offsetTok] = m;
-      const cols = colList.split(',').map((s) => s.trim());
-      let rows = this.table(table).filter(this.wherePredicate(where, params));
-      if (order) rows = this.applyOrder(rows, order);
-
-      const bound = (tok, fallback) => {
-        if (!tok) return fallback;
-        return tok.startsWith('$') ? Number(params[Number(tok.slice(1)) - 1]) : Number(tok);
-      };
-      const offset = bound(offsetTok, 0);
-      const limit = bound(limitTok, rows.length);
-
+      const cols = m[1].split(',').map((s) => s.trim());
+      let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
+      rows = this.applyOrder(rows, m[4]);
+      const limit = Number(params[m[5] - 1]);
+      const offset = Number(params[m[6] - 1]);
       return {
         rows: rows.slice(offset, offset + limit).map((r) => {
           const out = {};
@@ -329,6 +297,39 @@ class FakeRcmDb {
           return out;
         }),
       };
+    }
+
+    // era.js's three shapes, which the patterns above do not cover: an
+    // ORDER BY with no LIMIT (the batches for a page of uploads), a literal
+    // LIMIT with no ORDER BY (the remittance-key lookups), and a WHERE
+    // containing parentheses (`… = ANY($2::uuid[])`).
+    //
+    // AFTER the narrower shapes above so they still win, and BEFORE the bare
+    // fallback below, which would swallow a trailing ORDER BY into the WHERE.
+    if (
+      (m = text.match(
+        /^SELECT (.+?) FROM (\w+) WHERE (.+?)(?: ORDER BY ([\w, ]+?(?: (?:ASC|DESC)(?: NULLS LAST)?)?))?(?: LIMIT (\$?\d+))?(?: OFFSET (\$?\d+))?$/i
+      ))
+    ) {
+      const [, colList, table, where, order, limitTok, offsetTok] = m;
+      let rows = this.table(table).filter(this.wherePredicate(where, params));
+      if (order) rows = this.applyOrder(rows, order);
+
+      const bound = (tok, fallback) => {
+        if (!tok) return fallback;
+        return tok.startsWith('$') ? Number(params[Number(tok.slice(1)) - 1]) : Number(tok);
+      };
+      const offset = bound(offsetTok, 0);
+      const limit = bound(limitTok, rows.length);
+      return { rows: rows.slice(offset, offset + limit).map((r) => project(r, colList)) };
+    }
+
+    // eobExtractionWorker's single-row read: SELECT <cols> FROM t WHERE <terms>.
+    // LAST, so the narrower ORDER BY / LIMIT / COUNT shapes above win — this
+    // pattern would otherwise swallow their trailing clauses into the WHERE.
+    if ((m = text.match(/^SELECT ([\w, ]+) FROM (\w+) WHERE ([^()]+)$/i))) {
+      const rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
+      return { rows: rows.map((r) => project(r, m[1])) };
     }
 
     throw new Error(`FakeRcmDb: cannot handle: ${text}`);
@@ -361,6 +362,64 @@ function key(v) {
   if (v == null) return null;
   if (v instanceof Date) return v.getTime();
   return typeof v === 'number' ? v : String(v);
+}
+
+/** Keep only the named columns, so a route reading an unselected one gets undefined. */
+function project(row, colList) {
+  const out = {};
+  for (const c of colList.split(',').map((s) => s.trim())) out[c] = row[c];
+  return out;
+}
+
+/** Split a SET clause on commas that are not inside parentheses (`now()`, casts). */
+function splitTopLevel(clause) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of clause) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current);
+  return parts;
+}
+
+/**
+ * Resolve the right-hand side of a SET assignment, or one item of a VALUES
+ * tuple. `row` is the row being updated, needed only by COALESCE.
+ */
+function literalOrParam(value, params, row) {
+  if (/^\$\d+$/.test(value)) return params[Number(value.slice(1)) - 1] ?? null;
+  if (/^NULL$/i.test(value)) return null;
+  if (/^now\(\)$/i.test(value)) return new Date();
+  if (/^CURRENT_DATE$/i.test(value)) return new Date().toISOString().slice(0, 10);
+  if (/^-?\d+$/.test(value)) return Number(value);
+  if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
+  const quoted = value.match(/^'(.*)'$/);
+  if (quoted) return quoted[1];
+
+  // `COALESCE($3, batch_id)` — finalizeRemittanceKey links the batch it
+  // produced without clobbering one already recorded.
+  let m;
+  if ((m = value.match(/^COALESCE\((.+)\)$/i))) {
+    const args = splitTopLevel(m[1]).map((s) => s.trim());
+    const first = literalOrParam(args[0], params, row);
+    return first == null ? (row ? row[args[1]] : null) : first;
+  }
+  // `array_append(needs_review_reasons, $3)` — a review reason discovered while
+  // writing rather than while parsing.
+  if ((m = value.match(/^array_append\((\w+), (.+)\)$/i))) {
+    const existing = row && Array.isArray(row[m[1]]) ? row[m[1]] : [];
+    return [...existing, literalOrParam(m[2].trim(), params, row)];
+  }
+
+  throw new Error(`FakeRcmDb: unsupported SET value: ${value}`);
 }
 
 const REGISTRY_KEYS = [
@@ -485,11 +544,16 @@ async function bootRcmApp({
 /**
  * JSON fetch helper. Sends the shared bearer by default so requests get past
  * the auth gate; pass `{ anon: true }` to omit it.
+ *
+ * `body` is passed through untouched — pass a FormData to exercise the
+ * multipart upload path, and let undici set the boundary (setting
+ * Content-Type by hand is the classic way to break a multipart request).
  */
-async function api(baseUrl, method, path, { anon = false } = {}) {
+async function api(baseUrl, method, path, { anon = false, body } = {}) {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers: anon ? {} : { Authorization: 'Bearer test-token' },
+    body,
   });
   let json = null;
   try {
@@ -501,27 +565,44 @@ async function api(baseUrl, method, path, { anon = false } = {}) {
 }
 
 /**
- * POST raw bytes — the shape POST /api/rcm/era takes, and the shape the browser
- * sends (a `File` straight into the body, name in a header).
- *
- * @param {string} baseUrl
- * @param {string} path
- * @param {string|Buffer} body
- * @param {{ filename?: string, contentType?: string, anon?: boolean }} [opts]
+ * A multipart body carrying one file, as a browser would send it.
+ * @param {Buffer} bytes
+ * @param {string} filename
+ * @param {string} [contentType]
+ * @param {string} [field]
  */
-async function postRaw(baseUrl, path, body, opts = {}) {
-  const headers = opts.anon ? {} : { Authorization: 'Bearer test-token' };
-  headers['Content-Type'] = opts.contentType || 'application/edi-x12';
-  if (opts.filename) headers['X-RCM-Filename'] = opts.filename;
+function filePart(bytes, filename, contentType = 'application/pdf', field = 'file') {
+  const form = new FormData();
+  form.append(field, new Blob([bytes], { type: contentType }), filename);
+  return form;
+}
 
-  const res = await fetch(`${baseUrl}${path}`, { method: 'POST', headers, body });
-  let json = null;
-  try {
-    json = await res.json();
-  } catch {
-    /* non-JSON body */
-  }
-  return { status: res.status, body: json };
+/**
+ * A minimal, VALID PDF whose text layer says `text`.
+ *
+ * Built by hand rather than committed as a fixture so no binary blob enters the
+ * repo, and so a test can state in one line exactly what the extractor will
+ * see. Padded past the route's 256-byte floor. NEVER contains a real name.
+ * @param {string} text
+ */
+function syntheticPdf(text = 'SYNTHETIC EOB') {
+  const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
+  const body =
+    '%PDF-1.4\n' +
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]' +
+    '/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n' +
+    '4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n' +
+    `5 0 obj<</Length ${stream.length}>>stream\n${stream}\nendstream endobj\n` +
+    'trailer<</Root 1 0 R>>\n' +
+    `% padding ${'-'.repeat(300)}\n`;
+  return Buffer.from(body, 'latin1');
+}
+
+/** Audit rows written to the fake store. */
+function auditRows(db) {
+  return db.table('audit_log');
 }
 
 /**
@@ -532,12 +613,12 @@ async function postRaw(baseUrl, path, body, opts = {}) {
  * office in the path) against the same string production would produce.
  */
 function defaultEraStoreStub() {
+  const crypto = require('crypto');
   const puts = [];
-  const stub = {
+  return {
     puts,
     isConfigured: () => true,
     putEraFile: async ({ tenantSlug, bytes, contentType }) => {
-      const crypto = require('crypto');
       const put = {
         key: `tenant/${tenantSlug}/rcm/era/${crypto.randomUUID()}.edi`,
         bytes: bytes.length,
@@ -548,12 +629,6 @@ function defaultEraStoreStub() {
       return put;
     },
   };
-  return stub;
-}
-
-/** Audit rows written to the fake store. */
-function auditRows(db) {
-  return db.table('audit_log');
 }
 
 /** Read a fixture 835 from backend/test/fixtures/rcm. */
@@ -568,8 +643,9 @@ module.exports = {
   FakeRcmDb,
   bootRcmApp,
   api,
-  postRaw,
   auditRows,
-  fixture835,
+  filePart,
+  syntheticPdf,
   defaultEraStoreStub,
+  fixture835,
 };

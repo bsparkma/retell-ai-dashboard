@@ -20,11 +20,14 @@ const {
   FakeRcmDb,
   bootRcmApp,
   api,
-  postRaw,
+  filePart,
   auditRows,
   fixture835,
   defaultEraStoreStub,
 } = require('./rcmTestUtils');
+
+/** What a browser labels an .edi upload, and what filePart stamps on it. */
+const EDI = 'application/edi-x12';
 
 const MULTI = fixture835('Test_Delta_Dental_MultiClaim.edi');
 const REVERSAL = fixture835('Test_Reversal_Recoupment.edi');
@@ -44,8 +47,8 @@ async function withApp(opts, fn) {
 
 test('THE STAR: uploading the same 835 twice creates ZERO new proposals and says so', async () => {
   await withApp({}, async (app) => {
-    const first = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, {
-      filename: 'delta_multiclaim.edi',
+    const first = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'delta_multiclaim.edi', EDI),
     });
     assert.equal(first.status, 201);
     assert.equal(first.body.counts.batches, 1);
@@ -59,8 +62,8 @@ test('THE STAR: uploading the same 835 twice creates ZERO new proposals and says
       uploads: app.db.table('rcm_eob_uploads').length,
     };
 
-    const second = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, {
-      filename: 'delta_multiclaim_again.edi',
+    const second = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'delta_multiclaim_again.edi', EDI),
     });
 
     assert.equal(second.status, 409);
@@ -94,7 +97,9 @@ test('there is NO override — no query param, header, or body field bypasses de
   // `forceDuplicate` has no successor. If one is ever added, this test is where
   // the decision has to be argued.
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     for (const query of [
       '&force=true',
@@ -103,9 +108,9 @@ test('there is NO override — no query param, header, or body field bypasses de
       '&allowDuplicate=true',
       '&skipDedupe=true',
     ]) {
-      const res = await postRaw(app.baseUrl, `/api/rcm/era?office=roland${query}`, MULTI, {
-        filename: 'a.edi',
-      });
+      const res = await api(app.baseUrl, 'POST', `/api/rcm/era?office=roland${query}`, {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
       assert.equal(res.status, 409, `${query} must not bypass the remittance key`);
     }
     assert.equal(app.db.table('rcm_payment_batches').length, 1);
@@ -117,8 +122,12 @@ test('the SAME file uploaded to the OTHER office is accepted', async () => {
   // distinct checks whose components collide, and a global key would let one
   // office's remittance silently block the other's.
   await withApp({}, async (app) => {
-    const roland = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
-    const valley = await postRaw(app.baseUrl, '/api/rcm/era?office=valley', MULTI, { filename: 'a.edi' });
+    const roland = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
+    const valley = await api(app.baseUrl, 'POST', '/api/rcm/era?office=valley', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     assert.equal(roland.status, 201);
     assert.equal(valley.status, 201);
@@ -143,8 +152,8 @@ test('the SAME file uploaded to the OTHER office is accepted', async () => {
 
 test('the canonical multi-claim file produces one batch, two claims, four lines', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, {
-      filename: 'delta.edi',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'delta.edi', EDI),
     });
 
     assert.equal(res.status, 201);
@@ -189,7 +198,9 @@ test('the canonical multi-claim file produces one batch, two claims, four lines'
 
 test('HARD RULE 1: nothing about Open Dental is touched, read, or written', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     // Matching a remittance line to a real OD claim is Slice 6's job — it needs
     // the odReads seam and one audit row per PHI read, neither of which exists
@@ -210,7 +221,9 @@ test('HARD RULE 1: nothing about Open Dental is touched, read, or written', asyn
 
 test('STEDI STAYS DORMANT: no poll state, no stedi rows, no stedi linkage', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     assert.equal(app.db.table('rcm_stedi_poll_state').length, 0);
     assert.equal(app.db.table('rcm_stedi_events').length, 0);
@@ -222,8 +235,8 @@ test('STEDI STAYS DORMANT: no poll state, no stedi rows, no stedi linkage', asyn
 test('the blob key is opaque — no filename, no patient name, no office in the path', async () => {
   const store = defaultEraStoreStub();
   await withApp({ eraStore: store }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, {
-      filename: 'Delta_FOSTER_Emily_0302.edi',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'Delta_FOSTER_Emily_0302.edi', EDI),
     });
 
     const key = res.body.upload.fileKey;
@@ -242,8 +255,8 @@ test('the blob key is opaque — no filename, no patient name, no office in the 
 
 test('a reversal is CREATED and FLAGGED — never dropped, and never left looking postable', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', REVERSAL, {
-      filename: 'reversal.edi',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(REVERSAL), 'reversal.edi', EDI),
     });
 
     assert.equal(res.status, 201);
@@ -268,8 +281,8 @@ test('a reversal is CREATED and FLAGGED — never dropped, and never left lookin
 
 test('a PLB-carrying file records the provider-level money and holds the batch open', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', fixture835('Test_PLB_Adjustments.edi'), {
-      filename: 'plb.edi',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(fixture835('Test_PLB_Adjustments.edi')), 'plb.edi', EDI),
     });
 
     assert.equal(res.status, 201);
@@ -284,8 +297,8 @@ test('a PLB-carrying file records the provider-level money and holds the batch o
 
 test('a denied claim lands with its CARC/RARC codes, which is the whole product', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', fixture835('Test_Denied_Claims.edi'), {
-      filename: 'denied.edi',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(fixture835('Test_Denied_Claims.edi')), 'denied.edi', EDI),
     });
 
     assert.equal(res.status, 201);
@@ -307,8 +320,8 @@ test('a denied claim lands with its CARC/RARC codes, which is the whole product'
 
 test('a downcode is recorded on the line and raises review on the claim', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', fixture835('Test_Cigna_Downcode.edi'), {
-      filename: 'cigna.edi',
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(fixture835('Test_Cigna_Downcode.edi')), 'cigna.edi', EDI),
     });
 
     const downcoded = app.db.table('rcm_procedure_lines').filter((l) => l.is_downcoded);
@@ -330,12 +343,9 @@ test('an unreadable CAS pair is flagged all the way to the review path, not writ
   // just the parse: line flag → claim reason → batch held open → API response
   // → the claims list Slice 7 reads.
   await withApp({}, async (app) => {
-    const res = await postRaw(
-      app.baseUrl,
-      '/api/rcm/era?office=roland',
-      fixture835('Test_Mixed_Adjustments.edi'),
-      { filename: 'mixed.edi' }
-    );
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(fixture835('Test_Mixed_Adjustments.edi')), 'mixed.edi', EDI),
+    });
     assert.equal(res.status, 201);
 
     assert.ok(
@@ -366,7 +376,9 @@ test('an unreadable CAS pair is flagged all the way to the review path, not writ
 
 test('a clean file is the only kind that reaches status ready', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', CLEAN, { filename: 'clean.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(CLEAN), 'clean.edi', EDI),
+    });
     assert.equal(app.db.table('rcm_payment_batches')[0].status, 'ready');
     assert.deepEqual(app.db.table('rcm_claims')[0].needs_review_reasons, []);
   });
@@ -395,7 +407,9 @@ test('TRANSACTIONALITY: a failure mid-ingest leaves no batch, no claim, and no l
   await withApp({ db }, async (app) => {
     const restore = failOn(db, /INSERT INTO rcm_procedure_adjustments/i);
 
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(res.status, 500);
     assert.equal(res.body.code, 'INTERNAL_ERROR');
 
@@ -419,28 +433,36 @@ test('A FAILED INGEST DOES NOT POISON THE KEY: the same file re-uploads cleanly'
   const db = new FakeRcmDb();
   await withApp({ db }, async (app) => {
     const restore = failOn(db, /INSERT INTO rcm_procedure_lines/i);
-    const failed = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const failed = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(failed.status, 500);
     restore();
 
     // No reservation survives, so nothing blocks the retry.
     assert.equal(db.table('rcm_remittance_keys').length, 0);
 
-    const retry = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const retry = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(retry.status, 201);
     assert.equal(retry.body.counts.claims, 2);
     assert.equal(db.table('rcm_remittance_keys').length, 1);
     assert.equal(db.table('rcm_remittance_keys')[0].status, 'posted');
 
     // And the retry's OWN duplicate is still refused — the guard survived.
-    const third = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const third = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(third.status, 409);
   });
 });
 
 test('the reservation is finalized only after the proposals commit', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     const sqls = app.db.log.map((e) => e.sql);
     const reserve = sqls.findIndex((s) => /INSERT INTO rcm_remittance_keys/.test(s));
@@ -461,8 +483,14 @@ test('an unparseable upload is refused, and nothing is stored or reserved', asyn
   const store = defaultEraStoreStub();
   const db = new FakeRcmDb();
   await withApp({ db, eraStore: store }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', 'this is a PDF, not an 835', {
-      filename: 'scan.pdf',
+    // Long enough to clear the min-size floor, so this exercises the PARSER's
+    // refusal rather than the size check. (A PDF header, which is what an
+    // operator actually mis-drags into this control.)
+    const notAn835 = Buffer.from(`%PDF-1.7\n${'%âãÏÓ binary junk '.repeat(8)}`);
+    assert.ok(notAn835.length > 64);
+
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(notAn835, 'scan.pdf', EDI),
     });
 
     assert.equal(res.status, 422);
@@ -475,23 +503,37 @@ test('an unparseable upload is refused, and nothing is stored or reserved', asyn
   });
 });
 
-test('an empty body is refused before anything else happens', async () => {
+test('an empty file is refused before anything else happens', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', '', { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.alloc(0), 'a.edi', EDI),
+    });
     assert.equal(res.status, 400);
-    assert.equal(res.body.code, 'ERA_EMPTY_UPLOAD');
+    assert.equal(res.body.code, 'NO_FILE');
   });
 });
 
-test('a JSON body is refused with an explanation, not an empty-file error', async () => {
-  // The global express.json() upstream has already consumed it, so raw() would
-  // hand back an empty buffer and the failure would look like an empty file.
+test('a file too short to be an 835 is refused with its own code', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', '{"file":"x"}', {
-      contentType: 'application/json',
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from('ISA*00*'), 'a.edi', EDI),
     });
-    assert.equal(res.status, 415);
-    assert.equal(res.body.code, 'ERA_BODY_NOT_RAW');
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'FILE_TOO_SMALL');
+  });
+});
+
+test('a non-multipart body is refused as a missing file, not parsed', async () => {
+  // multer sees no multipart part at all, so req.file is undefined. The refusal
+  // names the field the caller should have used rather than blaming the bytes.
+  await withApp({}, async (app) => {
+    const res = await fetch(`${app.baseUrl}/api/rcm/era?office=roland`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/edi-x12' },
+      body: MULTI,
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, 'NO_FILE');
   });
 });
 
@@ -516,7 +558,9 @@ test('a file with no payment date is refused rather than dated today', async () 
 
   const store = defaultEraStoreStub();
   await withApp({ eraStore: store }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', noDate, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(noDate), 'a.edi', EDI),
+    });
     assert.equal(res.status, 422);
     assert.equal(res.body.code, 'ERA_MISSING_PAYMENT_DATE');
     assert.deepEqual(res.body.transactionIndexes, [0]);
@@ -542,7 +586,9 @@ test('a file with no trace and no check number is refused as unidentifiable', as
     ].join('~\n') + '~\n';
 
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', noTrace, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(noTrace), 'a.edi', EDI),
+    });
     assert.equal(res.status, 422);
     assert.equal(res.body.code, 'ERA_NO_REMITTANCE_IDENTITY');
   });
@@ -553,7 +599,9 @@ test('an unconfigured blob store 503s rather than writing rows with no artifact'
   // never stored would be unverifiable months later.
   const db = new FakeRcmDb();
   await withApp({ db, eraStore: { isConfigured: () => false } }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(res.status, 503);
     assert.equal(res.body.code, 'ERA_STORAGE_UNAVAILABLE');
     assert.equal(db.table('rcm_payment_batches').length, 0);
@@ -568,7 +616,9 @@ test('POST demands rcm.WRITE while GET demands rcm.read', async () => {
   // separate them by outcome. The denial names the action it evaluated, which
   // is what proves requireReadWrite picked the write gate for POST.
   await withApp({ role: 'tc' }, async (app) => {
-    const post = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const post = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(post.status, 403);
     assert.equal(post.body.code, 'FORBIDDEN');
     assert.equal(post.body.action, 'rcm.write');
@@ -581,7 +631,9 @@ test('POST demands rcm.WRITE while GET demands rcm.read', async () => {
 
 test('a hygienist cannot upload a remittance', async () => {
   await withApp({ role: 'hygiene' }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(res.status, 403);
     assert.equal(app.db.table('rcm_payment_batches').length, 0);
   });
@@ -589,7 +641,9 @@ test('a hygienist cannot upload a remittance', async () => {
 
 test('a tenant without the rcm module gets MODULE_NOT_ENTITLED, not a parse attempt', async () => {
   await withApp({ modules: ['voice'] }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(res.status, 403);
     assert.equal(res.body.error, 'MODULE_NOT_ENTITLED');
     assert.equal(app.db.table('rcm_payment_batches').length, 0);
@@ -598,9 +652,8 @@ test('a tenant without the rcm module gets MODULE_NOT_ENTITLED, not a parse atte
 
 test('an anonymous upload is refused by the auth gate', async () => {
   await withApp({ user: null }, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, {
-      filename: 'a.edi',
-      anon: true,
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI), anon: true,
     });
     assert.equal(res.status, 401);
   });
@@ -609,7 +662,9 @@ test('an anonymous upload is refused by the auth gate', async () => {
 test('office comes from the validated query param — a missing or unknown one 400s', async () => {
   await withApp({}, async (app) => {
     for (const path of ['/api/rcm/era', '/api/rcm/era?office=', '/api/rcm/era?office=springfield']) {
-      const res = await postRaw(app.baseUrl, path, MULTI, { filename: 'a.edi' });
+      const res = await api(app.baseUrl, 'POST', path, {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
       assert.equal(res.status, 400);
       assert.equal(res.body.code, 'INVALID_OFFICE');
     }
@@ -621,7 +676,9 @@ test('an office asserted in the BODY cannot redirect the write', async () => {
   // There is no body field this route reads other than the file bytes. A file
   // whose payee names Valley still lands in whatever office the URL said.
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(res.status, 201);
     assert.ok(app.db.table('rcm_payment_batches').every((b) => b.office_id === 'roland'));
   });
@@ -631,7 +688,9 @@ test('an office asserted in the BODY cannot redirect the write', async () => {
 
 test('an upload writes a CREATE audit row naming the office and the upload', async () => {
   await withApp({}, async (app) => {
-    const res = await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
 
     const rows = auditRows(app.db);
     assert.equal(rows.length, 1);
@@ -648,8 +707,12 @@ test('an upload writes a CREATE audit row naming the office and the upload', asy
 
 test('a refused duplicate writes no audit row, because nothing happened', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'a.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'a.edi', EDI),
+    });
     assert.equal(auditRows(app.db).length, 1);
   });
 });
@@ -658,8 +721,12 @@ test('a refused duplicate writes no audit row, because nothing happened', async 
 
 test('the list shows each upload, its remittances, and their dedupe status', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'delta.edi' });
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', REVERSAL, { filename: 'reversal.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'delta.edi', EDI),
+    });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(REVERSAL), 'reversal.edi', EDI),
+    });
 
     const res = await api(app.baseUrl, 'GET', '/api/rcm/era?office=roland');
     assert.equal(res.status, 200);
@@ -685,7 +752,9 @@ test('the list shows each upload, its remittances, and their dedupe status', asy
 
 test('the list is office-scoped — the other office sees none of it', async () => {
   await withApp({}, async (app) => {
-    await postRaw(app.baseUrl, '/api/rcm/era?office=roland', MULTI, { filename: 'delta.edi' });
+    await api(app.baseUrl, 'POST', '/api/rcm/era?office=roland', {
+      body: filePart(Buffer.from(MULTI), 'delta.edi', EDI),
+    });
 
     const valley = await api(app.baseUrl, 'GET', '/api/rcm/era?office=valley');
     assert.equal(valley.status, 200);

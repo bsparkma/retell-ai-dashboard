@@ -55,21 +55,25 @@ derived. The blob write happens **before** the transaction, so a committed propo
 never reference a blob that does not exist; the reverse — a blob whose transaction rolled
 back — is a few orphaned kilobytes, and the retry writes a fresh one.
 
-### Why the body is raw bytes
+### Transport — the same as `POST /eob`
 
-The repository has no multipart middleware and no `multer` dependency, and adding one for
-a single route is a larger change than the route. A browser can POST a `File` object
-straight as the request body, so the client sends the bytes and puts the name in
-`X-RCM-Filename` (percent-encoded — a header value must be Latin-1, and `fetch` refuses an
-accented filename outright). If a second upload route ever needs true multipart, that is
-the moment to take the dependency.
+multipart/form-data, file in a field named `file`, through the `multer` instance Slice 4
+introduced. Two upload endpoints in one module with two different transports would be a
+wart, and the shared shape means the client, the tests and the error vocabulary are the
+same for both. Bytes are held in memory and never touch disk — the container filesystem is
+ephemeral, and the one mounted volume in prod is the AzureFile share the call store lives
+on.
+
+Office travels in the query string either way: it is a correctness boundary the server
+validates, never something the client asserts in a body.
 
 ```bash
 curl -X POST 'https://<host>/api/rcm/era?office=roland' \
-  -H 'Content-Type: application/edi-x12' \
-  -H 'X-RCM-Filename: delta_multiclaim_0302.edi' \
-  --data-binary @Test_Delta_Dental_MultiClaim.edi
+  -F 'file=@Test_Delta_Dental_MultiClaim.edi;type=application/edi-x12'
 ```
+
+Unlike `POST /eob`, there is **no magic-byte check**: a PDF has one and an 835 does not, so
+the content is validated by parsing it — which is the only check that means anything here.
 
 ---
 
@@ -198,8 +202,10 @@ takeback would be a lie.
 | Code | HTTP | When |
 | --- | --- | --- |
 | `INVALID_OFFICE` | 400 | `?office=` missing or not `roland`/`valley` |
-| `ERA_EMPTY_UPLOAD` | 400 | No bytes |
-| `ERA_BODY_NOT_RAW` | 415 | `Content-Type: application/json` — the global `express.json()` already consumed it, so `raw()` would hand back an empty buffer and the failure would read as an empty file |
+| `NO_FILE` | 400 | No multipart field named `file`, or an empty one |
+| `FILE_TOO_SMALL` | 400 | Under 64 bytes — a truncated download, not a remittance |
+| `INVALID_UPLOAD` | 400 | More than one file, or an unreadable multipart body |
+| `FILE_TOO_LARGE` | 413 | Over the 5MB ceiling |
 | `ERA_PARSE_FAILED` | 422 | Not a parseable 835 |
 | `ERA_NO_REMITTANCES` | 422 | Parsed, but carries no BPR payment transaction |
 | `ERA_MISSING_PAYMENT_DATE` | 422 | Neither `DTM*405` nor `BPR16` |
