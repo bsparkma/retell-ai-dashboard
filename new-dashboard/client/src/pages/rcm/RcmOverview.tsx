@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import { AlertCircle, FileText, Layers, ListChecks, Loader2 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
+import EraUploadPanel from "./EraUploadPanel";
 import {
   getRcmSummary,
   RcmApiError,
@@ -162,6 +163,13 @@ function OfficeSummaryCard({ office }: { office: RcmOfficeId }) {
           {state.summary.claims.byStatus.pending_review === 1 ? "" : "s"} pending review.
         </p>
       )}
+
+      {/*
+        Slice 5. Inside the office card on purpose: office is a correctness
+        boundary here, and one upload control per office cannot be aimed at the
+        wrong one the way a single control with a dropdown can.
+      */}
+      <EraUploadPanel office={office} />
     </div>
   );
 }

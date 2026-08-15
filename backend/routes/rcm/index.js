@@ -49,5 +49,10 @@ router.use(requireOffice);
 
 router.use('/summary', require('./summary'));
 router.use('/claims', require('./claims'));
+// Slice 5: manual 835 upload. The first MUTATION in this module — it needs no
+// gate of its own because the mount's requireReadWrite already demands
+// rcm.write for every non-GET method, which is exactly the property the pair
+// was introduced for. Office still comes from requireOffice above.
+router.use('/era', require('./era'));
 
 module.exports = router;

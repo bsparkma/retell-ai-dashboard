@@ -31,6 +31,8 @@ const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 const { requireReadWrite } = require('../../config/permissions');
 const { requireDashboardAuth } = require('../../middleware/auth');
+// Namespace import so bootRcmApp can patch it — see the note at the patch site.
+const eraFileStore = require('../../services/rcm/eraFileStore');
 
 /**
  * An in-memory stand-in for the tenant pg Pool that understands exactly the
@@ -73,13 +75,127 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
+        // `status = 'failed'` — the remittance-key protocol re-asserts the
+        // status it expects inside its own WHERE, which is what makes a
+        // take-over or a release atomic rather than a read-then-write.
+        if ((m = term.match(/^(\w+) = '([^']*)'$/))) {
+          const [, col, value] = m;
+          return (r) => r[col] === value;
+        }
+        // `era_file_key = ANY($2::text[])` — the list endpoint's join back from
+        // a page of uploads to the batches they produced.
+        if ((m = term.match(/^(\w+) = ANY\(\$(\d+)(?:::\w+\[\])?\)$/))) {
+          const [, col, idx] = m;
+          const list = params[idx - 1];
+          return (r) => Array.isArray(list) && list.includes(r[col]);
+        }
         throw new Error(`FakeRcmDb: unsupported WHERE term: ${term}`);
       });
     return (r) => checks.every((c) => c(r));
   }
 
+  /**
+   * A pooled client. Slice 5's upload runs `BEGIN … COMMIT/ROLLBACK` around the
+   * whole ingest, so the fake has to implement transactions for real: a test
+   * that could not observe a rollback could not tell an atomic write path from
+   * one that leaves half a remittance behind.
+   *
+   * The snapshot is taken on BEGIN and restored on ROLLBACK. Rows are copied
+   * one level deep, which is enough because every mutation here replaces column
+   * values rather than mutating a nested object in place.
+   */
   async connect() {
-    return { query: (sql, params) => this.query(sql, params), release() {} };
+    let snapshot = null;
+    return {
+      query: async (sql, params) => {
+        const verb = String(sql).trim().toUpperCase();
+        if (verb === 'BEGIN') {
+          snapshot = new Map(
+            [...this.tables].map(([name, rows]) => [name, rows.map((r) => ({ ...r }))])
+          );
+          this.log.push({ sql: 'BEGIN', params: [] });
+          return { rows: [], rowCount: 0 };
+        }
+        if (verb === 'COMMIT') {
+          snapshot = null;
+          this.log.push({ sql: 'COMMIT', params: [] });
+          return { rows: [], rowCount: 0 };
+        }
+        if (verb === 'ROLLBACK') {
+          if (snapshot) this.tables = snapshot;
+          snapshot = null;
+          this.log.push({ sql: 'ROLLBACK', params: [] });
+          return { rows: [], rowCount: 0 };
+        }
+        return this.query(sql, params);
+      },
+      release() {},
+    };
+  }
+
+  /**
+   * Evaluate one item of a VALUES list. Routes mix bound parameters with SQL
+   * literals (`'pending_review'`, `now()`, `CURRENT_DATE`, `0`), so a
+   * positional params[i] mapping would silently misalign every column after the
+   * first literal — which is exactly the class of bug this fake exists to catch.
+   */
+  static literal(token, params) {
+    const t = token.trim();
+    let m;
+    if ((m = t.match(/^\$(\d+)$/))) {
+      const v = params[Number(m[1]) - 1];
+      return v === undefined ? null : v;
+    }
+    if (/^'(.*)'$/.test(t)) return t.slice(1, -1);
+    if (/^-?\d+$/.test(t)) return Number(t);
+    if (/^(now\(\)|CURRENT_TIMESTAMP)$/i.test(t)) return new Date();
+    if (/^CURRENT_DATE$/i.test(t)) return new Date().toISOString().slice(0, 10);
+    if (/^NULL$/i.test(t)) return null;
+    if (/^(true|false)$/i.test(t)) return t.toLowerCase() === 'true';
+    throw new Error(`FakeRcmDb: unsupported VALUES item: ${t}`);
+  }
+
+  /** Split a parenthesised list on TOP-LEVEL commas (nested calls survive). */
+  static splitTopLevel(list) {
+    const out = [];
+    let depth = 0;
+    let quoted = false;
+    let current = '';
+    for (const ch of list) {
+      if (ch === "'") quoted = !quoted;
+      if (!quoted && ch === '(') depth += 1;
+      if (!quoted && ch === ')') depth -= 1;
+      if (!quoted && depth === 0 && ch === ',') {
+        out.push(current);
+        current = '';
+        continue;
+      }
+      current += ch;
+    }
+    if (current.trim()) out.push(current);
+    return out.map((s) => s.trim());
+  }
+
+  /** Primary-key column per table, so RETURNING can hand one back. */
+  static primaryKey(table) {
+    return {
+      rcm_remittance_keys: 'remittance_key_id',
+      rcm_payment_batches: 'batch_id',
+      rcm_claims: 'claim_id',
+      rcm_batch_claim_payments: 'batch_claim_payment_id',
+      rcm_procedure_lines: 'line_id',
+      rcm_procedure_adjustments: 'adjustment_id',
+      rcm_eob_uploads: 'upload_id',
+    }[table];
+  }
+
+  /**
+   * The UNIQUE constraints Slice 5 depends on. `ON CONFLICT DO NOTHING` is only
+   * meaningful if the fake actually enforces one — otherwise the duplicate test,
+   * the whole point of the slice, would pass against a broken guard.
+   */
+  static uniqueColumns(table) {
+    return { rcm_remittance_keys: ['office_id', 'remittance_key'] }[table] || null;
   }
 
   async query(sql, params = []) {
@@ -88,16 +204,82 @@ class FakeRcmDb {
 
     let m;
 
-    // The audit row (platform/audit.js) — accepted and stored so audit-trail
-    // assertions can read it back, exactly as the TC harness does.
-    if ((m = text.match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES/i))) {
-      const cols = m[2].split(',').map((s) => s.trim());
+    // INSERT INTO t (cols) VALUES (items) [ON CONFLICT (…) DO NOTHING] [RETURNING col]
+    if (
+      (m = text.match(
+        /^INSERT INTO (\w+) \(([^)]+)\) VALUES \((.+?)\)(?: ON CONFLICT \(([^)]+)\) DO NOTHING)?(?: RETURNING (\w+))?$/i
+      ))
+    ) {
+      const [, table, colList, valueList, , returning] = m;
+      const cols = colList.split(',').map((s) => s.trim());
+      const values = FakeRcmDb.splitTopLevel(valueList);
+      if (cols.length !== values.length) {
+        throw new Error(
+          `FakeRcmDb: ${table} INSERT has ${cols.length} columns and ${values.length} values`
+        );
+      }
+
+      /** @type {Record<string, unknown>} */
       const row = {};
       cols.forEach((c, i) => {
-        row[c] = params[i] === undefined ? null : params[i];
+        row[c] = FakeRcmDb.literal(values[i], params);
       });
-      this.table(m[1]).push(row);
-      return { rows: [], rowCount: 1 };
+
+      const unique = FakeRcmDb.uniqueColumns(table);
+      if (unique && this.table(table).some((r) => unique.every((c) => r[c] === row[c]))) {
+        // ON CONFLICT DO NOTHING: no row inserted, no rows returned. Without
+        // the constraint the second upload of a file would succeed silently.
+        return { rows: [], rowCount: 0 };
+      }
+
+      const pk = FakeRcmDb.primaryKey(table);
+      if (pk && row[pk] === undefined) row[pk] = require('crypto').randomUUID();
+      // Column defaults the routes rely on but do not name in their INSERTs.
+      const now = new Date();
+      for (const [col, value] of [
+        ['created_at', now],
+        ['updated_at', now],
+        ['archived_at', null],
+      ]) {
+        if (row[col] === undefined) row[col] = value;
+      }
+      if (table === 'rcm_eob_uploads' && row.uploaded_at === undefined) row.uploaded_at = now;
+      if (table === 'rcm_remittance_keys' && row.posted_at === undefined) row.posted_at = now;
+
+      this.table(table).push(row);
+      return {
+        rows: returning ? [{ [returning]: row[returning] }] : [],
+        rowCount: 1,
+      };
+    }
+
+    // UPDATE t SET a = …, b = … WHERE … [RETURNING col]
+    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (\w+))?$/i))) {
+      const [, table, setList, where, returning] = m;
+      const assignments = FakeRcmDb.splitTopLevel(setList).map((pair) => {
+        const eq = pair.indexOf('=');
+        return [pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()];
+      });
+      const matched = this.table(table).filter(this.wherePredicate(where, params));
+      for (const row of matched) {
+        for (const [col, expr] of assignments) {
+          let inner;
+          if ((inner = expr.match(/^COALESCE\((.+)\)$/i))) {
+            const args = FakeRcmDb.splitTopLevel(inner[1]);
+            const first = FakeRcmDb.literal(args[0], params);
+            row[col] = first == null ? row[args[1].trim()] : first;
+          } else if ((inner = expr.match(/^array_append\((\w+), (.+)\)$/i))) {
+            const existing = Array.isArray(row[inner[1]]) ? row[inner[1]] : [];
+            row[col] = [...existing, FakeRcmDb.literal(inner[2], params)];
+          } else {
+            row[col] = FakeRcmDb.literal(expr, params);
+          }
+        }
+      }
+      return {
+        rows: returning ? matched.map((r) => ({ [returning]: r[returning] })) : [],
+        rowCount: matched.length,
+      };
     }
 
     // summary.js: SELECT status, COUNT(*)::int AS n FROM t WHERE … GROUP BY status
@@ -115,17 +297,29 @@ class FakeRcmDb {
       return { rows: [{ n: rows.length }] };
     }
 
-    // claims.js: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT $n OFFSET $n
+    // SELECT <cols> FROM t WHERE … [ORDER BY …] [LIMIT …] [OFFSET …]
+    //
+    // Covers claims.js's paginated page, era.js's upload page and its two
+    // follow-up lookups, and the remittance-key protocol's `LIMIT 1` reads.
+    // ORDER BY / LIMIT / OFFSET are each optional and each may be a bound
+    // parameter or a literal.
     if (
       (m = text.match(
-        /^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT \$(\d+) OFFSET \$(\d+)$/i
+        /^SELECT (.+?) FROM (\w+) WHERE (.+?)(?: ORDER BY (.+?))?(?: LIMIT (\$\d+|\d+))?(?: OFFSET (\$\d+|\d+))?$/i
       ))
     ) {
-      const cols = m[1].split(',').map((s) => s.trim());
-      let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
-      rows = this.applyOrder(rows, m[4]);
-      const limit = Number(params[m[5] - 1]);
-      const offset = Number(params[m[6] - 1]);
+      const [, colList, table, where, order, limitTok, offsetTok] = m;
+      const cols = colList.split(',').map((s) => s.trim());
+      let rows = this.table(table).filter(this.wherePredicate(where, params));
+      if (order) rows = this.applyOrder(rows, order);
+
+      const bound = (tok, fallback) => {
+        if (!tok) return fallback;
+        return tok.startsWith('$') ? Number(params[Number(tok.slice(1)) - 1]) : Number(tok);
+      };
+      const offset = bound(offsetTok, 0);
+      const limit = bound(limitTok, rows.length);
+
       return {
         rows: rows.slice(offset, offset + limit).map((r) => {
           const out = {};
@@ -190,9 +384,12 @@ const REGISTRY_KEYS = [
  *   user?: { email: string, name?: string, tenantId?: string } | null,
  *   role?: 'admin'|'office'|'tc'|'hygiene',
  *   superAdmin?: boolean,
- *   db?: FakeRcmDb
+ *   db?: FakeRcmDb,
+ *   eraStore?: { isConfigured?: () => boolean, putEraFile?: Function } | null
  * }} [opts] `user: null` boots WITHOUT the fake identity layer, so the real auth
- *   gate answers — that is how the anonymous 401 is tested.
+ *   gate answers — that is how the anonymous 401 is tested. `eraStore: null`
+ *   leaves the real (unconfigured) blob module in place, which is how the 503
+ *   is tested.
  */
 async function bootRcmApp({
   modules = ['rcm'],
@@ -200,12 +397,23 @@ async function bootRcmApp({
   role = 'admin',
   superAdmin = false,
   db = new FakeRcmDb(),
+  eraStore = defaultEraStoreStub(),
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
     withTenantDb: tenantDb.withTenantDb,
     token: process.env.DASHBOARD_API_TOKEN,
+    eraStore: { isConfigured: eraFileStore.isConfigured, putEraFile: eraFileStore.putEraFile },
   };
+
+  // Patched on the MODULE OBJECT, not swapped for a new one: routes/rcm/era.js
+  // imports the namespace (`require('…/eraFileStore')`) precisely so a stub can
+  // be installed here. A destructured import would pin the real function at
+  // require time and no test could reach it.
+  if (eraStore) {
+    if (eraStore.isConfigured) eraFileStore.isConfigured = eraStore.isConfigured;
+    if (eraStore.putEraFile) eraFileStore.putEraFile = eraStore.putEraFile;
+  }
 
   registry.getUserByEmail = async () => ({
     user_id: 'U1',
@@ -263,6 +471,8 @@ async function bootRcmApp({
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
             tenantDb.withTenantDb = originals.withTenantDb;
+            eraFileStore.isConfigured = originals.eraStore.isConfigured;
+            eraFileStore.putEraFile = originals.eraStore.putEraFile;
             if (originals.token === undefined) delete process.env.DASHBOARD_API_TOKEN;
             else process.env.DASHBOARD_API_TOKEN = originals.token;
             server.close(r);
@@ -290,9 +500,76 @@ async function api(baseUrl, method, path, { anon = false } = {}) {
   return { status: res.status, body: json };
 }
 
+/**
+ * POST raw bytes — the shape POST /api/rcm/era takes, and the shape the browser
+ * sends (a `File` straight into the body, name in a header).
+ *
+ * @param {string} baseUrl
+ * @param {string} path
+ * @param {string|Buffer} body
+ * @param {{ filename?: string, contentType?: string, anon?: boolean }} [opts]
+ */
+async function postRaw(baseUrl, path, body, opts = {}) {
+  const headers = opts.anon ? {} : { Authorization: 'Bearer test-token' };
+  headers['Content-Type'] = opts.contentType || 'application/edi-x12';
+  if (opts.filename) headers['X-RCM-Filename'] = opts.filename;
+
+  const res = await fetch(`${baseUrl}${path}`, { method: 'POST', headers, body });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  return { status: res.status, body: json };
+}
+
+/**
+ * A blob store that records what it was handed instead of reaching Azure.
+ *
+ * Keys are shaped like the real ones — `tenant/<slug>/rcm/era/<uuid>.edi` — so
+ * a test can assert the opaqueness rule (no filename, no patient name, no
+ * office in the path) against the same string production would produce.
+ */
+function defaultEraStoreStub() {
+  const puts = [];
+  const stub = {
+    puts,
+    isConfigured: () => true,
+    putEraFile: async ({ tenantSlug, bytes, contentType }) => {
+      const crypto = require('crypto');
+      const put = {
+        key: `tenant/${tenantSlug}/rcm/era/${crypto.randomUUID()}.edi`,
+        bytes: bytes.length,
+        hash: crypto.createHash('sha256').update(bytes).digest('hex'),
+        contentType,
+      };
+      puts.push(put);
+      return put;
+    },
+  };
+  return stub;
+}
+
 /** Audit rows written to the fake store. */
 function auditRows(db) {
   return db.table('audit_log');
 }
 
-module.exports = { FakeRcmDb, bootRcmApp, api, auditRows };
+/** Read a fixture 835 from backend/test/fixtures/rcm. */
+function fixture835(name) {
+  return require('fs').readFileSync(
+    require('path').join(__dirname, '..', '..', 'test', 'fixtures', 'rcm', name),
+    'utf8'
+  );
+}
+
+module.exports = {
+  FakeRcmDb,
+  bootRcmApp,
+  api,
+  postRaw,
+  auditRows,
+  fixture835,
+  defaultEraStoreStub,
+};
