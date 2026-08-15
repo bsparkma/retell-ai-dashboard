@@ -33,6 +33,22 @@ const { requireReadWrite } = require('../../config/permissions');
 const { requireDashboardAuth } = require('../../middleware/auth');
 
 /**
+ * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
+ * uuid for THESE columns on insert (as `gen_random_uuid()` would) and for no
+ * others — see the RETURNING branch in query().
+ */
+const PRIMARY_KEYS = Object.freeze({
+  rcm_eob_uploads: 'upload_id',
+  rcm_claims: 'claim_id',
+  rcm_procedure_lines: 'line_id',
+  rcm_procedure_adjustments: 'adjustment_id',
+  rcm_payment_batches: 'batch_id',
+  rcm_batch_claim_payments: 'batch_claim_payment_id',
+  rcm_bank_transactions: 'bank_transaction_id',
+  rcm_posting_queue: 'queue_id',
+});
+
+/**
  * An in-memory stand-in for the tenant pg Pool that understands exactly the
  * query shapes routes/rcm issues. Anything else throws by design: a fake that
  * silently answers a query it does not understand turns a broken route into a
@@ -44,6 +60,18 @@ class FakeRcmDb {
     this.tables = new Map();
     /** @type {Array<{ sql: string, params: unknown[] }>} */
     this.log = [];
+    /**
+     * Snapshot taken at BEGIN and restored at ROLLBACK.
+     *
+     * Transactions are SIMULATED, not faked away, and that is the point: Slice
+     * 4 commits a claim, its lines, its adjustments, the batch, the batch links
+     * AND the upload's 'extracted' flip together. "All of that is atomic" is
+     * only a testable claim if a rollback actually undoes it here.
+     * @type {Map<string, Array<Record<string, unknown>>>|null}
+     */
+    this.snapshot = null;
+    /** Query index at which to throw, for atomicity tests. @type {null|((sql: string) => boolean)} */
+    this.failWhen = null;
   }
 
   /** Seed rows into a table (created on first touch). */
@@ -73,6 +101,11 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
+        // A literal, e.g. the startup sweep's `status = 'processing'`.
+        if ((m = term.match(/^(\w+) = '([^']*)'$/))) {
+          const [, col, literal] = m;
+          return (r) => r[col] === literal;
+        }
         throw new Error(`FakeRcmDb: unsupported WHERE term: ${term}`);
       });
     return (r) => checks.every((c) => c(r));
@@ -86,18 +119,91 @@ class FakeRcmDb {
     const text = sql.replace(/\s+/g, ' ').trim();
     this.log.push({ sql: text, params: params || [] });
 
+    if (this.failWhen && this.failWhen(text)) {
+      throw new Error(`FakeRcmDb: injected failure on: ${text.slice(0, 60)}`);
+    }
+
     let m;
 
-    // The audit row (platform/audit.js) — accepted and stored so audit-trail
-    // assertions can read it back, exactly as the TC harness does.
-    if ((m = text.match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES/i))) {
+    // ── Transaction control ─────────────────────────────────────────────────
+    if (/^BEGIN$/i.test(text)) {
+      this.snapshot = new Map([...this.tables].map(([t, rows]) => [t, rows.map((r) => ({ ...r }))]));
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^COMMIT$/i.test(text)) {
+      this.snapshot = null;
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^ROLLBACK$/i.test(text)) {
+      if (this.snapshot) this.tables = this.snapshot;
+      this.snapshot = null;
+      return { rows: [], rowCount: 0 };
+    }
+
+    // The audit row (platform/audit.js) and every rcm_* INSERT.
+    //
+    // Each column is bound to ITS OWN slot in the VALUES tuple, not to its
+    // ordinal position in the column list. Those differ the moment a literal
+    // appears in the tuple (`… , 'uploaded')`), and binding by ordinal quietly
+    // handed such a column `undefined` — which reads as a route that forgot to
+    // set a NOT NULL field rather than as a fake that cannot parse SQL.
+    if ((m = text.match(/^INSERT INTO (\w+) \(([^)]+)\) VALUES (.+)$/i))) {
       const cols = m[2].split(',').map((s) => s.trim());
+      const tuple = m[3].match(/^\(([\s\S]*?)\)(?:\s+RETURNING|$)/);
+      if (!tuple) throw new Error(`FakeRcmDb: cannot parse VALUES of: ${text}`);
+      const values = splitTopLevel(tuple[1]).map((s) => s.trim());
+      if (values.length !== cols.length) {
+        throw new Error(
+          `FakeRcmDb: ${m[1]} lists ${cols.length} columns but ${values.length} values`
+        );
+      }
       const row = {};
       cols.forEach((c, i) => {
-        row[c] = params[i] === undefined ? null : params[i];
+        row[c] = literalOrParam(values[i], params);
       });
       this.table(m[1]).push(row);
-      return { rows: [], rowCount: 1 };
+
+      const returning = m[3].match(/RETURNING (.+)$/i);
+      if (!returning) return { rows: [], rowCount: 1 };
+
+      // Fill the columns pg would have DEFAULTED, so a route reading
+      // `RETURNING upload_id` gets an id rather than undefined.
+      //
+      // Only the declared PRIMARY KEY gets a generated uuid. Minting one for
+      // every `*_id` column would hand back a `result_claim_id` on a row that
+      // has not been extracted — i.e. it would fabricate the exact linkage this
+      // slice is careful never to claim before it exists.
+      const out = {};
+      for (const col of returning[1].split(',').map((s) => s.trim())) {
+        if (col in row) {
+          out[col] = row[col];
+          continue;
+        }
+        if (PRIMARY_KEYS[m[1]] === col) row[col] = require('crypto').randomUUID();
+        else if (/_at$/.test(col)) row[col] = new Date();
+        else row[col] = null;
+        out[col] = row[col];
+      }
+      return { rows: [out], rowCount: 1 };
+    }
+
+    // UPDATE t SET a = $n | 'literal' | NULL | now() WHERE <terms> [RETURNING <cols>]
+    if ((m = text.match(/^UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (.+))?$/i))) {
+      const assignments = splitTopLevel(m[2]).map((raw) => {
+        const [, col, value] = raw.trim().match(/^(\w+) = (.+)$/) || [];
+        if (!col) throw new Error(`FakeRcmDb: unsupported SET term: ${raw}`);
+        return { col, value: value.trim() };
+      });
+      const rows = this.table(m[1]).filter(this.wherePredicate(m[3], params));
+      for (const row of rows) {
+        for (const { col, value } of assignments) {
+          row[col] = literalOrParam(value, params);
+        }
+      }
+      return {
+        rows: m[4] ? rows.map((r) => project(r, m[4])) : [],
+        rowCount: rows.length,
+      };
     }
 
     // summary.js: SELECT status, COUNT(*)::int AS n FROM t WHERE … GROUP BY status
@@ -113,6 +219,13 @@ class FakeRcmDb {
     if ((m = text.match(/^SELECT COUNT\(\*\)::int AS n FROM (\w+) WHERE (.+)$/i))) {
       const rows = this.table(m[1]).filter(this.wherePredicate(m[2], params));
       return { rows: [{ n: rows.length }] };
+    }
+
+    // eob.js dedup probe: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT <n>
+    if ((m = text.match(/^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT (\d+)$/i))) {
+      let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
+      rows = this.applyOrder(rows, m[4]);
+      return { rows: rows.slice(0, Number(m[5])).map((r) => project(r, m[1])) };
     }
 
     // claims.js: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT $n OFFSET $n
@@ -135,6 +248,14 @@ class FakeRcmDb {
           return out;
         }),
       };
+    }
+
+    // eobExtractionWorker's single-row read: SELECT <cols> FROM t WHERE <terms>.
+    // LAST, so the narrower ORDER BY / LIMIT / COUNT shapes above win — this
+    // pattern would otherwise swallow their trailing clauses into the WHERE.
+    if ((m = text.match(/^SELECT ([\w, ]+) FROM (\w+) WHERE ([^()]+)$/i))) {
+      const rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
+      return { rows: rows.map((r) => project(r, m[1])) };
     }
 
     throw new Error(`FakeRcmDb: cannot handle: ${text}`);
@@ -167,6 +288,42 @@ function key(v) {
   if (v == null) return null;
   if (v instanceof Date) return v.getTime();
   return typeof v === 'number' ? v : String(v);
+}
+
+/** Keep only the named columns, so a route reading an unselected one gets undefined. */
+function project(row, colList) {
+  const out = {};
+  for (const c of colList.split(',').map((s) => s.trim())) out[c] = row[c];
+  return out;
+}
+
+/** Split a SET clause on commas that are not inside parentheses (`now()`, casts). */
+function splitTopLevel(clause) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of clause) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current);
+  return parts;
+}
+
+/** Resolve the right-hand side of a SET assignment. */
+function literalOrParam(value, params) {
+  if (/^\$\d+$/.test(value)) return params[Number(value.slice(1)) - 1] ?? null;
+  if (/^NULL$/i.test(value)) return null;
+  if (/^now\(\)$/i.test(value)) return new Date();
+  const quoted = value.match(/^'(.*)'$/);
+  if (quoted) return quoted[1];
+  throw new Error(`FakeRcmDb: unsupported SET value: ${value}`);
 }
 
 const REGISTRY_KEYS = [
@@ -275,11 +432,16 @@ async function bootRcmApp({
 /**
  * JSON fetch helper. Sends the shared bearer by default so requests get past
  * the auth gate; pass `{ anon: true }` to omit it.
+ *
+ * `body` is passed through untouched — pass a FormData to exercise the
+ * multipart upload path, and let undici set the boundary (setting
+ * Content-Type by hand is the classic way to break a multipart request).
  */
-async function api(baseUrl, method, path, { anon = false } = {}) {
+async function api(baseUrl, method, path, { anon = false, body } = {}) {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers: anon ? {} : { Authorization: 'Bearer test-token' },
+    body,
   });
   let json = null;
   try {
@@ -290,9 +452,45 @@ async function api(baseUrl, method, path, { anon = false } = {}) {
   return { status: res.status, body: json };
 }
 
+/**
+ * A multipart body carrying one file, as a browser would send it.
+ * @param {Buffer} bytes
+ * @param {string} filename
+ * @param {string} [contentType]
+ * @param {string} [field]
+ */
+function filePart(bytes, filename, contentType = 'application/pdf', field = 'file') {
+  const form = new FormData();
+  form.append(field, new Blob([bytes], { type: contentType }), filename);
+  return form;
+}
+
+/**
+ * A minimal, VALID PDF whose text layer says `text`.
+ *
+ * Built by hand rather than committed as a fixture so no binary blob enters the
+ * repo, and so a test can state in one line exactly what the extractor will
+ * see. Padded past the route's 256-byte floor. NEVER contains a real name.
+ * @param {string} text
+ */
+function syntheticPdf(text = 'SYNTHETIC EOB') {
+  const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
+  const body =
+    '%PDF-1.4\n' +
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]' +
+    '/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n' +
+    '4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n' +
+    `5 0 obj<</Length ${stream.length}>>stream\n${stream}\nendstream endobj\n` +
+    'trailer<</Root 1 0 R>>\n' +
+    `% padding ${'-'.repeat(300)}\n`;
+  return Buffer.from(body, 'latin1');
+}
+
 /** Audit rows written to the fake store. */
 function auditRows(db) {
   return db.table('audit_log');
 }
 
-module.exports = { FakeRcmDb, bootRcmApp, api, auditRows };
+module.exports = { FakeRcmDb, bootRcmApp, api, auditRows, filePart, syntheticPdf };

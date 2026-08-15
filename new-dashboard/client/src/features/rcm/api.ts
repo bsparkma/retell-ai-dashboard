@@ -147,3 +147,121 @@ export function listRcmClaims(
   if (opts.status) params.status = opts.status;
   return get<RcmClaimPage>("/claims", params);
 }
+
+// ─── EOB ingestion (Slice 4) ─────────────────────────────────────────────────
+
+/**
+ * The four states rcm_eob_uploads.status can hold, straight from the CHECK
+ * constraint. A closed union on purpose, the same way TranscribeStatus is on
+ * the voice side: adding a fifth state server-side becomes a compile error
+ * here, not a chip that silently renders as nothing.
+ */
+export const EOB_UPLOAD_STATUSES = ["uploaded", "processing", "extracted", "failed"] as const;
+export type EobUploadStatus = (typeof EOB_UPLOAD_STATUSES)[number];
+
+export interface EobUpload {
+  uploadId: string;
+  officeId: RcmOfficeId;
+  /** The name as uploaded. PHI — EOB filenames routinely carry patient names. */
+  filename: string;
+  fileSizeBytes: number | null;
+  status: EobUploadStatus;
+  /**
+   * On `failed`, why it failed. On `uploaded`, why extraction has not STARTED
+   * (cost cap reached, or no LLM configured in this environment). Read it
+   * together with `status` — the same field means different things either side
+   * of that line, and the server documents it the same way.
+   */
+  message: string | null;
+  resultClaimId: string | null;
+  resultBatchId: string | null;
+  uploadedAt: string | null;
+  processedAt: string | null;
+}
+
+/** The daily extraction cost breaker, as the server reports it. */
+export interface EobExtractionState {
+  /** True = the daily cap is spent. Uploads still succeed; extraction waits. */
+  paused: boolean;
+  usedCents: number;
+  capCents: number;
+  /** null when the cap is configured as unlimited. */
+  remainingCents: number | null;
+  /** ISO-8601 instant the cap next resets (local midnight in `timezone`). */
+  resetsAt: string;
+  timezone: string;
+  /** False = the counter is memory-only, so a restart would forget the spend. */
+  persisted: boolean;
+  queue?: { pending: number; deferred: number; running: boolean };
+}
+
+export interface EobUploadPage {
+  office: RcmOfficeId;
+  uploads: EobUpload[];
+  total: number;
+  limit: number;
+  offset: number;
+  extraction: EobExtractionState;
+}
+
+export interface EobUploadResult {
+  office: RcmOfficeId;
+  /** True when these exact bytes were already on file for this office. */
+  duplicate: boolean;
+  /** True when a previously-stuck upload was put back on the queue. */
+  requeued?: boolean;
+  upload: EobUpload;
+  extraction?: EobExtractionState;
+}
+
+/** This office's EOB uploads, newest first, plus the cost-breaker state. */
+export function listEobUploads(
+  office: RcmOfficeId,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<EobUploadPage> {
+  const params: Record<string, string | number> = { office };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return get<EobUploadPage>("/eob", params);
+}
+
+/**
+ * Upload one EOB PDF.
+ *
+ * multipart/form-data with the file in a field named `file` — and NO explicit
+ * Content-Type header, because the browser must set the multipart boundary
+ * itself. Setting it by hand is the classic way to make this 400.
+ */
+export async function uploadEob(office: RcmOfficeId, file: File): Promise<EobUploadResult> {
+  const body = new FormData();
+  body.append("file", file);
+
+  const res = await fetch(`${BASE}/rcm/eob?office=${encodeURIComponent(office)}`, {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new RcmApiError("Not signed in", 401, null);
+  }
+
+  if (!res.ok) {
+    let errBody: ErrorBody = {};
+    try {
+      errBody = (await res.json()) as ErrorBody;
+    } catch {
+      /* non-JSON error body */
+    }
+    const message = typeof errBody.error === "string" ? errBody.error : `HTTP ${res.status}`;
+    const code = typeof errBody.code === "string" ? errBody.code : null;
+    throw new RcmApiError(
+      message,
+      res.status,
+      code ?? (message === "MODULE_NOT_ENTITLED" ? message : null),
+    );
+  }
+
+  return (await res.json()) as EobUploadResult;
+}
