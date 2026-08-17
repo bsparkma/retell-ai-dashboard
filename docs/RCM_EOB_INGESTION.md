@@ -210,8 +210,8 @@ disk, and is never logged — only its character count is.
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. Absent ⇒ POST 503s. |
-| `RCM_BLOB_CONTAINER` | `rcm-eob` | Private container for EOB PDFs. |
+| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. Absent ⇒ POST 503s. Shared with the ERA store: one storage account holds both containers. **Set on staging; deliberately NOT on prod** — see the promotion checklist below. |
+| `RCM_EOB_CONTAINER` | `rcm-eob` | Private container for EOB PDFs. **Leave unset.** The default is the container that exists in both environments. |
 | `RCM_EXTRACTION_MAX_CENTS_PER_DAY` | `1000` | The breaker. `0` = unlimited. Non-numeric falls back to 1000. |
 | `RCM_EXTRACTION_BUDGET_TZ` | `America/Chicago` | Day boundary for the breaker. |
 | `RCM_LLM_INPUT_CENTS_PER_MTOK` | `25` | Price estimate, cents per million input tokens. |
@@ -228,6 +228,49 @@ shared-key auth disabled, so there is no connection-string path and none may be 
 There is **no** OpenAI-direct escape hatch here. `ALLOW_OPENAI_DIRECT` is honored by the
 voice summarizer (a worse summary is the downside) and is deliberately ignored by this
 module (invented dollar amounts in a claim is the downside).
+
+### What is provisioned today (2026-08-15)
+
+Both RCM containers live on the **same storage accounts as TC media** — same PHI class,
+same tenant, same posture (shared-key auth off, public blob access off, 14-day blob *and*
+container soft delete), separated by container and by key prefix. `Storage Blob Data
+Contributor` is granted at **container** scope, matching `tc-media`.
+
+| | staging | prod |
+| --- | --- | --- |
+| account | `stcareinstaging` (rg-carein-staging) | `stcareinprod` (rg-carein-prod) |
+| containers | `rcm-eob`, `rcm-era` ✅ | `rcm-eob`, `rcm-era` ✅ |
+| RBAC (MI + `admin@carein.ai`) | ✅ | ✅ |
+| `RCM_BLOB_ACCOUNT_URL` | ✅ set | ❌ **deferred — see below** |
+
+Containers are **not** on `stcareinstgcallstore`. That account has shared-key auth *enabled*
+because Container Apps AzureFile mounts authenticate with the account key; keeping PHI blobs
+off it is the entire reason it exists separately
+([project_staging_callstore_durability](DEV_PROD_WORKFLOW.md#gotchas)).
+
+### Prod promotion checklist
+
+RCM ships dark, so prod carries the containers and the RBAC but **not** the env var: setting
+it restarts the backend, and prod has known readiness-probe flakiness at `maxReplicas=1`.
+Deferring it is only safe if it is not forgotten — so it is a line item here:
+
+- [ ] **Set `RCM_BLOB_ACCOUNT_URL` on `ca-carein-prod-backend`** during the promotion window,
+      *before* flipping the `rcm` entitlement. Without it, the first prod upload returns
+      `503 EOB_STORAGE_UNAVAILABLE` — the exact failure staging hit on 2026-08-15.
+
+  ```bash
+  az containerapp update --subscription "Azure subscription 1" \
+    -n ca-carein-prod-backend -g rg-carein-prod \
+    --set-env-vars RCM_BLOB_ACCOUNT_URL=https://stcareinprod.blob.core.windows.net
+  ```
+
+  Do **not** set `RCM_EOB_CONTAINER` or `RCM_ERA_CONTAINER`. Check `gh run list
+  --workflow=prod.yml` for an in-flight deploy first, and confirm afterwards that the new
+  revision kept its image tag and `CALLSTORE_DIR=/data`.
+
+- [ ] Verify the containers and RBAC are still in place (they were created 2026-08-15):
+      `az storage container-rm list --subscription "Azure subscription 1" --storage-account stcareinprod -o table`
+- [ ] Only then flip the `rcm` module entitlement for the tenant.
 
 ---
 
