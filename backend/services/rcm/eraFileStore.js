@@ -37,7 +37,7 @@
  * because both containers really do live on one storage account.
  *
  * Unconfigured is a legal state — `isConfigured()` gates the upload route into
- * a structured 503 rather than a crash at require time. As of 2026-08-15 both
+ * a structured 503 rather than a crash at require time. As of 2026-08-17 both
  * containers exist on stcareinstaging and stcareinprod, and the account url is
  * set on STAGING ONLY; prod gets it during the RCM promotion window (see
  * docs/RCM_EOB_INGESTION.md §"Prod promotion checklist").

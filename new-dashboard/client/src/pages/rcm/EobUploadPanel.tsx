@@ -16,9 +16,17 @@
  *
  * "Extracted" says "proposal ready" on purpose. Nothing in this slice writes to
  * a patient's chart, and a chip reading "posted" would be a lie about that.
+ *
+ * WHY THIS POLLS (staging, 2026-08-17). Extraction is asynchronous — the POST
+ * returns as soon as the document is stored, and the queue finishes a second or
+ * two later. This panel fetched exactly twice, on mount and after an upload, so
+ * the post-upload fetch landed ~2s BEFORE extraction committed and the chip sat
+ * on "Extracting" forever. The backend was honest throughout; the page simply
+ * stopped asking. A UI that keeps asserting a state it no longer knows to be
+ * true is the same failure as a server that reports a send it did not make.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, FileUp, Loader2, PauseCircle, UploadCloud } from "lucide-react";
+import { AlertCircle, FileUp, Loader2, PauseCircle, RefreshCw, UploadCloud } from "lucide-react";
 import {
   listEobUploads,
   uploadEob,
@@ -55,6 +63,42 @@ const STATUS_CHIP: Record<EobUploadStatus, { label: string; className: string }>
   },
 };
 
+/**
+ * Polling budget. The limiter allows 600 requests per 15 minutes PER SIGNED-IN
+ * USER (backend/middleware/rateLimit.js) — ~40/min — and the RCM page renders one
+ * of these panels per office. A flat 3s poll for the full five minutes would be
+ * 100 requests from one panel, and two panels polling at once would eat the
+ * entire sustained rate. So: 3s while the answer is plausibly seconds away, then
+ * back off. Worst case is ~37 requests per panel per document instead of 100.
+ *
+ * The measured staging extraction was 3.7s end to end, so the fast phase is the
+ * one that does the real work; the slow phase only covers a long document.
+ */
+const POLL_FAST_MS = 3_000;
+const POLL_SLOW_MS = 10_000;
+/** How long to stay at the fast interval before backing off. */
+const POLL_FAST_WINDOW_MS = 30_000;
+/** Hard ceiling on one polling run. Past this we stop and SAY we stopped. */
+const POLL_MAX_MS = 5 * 60_000;
+
+/**
+ * Is this row one the server is still going to act on by itself?
+ *
+ * `processing`  — an attempt is in flight; it resolves in seconds.
+ * `uploaded`    — queued, ABOUT to run… but only when `message` is null. The
+ *                 worker writes a reason there and leaves the row `uploaded`
+ *                 when it declines to start at all: the daily cost cap is spent,
+ *                 or no LLM is configured in this environment. Both of those
+ *                 wait on a clock (local midnight) or on a deployment, and
+ *                 neither gets closer by asking again every three seconds.
+ *
+ * `extracted` and `failed` are done. Nothing changes them without a new upload.
+ */
+function isAwaitingExtraction(u: EobUpload): boolean {
+  if (u.status === "processing") return true;
+  return u.status === "uploaded" && u.message === null;
+}
+
 function formatBytes(bytes: number | null): string {
   if (bytes === null) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -78,7 +122,15 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [gaveUpPolling, setGaveUpPolling] = useState(false);
+  const [tabVisible, setTabVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
   const inputRef = useRef<HTMLInputElement | null>(null);
+  /** When the current polling run started. null = no run in progress. */
+  const pollStartedAt = useRef<number | null>(null);
+  /** When the tab went to the background, so that time can be given back. */
+  const hiddenSince = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -99,6 +151,68 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   useEffect(() => {
     setState({ kind: "loading" });
     setNotice(null);
+    // A different office is a different run. Never inherit the old one's clock.
+    pollStartedAt.current = null;
+    setGaveUpPolling(false);
+    void refresh();
+  }, [refresh]);
+
+  // A hidden tab is nobody looking. Stop asking, and pick it back up on return —
+  // at the same tempo it left off, because time nobody spent watching is not
+  // time spent waiting. Otherwise a tab backgrounded for a minute comes back
+  // already backed off to the slow interval, or already timed out.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onChange = () => {
+      const visible = document.visibilityState !== "hidden";
+      if (!visible) {
+        hiddenSince.current = Date.now();
+      } else if (hiddenSince.current !== null) {
+        if (pollStartedAt.current !== null) {
+          pollStartedAt.current += Date.now() - hiddenSince.current;
+        }
+        hiddenSince.current = null;
+      }
+      setTabVisible(visible);
+    };
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+
+  const awaiting = state.kind === "loaded" && state.uploads.some(isAwaitingExtraction);
+
+  /**
+   * One timeout at a time, re-armed by each completed refresh — not a standing
+   * interval. An interval fires whether or not the previous request came back;
+   * this cannot overlap itself, and it stops dead the moment a response says
+   * every row is settled. `state` is a dependency on purpose: a new response IS
+   * the signal to decide whether to ask again.
+   */
+  useEffect(() => {
+    if (!awaiting) {
+      // Settled. Clear the clock so the NEXT document gets a full five minutes.
+      pollStartedAt.current = null;
+      if (gaveUpPolling) setGaveUpPolling(false);
+      return;
+    }
+    if (gaveUpPolling || !tabVisible) return;
+
+    if (pollStartedAt.current === null) pollStartedAt.current = Date.now();
+    const elapsed = Date.now() - pollStartedAt.current;
+    if (elapsed >= POLL_MAX_MS) {
+      setGaveUpPolling(true);
+      return;
+    }
+
+    const delay = elapsed < POLL_FAST_WINDOW_MS ? POLL_FAST_MS : POLL_SLOW_MS;
+    const timer = window.setTimeout(() => void refresh(), delay);
+    return () => window.clearTimeout(timer);
+  }, [awaiting, gaveUpPolling, tabVisible, refresh, state]);
+
+  /** The manual escape hatch once we have stopped checking on our own. */
+  const checkAgain = useCallback(() => {
+    pollStartedAt.current = null;
+    setGaveUpPolling(false);
     void refresh();
   }, [refresh]);
 
@@ -106,6 +220,9 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
     async (file: File) => {
       setBusy(true);
       setNotice(null);
+      // A new document is a new run, even if an earlier one timed out waiting.
+      pollStartedAt.current = null;
+      setGaveUpPolling(false);
       try {
         const result = await uploadEob(office, file);
         // Say which of the three things happened. "Uploaded" on a re-submission
@@ -254,6 +371,28 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
             ))}
           </ul>
         ))}
+
+      {/* We stopped checking. Say so, rather than leaving a chip that reads
+          "Extracting" long after the page stopped knowing that to be true. */}
+      {awaiting && gaveUpPolling && (
+        <div
+          className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3"
+          data-testid={`rcm-eob-stalled-${office}`}
+        >
+          <span className="text-xs text-muted-foreground">
+            Still not finished after 5 minutes — this page stopped checking on its own.
+          </span>
+          <button
+            type="button"
+            onClick={checkAgain}
+            className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted"
+            data-testid={`rcm-eob-recheck-${office}`}
+          >
+            <RefreshCw size={12} />
+            Check again
+          </button>
+        </div>
+      )}
 
       {/* Spend, shown even when the cap is not reached. A cost rail nobody can
           see is a cost rail nobody trusts. */}
