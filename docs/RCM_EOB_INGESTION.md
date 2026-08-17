@@ -141,6 +141,38 @@ Two conditions make this safe, and both are load-bearing:
 It never blocks startup. An unreachable tenant database is logged and skipped — refusing to
 start the app because one tenant's housekeeping failed would trade a stale row for an outage.
 
+### How the panel stays honest about them (2026-08-17)
+
+Extraction is asynchronous: `POST /api/rcm/eob` returns as soon as the bytes are stored, and
+the queue finishes a second or two later. The first staging upload proved why that matters —
+the document extracted in **3.7s**, the row went to `extracted`, and the chip still read
+"Extracting" indefinitely, because `EobUploadPanel` fetched exactly twice (on mount and after
+the upload) and its post-upload fetch landed ~2s early. Nothing on the server lied; the page
+stopped asking. **A UI that keeps asserting a state it no longer knows to be true is the same
+failure as a server reporting a send it did not make.**
+
+The panel now polls `GET /api/rcm/eob`, and every part of the shape is a limit:
+
+| | |
+| --- | --- |
+| when | only while a row is `processing`, or `uploaded` **with no `error_message`** |
+| tempo | 3s for the first 30s, then 10s |
+| ceiling | 5 minutes of foreground waiting, then it stops and **says** it stopped, with a "Check again" button |
+| background | paused while the tab is hidden, and hidden time is given back rather than counted |
+| teardown | cleared on unmount and on an office change |
+
+An `uploaded` row that carries an `error_message` is **terminal for polling**: it is waiting
+on the cost cap's local midnight or on a deployment, and neither arrives sooner for being
+asked about. This is the one place the double duty of `error_message` (§2) is load-bearing in
+the client.
+
+Why so careful: the API limiter allows **600 requests / 15 min per signed-in user**
+(`backend/middleware/rateLimit.js`), and the RCM page renders one panel per office. A flat 3s
+poll held for the full five minutes would be 100 requests from a single panel, and two
+panels polling at once would consume the entire sustained rate. The backoff makes the worst
+case ~37. A standing timer on an open tab is precisely how the 2026-08-12 429 incident
+happened, and this must not be a second cause of it.
+
 ---
 
 ## 3. The daily cost breaker (decision D-4)
@@ -229,7 +261,7 @@ There is **no** OpenAI-direct escape hatch here. `ALLOW_OPENAI_DIRECT` is honore
 voice summarizer (a worse summary is the downside) and is deliberately ignored by this
 module (invented dollar amounts in a claim is the downside).
 
-### What is provisioned today (2026-08-15)
+### What is provisioned today (2026-08-17)
 
 Both RCM containers live on the **same storage accounts as TC media** — same PHI class,
 same tenant, same posture (shared-key auth off, public blob access off, 14-day blob *and*
@@ -256,7 +288,7 @@ Deferring it is only safe if it is not forgotten — so it is a line item here:
 
 - [ ] **Set `RCM_BLOB_ACCOUNT_URL` on `ca-carein-prod-backend`** during the promotion window,
       *before* flipping the `rcm` entitlement. Without it, the first prod upload returns
-      `503 EOB_STORAGE_UNAVAILABLE` — the exact failure staging hit on 2026-08-15.
+      `503 EOB_STORAGE_UNAVAILABLE` — the exact failure staging hit on 2026-08-17.
 
   ```bash
   az containerapp update --subscription "Azure subscription 1" \
@@ -268,7 +300,7 @@ Deferring it is only safe if it is not forgotten — so it is a line item here:
   --workflow=prod.yml` for an in-flight deploy first, and confirm afterwards that the new
   revision kept its image tag and `CALLSTORE_DIR=/data`.
 
-- [ ] Verify the containers and RBAC are still in place (they were created 2026-08-15):
+- [ ] Verify the containers and RBAC are still in place (they were created 2026-08-17):
       `az storage container-rm list --subscription "Azure subscription 1" --storage-account stcareinprod -o table`
 - [ ] Only then flip the `rcm` module entitlement for the tenant.
 

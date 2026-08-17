@@ -221,7 +221,7 @@ takeback would be a lie.
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. **Unset ⇒ every upload 503s.** Shared with the EOB store: one account holds both containers. **Set on staging as of 2026-08-15; prod is deferred to the promotion window.** |
+| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. **Unset ⇒ every upload 503s.** Shared with the EOB store: one account holds both containers. **Set on staging as of 2026-08-17; prod is deferred to the promotion window.** |
 | `RCM_ERA_CONTAINER` | `rcm-era` | Container name. **Leave unset** — the default is the container that exists. |
 | `AZURE_USE_MANAGED_IDENTITY`, `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | Same convention as `tcMediaStore` / `config/secrets.js` |
 
