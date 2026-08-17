@@ -27,12 +27,20 @@
  * unguarded copy of it.
  *
  * Config (env):
- *   RCM_BLOB_ACCOUNT_URL  https://<acct>.blob.core.windows.net
- *   RCM_BLOB_CONTAINER    container name, default 'rcm-era'
+ *   RCM_BLOB_ACCOUNT_URL  https://<acct>.blob.core.windows.net   (shared with EOB)
+ *   RCM_ERA_CONTAINER     container name, default 'rcm-era'
  *
- * Unconfigured is a legal state — RCM ships dark, and no environment has this
- * container yet. `isConfigured()` gates the upload route into a structured 503
- * rather than a crash at require time.
+ * The container var is PER-STORE. This module and services/rcm/eobBlobStore.js
+ * originally read ONE `RCM_BLOB_CONTAINER` with DIFFERENT defaults, which works
+ * only while nobody sets it — and the first person to set it would silently
+ * route raw 835 files into the EOB container. The ACCOUNT url stays shared
+ * because both containers really do live on one storage account.
+ *
+ * Unconfigured is a legal state — `isConfigured()` gates the upload route into
+ * a structured 503 rather than a crash at require time. As of 2026-08-15 both
+ * containers exist on stcareinstaging and stcareinprod, and the account url is
+ * set on STAGING ONLY; prod gets it during the RCM promotion window (see
+ * docs/RCM_EOB_INGESTION.md §"Prod promotion checklist").
  */
 
 const crypto = require('crypto');
@@ -57,7 +65,7 @@ function getContainerClient() {
   }
 
   const { BlobServiceClient } = require('@azure/storage-blob');
-  const containerName = process.env.RCM_BLOB_CONTAINER || 'rcm-era';
+  const containerName = process.env.RCM_ERA_CONTAINER || 'rcm-era';
 
   let credential;
   if (process.env.AZURE_USE_MANAGED_IDENTITY === 'true') {

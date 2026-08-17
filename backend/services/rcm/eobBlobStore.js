@@ -29,8 +29,16 @@
  * may be added (PR #26 review item 1).
  *
  * Config (env):
- *   RCM_BLOB_ACCOUNT_URL   https://<acct>.blob.core.windows.net
- *   RCM_BLOB_CONTAINER     container name, default 'rcm-eob'
+ *   RCM_BLOB_ACCOUNT_URL   https://<acct>.blob.core.windows.net   (shared with ERA)
+ *   RCM_EOB_CONTAINER      container name, default 'rcm-eob'
+ *
+ * The container var is PER-STORE, and that is deliberate. This module and
+ * services/rcm/eraFileStore.js originally read ONE `RCM_BLOB_CONTAINER` with
+ * DIFFERENT defaults ('rcm-eob' here, 'rcm-era' there) — an arrangement that
+ * only works while nobody sets it. The first person to set it "for clarity"
+ * would silently route raw 835 files into the EOB container, or EOB PDFs into
+ * the ERA one. The ACCOUNT url stays shared because both containers really do
+ * live on one storage account; the container names do not.
  */
 
 const crypto = require('crypto');
@@ -77,7 +85,7 @@ function getContainerClient() {
   }
 
   const { BlobServiceClient } = require('@azure/storage-blob');
-  const containerName = process.env.RCM_BLOB_CONTAINER || 'rcm-eob';
+  const containerName = process.env.RCM_EOB_CONTAINER || 'rcm-eob';
 
   // Same credential selection as tcMediaStore/callAnalyzer: managed identity in
   // Azure (explicit, via the platform's AZURE_USE_MANAGED_IDENTITY switch),

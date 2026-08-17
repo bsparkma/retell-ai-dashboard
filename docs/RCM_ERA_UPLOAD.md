@@ -221,13 +221,23 @@ takeback would be a lie.
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. **Unset ⇒ every upload 503s.** No environment has this yet. |
-| `RCM_BLOB_CONTAINER` | `rcm-era` | Container name |
+| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. **Unset ⇒ every upload 503s.** Shared with the EOB store: one account holds both containers. **Set on staging as of 2026-08-15; prod is deferred to the promotion window.** |
+| `RCM_ERA_CONTAINER` | `rcm-era` | Container name. **Leave unset** — the default is the container that exists. |
 | `AZURE_USE_MANAGED_IDENTITY`, `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | Same convention as `tcMediaStore` / `config/secrets.js` |
 
 AAD only. The storage accounts have shared-key auth disabled, so there is deliberately no
 connection-string path and no SAS. Containers are private; Slice 5 writes the key and
 serves nothing, and the download proxy is Slice 7's.
+
+The container variable is **per-store**: this module reads `RCM_ERA_CONTAINER` and the EOB
+store reads `RCM_EOB_CONTAINER`. They originally shared one `RCM_BLOB_CONTAINER` with
+different defaults, which works only while nobody sets it — setting it would silently file
+raw 835s into the EOB container. `services/rcm/rcmBlobConfig.test.js` keeps them split.
+
+Provisioning, the storage-account rationale, and the **prod promotion checklist** (the one
+line that must not be forgotten: set `RCM_BLOB_ACCOUNT_URL` on the prod backend *before*
+flipping the entitlement) live in
+[RCM_EOB_INGESTION.md §5](RCM_EOB_INGESTION.md#5-configuration).
 
 ### PHI
 
