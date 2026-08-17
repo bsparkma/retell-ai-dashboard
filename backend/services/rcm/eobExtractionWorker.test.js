@@ -521,7 +521,10 @@ test('the raw extraction payload is stored, so per-line confidence survives', as
   const h = harness();
   try {
     await runExtraction(JOB);
-    const raw = JSON.parse(h.db.table('rcm_claims')[0].raw_extracted_json);
+    // Read as an OBJECT: jsonb comes back parsed from pg, and FakeRcmDb models
+    // that (JSONB_COLUMNS in rcmTestUtils) so the route is tested against what
+    // it will actually receive.
+    const raw = h.db.table('rcm_claims')[0].raw_extracted_json;
     assert.equal(raw.confidence, 96);
     assert.equal(raw.claim.procedures[0].confidence, 97);
     assert.equal(raw.payment.checkNumber, 'CHK-100200');

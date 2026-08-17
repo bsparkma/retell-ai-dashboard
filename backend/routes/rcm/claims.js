@@ -1,25 +1,55 @@
 'use strict';
 
 /**
- * GET /api/rcm/claims?office=roland|valley[&status=&limit=&offset=]
+ * /api/rcm/claims — the office's claims, and (Slice 6a) one claim's match panel.
  *
- * The office's claims, newest first, paginated. Minimal fields — enough for a
- * worklist row and for Slice 7 to grow from, and nothing more. Notably ABSENT:
- * raw_extracted_json (the full PHI extraction payload), subscriber_id,
- * group_number, patient_dob. A list endpoint has no use for them and shipping
- * them "just in case" widens the PHI surface for free.
+ *   GET  /                     the worklist, newest first, paginated
+ *   GET  /:id                  one claim: lines, adjustments, match snapshot
+ *   POST /:id/match            read Open Dental and rank candidates
+ *   POST /:id/confirm-match    a human picks one          (attributed)
+ *   POST /:id/review           mark reviewed + note        (attributed)
+ *
+ * The list returns minimal fields — enough for a worklist row, and nothing
+ * more. Notably ABSENT: raw_extracted_json (the full PHI extraction payload),
+ * subscriber_id, group_number, patient_dob. A list endpoint has no use for them
+ * and shipping them "just in case" widens the PHI surface for free.
  *
  * patient_name IS returned — a claims worklist that cannot say whose claim it
- * is has no product in it. That is what makes this a PHI path, which is why the
- * read is audited fail-closed.
+ * is has no product in it. That is what makes this a PHI path, which is why
+ * every read here is audited fail-closed.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE MATCH IS A POST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It reads Open Dental and writes nothing to a chart — so on the face of it a
+ * GET. It is a POST because it WRITES TO OUR ROWS: the snapshot, the match
+ * status, and the instant we looked. That makes it non-idempotent, unsafe to
+ * retry blindly, and unsafe to prefetch — three properties a GET promises the
+ * opposite of. It also means the mount's `requireReadWrite` demands `rcm.write`
+ * for it, which is right: recording an observation against a claim is a change
+ * to the practice's record of that claim.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NO POSTING, NO APPROVAL, NO QUEUE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * There is deliberately no approve or enqueue endpoint in this slice.
+ * `rcm_posting_queue` is untouched. The workbench renders its Approve button
+ * DISABLED so the layout is right when Slice 6b lands, and there is no route
+ * behind it to call.
  */
 
 const express = require('express');
 
 // Namespace import — see the note in summary.js.
 const tenantDb = require('../../platform/tenantDb');
-const { h, auditRcmRead, num, iso, isoDate } = require('./helpers');
+const odOffices = require('../../config/odOffices');
+const { h, actorEmail, auditRcmRead, num, iso, isoDate } = require('./helpers');
+const { audit } = require('../../platform/audit');
 const { CLAIM_STATUSES } = require('./summary');
+const { describeActors } = require('../../services/rcm/rcmUserMap');
+const matchService = require('./matchService');
+const claimMatch = require('../../services/rcm/claimMatch');
+const { OdReadError } = require('../../services/rcm/odClaimReads');
 
 const router = express.Router();
 
@@ -135,6 +165,232 @@ router.get(
       limit,
       offset,
     });
+  })
+);
+
+// ─── The actor, and how failures are shaped ──────────────────────────────────
+
+/**
+ * The SSO identity, in the shape rcmUserMap wants.
+ * `actorEmail` throws if the route were ever mounted outside the auth gate, so
+ * an unattributed write is impossible rather than merely unlikely.
+ * @param {import('express').Request} req
+ */
+function actorOf(req) {
+  return {
+    email: actorEmail(req),
+    displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+  };
+}
+
+/**
+ * Map the three families of refusal onto HTTP, without leaking internals.
+ *
+ * - `OdOfficeError` — this office has no usable Open Dental connection. 409 or
+ *   503 per config/odOffices' own table; the UI renders it as the honest
+ *   "Open Dental is not connected for this office" state rather than as a
+ *   failed match, because those are different problems with different fixes.
+ * - `OdReadError` — Open Dental answered badly. 502: the failure is theirs, and
+ *   echoing it as a 404 would read as "no such claim".
+ * - Anything carrying `httpStatus` — this module's own typed refusals.
+ *
+ * Returns true when it answered, so callers read as a guard clause.
+ */
+function respondToMatchError(res, office, err) {
+  if (err instanceof odOffices.OdOfficeError) {
+    res.status(odOffices.httpStatusFor(err)).json({
+      success: false,
+      error: err.publicMessage || 'Open Dental is not connected for this office',
+      code: 'OFFICE_NOT_CONNECTED',
+      reason: err.code,
+      office,
+    });
+    return true;
+  }
+  if (err instanceof OdReadError) {
+    // Never logged with a patient name or a search term — the message is ours.
+    console.error(`[rcm/match] office=${office} OD read failed (${err.status})`);
+    res.status(502).json({
+      success: false,
+      error: 'Could not read Open Dental',
+      code: 'OD_READ_FAILED',
+      office,
+    });
+    return true;
+  }
+  if (err && typeof err.httpStatus === 'number') {
+    res.status(err.httpStatus).json({
+      success: false,
+      error: err.message,
+      code: err.code || 'REFUSED',
+      office,
+    });
+    return true;
+  }
+  return false;
+}
+
+// ─── GET /:id — the claim detail / match panel ───────────────────────────────
+
+router.get(
+  '/:id',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const claimId = String(req.params.id);
+
+    const loaded = await tenantDb.withTenantDb(req, async (pool) => {
+      const claim = await matchService.loadClaimBundle(pool, office, claimId);
+      if (!claim) return null;
+      const actors = await describeActors(pool, [claim.odMatchedByKey, claim.reviewedByKey]);
+      return { claim, actors };
+    });
+
+    if (!loaded) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such claim for this office', code: 'CLAIM_NOT_FOUND' });
+    }
+
+    await auditRcmRead(req, 'rcm_claim', { office });
+
+    const { odMatchedByKey, reviewedByKey, ...claim } = loaded.claim;
+    return res.json({
+      success: true,
+      office,
+      claim: {
+        ...claim,
+        odMatchedBy: odMatchedByKey ? (loaded.actors[odMatchedByKey] || {}).displayName || odMatchedByKey : null,
+        reviewedBy: reviewedByKey ? (loaded.actors[reviewedByKey] || {}).displayName || reviewedByKey : null,
+      },
+      /**
+       * The tolerances and bands the scores were produced with, so the panel
+       * explains itself with the numbers that actually ran rather than with
+       * copy that can drift away from them.
+       */
+      matchRules: {
+        amountNearCents: claimMatch.AMOUNT_NEAR_CENTS,
+        dateNearDays: claimMatch.DATE_NEAR_DAYS,
+        ambiguityMargin: claimMatch.AMBIGUITY_MARGIN,
+        bands: claimMatch.CONFIDENCE_BANDS,
+      },
+    });
+  })
+);
+
+// ─── POST /:id/match ─────────────────────────────────────────────────────────
+
+router.post(
+  '/:id/match',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const claimId = String(req.params.id);
+    // Re-running over a confirmed match is allowed but must be ASKED FOR. The
+    // default refuses, so a stray double-click cannot discard somebody's
+    // decision — "re-run allowed explicitly, never silent overwrite".
+    const force = req.body && req.body.force === true;
+
+    let result;
+    try {
+      result = await matchService.runClaimMatch(req, office, claimId, { force });
+    } catch (err) {
+      if (respondToMatchError(res, office, err)) return undefined;
+      throw err;
+    }
+
+    // ONE audit row per PHI read, whatever the fan-out cost. A match that made
+    // fifteen Open Dental calls is one thing a human asked for — the same
+    // granularity rule platform/odAccess applies to a 25-call treatment plan.
+    await auditRcmRead(req, 'rcm_claim_match', { office });
+
+    return res.json({
+      success: true,
+      office,
+      claimId,
+      status: result.status,
+      snapshot: result.snapshot,
+    });
+  })
+);
+
+// ─── POST /:id/confirm-match ─────────────────────────────────────────────────
+
+router.post(
+  '/:id/confirm-match',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const claimId = String(req.params.id);
+    const odClaimNum = Number(req.body && req.body.odClaimNum);
+
+    if (!Number.isFinite(odClaimNum) || odClaimNum <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'odClaimNum is required and must be a positive number',
+        code: 'INVALID_CLAIM_NUM',
+      });
+    }
+
+    let result;
+    try {
+      result = await matchService.confirmMatch(req, office, claimId, odClaimNum, actorOf(req));
+    } catch (err) {
+      if (respondToMatchError(res, office, err)) return undefined;
+      throw err;
+    }
+
+    // UPDATE, not READ: a chart linkage was recorded. `resourceId` is the claim
+    // — an id we minted, never PHI — so unlike the list reads it is stamped.
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_claim_match',
+      resourceId: claimId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, office, ...result });
+  })
+);
+
+// ─── POST /:id/review ────────────────────────────────────────────────────────
+
+/** A note is a person's sentence about a claim, not a document. */
+const MAX_REVIEW_NOTE = 2000;
+
+router.post(
+  '/:id/review',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const claimId = String(req.params.id);
+    const raw = req.body && req.body.note;
+    const note = typeof raw === 'string' ? raw.trim() : '';
+
+    if (note.length > MAX_REVIEW_NOTE) {
+      return res.status(400).json({
+        success: false,
+        error: `Note is too long (max ${MAX_REVIEW_NOTE} characters)`,
+        code: 'NOTE_TOO_LONG',
+      });
+    }
+
+    let result;
+    try {
+      result = await matchService.markReviewed(req, office, claimId, note || null, actorOf(req));
+    } catch (err) {
+      if (respondToMatchError(res, office, err)) return undefined;
+      throw err;
+    }
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_claim_review',
+      resourceId: claimId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, office, ...result });
   })
 );
 

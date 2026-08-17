@@ -288,7 +288,10 @@ test('a PLB-carrying file records the provider-level money and holds the batch o
     assert.equal(res.status, 201);
     const [batch] = app.db.table('rcm_payment_batches');
     assert.equal(batch.plb_total_cents, -4_200);
-    assert.deepEqual(JSON.parse(batch.plb_adjustments).map((a) => a.reasonCode), ['WO', 'L6']);
+    // Read as an OBJECT, not a JSON string: jsonb comes back parsed from pg, and
+    // FakeRcmDb models that (see JSONB_COLUMNS in rcmTestUtils) so a route that
+    // reads `Array.isArray(plb_adjustments)` is tested against what it will get.
+    assert.deepEqual(batch.plb_adjustments.map((a) => a.reasonCode), ['WO', 'L6']);
     // PLB belongs to no single claim, so nothing can act on it yet.
     assert.equal(batch.status, 'open');
     assert.ok(res.body.remittances[0].flags.includes('plb_adjustments_present'));
@@ -699,9 +702,21 @@ test('an upload writes a CREATE audit row naming the office and the upload', asy
     assert.equal(rows[0].resource_id, res.body.upload.uploadId);
     assert.equal(rows[0].office, 'roland');
     assert.equal(rows[0].user_id, 'billing@carein.ai');
-    // Attribution lives HERE: rcm_payment_batches.created_by is a FK to
-    // rcm_user_map, and the staff crosswalk is deferred to Slice 6.
-    assert.equal(app.db.table('rcm_payment_batches')[0].created_by, undefined);
+
+    // Slice 6a discharged the deferral this assertion used to record. Decision
+    // D-5 upserts rcm_user_map from the SSO identity on a person's first RCM
+    // action, so the batch's created_by FK is now satisfiable at upload time —
+    // and the workbench can say who brought a check in without reading the
+    // audit log. `user_key` is the lowercased email for someone with no legacy
+    // rcm-posting history.
+    const [batch] = app.db.table('rcm_payment_batches');
+    assert.equal(batch.created_by, 'billing@carein.ai');
+    const [mapped] = app.db.table('rcm_user_map');
+    assert.equal(mapped.platform_email, 'billing@carein.ai');
+    assert.equal(mapped.display_name, 'Billing User');
+    // Tenant-global by design: rcm_user_map is one of exactly two rcm_* tables
+    // without office_id, because billing staff work across both practices.
+    assert.equal(mapped.office_id, undefined);
   });
 });
 

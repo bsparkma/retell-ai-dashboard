@@ -162,6 +162,38 @@ async function toError(res: Response): Promise<RcmApiError> {
   );
 }
 
+/**
+ * POST a JSON body to /api/rcm and read a JSON response.
+ *
+ * Separate from `get` rather than a mode of it, because these are the calls
+ * that CHANGE something and the difference should be visible at the call site.
+ * Every one of them needs `rcm.write`, which the server enforces at the mount
+ * by HTTP method — no page has to know that to render.
+ */
+async function post<T>(
+  path: string,
+  params: Record<string, string | number>,
+  body: unknown = {},
+): Promise<T> {
+  const qs = new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)]),
+  ).toString();
+
+  const res = await fetch(`${BASE}/rcm${path}?${qs}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new RcmApiError("Not signed in", 401, null);
+  }
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as T;
+}
+
 async function get<T>(path: string, params: Record<string, string | number>): Promise<T> {
   const qs = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
@@ -434,4 +466,368 @@ export async function uploadEra(office: RcmOfficeId, file: File): Promise<EraUpl
   if (!res.ok) throw await toError(res);
 
   return (await res.json()) as EraUploadResult;
+}
+
+// ─── The review workbench — Slice 6a ─────────────────────────────────────────
+
+/**
+ * The four honest states of a claim's Open Dental linkage, straight from the
+ * CHECK constraint. A closed union on purpose, the same way `TranscribeStatus`
+ * is on the voice side: a fifth state added server-side becomes a compile error
+ * here, not a chip that silently renders as nothing.
+ *
+ * `not_run` and `no_candidate` are DIFFERENT facts. "Nobody has checked" and
+ * "we checked and Open Dental has nothing" lead a biller to different actions,
+ * and a nullable claim number cannot tell them apart.
+ */
+export const OD_MATCH_STATUSES = ["not_run", "candidates", "no_candidate", "confirmed"] as const;
+export type OdMatchStatus = (typeof OD_MATCH_STATUSES)[number];
+
+/** The scorer's bands. HIGH is an argument, never a decision. */
+export type MatchConfidence = "HIGH" | "MEDIUM" | "LOW";
+
+/** One reason a candidate scored the way it did. Weights can be negative. */
+export interface MatchEvidence {
+  tag: string;
+  weight: number;
+  label: string;
+  detail: string;
+  /** The specific number or name behind the tag, when there is one. */
+  note?: string;
+}
+
+/** A pre-flight fact about the Open Dental claim that Slice 6c will act on. */
+export interface MatchBlocker {
+  code: string;
+  /** True = 6c cannot post this at all. False = read it, but it is not a wall. */
+  blocking: boolean;
+  label: string;
+  detail: string;
+  count?: number;
+}
+
+/** One Open Dental claimproc as it read at match time. */
+export interface OdLineFacts {
+  claimProcNum: number;
+  procNum: number | null;
+  code: string;
+  status: string;
+  feeBilledCents: number;
+  insPayAmtCents: number;
+  writeOffCents: number;
+  dedAppliedCents: number;
+  isTransfer: boolean;
+  /** Non-null ⇒ a check is attached and InsPayAmt is locked. */
+  claimPaymentNum: number | null;
+  /** OD's DELETE is a SOFT delete; these are excluded from every total. */
+  deleted: boolean;
+  blockedStatus: boolean;
+}
+
+/** Which chart line each of our lines would adjudicate, if this candidate wins. */
+export interface LinePair {
+  lineId: string | null;
+  position: number | null;
+  code: string;
+  odClaimProcNum: number | null;
+  odCode: string | null;
+  billedDeltaCents: number | null;
+  /** Why nothing was paired. Null when it was. */
+  reason: string | null;
+}
+
+export interface MatchCandidate {
+  odClaimNum: number;
+  odPatNum: number | null;
+  score: number;
+  confidence: MatchConfidence;
+  evidence: MatchEvidence[];
+  blockers: MatchBlocker[];
+  od: {
+    claimStatus: string;
+    dateService: string | null;
+    claimFeeCents: number;
+    insPaidCents: number;
+    writeOffCents: number;
+    patientName: string | null;
+    lines: OdLineFacts[];
+    deletedLineCount: number;
+  };
+  linePairs: LinePair[];
+}
+
+/**
+ * What a match run observed. A record of a past observation, never a cache to
+ * serve current dollar figures from — Slice 6c re-verifies against it at drain
+ * time, which is the whole reason `fetchedAt` is on it.
+ */
+export interface MatchSnapshot {
+  version: number;
+  fetchedAt: string;
+  office: RcmOfficeId;
+  officeName: string;
+  odCalls: number;
+  /** A cap was hit. Some candidates were NOT examined. */
+  truncated: boolean;
+  /** Limits and oddities worth saying out loud, in the server's words. */
+  notes: string[];
+  patientsConsidered: { patNum: number; name: string }[];
+  /** The top two are too close to read as an ordering. Displayed, not resolved. */
+  ambiguous: boolean;
+  margin: number | null;
+  candidates: MatchCandidate[];
+  confirmed: {
+    odClaimNum: number;
+    odPatNum: number | null;
+    confirmedAt: string;
+    confirmedBy: string;
+    linePairs: LinePair[];
+    odAmountsAsRead: {
+      claimFeeCents: number;
+      insPaidCents: number;
+      writeOffCents: number;
+      claimStatus: string;
+    };
+  } | null;
+}
+
+/** One CARC/RARC adjustment, resolved into plain English by the server. */
+export interface ClaimAdjustment {
+  adjustmentId: string;
+  amountCents: number;
+  quantity: number;
+  groupCode: string;
+  groupLabel: string;
+  groupDescription: string | null;
+  reasonCode: string;
+  /** Null when the code is not in the published list — rendered bare, not guessed. */
+  reasonDescription: string | null;
+  remarkCode: string | null;
+  remarkDescription: string | null;
+}
+
+export interface ClaimLine {
+  lineId: string;
+  position: number;
+  billedCode: string;
+  /** Set only when the carrier downcoded; both codes are kept. */
+  paidCode: string | null;
+  code: string;
+  description: string;
+  billedCents: number;
+  allowedCents: number;
+  deductibleCents: number;
+  copayCents: number;
+  paidCents: number;
+  adjustmentCents: number;
+  patientRespCents: number;
+  writeOffCents: number;
+  adjustmentReason: string | null;
+  isDowncoded: boolean;
+  isBundled: boolean;
+  isDenied: boolean;
+  flags: string[];
+  odClaimProcNum: number | null;
+  adjustments: ClaimAdjustment[];
+}
+
+export interface WorkbenchClaim {
+  claimId: string;
+  officeId: RcmOfficeId;
+  claimNumber: string;
+  checkNumber: string | null;
+  patientName: string;
+  odPatientId: number | null;
+  /** Meaningful ONLY when odMatchStatus is 'confirmed' — a DB CHECK enforces it. */
+  odClaimNum: number | null;
+  payer: string;
+  serviceDate: string | null;
+  receivedDate: string | null;
+  status: string;
+  paymentStatus: string;
+  insuranceType: string;
+  totalBilledCents: number;
+  totalAllowedCents: number;
+  totalPaidCents: number;
+  totalDeductibleCents: number;
+  patientBalanceCents: number;
+  needsReviewReasons: string[];
+  /** The EXTRACTOR's 0-100 confidence. Not the Open Dental match confidence. */
+  extractionConfidence: number;
+  odMatchStatus: OdMatchStatus;
+  odMatchAt: string | null;
+  odMatchConfirmedAt: string | null;
+  odMatchedBy: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reviewNote: string | null;
+  createdAt: string | null;
+  lines: ClaimLine[];
+  matchSnapshot?: MatchSnapshot | null;
+}
+
+/** A claim as the remittance detail lists it (no snapshot — the panel loads that). */
+export type RemittanceClaim = Omit<WorkbenchClaim, "matchSnapshot">;
+
+export interface RemittanceUpload {
+  uploadId: string;
+  /** PHI — remittance filenames routinely carry a patient and a payer. */
+  filename: string;
+  uploadedAt: string | null;
+  /** Null means NOT RECORDED (uploaded before D-5), never "the system did it". */
+  uploadedBy: string | null;
+  documentUrl?: string;
+}
+
+export interface Remittance {
+  batchId: string;
+  officeId: RcmOfficeId;
+  payer: string;
+  checkNumber: string | null;
+  eftNumber: string | null;
+  traceNumber: string | null;
+  paymentMethod: "check" | "eft" | null;
+  depositDate: string | null;
+  totalAmountCents: number;
+  postedAmountCents: number;
+  plbTotalCents: number;
+  claimCount: number;
+  status: string;
+  /** '835' = parsed, and can only be malformed. 'eob' = READ by a model, and can be WRONG. */
+  source: "835" | "eob" | null;
+  notes: string;
+  createdAt: string | null;
+  createdBy: string | null;
+  /** Computed server-side so the list and the detail cannot disagree. */
+  balance: {
+    batchTotalCents: number;
+    claimTotalCents: number;
+    differenceCents: number;
+    plbTotalCents: number;
+    balanced: boolean;
+  };
+  needsAttention: boolean;
+  attentionReasons: string[];
+  reviewReasonCount: number;
+  unmatchedClaimCount: number;
+  upload: RemittanceUpload | null;
+}
+
+export interface RemittanceListPage {
+  office: RcmOfficeId;
+  remittances: Remittance[];
+  total: number;
+  limit: number;
+  offset: number;
+  needsAttentionCount: number;
+}
+
+export interface RemittanceDetail {
+  office: RcmOfficeId;
+  remittance: Remittance & {
+    /** Provider-level money, belonging to no single claim. Detect-and-flag only. */
+    plbAdjustments: unknown[];
+  };
+  claims: RemittanceClaim[];
+}
+
+/** The tolerances the scores were actually produced with. */
+export interface MatchRules {
+  amountNearCents: number;
+  dateNearDays: number;
+  ambiguityMargin: number;
+  bands: { band: MatchConfidence; min: number }[];
+}
+
+export interface ClaimDetailResponse {
+  office: RcmOfficeId;
+  claim: WorkbenchClaim;
+  matchRules: MatchRules;
+}
+
+export interface MatchRunResponse {
+  office: RcmOfficeId;
+  claimId: string;
+  status: OdMatchStatus;
+  snapshot: MatchSnapshot;
+}
+
+export interface BatchMatchResponse {
+  office: RcmOfficeId;
+  batchId: string;
+  matched: {
+    claimId: string;
+    status: OdMatchStatus | "already_confirmed" | "failed";
+    candidateCount?: number;
+    ambiguous?: boolean;
+    error?: string;
+  }[];
+  odCalls: number;
+  pacingMs: number;
+  /** Claims a cap left unmatched. Stated, never silent. */
+  skipped: number;
+  note?: string;
+}
+
+/** Every payment batch for this office, needs-attention count included. */
+export function listRemittances(
+  office: RcmOfficeId,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<RemittanceListPage> {
+  const params: Record<string, string | number> = { office };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return get<RemittanceListPage>("/remittances", params);
+}
+
+/** One remittance: header, balance check, and every claim with its lines. */
+export function getRemittance(office: RcmOfficeId, batchId: string): Promise<RemittanceDetail> {
+  return get<RemittanceDetail>(`/remittances/${encodeURIComponent(batchId)}`, { office });
+}
+
+/** One claim: lines, adjustments, and the last match snapshot if there is one. */
+export function getClaim(office: RcmOfficeId, claimId: string): Promise<ClaimDetailResponse> {
+  return get<ClaimDetailResponse>(`/claims/${encodeURIComponent(claimId)}`, { office });
+}
+
+/**
+ * Read Open Dental and rank candidates for one claim.
+ *
+ * A POST because it WRITES TO OUR ROWS — the snapshot, the status, the instant
+ * we looked. Nothing is written to a chart. `force` re-runs over a confirmed
+ * match, which the server otherwise refuses so a stray double-click cannot
+ * discard somebody's decision.
+ */
+export function matchClaim(
+  office: RcmOfficeId,
+  claimId: string,
+  opts: { force?: boolean } = {},
+): Promise<MatchRunResponse> {
+  return post<MatchRunResponse>(`/claims/${encodeURIComponent(claimId)}/match`, { office }, opts);
+}
+
+/**
+ * Confirm one candidate as THE Open Dental claim. Attributed to the signed-in
+ * user, and the only thing that sets `odClaimNum`.
+ */
+export function confirmClaimMatch(
+  office: RcmOfficeId,
+  claimId: string,
+  odClaimNum: number,
+): Promise<{ claimId: string; odClaimNum: number; confirmedAt: string }> {
+  return post(`/claims/${encodeURIComponent(claimId)}/confirm-match`, { office }, { odClaimNum });
+}
+
+/** Mark a claim reviewed, with an optional note. No Open Dental effect at all. */
+export function reviewClaim(
+  office: RcmOfficeId,
+  claimId: string,
+  note: string,
+): Promise<{ claimId: string }> {
+  return post(`/claims/${encodeURIComponent(claimId)}/review`, { office }, { note });
+}
+
+/** Match every claim on a remittance. Sequential and paced, server-side. */
+export function matchRemittance(office: RcmOfficeId, batchId: string): Promise<BatchMatchResponse> {
+  return post<BatchMatchResponse>(`/remittances/${encodeURIComponent(batchId)}/match`, { office });
 }

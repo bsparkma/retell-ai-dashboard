@@ -58,6 +58,7 @@ const { audit } = require('../../platform/audit');
 const { h, actorEmail, num, iso, isoDate } = require('./helpers');
 const { parse835, X12FormatError } = require('../../services/rcm/eraParser');
 const { RemittanceIdentityError, buildRemittanceKey } = require('../../services/rcm/remittanceKey');
+const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const { ingestParsedEra, findAlreadyProcessed } = require('../../services/rcm/eraIngest');
 const eraFileStore = require('../../services/rcm/eraFileStore');
 
@@ -287,7 +288,15 @@ router.post(
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const result = await ingestParsedEra(client, { officeId: office, parsed, file });
+        // D-5: resolve (and, on a first RCM action, create) the acting user
+        // INSIDE this transaction — every actor column in the schema is a FK to
+        // rcm_user_map, and a row committed on another connection would not be
+        // visible to a transaction already in flight.
+        const actorKey = await resolveRcmActor(client, {
+          email: actorEmail(req),
+          displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+        });
+        const result = await ingestParsedEra(client, { officeId: office, parsed, file, actorKey });
         if (result.conflict) {
           await client.query('ROLLBACK');
           return result;

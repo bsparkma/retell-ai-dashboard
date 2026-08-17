@@ -26,8 +26,24 @@
  * be READ by a model and can be wrong, an 835 is PARSED and can only be
  * malformed. They produce the same rcm_* proposal rows and share nothing else.
  *
- * NOT here, and not yet: posting (Slice 6), the review/approval UI (Slice 7),
- * and any Open Dental client usage in ANY slice of this module before 6. The
+ * Slice 6a turned the module from an intake pipe into something a biller can
+ * open. It added the review workbench and the Open Dental matching underneath
+ * it — and the module's FIRST Open Dental traffic, which is GET-only:
+ *   GET  /remittances[/:id]        the list and the detail
+ *   POST /remittances/:id/match    sequential, paced batch match
+ *   GET  /claims/:id               one claim: lines, adjustments, snapshot
+ *   POST /claims/:id/match         read OD, rank candidates, store a snapshot
+ *   POST /claims/:id/confirm-match a human picks one       (attributed, D-5)
+ *   POST /claims/:id/review        worklist hygiene         (attributed, D-5)
+ *   GET  /uploads/:id/document     the authorised source-document proxy
+ *
+ * ZERO OPEN DENTAL WRITES IN THIS SLICE. The only transport reachable from any
+ * of the above is `apiGetRaw` on the office's own client, which has no write
+ * counterpart; `rcmNoOdWrites.test.js` fails if one appears. There is no
+ * approve, no enqueue and no post route, and `rcm_posting_queue` is untouched.
+ *
+ * NOT here, and not yet: the approval gate (6b), any Open Dental write (6c),
+ * the recoupment gate (6d), reconciliation, VCC and metrics (8/9), Stedi. The
  * only tables anything under this mount touches are rcm_* and the platform
  * audit_log.
  */
@@ -74,5 +90,11 @@ router.use('/eob', require('./eob'));
 // mount's requireReadWrite for every non-GET method, and the same
 // requireOffice above. Still no Open Dental (eraNoOdImports covers this one).
 router.use('/era', require('./era'));
+// Slice 6a — the review workbench. `/remittances` is the screen a biller opens
+// a check on; `/uploads/:id/document` is the authorised proxy back to the bytes
+// it was parsed from. Both sit BELOW requireOffice like everything else, so a
+// cross-office read is a miss rather than a refusal somebody had to remember.
+router.use('/remittances', require('./remittances'));
+router.use('/uploads', require('./documents'));
 
 module.exports = router;

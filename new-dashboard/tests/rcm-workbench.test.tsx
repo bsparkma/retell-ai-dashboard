@@ -1,0 +1,808 @@
+/**
+ * The RCM review workbench — client side (Slice 6a).
+ *
+ * The backend is the source of truth for what is allowed
+ * (backend/routes/rcm/workbench.test.js, rcmNoOdWrites.test.js). This suite is
+ * about what a person is TOLD, and the claims it pins are the ones that would
+ * mislead a biller if they broke:
+ *
+ *  - the list opens on NEEDS ATTENTION, and always says how much it is hiding;
+ *  - a batch/claim imbalance shows the DIFFERENCE, not just a red flag;
+ *  - Slice 4 and 5 flags render as first-class review reasons — this is the
+ *    screen where they finally get seen;
+ *  - CARC and RARC codes render with their plain-English meanings, and an
+ *    unknown code renders BARE rather than glossed with a guess;
+ *  - "no candidate" reads as a finished search with a negative result, not as
+ *    an empty screen;
+ *  - ambiguity is displayed, never resolved;
+ *  - Approve is present and DISABLED, and says why.
+ */
+import * as React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Router as WouterRouter } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
+
+// Classic JSX runtime under vitest — same shim the other .tsx suites use.
+(globalThis as Record<string, unknown>).React = React;
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+(globalThis as Record<string, unknown>).ResizeObserver ??= ResizeObserverStub;
+
+// ─── Fixtures. Synthetic names only — the repo's no-real-patient-data rule ───
+
+function adjustment(over: Record<string, unknown> = {}) {
+  return {
+    adjustmentId: "adj-1",
+    amountCents: 6000,
+    quantity: 1,
+    groupCode: "CO",
+    groupLabel: "Contractual",
+    groupDescription:
+      "Contractual obligation — the practice writes this off, the patient is not billed",
+    reasonCode: "45",
+    reasonDescription: "Charge exceeds fee schedule/maximum allowable",
+    remarkCode: "N19",
+    remarkDescription: "Procedure code incidental to primary procedure",
+    ...over,
+  };
+}
+
+function line(over: Record<string, unknown> = {}) {
+  return {
+    lineId: "pl-1",
+    position: 1,
+    billedCode: "D0150",
+    paidCode: null,
+    code: "D0150",
+    description: "Comprehensive oral evaluation",
+    billedCents: 21000,
+    allowedCents: 15000,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 15000,
+    adjustmentCents: 6000,
+    patientRespCents: 0,
+    writeOffCents: 6000,
+    adjustmentReason: null,
+    isDowncoded: false,
+    isBundled: false,
+    isDenied: false,
+    flags: [] as string[],
+    odClaimProcNum: null,
+    adjustments: [adjustment()],
+    ...over,
+  };
+}
+
+function claim(over: Record<string, unknown> = {}) {
+  return {
+    claimId: "c-1",
+    officeId: "roland",
+    claimNumber: "53648",
+    checkNumber: "830200001",
+    patientName: "Fixture, Synthetic",
+    odPatientId: null,
+    odClaimNum: null,
+    payer: "DELTA DENTAL OF ARKANSAS",
+    serviceDate: "2026-03-02",
+    receivedDate: "2026-03-02",
+    status: "pending_review",
+    paymentStatus: "unpaid",
+    insuranceType: "primary",
+    totalBilledCents: 21000,
+    totalAllowedCents: 15000,
+    totalPaidCents: 15000,
+    totalDeductibleCents: 0,
+    patientBalanceCents: 0,
+    needsReviewReasons: [] as string[],
+    extractionConfidence: 95,
+    odMatchStatus: "not_run",
+    odMatchAt: null,
+    odMatchConfirmedAt: null,
+    odMatchedBy: null,
+    reviewedAt: null,
+    reviewedBy: null,
+    reviewNote: null,
+    createdAt: "2026-03-02T10:00:00.000Z",
+    lines: [line()],
+    ...over,
+  };
+}
+
+function remittance(over: Record<string, unknown> = {}) {
+  const totalAmountCents = (over.totalAmountCents as number) ?? 15000;
+  return {
+    batchId: "b-1",
+    officeId: "roland",
+    payer: "DELTA DENTAL OF ARKANSAS",
+    checkNumber: "830200001",
+    eftNumber: null,
+    traceNumber: "830200001",
+    paymentMethod: "check",
+    depositDate: "2026-03-02",
+    totalAmountCents,
+    postedAmountCents: 0,
+    plbTotalCents: 0,
+    claimCount: 1,
+    status: "ready",
+    source: "835",
+    notes: "",
+    createdAt: "2026-03-02T10:00:00.000Z",
+    createdBy: "Billing User",
+    balance: {
+      batchTotalCents: totalAmountCents,
+      claimTotalCents: 15000,
+      differenceCents: totalAmountCents - 15000,
+      plbTotalCents: 0,
+      balanced: totalAmountCents - 15000 === 0,
+    },
+    needsAttention: true,
+    attentionReasons: ["claims_unmatched", "claims_unreviewed"],
+    reviewReasonCount: 0,
+    unmatchedClaimCount: 1,
+    upload: {
+      uploadId: "u-1",
+      filename: "delta_fixture_multiclaim.edi",
+      uploadedAt: "2026-03-02T10:00:00.000Z",
+      uploadedBy: "Billing User",
+      documentUrl: "/api/rcm/uploads/u-1/document?office=roland",
+    },
+    ...over,
+  };
+}
+
+function candidate(over: Record<string, unknown> = {}) {
+  return {
+    odClaimNum: 53648,
+    odPatNum: 12828,
+    score: 95,
+    confidence: "HIGH",
+    evidence: [
+      {
+        tag: "CLAIM_NUMBER_MATCH",
+        weight: 35,
+        label: "Claim number matches",
+        detail: "The carrier's claim number is this Open Dental ClaimNum.",
+      },
+      {
+        tag: "BILLED_AMOUNT_MISMATCH",
+        weight: -10,
+        label: "Billed total differs",
+        detail: "The remittance and the chart disagree on what was billed.",
+        note: "250¢ apart",
+      },
+    ],
+    blockers: [] as unknown[],
+    od: {
+      claimStatus: "S",
+      dateService: "2026-03-02",
+      claimFeeCents: 21000,
+      insPaidCents: 0,
+      writeOffCents: 0,
+      patientName: "Fixture, Synthetic",
+      lines: [],
+      deletedLineCount: 0,
+    },
+    linePairs: [
+      {
+        lineId: "pl-1",
+        position: 1,
+        code: "D0150",
+        odClaimProcNum: 99001,
+        odCode: "D0150",
+        billedDeltaCents: 0,
+        reason: null,
+      },
+    ],
+    ...over,
+  };
+}
+
+function snapshot(over: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    fetchedAt: "2026-03-03T15:00:00.000Z",
+    office: "roland",
+    officeName: "Roland Family Dental",
+    odCalls: 6,
+    truncated: false,
+    notes: [] as string[],
+    patientsConsidered: [{ patNum: 12828, name: "Fixture, Synthetic" }],
+    ambiguous: false,
+    margin: 40,
+    candidates: [candidate()],
+    confirmed: null,
+    ...over,
+  };
+}
+
+// ─── Mocks ───────────────────────────────────────────────────────────────────
+
+const state = vi.hoisted(() => ({
+  remittances: [] as unknown[],
+  needsAttentionCount: 0,
+  detail: null as unknown,
+  claim: null as unknown,
+  listError: null as Error | null,
+  detailError: null as Error | null,
+  matchResult: null as unknown,
+  confirmed: [] as number[],
+  reviews: [] as string[],
+  batchMatched: 0,
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/api")>();
+  const target = {
+    getOffices: async () => [{ officeId: "roland", officeName: "Roland Family Dental" }],
+  };
+  return {
+    ...real,
+    api: new Proxy(target, {
+      get: (t, prop) => (prop in t ? Reflect.get(t, prop) : () => new Promise(() => {})),
+    }),
+  };
+});
+
+vi.mock("@/features/rcm/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/features/rcm/api")>();
+  return {
+    ...real,
+    listRemittances: vi.fn(async (office: string) => {
+      if (state.listError) throw state.listError;
+      return {
+        office,
+        remittances: state.remittances,
+        total: state.remittances.length,
+        limit: 100,
+        offset: 0,
+        needsAttentionCount: state.needsAttentionCount,
+      };
+    }),
+    getRemittance: vi.fn(async (office: string) => {
+      if (state.detailError) throw state.detailError;
+      return state.detail ?? { office, remittance: { ...remittance(), plbAdjustments: [] }, claims: [claim()] };
+    }),
+    getClaim: vi.fn(async (office: string) => {
+      if (state.detailError) throw state.detailError;
+      return {
+        office,
+        claim: state.claim ?? claim(),
+        matchRules: {
+          amountNearCents: 100,
+          dateNearDays: 7,
+          ambiguityMargin: 10,
+          bands: [
+            { band: "HIGH", min: 75 },
+            { band: "MEDIUM", min: 45 },
+            { band: "LOW", min: 0 },
+          ],
+        },
+      };
+    }),
+    matchClaim: vi.fn(async (office: string, claimId: string) => {
+      const snap = (state.matchResult as Record<string, unknown>) ?? snapshot();
+      const candidates = snap.candidates as unknown[];
+      return {
+        office,
+        claimId,
+        status: candidates.length > 0 ? "candidates" : "no_candidate",
+        snapshot: snap,
+      };
+    }),
+    confirmClaimMatch: vi.fn(async (_office: string, claimId: string, odClaimNum: number) => {
+      state.confirmed.push(odClaimNum);
+      return { claimId, odClaimNum, confirmedAt: "2026-03-03T16:00:00.000Z" };
+    }),
+    reviewClaim: vi.fn(async (_office: string, claimId: string, note: string) => {
+      state.reviews.push(note);
+      return { claimId };
+    }),
+    matchRemittance: vi.fn(async (office: string, batchId: string) => {
+      state.batchMatched += 1;
+      return {
+        office,
+        batchId,
+        matched: [{ claimId: "c-1", status: "candidates", candidateCount: 1, ambiguous: false }],
+        odCalls: 6,
+        pacingMs: 1200,
+        skipped: 0,
+      };
+    }),
+  };
+});
+
+import RemittanceList from "@/pages/rcm/RemittanceList";
+import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
+import ClaimMatch from "@/pages/rcm/ClaimMatch";
+import { OfficeProvider } from "@/contexts/OfficeContext";
+import { ThemeProvider } from "@/contexts/ThemeContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
+function renderAt(ui: React.ReactElement, path: string) {
+  const memory = memoryLocation({ path, record: true });
+  render(
+    <WouterRouter hook={memory.hook}>
+      <ThemeProvider defaultTheme="light" switchable>
+        <TooltipProvider>
+          <OfficeProvider>{ui}</OfficeProvider>
+        </TooltipProvider>
+      </ThemeProvider>
+    </WouterRouter>,
+  );
+  return memory;
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  localStorage.setItem("carein.office", "roland");
+  state.remittances = [];
+  state.needsAttentionCount = 0;
+  state.detail = null;
+  state.claim = null;
+  state.listError = null;
+  state.detailError = null;
+  state.matchResult = null;
+  state.confirmed = [];
+  state.reviews = [];
+  state.batchMatched = 0;
+});
+
+afterEach(cleanup);
+
+// ─── The list ────────────────────────────────────────────────────────────────
+
+describe("the remittance list", () => {
+  it("opens on Needs attention, not on everything", async () => {
+    state.remittances = [
+      remittance(),
+      remittance({ batchId: "b-2", payer: "CIGNA", needsAttention: false, attentionReasons: [] }),
+    ];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await waitFor(() => expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy());
+    // The finished one is hidden by the DEFAULT filter, not missing.
+    expect(screen.queryByTestId("remittance-row-b-2")).toBeNull();
+    expect(screen.getByTestId("remittance-filter-attention").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("always says how much the filter is hiding", async () => {
+    // A filter that does not state its own scope is one people forget is on.
+    state.remittances = [remittance(), remittance({ batchId: "b-2", needsAttention: false })];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remittance-counts-roland").textContent).toContain(
+        "1 needing attention · 2 total",
+      ),
+    );
+  });
+
+  it("shows everything when All is chosen", async () => {
+    state.remittances = [remittance(), remittance({ batchId: "b-2", needsAttention: false })];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+    await waitFor(() => expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("remittance-filter-all"));
+    expect(screen.getByTestId("remittance-row-b-2")).toBeTruthy();
+  });
+
+  it("shows the DIFFERENCE on an unbalanced remittance, not just a flag", async () => {
+    // The number a biller chases, in the row where they first see the problem.
+    state.remittances = [remittance({ totalAmountCents: 20000 })];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remittance-imbalance-b-1").textContent).toContain("$50.00 off"),
+    );
+  });
+
+  it("labels the source, because an 835 and a model-read PDF are different evidence", async () => {
+    state.remittances = [remittance()];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const chip = await screen.findByTestId("remittance-source-b-1");
+    expect(chip.textContent).toBe("835");
+    expect(chip.getAttribute("title")).toContain("cannot be misread");
+  });
+
+  it("distinguishes an empty office from a filtered-out one", async () => {
+    state.remittances = [remittance({ needsAttention: false, attentionReasons: [] })];
+    state.needsAttentionCount = 0;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
+        "Switch to All to see everything",
+      ),
+    );
+  });
+
+  it("reports MODULE_NOT_ENTITLED in the server's own words", async () => {
+    const { RcmApiError } = await import("@/features/rcm/api");
+    state.listError = new RcmApiError("MODULE_NOT_ENTITLED", 403, "MODULE_NOT_ENTITLED");
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("remittances-error-roland").textContent).toContain(
+        "not set up for the RCM module",
+      ),
+    );
+  });
+});
+
+// ─── The detail ──────────────────────────────────────────────────────────────
+
+describe("the remittance detail", () => {
+  it("renders the balance check as a first-class fact", async () => {
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await waitFor(() => expect(screen.getByTestId("balance-check")).toBeTruthy());
+    expect(screen.getByTestId("stat-check-total").textContent).toBe("$150.00");
+    expect(screen.getByTestId("stat-claim-total").textContent).toBe("$150.00");
+    expect(screen.getByTestId("balance-check").textContent).toContain("Balances");
+  });
+
+  it("names the unaccounted amount when the totals disagree", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance({ totalAmountCents: 20000 }), plbAdjustments: [] },
+      claims: [claim()],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("balance-check").textContent).toContain("$50.00 unaccounted"),
+    );
+  });
+
+  it("renders CARC and RARC codes with their plain-English meanings", async () => {
+    // Open Dental will not take these codes at all (ClaimAdjReasonCodes is
+    // read-only over the API), so this rendering IS the product.
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await waitFor(() => expect(screen.getByTestId("toggle-lines-c-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("toggle-lines-c-1"));
+
+    const lines = screen.getByTestId("lines-c-1");
+    expect(within(lines).getByText("CO-45")).toBeTruthy();
+    expect(within(lines).getByText("Charge exceeds fee schedule/maximum allowable")).toBeTruthy();
+    expect(lines.textContent).toContain("N19");
+    expect(lines.textContent).toContain("Procedure code incidental to primary procedure");
+  });
+
+  it("renders an unknown code BARE rather than glossing it with a guess", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [
+        claim({
+          lines: [
+            line({
+              adjustments: [
+                adjustment({ reasonCode: "9999", reasonDescription: null, remarkCode: null, remarkDescription: null }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("toggle-lines-c-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("toggle-lines-c-1"));
+
+    const lines = screen.getByTestId("lines-c-1");
+    expect(within(lines).getByText("CO-9999")).toBeTruthy();
+    // No invented sentence anywhere near it.
+    expect(lines.textContent).not.toContain("Adjustment code");
+  });
+
+  it("renders every Slice 4/5 flag as a first-class review reason", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [
+        claim({
+          needsReviewReasons: ["unparseable_cas", "procedure_downcoded", "claim_denied"],
+        }),
+      ],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const flags = await screen.findByTestId("claim-flags-c-1");
+    expect(flags.textContent).toContain("An adjustment could not be read");
+    expect(flags.textContent).toContain("The carrier changed a procedure code");
+    expect(flags.textContent).toContain("Denied by the carrier");
+  });
+
+  it("states plainly that a reversal will not be posted, and points at the manual route", async () => {
+    // Detect-and-flag only: a negative supplemental is the single IRREVERSIBLE
+    // Open Dental operation, so inventing an action for one would be worse than
+    // admitting there is none.
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [claim({ needsReviewReasons: ["reversal_not_postable"] })],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const note = await screen.findByTestId("claim-no-action-c-1");
+    expect(note.textContent).toContain("CareIN will not post this");
+    expect(note.textContent).toContain("cannot be reversed");
+  });
+
+  it("keeps BOTH codes on a downcoded line", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [claim({ lines: [line({ billedCode: "D0120", paidCode: "D0150", isDowncoded: true, flags: ["downcode"] })] })],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("toggle-lines-c-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("toggle-lines-c-1"));
+
+    const lines = screen.getByTestId("lines-c-1");
+    expect(lines.textContent).toContain("D0120");
+    expect(lines.textContent).toContain("submitted as D0150");
+    expect(lines.textContent).toContain("Downcoded");
+  });
+
+  it("renders Approve DISABLED and says why", async () => {
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const approve = await screen.findByTestId("approve-disabled");
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("approve-note").textContent).toContain("next release");
+    expect(screen.getByTestId("approve-note").textContent).toContain("writes to a patient's chart");
+  });
+
+  it("links to the source document and says who uploaded it", async () => {
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const doc = await screen.findByTestId("source-document");
+    expect(doc.textContent).toContain("delta_fixture_multiclaim.edi");
+    expect(doc.textContent).toContain("Billing User");
+    expect(doc.querySelector("a")?.getAttribute("href")).toContain("/api/rcm/uploads/u-1/document");
+  });
+
+  it("says NOT RECORDED for a pre-D-5 upload, never 'the system'", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: {
+        ...remittance({ upload: { ...remittance().upload, uploadedBy: null } }),
+        plbAdjustments: [],
+      },
+      claims: [claim()],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const doc = await screen.findByTestId("source-document");
+    expect(doc.textContent).toContain("not recorded");
+    expect(doc.textContent).not.toContain("System");
+  });
+
+  it("reports what a batch match did, per claim", async () => {
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("match-all-claims"));
+
+    await waitFor(() => expect(state.batchMatched).toBe(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("batch-match-result").textContent).toContain("1 candidate"),
+    );
+  });
+});
+
+// ─── The match panel ─────────────────────────────────────────────────────────
+
+describe("the claim match panel", () => {
+  it("says nobody has looked yet, and that looking writes nothing", async () => {
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    await waitFor(() => expect(screen.getByTestId("match-not-run")).toBeTruthy());
+    expect(screen.getByTestId("match-not-run").textContent).toContain("writes nothing to any chart");
+  });
+
+  it("shows candidates with the evidence behind each score", async () => {
+    state.claim = claim({ odMatchStatus: "candidates", matchSnapshot: snapshot() });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const evidence = await screen.findByTestId("evidence-53648");
+    expect(evidence.textContent).toContain("Claim number matches");
+    expect(evidence.textContent).toContain("+35");
+    // Negative evidence is evidence too, and is shown as such.
+    expect(evidence.textContent).toContain("Billed total differs");
+    expect(evidence.textContent).toContain("-10");
+    expect(evidence.textContent).toContain("250¢ apart");
+  });
+
+  it("DISPLAYS ambiguity rather than resolving it", async () => {
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({
+        ambiguous: true,
+        margin: 0,
+        candidates: [candidate(), candidate({ odClaimNum: 53649 })],
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const warning = await screen.findByTestId("match-ambiguous");
+    expect(warning.textContent).toContain("not a recommendation");
+    // BOTH are still offered — nothing is dropped for being ambiguous.
+    expect(screen.getByTestId("candidate-53648")).toBeTruthy();
+    expect(screen.getByTestId("candidate-53649")).toBeTruthy();
+  });
+
+  it("reads 'no candidate' as a finished search, not an empty screen", async () => {
+    state.claim = claim({
+      odMatchStatus: "no_candidate",
+      odMatchAt: "2026-03-03T15:00:00.000Z",
+      matchSnapshot: snapshot({ candidates: [] }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const panel = await screen.findByTestId("no-candidate");
+    expect(panel.textContent).toContain("No matching claim in Open Dental");
+    expect(panel.textContent).toContain("a recorded outcome, not a missing one");
+    expect(panel.textContent).toContain("Roland Family Dental");
+  });
+
+  it("surfaces the pre-flight facts Slice 6c will refuse on", async () => {
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({
+        candidates: [
+          candidate({
+            blockers: [
+              {
+                code: "LINE_IS_TRANSFER",
+                blocking: true,
+                label: "A line is an income transfer",
+                detail: "PUT /claimprocs is refused when IsTransfer is true.",
+                count: 1,
+              },
+              {
+                code: "DELETED_PROCEDURES_EXCLUDED",
+                blocking: false,
+                label: "Deleted procedures excluded",
+                detail: "DELETE /procedurelogs is a soft delete.",
+                count: 2,
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const blockers = await screen.findByTestId("blockers-53648");
+    expect(blockers.textContent).toContain("A line is an income transfer (1)");
+    expect(blockers.textContent).toContain("Deleted procedures excluded (2)");
+  });
+
+  it("shows which chart line each of our lines would touch, and where none does", async () => {
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({
+        candidates: [
+          candidate({
+            linePairs: [
+              { lineId: "pl-1", position: 1, code: "D0150", odClaimProcNum: 99001, odCode: "D0150", billedDeltaCents: 0, reason: null },
+              { lineId: "pl-2", position: 2, code: "D1110", odClaimProcNum: null, odCode: null, billedDeltaCents: null, reason: "no line on this claim carries this code" },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const pairs = await screen.findByTestId("pairs-53648");
+    expect(pairs.textContent).toContain("ClaimProc 99001");
+    expect(pairs.textContent).toContain("no line on this claim carries this code");
+  });
+
+  it("confirming is a click a person makes, and reports the linkage", async () => {
+    state.claim = claim({ odMatchStatus: "candidates", matchSnapshot: snapshot() });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    fireEvent.click(await screen.findByTestId("confirm-53648"));
+
+    await waitFor(() => expect(state.confirmed).toEqual([53648]));
+    await waitFor(() =>
+      expect(screen.getByTestId("claim-notice").textContent).toContain("Linked to Open Dental claim 53648"),
+    );
+  });
+
+  it("warns that re-running un-links, before anyone presses it", async () => {
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot(),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const warning = await screen.findByTestId("reconfirm-warning");
+    expect(warning.textContent).toContain("un-links the claim");
+    expect(warning.textContent).toContain("stays in the audit trail");
+  });
+
+  it("marking reviewed is offered without a match, and says it changes nothing in OD", async () => {
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const box = await screen.findByTestId("review-box");
+    expect(box.textContent).toContain("changes nothing in Open Dental");
+    expect(box.textContent).toContain("can still be finished work");
+
+    fireEvent.change(screen.getByTestId("review-note"), {
+      target: { value: "Carrier owes a corrected EOB." },
+    });
+    fireEvent.click(screen.getByTestId("mark-reviewed"));
+
+    await waitFor(() => expect(state.reviews).toEqual(["Carrier owes a corrected EOB."]));
+  });
+
+  it("states the tolerances the scores were actually produced with", async () => {
+    state.claim = claim({ odMatchStatus: "candidates", matchSnapshot: snapshot() });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const meta = await screen.findByTestId("match-meta");
+    expect(meta.textContent).toContain("within $1.00");
+    expect(meta.textContent).toContain("within 7 days");
+    expect(meta.textContent).toContain("6 Open Dental reads");
+  });
+
+  it("says out loud when a search hit a limit", async () => {
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({
+        truncated: true,
+        notes: ["Patient 12828 has 31 claims; the 8 most recent were examined in detail."],
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const meta = await screen.findByTestId("match-meta");
+    expect(meta.textContent).toContain("some Open Dental claims were not examined");
+    expect(screen.getByTestId("match-notes").textContent).toContain("8 most recent");
+  });
+
+  it("renders Approve DISABLED here too", async () => {
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    const approve = await screen.findByTestId("approve-disabled");
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+  });
+});

@@ -27,6 +27,9 @@ import AdminUsers from "./pages/AdminUsers";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmOverview from "./pages/rcm/RcmOverview";
+import RemittanceList from "./pages/rcm/RemittanceList";
+import RemittanceDetail from "./pages/rcm/RemittanceDetail";
+import ClaimMatch from "./pages/rcm/ClaimMatch";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
@@ -113,8 +116,15 @@ export function Router() {
             endpoint behind it is requireSuperAdmin()-gated regardless. */}
         <Route path="/platform" component={Platform} />
         {/* RCM module — entitlement-gated server-side (requireModule('rcm')).
-            One page in Slice 3; the module's routes grow under /rcm/*. */}
+            Slice 6a added the review workbench: the list a biller opens a check
+            from, the remittance itself, and the per-claim Open Dental match
+            panel. All three inherit rcm.read from the /rcm prefix in
+            ROUTE_PERMISSIONS; the mutations behind them demand rcm.write
+            server-side, which no page needs to know to render. */}
         <Route path="/rcm" component={RcmOverview} />
+        <Route path="/rcm/remittances" component={RemittanceList} />
+        <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
+        <Route path="/rcm/claims/:id" component={ClaimMatch} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />

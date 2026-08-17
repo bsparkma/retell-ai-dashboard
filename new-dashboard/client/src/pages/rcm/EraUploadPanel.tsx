@@ -20,6 +20,7 @@
  * there is no override to retry with.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, FileUp, Info, Loader2 } from "lucide-react";
 import {
   listEraUploads,
@@ -215,8 +216,18 @@ function UploadResult({ result, office }: { result: EraUploadResult; office: Rcm
 
       <ul className="mt-3 space-y-1.5">
         {result.remittances.map((r) => (
+          // Slice 6a: an upload is no longer a dead end. Every remittance this
+          // file produced links to the screen where a biller can actually work
+          // it — which is the whole reason the workbench was built first.
           <li key={r.batchId} className="text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{r.payer}</span> · {r.checkNumber} ·{" "}
+            <Link
+              href={`/rcm/remittances/${r.batchId}`}
+              className="font-medium text-foreground underline-offset-2 hover:underline"
+              data-testid={`rcm-era-open-${r.batchId}`}
+            >
+              {r.payer}
+            </Link>{" "}
+            · {r.checkNumber} ·{" "}
             {r.paymentDate} · <span className="tabular-nums">{money(r.totalAmountCents)}</span> ·{" "}
             {r.claims.length} claim{r.claims.length === 1 ? "" : "s"} ·{" "}
             <StatusChip status={r.status} />
@@ -280,6 +291,17 @@ function DuplicateNotice({
                   ? `processed ${r.processedAt.slice(0, 10)}`
                   : "already processed"}
             </span>
+            {/* The useful next move after a duplicate is to go and LOOK at the
+                batch it already became, which was impossible before 6a. */}
+            {r.batchId && (
+              <Link
+                href={`/rcm/remittances/${r.batchId}`}
+                className="ml-1.5 font-medium text-foreground underline-offset-2 hover:underline"
+                data-testid={`rcm-era-duplicate-open-${r.batchId}`}
+              >
+                open it
+              </Link>
+            )}
           </li>
         ))}
       </ul>
@@ -331,7 +353,14 @@ function RecentUploads({
           </div>
           {u.remittances.map((r) => (
             <div key={r.batchId} className="mt-1 text-[11px] text-muted-foreground">
-              {r.payer} · {r.checkNumber ?? r.eftNumber ?? r.traceNumber} ·{" "}
+              <Link
+                href={`/rcm/remittances/${r.batchId}`}
+                className="font-medium text-foreground underline-offset-2 hover:underline"
+                data-testid={`rcm-era-history-open-${r.batchId}`}
+              >
+                {r.payer}
+              </Link>{" "}
+              · {r.checkNumber ?? r.eftNumber ?? r.traceNumber} ·{" "}
               <span className="tabular-nums">{money(r.totalAmountCents)}</span> · {r.claimCount}{" "}
               claim{r.claimCount === 1 ? "" : "s"} · <StatusChip status={r.status} />
               {r.dedupeStatus === "posted" && (

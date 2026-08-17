@@ -26,6 +26,7 @@
  * true is the same failure as a server that reports a send it did not make.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { AlertCircle, FileUp, Loader2, PauseCircle, RefreshCw, UploadCloud } from "lucide-react";
 import {
   listEobUploads,
@@ -366,6 +367,21 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
                   >
                     {u.message}
                   </p>
+                )}
+                {/* Slice 6a: an extracted document is no longer a dead end. The
+                    batch it produced is where a biller can actually work it.
+                    Only shown when there IS one — an upload still waiting on the
+                    cost cap has nothing to open, and a link that led nowhere
+                    would be the same lie as a chip reading "Extracting" after
+                    the page stopped asking. */}
+                {u.resultBatchId && (
+                  <Link
+                    href={`/rcm/remittances/${u.resultBatchId}`}
+                    className="mt-1.5 inline-block text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                    data-testid={`rcm-eob-open-${u.uploadId}`}
+                  >
+                    Open the remittance →
+                  </Link>
                 )}
               </li>
             ))}
