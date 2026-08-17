@@ -37,6 +37,7 @@ const eraFileStore = require('../../services/rcm/eraFileStore');
 // namespace so a test can install a RECORDING Open Dental client here without
 // the real registry ever resolving a customer key.
 const odOffices = require('../../config/odOffices');
+const odPacer = require('../../services/rcm/odPacer');
 
 /**
  * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
@@ -141,6 +142,14 @@ class FakeRcmDb {
         if ((m = term.match(/^(\w+) IS NULL$/))) {
           const [, col] = m;
           return (r) => r[col] == null;
+        }
+        // `col <> 'literal'` — runClaimMatch re-asserts the match status inside
+        // its own WHERE so the check and the write are ONE statement. Without
+        // this the fake could not express the guard, and the lost-confirmation
+        // race would be untestable.
+        if ((m = term.match(/^(\w+) <> '([^']*)'$/))) {
+          const [, col, literal] = m;
+          return (r) => r[col] !== literal;
         }
         // A literal, e.g. the startup sweep's `status = 'processing'`, or the
         // remittance-key protocol re-asserting the status it expects inside its
@@ -673,6 +682,22 @@ async function bootRcmApp({
     getOdOffice: odOffices.getOdOffice,
   };
 
+  /*
+   * PACE AT 1ms IN ROUTE TESTS.
+   *
+   * The production floor is 1200ms per Open Dental call, which is correct and
+   * non-negotiable — but a route suite that pays it takes two minutes to prove
+   * things that have nothing to do with timing. The pacer's MECHANISM
+   * (serialization, observed spacing) and its FLOOR (no env var can lower it)
+   * are proven independently in services/rcm/odPacer.test.js, so neither can be
+   * satisfied by this override.
+   *
+   * The queue is still real here: calls still serialize, so a route that
+   * accidentally fanned out would still be caught.
+   */
+  odPacer._resetForTests();
+  odPacer._setIntervalForTests(1);
+
   // The office's OWN client, faked. `getOdOffice` is what the per-office
   // registry hands out, and `assertOfficeMatch` is left REAL — so a route that
   // forgot the office assertion still fails its test rather than passing on a
@@ -756,6 +781,7 @@ async function bootRcmApp({
             eraFileStore.isConfigured = originals.eraStore.isConfigured;
             eraFileStore.putEraFile = originals.eraStore.putEraFile;
             odOffices.getOdOffice = originals.getOdOffice;
+            odPacer._resetForTests();
             if (originals.token === undefined) delete process.env.DASHBOARD_API_TOKEN;
             else process.env.DASHBOARD_API_TOKEN = originals.token;
             server.close(r);

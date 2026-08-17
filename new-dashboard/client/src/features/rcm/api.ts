@@ -170,21 +170,52 @@ async function toError(res: Response): Promise<RcmApiError> {
  * Every one of them needs `rcm.write`, which the server enforces at the mount
  * by HTTP method — no page has to know that to render.
  */
+/**
+ * How long the client waits before it stops waiting.
+ *
+ * A batch match is a paced, sequential run against Open Dental — 25 claims at
+ * ≥1.2s per CALL is minutes, not seconds — and it is held open on one HTTP
+ * request. Without a timeout a hung connection leaves the button spinning
+ * "Matching…" forever with no way back; with one, the page can say what it
+ * knows ("this may still be running") instead of pretending to still be
+ * connected. The server keeps going either way, which is why the copy tells the
+ * operator to refresh rather than retry.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
+
 async function post<T>(
   path: string,
   params: Record<string, string | number>,
   body: unknown = {},
+  { timeoutMs = REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {},
 ): Promise<T> {
   const qs = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString();
 
-  const res = await fetch(`${BASE}/rcm${path}?${qs}`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/rcm${path}?${qs}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+  } catch (err) {
+    // A timeout is NOT a failure of the operation — the server may well still
+    // be working. It gets its own code so the UI can say that rather than
+    // inviting a second run on top of the first.
+    if (abort.signal.aborted) {
+      throw new RcmApiError("The request took too long and the page stopped waiting", 0, "TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 401) {
     handleUnauthorized();

@@ -32,28 +32,33 @@ const odOffices = require('../../config/odOffices');
 const tenantDb = require('../../platform/tenantDb');
 const claimMatch = require('../../services/rcm/claimMatch');
 const odClaimReads = require('../../services/rcm/odClaimReads');
+const odPacer = require('../../services/rcm/odPacer');
 const { describeAdjustment } = require('../../services/rcm/adjustmentCodes');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const { num, iso, isoDate } = require('./helpers');
 
 /**
- * Minimum gap between claims in a batch match.
+ * Minimum gap between EVERY RCM Open Dental call — not between claims.
  *
- * Each claim costs a handful of Open Dental calls against an API that is
- * throttled and ~10 hops deep. Pacing is how a twelve-claim remittance stays a
- * background-shaped operation instead of a burst the OD rate limiter answers
- * with 429s — which the client would then back off from anyway, slower and
- * noisier than doing it on purpose. Floor of 1200ms; a smaller env value is
- * raised to it rather than honoured.
+ * This used to pace only the loop over a remittance's claims, which left the
+ * calls WITHIN a claim completely unpaced: one unlinked patient with a common
+ * surname is 35–40 sequential GETs at the transport's 120ms default, i.e. ~8
+ * req/s against a credential Open Dental throttles at 1 req/s and that the
+ * VOICE module and TC are using in production. The modules that would have
+ * eaten the 429s are the phone system and TC, not RCM.
+ *
+ * services/rcm/odPacer.js now gates every call, so the guarantee holds per
+ * request rather than per claim. This constant is retained only to report the
+ * effective interval on the batch-match response.
  */
-const BATCH_PACING_MS = Math.max(1200, Number(process.env.RCM_OD_BATCH_PACING_MS || 1200));
+const BATCH_PACING_MS = odPacer.resolveMinIntervalMs();
 
 /**
  * Claims in one batch-match run. A remittance larger than this is matched a
  * page at a time, and the response says how many were left — a cap that does
  * not announce itself reads as "everything matched".
  */
-const MAX_BATCH_MATCH_CLAIMS = Number(process.env.RCM_OD_MAX_BATCH_MATCH_CLAIMS || 25);
+const MAX_BATCH_MATCH_CLAIMS = odClaimReads.intEnv('RCM_OD_MAX_BATCH_MATCH_CLAIMS', 25);
 
 /** The snapshot's shape version. 6c reads this before trusting the contents. */
 const SNAPSHOT_VERSION = 1;
@@ -284,9 +289,13 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
 function odTransportFor(office) {
   const handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
   return {
-    // A GET-only closure. Nothing downstream of this line holds a client
-    // object, so nothing downstream can find a write verb on one.
-    odGet: (path, params, opts) => handle.client.apiGetRaw(path, params, opts),
+    // A GET-only closure, PACED. Nothing downstream of this line holds a client
+    // object, so nothing downstream can find a write verb on one — and nothing
+    // downstream has to remember to pace, because the transport it was handed
+    // already does. That is why the wrap happens here and not at each call site.
+    odGet: odPacer.pacedOdGet((path, params, opts) =>
+      handle.client.apiGetRaw(path, params, opts)
+    ),
     officeName: handle.officeName,
   };
 }
@@ -311,7 +320,7 @@ function odTransportFor(office) {
  * @param {{ force?: boolean }} [opts] force re-runs over a confirmed match
  * @returns {Promise<{ status: string, claimId: string, snapshot: object }>}
  */
-async function runClaimMatch(req, office, claimId, { force = false } = {}) {
+async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = null } = {}) {
   const claim = await tenantDb.withTenantDb(req, (pool) =>
     loadClaimBundle(pool, office, claimId, { includeSnapshot: false })
   );
@@ -369,6 +378,9 @@ async function runClaimMatch(req, office, claimId, { force = false } = {}) {
     patientsConsidered: found.patientsConsidered,
     ambiguous: ranked.ambiguous,
     margin: ranked.margin,
+    /** Examined and scored too low to offer. Counted, never silently dropped. */
+    rejectedCandidates: ranked.rejected,
+    minScore: ranked.minScore,
     candidates,
     /** Carried forward across a re-run so a prior confirmation is auditable. */
     confirmed: null,
@@ -380,14 +392,52 @@ async function runClaimMatch(req, office, claimId, { force = false } = {}) {
   // different facts a biller acts on differently.
   const status = candidates.length > 0 ? 'candidates' : 'no_candidate';
 
-  await tenantDb.withTenantDb(req, (pool) =>
+  /*
+   * THE TRAIL IS WRITTEN BEFORE THE SNAPSHOT, not after the response.
+   *
+   * The snapshot contains Open Dental PATIENT NAMES. Persisting it first and
+   * auditing afterwards means an audit failure leaves PHI on disk, re-readable
+   * through GET /claims/:id, with nothing recorded — the exact inversion
+   * documents.js states as its own rule ("the trail is written before the
+   * bytes"). This is fail-CLOSED: `onPhiRead` throws AuditError and h() turns
+   * that into a 500 before anything is stored.
+   */
+  if (onPhiRead) await onPhiRead();
+
+  /*
+   * THE GUARD IS IN THE WHERE, NOT ONLY IN THE READ ABOVE.
+   *
+   * The `confirmed` check at the top of this function reads on one connection;
+   * this writes on another, and between them sit the Open Dental round trips —
+   * seconds. Two billers working the same remittance, or one biller's second
+   * click while the first run is still draining, would both pass the read and
+   * the later UPDATE would blank a confirmation the other had already
+   * committed: `od_claim_num`, `od_matched_by` and `od_match_confirmed_at` all
+   * set back to NULL, no error, no audit row recording the reversal, and the
+   * claim silently back in needs-attention.
+   *
+   * Re-asserting the status in the WHERE makes the check-and-write one
+   * statement, so the loser writes nothing and finds out. Same reason the
+   * remittance-key protocol re-asserts its own status inside its WHERE.
+   */
+  const written = await tenantDb.withTenantDb(req, (pool) =>
     pool.query(
       `UPDATE rcm_claims SET od_match_status = $3, od_match_snapshot = $4, od_match_at = now(), ` +
         `od_claim_num = NULL, od_match_confirmed_at = NULL, od_matched_by = NULL, updated_at = now() ` +
-        `WHERE office_id = $1 AND claim_id = $2`,
+        `WHERE office_id = $1 AND claim_id = $2` +
+        (force ? '' : ` AND od_match_status <> 'confirmed'`),
       [office, claimId, status, JSON.stringify(snapshot)]
     )
   );
+
+  if (!force && written.rowCount === 0) {
+    // Somebody confirmed it while we were reading Open Dental. Their decision
+    // stands; this run's snapshot is discarded rather than overwriting it.
+    const err = new Error('This claim was confirmed while the match was running');
+    err.httpStatus = 409;
+    err.code = 'MATCH_ALREADY_CONFIRMED';
+    throw err;
+  }
 
   return { status, claimId, snapshot };
 }
@@ -404,7 +454,7 @@ async function runClaimMatch(req, office, claimId, { force = false } = {}) {
  * @param {string} office
  * @param {ReadonlyArray<string>} claimIds
  */
-async function runBatchMatch(req, office, claimIds) {
+async function runBatchMatch(req, office, claimIds, { onPhiRead = null } = {}) {
   const todo = claimIds.slice(0, MAX_BATCH_MATCH_CLAIMS);
   const skipped = claimIds.length - todo.length;
 
@@ -413,9 +463,15 @@ async function runBatchMatch(req, office, claimIds) {
   let odCalls = 0;
 
   for (let i = 0; i < todo.length; i++) {
-    if (i > 0) await new Promise((r) => setTimeout(r, BATCH_PACING_MS));
+    // No sleep here: every OD call this loop causes is already gated by
+    // odPacer, so an extra between-claims wait would only add latency without
+    // adding a guarantee. The pacing that matters is per CALL.
     try {
-      const out = await runClaimMatch(req, office, todo[i]);
+      // ONE audit row for the whole run, written before the FIRST claim's
+      // snapshot lands. A twelve-claim match is one thing a human asked for.
+      const out = await runClaimMatch(req, office, todo[i], {
+        onPhiRead: i === 0 ? onPhiRead : null,
+      });
       odCalls += out.snapshot.odCalls;
       results.push({
         claimId: todo[i],
@@ -497,6 +553,38 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
         const err = new Error('Run a match before confirming one');
         err.httpStatus = 409;
         err.code = 'NO_MATCH_TO_CONFIRM';
+        throw err;
+      }
+
+      /*
+       * THE SNAPSHOT MUST BELONG TO THIS OFFICE, AND TO THIS SHAPE.
+       *
+       * `runClaimMatch` stamps both and confirm used to read neither — then
+       * wrote `od_patient_id = candidate.odPatNum`. PatNum numbering RESTARTS
+       * in every Open Dental database (7115 is Riley's test patient and a
+       * different, real person in Roland), so confirming against a snapshot
+       * taken under another office would write that other practice's PatNum
+       * onto a row stamped with this one. Hard rule 3, enforced rather than
+       * assumed.
+       *
+       * The version check is the same argument for shape: 6c reads
+       * `confirmed.linePairs` and `odAmountsAsRead` out of this structure, and
+       * a snapshot written by an older or newer slice may not carry them.
+       */
+      if (snapshot.office && snapshot.office !== office) {
+        await client.query('ROLLBACK');
+        const err = new Error(
+          'That match was run against a different office — re-run it for this one before confirming'
+        );
+        err.httpStatus = 409;
+        err.code = 'SNAPSHOT_OFFICE_MISMATCH';
+        throw err;
+      }
+      if (Number(snapshot.version) !== SNAPSHOT_VERSION) {
+        await client.query('ROLLBACK');
+        const err = new Error('That match was recorded in an older format — re-run it before confirming');
+        err.httpStatus = 409;
+        err.code = 'SNAPSHOT_VERSION_STALE';
         throw err;
       }
 

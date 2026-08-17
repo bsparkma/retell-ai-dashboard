@@ -43,7 +43,7 @@ const express = require('express');
 
 // Namespace import — see the note in summary.js.
 const tenantDb = require('../../platform/tenantDb');
-const { h, auditRcmRead, num, iso, isoDate } = require('./helpers');
+const { h, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
 const { toClaimSummary, loadClaimBundle, runBatchMatch, CLAIM_LIST_COLUMNS } = require('./matchService');
 
@@ -376,6 +376,7 @@ router.get(
     });
 
     if (!loaded) {
+      await auditRcmDenial(req, 'rcm_remittance', batchId, { office });
       return res.status(404).json({
         success: false,
         error: 'No such remittance for this office',
@@ -440,6 +441,7 @@ router.post(
     });
 
     if (claimIds === null) {
+      await auditRcmDenial(req, 'rcm_remittance', batchId, { office });
       return res.status(404).json({
         success: false,
         error: 'No such remittance for this office',
@@ -457,11 +459,13 @@ router.post(
      * backoff would then serialise them anyway, slower and noisier than doing
      * it deliberately. runBatchMatch paces at RCM_OD_BATCH_PACING_MS (≥1200ms).
      */
-    const result = await runBatchMatch(req, office, claimIds);
-
     // ONE audit row for the whole batch run, matching odAccess's granularity
     // rule: a twelve-claim match is one operation a human asked for, not twelve.
-    await auditRcmRead(req, 'rcm_claim_match', { office });
+    // Handed in so it lands BEFORE the first snapshot — which carries Open
+    // Dental patient names — is persisted.
+    const result = await runBatchMatch(req, office, claimIds, {
+      onPhiRead: () => auditRcmRead(req, 'rcm_claim_match', { office }),
+    });
 
     return res.json({ success: true, office, batchId, ...result });
   })

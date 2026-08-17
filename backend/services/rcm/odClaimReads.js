@@ -50,17 +50,47 @@ const claimMatch = require('./claimMatch');
 
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
+/**
+ * Read a positive-integer tunable, or REFUSE TO START.
+ *
+ * Every cap here used to be `Number(process.env.X || default)`, which turns a
+ * typo into `NaN` and `NaN` into silence: `RCM_OD_MAX_CANDIDATE_PATIENTS=three`
+ * makes `slice(0, NaN)` return `[]`, no patients are searched, and the workbench
+ * states as a FACT that Open Dental has no such claim. A misconfiguration that
+ * produces a confident wrong answer is worse than one that fails to boot, and
+ * this module's whole premise is that `no_candidate` means we looked.
+ *
+ * Throwing at require time surfaces it in the deploy, where it is one env edit
+ * away from fixed.
+ *
+ * @param {string} name
+ * @param {number} fallback
+ * @returns {number}
+ */
+function intEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(
+      `[rcm/odReads] ${name}=${JSON.stringify(raw)} is not a positive integer. ` +
+        `Refusing to start: a NaN cap silently reports "no matching claim in Open Dental".`
+    );
+  }
+  return n;
+}
+
 /** Per-OD-call timeout. Same default and same reasoning as the TC read layer. */
-const OD_CALL_TIMEOUT_MS = Number(process.env.RCM_OD_CALL_TIMEOUT_MS || 30000);
+const OD_CALL_TIMEOUT_MS = intEnv('RCM_OD_CALL_TIMEOUT_MS', 30000);
 
 /** OD paginates list reads at 100 rows via `Offset`. */
 const OD_PAGE_SIZE = 100;
 
 /** Pages of a patient's procedure history to scan for ProcStatus / ADA codes. */
-const MAX_PROCEDURE_PAGES = Number(process.env.RCM_OD_MAX_PROCEDURE_PAGES || 3);
+const MAX_PROCEDURE_PAGES = intEnv('RCM_OD_MAX_PROCEDURE_PAGES', 3);
 
 /** Pages of a patient's claims to scan. */
-const MAX_CLAIM_PAGES = Number(process.env.RCM_OD_MAX_CLAIM_PAGES || 3);
+const MAX_CLAIM_PAGES = intEnv('RCM_OD_MAX_CLAIM_PAGES', 3);
 
 /**
  * How many name-search hits become candidate patients.
@@ -70,10 +100,10 @@ const MAX_CLAIM_PAGES = Number(process.env.RCM_OD_MAX_CLAIM_PAGES || 3);
  * patients' whole claim histories to rank a single remittance line is neither
  * affordable nor proportionate. Exceeding it sets `truncated`.
  */
-const MAX_CANDIDATE_PATIENTS = Number(process.env.RCM_OD_MAX_CANDIDATE_PATIENTS || 3);
+const MAX_CANDIDATE_PATIENTS = intEnv('RCM_OD_MAX_CANDIDATE_PATIENTS', 3);
 
 /** Candidate claims whose claimprocs are fetched. */
-const MAX_CANDIDATE_CLAIMS = Number(process.env.RCM_OD_MAX_CANDIDATE_CLAIMS || 8);
+const MAX_CANDIDATE_CLAIMS = intEnv('RCM_OD_MAX_CANDIDATE_CLAIMS', 8);
 
 // ─── Small utilities ─────────────────────────────────────────────────────────
 
@@ -236,6 +266,8 @@ async function searchPatientsByName(odGet, patientName) {
   /** @type {Map<number, Record<string, unknown>>} */
   const byPatNum = new Map();
   let calls = 0;
+  let filterIgnored = false;
+  let pageCapped = false;
 
   for (const { last, first } of readings) {
     for (const [param, value] of [['LName', last], ['FName', first]]) {
@@ -249,10 +281,44 @@ async function searchPatientsByName(odGet, patientName) {
         }
         throw new OdReadError(`OD patient search failed (${res.status})`, 'OD_READ_FAILED', res.status);
       }
+      /*
+       * RE-FILTERED, like every other list read in this file.
+       *
+       * This was the ONE that trusted Open Dental's filter, and it is the
+       * worst place to have done so: if `?LName=` is ever non-functional (an
+       * upgrade, a per-practice entitlement difference), OD returns page 1 of
+       * the PATIENT TABLE — 100 real people — with a 200. Every one of them
+       * would have been read in full and offered as a candidate for a biller
+       * to attach a stranger's PatNum to.
+       *
+       * The predicate is the one we asked for: a PREFIX match on the same
+       * field, case-insensitively. If OD honoured the filter this drops
+       * nothing.
+       */
+      const wanted = String(value).toUpperCase();
+      let kept = 0;
+      let dropped = 0;
       for (const p of asArray(res.data)) {
         const n = Number(p.PatNum);
-        if (Number.isFinite(n) && !byPatNum.has(n)) byPatNum.set(n, p);
+        if (!Number.isFinite(n)) continue;
+        const field = String(p[param] || '').toUpperCase();
+        if (!field.startsWith(wanted)) {
+          dropped++;
+          continue;
+        }
+        kept++;
+        if (!byPatNum.has(n)) byPatNum.set(n, p);
       }
+      if (dropped > 0) {
+        filterIgnored = true;
+        console.warn(
+          `[rcm/odReads] Open Dental ignored the ${param} filter on /patients — ` +
+            `${dropped} non-matching rows discarded client-side`
+        );
+      }
+      // A full page means OD had more to give and we asked for one page. Say so
+      // rather than letting "N patients matched" silently mean "at least N".
+      if (kept + dropped >= OD_PAGE_SIZE) pageCapped = true;
     }
     // A reading that found somebody is enough; trying the transposed one as
     // well would only add same-prefix strangers.
@@ -268,8 +334,19 @@ async function searchPatientsByName(odGet, patientName) {
     return shared(b) - shared(a) || Number(a.PatNum) - Number(b.PatNum);
   });
 
-  const truncated = patients.length > MAX_CANDIDATE_PATIENTS;
-  if (truncated) {
+  if (filterIgnored) {
+    notes.push(
+      'Open Dental ignored the name filter on /patients and returned unrelated patients; they were discarded here. Verify the patient before confirming any match.'
+    );
+  }
+  if (pageCapped) {
+    notes.push(
+      `Open Dental returned a full page of ${OD_PAGE_SIZE} name matches; there may be more it did not send.`
+    );
+  }
+
+  const truncated = patients.length > MAX_CANDIDATE_PATIENTS || pageCapped;
+  if (patients.length > MAX_CANDIDATE_PATIENTS) {
     notes.push(
       `Open Dental matched ${patients.length} patients by name prefix; the ${MAX_CANDIDATE_PATIENTS} closest were searched. Narrow it by linking the patient first.`
     );
@@ -401,6 +478,25 @@ async function findClaimCandidates(odGet, proposal) {
       MAX_PROCEDURE_PAGES
     );
     odCalls += procedures.calls;
+    /*
+     * A capability miss here used to be SILENT — the `/claims` and
+     * `/claimprocs` scans checked for one and this did not. The consequence was
+     * not a missing note but a WRONG ANSWER: with no procedure rows, every line
+     * read as not-deleted (DELETE is a soft delete, so absence is
+     * indistinguishable from presence), which inflated the chart's billed and
+     * paid totals, hid the deleted-lines blocker, and let a deleted
+     * procedure's ClaimProcNum be paired for Slice 6c to post against.
+     *
+     * The scorer now treats a missing procedure row as 'unknown' rather than
+     * live; this is the note that tells a human WHY.
+     */
+    if (procedures.capabilityMiss) {
+      notes.push(
+        'Open Dental refused the procedure list — enable the /procedurelogs resource on this key. ' +
+          'Without it a deleted procedure cannot be told from a live one, so amounts are withheld.'
+      );
+      truncated = true;
+    }
     if (procedures.truncated) {
       notes.push(
         `Patient ${patNum} has more procedures than the ${MAX_PROCEDURE_PAGES * OD_PAGE_SIZE}-row scan reads; some line codes and deleted-procedure checks may be missing.`
@@ -476,4 +572,5 @@ module.exports = {
   nameInterpretations,
   isCapabilityMiss,
   scanList,
+  intEnv,
 };

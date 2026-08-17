@@ -63,6 +63,42 @@ const AMOUNT_NEAR_CENTS = 100;
 const DATE_NEAR_DAYS = 7;
 
 /**
+ * The score below which a candidate is NOT OFFERED AT ALL.
+ *
+ * Ranking without a floor means the worst candidate in a bad list is still
+ * presented as a candidate. That is not theoretical: if Open Dental's name
+ * filter is ever ignored, the read shell's client-side re-filter is what keeps
+ * strangers out — and this is the second line of that defence. A claim that
+ * matches on nothing but "the patient has some claims" scores at or below zero
+ * once PATIENT_NAME_MISMATCH (−15) and CODES_ABSENT (−15) land, and a biller
+ * should never be shown it next to a Confirm button.
+ *
+ * 15 is deliberately low: it is cleared by a surname match plus a near date, or
+ * by matching codes alone. It excludes noise, not weak-but-real candidates —
+ * the LOW band exists precisely for those.
+ *
+ * It is the WEAKER of the two guards. The sharper one is below: a candidate
+ * whose patient name affirmatively DISAGREES with the chart is never offered at
+ * any score, because that is the exact signature of the failure this defends
+ * against — Open Dental returning strangers when a name filter is ignored.
+ */
+const MIN_CANDIDATE_SCORE = 15;
+
+/**
+ * Evidence that disqualifies a candidate outright, whatever else it scored.
+ *
+ * A claim whose patient shares NO name token with the remittance is not this
+ * patient's claim. A same-day appointment and a coincidental fee could
+ * otherwise lift a total stranger over a numeric floor — and the whole point of
+ * the floor is that a stranger must never appear beside a Confirm button.
+ *
+ * A genuine name change or a mis-keyed 835 is handled the way it should be:
+ * the biller links the patient first, which skips the name search entirely and
+ * reads that patient's claims directly.
+ */
+const DISQUALIFYING_TAGS = Object.freeze(['PATIENT_NAME_MISMATCH']);
+
+/**
  * How close the runner-up may score before the result is called ambiguous.
  *
  * 10 points on a 100-point scale. Deliberately generous: the cost of saying
@@ -201,6 +237,12 @@ const OD_BLOCKERS = Object.freeze({
     blocking: true,
     label: 'No payable lines',
     detail: 'Every line on this claim is deleted, transferred, or in a blocked status.',
+  },
+  DELETED_STATUS_UNKNOWN: {
+    blocking: true,
+    label: 'Cannot tell whether a line was deleted',
+    detail:
+      "Open Dental did not return the procedure behind this line, so we cannot check its ProcStatus. Because DELETE is a SOFT delete, a deleted procedure is indistinguishable from a live one without that row — so the line is excluded from every total here and cannot be posted until the read succeeds.",
   },
 });
 
@@ -357,13 +399,23 @@ function odAmount(value) {
  * @property {number} dedAppliedCents
  * @property {boolean} isTransfer
  * @property {number|null} claimPaymentNum  non-null ⇒ InsPayAmt is locked
- * @property {boolean} deleted        the procedure reads ProcStatus 'D'
+ * @property {boolean|'unknown'} deleted  true = ProcStatus 'D'; 'unknown' = the
+ *   procedure row could not be read, so a soft delete cannot be ruled out
  * @property {boolean} blockedStatus  PUT /claimprocs would refuse this status
  */
 
 /**
  * Flatten one candidate's claimprocs into the facts the scorer and the screen
  * both use, resolving each line's ADA code through the procedure it adjudicates.
+ *
+ * `deleted` IS TRI-STATE, and that is the point. It used to be
+ * `!!proc && ProcStatus === 'D'`, which reads a MISSING procedure row as "not
+ * deleted" — the one direction that is unsafe. `DELETE /procedurelogs` is a
+ * soft delete (G12), so without the procedure row a deleted line and a live one
+ * are indistinguishable; and an Open Dental key without the `/procedurelogs`
+ * resource returns no rows at all. Failing open there silently inflates every
+ * amount, hides the exclusion blocker, and lets `pairLines` hand Slice 6c the
+ * ClaimProcNum of a deleted procedure to PUT against.
  *
  * @param {ReadonlyArray<Record<string, unknown>>} claimProcs raw OD claimproc rows
  * @param {Map<number, Record<string, unknown>>} proceduresByProcNum raw procedurelog rows
@@ -373,6 +425,18 @@ function summariseLines(claimProcs, proceduresByProcNum) {
   return (claimProcs || []).map((cp) => {
     const procNum = Number(cp.ProcNum);
     const proc = Number.isFinite(procNum) ? proceduresByProcNum.get(procNum) : undefined;
+    // A claimproc with no procedure of its own (ProcNum 0 is OD's claim-level
+    // row) has nothing that could be deleted. A REAL ProcNum we could not read
+    // is 'unknown'.
+    const hasProcedure = Number.isFinite(procNum) && procNum > 0;
+    // WHY the row is missing (an unentitled resource, a page cap, a procedure
+    // outside the scan) is already reported as a note by the read shell; here
+    // it is enough that we could not check.
+    const deleted = !hasProcedure
+      ? false
+      : proc
+        ? String(proc.ProcStatus) === DELETED_PROC_STATUS
+        : 'unknown';
     const status = typeof cp.Status === 'string' ? cp.Status : String(cp.Status ?? '');
     // Zero is OD's "no check" for ClaimPaymentNum, not a check numbered zero.
     const payNum = Number(cp.ClaimPaymentNum);
@@ -387,7 +451,7 @@ function summariseLines(claimProcs, proceduresByProcNum) {
       dedAppliedCents: dollarsToCents(cp.DedApplied),
       isTransfer: cp.IsTransfer === true || cp.IsTransfer === 'true',
       claimPaymentNum: Number.isFinite(payNum) && payNum > 0 ? payNum : null,
-      deleted: !!proc && String(proc.ProcStatus) === DELETED_PROC_STATUS,
+      deleted,
       blockedStatus: BLOCKED_CLAIMPROC_STATUSES.includes(status),
     };
   });
@@ -406,10 +470,15 @@ function findBlockers(lines, claim) {
 
   if (String(claim.ClaimStatus) === 'R') add('CLAIM_ALREADY_RECEIVED');
 
-  const deleted = lines.filter((l) => l.deleted).length;
+  const deleted = lines.filter((l) => l.deleted === true).length;
   if (deleted) add('DELETED_PROCEDURES_EXCLUDED', deleted);
 
-  const live = lines.filter((l) => !l.deleted);
+  // Blocking, not a caution: a line whose procedure we could not read may be a
+  // soft-deleted one, and 6c would be PUTting money against it.
+  const unknown = lines.filter((l) => l.deleted === 'unknown').length;
+  if (unknown) add('DELETED_STATUS_UNKNOWN', unknown);
+
+  const live = lines.filter((l) => l.deleted === false);
   const withPayment = live.filter((l) => l.claimPaymentNum !== null).length;
   if (withPayment) add('LINE_HAS_CLAIM_PAYMENT', withPayment);
 
@@ -473,7 +542,25 @@ function bandFor(score) {
 function scoreCandidate(proposal, candidate) {
   const claim = candidate.claim || {};
   const lines = summariseLines(candidate.claimProcs || [], candidate.procedures || new Map());
-  const live = lines.filter((l) => !l.deleted);
+  /*
+   * TWO DIFFERENT LINE SETS, because money and identity fail differently.
+   *
+   * `live` — known NOT deleted. Feeds every AMOUNT. A line we cannot vouch for
+   *   is excluded exactly like a deleted one, because a wrong total is a wrong
+   *   answer with no flag on it.
+   *
+   * `identity` — everything not KNOWN deleted. Feeds procedure codes and the
+   *   line count, which answer "is this the same claim?" rather than "how much
+   *   money is on it". A procedure whose row we could not read still tells us
+   *   this claim carries that code; excluding it would make a claim harder to
+   *   recognise for a reason that has nothing to do with recognising it.
+   *
+   * A KNOWN-deleted line is out of both: it is the one case where we have
+   * positive evidence the procedure is gone.
+   */
+  const live = lines.filter((l) => l.deleted === false);
+  const identity = lines.filter((l) => l.deleted !== true);
+  const unknownLines = lines.filter((l) => l.deleted === 'unknown').length;
 
   /** @type {Array<{tag:string, weight:number, label:string, detail:string, note?:string}>} */
   const evidence = [];
@@ -522,7 +609,7 @@ function scoreCandidate(proposal, candidate) {
       if (code) ourCodes.add(code);
     }
   }
-  const odCodes = new Set(live.map((l) => l.code).filter(Boolean));
+  const odCodes = new Set(identity.map((l) => l.code).filter(Boolean));
   // Guarded on the claim HAVING lines, not on the live codes being non-empty. A
   // claim whose every procedure was deleted genuinely does not carry our codes,
   // and that is a signal — whereas a claim whose claimprocs were never fetched
@@ -545,7 +632,11 @@ function scoreCandidate(proposal, candidate) {
   // that over-applied a reversal by $2.00 in the spike teardown.
   const odBilledCents = live.reduce((sum, l) => sum + l.feeBilledCents, 0);
   const ourBilledCents = Number(proposal.totalBilledCents);
-  if (Number.isFinite(ourBilledCents) && ourBilledCents > 0 && odBilledCents > 0) {
+  // NO money tag at all when a line's deleted state is unknown: the chart total
+  // is then neither trustworthy nor knowably wrong, and either a MATCH or a
+  // MISMATCH would be an assertion we cannot make. Silence is the honest answer,
+  // and the blocker says why.
+  if (unknownLines === 0 && Number.isFinite(ourBilledCents) && ourBilledCents > 0 && odBilledCents > 0) {
     const delta = Math.abs(ourBilledCents - odBilledCents);
     if (delta <= AMOUNT_EXACT_CENTS) tag('BILLED_AMOUNT_MATCH');
     else if (delta <= AMOUNT_NEAR_CENTS) tag('BILLED_AMOUNT_NEAR', describeDelta(delta));
@@ -554,7 +645,7 @@ function scoreCandidate(proposal, candidate) {
 
   // ── Line count ────────────────────────────────────────────────────────────
   const ourLineCount = (proposal.lines || []).length;
-  if (ourLineCount > 0 && live.length === ourLineCount) tag('LINE_COUNT_MATCH');
+  if (ourLineCount > 0 && identity.length === ourLineCount) tag('LINE_COUNT_MATCH');
 
   const raw = evidence.reduce((sum, e) => sum + e.weight, 0);
   const score = Math.max(0, Math.min(100, raw));
@@ -577,7 +668,9 @@ function scoreCandidate(proposal, candidate) {
       writeOffCents: live.reduce((s, l) => s + l.writeOffCents, 0),
       patientName: patient ? `${patient.LName || ''}, ${patient.FName || ''}`.trim().replace(/^,\s*/, '') : null,
       lines,
-      deletedLineCount: lines.length - live.length,
+      deletedLineCount: lines.filter((l) => l.deleted === true).length,
+      /** Lines whose procedure could not be read — excluded from every total. */
+      unknownDeletedLineCount: unknownLines,
     },
   };
 }
@@ -601,11 +694,23 @@ function rankCandidates(proposal, candidates) {
     // a re-run comparable.
     .sort((a, b) => b.score - a.score || a.odClaimNum - b.odClaimNum);
 
-  const margin = scored.length >= 2 ? scored[0].score - scored[1].score : null;
+  // Noise is not "a weak candidate", and offering it beside a Confirm button is
+  // how a stranger's ClaimNum gets written onto a claim. Dropped candidates are
+  // COUNTED and their reason recorded — never silently vanished.
+  const nameMismatch = (c) => c.evidence.some((e) => DISQUALIFYING_TAGS.includes(e.tag));
+  const rejectedForName = scored.filter(nameMismatch).length;
+  const offered = scored.filter((c) => !nameMismatch(c) && c.score >= MIN_CANDIDATE_SCORE);
+  const rejectedForScore = scored.length - offered.length - rejectedForName;
+
+  const margin = offered.length >= 2 ? offered[0].score - offered[1].score : null;
   return {
-    candidates: scored,
+    candidates: offered,
     ambiguous: margin !== null && margin < AMBIGUITY_MARGIN,
     margin,
+    /** Examined and not offered. */
+    rejected: scored.length - offered.length,
+    rejectedReasons: { nameMismatch: rejectedForName, belowScore: rejectedForScore },
+    minScore: MIN_CANDIDATE_SCORE,
   };
 }
 
@@ -630,8 +735,11 @@ function rankCandidates(proposal, candidates) {
  *                   billedDeltaCents: number|null, reason: string|null }>}
  */
 function pairLines(proposalLines, odLines) {
+  // `deleted === false` rather than `!deleted`: 'unknown' is truthy-adjacent
+  // and must NOT be pairable — pairing writes a ClaimProcNum that Slice 6c PUTs
+  // money against, and an unread procedure may be a soft-deleted one.
   const eligible = (odLines || []).filter(
-    (l) => !l.deleted && !l.isTransfer && !l.blockedStatus && l.claimPaymentNum === null
+    (l) => l.deleted === false && !l.isTransfer && !l.blockedStatus && l.claimPaymentNum === null
   );
   const taken = new Set();
 
@@ -679,6 +787,8 @@ module.exports = {
   AMOUNT_NEAR_CENTS,
   DATE_NEAR_DAYS,
   AMBIGUITY_MARGIN,
+  MIN_CANDIDATE_SCORE,
+  DISQUALIFYING_TAGS,
   CONFIDENCE_BANDS,
   EVIDENCE_TAGS,
   EVIDENCE_TAG_NAMES,

@@ -394,14 +394,77 @@ test('deleted lines are excluded from the OD amounts recorded in the snapshot', 
 // ─── Ranking and ambiguity ───────────────────────────────────────────────────
 
 test('candidates are ranked highest first', () => {
-  const weak = candidate({
+  // Weak but ABOVE the floor: right patient, right codes, wrong date and money.
+  const weaker = candidate({
     claim: { ClaimNum: 60000, DateService: '2025-01-01', ClaimFee: 5.0 },
     claimProcs: [claimProc({ ClaimNum: 60000, ClaimProcNum: 70001, ProcNum: 9901, FeeBilled: 5.0 })],
-    procedures: [procedure({ ProcNum: 9901, procCode: 'D9999' })],
+    procedures: [procedure({ ProcNum: 9901, procCode: 'D0150' })],
   });
-  const { candidates } = m.rankCandidates(proposal(), [weak, candidate()]);
+  const { candidates } = m.rankCandidates(proposal(), [weaker, candidate()]);
+  assert.equal(candidates.length, 2);
   assert.equal(candidates[0].odClaimNum, 53648);
   assert.ok(candidates[0].score > candidates[1].score);
+});
+
+test('a candidate below the floor is NOT OFFERED, and the drop is counted', () => {
+  // The second line of defence behind the read shell's client-side re-filter:
+  // if Open Dental ever ignores the name filter, a stranger's claim must not
+  // appear next to a Confirm button just because it was returned.
+  const stranger = candidate({
+    claim: { ClaimNum: 60000, PatNum: 999, DateService: '2020-01-01', ClaimFee: 5.0 },
+    claimProcs: [claimProc({ ClaimNum: 60000, ClaimProcNum: 70001, ProcNum: 9901, FeeBilled: 5.0 })],
+    procedures: [procedure({ ProcNum: 9901, procCode: 'D9999' })],
+    patient: { PatNum: 999, LName: 'Unrelated', FName: 'Person' },
+  });
+  const ranked = m.rankCandidates(proposal(), [candidate(), stranger]);
+  assert.deepEqual(ranked.candidates.map((c) => c.odClaimNum), [53648]);
+  assert.equal(ranked.rejected, 1);
+  assert.equal(ranked.rejectedReasons.nameMismatch, 1);
+  assert.equal(ranked.minScore, m.MIN_CANDIDATE_SCORE);
+});
+
+test('a list of nothing but noise offers NOTHING — which reads as no_candidate', () => {
+  const stranger = candidate({
+    claim: { ClaimNum: 60000, PatNum: 999, DateService: '2020-01-01', ClaimFee: 5.0 },
+    claimProcs: [claimProc({ ClaimNum: 60000, ClaimProcNum: 70001, ProcNum: 9901, FeeBilled: 5.0 })],
+    procedures: [procedure({ ProcNum: 9901, procCode: 'D9999' })],
+    patient: { PatNum: 999, LName: 'Unrelated', FName: 'Person' },
+  });
+  const ranked = m.rankCandidates(proposal({ claimNumber: '' }), [stranger, stranger]);
+  assert.deepEqual(ranked.candidates, []);
+  assert.equal(ranked.rejected, 2);
+  assert.equal(ranked.ambiguous, false);
+});
+
+test('a name mismatch disqualifies at ANY score', () => {
+  // A stranger with a same-day claim and a coincidental fee could clear a
+  // numeric floor. Sharing no name token with the chart is disqualifying on its
+  // own — that is the signature of an ignored Open Dental name filter.
+  const sameDayStranger = candidate({
+    claim: { ClaimNum: 70000, PatNum: 999, DateService: '2026-03-02', ClaimFee: 210.0 },
+    claimProcs: [claimProc({ ClaimNum: 70000, ClaimProcNum: 70003, ProcNum: 9903, FeeBilled: 210.0 })],
+    procedures: [procedure({ ProcNum: 9903, procCode: 'D0150' })],
+    patient: { PatNum: 999, LName: 'Unrelated', FName: 'Person' },
+  });
+  const alone = m.scoreCandidate(proposal({ claimNumber: '' }), sameDayStranger);
+  assert.ok(alone.score >= m.MIN_CANDIDATE_SCORE, 'this candidate clears the numeric floor');
+
+  const ranked = m.rankCandidates(proposal({ claimNumber: '' }), [sameDayStranger]);
+  assert.deepEqual(ranked.candidates, [], 'and is still not offered');
+  assert.equal(ranked.rejectedReasons.nameMismatch, 1);
+});
+
+test('the floor is low enough to keep a weak-but-real candidate', () => {
+  // A surname match plus a near date clears it. The floor excludes noise, not
+  // the LOW band — that band exists precisely for candidates worth a look.
+  const partial = candidate({
+    claim: { ClaimNum: 60001, DateService: '2026-03-05', ClaimFee: 210.0 },
+    claimProcs: [claimProc({ ClaimNum: 60001, ClaimProcNum: 70002, ProcNum: 9902, FeeBilled: 210.0 })],
+    procedures: [procedure({ ProcNum: 9902, procCode: 'D9999' })],
+    patient: { PatNum: 4242, LName: 'Fixture', FName: 'Different' },
+  });
+  const ranked = m.rankCandidates(proposal({ claimNumber: '' }), [partial]);
+  assert.equal(ranked.candidates.length, 1, 'a surname + near-date match must survive the floor');
 });
 
 test('two indistinguishable candidates are AMBIGUOUS and neither is chosen', () => {
@@ -420,13 +483,14 @@ test('two indistinguishable candidates are AMBIGUOUS and neither is chosen', () 
 });
 
 test('a clear winner is not ambiguous', () => {
-  const weak = candidate({
-    claim: { ClaimNum: 60000, DateService: '2020-01-01', ClaimFee: 5.0 },
+  // Both above the floor, so a margin genuinely exists to be compared.
+  const weaker = candidate({
+    claim: { ClaimNum: 60000, DateService: '2025-06-01', ClaimFee: 5.0 },
     claimProcs: [claimProc({ ClaimNum: 60000, ClaimProcNum: 70001, ProcNum: 9901, FeeBilled: 5.0 })],
-    procedures: [procedure({ ProcNum: 9901, procCode: 'D9999' })],
-    patient: { PatNum: 999, LName: 'Other', FName: 'Person' },
+    procedures: [procedure({ ProcNum: 9901, procCode: 'D0150' })],
   });
-  const ranked = m.rankCandidates(proposal(), [candidate(), weak]);
+  const ranked = m.rankCandidates(proposal(), [candidate(), weaker]);
+  assert.equal(ranked.candidates.length, 2);
   assert.equal(ranked.ambiguous, false);
   assert.ok(ranked.margin >= m.AMBIGUITY_MARGIN);
 });

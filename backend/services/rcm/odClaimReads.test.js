@@ -166,6 +166,68 @@ test('prefix hits are ranked by how much of the name the chart actually shares',
   assert.equal(found.patients[0].PatNum, 2, 'the closer name should be searched first');
 });
 
+test('an IGNORED name filter is re-filtered client-side, and SAID', async () => {
+  // The mirror of the /claims test below, and the one that was missing.
+  // If `?LName=` is ever non-functional, OD returns page 1 of the PATIENT TABLE
+  // with a 200 — 100 real people. Trusting it would read every one of them in
+  // full and offer strangers' claims for a biller to attach a PatNum to.
+  const roster = [
+    PATIENT,
+    { PatNum: 4242, LName: 'Unrelated', FName: 'Person', Birthdate: '1970-01-01' },
+    { PatNum: 4243, LName: 'Someone', FName: 'Else', Birthdate: '1980-01-01' },
+  ];
+  const odGet = odGetOf((path) => (path === '/patients' ? { data: roster } : { data: [] }));
+
+  const found = await reads.searchPatientsByName(odGet, 'Test, MangoTest');
+  assert.deepEqual(
+    found.patients.map((p) => p.PatNum),
+    [12828]
+  );
+  assert.match(found.notes.join(' '), /ignored the name filter on \/patients/);
+});
+
+test('a prefix match is kept — the client-side pass is a no-op when OD behaves', async () => {
+  // `LName=Spark` legitimately returns "Sparkman": the filter is a PREFIX, and
+  // re-filtering must use the same predicate or it would drop real matches.
+  const odGet = odGetOf((path, params) =>
+    path === '/patients' && params.LName
+      ? { data: [{ PatNum: 8305, LName: 'Sparkman', FName: 'Aiden' }] }
+      : { data: [] }
+  );
+  const found = await reads.searchPatientsByName(odGet, 'Spark');
+  assert.equal(found.patients.length, 1);
+  assert.ok(!found.notes.join(' ').includes('ignored'));
+});
+
+test('a full page of name matches is reported, not silently under-counted', async () => {
+  const page = Array.from({ length: reads.OD_PAGE_SIZE }, (_, i) => ({
+    PatNum: 5000 + i,
+    LName: 'Sparkman',
+    FName: `Person${i}`,
+  }));
+  const odGet = odGetOf((path) => (path === '/patients' ? { data: page } : { data: [] }));
+  const found = await reads.searchPatientsByName(odGet, 'Sparkman');
+  assert.equal(found.truncated, true);
+  assert.match(found.notes.join(' '), /full page of \d+ name matches/);
+});
+
+test('a refused /procedurelogs is REPORTED — a soft delete cannot be ruled out without it', async () => {
+  // This was silent, and the silence was the bug: with no procedure rows every
+  // line read as not-deleted, which inflated the chart totals, hid the
+  // exclusion blocker, and let a deleted line be paired for Slice 6c to post
+  // against.
+  const odGet = happyOd({
+    '/procedurelogs': () => ({
+      ok: false,
+      status: 404,
+      error: 'procedurelogs is not a valid resource.',
+    }),
+  });
+  const found = await reads.findClaimCandidates(odGet, PROPOSAL);
+  assert.match(found.notes.join(' '), /enable the \/procedurelogs resource/);
+  assert.equal(found.truncated, true);
+});
+
 test('a capability miss on /patients is a NOTE, not an outage', async () => {
   const odGet = odGetOf(() => ({ ok: false, status: 404, error: 'patients is not a valid resource.' }));
   const found = await reads.searchPatientsByName(odGet, 'Fixture, Synthetic');

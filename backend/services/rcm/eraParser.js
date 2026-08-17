@@ -136,16 +136,21 @@ const { parseSegments, subElement, X12FormatError } = require('./x12');
 /**
  * CARC (Claim Adjustment Reason Code) descriptions.
  *
- * The table itself now lives in ./adjustmentCodes.js, which is also where the
- * RARC and group-code vocabularies are — one home for "what does this code
- * mean", read at parse time here and again at render time by the Slice 6a
- * review workbench. Re-exported below so existing callers are unaffected.
+ * `describeCarc` is the SHARED accessor over the published X12 list ingested in
+ * ./x12Codes.generated.js — one home for "what does this code mean", read at
+ * parse time here and again at render time by the Slice 6a review workbench.
+ *
+ * Called rather than indexed on purpose: the accessor normalizes the token
+ * (`trim().toUpperCase()`) and this file's raw `reasonCode` does not, so
+ * indexing the table directly would miss ` b15 ` where the workbench found it —
+ * and the two layers would then disagree about the same adjustment.
  *
  * These land in `rcm_procedure_adjustments.reason_description`, which is what a
  * human reads when asking why a line paid short. D10 (CARC 97 is the bundling
- * text, not "Benefit maximum reached" — that is 119) is preserved there.
+ * text, not "Benefit maximum reached" — that is 119) is satisfied by the
+ * published list itself rather than by a hand-maintained correction.
  */
-const { CARC_DESCRIPTIONS } = require('./adjustmentCodes');
+const { describeCarc } = require('./adjustmentCodes');
 
 /** PLB (Provider Level Balance) adjustment reason codes. Ported verbatim. */
 const PLB_REASON_DESCRIPTIONS = Object.freeze({
@@ -841,7 +846,7 @@ function parseServiceLines(win, claimDenied) {
         adjustments.push({
           groupCode,
           reasonCode,
-          description: CARC_DESCRIPTIONS[reasonCode] || `Adjustment code ${reasonCode}`,
+          description: describeCarc(reasonCode) || `Adjustment code ${reasonCode}`,
           amountCents,
           quantity: Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1,
           // RARCs are reported per service line, not per adjustment; the first
@@ -897,7 +902,6 @@ function parseServiceLines(win, claimDenied) {
 module.exports = {
   parse835,
   // Exported for tests and for the route's flag handling — not for redefinition.
-  CARC_DESCRIPTIONS,
   PLB_REASON_DESCRIPTIONS,
   CLAIM_STATUS,
   LINE_FLAGS,

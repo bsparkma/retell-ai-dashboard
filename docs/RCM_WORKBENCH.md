@@ -12,7 +12,7 @@ them. **Reads only against Open Dental. Zero chart writes.**
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Migration | `backend/migrations-tenant/1787040000000_rcm_od_match.js` (additive columns only) |
 | Code | [`backend/routes/rcm/`](../backend/routes/rcm/), [`backend/services/rcm/`](../backend/services/rcm/), [`new-dashboard/client/src/pages/rcm/`](../new-dashboard/client/src/pages/rcm/) |
-| Tests | `claimMatch.test.js` (50), `odClaimReads.test.js` (27), `workbench.test.js` (42), `rcmNoOdWrites.test.js` (8), `adjustmentCodes.test.js` (15), `rcm-workbench.test.tsx` (30) |
+| Tests | `claimMatch.test.js` (54), `odClaimReads.test.js` (31), `workbench.test.js` (51), `odPacer.test.js` (10), `rcmNoOdWrites.test.js` (8), `adjustmentCodes.test.js` (31), `rcm-workbench.test.tsx` (30) |
 
 ---
 
@@ -111,27 +111,65 @@ sampled Received claimprocs on Roland carried one. **Structured denial reasons
 exist only in our schema**, which makes rendering them legibly not a nicety but
 the product.
 
-[`backend/services/rcm/adjustmentCodes.js`](../backend/services/rcm/adjustmentCodes.js)
-is the one home for the vocabularies — the CARC table moved there from
-`eraParser.js` (so the parser and the workbench read **one** table, not two),
-joined by a **RARC table that did not exist before**: parser deviation D9 reads
-the `LQ*HE` remark code but there was nothing to look it up in, so every
-`remark_description` Slice 5 wrote is the empty string. They resolve at render
-time now.
+### The data is INGESTED, never typed
 
-Three rules the codes layer follows:
+[`backend/services/rcm/x12Codes.generated.js`](../backend/services/rcm/x12Codes.generated.js)
+holds the published X12 lists — **407 CARC and 1,216 RARC** — produced by
+[`backend/scripts/fetch-x12-codes.mjs`](../backend/scripts/fetch-x12-codes.mjs)
+and carrying the source URLs, the retrieval date and a content hash.
+[`adjustmentCodes.js`](../backend/services/rcm/adjustmentCodes.js) is the
+accessor over it, and `eraParser.js` calls the same accessor, so the parser and
+the workbench cannot drift apart.
+
+**This replaced a hand-written table that was wrong.** The first version of this
+slice asserted its entries were "the published X12/WPC meaning". They were not,
+and the errors clustered on exactly the codes a dental biller acts on:
+
+| Code | The hand-written table said | Published meaning |
+| --- | --- | --- |
+| **22** | "Reimbursement adjusted – care already paid" | **coordination of benefits** — *bill the other payer* |
+| 49 | "Not covered unless emergency" | routine/preventive exam or screening |
+| 50 | "Non-covered service" | not deemed a **medical necessity** |
+| 51 | "Services delivered in a different location" | a **pre-existing condition** |
+| 54 / 234 | swapped with each other | 234 is "not paid separately"; 54 is multiple physicians |
+| 151 | "automatic pre-payment review" | the **frequency limit** code |
+| B15 | "combined with another procedure" | requires a **qualifying service** — the buildup/crown and SRP sequencing code |
+
+Code 22 is the one that costs money: it means the claim should go to the
+secondary carrier, and the table told a biller it had already been paid. A test
+even pinned one of the wrong strings as correct, so the suite locked the bug in
+rather than catching it.
+
+The fix was not to hand-correct them. `adjustmentCodes.test.js` now pins the
+**entry counts and a SHA-256 over the canonical content**, so both silent
+upstream drift and a hand edit fail the build; the per-code tests assert the
+*substance* that made each old string dangerous (`/coordination of benefits/`,
+`/pre-existing condition/`) rather than re-transcribing the new text.
+
+Re-running the generator when X12 publishes an update is expected to turn that
+test red. That is the point: a human reads the diff and re-pins deliberately.
+
+### Four rules the codes layer follows
 
 1. **An unknown code renders BARE.** `describeCarc('9999')` returns `null` and the
    screen shows `CO-9999` with no gloss. A fabricated description in front of
    billing staff is exactly the failure the parser's D5 ruling refused to make at
    parse time; it would be no better made at render time.
 2. **A payer's own stored wording wins** when it is non-empty, so two uploads of
-   the same remittance do not read differently depending on when our table last
-   changed. Only the parser's `Adjustment code <n>` placeholder is treated as
+   the same remittance do not read differently depending on when the list was
+   last pulled. Only the parser's `Adjustment code <n>` placeholder is treated as
    blank.
 3. **The group code is spelled out.** `CO` is a write-off the practice absorbs;
    `PR` is money the patient owes. Rendering those as two anonymous letters
    invites reading one as the other.
+4. **Retired codes are kept, and say they are retired.** An old denial being
+   worked today legitimately carries a code X12 has since deactivated; dropping
+   it would leave a gap exactly where the work is hardest.
+
+Published entries often append implementer guidance (`… Usage: Refer to the 835
+Healthcare Policy Identification Segment …`). That is split off at the literal
+`" Usage: "` marker — a mechanical, lossless split of published text — so a chip
+shows the meaning and `describeCarcFull()` still returns the untouched string.
 
 ### Claim match panel — `/rcm/claims/:id`
 
@@ -236,6 +274,25 @@ Sum, clamped to 0–100. Bands: **HIGH ≥ 75 · MEDIUM ≥ 45 · LOW below.**
 | `DATE_NEAR_DAYS` | 7 | A carrier's service date and the chart's can differ by days on a multi-visit claim; a week is generous without spanning a recall interval |
 | `AMBIGUITY_MARGIN` | 10 | The cost of saying "these two look alike, you decide" is one extra glance. The cost of not saying it is money posted to the wrong patient's chart |
 
+### Two guards keep a stranger out of the candidate list
+
+Ranking without a floor means the worst candidate in a bad list is still
+presented as a candidate — beside a Confirm button.
+
+- **`MIN_CANDIDATE_SCORE = 15`.** Cleared by a surname match plus a near date, or
+  by matching codes alone. It excludes noise, not weak-but-real candidates; the
+  LOW band exists for those.
+- **A patient-name MISMATCH disqualifies at any score.** The sharper guard, and
+  the one aimed at the actual failure: a stranger with a same-day claim and a
+  coincidental fee can clear a numeric floor. Sharing no name token with the
+  chart means this is not that patient's claim.
+
+A genuine name change or a mis-keyed 835 is handled the way it should be — the
+biller links the patient first, which skips the name search entirely.
+
+Dropped candidates are **counted and reported** (`rejectedCandidates`,
+`rejectedReasons`), never silently vanished.
+
 ### Nothing auto-decides
 
 There is **no** `autoConfirm`, no threshold above which a candidate is chosen,
@@ -266,6 +323,33 @@ Every claimproc whose procedure reads "D" is dropped **before any total is
 computed**, the count is reported, and the billed comparison runs against the
 live lines' `FeeBilled` rather than the claim's `ClaimFee` — which still includes
 the deleted ones.
+
+**`deleted` is TRI-STATE, because the missing case is the dangerous one.** It was
+`!!proc && ProcStatus === 'D'`, which reads an ABSENT procedure row as "not
+deleted" — and an Open Dental key without the `/procedurelogs` resource returns
+no rows at all, silently. That single `!!` inflated the chart's billed and paid
+totals, flipped `BILLED_AMOUNT_MATCH` to `MISMATCH` (a 20-point swing that can
+drop a true match out of HIGH), hid the exclusion blocker so the screen
+affirmatively said nothing was excluded, wrote the inflated figures into
+`confirmed.odAmountsAsRead` — **the values 6c re-verifies against** — and let
+`pairLines` hand 6c the ClaimProcNum of a possibly-deleted procedure to `PUT`
+money against.
+
+| `deleted` | Means | Amounts | Codes | Pairable |
+| --- | --- | --- | --- | --- |
+| `false` | The procedure row says it is live | ✅ | ✅ | ✅ |
+| `true` | `ProcStatus "D"` | ❌ | ❌ | ❌ |
+| `'unknown'` | The procedure row could not be read | ❌ | ✅ | ❌ |
+
+**Money and identity fail differently**, which is why those columns differ. A
+line we cannot vouch for is out of every total — a wrong total is a wrong answer
+with no flag on it — but its CODE still helps answer "is this the same claim?",
+and excluding it there would make a claim harder to recognise for a reason that
+has nothing to do with recognising it.
+
+When any line is `'unknown'`, **no billed-amount tag is emitted at all**. Neither
+MATCH nor MISMATCH is an assertion we can make, so silence is the honest answer
+and the `DELETED_STATUS_UNKNOWN` blocker says why.
 
 ---
 
@@ -311,13 +395,54 @@ four candidate claims of five lines each.
 Hitting any of them sets `truncated` **with a note**. A short candidate list that
 does not say it is short is how a biller concludes "there is no such claim".
 
-### Batch matching is sequential
+### Pacing: every CALL, not every claim
 
-Never a request-scoped fan-out. Each claim costs a handful of calls against an
-API that is throttled and ~10 network hops deep; matching a twelve-claim
-remittance in parallel would be sixty-odd concurrent calls, and the client's own
-429 backoff would serialise them anyway — slower and noisier than doing it
-deliberately.
+[`odPacer.js`](../backend/services/rcm/odPacer.js) is the one gate every RCM
+Open Dental read passes through. It guarantees:
+
+1. **No two RCM Open Dental calls are ever in flight at once** — serialization,
+   not merely spacing. A fan-out that issued ten calls simultaneously would
+   satisfy an interval check and still burst.
+2. **≥1200 ms between the start of consecutive calls**, floored so no env var
+   can lower it. `RCM_OD_MIN_INTERVAL_MS` may only raise it (a practice on the
+   free tier is 1 request / 5 s).
+3. **Process-wide for RCM**, not per office, per request or per claim — both
+   customer keys sit behind one developer key.
+
+The first version of this slice paced **between claims** and not at all within
+one, which left the real burst unaddressed: one unlinked patient with a common
+surname is 35–40 sequential GETs, so a 25-claim remittance was ~900 requests
+spaced 1.2 s only 24 times. Open Dental's published throttle is **1 request /
+1 second** on the paid tier ([RCM_OD_WRITES §Throttle](RCM_OD_WRITES.md)), the
+transport's own default spacing is 120 ms, and the credential is shared with the
+**voice module and TC in production** — so the modules that would have eaten the
+resulting 429s are the phone system and the treatment coordinator, not RCM.
+
+> **A biller pressing "Match all claims" must never be able to degrade the
+> phones.**
+
+Two supporting changes:
+
+- **The transport's reserved slot is now shared per credential.** It used to live
+  on the client instance, so the two per-office clients and the process-wide
+  singleton spaced themselves independently — three instances at 120 ms each is
+  ~25 req/s against one rate-limited key. The rate limit belongs to the KEY, so
+  the reservation does too (`config/openDental.js`).
+- **`apiGetRaw(path, params, { minIntervalMs })`** lets a caller RAISE its share
+  of that slot. It can never lower it. RCM passes 1200 so its calls occupy a fair
+  share of the shared credential rather than queueing politely in the pacer and
+  then bursting at the transport.
+
+`odPacer.test.js` asserts the observed behaviour — real timestamps, real
+concurrency — and the floor separately, so neither can be satisfied by weakening
+the other. Route suites override the interval to 1 ms; the queue is still real
+there, so a route that accidentally fanned out is still caught.
+
+> ⚠️ **Not fixed here, and not RCM's to fix:** `OD_API_MIN_INTERVAL_MS` defaults
+> to **120 ms** process-wide, i.e. ~8 req/s against a documented 1 req/s limit,
+> for the voice module and TC. That predates this slice and raising it would slow
+> live phone-path lookups, so it is flagged for a deliberate decision rather than
+> changed in an RCM PR.
 
 A single claim's failure does not discard the run: each outcome is reported
 individually, and a claim someone has already confirmed is reported as
@@ -548,7 +673,28 @@ SELECT claim_number, od_match_status, od_claim_num, od_match_at, reviewed_at, re
 
 ---
 
-## 13. What Slice 6b adds
+## 13. Known limits — logged here, fixed in 6b
+
+Found in the Slice 6a review, deliberately **not** expanded into this PR. None
+produces a wrong number today; each is a real edge that will bite at scale or on
+a decision that has not been made yet.
+
+| | Limit | Why it waits |
+| --- | --- | --- |
+| **Paging** | `needsAttentionCount` is page-scoped while `total` is global, and the list is capped at 100 with no pagination — so the header can read "12 needing attention · 640 total". A remittance needing attention and older than the 100th newest is invisible *and* uncounted, on a screen whose stated premise is that the default is the work. | Harmless on seed data, wrong the first busy quarter. Needs a server-side count and real paging, which is its own slice of work. |
+| **Batch-level flags render nowhere** | `eraParser` emits `negative_total_payment`, `no_payment_made`, `plb_adjustments_present`, `claim_total_mismatch`; `eraIngest` persists them into `notes`; `remittances.js` puts `notes` on the wire; neither page renders it. A whole-check takeback surfaces only as "Held — something on this remittance was flagged". | This is the same sin one level up that the PR fixed at claim level: a UI that announces a flag exists and refuses to say which. |
+| **PLB has no breakdown** | A dollar total, no per-adjustment detail, and the "link to the manual SOP" promised in the route comment is prose rather than an anchor in either page. | The SOP does not exist as a document yet. |
+| **EOB-path review reasons miss the label map** | `deriveClaimReviewReasons` emits `low_confidence` and `uncertain_line:<N>`; the map has `low_confidence_extraction` and `uncertain_line`. Thirteen more have no entry. | The fallback humanizes them so nothing is dropped — the honesty rule holds — but the two labels written for that path never fire. |
+| **`rcm.read` and `rcm.write` hold identical role sets** | The split is a no-op today, and `workbench.test.js`'s permission test is structurally incapable of failing because both branches assert the same thing. Anyone who can open the workbench will be able to approve postings in 6b and move money in 6c. | **A product decision for Beau, not a code fix.** Flagged rather than guessed at. |
+| **`GET /remittances/:id` is unbounded and N+1** | `claimsByBatch` has no LIMIT and `loadClaimBundle` runs three queries per claim. A several-hundred-claim carrier check issues ~1200 concurrent queries and returns every patient name on it in one body behind one audit row. | Real carrier checks in this practice are single digits; the shape is wrong for a large payer. |
+| **Non-uuid path ids 500 instead of 404** | And `FakeRcmDb`'s string ids (`'b-1'`, `'c-1'`) structurally hide it: every cross-office 404 test runs on values production could never mint. | Needs a uuid guard at the router and fixture ids that look like production. |
+| **`rcm_user_map.platform_email` has no unique constraint** | A Slice 2 legacy-import row racing a first RCM action produces two rows for one person — the split attribution D-5 exists to prevent. Step 1 of `resolveRcmActor` also does not filter `active = true`. | A migration plus a de-dupe pass over any rows already imported. |
+| **`eob.js` resolves the actor on a different pooled connection** | It calls `resolveRcmActor(pool, …)` and then INSERTs, contradicting `rcmUserMap.js`'s own header ("MUST be called with the same connection/transaction as the write it attributes"). Safe today only because there is no open transaction. | Breaks silently the moment someone wraps that route in a `BEGIN`. |
+| **Candidate 2 in screenshot 03 has an enabled Confirm above a red blocker** | Defensible — confirming only links, and 6c is what refuses to post — but it should be a deliberate decision before 6b, not an accident of layout. | Needs a ruling on whether a blocking pre-flight fact should disable Confirm or merely warn. |
+
+---
+
+## 14. What Slice 6b adds
 
 The Approve button becomes real. Concretely:
 
@@ -571,7 +717,7 @@ re-verifying against the snapshot above), and 6d adds the recoupment gate.
 
 ---
 
-## 14. Out of scope
+## 15. Out of scope
 
 The approval gate (6b) · any Open Dental write (6c) · the recoupment gate (6d) ·
 reconciliation, VCC and metrics (8/9) · Stedi polling · entitlement changes · prod.

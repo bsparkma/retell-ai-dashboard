@@ -312,9 +312,11 @@ test('the detail carries lines, CARC codes and — newly — RARC descriptions',
     assert.equal(adj.reasonCode, '45');
     assert.equal(adj.reasonDescription, 'Charge exceeds fee schedule/maximum allowable');
     // Slice 5 wrote '' here because RARC descriptions had no source of data at
-    // all. This is where that finally gets seen.
+    // all. This is where that finally gets seen — resolved from the INGESTED
+    // published list, so the assertion is on substance; the exact string is
+    // pinned by the content hash in adjustmentCodes.test.js.
     assert.equal(adj.remarkCode, 'N19');
-    assert.equal(adj.remarkDescription, 'Procedure code incidental to primary procedure');
+    assert.match(adj.remarkDescription, /incidental to primary procedure/i);
   });
 });
 
@@ -762,8 +764,13 @@ test('an unconfigured blob store refuses with the module\'s own 503, not a crash
     const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`);
     assert.equal(res.status, 503);
     assert.equal(res.body.code, 'RCM_STORAGE_UNAVAILABLE');
-    // Nothing was served, so nothing should have been audited as served.
-    assert.equal(auditRows(db).filter((r) => r.resource_type === 'rcm_source_document').length, 0);
+
+    // Nothing was SERVED — but the attempt is recorded. Auditing only successes
+    // means somebody walking upload ids leaves nothing in the tenant's trail,
+    // and the attempt is what a HIPAA trail most needs to have.
+    const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_source_document');
+    assert.equal(row.result, 'UNAUTHORIZED');
+    assert.equal(row.resource_id, 'u-1');
   });
 });
 
@@ -816,6 +823,235 @@ test('a header-splitting filename is neutralised rather than echoed', async () =
       assert.equal(res.status, 200);
       assert.ok(!res.headers['x-injected']);
       assert.ok(!res.headers['content-disposition'].includes('\n'));
+    });
+  } finally {
+    eraFileStore.isConfigured = original.isConfigured;
+    eraFileStore.getEraFile = original.getEraFile;
+  }
+});
+
+// ─── Review findings: races, stale snapshots, and audited refusals ───────────
+
+test('a confirmation is NOT wiped by a match that was already in flight', async () => {
+  /*
+   * The lost-confirmation race, driven end to end.
+   *
+   * The `confirmed` guard reads on one connection and the write lands on
+   * another, with the Open Dental round trips in between. Biller A confirms;
+   * biller B's match — which passed the guard while the claim still read
+   * `candidates` — used to land afterwards and blank od_claim_num,
+   * od_matched_by and od_match_confirmed_at. No error, no audit row recording
+   * the reversal, and the claim silently back in needs-attention.
+   *
+   * Simulated by confirming while a match is mid-flight: the fake OD blocks on
+   * a gate the test opens after the confirmation has committed.
+   */
+  const db = seed(new FakeRcmDb());
+  const od = odFixture();
+
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const realGet = od.client.apiGetRaw;
+  let held = false;
+  od.client.apiGetRaw = async (path, params, opts) => {
+    if (!held) {
+      held = true;
+      await gate; // the first OD read of the second match hangs here
+    }
+    return realGet(path, params, opts);
+  };
+
+  await withApp({ db, od }, async (app) => {
+    // First match + confirm, completed normally.
+    od.client.apiGetRaw = realGet;
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
+
+    // Now a SECOND match that passed its guard before the confirmation existed:
+    // force it, so it gets past the read-side check, then assert the write-side
+    // guard is what actually protects the decision.
+    const late = api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await late;
+
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
+
+    const claim = db.table('rcm_claims')[0];
+    assert.equal(claim.od_match_status, 'confirmed', 'the decision survived');
+    assert.equal(claim.od_claim_num, 53648);
+    assert.equal(claim.od_matched_by, 'billing@carein.ai');
+    if (release) release();
+  });
+});
+
+test('the guard is in the WHERE, not only in the read', async () => {
+  /*
+   * Structural, because the race above is timing-dependent and this is not.
+   *
+   * The read-side check is the fast path and normally answers first — which is
+   * exactly why it cannot be the only guard. The write must re-assert the
+   * status it checked, so check-and-write is ONE statement and the loser of a
+   * race writes nothing.
+   */
+  const src = require('node:fs').readFileSync(require.resolve('./matchService'), 'utf8');
+  // Located by substring rather than by a multi-line regex: the statement is
+  // built from concatenated template literals, and a pattern loose enough to
+  // span them is loose enough to match the wrong thing.
+  const at = src.indexOf('UPDATE rcm_claims SET od_match_status = $3');
+  assert.ok(at > 0, "matchService's match UPDATE should be findable");
+  const statement = src.slice(at, src.indexOf('[office, claimId, status', at));
+  assert.match(statement, /od_match_status <> 'confirmed'/, 'the status must be re-asserted in the WHERE');
+  assert.match(src, /written\.rowCount === 0/, 'and a losing UPDATE must be detected');
+
+  // And the guard actually fires end to end.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
+  });
+});
+
+test("confirming against ANOTHER OFFICE'S snapshot is refused", async () => {
+  // PatNum numbering restarts in every Open Dental database, and confirm writes
+  // od_patient_id straight off the snapshot's candidate. A snapshot taken under
+  // valley must never be confirmable under roland (hard rule 3).
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    // Re-stamp the stored snapshot as if it had been taken for the other office.
+    const claim = db.table('rcm_claims')[0];
+    claim.od_match_snapshot = { ...claim.od_match_snapshot, office: 'valley' };
+
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'SNAPSHOT_OFFICE_MISMATCH');
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, null);
+    assert.equal(db.table('rcm_claims')[0].od_patient_id, null);
+  });
+});
+
+test('confirming against an older snapshot SHAPE is refused', async () => {
+  // 6c reads confirmed.linePairs and odAmountsAsRead out of this structure.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const claim = db.table('rcm_claims')[0];
+    claim.od_match_snapshot = { ...claim.od_match_snapshot, version: 0 };
+
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'SNAPSHOT_VERSION_STALE');
+  });
+});
+
+test('a match that READ PHI and then failed still leaves a trail', async () => {
+  // /patients returns real names and dates of birth; /claims then 503s. The
+  // audit row used to be written only after a successful return, so this
+  // sequence read a patient's identity out of Open Dental and recorded nothing.
+  const db = seed(new FakeRcmDb());
+  const od = odFixture({ fail: { '/claims': { status: 503, error: 'gateway' } } });
+  await withApp({ db, od }, async (app) => {
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(res.status, 502);
+
+    const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
+    assert.ok(row, 'a PHI read that failed must still be audited');
+    assert.equal(row.result, 'UNAUTHORIZED');
+    assert.equal(row.resource_id, 'c-1');
+    // And the patient's name is not in the trail.
+    assert.ok(!JSON.stringify(row).includes('Fixture'));
+  });
+});
+
+test('the audit row lands BEFORE the snapshot, which carries OD patient names', async () => {
+  // documents.js states the rule ("the trail is written before the bytes") and
+  // this path used to invert it: an audit failure left PHI on disk, re-readable
+  // through GET /claims/:id, with nothing recorded.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+
+    const auditAt = db.log.findIndex((q) => /INSERT INTO audit_log/i.test(q.sql));
+    const snapshotAt = db.log.findIndex((q) =>
+      /^UPDATE rcm_claims SET od_match_status .*od_match_snapshot/.test(q.sql)
+    );
+    assert.ok(auditAt >= 0 && snapshotAt >= 0, 'both statements should have run');
+    assert.ok(auditAt < snapshotAt, 'the trail must precede the PHI write');
+  });
+});
+
+test('walking claim and remittance ids is not a silent activity', async () => {
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    await api(app.baseUrl, 'GET', `/api/rcm/claims/does-not-exist${Q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances/does-not-exist${Q}`);
+
+    const denials = auditRows(db).filter((r) => r.result === 'UNAUTHORIZED');
+    assert.deepEqual(denials.map((r) => r.resource_type).sort(), ['rcm_claim', 'rcm_remittance']);
+  });
+});
+
+test('the document proxy never reflects a client-declared content type', async () => {
+  // rcm_eob_uploads.content_type is the raw multipart part header, unvalidated
+  // on the ERA path. Reflecting it with Content-Disposition: inline lets a
+  // parseable 835 declaring text/html render as HTML on the API origin.
+  const db = seed(new FakeRcmDb());
+  db.table('rcm_eob_uploads')[0].content_type = 'text/html';
+
+  const eraFileStore = require('../../services/rcm/eraFileStore');
+  const original = { isConfigured: eraFileStore.isConfigured, getEraFile: eraFileStore.getEraFile };
+  eraFileStore.isConfigured = () => true;
+  eraFileStore.getEraFile = async () => Buffer.from('<script>alert(1)</script>');
+  try {
+    await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      assert.equal(res.status, 200);
+      // Derived from the blob KEY path, which we mint — not from the row.
+      assert.equal(res.headers['content-type'], 'application/edi-x12');
+      assert.equal(res.headers['x-content-type-options'], 'nosniff');
+    });
+  } finally {
+    eraFileStore.isConfigured = original.isConfigured;
+    eraFileStore.getEraFile = original.getEraFile;
+  }
+});
+
+test('a non-Latin-1 filename serves rather than 500ing after the audit row', async () => {
+  // Node rejects a header value outside Latin-1, so this used to throw AFTER
+  // the audit row was written — a trail claiming a PHI read that never
+  // happened, and a permanently unreachable document.
+  const db = seed(new FakeRcmDb());
+  db.table('rcm_eob_uploads')[0].filename = '歯科_remittance_“March”.edi';
+
+  const eraFileStore = require('../../services/rcm/eraFileStore');
+  const original = { isConfigured: eraFileStore.isConfigured, getEraFile: eraFileStore.getEraFile };
+  eraFileStore.isConfigured = () => true;
+  eraFileStore.getEraFile = async () => Buffer.from('ISA*00*');
+  try {
+    await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      assert.equal(res.status, 200);
+      const cd = res.headers['content-disposition'];
+      // An ASCII form every client understands, plus the real name encoded.
+      assert.match(cd, /filename="[\x20-\x7e]*"/);
+      assert.match(cd, /filename\*=UTF-8''/);
+      assert.ok(cd.includes(encodeURIComponent('歯科')));
     });
   } finally {
     eraFileStore.isConfigured = original.isConfigured;

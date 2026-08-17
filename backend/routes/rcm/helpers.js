@@ -169,9 +169,47 @@ function totalOf(counts) {
   return Object.values(counts).reduce((a, b) => a + b, 0);
 }
 
+/**
+ * Audit a REFUSED read on a PHI path.
+ *
+ * Auditing only successes means somebody walking ids — probing for another
+ * office's document, or for one that does not exist — leaves nothing in the
+ * tenant's trail at all. The attempt is precisely what a HIPAA trail most needs
+ * recorded, and an audit-on-success-only design discards it silently.
+ *
+ * BEST EFFORT, unlike `auditRcmRead`. The request is already being refused;
+ * turning a 404 into a 500 because the trail could not be written would hand a
+ * prober a way to distinguish "no such id" from "audit is down", and would
+ * convert a clean refusal into an outage. The fail-CLOSED rule applies where it
+ * matters: on the path that actually serves PHI.
+ *
+ * @param {import('express').Request} req
+ * @param {string} resourceType
+ * @param {string|number|null} resourceId an id WE minted — never PHI
+ * @param {{ office: string }} extra
+ */
+async function auditRcmDenial(req, resourceType, resourceId, extra) {
+  try {
+    await audit(req, {
+      action: 'READ',
+      resourceType,
+      resourceId,
+      result: 'UNAUTHORIZED',
+      office: extra.office,
+      sourceRef: null,
+    });
+  } catch (err) {
+    console.error(
+      `[rcm] could not record a denied ${resourceType} read:`,
+      (err && err.message) || err
+    );
+  }
+}
+
 module.exports = {
   OFFICES,
   requireOffice,
+  auditRcmDenial,
   actorEmail,
   h,
   auditRcmRead,

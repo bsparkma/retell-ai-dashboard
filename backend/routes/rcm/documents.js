@@ -37,13 +37,28 @@
  * documented PHI column. It IS sent as the Content-Disposition filename,
  * because a document that downloads as a uuid is one nobody can file. It is
  * never logged: this route logs the upload id and the office, and nothing else.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A REFUSED READ IS AUDITED TOO
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Every refusal path here writes an `UNAUTHORIZED` audit row before it answers.
+ * Auditing only successes means somebody walking upload ids — probing for a
+ * document belonging to the other office, or for one that does not exist —
+ * leaves NOTHING in the tenant's trail. The attempt is the thing a HIPAA trail
+ * most needs to have recorded, and it is the one an audit-on-success-only
+ * design silently discards.
+ *
+ * The audit write is best-effort on these paths, and deliberately so: the
+ * request is already being refused, and turning a 404 into a 500 because the
+ * trail could not be written would hand a prober a way to tell the two apart.
+ * On the SUCCESS path it stays fail-closed — no trail, no bytes.
  */
 
 const express = require('express');
 
 const tenantDb = require('../../platform/tenantDb');
 const { audit } = require('../../platform/audit');
-const { h } = require('./helpers');
+const { h, auditRcmDenial } = require('./helpers');
 const eobBlobStore = require('../../services/rcm/eobBlobStore');
 const eraFileStore = require('../../services/rcm/eraFileStore');
 
@@ -85,6 +100,31 @@ function safeFilename(name, fallback) {
   return s.slice(0, 200) || fallback;
 }
 
+/**
+ * A full `Content-Disposition` value, RFC 6266.
+ *
+ * Node REJECTS a header value containing a character outside Latin-1, so a
+ * filename with a CJK character, an emoji or a curly quote used to throw AFTER
+ * the audit row had been written — leaving a trail that claimed a successful
+ * PHI read which never happened, and a document permanently unreachable.
+ *
+ * So: an ASCII-only `filename=` that every client understands, plus
+ * `filename*=UTF-8''…` carrying the real name percent-encoded. Clients that
+ * understand the extended form use it; the rest get something openable.
+ *
+ * @param {string} filename
+ * @param {string} fallback used when nothing survives the ASCII reduction
+ * @returns {string}
+ */
+function contentDisposition(filename, fallback) {
+  // eslint-disable-next-line no-control-regex
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '').trim() || fallback;
+  const encoded = encodeURIComponent(filename).replace(/['()*]/g, (c) =>
+    `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 router.get(
   '/:id/document',
   h(async (req, res) => {
@@ -103,6 +143,10 @@ router.get(
     });
 
     if (!upload) {
+      // Covers BOTH "no such id" and "belongs to the other office" — office_id
+      // is in the WHERE, so they are the same miss here. Recording the attempt
+      // is the point: a prober must not be able to walk ids in silence.
+      await auditRcmDenial(req, 'rcm_source_document', uploadId, { office });
       return res
         .status(404)
         .json({ success: false, error: 'No such document for this office', code: 'DOCUMENT_NOT_FOUND' });
@@ -114,6 +158,7 @@ router.get(
       // document may well exist, and saying "not found" would send someone
       // looking for a missing upload instead of a mis-shaped key.
       console.error(`[rcm/documents] office=${office} upload=${uploadId} has an unrecognised blob key`);
+      await auditRcmDenial(req, 'rcm_source_document', uploadId, { office });
       return res.status(500).json({
         success: false,
         error: 'This document is stored under an unrecognised key',
@@ -124,6 +169,7 @@ router.get(
     if (!eraFileStore.isConfigured()) {
       // Same 503 vocabulary the uploads use. Both stores read the one
       // RCM_BLOB_ACCOUNT_URL, so either module's check answers for both.
+      await auditRcmDenial(req, 'rcm_source_document', uploadId, { office });
       return res.status(503).json({
         success: false,
         error: 'Document storage is not configured for this environment',
@@ -160,10 +206,31 @@ router.get(
     }
 
     const filename = safeFilename(upload.filename, `remittance.${store.kind === 'era' ? 'edi' : 'pdf'}`);
-    res.setHeader('Content-Type', upload.content_type || store.contentType);
+
+    /*
+     * THE CONTENT TYPE COMES FROM THE KEY, NEVER FROM THE ROW.
+     *
+     * `rcm_eob_uploads.content_type` is the raw multipart part header — the
+     * CLIENT's claim about its own upload, and explicitly unvalidated on the
+     * ERA path (an 835 is validated by parsing it, not by its declared type).
+     * Reflecting it here alongside `Content-Disposition: inline` means a
+     * parseable 835 that declares `text/html` and carries markup in a free-text
+     * element renders as HTML **on the API origin, under the victim's session**.
+     * Helmet's default CSP happens to cap that at UI redress today, which is a
+     * default nobody chose as a control.
+     *
+     * The blob key's own path segment is ours — `putEraFile` and `putEob` mint
+     * it — so it is the trustworthy source for this decision.
+     */
+    res.setHeader('Content-Type', store.contentType);
+    // Belt and braces: never let a browser sniff its way to something else.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     // `inline` so a PDF opens in the browser's viewer rather than landing in a
     // downloads folder — the point is to look at it next to the parsed rows.
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader(
+      'Content-Disposition',
+      contentDisposition(filename, `remittance.${store.kind === 'era' ? 'edi' : 'pdf'}`)
+    );
     res.setHeader('Content-Length', String(bytes.length));
     // PHI must not sit in a shared cache, and a private one is enough for the
     // back button to work within a session.
@@ -175,3 +242,4 @@ router.get(
 module.exports = router;
 module.exports.storeFor = storeFor;
 module.exports.safeFilename = safeFilename;
+module.exports.contentDisposition = contentDisposition;

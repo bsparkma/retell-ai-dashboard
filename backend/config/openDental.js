@@ -15,6 +15,38 @@ function computeOdBackoffMs(attempt, retryAfterSec) {
   return Math.min(500 * 2 ** (Math.max(1, attempt) - 1), 8000);
 }
 
+/**
+ * Reserved-slot timestamps, keyed by the Open Dental credential.
+ *
+ * Module-level rather than per-instance because the RATE LIMIT IS A PROPERTY OF
+ * THE KEY, not of a JavaScript object: docs/RCM_OD_WRITES.md records Open
+ * Dental's published throttle as **1 request / 1 s** on the paid tier. Every
+ * client sharing a credential must therefore share one queue, or the spacing
+ * each of them computes is fiction.
+ *
+ * Keyed by customer key because that is what selects the practice database; the
+ * developer key is process-wide. Two offices with distinct customer keys queue
+ * independently, which is correct — they are separate credentials.
+ *
+ * @type {Map<string, number>}
+ */
+const OD_SLOTS = new Map();
+
+/**
+ * The slot key for a client. Never logged, never returned — it is only ever a
+ * Map key inside this module.
+ * @param {{ customerKey?: string, apiUrl?: string }} client
+ * @returns {string}
+ */
+function odSlotKeyFor(client) {
+  return `${client.apiUrl || ''}::${client.customerKey || 'default'}`;
+}
+
+/** Test seam — drop every reservation so a suite starts from a known clock. */
+function _resetOdSlotsForTests() {
+  OD_SLOTS.clear();
+}
+
 class OpenDentalService extends EventEmitter {
   /**
    * @param {{ customerKey?: string, officeKey?: string|null }} [options]
@@ -144,16 +176,32 @@ class OpenDentalService extends EventEmitter {
     // Throttle (item 7): the OD API rate-limits bursts (429 "Too many requests"). Space
     // outgoing requests by a minimum interval so patient-match bursts don't trip it. A
     // reserved-slot timestamp serializes spacing even under concurrent callers.
+    //
+    // THE SLOT IS SHARED PER KEY, NOT PER INSTANCE. It used to live on `this`,
+    // which meant the per-office clients from config/odOffices and the
+    // process-wide singleton behind platform/odAccess spaced themselves
+    // independently and therefore not at all: three instances at 120ms each is
+    // 25 req/s against one rate-limited credential. The rate limit belongs to
+    // the KEY, so the reservation does too. See ROUTE_SLOTS below.
     const MIN_INTERVAL_MS = parseInt(process.env.OD_API_MIN_INTERVAL_MS || '120', 10);
-    this._odNextSlotAt = 0;
 
     // Request interceptor — space requests, then log.
     this.client.interceptors.request.use(
       async (config) => {
-        if (MIN_INTERVAL_MS > 0) {
+        // A caller may demand MORE spacing than the process default; it can
+        // never demand less. RCM's batch matcher uses this to hold itself to
+        // the documented 1 req/s without slowing the voice module's lookups.
+        const requested = Number(config.__odMinIntervalMs);
+        const interval = Math.max(
+          MIN_INTERVAL_MS,
+          Number.isFinite(requested) && requested > 0 ? requested : 0
+        );
+        if (interval > 0) {
+          const slot = odSlotKeyFor(this);
           const now = Date.now();
-          const wait = Math.max(0, this._odNextSlotAt - now);
-          this._odNextSlotAt = Math.max(now, this._odNextSlotAt) + MIN_INTERVAL_MS;
+          const reservedAt = OD_SLOTS.get(slot) || 0;
+          const wait = Math.max(0, reservedAt - now);
+          OD_SLOTS.set(slot, Math.max(now, reservedAt) + interval);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
         // `__odQuiet` is set by apiGetRaw({ quiet: true }) and today has exactly
@@ -1450,7 +1498,10 @@ class OpenDentalService extends EventEmitter {
    *
    * @param {string} path OD API path beginning with '/', e.g. '/treatplans'
    * @param {Record<string, unknown>} [params] query params (PascalCase, per OD)
-   * @param {{ timeoutMs?: number }} [opts]
+   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number }} [opts]
+   *   `minIntervalMs` RAISES this request's share of the shared per-key throttle
+   *   slot; it can never lower it. RCM's batch matcher passes 1200 to hold
+   *   itself to Open Dental's documented 1 req/s.
    * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
    */
   async apiGetRaw(path, params = {}, opts = {}) {
@@ -1474,6 +1525,7 @@ class OpenDentalService extends EventEmitter {
         // Carried through to the interceptors, which skip their per-request
         // console lines when it is set. See setupInterceptors().
         ...(opts.quiet ? { __odQuiet: true } : {}),
+        ...(opts.minIntervalMs ? { __odMinIntervalMs: opts.minIntervalMs } : {}),
       });
       return { ok: true, status: response.status, data: response.data };
     } catch (error) {
@@ -1929,4 +1981,5 @@ const openDentalServiceSingleton = new OpenDentalService();
 openDentalServiceSingleton.OpenDentalService = OpenDentalService;
 module.exports = openDentalServiceSingleton;
 module.exports.OpenDentalService = OpenDentalService;
-module.exports.computeOdBackoffMs = computeOdBackoffMs; 
+module.exports.computeOdBackoffMs = computeOdBackoffMs;
+module.exports._resetOdSlotsForTests = _resetOdSlotsForTests; 

@@ -73,6 +73,17 @@ export default function RemittanceDetailPage() {
   >({ kind: "loading" });
   const [matching, setMatching] = useState(false);
   const [matchResult, setMatchResult] = useState<BatchMatchResponse | null>(null);
+  /**
+   * A failed MATCH must not replace the loaded remittance.
+   *
+   * It used to set `state = "failed"`, so a batch match that timed out wiped
+   * the screen to "Could not open this remittance" while the server was still
+   * matching. The operator's only move was to reload and press Match again —
+   * launching a SECOND Open Dental-heavy run against a rate-limited credential.
+   * An inline notice keeps the data on screen and the mistake un-invited, the
+   * way ClaimMatch.tsx already handles its own failures.
+   */
+  const [matchError, setMatchError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   /**
@@ -134,7 +145,10 @@ export default function RemittanceDetailPage() {
    * of failure as the EOB panel's "Extracting" chip — a screen that stops
    * telling you something it still knows.
    */
-  useEffect(() => setMatchResult(null), [batchId]);
+  useEffect(() => {
+    setMatchResult(null);
+    setMatchError(null);
+  }, [batchId]);
 
   if (state.kind === "loading") {
     return (
@@ -161,16 +175,21 @@ export default function RemittanceDetailPage() {
 
   async function runBatchMatch() {
     setMatching(true);
+    setMatchError(null);
     try {
       const result = await matchRemittance(office, r.batchId);
       setMatchResult(result);
       load();
     } catch (err) {
       setMatchResult(null);
-      setState({
-        kind: "failed",
-        message: err instanceof Error ? err.message : "The match could not be run.",
-      });
+      // Inline, and the remittance stays on screen. See `matchError` above.
+      setMatchError(
+        err instanceof RcmApiError && err.code === "TIMEOUT"
+          ? "The match is taking longer than expected and this page stopped waiting. It may still be running — press Refresh in a minute before trying again, so a second run does not start on top of the first."
+          : err instanceof Error
+            ? err.message
+            : "The match could not be run.",
+      );
     } finally {
       setMatching(false);
     }
@@ -308,6 +327,16 @@ export default function RemittanceDetailPage() {
                 before the staff crosswalk existed genuinely have no name. */}
             {r.upload.uploadedBy ?? <em className="not-italic text-muted-foreground/70">not recorded</em>}
           </span>
+        </div>
+      )}
+
+      {matchError && (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+          data-testid="batch-match-error"
+        >
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>{matchError}</span>
         </div>
       )}
 

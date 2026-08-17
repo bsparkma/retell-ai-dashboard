@@ -43,7 +43,7 @@ const express = require('express');
 // Namespace import — see the note in summary.js.
 const tenantDb = require('../../platform/tenantDb');
 const odOffices = require('../../config/odOffices');
-const { h, actorEmail, auditRcmRead, num, iso, isoDate } = require('./helpers');
+const { h, actorEmail, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
 const { audit } = require('../../platform/audit');
 const { CLAIM_STATUSES } = require('./summary');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
@@ -196,7 +196,20 @@ function actorOf(req) {
  *
  * Returns true when it answered, so callers read as a guard clause.
  */
-function respondToMatchError(res, office, err) {
+function respondToMatchError(res, office, err, req, claimId) {
+  /*
+   * A FAILED MATCH MAY STILL HAVE READ PHI.
+   *
+   * `/patients` can return real names and dates of birth and THEN `/claims`
+   * can 503. The audit row used to be written only after runClaimMatch
+   * returned, so that sequence read a patient's identity out of Open Dental and
+   * recorded nothing at all. Best-effort, for the same reason as the other
+   * refusal paths: the request is already failing.
+   */
+  if (req && claimId) {
+    void auditRcmDenial(req, 'rcm_claim_match', claimId, { office });
+  }
+
   if (err instanceof odOffices.OdOfficeError) {
     res.status(odOffices.httpStatusFor(err)).json({
       success: false,
@@ -246,6 +259,10 @@ router.get(
     });
 
     if (!loaded) {
+      // Audited: walking claim ids must not be a silent activity, and this
+      // 404 also covers "belongs to the other office" (office_id is in the
+      // WHERE), which is exactly the probe worth having a record of.
+      await auditRcmDenial(req, 'rcm_claim', claimId, { office });
       return res
         .status(404)
         .json({ success: false, error: 'No such claim for this office', code: 'CLAIM_NOT_FOUND' });
@@ -291,16 +308,21 @@ router.post(
 
     let result;
     try {
-      result = await matchService.runClaimMatch(req, office, claimId, { force });
+      // ONE audit row per PHI read, whatever the fan-out cost — a match that
+      // made fifteen Open Dental calls is one thing a human asked for, the same
+      // granularity rule platform/odAccess applies to a 25-call treatment plan.
+      //
+      // Handed IN rather than written afterwards, so it lands BEFORE the
+      // snapshot (which carries OD patient names) is persisted. Fail-closed:
+      // auditRcmRead throws AuditError and h() answers 500 with nothing stored.
+      result = await matchService.runClaimMatch(req, office, claimId, {
+        force,
+        onPhiRead: () => auditRcmRead(req, 'rcm_claim_match', { office }),
+      });
     } catch (err) {
-      if (respondToMatchError(res, office, err)) return undefined;
+      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
       throw err;
     }
-
-    // ONE audit row per PHI read, whatever the fan-out cost. A match that made
-    // fifteen Open Dental calls is one thing a human asked for — the same
-    // granularity rule platform/odAccess applies to a 25-call treatment plan.
-    await auditRcmRead(req, 'rcm_claim_match', { office });
 
     return res.json({
       success: true,
@@ -333,7 +355,7 @@ router.post(
     try {
       result = await matchService.confirmMatch(req, office, claimId, odClaimNum, actorOf(req));
     } catch (err) {
-      if (respondToMatchError(res, office, err)) return undefined;
+      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
       throw err;
     }
 
@@ -377,7 +399,7 @@ router.post(
     try {
       result = await matchService.markReviewed(req, office, claimId, note || null, actorOf(req));
     } catch (err) {
-      if (respondToMatchError(res, office, err)) return undefined;
+      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
       throw err;
     }
 

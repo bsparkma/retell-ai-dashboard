@@ -269,7 +269,7 @@ const CANDIDATES = [
       { tag: "PATIENT_NAME_MATCH", weight: 20, label: "Patient name matches", detail: "", note: "FIXTURE SYNTHETIC" },
       { tag: "SERVICE_DATE_NEAR", weight: 7, label: "Service date within 7 days", detail: "", note: "4 days apart" },
       { tag: "CODES_PARTIAL", weight: 10, label: "Some procedure codes present", detail: "", note: "1/2" },
-      { tag: "BILLED_AMOUNT_MISMATCH", weight: -10, label: "Billed total differs", detail: "", note: "98400¢ apart" },
+      { tag: "BILLED_AMOUNT_MISMATCH", weight: -10, label: "Billed total differs", detail: "", note: "$984.00 apart" },
       { tag: "LINE_COUNT_MATCH", weight: 5, label: "Same number of lines", detail: "" },
     ],
     blockers: [
