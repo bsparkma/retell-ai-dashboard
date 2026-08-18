@@ -107,3 +107,7 @@ temp/
 
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
+
+# Intermediate HTML dumps from the screenshot pipeline. The PNGs in
+# docs/screenshots/ are the artefact; these are scaffolding.
+tests/.shots/
