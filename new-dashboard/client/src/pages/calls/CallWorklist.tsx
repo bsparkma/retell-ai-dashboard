@@ -21,10 +21,12 @@ import {
 } from "@/components/ui/select";
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
-  CheckCircle2, PhoneForwarded, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
-  FileText, VolumeX, RotateCcw, MessageSquare, Archive,
+  CheckCircle2, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
+  FileText, VolumeX, MessageSquare, Archive,
 } from "lucide-react";
 import { ActionTooltip, IconAction, ACTION_HEIGHT, ICON_ACTION_CLASS } from "@/components/calls/IconAction";
+import { TriageActions } from "@/components/calls/TriageActions";
+import { outcomeLabel } from "@/lib/triage";
 import { DispositionBadge, DispositionPicker } from "@/components/calls/DispositionControl";
 import { CallNotesPanel } from "@/components/calls/CallNotesPanel";
 import {
@@ -49,17 +51,6 @@ import { toast } from "sonner";
 import { PickPatientModal } from "./PickPatientModal";
 import { SendToChartDialog } from "./SendToChartDialog";
 import { SendToTcButton, type SendToTcResult } from "./SendToTcButton";
-
-const OUTCOMES: { value: TriageOutcome; label: string }[] = [
-  { value: "scheduled", label: "Scheduled" },
-  { value: "called_back", label: "Called back" },
-  { value: "left_voicemail", label: "Left voicemail" },
-  { value: "no_answer", label: "No answer" },
-  { value: "no_action_needed", label: "No action needed" },
-];
-const OUTCOME_LABEL: Record<TriageOutcome, string> = Object.fromEntries(
-  OUTCOMES.map((o) => [o.value, o.label])
-) as Record<TriageOutcome, string>;
 
 const SORT_STORAGE_KEY = "carein.worklist.sort";
 /** Surface the "oldest unhandled" hint once the backlog age crosses this. */
@@ -974,7 +965,7 @@ function RowSignals({ call, className = "" }: { call: UnifiedCall; className?: s
         <>
           <span className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full text-emerald-700 bg-emerald-500/10">
             <CheckCircle2 size={10} />
-            {call.triageOutcome ? OUTCOME_LABEL[call.triageOutcome] : "Done"}
+            {outcomeLabel(call.triageOutcome)}
           </span>
           {/* w-full puts attribution on its own line inside the wrapping chip row, so a
               long name can't push the chips out of the column. */}
@@ -1236,79 +1227,5 @@ function PatientIdentityCell({
       <UserSearch size={12} className="flex-shrink-0" />
       <span className="truncate">{label}</span>
     </button>
-  );
-}
-
-/**
- * Follow up / Done / Reopen — ALWAYS icon-only.
- *
- * These fire on every row regardless of state, so they are exactly the labels a row can't
- * afford. The "Following up" distinction survives as the button's filled variant plus its
- * tooltip, and the resolved outcome is rendered by RowSignals.
- */
-function TriageActions({
-  call, onFollowUp, onDone, onReopen,
-}: {
-  call: UnifiedCall;
-  onFollowUp: () => void;
-  onDone: (call: UnifiedCall, status: "done", outcome: TriageOutcome, note?: string) => void;
-  onReopen: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [note, setNote] = useState("");
-
-  if (call.triageStatus === "done") {
-    return (
-      <IconAction
-        label="Reopen this call"
-        icon={<RotateCcw size={13} />}
-        variant="ghost"
-        onClick={onReopen}
-      />
-    );
-  }
-
-  const followingUp = call.triageStatus === "needs_action";
-
-  return (
-    <>
-      <IconAction
-        label={followingUp ? "Following up — click to keep it flagged" : "Flag for follow up"}
-        icon={<PhoneForwarded size={13} />}
-        variant={followingUp ? "secondary" : "outline"}
-        onClick={onFollowUp}
-      />
-
-      <Popover open={open} onOpenChange={setOpen}>
-        <ActionTooltip label="Mark done — choose an outcome">
-          <PopoverTrigger asChild>
-            <Button size="sm" className={ICON_ACTION_CLASS} aria-label="Mark done — choose an outcome">
-              <CheckCircle2 size={13} />
-            </Button>
-          </PopoverTrigger>
-        </ActionTooltip>
-        <PopoverContent align="end" className="w-56 p-2">
-          <div className="text-xs font-semibold text-muted-foreground px-1 pb-1.5">Outcome</div>
-          <div className="space-y-0.5">
-            {OUTCOMES.map((o) => (
-              <button
-                key={o.value}
-                onClick={() => { onDone(call, "done", o.value, note.trim() || undefined); setOpen(false); setNote(""); }}
-                className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted transition-colors"
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          <Input
-            placeholder="Optional note…"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            maxLength={280}
-            className="mt-2 h-8 text-xs"
-          />
-        </PopoverContent>
-      </Popover>
-    </>
   );
 }
