@@ -15,9 +15,12 @@ import {
 import {
   api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
   type CallActor, type OdSyncStatus, type TranscribeResult, type CallDisposition,
+  type TriageOutcome, type TriageStatus,
   normalizeUnifiedCall, normalizeCallNotes,
 } from "@/lib/api";
 import { DispositionPicker, DispositionBadge } from "@/components/calls/DispositionControl";
+import { TriageActions, TriageStatePill } from "@/components/calls/TriageActions";
+import { outcomeLabel } from "@/lib/triage";
 import { CallNotesPanel } from "@/components/calls/CallNotesPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
@@ -545,6 +548,78 @@ export default function CallDetail() {
     }
   }, [id]);
 
+  // --- triage ----------------------------------------------------------------
+  /**
+   * Flag for follow-up / Mark done / Reopen — the two worklist actions that were
+   * missing here.
+   *
+   * The team reads the call on this page. Closing it out meant navigating back to the
+   * list and finding the row again, so calls that had been handled kept sitting in
+   * "Needs attention". Same endpoint, same five outcomes, same optional note as the
+   * worklist — only the shape of the buttons differs (variant="labeled").
+   *
+   * Optimistic, then RECONCILED with the server's record, which owns the attribution
+   * and the timestamp; a failure puts the previous triage state back rather than
+   * leaving the page claiming a call was handled when nothing was saved.
+   *
+   * Deliberately does NOT navigate anywhere afterwards: marking a call done and filing
+   * its chart note are two separate decisions, and the person may well want to do the
+   * second one next.
+   */
+  const triageActor: CallActor | null = auth.status === "authenticated"
+    ? { name: auth.user.name, email: auth.user.email }
+    : null;
+  // UX only — PATCH /triage is gated on voice.write server-side, so a `tc` user who
+  // never sees these buttons gets a 403 if they call the endpoint anyway.
+  const canTriage = auth.status === "authenticated"
+    && (auth.user.isSuperAdmin || can(auth.user.permissions, "voice.write"));
+
+  const applyTriage = useCallback(async (
+    status: TriageStatus,
+    outcome?: TriageOutcome,
+    note?: string,
+  ) => {
+    if (!id || !call || call === "loading") return;
+    const previous = {
+      triageStatus: call.triageStatus,
+      triageOutcome: call.triageOutcome,
+      triageBy: call.triageBy,
+      triageAt: call.triageAt,
+      triageNote: call.triageNote,
+    };
+    const reopening = previous.triageStatus === "done" && status !== "done";
+
+    setCall((prev) => (prev && prev !== "loading"
+      ? {
+          ...prev,
+          triageStatus: status,
+          triageOutcome: outcome ?? null,
+          triageBy: triageActor,
+          triageAt: new Date().toISOString(),
+          triageNote: note ?? null,
+        }
+      : prev));
+
+    try {
+      const updated = await api.triageCall(id, {
+        triage_status: status,
+        ...(outcome ? { triage_outcome: outcome } : {}),
+        ...(note ? { triage_note: note } : {}),
+      });
+      setCall((prev) => (prev && prev !== "loading" ? { ...prev, ...normalizeUnifiedCall(updated) } : prev));
+      toast.success(
+        status === "done"
+          ? `Marked done — ${outcomeLabel(outcome)}`
+          : reopening
+          ? "Reopened"
+          : "Flagged for follow-up",
+      );
+    } catch (err) {
+      setCall((prev) => (prev && prev !== "loading" ? { ...prev, ...previous } : prev));
+      toast.error(err instanceof Error ? err.message : "Failed to save triage", { duration: 8000 });
+    }
+  }, [id, call, triageActor?.email, triageActor?.name]);
+
   // (M4) On-demand transcription. Auto-transcription is off, so a staff call shows only
   // metadata until someone decides it matters. The page reflects the transcript ONLY after
   // the server confirms it is persisted — no optimistic success.
@@ -776,7 +851,19 @@ export default function CallDetail() {
             <span className="font-mono">{formatDuration(displayCall.duration)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Header actions. Triage leads because closing the call out is what someone
+            is here to do; a read-only (tc) user sees the state pill and nothing else. */}
+        <div className="flex items-center gap-2 flex-wrap justify-end" data-testid="call-header-actions">
+          <TriageStatePill call={displayCall} />
+          {canTriage && (
+            <TriageActions
+              call={displayCall}
+              variant="labeled"
+              onFollowUp={() => { void applyTriage("needs_action"); }}
+              onDone={(_call, status, outcome, note) => { void applyTriage(status, outcome, note); }}
+              onReopen={() => { void applyTriage("needs_action"); }}
+            />
+          )}
           {canPlay && !audioError && audioSrc ? (
             <a href={audioSrc} download className="inline-flex items-center">
               <Button variant="outline" size="sm" asChild>
