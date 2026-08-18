@@ -515,9 +515,9 @@ nothing for RCM to yield to: contention backoff belongs only to the rejected
 option and is deliberately absent.
 
 The cost is **counted, not assumed**. `config/openDental.js` attributes requests
-and 429s to the calling module (`opts.module`, attribution only — it buys no
-priority) and records the worst wait a non-RCM caller took behind an RCM
-reservation. `GET /api/rcm/eob` surfaces all of it beside the extraction budget:
+and 429s by `opts.module` (attribution only — it buys no priority) and records
+the worst wait a non-RCM caller took behind an RCM reservation. `GET
+/api/rcm/eob` surfaces all of it beside the extraction budget:
 
 ```json
 "odPacing": {
@@ -527,6 +527,11 @@ reservation. `GET /api/rcm/eob` surfaces all of it beside the extraction budget:
   "worstWaitBehindRcmMs": 1194, "waitsBehindRcm": 31
 }
 ```
+
+The buckets are `rcm` and `other`, and **`other` is not a module** — RCM is
+simply the only caller passing the field today, so voice and TC share it.
+Tagging their calls is a main-line change, not an RCM one; until then read
+`other` as "everything else on this credential".
 
 Process-local and reset on restart — a trend indicator, not an SLA. Beau chose
 this on reasoning; he should be able to revisit it on data.
@@ -549,9 +554,11 @@ Rather than stretch the transport, the run is bounded to fit it:
 - `RCM_OD_BATCH_MATCH_BUDGET_MS` (default **90 s**) stops the loop **between**
   claims — never mid-claim, because a claim abandoned halfway has read charts and
   stored nothing, which is the one outcome worse than not starting it.
-- The response carries `outOfTime`, `budgetMs` and `skipped`, and the note says
-  *"Run it again to continue"*. A cap that does not announce itself reads as
-  "everything matched".
+- The response carries `outOfTime`, `budgetMs` and `skipped`, and the remittance
+  screen renders the stopped state **as its own line** rather than relying on
+  the note's wording — a boolean the server sends needs a rendering of its own,
+  or a later copy edit silently stops saying it. A cap that does not announce
+  itself reads as "everything matched".
 - **Unmatched claims go first** (`not_run` → `no_candidate` → `candidates` →
   `confirmed`, stable within each). In deposit order every press would redo the
   front of the list and never reach the tail.
@@ -640,25 +647,56 @@ Roles holding each, from [`config/permissions.js`](../backend/config/permissions
 | --- | --- | --- | --- |
 | `admin` | ✅ | ✅ | ✅ |
 | `office` | ✅ | ✅ | ✅ |
-| **`billing`** (new) | ✅ | ✅ | ❌ |
+| **`reviewer`** (new) | ✅ | ✅ | ❌ |
 | `tc` | ❌ | ❌ | ❌ |
 | `hygiene` | ❌ | ❌ | ❌ |
 
-> ⚠️ **`billing` is a NAME, not a decision.** It follows the platform's existing
-> job-shaped vocabulary (`tc`, `hygiene`), but it is the REVIEWER tier —
-> confirming, approving and posting stay with `admin`/`office`. If Beau wants a
-> biller who can commit, this wants renaming (or splitting) **before it reaches
-> anyone's account**. No roster row holds it today.
+> **The name says what it DOES.** This was `billing` for one review round, which
+> was the wrong word for a role that cannot perform the billing act: confirming,
+> approving and posting stay with `admin`/`office`. Beau ruled `reviewer` on
+> 2026-08-18. No roster row holds it, so it is still free to change.
 
-**How it is wired.** The mount stays
+### Releasing a confirmation is the write tier's act
+
+`POST /claims/:id/match` is a queue-tier route because running a match reads
+Open Dental and changes no chart. **The same route with `force: true` over a
+CONFIRMED claim is a different act**: it NULLs `od_claim_num`, `od_matched_by`
+and `od_match_confirmed_at` — and the UI's "Run again" button sends exactly that
+body for exactly that state. Gating the route on `rcm.queue` alone therefore let
+a reviewer who cannot confirm a match nonetheless **un-confirm** one, which
+inverts the tier at the one column Slice 6c reads to pick a chart.
+
+The route cannot know which act it is until the claim has been read, so the
+check lives in `runClaimMatch`, before any Open Dental call and before anything
+is written: `force` over a confirmed claim demands `rcm.write` and otherwise
+answers **403 `FORCE_REQUIRES_WRITE`**, with a message naming the fix ("ask an
+approver") rather than the rule. The refusal is audited `UNAUTHORIZED` — a
+refusal of access in the literal sense, unlike the routine 409s, which write
+nothing. Forcing an *unconfirmed* claim is still just a re-run and stays open to
+the queue tier.
+
+`config/permissions.js` exports `holdsPermission(req, action)` for this: the
+predicate behind the middleware, so an in-handler check allows exactly what a
+mount-level gate allows — same super_admin and machine-token order, one
+implementation.
+
+**How the tier is wired.** The mount stays
 `requireReadWrite('rcm.read', 'rcm.write')`, applied by HTTP method — so a new
 POST added to this module still inherits the STRONG action by omission, which is
 the property that pair was chosen for. The two queue POSTs are enumerated
-exceptions: `routes/rcm/index.js` exports `QUEUE_PATHS`, the mount passes it as
-`exempt`, and each of those routes carries its own
-`requirePermission('rcm.queue')`. `rcmGuard.test.js` asserts the mount uses the
-router's own list, that every exempted path has a gate of its own, and that
-`confirm-match` is **not** in it.
+exceptions: `routes/rcm/index.js` exports `QUEUE_PATHS` and the mount passes it
+as **`writeExempt`** — skipping only the WRITE gate, so a `GET` later added at
+one of those paths still needs `rcm.read` rather than nothing. Each route
+carries its own `requirePermission('rcm.queue')`.
+
+`rcmGuard.test.js` **walks the assembled router** rather than grepping source:
+every `QUEUE_PATHS` regex must resolve to at least one real route, every route
+it matches must carry an `rcm.queue` gate, no GET may match one at all, and
+`confirm-match` must not be in the list. Middleware built by
+`requirePermission` carries its own `permissionAction`, which is what makes that
+walk able to see *which* tier a route is gated on rather than merely that it is
+gated. A runtime negative sits beside it: `tc` → `POST /remittances/:id/match`
+→ 403.
 
 Routes name an ACTION, never a role — the role lists live in one file.
 
@@ -683,6 +721,7 @@ is the only question this log exists to answer.
 | `POST /remittances/:id/match` | READ | `rcm_remittance_match` | the batch id — **the run, written before any claim is touched** |
 | ” | READ | `rcm_claim_match` | the claim id — **one per claim actually read** |
 | `POST /claims/:id/match?force` over a confirmation | UPDATE | `rcm_claim_match_superseded` | the claim id |
+| ” refused for want of `rcm.write` | READ / UNAUTHORIZED | `rcm_claim_match` | the claim id |
 | `POST /claims/:id/confirm-match` | UPDATE | `rcm_claim_match` | the claim id |
 | `POST /claims/:id/review` | UPDATE | `rcm_claim_review` | the claim id |
 | `GET /uploads/:id/document` | READ | `rcm_source_document` | the upload id |
@@ -696,6 +735,12 @@ claims" has no single id.
 Three corrections from the review round, each of which had made the trail lie in
 a different direction:
 
+- **A batch claim whose read failed part way through recorded nothing.**
+  `onPhiRead` fires after `findClaimCandidates` returns, so a claim whose
+  `/patients` call succeeded and whose `/claims` call then 503'd had names and
+  dates of birth off the wire while the batch's `catch` wrote `failed` and moved
+  on. The single-claim route had handled this since the previous round; the
+  batch now mirrors it with an `ERROR` row per affected chart.
 - **The batch run's obligation belonged to claim zero.** `onPhiRead` was handed
   only to the first claim, so if that claim threw before reaching the PHI point —
   a claim somebody had already confirmed, the ordinary outcome of re-running a
@@ -788,12 +833,31 @@ candidates, evidence, the OD amounts *as read*, per-line ClaimProcNums, the
 patients considered, the candidates examined and NOT offered and why, every note
 and truncation, and `fetchedAt`.
 
-`confirmMatch` refuses a snapshot whose `version` is not the current one and a
-snapshot stamped with a different office — the latter **unconditionally**, since
+`confirmMatch` holds the claim row with **`SELECT … FOR UPDATE`** for the length
+of its transaction and re-asserts `od_match_status <> 'confirmed'` in its own
+UPDATE. Only match-vs-confirm was closed in the previous round; confirm-vs-
+confirm and force-vs-confirm read on one statement and wrote on another with an
+`rcm_user_map` upsert in between, so the second write landed on top of the first
+with no error — one person's ClaimNum, attribution and per-line ClaimProcNums
+replaced by another's. Under the lock, re-confirming the **same** ClaimNum is
+idempotent and returns the recorded decision (`alreadyConfirmed: true`); a
+**different** one is 409 and the first decision stands.
+
+`confirmMatch` also refuses a snapshot whose `version` is not the current one
+and a snapshot stamped with a different office — the latter **unconditionally**, since
 a snapshot that cannot say which practice it was read from is not untrustworthy,
 it is unreadable. v2 renamed `confirmed.odAmountsAsRead.claimFeeCents` to
 `claimHeaderFeeCents` and added `billedCents`; see [Two billed
 figures](#two-billed-figures-and-which-one-6c-uses).
+
+**A snapshot of the wrong shape is not SERVED either.** Refusing it at confirm
+time while handing it to the screen meant the panel read fields that version
+does not have — `nameRuleApplied` came back `undefined`, so every legacy claim
+rendered "this patient is already linked…", and the billed total rendered as a
+formatted `undefined`. `loadClaimBundle` now returns `matchSnapshot: null` plus
+`matchSnapshotStale: true`, and the panel says a match ran under an earlier
+version and offers to run it again — which is neither "nobody has looked" nor a
+confident wrong number.
 
 It is a record of a past observation, **never a cache to serve from**. Nothing in
 this slice or the next reads a dollar figure out of it and calls it current.
@@ -897,6 +961,7 @@ a decision that has not been made yet.
 | **PLB has no breakdown** | A dollar total, no per-adjustment detail, and the "link to the manual SOP" promised in the route comment is prose rather than an anchor in either page. | The SOP does not exist as a document yet. |
 | **EOB-path review reasons miss the label map** | `deriveClaimReviewReasons` emits `low_confidence` and `uncertain_line:<N>`; the map has `low_confidence_extraction` and `uncertain_line`. Thirteen more have no entry. | The fallback humanizes them so nothing is dropped — the honesty rule holds — but the two labels written for that path never fire. |
 | **`GET /remittances/:id` is unbounded and N+1** | `claimsByBatch` has no LIMIT and `loadClaimBundle` runs three queries per claim. A several-hundred-claim carrier check issues ~1200 concurrent queries and returns every patient name on it in one body behind one audit row. | Real carrier checks in this practice are single digits; the shape is wrong for a large payer. |
+| **The claim LIST projects one integer out of the snapshot** | `(od_match_snapshot->>'rejectedCandidates')::int` on every list read, so a remittance's claim rows can tell the two negatives apart. It is a jsonb read per row on a path that is already unbounded (below). | Cheap at real remittance sizes; the shape to fix is the unbounded list, not the projection. |
 | **Non-uuid path ids 500 instead of 404** | And `FakeRcmDb`'s string ids (`'b-1'`, `'c-1'`) structurally hide it: every cross-office 404 test runs on values production could never mint. | Needs a uuid guard at the router and fixture ids that look like production. |
 | **`rcm_user_map.platform_email` has no unique constraint** | A Slice 2 legacy-import row racing a first RCM action produces two rows for one person — the split attribution D-5 exists to prevent. Step 1 of `resolveRcmActor` also does not filter `active = true`. | A migration plus a de-dupe pass over any rows already imported. |
 | **`eob.js` resolves the actor on a different pooled connection** | It calls `resolveRcmActor(pool, …)` and then INSERTs, contradicting `rcmUserMap.js`'s own header ("MUST be called with the same connection/transaction as the write it attributes"). Safe today only because there is no open transaction. | Breaks silently the moment someone wraps that route in a `BEGIN`. |

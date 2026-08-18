@@ -14,8 +14,9 @@
  *   office   everything except /api/admin
  *   tc       TC module + READ-ONLY voice
  *   hygiene  hygiene intake/submissions/inbox only
- *   billing  RCM review workbench: read it and WORK it, but commit nothing
- *            (added by RCM Slice 6a, decision D-9 — see the rcm block below)
+ *   reviewer RCM review workbench: read it and WORK it, but commit nothing
+ *            (added by RCM Slice 6a, decision D-9 — see the rcm block below).
+ *            Named for what it DOES: it cannot perform the billing act.
  *
  * Above them sits the PLATFORM tier: a super_admin (platform_admin row) acts as
  * tenant 'admin' everywhere and short-circuits every check below.
@@ -25,7 +26,7 @@
  * inheriting a permission set that was never chosen for it.
  */
 
-/** @typedef {'admin'|'office'|'tc'|'hygiene'|'billing'} TenantRole */
+/** @typedef {'admin'|'office'|'tc'|'hygiene'|'reviewer'} TenantRole */
 
 /**
  * Action → roles that hold it. Frozen: this is configuration, and a route that
@@ -59,7 +60,7 @@ const PERMISSIONS = Object.freeze({
    * THREE TIERS, NOT TWO (decision D-9).
    *
    * The workbench asks a person to look at a remittance and judge it, and that
-   * is a different job from committing the judgement. A `billing` user can open
+   * is a different job from committing the judgement. A `reviewer` user can open
    * the workbench, read a remittance, download the source document, RUN A MATCH
    * (which reads Open Dental and changes nothing about a chart) and MARK A
    * CLAIM REVIEWED with a note (worklist hygiene, no Open Dental effect at
@@ -72,7 +73,7 @@ const PERMISSIONS = Object.freeze({
    */
 
   /** Read the RCM surface: claim/batch/queue counts, the claims list, the workbench. */
-  'rcm.read': Object.freeze(['admin', 'office', 'billing']),
+  'rcm.read': Object.freeze(['admin', 'office', 'reviewer']),
   /**
    * Work the queue: run a match, mark a claim reviewed.
    *
@@ -82,7 +83,7 @@ const PERMISSIONS = Object.freeze({
    * "the carrier owes a corrected EOB, there is nothing here to post" has no way
    * to clear their queue except by confirming matches they do not believe in.
    */
-  'rcm.queue': Object.freeze(['admin', 'office', 'billing']),
+  'rcm.queue': Object.freeze(['admin', 'office', 'reviewer']),
   /**
    * Any OTHER RCM mutation: uploading an EOB or an 835, confirming a match, and
    * (from 6b) approving, enqueueing and posting.
@@ -103,7 +104,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 /** Every role that appears anywhere in the map, for validation and PR C's UI. */
-const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'billing']);
+const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'reviewer']);
 
 /**
  * Does `role` hold `action`?
@@ -165,6 +166,30 @@ function isMachineCaller(req) {
 }
 
 /**
+ * Does THIS REQUEST hold `action`? The predicate behind the guard below.
+ *
+ * Exported because a permission is not always a whole route. RCM's match
+ * endpoint is the case that forced it: running a match is the queue tier, but
+ * running one with `force` over a CONFIRMED claim NULLs `od_claim_num` — it
+ * releases a decision, which is the write tier's act. The route cannot know
+ * which it is until it has read the claim, so the check has to happen inside
+ * the handler, and it must allow exactly what the middleware allows or the two
+ * would disagree about super_admins and machine tokens.
+ *
+ * Same order, same fail-closed behaviour, one implementation.
+ *
+ * @param {import('express').Request} req
+ * @param {string} action
+ * @returns {boolean}
+ */
+function holdsPermission(req, action) {
+  if (!req) return false;
+  if (req.isSuperAdmin === true) return true;
+  if (isMachineCaller(req)) return true;
+  return roleHasPermission(req.userRole, action);
+}
+
+/**
  * Express guard factory: 403 unless the caller holds `action`.
  *
  * Mount AFTER tenantContext() (which attaches req.userRole / req.isSuperAdmin).
@@ -198,15 +223,13 @@ function requirePermission(action, { exempt = [] } = {}) {
     );
   }
 
-  return function requirePermissionMiddleware(req, res, next) {
+  function requirePermissionMiddleware(req, res, next) {
     const subPath = req.path || '';
     for (const rx of exempt) {
       if (rx.test(subPath)) return next();
     }
 
-    if (req.isSuperAdmin === true) return next();
-    if (isMachineCaller(req)) return next();
-    if (roleHasPermission(req.userRole, action)) return next();
+    if (holdsPermission(req, action)) return next();
 
     return res.status(403).json({
       success: false,
@@ -214,7 +237,18 @@ function requirePermission(action, { exempt = [] } = {}) {
       code: 'FORBIDDEN',
       action,
     });
-  };
+  }
+
+  /*
+   * THE RETURNED MIDDLEWARE CARRIES ITS ACTION.
+   *
+   * Every gate is the same function under the same name, so a test walking a
+   * router's stack could see that a route was gated but not by WHAT — which is
+   * the half that matters when the question is "is this exempted path still
+   * protected, and by the right tier?". routes/rcm/rcmGuard.test.js reads it.
+   */
+  requirePermissionMiddleware.permissionAction = action;
+  return requirePermissionMiddleware;
 }
 
 /** HTTP methods that only read. Everything else counts as a write. */
@@ -235,14 +269,21 @@ const READ_METHODS = Object.freeze(['GET', 'HEAD', 'OPTIONS']);
  * runs after this one — the specific gate narrows the general one, never the
  * other way round.
  *
+ * `exempt` skips BOTH gates. `writeExempt` skips only the write one, so the
+ * path still needs `readAction` to be read — which is what a caller wants when
+ * a specific POST is being widened to a lower tier rather than opened up. RCM's
+ * queue routes use it: exempting them from both would mean a `GET` later added
+ * at one of those paths was readable by any module-entitled role, because the
+ * exemption is matched on PATH and express would happily route it.
+ *
  * @param {string} readAction
  * @param {string} writeAction
- * @param {{ exempt?: RegExp[] }} [opts]
+ * @param {{ exempt?: RegExp[], writeExempt?: RegExp[] }} [opts]
  * @returns {import('express').RequestHandler}
  */
-function requireReadWrite(readAction, writeAction, { exempt = [] } = {}) {
+function requireReadWrite(readAction, writeAction, { exempt = [], writeExempt = [] } = {}) {
   const readGate = requirePermission(readAction, { exempt });
-  const writeGate = requirePermission(writeAction, { exempt });
+  const writeGate = requirePermission(writeAction, { exempt: [...exempt, ...writeExempt] });
   return function requireReadWriteMiddleware(req, res, next) {
     const gate = READ_METHODS.includes(req.method) ? readGate : writeGate;
     return gate(req, res, next);
@@ -278,6 +319,7 @@ module.exports = {
   PERMISSIONS,
   TENANT_ROLES,
   roleHasPermission,
+  holdsPermission,
   permissionsForRole,
   requirePermission,
   requireReadWrite,

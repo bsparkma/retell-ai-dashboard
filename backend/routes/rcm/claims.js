@@ -45,7 +45,7 @@ const tenantDb = require('../../platform/tenantDb');
 const odOffices = require('../../config/odOffices');
 const { h, actorEmail, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
 const { audit } = require('../../platform/audit');
-const { requirePermission } = require('../../config/permissions');
+const { requirePermission, holdsPermission } = require('../../config/permissions');
 const { CLAIM_STATUSES } = require('./summary');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
 const matchService = require('./matchService');
@@ -220,6 +220,9 @@ function respondToMatchError(res, office, err, { req, claimId, phiAudited = fals
    *  - `CLAIM_NOT_FOUND` — an id that resolved to nothing for this office,
    *    which also covers "belongs to the other practice". That IS the probe
    *    worth recording. UNAUTHORIZED.
+   *  - `FORCE_REQUIRES_WRITE` — somebody without posting permission tried to
+   *    release a confirmed match. A refusal of access in the literal sense, and
+   *    exactly what UNAUTHORIZED is for.
    *  - everything else (409 conflicts, an unconnected office) — no row. No PHI
    *    was read and nobody was refused access to anything.
    */
@@ -228,6 +231,8 @@ function respondToMatchError(res, office, err, { req, claimId, phiAudited = fals
       void auditRcmDenial(req, 'rcm_claim_match', claimId, { office, result: 'ERROR' });
     } else if (err && err.code === 'CLAIM_NOT_FOUND') {
       void auditRcmDenial(req, 'rcm_claim', claimId, { office });
+    } else if (err && err.code === 'FORCE_REQUIRES_WRITE') {
+      void auditRcmDenial(req, 'rcm_claim_match', claimId, { office });
     }
   }
 
@@ -319,7 +324,7 @@ router.get(
 
 /**
  * The queue tier (D-9). These two POSTs are exempt from the mount's
- * rcm.read/rcm.write pair and gated here instead, so a `billing` reviewer can
+ * rcm.read/rcm.write pair and gated here instead, so a `reviewer` can
  * work the queue without holding the permission that commits a chart linkage.
  *
  * Named as an ACTION, never a role — the role list lives in one file
@@ -338,6 +343,18 @@ router.post(
     // decision — "re-run allowed explicitly, never silent overwrite".
     const force = req.body && req.body.force === true;
 
+    /*
+     * …AND ASKING FOR IT IS THE WRITE TIER'S ACT (D-9).
+     *
+     * The route is gated on `rcm.queue` because running a match reads Open
+     * Dental and changes no chart. `force` over a CONFIRMED claim is a
+     * different act: it NULLs `od_claim_num`, the column 6c reads to pick a
+     * chart. Evaluated here and enforced in runClaimMatch, which is where the
+     * claim's status is actually known — a reviewer forcing an UNCONFIRMED
+     * claim is still just a re-run and is allowed.
+     */
+    const mayReleaseConfirmed = holdsPermission(req, 'rcm.write');
+
     let result;
     // So a failure downstream knows the disclosure is already on record and
     // does not file the same operation a second time under a different result.
@@ -352,6 +369,7 @@ router.post(
       // auditRcmRead throws AuditError and h() answers 500 with nothing stored.
       result = await matchService.runClaimMatch(req, office, claimId, {
         force,
+        mayReleaseConfirmed,
         onPhiRead: async (ctx) => {
           await auditRcmRead(req, 'rcm_claim_match', { office, resourceId: claimId });
           /*

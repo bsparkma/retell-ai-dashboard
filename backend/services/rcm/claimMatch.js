@@ -442,8 +442,14 @@ function summariseLines(claimProcs, proceduresByProcNum) {
      * claim-level row.
      */
     const raw = cp.ProcNum;
-    const stated = raw !== undefined && raw !== null && raw !== '';
-    const procNum = Number(raw);
+    // `Number()` is far too generous to lean on: '  ', [], false and null all
+    // coerce to 0, which is OD's claim-level row — the one value that means
+    // "there is no procedure here and that is fine". Only an actual number or a
+    // string that is entirely digits counts as OD having STATED one.
+    const stated =
+      (typeof raw === 'number' && Number.isFinite(raw)) ||
+      (typeof raw === 'string' && /^\s*-?\d+\s*$/.test(raw));
+    const procNum = stated ? Number(raw) : NaN;
     const usable = stated && Number.isFinite(procNum);
     const proc = usable ? proceduresByProcNum.get(procNum) : undefined;
     // WHY the row is missing (an unentitled resource, a page cap, a procedure

@@ -45,7 +45,7 @@ export function can(
  * them.
  *
  * A hygienist's home is the inbox, not a dashboard they cannot read. `tc` gets
- * the TC dashboard. A `billing` reviewer holds exactly one surface, so sending
+ * the TC dashboard. A `reviewer` holds exactly one surface, so sending
  * them to a module hub with one tile on it would be a click for nothing.
  * office/admin keep the module hub they have today — they may hold several
  * modules, and picking one for them would be a regression.
@@ -55,7 +55,7 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   office: "/home",
   tc: "/tc/dashboard",
   hygiene: "/tc/hygiene/inbox",
-  billing: "/rcm/remittances",
+  reviewer: "/rcm/remittances",
 };
 
 /** The fallback home for a user whose role we could not resolve. */

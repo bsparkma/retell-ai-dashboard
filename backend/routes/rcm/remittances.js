@@ -487,6 +487,10 @@ router.post(
       // Fail-closed per claim: a claim whose read cannot be recorded is
       // reported as failed rather than matched, and its snapshot is not stored.
       onPhiRead: (ctx) => auditRcmRead(req, 'rcm_claim_match', { office, resourceId: ctx.claimId }),
+      // A read that got names off the wire and then failed is a disclosure that
+      // did not complete — ERROR, not a refusal, and never silence.
+      onReadFailed: (ctx) =>
+        auditRcmDenial(req, 'rcm_claim_match', ctx.claimId, { office, result: 'ERROR' }),
     });
 
     return res.json({ success: true, office, batchId, ...result });

@@ -50,7 +50,7 @@ import {
   day,
   lineFlagLabel,
   lineFlagTone,
-  MATCH_STATUS_LABELS,
+  matchStatusLabel,
   MATCH_STATUS_TONE,
   money,
   NO_ACTION_REASONS,
@@ -363,8 +363,37 @@ export default function RemittanceDetailPage() {
                       : `${row.candidateCount} candidate${row.candidateCount === 1 ? "" : "s"}${row.ambiguous ? " — too close to call, needs a person" : ""}`}
               </li>
             ))}
-            {matchResult.note && <li className="text-amber-700 dark:text-amber-400">{matchResult.note}</li>}
           </ul>
+
+          {/*
+            THE UNFINISHED STATE IS ITS OWN LINE, not a sentence in a note.
+            A run stopped by the clock leaves claims nobody has looked at, and
+            "the note happened to mention it" is the same fragility that made
+            `skipped` invisible: a boolean the server sends deserves a rendering
+            of its own, so the screen cannot quietly stop saying it.
+          */}
+          {matchResult.outOfTime ? (
+            <div
+              className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+              data-testid="match-out-of-time"
+            >
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                Stopped at the {Math.round(matchResult.budgetMs / 1000)}-second budget —{" "}
+                {matchResult.skipped} claim{matchResult.skipped === 1 ? "" : "s"} not yet examined.
+                Press Match again to continue; claims nobody has looked at go first.
+              </span>
+            </div>
+          ) : (
+            matchResult.skipped > 0 && (
+              <div
+                className="mt-2 text-xs text-amber-700 dark:text-amber-400"
+                data-testid="match-skipped"
+              >
+                {matchResult.note}
+              </div>
+            )
+          )}
         </div>
       )}
 
@@ -455,7 +484,7 @@ function ClaimCard({
               className={`rounded-full px-2 py-0.5 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
               data-testid={`claim-match-state-${claim.claimId}`}
             >
-              {MATCH_STATUS_LABELS[claim.odMatchStatus]}
+              {matchStatusLabel(claim.odMatchStatus, claim.rejectedCandidates)}
               {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
             </span>
             {claim.reviewedAt && (

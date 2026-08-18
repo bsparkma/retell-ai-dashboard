@@ -446,6 +446,36 @@ test('an ABSENT ProcNum is unknown - not mistaken for the claim-level row', () =
   );
 });
 
+test('only a NUMBER counts as Open Dental having stated a ProcNum', () => {
+  /*
+   * `Number()` coerces far more than it should be trusted to: '  ', [] and
+   * false all land on 0, which is the one value that means "OD's claim-level
+   * row, nothing to delete". Anything that is not actually a number — or a
+   * string that is entirely digits, which is how a JSON field occasionally
+   * arrives — is unknown.
+   */
+  const lines = m.summariseLines(
+    [
+      claimProc({ ClaimProcNum: 1, ProcNum: '  ' }),
+      claimProc({ ClaimProcNum: 2, ProcNum: [] }),
+      claimProc({ ClaimProcNum: 3, ProcNum: false }),
+      claimProc({ ClaimProcNum: 4, ProcNum: true }),
+      claimProc({ ClaimProcNum: 5, ProcNum: 'abc' }),
+      claimProc({ ClaimProcNum: 6, ProcNum: '0' }), // digits: OD's claim-level row
+      claimProc({ ClaimProcNum: 7, ProcNum: '8801' }),
+    ],
+    new Map([[8801, procedure()]])
+  );
+  assert.deepEqual(
+    lines.map((l) => l.deleted),
+    ['unknown', 'unknown', 'unknown', 'unknown', 'unknown', false, false]
+  );
+  assert.deepEqual(
+    lines.map((l) => l.procNum),
+    [null, null, null, null, null, 0, 8801]
+  );
+});
+
 test('an unknown line is EXCLUDED from every amount', () => {
   const scored = m.scoreCandidate(proposal(), unreadable());
   // $210 live + $100 unreadable. Only the live one counts.

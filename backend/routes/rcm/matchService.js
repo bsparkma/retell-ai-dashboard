@@ -128,6 +128,17 @@ const CLAIM_LIST_COLUMNS = [
   'reviewed_by',
   'review_note',
   'created_at',
+  /*
+   * A PROJECTION OF THE SNAPSHOT, not the snapshot.
+   *
+   * The list has to be able to tell "Open Dental had nothing" from "Open Dental
+   * had things and none could be offered" — otherwise the screen billers
+   * actually triage from goes on saying the thing the whole fix exists to stop
+   * saying. It cannot carry `od_match_snapshot` to do it: that is the full
+   * candidate payload, Open Dental patient NAMES included, once per claim on a
+   * check. One integer answers the question.
+   */
+  "(od_match_snapshot->>'rejectedCandidates')::int AS od_match_rejected",
 ].join(', ');
 
 /** The detail view adds the snapshot; everything else is the same read. */
@@ -201,6 +212,8 @@ function toClaimSummary(row) {
     /** The extractor's own 0–100 confidence. NOT the OD match confidence. */
     extractionConfidence: num(row.confidence),
     odMatchStatus: row.od_match_status || 'not_run',
+    /** Examined and not offered. 0 when no match has run. */
+    rejectedCandidates: num(row.od_match_rejected),
     odMatchAt: iso(row.od_match_at),
     odMatchConfirmedAt: iso(row.od_match_confirmed_at),
     odMatchedByKey: row.od_matched_by || null,
@@ -296,11 +309,30 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
   }
 
   const summary = toClaimSummary(row);
+
+  /*
+   * A SNAPSHOT OF THE WRONG SHAPE IS NOT SERVED AS IF IT FIT.
+   *
+   * `confirmMatch` already refuses one — but the GET handed it over anyway, and
+   * the panel then read fields that version does not have: `nameRuleApplied`
+   * came back `undefined`, so every legacy claim rendered "this patient is
+   * already linked…", and `billedCents` rendered as a formatted `undefined`.
+   * A screen confidently stating something it cannot know is the failure this
+   * whole slice is built to avoid; the honest answer is to say the record is
+   * from an earlier version and offer to run it again.
+   */
+  const stored = row.od_match_snapshot || null;
+  const usable = stored && Number(stored.version) === SNAPSHOT_VERSION;
+
   return {
     ...summary,
     lines: lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || [])),
     ...(includeSnapshot
-      ? { matchSnapshot: row.od_match_snapshot || null }
+      ? {
+          matchSnapshot: usable ? stored : null,
+          /** True when there IS one and it predates the current shape. */
+          matchSnapshotStale: Boolean(stored) && !usable,
+        }
       : {}),
   };
 }
@@ -348,12 +380,19 @@ function odTransportFor(office) {
  * @param {import('express').Request} req
  * @param {string} office
  * @param {string} claimId
- * @param {{ force?: boolean, onPhiRead?: ((ctx: { claimId: string, force: boolean,
- *   supersedes: object|null }) => Promise<void>)|null }} [opts] force re-runs
- *   over a confirmed match; `onPhiRead` is awaited BEFORE anything is stored.
+ * @param {{ force?: boolean, mayReleaseConfirmed?: boolean,
+ *   onPhiRead?: ((ctx: { claimId: string, force: boolean,
+ *   supersedes: object|null }) => Promise<void>)|null }} [opts] `force` re-runs
+ *   over a confirmed match and REQUIRES `mayReleaseConfirmed`; `onPhiRead` is
+ *   awaited BEFORE anything is stored.
  * @returns {Promise<{ status: string, claimId: string, snapshot: object }>}
  */
-async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = null } = {}) {
+async function runClaimMatch(
+  req,
+  office,
+  claimId,
+  { force = false, mayReleaseConfirmed = false, onPhiRead = null } = {}
+) {
   // The snapshot is loaded, not skipped: a forced re-run has to carry the
   // confirmation it is about to destroy into the new one (see `supersedes`).
   const claim = await tenantDb.withTenantDb(req, (pool) =>
@@ -365,11 +404,32 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
     err.code = 'CLAIM_NOT_FOUND';
     throw err;
   }
-  if (claim.odMatchStatus === 'confirmed' && !force) {
-    const err = new Error('This claim already has a confirmed Open Dental match');
-    err.httpStatus = 409;
-    err.code = 'MATCH_ALREADY_CONFIRMED';
-    throw err;
+  if (claim.odMatchStatus === 'confirmed') {
+    if (!force) {
+      const err = new Error('This claim already has a confirmed Open Dental match');
+      err.httpStatus = 409;
+      err.code = 'MATCH_ALREADY_CONFIRMED';
+      throw err;
+    }
+    /*
+     * RELEASING A CONFIRMATION IS THE WRITE TIER'S ACT (D-9).
+     *
+     * A forced re-run NULLs `od_claim_num`, `od_matched_by` and
+     * `od_match_confirmed_at` — the column Slice 6c reads to pick a chart, and
+     * the attribution behind it. Gating the ROUTE on `rcm.queue` alone let a
+     * reviewer who cannot confirm a match nonetheless UN-confirm one, which
+     * inverts the tier at the one seam where it matters. The route cannot know
+     * which act this is until the claim has been read, so the check lives here,
+     * before any Open Dental call and before anything is written.
+     */
+    if (!mayReleaseConfirmed) {
+      const err = new Error(
+        'Releasing a confirmed match needs posting permission — ask an approver to re-run this claim'
+      );
+      err.httpStatus = 403;
+      err.code = 'FORCE_REQUIRES_WRITE';
+      throw err;
+    }
   }
 
   /**
@@ -521,7 +581,7 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
  * @param {string} office
  * @param {ReadonlyArray<{ claimId: string, odMatchStatus?: string }|string>} claims
  */
-async function runBatchMatch(req, office, claims, { onPhiRead = null } = {}) {
+async function runBatchMatch(req, office, claims, { onPhiRead = null, onReadFailed = null } = {}) {
   /*
    * UNMATCHED FIRST, so pressing the button again makes PROGRESS.
    *
@@ -586,6 +646,21 @@ async function runBatchMatch(req, office, claims, { onPhiRead = null } = {}) {
         ambiguous: out.snapshot.ambiguous,
       });
     } catch (err) {
+      /*
+       * A CLAIM WHOSE READ FAILED PART WAY THROUGH STILL READ A CHART.
+       *
+       * `onPhiRead` fires after `findClaimCandidates` returns, so a claim whose
+       * /patients call succeeded and whose /claims call then 503'd lands here
+       * with names and dates of birth already off the wire and nothing
+       * recorded. The single-claim route handles this through
+       * respondToMatchError; the batch swallowed it into a `failed` result.
+       * Best-effort like every other refusal path — the run is already
+       * degraded, and turning a partial failure into a 500 would discard the
+       * claims that did work.
+       */
+      if (onReadFailed && err instanceof odClaimReads.OdReadError) {
+        await onReadFailed({ claimId: todo[i].claimId });
+      }
       // A confirmed claim is skipped rather than reported as a failure — it is
       // the expected outcome of re-running a batch someone has partly worked.
       const code = err && err.code;
@@ -641,8 +716,19 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
     try {
       await client.query('BEGIN');
 
+      /*
+       * FOR UPDATE — the row is LOCKED for the length of this transaction.
+       *
+       * Two billers confirming the same claim, or a confirm racing a forced
+       * re-run, both read this row and then write it. Without the lock the
+       * second write lands on top of the first with no error: one person's
+       * ClaimNum and attribution silently replaced by another's, and the
+       * per-line ClaimProcNums below rewritten to a different candidate's.
+       * The re-asserted status in the UPDATE's WHERE is the second half of the
+       * same guard — see there.
+       */
       const claims = await client.query(
-        `SELECT ${CLAIM_DETAIL_COLUMNS} FROM rcm_claims WHERE office_id = $1 AND claim_id = $2`,
+        `SELECT ${CLAIM_DETAIL_COLUMNS} FROM rcm_claims WHERE office_id = $1 AND claim_id = $2 FOR UPDATE`,
         [office, claimId]
       );
       if (claims.rows.length === 0) {
@@ -654,6 +740,37 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
       }
       const row = claims.rows[0];
       const snapshot = row.od_match_snapshot || null;
+
+      /*
+       * ALREADY CONFIRMED, UNDER THE LOCK — decided here, not by the WHERE.
+       *
+       * Same ClaimNum is a double-click or a retry: the decision it asks for is
+       * already recorded, so it returns the recorded one rather than an error
+       * about a race with itself. A DIFFERENT ClaimNum is a genuine conflict
+       * between two people, and the first decision stands — the same shape the
+       * voice side uses for ALREADY_SENT_TO_CHART.
+       */
+      if (row.od_match_status === 'confirmed') {
+        const existing = row.od_claim_num == null ? null : Number(row.od_claim_num);
+        if (existing === Number(odClaimNum)) {
+          await client.query('COMMIT');
+          const confirmed = (snapshot && snapshot.confirmed) || {};
+          return {
+            claimId,
+            odClaimNum: existing,
+            confirmedAt: confirmed.confirmedAt || iso(row.od_match_confirmed_at),
+            confirmedBy: confirmed.confirmedBy || row.od_matched_by || null,
+            alreadyConfirmed: true,
+          };
+        }
+        await client.query('ROLLBACK');
+        const err = new Error(
+          `This claim is already linked to Open Dental claim ${existing} — release that first`
+        );
+        err.httpStatus = 409;
+        err.code = 'MATCH_ALREADY_CONFIRMED';
+        throw err;
+      }
 
       // Confirming requires a match to confirm. Accepting a bare ClaimNum from
       // the request body would make this endpoint a way to write an arbitrary
@@ -745,10 +862,20 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
         },
       };
 
-      await client.query(
+      /*
+       * AND THE STATUS IS RE-ASSERTED IN THE WHERE, like the match's own write.
+       *
+       * The lock above serializes; this is what makes the loser of that race
+       * find out rather than overwrite. A claim that became `confirmed` between
+       * the snapshot being read and this statement — which the lock now
+       * prevents, but a future refactor that drops it would re-open — matches
+       * nothing, and the 409 below says whose decision stands.
+       */
+      const written = await client.query(
         `UPDATE rcm_claims SET od_match_status = 'confirmed', od_claim_num = $3, od_patient_id = $4, ` +
           `od_match_confirmed_at = now(), od_matched_by = $5, od_match_snapshot = $6, ` +
-          `status = 'matched', updated_at = now() WHERE office_id = $1 AND claim_id = $2`,
+          `status = 'matched', updated_at = now() ` +
+          `WHERE office_id = $1 AND claim_id = $2 AND od_match_status <> 'confirmed'`,
         [
           office,
           claimId,
@@ -758,6 +885,14 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
           JSON.stringify(nextSnapshot),
         ]
       );
+
+      if (written.rowCount === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('Somebody confirmed this claim first');
+        err.httpStatus = 409;
+        err.code = 'MATCH_ALREADY_CONFIRMED';
+        throw err;
+      }
 
       // Per-line ClaimProcNums. A line the pairing could not resolve is set to
       // NULL rather than left at whatever a previous match wrote — a stale

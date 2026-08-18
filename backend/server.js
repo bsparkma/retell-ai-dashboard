@@ -326,12 +326,13 @@ async function bootstrap() {
   // routes/rcm/index.js for the ordering constraint that keeps it so.
   //
   // QUEUE_PATHS are the module's own enumerated exceptions (D-9): POSTs a
-  // read-tier reviewer must be able to press. They are exempt from the pair
-  // here and carry requirePermission('rcm.queue') at the route.
+  // read-tier reviewer must be able to press. `writeExempt`, not `exempt` — a
+  // GET later added at one of those paths still needs rcm.read. They carry
+  // requirePermission('rcm.queue') at the route.
   app.use(
     '/api/rcm',
     requireModule('rcm'),
-    requireReadWrite('rcm.read', 'rcm.write', { exempt: rcmRouter.QUEUE_PATHS }),
+    requireReadWrite('rcm.read', 'rcm.write', { writeExempt: rcmRouter.QUEUE_PATHS }),
     rcmRouter
   );
 

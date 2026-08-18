@@ -176,8 +176,16 @@ class FakeRcmDb {
   }
 
   async query(sql, params = []) {
-    const text = sql.replace(/\s+/g, ' ').trim();
-    this.log.push({ sql: text, params: params || [] });
+    const raw = sql.replace(/\s+/g, ' ').trim();
+    this.log.push({ sql: raw, params: params || [] });
+
+    /*
+     * `FOR UPDATE` is a LOCK HINT, and this fake is single-threaded — there is
+     * nothing to lock against. It is stripped rather than rejected so real SQL
+     * parses, and the UNSTRIPPED statement stays in `this.log`, which is how a
+     * test asserts the lock was actually requested.
+     */
+    const text = raw.replace(/ FOR UPDATE$/i, '');
 
     if (this.failWhen && this.failWhen(text)) {
       throw new Error(`FakeRcmDb: injected failure on: ${text.slice(0, 60)}`);
@@ -458,10 +466,32 @@ function key(v) {
   return typeof v === 'number' ? v : String(v);
 }
 
+/**
+ * A jsonb field pulled out under an alias — `(col->>'key')::int AS alias`.
+ *
+ * The claim LIST projects one integer out of `od_match_snapshot` rather than
+ * shipping the whole snapshot, so the fake has to model the extraction or the
+ * list tests would run against a column that is always undefined. jsonb is held
+ * PARSED here (see JSONB_COLUMNS), exactly as node-postgres hands it over, so
+ * the `->>`-plus-cast is a property read plus a Number().
+ */
+const JSONB_PROJECTION = /^\((\w+)->>'(\w+)'\)(?:::(\w+))? AS (\w+)$/;
+
 /** Keep only the named columns, so a route reading an unselected one gets undefined. */
 function project(row, colList) {
   const out = {};
-  for (const c of colList.split(',').map((s) => s.trim())) out[c] = row[c];
+  for (const c of colList.split(',').map((s) => s.trim())) {
+    const m = c.match(JSONB_PROJECTION);
+    if (m) {
+      const [, col, field, cast, alias] = m;
+      const doc = row[col];
+      const value = doc && typeof doc === 'object' ? doc[field] : undefined;
+      // pg returns NULL for a missing key, and `::int` on NULL is still NULL.
+      out[alias] = value == null ? null : cast === 'int' ? Number(value) : String(value);
+      continue;
+    }
+    out[c] = row[c];
+  }
   return out;
 }
 
@@ -653,7 +683,7 @@ const REGISTRY_KEYS = [
  * @param {{
  *   modules?: string[],
  *   user?: { email: string, name?: string, tenantId?: string } | null,
- *   role?: 'admin'|'office'|'tc'|'hygiene'|'billing',
+ *   role?: 'admin'|'office'|'tc'|'hygiene'|'reviewer',
  *   superAdmin?: boolean,
  *   db?: FakeRcmDb,
  *   eraStore?: { isConfigured?: () => boolean, putEraFile?: Function } | null,
@@ -766,7 +796,7 @@ async function bootRcmApp({
   app.use(
     '/api/rcm',
     requireModule('rcm'),
-    requireReadWrite('rcm.read', 'rcm.write', { exempt: rcmRouter.QUEUE_PATHS }),
+    requireReadWrite('rcm.read', 'rcm.write', { writeExempt: rcmRouter.QUEUE_PATHS }),
     rcmRouter
   );
 

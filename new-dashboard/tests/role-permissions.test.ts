@@ -149,7 +149,7 @@ describe("homeForRole", () => {
       tc: ["voice.read", "tc.full", "tc.hygiene"],
       hygiene: ["tc.hygiene"],
       // The RCM reviewer tier (D-9): the workbench and nothing else.
-      billing: ["rcm.read", "rcm.queue"],
+      reviewer: ["rcm.read", "rcm.queue"],
     };
     for (const role of Object.keys(ROLE_HOME) as (keyof typeof ROLE_HOME)[]) {
       // Otherwise the redirect would bounce forever between "not allowed here"

@@ -39,7 +39,9 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { useOffice } from "@/contexts/OfficeContext";
+import { can } from "@/lib/permissions";
 import {
   confirmClaimMatch,
   getClaim,
@@ -72,6 +74,7 @@ export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
   const claimId = params?.id ?? "";
   const { office: selected } = useOffice();
+  const auth = useAuth();
 
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -149,6 +152,21 @@ export default function ClaimMatchPage() {
   const { office, data } = state;
   const claim = data.claim;
   const snapshot = claim.matchSnapshot ?? null;
+
+  /*
+   * RE-RUNNING A CONFIRMED CLAIM IS THE WRITE TIER'S ACT (D-9).
+   *
+   * "Run again" on a confirmed claim sends `force: true`, which NULLs
+   * `od_claim_num` — the column Slice 6c reads to pick a chart. A `reviewer`
+   * holds `rcm.queue` and may run a match all day; releasing a decision they
+   * could not have made is not theirs. UI HIDING ONLY: the server refuses this
+   * with 403 FORCE_REQUIRES_WRITE whatever the button does.
+   */
+  const mayRerun =
+    claim.odMatchStatus !== "confirmed" ||
+    auth.status !== "authenticated" ||
+    auth.user.isSuperAdmin ||
+    can(auth.user.permissions, "rcm.write");
 
   /** Turn a refusal into the server's own words, never "something went wrong". */
   function say(err: unknown, fallback: string) {
@@ -365,9 +383,14 @@ export default function ClaimMatchPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => runMatch(claim.odMatchStatus === "confirmed")}
-                disabled={busy !== null}
+                disabled={busy !== null || !mayRerun}
                 data-testid="run-match"
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+                title={
+                  mayRerun
+                    ? undefined
+                    : "Releasing a confirmed match needs posting permission. Ask an approver to re-run it."
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy === "match" ? (
                   <Loader2 size={14} className="animate-spin" />
@@ -394,21 +417,30 @@ export default function ClaimMatchPage() {
 
           {claim.odMatchStatus === "confirmed" && (
             <p className="mt-2 text-xs text-muted-foreground" data-testid="reconfirm-warning">
-              Re-running replaces this match and un-links the claim. The confirmation stays in the
-              audit trail.
+              {mayRerun
+                ? "Re-running replaces this match and un-links the claim. The confirmation stays in the audit trail."
+                : "This claim is linked. Releasing it un-links the claim, which needs posting permission — ask an approver."}
             </p>
           )}
 
           {!snapshot ? (
             <div
               className="mt-2 rounded-xl border border-dashed border-border bg-card p-8 text-center"
-              data-testid="match-not-run"
+              data-testid={claim.matchSnapshotStale ? "match-stale" : "match-not-run"}
             >
               <Search size={20} className="mx-auto text-muted-foreground/50" />
-              <p className="mt-2 text-sm text-muted-foreground">
-                Nobody has looked yet. Running a match READS Open Dental — it writes nothing to any
-                chart.
-              </p>
+              {claim.matchSnapshotStale ? (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  A match was run against this claim, but under an earlier version of the record —
+                  its contents cannot be read here, and confirming from it is refused. Run it again
+                  to get a current answer. Nothing has been un-linked.
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Nobody has looked yet. Running a match READS Open Dental — it writes nothing to any
+                  chart.
+                </p>
+              )}
             </div>
           ) : (
             <>

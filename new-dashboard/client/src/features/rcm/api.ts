@@ -763,6 +763,16 @@ export interface WorkbenchClaim {
   /** The EXTRACTOR's 0-100 confidence. Not the Open Dental match confidence. */
   extractionConfidence: number;
   odMatchStatus: OdMatchStatus;
+  /**
+   * Examined by the last match and NOT offered — 0 when none were, or when no
+   * match has run.
+   *
+   * A PROJECTION of the snapshot, present on list rows that carry no snapshot
+   * at all, because the remittance's claim list has to be able to tell "Open
+   * Dental had nothing" from "Open Dental had things and none could be
+   * offered". `matchStatusLabel()` is what turns it into words.
+   */
+  rejectedCandidates: number;
   odMatchAt: string | null;
   odMatchConfirmedAt: string | null;
   odMatchedBy: string | null;
@@ -772,6 +782,15 @@ export interface WorkbenchClaim {
   createdAt: string | null;
   lines: ClaimLine[];
   matchSnapshot?: MatchSnapshot | null;
+  /**
+   * A match HAS run, but under an older snapshot shape — so its contents are
+   * not readable by this build and `matchSnapshot` is null.
+   *
+   * Kept as a separate flag rather than a nullable union so the panel can say
+   * "there is a record here and it is from an earlier version" instead of
+   * "nobody has looked", which are different facts.
+   */
+  matchSnapshotStale?: boolean;
 }
 
 /** A claim as the remittance detail lists it (no snapshot — the panel loads that). */

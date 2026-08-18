@@ -180,6 +180,38 @@ function seed(db, over = {}) {
 }
 
 /** Boot, run, close. */
+/**
+ * A SECOND claim on the same remittance.
+ *
+ * Deliberately minimal: the tests that need it are about how many rows a RUN
+ * produces and which claim a bounded run reaches first, and both of those are
+ * unanswerable on a one-claim fixture.
+ */
+function addSecondClaim(db, over = {}) {
+  const first = db.table('rcm_claims')[0];
+  db.seed('rcm_claims', [
+    {
+      ...first,
+      claim_id: over.claimId || 'c-2',
+      claim_number: '53712',
+      patient_name: 'Sample, Placeholder',
+      od_match_status: 'not_run',
+      od_match_snapshot: null,
+      od_match_at: null,
+    },
+  ]);
+  db.seed('rcm_batch_claim_payments', [
+    {
+      batch_claim_payment_id: 'bcp-2',
+      batch_id: 'b-1',
+      claim_id: over.claimId || 'c-2',
+      office_id: first.office_id,
+      position: 2,
+    },
+  ]);
+  return db;
+}
+
 async function withApp(opts, fn) {
   const app = await bootRcmApp(opts);
   try {
@@ -647,16 +679,95 @@ test('a batch match reports each claim individually', async () => {
   });
 });
 
-test('a batch match writes exactly ONE audit row for the whole run', async () => {
-  // Matching a twelve-claim remittance is one thing a human asked for, not
-  // twelve — the same granularity rule platform/odAccess applies.
+test('a batch match writes ONE row for the run and one per CHART', async () => {
+  /*
+   * The granularity rule platform/odAccess applies — a 25-call treatment plan
+   * is one row — is about not writing a row per CALL. A claim is not a call: it
+   * is one patient's chart. Two claims here, deliberately, because the previous
+   * version of this test ran on a ONE-claim fixture and so could not tell "one
+   * row per run" from "one row per claim" at all — it asserted the design it
+   * was written against and would have passed under either.
+   */
   const db = seed(new FakeRcmDb());
+  addSecondClaim(db);
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
-    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].office, 'roland');
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    assert.equal(res.body.matched.length, 2);
+
+    const run = auditRows(db).filter((r) => r.resource_type === 'rcm_remittance_match');
+    assert.equal(run.length, 1, 'the run itself, once');
+    assert.equal(run[0].resource_id, 'b-1');
+
+    const charts = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
+    assert.deepEqual(charts.map((r) => r.resource_id).sort(), ['c-1', 'c-2']);
+    for (const row of charts) {
+      assert.equal(row.office, 'roland');
+      assert.equal(row.result, 'SUCCESS');
+    }
   });
+});
+
+test('a chart read that failed part way through a BATCH is still recorded', async () => {
+  /*
+   * `onPhiRead` fires AFTER findClaimCandidates returns. A claim whose
+   * /patients call succeeded and whose /claims call then 503'd therefore had
+   * names and dates of birth off the wire with nothing recorded — the batch
+   * caught the error, wrote `failed`, and moved on. The single-claim route has
+   * handled this since the last round; the batch did not.
+   */
+  const db = seed(new FakeRcmDb());
+  const od = odFixture({ fail: { '/claims': { status: 503, error: 'gateway' } } });
+  await withApp({ db, od }, async (app) => {
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.matched[0].status, 'failed');
+
+    const charts = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
+    assert.equal(charts.length, 1, 'the chart was read; the trail has to say so');
+    assert.equal(charts[0].resource_id, 'c-1');
+    assert.equal(charts[0].result, 'ERROR', 'a disclosure that did not complete');
+  });
+});
+
+test('a budgeted run stops on the CLOCK and says so, unmatched claims first', async () => {
+  /*
+   * A claim-count cap alone does not bound the request: at >=1.2s per Open
+   * Dental CALL a 25-claim remittance is minutes on one held HTTP request, so
+   * the client's timeout becomes the normal outcome. The run is bounded to fit
+   * the transport instead — and ORDERED so that pressing again reaches the
+   * tail rather than redoing the front.
+   */
+  const db = seed(new FakeRcmDb());
+  addSecondClaim(db);
+  // c-1 has already been looked at; c-2 has not. Unmatched goes first.
+  db.table('rcm_claims')[0].od_match_status = 'no_candidate';
+
+  const original = process.env.RCM_OD_BATCH_MATCH_BUDGET_MS;
+  process.env.RCM_OD_BATCH_MATCH_BUDGET_MS = '1';
+  try {
+    // The module reads the cap at require time, so it has to be re-read here.
+    delete require.cache[require.resolve('./matchService')];
+    delete require.cache[require.resolve('./remittances')];
+    delete require.cache[require.resolve('./index')];
+    await withApp({ db, od: odFixture() }, async (app) => {
+      const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+
+      // One claim got in before the budget was spent; the other did not.
+      assert.equal(res.body.outOfTime, true, 'the CLOCK stopped it, not the claim cap');
+      assert.equal(res.body.matched.length, 1);
+      assert.equal(res.body.matched[0].claimId, 'c-2', 'the unmatched claim went first');
+      assert.equal(res.body.skipped, 1);
+      assert.match(res.body.note, /budget/i);
+      assert.match(res.body.note, /run it again/i);
+    });
+  } finally {
+    if (original === undefined) delete process.env.RCM_OD_BATCH_MATCH_BUDGET_MS;
+    else process.env.RCM_OD_BATCH_MATCH_BUDGET_MS = original;
+    delete require.cache[require.resolve('./matchService')];
+    delete require.cache[require.resolve('./remittances')];
+    delete require.cache[require.resolve('./index')];
+  }
 });
 
 test('a batch match on another office\'s remittance is a 404', async () => {
@@ -855,7 +966,136 @@ test('a role with NO rcm permission at all is refused the whole surface', async 
   });
 });
 
-test('the billing role can READ and WORK the queue, and cannot commit (D-9)', async () => {
+test('the reviewer role cannot UN-confirm what it could not confirm (D-9)', async () => {
+  /*
+   * The seam D-9 turns on. `POST /claims/:id/match` is gated on `rcm.queue`
+   * because running a match reads Open Dental and changes no chart — but the
+   * same route with `force: true` over a CONFIRMED claim NULLs `od_claim_num`,
+   * `od_matched_by` and `od_match_confirmed_at`. A tier that cannot make the
+   * decision was able to reverse it, which inverts the whole ruling at the one
+   * column Slice 6c reads to pick a chart. And the UI's "Run again" button
+   * sends exactly that body for exactly that state.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+  });
+
+  await withApp({ db, role: 'reviewer', od: odFixture() }, async (app) => {
+    db.log.length = 0;
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+
+    assert.equal(res.status, 403, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'FORCE_REQUIRES_WRITE');
+    // The refusal names the fix rather than the rule.
+    assert.match(res.body.error, /approver/i);
+
+    const claim = db.table('rcm_claims')[0];
+    assert.equal(claim.od_match_status, 'confirmed', 'the decision survived');
+    assert.equal(claim.od_claim_num, 53648);
+    assert.equal(claim.od_matched_by, 'billing@carein.ai');
+
+    // Refused BEFORE any Open Dental call — the office's chart is not read to
+    // answer a question about permission.
+    assert.deepEqual(app.od.pathsRead(), []);
+
+    // A refusal of access in the literal sense, which is what UNAUTHORIZED is
+    // for — unlike the routine 409s, which write nothing.
+    const denied = auditRows(db).filter((r) => r.result === 'UNAUTHORIZED');
+    assert.equal(denied.length, 1);
+    assert.equal(denied[0].resource_type, 'rcm_claim_match');
+    assert.equal(denied[0].resource_id, 'c-1');
+  });
+});
+
+test('a reviewer CAN force a re-run of a claim nobody confirmed', async () => {
+  // The gate is on releasing a DECISION, not on the word `force`. Re-running an
+  // unconfirmed match discards nothing a human stood behind.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, role: 'reviewer', od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
+  });
+});
+
+test('confirming LOCKS the row it read', async () => {
+  /*
+   * Only match-vs-confirm was closed last round. Confirm-vs-confirm and
+   * force-vs-confirm read the claim on one statement and write it on another,
+   * with an `rcm_user_map` upsert in between — so without the lock the second
+   * write lands on top of the first with no error, replacing one person's
+   * ClaimNum, attribution and per-line ClaimProcNums with another's.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    db.log.length = 0;
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+
+    const read = db.log.filter((q) => /^SELECT .* FROM rcm_claims WHERE/.test(q.sql));
+    assert.ok(read.length > 0, 'confirm must read the claim');
+    assert.match(read[0].sql, / FOR UPDATE$/, 'and hold it for the length of the transaction');
+
+    const written = db.log.filter((q) => /^UPDATE rcm_claims SET od_match_status = 'confirmed'/.test(q.sql));
+    assert.equal(written.length, 1);
+    assert.match(
+      written[0].sql,
+      /od_match_status <> 'confirmed'/,
+      'and re-assert the status it checked, so the loser of a race finds out'
+    );
+  });
+});
+
+test('confirming the SAME claim twice is idempotent; a different one is refused', async () => {
+  // A double-click asks for a decision that is already recorded, so it gets the
+  // recorded one. Two people picking DIFFERENT candidates is a real conflict,
+  // and the first decision stands — the shape the voice side uses for
+  // ALREADY_SENT_TO_CHART.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const first = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(first.status, 200);
+
+    const again = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.alreadyConfirmed, true);
+    assert.equal(again.body.odClaimNum, 53648);
+    assert.equal(again.body.confirmedBy, 'billing@carein.ai');
+
+    // A different candidate from the same snapshot.
+    db.table('rcm_claims')[0].od_match_snapshot.candidates.push({
+      odClaimNum: 53649,
+      odPatNum: 12828,
+      linePairs: [],
+      od: { claimStatus: 'S', billedCents: 0, claimHeaderFeeCents: 0, insPaidCents: 0, writeOffCents: 0 },
+    });
+    const conflict = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53649 })
+    );
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.code, 'MATCH_ALREADY_CONFIRMED');
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648, 'the first decision stands');
+  });
+});
+
+test('the reviewer role can READ and WORK the queue, and cannot commit (D-9)', async () => {
   /*
    * The reviewer tier. Its whole point is that judging a remittance and
    * COMMITTING that judgement are different jobs — so running a match (reads
@@ -868,7 +1108,7 @@ test('the billing role can READ and WORK the queue, and cannot commit (D-9)', as
    * that must not have it.
    */
   const db = seed(new FakeRcmDb());
-  await withApp({ db, role: 'billing', od: odFixture() }, async (app) => {
+  await withApp({ db, role: 'reviewer', od: odFixture() }, async (app) => {
     const list = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     assert.equal(list.status, 200, 'a reviewer must be able to open the workbench');
 

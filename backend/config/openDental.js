@@ -56,8 +56,13 @@ function odSlotKeyFor(client) {
 const OD_SLOT_OWNER = new Map();
 
 /**
- * Per-module transport counters. Module names are whatever callers pass as
- * `opts.module`; anything that does not pass one is 'other'.
+ * Transport counters, keyed by whatever callers pass as `opts.module`.
+ *
+ * Today that is `rcm` and `other`, and NOT because the rest of the platform is
+ * one thing: RCM is simply the only caller passing the field. Voice and TC
+ * share the `other` bucket until they tag their own calls, which is a main-line
+ * change rather than an RCM one. Read `other` as "everything else on this
+ * credential", not as a module.
  */
 const OD_TRAFFIC = {
   /** 429s seen, by the module whose request got one. */
@@ -237,8 +242,12 @@ class OpenDentalService extends EventEmitter {
     this.client.interceptors.request.use(
       async (config) => {
         // A caller may demand MORE spacing than the process default; it can
-        // never demand less. RCM's batch matcher uses this to hold itself to
-        // the documented 1 req/s without slowing the voice module's lookups.
+        // never demand less. RCM's batch matcher passes 1200 to hold traffic
+        // against this CREDENTIAL to Open Dental's documented 1 req/s — which
+        // means a voice lookup issued during a batch match waits behind it.
+        // Bounded and interleaved, never starved, and chosen deliberately
+        // (decision D-8; see services/rcm/odPacer.js for the alternative and
+        // why it was rejected).
         const requested = Number(config.__odMinIntervalMs);
         const caller = config.__odModule || 'other';
         bump(OD_TRAFFIC.requests, caller);

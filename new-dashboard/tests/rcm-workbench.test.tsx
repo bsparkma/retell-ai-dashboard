@@ -102,6 +102,7 @@ function claim(over: Record<string, unknown> = {}) {
     needsReviewReasons: [] as string[],
     extractionConfidence: 95,
     odMatchStatus: "not_run",
+    rejectedCandidates: 0,
     odMatchAt: null,
     odMatchConfirmedAt: null,
     odMatchedBy: null,
@@ -243,7 +244,25 @@ const state = vi.hoisted(() => ({
   confirmed: [] as number[],
   reviews: [] as string[],
   batchMatched: 0,
+  /** Overrides folded into the batch-match response, for the bounded run. */
+  batchOverrides: {} as Record<string, unknown>,
+  /**
+   * The signed-in identity, so the D-9 tier can be varied.
+   *
+   * `loading` is the default and the UI treats it as permissive on purpose:
+   * hiding a button because /auth/me has not answered yet would flicker, and
+   * the server refuses regardless — UI hiding is never the boundary.
+   */
+  auth: { status: "loading" } as
+    | { status: "loading" }
+    | { status: "anonymous" }
+    | { status: "authenticated"; user: { isSuperAdmin: boolean; permissions: string[] } },
 }));
+
+vi.mock("@/contexts/AuthContext", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/contexts/AuthContext")>();
+  return { ...real, useAuth: () => state.auth };
+});
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
@@ -320,7 +339,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
         matched: [{ claimId: "c-1", status: "candidates", candidateCount: 1, ambiguous: false }],
         odCalls: 6,
         pacingMs: 1200,
+        budgetMs: 90_000,
+        outOfTime: false,
         skipped: 0,
+        ...(state.batchOverrides as Record<string, unknown>),
       };
     }),
   };
@@ -357,9 +379,11 @@ beforeEach(() => {
   state.listError = null;
   state.detailError = null;
   state.matchResult = null;
+  state.auth = { status: "loading" };
   state.confirmed = [];
   state.reviews = [];
   state.batchMatched = 0;
+  state.batchOverrides = {};
 });
 
 afterEach(cleanup);
@@ -624,6 +648,31 @@ describe("the remittance detail", () => {
       expect(screen.getByTestId("batch-match-result").textContent).toContain("1 candidate"),
     );
   });
+
+  it("a run stopped by the CLOCK says so in its own words", async () => {
+    /*
+     * `outOfTime` was typed and never rendered — the screen showed only the
+     * server's note, which is the same fragility that let `skipped` go
+     * invisible: a boolean the server sends needs a rendering of its own, or a
+     * later copy edit silently stops saying it. And an unfinished run is the
+     * one a biller must press again.
+     */
+    state.batchOverrides = {
+      outOfTime: true,
+      skipped: 7,
+      budgetMs: 90_000,
+      note: "7 claims were not reached before this run's 90s budget ran out.",
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("match-all-claims"));
+
+    const stopped = await screen.findByTestId("match-out-of-time");
+    expect(stopped.textContent).toContain("90-second budget");
+    expect(stopped.textContent).toContain("7 claims not yet examined");
+    expect(stopped.textContent).toContain("Press Match again");
+  });
 });
 
 // ─── The match panel ─────────────────────────────────────────────────────────
@@ -716,6 +765,114 @@ describe("the claim match panel", () => {
     expect(screen.getByTestId("claim-match-status").textContent).toContain(
       "Examined — none offered",
     );
+  });
+
+  it("the remittance's OWN claim list stops calling an all-rejected search empty", async () => {
+    /*
+     * The claim panel got this right and the LIST — the screen billers actually
+     * triage from — went on rendering the raw status label. Same helper, same
+     * data: the list row carries `rejectedCandidates` as a projection of the
+     * snapshot, so it can tell the two negatives apart without shipping every
+     * Open Dental patient name on the check into a list response.
+     */
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [
+        claim({ claimId: "c-1", odMatchStatus: "no_candidate", rejectedCandidates: 0 }),
+        claim({
+          claimId: "c-2",
+          patientName: "Sample, Placeholder",
+          odMatchStatus: "no_candidate",
+          rejectedCandidates: 3,
+        }),
+      ],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const empty = await screen.findByTestId("claim-match-state-c-1");
+    const rejected = screen.getByTestId("claim-match-state-c-2");
+    expect(empty.textContent).toContain("No matching claim in Open Dental");
+    expect(rejected.textContent).toContain("Examined — none offered");
+    expect(rejected.textContent).not.toContain("No matching claim in Open Dental");
+  });
+
+  it("a reviewer cannot press Run again on a CONFIRMED claim", async () => {
+    /*
+     * "Run again" on a confirmed claim sends `force: true`, which NULLs
+     * `od_claim_num` — the column Slice 6c reads to pick a chart. A tier that
+     * cannot confirm must not be able to un-confirm. UI hiding only; the server
+     * answers 403 FORCE_REQUIRES_WRITE whatever the button does.
+     */
+    state.auth = {
+      status: "authenticated",
+      user: { isSuperAdmin: false, permissions: ["rcm.read", "rcm.queue"] },
+    };
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot(),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const button = (await screen.findByTestId("run-match")) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByTestId("reconfirm-warning").textContent).toContain("needs posting permission");
+  });
+
+  it("an approver still can, and is told what it costs", async () => {
+    state.auth = {
+      status: "authenticated",
+      user: { isSuperAdmin: false, permissions: ["rcm.read", "rcm.queue", "rcm.write"] },
+    };
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot(),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const button = (await screen.findByTestId("run-match")) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(screen.getByTestId("reconfirm-warning").textContent).toContain("un-links the claim");
+  });
+
+  it("a reviewer CAN still run a match on a claim nobody confirmed", async () => {
+    state.auth = {
+      status: "authenticated",
+      user: { isSuperAdmin: false, permissions: ["rcm.read", "rcm.queue"] },
+    };
+    state.claim = claim({ odMatchStatus: "candidates", matchSnapshot: snapshot() });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const button = (await screen.findByTestId("run-match")) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  it("a snapshot from an earlier version is named, not rendered as never-run", async () => {
+    /*
+     * `confirmMatch` refuses a v1 snapshot; the GET used to hand it over anyway
+     * and the panel then read fields that shape does not have — every legacy
+     * claim rendered "this patient is already linked" and a formatted
+     * `undefined` for the billed total. "Nobody has looked" would be just as
+     * wrong: a match DID run.
+     */
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: null,
+      matchSnapshotStale: true,
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const panel = await screen.findByTestId("match-stale");
+    expect(panel.textContent).toContain("earlier version");
+    expect(panel.textContent).toContain("Nothing has been un-linked");
+    expect(screen.queryByTestId("match-not-run")).toBeNull();
   });
 
   it("says how many candidates were set aside even when some were offered", async () => {
