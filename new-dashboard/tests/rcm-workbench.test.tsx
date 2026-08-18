@@ -143,7 +143,9 @@ function remittance(over: Record<string, unknown> = {}) {
       balanced: totalAmountCents - 15000 === 0,
     },
     needsAttention: true,
-    attentionReasons: ["claims_unmatched", "claims_unreviewed"],
+    // OBLIGATIONS drive the queue; OBSERVATIONS are facts about the file.
+    attentionReasons: ["claims_unreviewed"],
+    attentionObservations: ["claims_unmatched"],
     reviewReasonCount: 0,
     unmatchedClaimCount: 1,
     upload: {
@@ -394,7 +396,12 @@ describe("the remittance list", () => {
   it("opens on Needs attention, not on everything", async () => {
     state.remittances = [
       remittance(),
-      remittance({ batchId: "b-2", payer: "CIGNA", needsAttention: false, attentionReasons: [] }),
+      remittance({
+        batchId: "b-2",
+        payer: "CIGNA",
+        needsAttention: false,
+        attentionReasons: [],
+      }),
     ];
     state.needsAttentionCount = 1;
 
@@ -429,6 +436,70 @@ describe("the remittance list", () => {
 
     fireEvent.click(screen.getByTestId("remittance-filter-all"));
     expect(screen.getByTestId("remittance-row-b-2")).toBeTruthy();
+  });
+
+  it("a fully reviewed remittance LEAVES the queue but keeps its chips", async () => {
+    /*
+     * The staging bug. A biller ran the match on both claims (honest
+     * `no_candidate`), read the flags, marked both reviewed — and the batch
+     * stayed in the needs-attention view, because three of the four reasons
+     * were permanent facts about the file that no action in this slice can
+     * change. Leaving the queue must not mean the facts disappear: the grey
+     * chips are how the next person knows this remittance was worth reading.
+     */
+    state.remittances = [
+      remittance({
+        needsAttention: false,
+        attentionReasons: [],
+        attentionObservations: ["batch_open", "claims_flagged", "claims_unmatched"],
+        reviewReasonCount: 2,
+        unmatchedClaimCount: 2,
+      }),
+    ];
+    state.needsAttentionCount = 0;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    // Gone from the default view…
+    await waitFor(() =>
+      expect(screen.getByTestId("remittances-empty-roland")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("remittance-counts-roland").textContent).toContain(
+      "0 needing attention · 1 total",
+    );
+
+    // …and everything it showed is still there under All.
+    fireEvent.click(screen.getByTestId("remittance-filter-all"));
+    expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy();
+    expect(screen.getByTestId("attention-observation-batch_open")).toBeTruthy();
+    expect(screen.getByTestId("attention-observation-claims_flagged").textContent).toBe("2 flagged");
+    expect(screen.getByTestId("attention-observation-claims_unmatched").textContent).toBe(
+      "2 unmatched",
+    );
+    // And none of them is rendered as work.
+    expect(screen.queryByTestId("attention-reason-claims_flagged")).toBeNull();
+    expect(screen.queryByTestId("attention-reason-batch_open")).toBeNull();
+  });
+
+  it("tells an outstanding action apart from a fact about the file", async () => {
+    state.remittances = [
+      remittance({
+        needsAttention: true,
+        attentionReasons: ["claims_unreviewed"],
+        attentionObservations: ["batch_open"],
+      }),
+    ];
+    state.needsAttentionCount = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const owed = await screen.findByTestId("attention-reason-claims_unreviewed");
+    const fact = screen.getByTestId("attention-observation-batch_open");
+    expect(owed.textContent).toBe("Claims not yet reviewed");
+    expect(fact.textContent).toContain("Held");
+    // Weight is the distinction a biller reads at a glance: amber is owed.
+    expect(owed.className).toContain("amber");
+    expect(fact.className).not.toContain("amber");
   });
 
   it("shows the DIFFERENCE on an unbalanced remittance, not just a flag", async () => {

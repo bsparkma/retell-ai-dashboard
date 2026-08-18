@@ -281,21 +281,36 @@ test('needs-attention is computed server-side, so the list and the detail agree'
     const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     const r = body.remittances[0];
     assert.equal(r.needsAttention, true);
-    assert.ok(r.attentionReasons.includes('claims_flagged'));
-    assert.ok(r.attentionReasons.includes('claims_unmatched'));
+    // The OBLIGATION is the unreviewed claim. The flag and the missing match
+    // are facts about the file — read them, but they are not work.
+    assert.deepEqual(r.attentionReasons, ['claims_unreviewed']);
+    assert.ok(r.attentionObservations.includes('claims_flagged'));
+    assert.ok(r.attentionObservations.includes('claims_unmatched'));
     assert.equal(r.reviewReasonCount, 1);
     assert.equal(body.needsAttentionCount, 1);
   });
 });
 
-test('a batch held open by a flag needs attention even with no claim reasons', async () => {
-  // Slice 5's contract: `open` means SOMETHING was flagged, `ready` means a
-  // person could act on it now. A status that said ready about a takeback would
-  // be a lie, and so would a list that hid it.
+test('a batch held open by a flag is SHOWN as open, but that is not work', async () => {
+  /*
+   * Slice 5's contract: `open` means SOMETHING was flagged — a reversal, a PLB,
+   * a downcode, an unreadable adjustment. Nearly every real 835 carries one, so
+   * `batch_open` on its own can never be the thing that holds a remittance in
+   * the queue: if it were, nothing would ever leave, which is exactly what
+   * happened on staging. Posting is what moves it, and posting is 6b.
+   */
   const db = seed(new FakeRcmDb(), { batchStatus: 'open' });
+  Object.assign(db.table('rcm_claims')[0], {
+    reviewed_at: new Date(),
+    reviewed_by: 'billing@carein.ai',
+  });
   await withApp({ db }, async (app) => {
     const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
-    assert.ok(body.remittances[0].attentionReasons.includes('batch_open'));
+    const r = body.remittances[0];
+    assert.ok(r.attentionObservations.includes('batch_open'), 'still visible');
+    assert.deepEqual(r.attentionReasons, [], 'and still not an obligation');
+    assert.equal(r.needsAttention, false);
+    assert.equal(body.needsAttentionCount, 0);
   });
 });
 
@@ -312,6 +327,95 @@ test('a fully worked remittance leaves the needs-attention view', async () => {
     assert.equal(body.remittances[0].needsAttention, false);
     assert.deepEqual(body.remittances[0].attentionReasons, []);
     assert.equal(body.needsAttentionCount, 0);
+  });
+});
+
+test('REVIEWING a flagged, unmatched batch is what clears it — the staging walk', async () => {
+  /*
+   * The bug, end to end. Beau opened the Delta multi-claim batch, ran the match
+   * on both claims (honest `no_candidate` — the fixture PatNums do not exist in
+   * that database), read the flags, marked both claims reviewed with a note,
+   * went back to the list, and the batch was still there.
+   *
+   * Every condition below is the one he actually had: batch `open` over a
+   * downcode and an unreadable CAS, both claims carrying review reasons
+   * forever, neither claim confirmable because Open Dental has no such claim.
+   * The only thing a human could change was the review stamp, and it cleared
+   * one of four reasons.
+   */
+  const db = seed(new FakeRcmDb(), {
+    batchStatus: 'open',
+    reviewReasons: ['downcoded_line', 'unreadable_adjustment'],
+  });
+  addSecondClaim(db);
+  for (const claim of db.table('rcm_claims')) {
+    claim.od_match_status = 'no_candidate';
+    claim.needs_review_reasons = ['downcoded_line'];
+  }
+
+  await withApp({ db }, async (app) => {
+    const before = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(before.body.remittances[0].needsAttention, true);
+    assert.deepEqual(before.body.remittances[0].attentionReasons, ['claims_unreviewed']);
+    assert.equal(before.body.needsAttentionCount, 1);
+
+    // One of two reviewed: still owed.
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${Q}`, json({ note: 'Downcode is correct.' }));
+    const half = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(half.body.remittances[0].needsAttention, true, 'one claim still owes a disposition');
+
+    // Both reviewed: nothing left that a human can do in this slice.
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-2/review${Q}`, json({ note: 'Carrier owes a corrected EOB.' }));
+    const after = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    const r = after.body.remittances[0];
+
+    assert.equal(r.needsAttention, false, 'she did everything the screen lets her do');
+    assert.deepEqual(r.attentionReasons, []);
+    assert.equal(after.body.needsAttentionCount, 0, 'and the count agrees with the predicate');
+
+    // WHAT SHE SAW IS STILL ON THE SCREEN. Leaving the queue is not the same as
+    // the facts going away — the chips are how the next person knows this
+    // remittance was worth reading.
+    assert.ok(r.attentionObservations.includes('batch_open'));
+    assert.ok(r.attentionObservations.includes('claims_flagged'));
+    assert.ok(r.attentionObservations.includes('claims_unmatched'));
+    assert.equal(r.reviewReasonCount, 2);
+    assert.equal(r.unmatchedClaimCount, 2);
+    assert.equal(r.status, 'open', 'and the batch is still honestly open');
+  });
+});
+
+test('a claim with nothing wrong with it STILL owes an explicit review', async () => {
+  // No auto-review. A biller marking "looked, nothing to do" is real work, and
+  // the audit row is what proves it happened.
+  const db = seed(new FakeRcmDb(), { batchStatus: 'ready' });
+  Object.assign(db.table('rcm_claims')[0], {
+    od_match_status: 'confirmed',
+    od_claim_num: 53648,
+    needs_review_reasons: [],
+  });
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(body.remittances[0].needsAttention, true);
+    assert.deepEqual(body.remittances[0].attentionReasons, ['claims_unreviewed']);
+    assert.deepEqual(body.remittances[0].attentionObservations, []);
+  });
+});
+
+test('a remittance with NO claims is unworkable, not finished', async () => {
+  /*
+   * "Every claim is reviewed" is vacuously true of an empty list. Without its
+   * own reason, an 835 that produced a payment batch and no claim rows would
+   * read as done the moment it landed — the same failure as the one this fix
+   * exists for, pointing the other way: silence where somebody should look.
+   */
+  const db = seed(new FakeRcmDb());
+  db.table('rcm_claims').length = 0;
+  db.table('rcm_batch_claim_payments').length = 0;
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(body.remittances[0].needsAttention, true);
+    assert.deepEqual(body.remittances[0].attentionReasons, ['batch_no_claims']);
   });
 });
 

@@ -10,8 +10,15 @@
  * NEEDS ATTENTION IS THE DEFAULT VIEW
  * ─────────────────────────────────────────────────────────────────────────────
  * Same philosophy as the voice worklist: the default is the WORK, not the
- * archive. The predicate is computed server-side and arrives on the row, so
- * this list and the detail screen cannot disagree about whether something is
+ * archive — and the work is an ACTION somebody still owes, never a fact the
+ * file happens to carry. `attentionReasons` are obligations and are the only
+ * thing that puts a row here; `attentionObservations` are facts, rendered
+ * beside them in a lighter weight. Merging the two is what left a remittance
+ * whose every claim had been reviewed sitting in this view for ever (see
+ * attentionFor in routes/rcm/remittances.js).
+ *
+ * The predicate is computed server-side and arrives on the row, so this list,
+ * its count and the detail screen cannot disagree about whether something is
  * finished. The "All" tab is one click away and its count is always visible, so
  * the filter never hides how much it is hiding.
  *
@@ -260,7 +267,11 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
             <span className="text-right">Amount</span>
             <span className="text-right">Claims</span>
             <span>Status</span>
-            <span>Needs attention</span>
+            {/* Not "Needs attention": the column carries BOTH what is owed
+                (amber) and what was merely observed (grey), and a grey chip
+                under a "needs attention" heading would be the same small lie
+                the predicate itself used to tell. */}
+            <span>Outstanding · observed</span>
             <span />
           </div>
           {rows.map((r) => (
@@ -327,23 +338,44 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         {batchStatusLabel(r.status)}
       </span>
 
+{/*
+        WHAT IS OWED, AND WHAT IS MERELY TRUE — told apart by weight.
+        Amber chips are outstanding actions and are the only thing that put this
+        row in the queue. Grey chips are facts about the file: a biller reads
+        them to decide how hard to look, and none of them is work she can
+        discharge. Rendering both in amber is how "reviewed everything, still
+        flagged as needing attention" happened.
+      */}
       <div className="flex flex-wrap gap-1">
-        {r.attentionReasons.length === 0 ? (
+        {r.attentionReasons.length === 0 && r.attentionObservations.length === 0 ? (
           <span className="text-xs text-muted-foreground">—</span>
         ) : (
-          r.attentionReasons.map((reason) => (
-            <span
-              key={reason}
-              title={attentionLabel(reason)}
-              className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-            >
-              {reason === "claims_flagged" && r.reviewReasonCount > 0
-                ? `${r.reviewReasonCount} flagged`
-                : reason === "claims_unmatched" && r.unmatchedClaimCount > 0
-                  ? `${r.unmatchedClaimCount} unmatched`
-                  : attentionLabel(reason)}
-            </span>
-          ))
+          <>
+            {r.attentionReasons.map((reason) => (
+              <span
+                key={reason}
+                title={attentionLabel(reason)}
+                data-testid={`attention-reason-${reason}`}
+                className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+              >
+                {attentionLabel(reason)}
+              </span>
+            ))}
+            {r.attentionObservations.map((reason) => (
+              <span
+                key={reason}
+                title={attentionLabel(reason)}
+                data-testid={`attention-observation-${reason}`}
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              >
+                {reason === "claims_flagged" && r.reviewReasonCount > 0
+                  ? `${r.reviewReasonCount} flagged`
+                  : reason === "claims_unmatched" && r.unmatchedClaimCount > 0
+                    ? `${r.unmatchedClaimCount} unmatched`
+                    : attentionLabel(reason)}
+              </span>
+            ))}
+          </>
         )}
       </div>
 
