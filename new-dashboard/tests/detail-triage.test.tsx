@@ -53,10 +53,16 @@ vi.mock("wouter", () => ({
     React.createElement("a", { href, ...rest }, children),
 }));
 
-/** The signed-in user. `permissions` is what decides whether triage is offered. */
+/**
+ * The signed-in user. `permissions` is what decides whether triage is offered.
+ *
+ * The office set includes voice.chart_write because the real role holds it — the
+ * "stays on the call" test below reads the Send to chart button as proof the page
+ * did not navigate, and that button follows voice.chart_write.
+ */
 const authState = vi.hoisted(() => ({
   role: "office" as string,
-  permissions: ["voice.read", "voice.write"] as string[],
+  permissions: ["voice.read", "voice.write", "voice.chart_write"] as string[],
   isSuperAdmin: false,
 }));
 vi.mock("@/contexts/AuthContext", () => ({
@@ -144,7 +150,7 @@ beforeEach(() => {
   toasts.calls.length = 0;
   routerState.path = "/calls/c1";
   authState.role = "office";
-  authState.permissions = ["voice.read", "voice.write"];
+  authState.permissions = ["voice.read", "voice.write", "voice.chart_write"];
   authState.isSuperAdmin = false;
   for (const fn of Object.values(apiMock)) fn.mockReset();
 });
