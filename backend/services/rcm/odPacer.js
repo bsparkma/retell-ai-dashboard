@@ -165,15 +165,44 @@ function paced(fn) {
      * consecutive requests land 6ms closer together than the interval promises.
      * The limiter sees arrivals, so the guarantee has to be about arrivals.
      *
+     * STAMPED AFTER `fn()` IS ENTERED, not before it. An earlier version took
+     * the timestamp on the line above the call, which meant the pacer spaced
+     * its own BOOKKEEPING by the interval while the request inside `fn` started
+     * an unbounded moment later. That lag varies per call, and the difference
+     * between two consecutive lags subtracts straight off the real spacing:
+     * with a 40ms interval, an 8ms lag on one call and none on the next puts
+     * two requests 32ms apart. CI caught it as a 39ms gap where 40 was promised
+     * (`consecutive calls are spaced by at least the interval`, 2026-08-18);
+     * Windows never saw it because its ~15ms timer granularity overshoots every
+     * sleep by enough to hide the difference, while Linux lands on the boundary.
+     *
+     * Calling `fn()` runs its synchronous prefix — for `pacedOdGet` that is
+     * everything up to the request's first await — so a stamp taken once it
+     * returns is at or after the moment the call really began. The next slot is
+     * therefore never earlier than one interval after this request started,
+     * which is the property Open Dental's throttle is counting.
+     *
+     * `finally` so a synchronously-throwing `fn` still yields its slot rather
+     * than letting the next caller through immediately.
+     *
      * Safe to compute here rather than reserve because `chain` already
      * serializes this section — only one caller is ever inside it.
      */
-    const startedAt = Date.now();
-    if (lastStartedAt) stats.spacedMs += startedAt - lastStartedAt;
-    lastStartedAt = startedAt;
-    nextSlotAt = startedAt + interval;
     stats.calls += 1;
-    return fn();
+    let pending;
+    try {
+      // NOT `await fn()` inside the try: the stamp must land when the request
+      // STARTS, and awaiting here would move `finally` to when it FINISHES —
+      // spacing calls an interval apart from completion, which is a different
+      // and much slower contract than the one this module promises.
+      pending = fn();
+    } finally {
+      const startedAt = Date.now();
+      if (lastStartedAt) stats.spacedMs += startedAt - lastStartedAt;
+      lastStartedAt = startedAt;
+      nextSlotAt = startedAt + interval;
+    }
+    return pending;
   });
 
   // The NEXT caller waits for this turn to settle either way. `catch` rather
