@@ -23,7 +23,7 @@ const vocabulary = require('./rcmVocabulary');
 const { deriveClaimReviewReasons, deriveBatchReviewReasons } = require('./eobExtraction');
 
 const MIGRATION = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'migrations-tenant', '1787020000000_rcm_fidelity.js'),
+  path.join(__dirname, '..', '..', 'migrations-tenant', '1787060000000_rcm_fidelity.js'),
   'utf8'
 );
 

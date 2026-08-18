@@ -22,6 +22,14 @@
  *  4. `rcm_eob_uploads` gets content-addressed dedupe and a machine-readable
  *     failure code.
  *
+ * TIMESTAMPED 1787060000000, AFTER Slice 6a's 1787040000000. It was authored as
+ * 1787020000000, which sorted BEFORE it; 6a merged to develop first, so on
+ * staging and prod 1787040000000 is already run and node-pg-migrate's default
+ * `checkOrder` refuses to insert an earlier migration behind it — the deploy's
+ * migrate job would have failed before touching a table. Renaming was safe only
+ * because this migration had never been applied anywhere; it is not a fix
+ * available once a migration has shipped.
+ *
  * `up` IS NON-DESTRUCTIVE. Every column is added nullable or with a default
  * that matches what the old code already meant, so existing staging rows keep
  * their meaning. The two CHECKs are the exception and are deliberately
