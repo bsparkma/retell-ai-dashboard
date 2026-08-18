@@ -31,7 +31,12 @@ const EDI = 'application/edi-x12';
 
 const MULTI = fixture835('Test_Delta_Dental_MultiClaim.edi');
 const REVERSAL = fixture835('Test_Reversal_Recoupment.edi');
-const CLEAN = fixture835('Test_Guardian_Clean.edi');
+// Slice 5.5 moved the "clean" baseline. Test_Guardian_Clean.edi is clean in
+// every way its author intended, but its AMT*B6 carries the BILLED amount
+// rather than the allowed one, so A3 now (correctly) raises
+// allowed_amount_mismatch on it — as it does on 25 of the corpus's 37 AMT*B6
+// lines. See the corpus note in test/fixtures/rcm/README.md.
+const CLEAN = fixture835('Test_Clean_Conformant.edi');
 
 /** Boot, run, always close. */
 async function withApp(opts, fn) {
@@ -170,8 +175,11 @@ test('the canonical multi-claim file produces one batch, two claims, four lines'
     assert.equal(batch.eft_number, '830200001');
     assert.equal(batch.check_number, null);
     assert.equal(batch.deposit_date, '2026-03-02');
-    // Nothing on this file needs a human, so the batch is actionable.
-    assert.equal(batch.status, 'ready');
+    // Slice 5.5: this file's AMT*B6 carries the BILLED amount rather than the
+    // allowed one, so A3 (correctly) raises allowed_amount_mismatch and the
+    // batch is held. See the corpus note in test/fixtures/rcm/README.md.
+    assert.equal(batch.status, 'open');
+    assert.deepEqual(batch.flags, []);
 
     const claims = app.db.table('rcm_claims');
     assert.deepEqual(claims.map((c) => c.claim_number).sort(), ['FOSTER001', 'NAVARRO001']);
@@ -273,8 +281,19 @@ test('a reversal is CREATED and FLAGGED — never dropped, and never left lookin
     assert.deepEqual(claim.needs_review_reasons, ['reversal_not_postable']);
     const [batch] = app.db.table('rcm_payment_batches');
     assert.equal(batch.status, 'open', 'a takeback must never read as ready to act on');
-    assert.match(batch.notes, /negative_total_payment/);
-    assert.deepEqual(res.body.remittances[0].flags, ['negative_total_payment']);
+    // Slice 5.5: flags are structured data now (rcm_payment_batches.flags,
+    // CHECKed against the frozen vocabulary). `notes` went back to being a
+    // place for a human to type, rather than prose the UI had to parse.
+    // `envelope_counts_mismatch` is a Slice 5.5 TRUE POSITIVE on this fixture:
+    // its SE01 declares 32 segments and the set actually contains 33. Five of
+    // the thirteen corpus files declare a wrong SE01 — see the corpus note in
+    // test/fixtures/rcm/README.md.
+    assert.deepEqual(batch.flags, ['negative_total_payment', 'envelope_counts_mismatch']);
+    assert.equal(batch.notes, '');
+    assert.deepEqual(res.body.remittances[0].flags, [
+      'negative_total_payment',
+      'envelope_counts_mismatch',
+    ]);
     assert.deepEqual(res.body.remittances[0].claims[0].needsReviewReasons, ['reversal_not_postable']);
   });
 });
@@ -310,10 +329,14 @@ test('a denied claim lands with its CARC/RARC codes, which is the whole product'
       adjustments.map((a) => `${a.group_code}-${a.reason_code}`),
       ['CO-18', 'CO-29', 'CO-31', 'PR-96', 'CO-50']
     );
-    // Open Dental's ClaimAdjReasonCodes is read-only over its API, so this
-    // table is the ONLY structured home these codes have.
+    // Slice 5.5 (B2): the RARC belongs to the LINE. X12 gives no CAS<->LQ
+    // association, so stamping remarkCodes[0] onto every adjustment stored the
+    // first RARC three times on a three-CARC line. Open Dental's
+    // ClaimAdjReasonCodes is read-only over its API, so these columns are still
+    // the ONLY structured home these codes have.
+    assert.ok(adjustments.every((a) => a.remark_code === undefined || a.remark_code === null));
     assert.deepEqual(
-      adjustments.map((a) => a.remark_code),
+      app.db.table('rcm_procedure_lines').map((l) => (l.remark_codes || [])[0] || null),
       ['N19', 'N362', 'N290', 'N130', null]
     );
     assert.ok(app.db.table('rcm_procedure_lines').every((l) => l.is_denied === true));
@@ -754,14 +777,22 @@ test('the list shows each upload, its remittances, and their dedupe status', asy
     assert.equal(delta.remittances[0].payer, 'DELTA DENTAL OF ARKANSAS');
     assert.equal(delta.remittances[0].totalAmountCents, 65_100);
     assert.equal(delta.remittances[0].claimCount, 2);
-    assert.equal(delta.remittances[0].status, 'ready');
+    // Slice 5.5: held at 'open' because this file's AMT*B6 carries the billed
+    // amount rather than the allowed one (A3). The remittance itself is clean —
+    // the review reason is on the claims.
+    assert.equal(delta.remittances[0].status, 'open');
+    assert.deepEqual(delta.remittances[0].flags, []);
     // The dedupe status is the thing that makes a re-upload refuse.
     assert.equal(delta.remittances[0].dedupeStatus, 'posted');
     assert.match(delta.remittances[0].remittanceKey, /^830200001\|DELTA DENTAL OF ARKANSAS\|/);
 
     const reversal = res.body.uploads.find((u) => u.filename === 'reversal.edi');
     assert.equal(reversal.remittances[0].status, 'open');
-    assert.match(reversal.remittances[0].notes, /negative_total_payment/);
+    // Slice 5.5: the list carries the structured flags, not prose in `notes`.
+    assert.deepEqual(reversal.remittances[0].flags, [
+      'negative_total_payment',
+      'envelope_counts_mismatch',
+    ]);
   });
 });
 

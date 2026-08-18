@@ -44,6 +44,8 @@
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
 /** Sentinels the model is INSTRUCTED to emit rather than invent a value. */
+const { EOB_REVIEW_REASONS } = require('./rcmVocabulary');
+
 const PLACEHOLDER_NPI = '0000000000';
 const PLACEHOLDER_DOB = '1900-01-01';
 const PLACEHOLDER_CHECK = 'UNKNOWN';
@@ -447,14 +449,28 @@ function normalizeAdjustment(rawAdj) {
 // ─── Review-reason derivation ────────────────────────────────────────────────
 
 /**
+ * The EOB half of the frozen vocabulary. Aliased to `R` so the derivation below
+ * reads as closely as possible to the bare literals it replaced — the point is
+ * that a typo is now a load-time crash instead of a rejected INSERT in prod.
+ */
+const R = EOB_REVIEW_REASONS;
+
+/**
  * Per-claim reasons a human must look at this. Ported from the source's
  * `deriveClaimReviewReasons`, plus the uncertain-line reasons.
  *
- * These land in rcm_claims.needs_review_reasons (text[], no CHECK constraint),
- * which is why an `uncertain_line:N` entry can carry the line number with it —
- * rcm_procedure_lines has no confidence column and its `flags` CHECK has no
- * slot for uncertainty, so the pointer lives on the claim. Slice 7 reads the
- * per-line confidence itself out of rcm_claims.raw_extracted_json.
+ * These land in rcm_claims.needs_review_reasons, which SINCE SLICE 5.5 CARRIES A
+ * CHECK CONSTRAINT — every value below must be a member of
+ * `rcmVocabulary.REVIEW_REASONS`, or the INSERT is rejected and a whole
+ * extraction rolls back. They are referenced through `R` rather than written as
+ * bare literals for exactly that reason.
+ *
+ * `uncertain_line:N` carries a line number with it because rcm_procedure_lines
+ * has no confidence column and its `flags` CHECK has no slot for uncertainty, so
+ * the pointer lives on the claim. That is the one PARAMETERISED member, and the
+ * CHECK validates it through an IMMUTABLE function rather than a plain array
+ * containment test. Slice 7 reads the per-line confidence itself out of
+ * rcm_claims.raw_extracted_json.
  *
  * @param {ExtractedClaim} claim
  * @param {number} confidence document-level confidence
@@ -466,34 +482,34 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
   /** @type {string[]} */
   const reasons = [];
 
-  if (confidence < LOW_CONFIDENCE_THRESHOLD) reasons.push('low_confidence');
-  if (!claim.providerNPI || claim.providerNPI === PLACEHOLDER_NPI) reasons.push('missing_npi');
-  if (!claim.patientDOB || claim.patientDOB === PLACEHOLDER_DOB) reasons.push('missing_dob');
-  if (!payment.checkNumber || payment.checkNumber === PLACEHOLDER_CHECK) reasons.push('missing_check_number');
-  if (!claim.subscriberId) reasons.push('missing_subscriber_id');
-  if (!payment.payer) reasons.push('missing_payer');
-  if (!claim.claimNumber) reasons.push('missing_claim_number');
-  if (!claim.patientName) reasons.push('missing_patient_name');
-  if (claim.procedures.length === 0) reasons.push('no_procedures_extracted');
+  if (confidence < LOW_CONFIDENCE_THRESHOLD) reasons.push(R.LOW_CONFIDENCE);
+  if (!claim.providerNPI || claim.providerNPI === PLACEHOLDER_NPI) reasons.push(R.MISSING_NPI);
+  if (!claim.patientDOB || claim.patientDOB === PLACEHOLDER_DOB) reasons.push(R.MISSING_DOB);
+  if (!payment.checkNumber || payment.checkNumber === PLACEHOLDER_CHECK) reasons.push(R.MISSING_CHECK_NUMBER);
+  if (!claim.subscriberId) reasons.push(R.MISSING_SUBSCRIBER_ID);
+  if (!payment.payer) reasons.push(R.MISSING_PAYER);
+  if (!claim.claimNumber) reasons.push(R.MISSING_CLAIM_NUMBER);
+  if (!claim.patientName) reasons.push(R.MISSING_PATIENT_NAME);
+  if (claim.procedures.length === 0) reasons.push(R.NO_PROCEDURES_EXTRACTED);
 
   // Math sanity: the per-procedure sums should reach the claim totals.
   if (claim.procedures.length > 0) {
     const paidSum = claim.procedures.reduce((acc, p) => acc + p.paidCents, 0);
     if (Math.abs(paidSum - claim.totalPaidCents) > TOTAL_TOLERANCE_CENTS) {
-      reasons.push('paid_total_mismatch');
+      reasons.push(R.PAID_TOTAL_MISMATCH);
     }
     const billedSum = claim.procedures.reduce((acc, p) => acc + p.billedCents, 0);
     if (Math.abs(billedSum - claim.totalBilledCents) > TOTAL_TOLERANCE_CENTS) {
-      reasons.push('billed_total_mismatch');
+      reasons.push(R.BILLED_TOTAL_MISMATCH);
     }
   }
 
   // Date sanity: a real ISO date, not in the future.
   const today = opts.today || new Date().toISOString().slice(0, 10);
   if (!claim.serviceDate) {
-    reasons.push('invalid_service_date');
+    reasons.push(R.INVALID_SERVICE_DATE);
   } else if (claim.serviceDate > today) {
-    reasons.push('service_date_in_future');
+    reasons.push(R.SERVICE_DATE_IN_FUTURE);
   }
 
   // Negative amounts on an EOB almost always mean a misread column. A genuine
@@ -503,7 +519,7 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
     claim.totalBilledCents < 0 ||
     claim.procedures.some((p) => p.paidCents < 0 || p.billedCents < 0)
   ) {
-    reasons.push('negative_amount');
+    reasons.push(R.NEGATIVE_AMOUNT);
   }
 
   // Uncertain lines, by printed position (1-based — it is a human pointer).
@@ -526,10 +542,10 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
  * @returns {string[]}
  */
 function deriveBatchReviewReasons(extracted) {
-  if (extracted.claims.length === 0) return ['no_claims_extracted'];
+  if (extracted.claims.length === 0) return [R.NO_CLAIMS_EXTRACTED];
   const claimsPaidSum = extracted.claims.reduce((acc, c) => acc + c.totalPaidCents, 0);
   return Math.abs(claimsPaidSum - extracted.payment.totalPaidCents) > TOTAL_TOLERANCE_CENTS
-    ? ['batch_paid_total_mismatch']
+    ? [R.BATCH_PAID_TOTAL_MISMATCH]
     : [];
 }
 

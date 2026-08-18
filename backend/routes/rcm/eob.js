@@ -83,6 +83,9 @@ const LIST_COLUMNS = [
   'file_size_bytes',
   'status',
   'error_message',
+  // A6: the machine-readable half of a failure. The panel switches on THIS;
+  // error_message stays the human sentence.
+  'failure_code',
   'result_claim_id',
   'result_batch_id',
   'uploaded_at',
@@ -101,6 +104,9 @@ function toWire(row) {
     // extraction has not started yet (budget paused, or no LLM configured) —
     // see the worker's markPending(). The UI distinguishes them by `status`.
     message: row.error_message || null,
+    // A6. Slice 5.5: what the panel switches on, so "split this document" and
+    // "this PDF is encrypted" can render differently without matching prose.
+    failureCode: row.failure_code || null,
     resultClaimId: row.result_claim_id || null,
     resultBatchId: row.result_batch_id || null,
     uploadedAt: iso(row.uploaded_at),
@@ -229,20 +235,33 @@ router.post(
       // the retry path. There is no separate retry endpoint and no background
       // rescan: re-uploading the document is the human action that restarts it,
       // which also covers a process restart that lost the in-memory queue.
-      await tenantDb.withTenantDb(req, (pool) =>
+      // SLICE 5.5 REVIEW. The `23505` guard below protects the INSERT path; this
+      // one is the same race on the RETRY path. Two concurrent re-uploads of a
+      // document whose prior row is 'failed'/'uploaded' both read that row, both
+      // flip it, and both enqueue — two extractions of one upload_id, i.e. the
+      // cost the budget breaker exists to prevent, spent twice.
+      //
+      // The UPDATE re-asserts the status it expects, so exactly one caller can
+      // win the transition. The loser did not requeue and says so rather than
+      // claiming a restart it did not cause.
+      const claimed = await tenantDb.withTenantDb(req, (pool) =>
         pool.query(
-          `UPDATE rcm_eob_uploads SET status = 'uploaded', error_message = NULL, updated_at = now()
-            WHERE upload_id = $1 AND office_id = $2`,
+          `UPDATE rcm_eob_uploads
+              SET status = 'uploaded', error_message = NULL, failure_code = NULL,
+                  updated_at = now()
+            WHERE upload_id = $1 AND office_id = $2 AND status IN ('uploaded', 'failed')
+            RETURNING upload_id`,
           [prior.upload_id, office]
         )
       );
-      queue.enqueue({ tenantId, tenantSlug, office, uploadId: prior.upload_id });
+      const requeued = claimed.rows.length > 0;
+      if (requeued) queue.enqueue({ tenantId, tenantSlug, office, uploadId: prior.upload_id });
       await auditEobWrite(req, office, prior.upload_id);
       return res.status(200).json({
         success: true,
         office,
         duplicate: true,
-        requeued: true,
+        requeued,
         upload: { ...toWire(prior), status: 'uploaded', message: null },
         extraction: budget.status(),
       });
@@ -253,24 +272,62 @@ router.post(
     // reconciliation sweep can find. Orphan beats lie.
     const stored = await blobStore.putEob({ tenantSlug, data: file.buffer });
 
-    const inserted = await tenantDb.withTenantDb(req, async (pool) => {
-      // D-5 (Slice 6a): who brought this document in. Resolved on the same
-      // connection as the INSERT that references it — `uploaded_by` is a FK to
-      // rcm_user_map, and the row is created here on a person's first RCM
-      // action rather than requiring an administrator to pre-seed a crosswalk.
-      const uploadedBy = await resolveRcmActor(pool, {
-        email: actorEmail(req),
-        displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+    // SLICE 5.5, PART C. The `existing` lookup above is a READ-then-write, so
+    // two uploads of the same PDF arriving together both see no prior and both
+    // insert — two batches, two sets of claims, two sets of lines, which is a
+    // double-post waiting for Slice 6c. The ERA path closed exactly this race
+    // with a unique index rather than with application code, because only the
+    // database can win it; `rcm_eob_uploads_office_hash_unique` is the EOB
+    // equivalent (partial: a FAILED upload does not hold the hash, so a
+    // document that failed extraction can still be retried).
+    //
+    // The loser of the race gets the same answer it would have got a
+    // millisecond later, which is the honest one: this document is already here.
+    let row;
+    try {
+      const inserted = await tenantDb.withTenantDb(req, async (pool) => {
+        // D-5 (Slice 6a): who brought this document in. `uploaded_by` is a FK
+        // to rcm_user_map, and the row is created here on a person's first RCM
+        // action rather than requiring an administrator to pre-seed a
+        // crosswalk. Resolved before the INSERT and outside any transaction —
+        // resolveRcmActor is SELECT-then-INSERT..ON CONFLICT, so it commits on
+        // its own and the FK target exists by the time the INSERT below runs.
+        const uploadedBy = await resolveRcmActor(pool, {
+          email: actorEmail(req),
+          displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+        });
+        return pool.query(
+          `INSERT INTO rcm_eob_uploads
+             (office_id, filename, file_key, file_url, file_hash, file_size_bytes, content_type, status, uploaded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'uploaded', $8)
+           RETURNING ${LIST_COLUMNS}`,
+          [office, filename, stored.key, stored.url, fileHash, stored.bytes, 'application/pdf', uploadedBy]
+        );
       });
-      return pool.query(
-        `INSERT INTO rcm_eob_uploads
-           (office_id, filename, file_key, file_url, file_hash, file_size_bytes, content_type, status, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'uploaded', $8)
-         RETURNING ${LIST_COLUMNS}`,
-        [office, filename, stored.key, stored.url, fileHash, stored.bytes, 'application/pdf', uploadedBy]
+      row = inserted.rows[0];
+    } catch (err) {
+      if (!err || err.code !== '23505') throw err;
+
+      const raced = await tenantDb.withTenantDb(req, (pool) =>
+        pool.query(
+          `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads
+            WHERE office_id = $1 AND file_hash = $2
+            ORDER BY uploaded_at DESC LIMIT 1`,
+          [office, fileHash]
+        )
       );
-    });
-    const row = inserted.rows[0];
+      const winner = raced.rows[0];
+      if (!winner) throw err; // The constraint fired but the row is gone: not ours to explain.
+
+      await auditEobWrite(req, office, winner.upload_id);
+      return res.status(200).json({
+        success: true,
+        office,
+        duplicate: true,
+        upload: toWire(winner),
+        extraction: budget.status(),
+      });
+    }
 
     // Audited BEFORE the 201: a PHI document entering the system without a
     // recorded trail is the thing hard rule 5 forbids, and h() turns an audit

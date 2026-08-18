@@ -42,7 +42,7 @@ const SEG = '~\n';
 function build835(claimBlocks) {
   return (
     [
-      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*>',
+      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*:',
       'GS*HP*SENDER*RECEIVER*20260301*1200*1*X*005010X221A1',
       'ST*835*0001',
       'BPR*I*150.00*C*ACH*CCP*01*999999999*DA*123456*1512345678**01*999988880*DA*98765*20260301',
@@ -176,7 +176,7 @@ const CLAIM = [
 function build(bpr, { dtm = true } = {}) {
   return (
     [
-      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*>',
+      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*:',
       'GS*HP*SENDER*RECEIVER*20260301*1200*1*X*005010X221A1',
       'ST*835*0001',
       bpr,
@@ -250,7 +250,7 @@ test('refuses a file that is not X12 at all', () => {
 test('refuses an interchange carrying no 835 transaction', () => {
   const notAn835 =
     [
-      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*>',
+      'ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260301*1200*^*00501*000000001*0*P*:',
       'GS*HC*SENDER*RECEIVER*20260301*1200*1*X*005010X222A1',
       'ST*837*0001',
       'SE*2*0001',
@@ -260,14 +260,28 @@ test('refuses an interchange carrying no 835 transaction', () => {
   assert.throws(() => parse835(notAn835), /No 835 transactions/);
 });
 
-test('reads the delimiters the interchange declares, not hardcoded ones', () => {
-  // The corpus declares ':' at ISA16 and the ported fixtures declare '>'. Both
-  // must parse, which is why x12.js reads ISA rather than assuming.
-  assert.equal(parse835(build(ACH_BPR)).traceNumber, '820633511'); // '>' at ISA16
-  assert.equal(
-    parse835(fixture('Test_Minimal_835.edi')).traceNumber, // ':' at ISA16
-    '000000006'
+test('A2: composites split on the DECLARED component separator, not a hardcoded one', () => {
+  // Slice 5.5 defect A2. `subElement` hardcoded ':' and ignored the ISA16 value
+  // x12.js had already read. A payer declaring '>' — ordinary in real 005010
+  // output — stored "AD>D0120" as the procedure code and "WO>OLDCLM001" as a
+  // PLB reason: every code in the file wrong, the money still reconciling, and
+  // NOTHING flagged. That is the silent-wrong-answer class this slice exists for.
+  const caret = parse835(fixture('Test_Caret_Delimiters.edi'));
+  const claim = caret.claims[0];
+
+  assert.equal(claim.procedures[0].code, 'D0120', 'split on the declared ">"');
+  assert.equal(claim.procedures[1].code, 'D1110');
+  assert.ok(
+    claim.procedures.every((p) => !p.code.includes('>')),
+    'no procedure code may still carry the separator'
   );
+  // The PLB composite splits on the same declared separator.
+  assert.equal(caret.plbAdjustments[0].reasonCode, 'WO');
+  assert.equal(caret.plbAdjustments[0].referenceId, 'OLDCLM777');
+
+  // And the ':'-declaring corpus is unaffected.
+  assert.equal(parse835(fixture('Test_Minimal_835.edi')).claims[0].procedures[0].code, 'D1110');
+  assert.equal(parse835(fixture('Test_Minimal_835.edi')).traceNumber, '000000006');
 });
 
 test('toCents handles decimal dollars, negatives and absent values', () => {
@@ -346,7 +360,10 @@ test('corpus: a denied claim is flagged, not silently zero-paid', () => {
   assert.equal(claim.claimStatusCode, '4');
   assert.equal(claim.claimStatusLabel, 'denied');
   assert.equal(claim.isDenied, true);
-  assert.deepEqual(claim.needsReviewReasons, ['claim_denied']);
+  // `patient_resp_mismatch` is a Slice 5.5 TRUE POSITIVE on this fixture: its
+  // CLP05 says the patient owes 0 while line D0220 carries PR-96 for $34. The
+  // file contradicts itself, and before A1 nothing reconciled the two.
+  assert.deepEqual(claim.needsReviewReasons, ['claim_denied', 'patient_resp_mismatch']);
   // D8: the source parsed CLP02 into a variable it never read, so a denial and
   // a clean payment were indistinguishable in the output.
   assert.ok(claim.procedures.every((p) => p.isDenied));
@@ -448,7 +465,13 @@ test('corpus: RARC remark codes are read from LQ*HE', () => {
     claim.procedures.map((p) => p.remarkCodes[0] || null),
     ['N19', 'N362', 'N290', 'N130', null]
   );
-  assert.equal(claim.procedures[0].adjustments[0].remarkCode, 'N19');
+
+  // B2. The RARC belongs to the LINE, and is no longer stamped onto every
+  // adjustment on it. X12 gives no CAS↔LQ association at all, so a line with
+  // three CARCs and one RARC used to store that RARC three times — plausible,
+  // and wrong. `remark_codes` on the line is the authoritative set.
+  assert.equal(claim.procedures[0].adjustments[0].remarkCode, undefined);
+  assert.deepEqual(claim.procedures[0].remarkCodes, ['N19']);
 });
 
 test('corpus: the subscriber id comes from NM1, and REF*1L is the GROUP number', () => {
@@ -487,10 +510,31 @@ test('corpus: a multi-claim check keeps each claim to its own patient and lines'
   assert.equal(parsed.remittances.length, 1);
 });
 
-test('corpus: a clean file raises no flags and no review reasons at all', () => {
-  const parsed = parse835(fixture('Test_Guardian_Clean.edi'));
+test('a clean, spec-conformant file raises no flags and no review reasons at all', () => {
+  // Moved off Test_Guardian_Clean.edi in Slice 5.5. That file is clean in every
+  // way the corpus author intended, but its `AMT*B6` carries the BILLED amount
+  // rather than the allowed one — so under A3 it now (correctly) raises
+  // `allowed_amount_mismatch`. See the corpus note in
+  // backend/test/fixtures/rcm/README.md: 25 of the corpus's 37 AMT*B6 lines
+  // hold the billed amount, which is not what B6 means in 005010X221A1.
+  //
+  // The "nothing fires on a good file" guarantee is worth keeping, so it moved
+  // to a fixture authored to the specification.
+  const parsed = parse835(fixture('Test_Clean_Conformant.edi'));
   assert.deepEqual(parsed.remittances[0].flags, []);
   assert.deepEqual(parsed.claims[0].needsReviewReasons, []);
+  assert.ok(parsed.claims[0].procedures.every((p) => p.flags.length === 0));
+  // …and its allowed amounts were READ, not derived.
+  assert.ok(parsed.claims[0].procedures.every((p) => p.allowedSource === 'reported'));
+});
+
+test('corpus: Guardian_Clean is clean apart from the corpus-wide AMT*B6 convention', () => {
+  // Kept as the record of exactly what changed for the old "clean" fixture, so
+  // a future reader can see this was a deliberate reclassification and not a
+  // regression that was quietly absorbed.
+  const parsed = parse835(fixture('Test_Guardian_Clean.edi'));
+  assert.deepEqual(parsed.remittances[0].flags, []);
+  assert.deepEqual(parsed.claims[0].needsReviewReasons, ['allowed_amount_mismatch']);
 });
 
 // ─── The two places the corpus and the specification disagree ───────────────
@@ -574,4 +618,356 @@ test('a well-formed multi-pair CAS reads every pair', () => {
   assert.equal(line.deductibleCents, 5_000);
   assert.equal(line.copayCents, 2_550);
   assert.ok(line.flags.includes('unexplained_adj') === false);
+});
+
+// ─── Slice 5.5 — the silent money defects ───────────────────────────────────
+//
+// Every test below asserts the FLAG FIRES. A regression test that only proves
+// the good case is how this class of defect got through the first time: all six
+// of these files parsed successfully, reconciled arithmetically, and stored the
+// wrong numbers with nothing raised.
+
+test('A1: claim-level CAS is read, rolled into the totals, and marked as claim-scoped', () => {
+  // Before: any CAS between the CLP and the first SVC was discarded with no
+  // flag, so this claim stored total_deductible_cents = 0 while its own CLP05
+  // said $75 — two stored numbers disagreeing, nothing reconciling them.
+  const claim = parse835(fixture('Test_Claim_Level_CAS.edi')).claims[0];
+
+  assert.equal(claim.claimLevelAdjustments.length, 1);
+  assert.equal(claim.claimLevelAdjustments[0].scope, 'claim');
+  assert.equal(claim.claimLevelAdjustments[0].groupCode, 'PR');
+  assert.equal(claim.claimLevelAdjustments[0].reasonCode, '1');
+  assert.equal(claim.claimLevelAdjustments[0].amountCents, 7_500);
+
+  // Rolled into the claim's own totals, which is what patient_balance_cents is
+  // computed from downstream.
+  assert.equal(claim.totalDeductibleCents, 7_500);
+  // And the review UI can say WHERE it was reported.
+  assert.ok(claim.needsReviewReasons.includes('claim_level_adjustments_present'));
+  // It reconciles against CLP05, so no mismatch is raised.
+  assert.equal(claim.patientRespCents, 7_500);
+  assert.equal(claim.patientRespSeenCents, 7_500);
+  assert.ok(!claim.needsReviewReasons.includes('patient_resp_mismatch'));
+});
+
+test('A1: PR that does not reconcile against CLP05 raises patient_resp_mismatch', () => {
+  // The check that was structurally impossible while claim-level CAS was being
+  // dropped — and the one that would have caught the drop.
+  const claim = parse835(fixture('Test_Denied_Claims.edi')).claims[0];
+  assert.equal(claim.patientRespCents, 0, 'CLP05 says the patient owes nothing');
+  assert.equal(claim.patientRespSeenCents, 3_400, 'but a PR-96 for $34 is on a line');
+  assert.ok(claim.needsReviewReasons.includes('patient_resp_mismatch'));
+});
+
+test('A1: a claim whose CLP05 is ABSENT is not reconciled against a fabricated zero', () => {
+  // An omitted CLP05 reads as 0, and reconciling against it would flag most of
+  // the corpus for a field the file never claimed.
+  const claim = parse835(fixture('Test_Delta_Dental_MultiClaim.edi')).claims[1];
+  assert.ok(claim.patientRespSeenCents > 0, 'this claim does carry PR adjustments');
+  assert.ok(!claim.needsReviewReasons.includes('patient_resp_mismatch'));
+});
+
+test('A3: an OA/PI contractual reduction is a write-off, not extra allowed', () => {
+  // Before: allowed = billed - the CO adjustments only. A payer taking the
+  // reduction under OA left the allowed inflated and therefore write_off_cents
+  // WRONG — and write_off_cents is a number Slice 6c writes into Open Dental.
+  const line = parse835(fixture('Test_Reported_Allowed.edi')).claims[0].procedures[0];
+  assert.equal(line.adjustments[0].groupCode, 'OA');
+  assert.equal(line.billedCents, 20_000);
+  assert.equal(line.derivedAllowedCents, 13_000, '200 billed less the 70 OA reduction');
+  assert.equal(line.allowedCents, 13_000);
+  assert.ok(!line.flags.includes('allowed_mismatch'), 'reported and derived agree');
+});
+
+test('A3: AMT*B6 is EVIDENCE — the DERIVED value is what allowed_cents holds', () => {
+  // An earlier revision of this slice preferred the reported value, and this
+  // test pinned it. That was a money regression: on the majority of the corpus
+  // B6 carries the BILLED amount, so preferring it set allowed := billed and
+  // made write_off_cents ZERO — worse than develop, on the very number Slice 6c
+  // writes into Open Dental's ClaimProc.WriteOff.
+  const parsed = parse835(fixture('Test_Reported_Allowed.edi'));
+  const line = parsed.claims[0].procedures[1];
+
+  assert.equal(line.reportedAllowedCents, 18_000, 'the payer figure is kept...');
+  assert.equal(line.derivedAllowedCents, 10_000, '...and the arithmetic is kept...');
+  assert.equal(line.allowedCents, 10_000, '...and the ARITHMETIC is what counts');
+
+  // `allowed_source` is the provenance of the payer's STATED allowed amount,
+  // not of allowed_cents — which is always derived.
+  assert.equal(line.allowedSource, 'reported');
+
+  // The disagreement is the finding, and it still fires.
+  assert.ok(line.flags.includes('allowed_mismatch'));
+  assert.ok(parsed.claims[0].needsReviewReasons.includes('allowed_amount_mismatch'));
+});
+
+test('A3: the STORED write-off equals the CAS contractual amount, on every corpus line', () => {
+  // THE TEST WHOSE ABSENCE LET THE REGRESSION THROUGH. No test in the suite
+  // asserted a stored write-off, so 1170 green tests said nothing while
+  // write_off_cents went to zero across most of the corpus.
+  //
+  // write_off_cents = billed - allowed, and it is what Slice 6c writes into
+  // ClaimProc.WriteOff. It must equal what the file's own CAS says was
+  // contractual — including on the 25-of-37 lines whose AMT*B6 carries the
+  // billed amount and would zero it if reported were preferred.
+  const CONTRACTUAL = ['CO', 'OA', 'PI'];
+  let checked = 0;
+
+  for (const name of fs.readdirSync(FIXTURES).filter((f) => f.endsWith('.edi'))) {
+    const parsed = parse835(fixture(name));
+    for (const claim of parsed.claims) {
+      // A line carrying an unreadable amount cannot be reconciled by
+      // construction — that is exactly what totals_unreconciled says.
+      if (claim.needsReviewReasons.includes('totals_unreconciled')) continue;
+
+      for (const line of claim.procedures) {
+        const contractual = line.adjustments
+          .filter((a) => CONTRACTUAL.includes(a.groupCode))
+          .reduce((sum, a) => sum + a.amountCents, 0);
+        assert.equal(
+          line.billedCents - line.allowedCents,
+          contractual,
+          `${name} ${line.code}: stored write-off must equal the CAS contractual amount`
+        );
+        checked += 1;
+      }
+    }
+  }
+  assert.ok(checked > 50, `expected to check the whole corpus, checked ${checked} lines`);
+});
+
+test('A3: the five lines the review named have their write-offs back', () => {
+  // Reproduces the PM's table exactly, so a change that re-breaks any one of
+  // them names the fixture rather than failing an aggregate.
+  const expected = [
+    ['Test_Guardian_Clean.edi', 'D0120', 200],
+    ['Test_Guardian_Clean.edi', 'D0274', 1_800],
+    ['Test_Delta_Dental_MultiClaim.edi', 'D2750', 50_400],
+    ['Test_Cigna_Downcode.edi', 'D0150', 4_500],
+    ['Test_Principal_Major.edi', 'D2750', 35_000],
+  ];
+  for (const [name, code, writeOff] of expected) {
+    const parsed = parse835(fixture(name));
+    const line = parsed.claims.flatMap((c) => c.procedures).find((p) => p.code === code);
+    assert.ok(line, `${name} should carry ${code}`);
+    assert.equal(line.billedCents - line.allowedCents, writeOff, `${name} ${code}`);
+  }
+});
+
+test('B1: the claim allowed total and its lines agree, across the whole corpus', () => {
+  // Two stored numbers describing one sum, with nothing comparing them, is the
+  // defect class A1 exists to end. This is that check one level up.
+  for (const name of fs.readdirSync(FIXTURES).filter((f) => f.endsWith('.edi'))) {
+    const parsed = parse835(fixture(name));
+    for (const claim of parsed.claims) {
+      assert.ok(
+        !claim.needsReviewReasons.includes('claim_line_allowed_mismatch'),
+        `${name} ${claim.claimNumber}: claim allowed should reconcile with its lines`
+      );
+    }
+  }
+});
+
+test('B1: a claim whose header disagrees with its lines about billed is flagged', () => {
+  // CLP03 says $300 billed; the single line says $200. The claim's allowed and
+  // the sum of its lines' allowed therefore cannot both be right.
+  const parsed = parse835(
+    build835(
+      [
+        'CLP*MISMATCH*1*300*100**12*ICN9',
+        'NM1*QC*1*SYNTHETIC*ALPHA****MI*111222333',
+        'SVC*AD:D2750*200*100',
+        'CAS*CO*45*100',
+      ].join(SEG)
+    )
+  );
+  const claim = parsed.claims[0];
+  assert.equal(claim.totalAllowedCents, 20_000, 'CLP03 300 less the 100 contractual');
+  assert.equal(
+    claim.procedures.reduce((s, p) => s + p.allowedCents, 0),
+    10_000,
+    'the line says 200 less 100'
+  );
+  assert.ok(claim.needsReviewReasons.includes('claim_line_allowed_mismatch'));
+});
+
+test('B3: an unreadable amount makes the claim say its totals are unreconciled', () => {
+  // The A4 flag alone was not enough. A refused CONTRACTUAL amount reads as 0,
+  // which inflates the derived allowed and zeroes the write-off — while
+  // claim_total_mismatch, line_total_mismatch and patient_resp_mismatch all
+  // compare figures the bad token never touched. A $100 write-off could vanish
+  // into totals that reconciled perfectly.
+  const parsed = parse835(
+    build835(
+      [
+        'CLP*UNREAD*1*200*100**12*ICN8',
+        'NM1*QC*1*SYNTHETIC*BRAVO****MI*222333444',
+        'SVC*AD:D2750*200*100',
+        'CAS*CO*45*1,00',
+      ].join(SEG)
+    )
+  );
+  const claim = parsed.claims[0];
+  const line = claim.procedures[0];
+
+  assert.ok(line.flags.includes('unreadable_amount'));
+  // The write-off IS wrong — nothing can recover a number we could not read —
+  // but the claim now refuses to present its totals as reconciled.
+  assert.equal(line.billedCents - line.allowedCents, 0);
+  assert.ok(claim.needsReviewReasons.includes('unreadable_amount'));
+  assert.ok(claim.needsReviewReasons.includes('totals_unreconciled'));
+
+  // And none of the pre-existing reconciliations would have caught it.
+  for (const quiet of ['claim_total_mismatch', 'line_total_mismatch', 'patient_resp_mismatch']) {
+    assert.ok(!claim.needsReviewReasons.includes(quiet), `${quiet} genuinely does not fire here`);
+  }
+});
+
+test('A3: a line with no AMT*B6 records that its allowed amount was DERIVED', () => {
+  const line = parse835(fixture('Test_Malformed_Amounts.edi')).claims[0].procedures[0];
+  assert.equal(line.allowedSource, 'derived');
+  assert.equal(line.reportedAllowedCents, null);
+});
+
+test('A4: a comma-formatted amount is REFUSED, not silently truncated to $1.00', () => {
+  // parseFloat("1,250.00") is 1. That stored $1.00 where $1,250.00 belonged,
+  // and only tripped a reconciliation if the value happened to be in a checked
+  // sum. THIS is the defect the whole slice is named for.
+  assert.equal(toCents('1,250.00'), 0, 'refused rather than read as 1');
+
+  const parsed = parse835(fixture('Test_Malformed_Amounts.edi'));
+  assert.ok(parsed.remittances[0].flags.includes('unreadable_amount'));
+  // And it is loud twice over: the BPR total could not be read, so the check no
+  // longer reconciles against its claims either.
+  assert.ok(parsed.remittances[0].flags.includes('claim_total_mismatch'));
+  assert.ok(parsed.claims[0].needsReviewReasons.includes('unreadable_amount'));
+  assert.ok(parsed.claims[0].procedures[0].flags.includes('unreadable_amount'));
+});
+
+test('A4: toCents accepts every shape X12 legitimately uses, and nothing else', () => {
+  assert.equal(toCents('892.50'), 89_250);
+  assert.equal(toCents('-285'), -28_500);
+  assert.equal(toCents('+12.5'), 1_250);
+  assert.equal(toCents('.75'), 75);
+  assert.equal(toCents(''), 0, 'an absent optional amount genuinely is zero');
+  assert.equal(toCents(undefined), 0);
+  assert.equal(toCents(null), 0);
+
+  for (const bad of ['1,250.00', '250USD', '$40', '12.34.56', 'N/A', '--5', '1 250']) {
+    let flagged = false;
+    assert.equal(
+      toCents(bad, () => {
+        flagged = true;
+      }),
+      0,
+      `${bad} must not yield a number`
+    );
+    assert.ok(flagged, `${bad} must call back`);
+  }
+});
+
+test('A5: a gapped CAS keeps the pairs AFTER the gap, and says it was gapped', () => {
+  // Before: `break` on the first empty element. `CAS*PR*1*50*****2*40` lost the
+  // $40 entirely, with NO flag — the CAS half of A5 was completely silent.
+  const claim = parse835(fixture('Test_Gapped_Segments.edi')).claims[0];
+  const line = claim.procedures[0];
+
+  assert.deepEqual(
+    line.adjustments.map((a) => `${a.groupCode}-${a.reasonCode}:${a.amountCents}`),
+    ['PR-1:5000', 'PR-2:4000'],
+    'the pair after the gap is recovered'
+  );
+  assert.equal(claim.totalDeductibleCents, 5_000);
+  assert.equal(claim.totalCopayCents, 4_000);
+  assert.ok(line.flags.includes('partial_adjustment_segment'));
+  assert.ok(claim.needsReviewReasons.includes('partial_adjustment_segment'));
+});
+
+test('A5: a gapped PLB keeps the pairs after the gap, and flags the remittance', () => {
+  const parsed = parse835(fixture('Test_Gapped_Segments.edi'));
+  assert.deepEqual(
+    parsed.plbAdjustments.map((a) => `${a.reasonCode}:${a.amountCents}`),
+    ['WO:-3000', 'L6:500']
+  );
+  assert.equal(parsed.plbTotalCents, -2_500);
+  assert.ok(parsed.remittances[0].flags.includes('partial_adjustment_segment'));
+});
+
+test('A5: trailing empty elements are NOT a gap', () => {
+  // `CAS*CO*45*20` pads to no more elements; flagging that would make the flag
+  // meaningless by firing on almost every real file.
+  const claim = parse835(fixture('Test_Clean_Conformant.edi')).claims[0];
+  assert.ok(claim.procedures.every((p) => !p.flags.includes('partial_adjustment_segment')));
+  assert.ok(!claim.needsReviewReasons.includes('partial_adjustment_segment'));
+});
+
+test('B1: REF*6R and SVC05 are captured, so Slice 6 need not match positionally', () => {
+  const claim = parse835(fixture('Test_Clean_Conformant.edi')).claims[0];
+  assert.deepEqual(
+    claim.procedures.map((p) => p.lineItemControlNumber),
+    ['CONF001-001', 'CONF001-002']
+  );
+  assert.deepEqual(
+    claim.procedures.map((p) => p.unitsPaid),
+    [1, 1]
+  );
+
+  // Absent on a line that does not carry them — null, never a fabricated value.
+  const minimal = parse835(fixture('Test_Minimal_835.edi')).claims[0];
+  assert.equal(minimal.procedures[0].lineItemControlNumber, null);
+  assert.equal(minimal.procedures[0].unitsPaid, null);
+});
+
+test('B2: claim-level remark codes are read from MOA', () => {
+  // MOA/MIA were not read AT ALL before 5.5.
+  const claim = parse835(fixture('Test_Claim_Level_CAS.edi')).claims[0];
+  assert.deepEqual(claim.remarkCodes, ['MA01', 'MA18']);
+});
+
+test('B3: an envelope whose counts disagree is flagged, and still parsed', () => {
+  // A truncated 835 that still contains a valid BPR and some CLPs used to parse
+  // and ingest AS IF COMPLETE. SE01/GE01/IEA01 were all unread.
+  const parsed = parse835(fixture('Test_Truncated_Envelope.edi'));
+  assert.ok(parsed.remittances[0].flags.includes('envelope_counts_mismatch'));
+
+  // The numbers behind the flag are reported, so a human can see how far off.
+  assert.equal(parsed.envelope.expected.transactionSets, 2);
+  assert.equal(parsed.envelope.actual.transactionSets, 1);
+  assert.equal(parsed.envelope.expected.segmentCounts[0], 40);
+  assert.notEqual(parsed.envelope.actual.segmentCounts[0], 40);
+
+  // Still parsed: a partial remittance a human is TOLD is partial beats a refusal.
+  assert.equal(parsed.claims.length, 1);
+  assert.equal(parsed.claims[0].claimNumber, 'TRUNC001');
+});
+
+test('B3: a well-formed envelope raises nothing', () => {
+  const parsed = parse835(fixture('Test_Clean_Conformant.edi'));
+  assert.ok(!parsed.remittances[0].flags.includes('envelope_counts_mismatch'));
+  assert.ok(!parsed.remittances[0].flags.includes('envelope_incomplete'));
+  assert.equal(parsed.envelope.expected.transactionSets, parsed.envelope.actual.transactionSets);
+});
+
+test('B4: two ST/SE sets are two checks, each with its own trace and total', () => {
+  // Multi-ST was implemented in Slice 5 with ZERO test coverage.
+  const parsed = parse835(fixture('Test_MultiCheck_TwoST.edi'));
+  assert.equal(parsed.transactionCount, 2);
+  assert.equal(parsed.remittances.length, 2);
+
+  assert.deepEqual(
+    parsed.remittances.map((r) => r.traceNumber),
+    ['835007001', '835007002']
+  );
+  assert.deepEqual(
+    parsed.remittances.map((r) => r.totalPaymentCents),
+    [5_700, 9_800]
+  );
+  // Each remittance keeps its OWN claim — not a merged pile.
+  assert.deepEqual(
+    parsed.remittances.map((r) => r.claims[0].claimNumber),
+    ['MULTI001', 'MULTI002']
+  );
+  // The merged view still sums both, which is what the top-level fields mean.
+  assert.equal(parsed.totalPaymentCents, 15_500);
+  assert.ok(parsed.remittances.every((r) => r.flags.includes('multi_transaction_file')));
 });

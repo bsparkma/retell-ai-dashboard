@@ -47,8 +47,19 @@ class X12FormatError extends Error {
 /**
  * Read the three delimiters an interchange declares in its ISA header.
  *
+ * ISA11 is the REPETITION separator (005010; in 004010 that position was the
+ * standards-identifier). It is read here for completeness of the delimiter
+ * contract — A2 was the fix for reading delimiters from the file rather than
+ * assuming them, and reading two of three would have been half a fix.
+ *
+ * Nothing in the 835 parser splits on it yet, and that is correct rather than
+ * lazy: no 835 segment this parser reads (BPR, TRN, CLP, SVC, CAS, PLB, AMT,
+ * REF, NM1, DTM, MOA/MIA, LQ) has a repeating data element in 005010X221A1.
+ * It is exposed on the returned delimiter set so a future consumer — an 837, or
+ * an 835 element that gains repetition — has it available without re-deriving.
+ *
  * @param {string} text the whole document, leading whitespace already trimmed
- * @returns {{ element: string, component: string, segment: string }}
+ * @returns {{ element: string, component: string, segment: string, repetition: string }}
  */
 function readDelimiters(text) {
   if (!text.startsWith('ISA')) {
@@ -69,7 +80,10 @@ function readDelimiters(text) {
   if (!tail || tail.length < 2) {
     throw new X12FormatError('ISA header is truncated — no ISA16/segment terminator');
   }
-  return { element, component: tail[0], segment: tail[1] };
+  // ISA11 — the 11th element of the ISA segment.
+  const repetition = isaFields[11] || '';
+
+  return { element, component: tail[0], segment: tail[1], repetition };
 }
 
 /**
@@ -79,24 +93,32 @@ function readDelimiters(text) {
  */
 
 /**
- * Split a document into segments.
+ * Split a document into segments, WITH the delimiters it declared.
  *
  * Elements are keyed by their 1-based X12 position as STRINGS ('1', '2', …),
  * matching `x12-parser`. Trailing empty elements are kept, so `seg['16']` on a
  * BPR with eleven empty middle fields reads the value X12 puts there rather
  * than `undefined`.
  *
+ * Returning the delimiter set alongside the segments is what closes Slice 5.5
+ * defect A2: `subElement` used to hardcode ':' and ignore the ISA16 value this
+ * function had already read, so a payer declaring '>' — ordinary in real 005010
+ * output — stored `"AD>D0120"` as the procedure code and `"WO>OLDCLM001"` as a
+ * PLB reason. Every code in the file was wrong, the money still reconciled, and
+ * nothing flagged.
+ *
  * @param {string} content
- * @returns {X12Segment[]}
+ * @returns {{ segments: X12Segment[], delimiters: { element: string, component: string, segment: string } }}
  */
-function parseSegments(content) {
+function parseInterchange(content) {
   if (typeof content !== 'string') {
     throw new X12FormatError('expected the file contents as a string');
   }
   // A BOM or leading newline before ISA is common from Windows editors and
   // from browsers that transcode an upload; it is not a malformed file.
   const text = content.replace(/^﻿/, '').replace(/^\s+/, '');
-  const { element, segment: terminator } = readDelimiters(text);
+  const delimiters = readDelimiters(text);
+  const { element, segment: terminator } = delimiters;
 
   /** @type {X12Segment[]} */
   const segments = [];
@@ -115,25 +137,27 @@ function parseSegments(content) {
   if (segments.length === 0) {
     throw new X12FormatError('no segments found');
   }
-  return segments;
+  return { segments, delimiters };
 }
 
 /**
  * The value of a composite's Nth sub-element, or '' when absent.
  *
- * Hardcodes ':' rather than using the interchange's declared component
- * separator, and does so deliberately: the ported regression fixtures declare
- * '>' at ISA16 while writing `AD:D2391` in their data — the same mismatch real
- * clearinghouse output shows — and every file in the repository corpus uses
- * ':'. Honouring the declaration here would break both.
+ * `componentSep` MUST come from the interchange's own ISA16 — pass the value
+ * `parseInterchange` returned. It defaults to ':' only so a caller reading a
+ * bare composite in isolation (a test, a one-off script) still behaves, never
+ * as a substitute for threading the real one through.
  *
  * @param {string|undefined} value
  * @param {number} index 0-based sub-element
+ * @param {string} [componentSep] the ISA16 this file declared
  * @returns {string}
  */
-function subElement(value, index) {
+function subElement(value, index, componentSep = ':') {
   if (!value) return '';
-  return String(value).split(':')[index] || '';
+  // A one-character split, always: a regex would need escaping for the
+  // separators X12 actually permits ('^', '|', '>', '*' among them).
+  return String(value).split(componentSep)[index] || '';
 }
 
-module.exports = { parseSegments, readDelimiters, subElement, X12FormatError };
+module.exports = { parseInterchange, readDelimiters, subElement, X12FormatError };

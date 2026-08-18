@@ -90,8 +90,71 @@ which column each code lands in is affected.
 these files would silently move the goalposts of every parser test. A spec-conformant
 downcode scenario is a **new file**, never an edit to these two.
 
+## The Slice 5.5 corpus — eight files added
+
+RCM Slice 5.5 hardened the parser against a class of defect worse than a crash: files that
+parse successfully, reconcile arithmetically, and store the **wrong numbers** with no flag
+raised. Every one of those defects needed a scenario the original 13 do not contain, and the
+13 are frozen — so these are new files. Full write-up: [`docs/RCM_ERA_FIDELITY.md`](../../../../docs/RCM_ERA_FIDELITY.md).
+
+| File | Scenario it exists to cover |
+| --- | --- |
+| `Test_Clean_Conformant.edi` | **The "nothing fires" baseline.** Fully conformant to 005010X221A1 — correct `SE01`, and `AMT*B6` carrying the ALLOWED amount. Parses with zero flags and zero review reasons |
+| `Test_Caret_Delimiters.edi` | **A2** — declares `>` at `ISA16` and uses it in every composite (`SVC*AD>D0120`, `PLB*…*WO>OLDCLM777`). Before A2 the parser hardcoded `:` and stored `"AD>D0120"` as the procedure code |
+| `Test_Claim_Level_CAS.edi` | **A1** — deductible reported at CLAIM level (a `CAS*PR*1*75` between the `CLP` and the first `SVC`), plus an `MOA` remark segment. Both were dropped entirely before 5.5 |
+| `Test_Reported_Allowed.edi` | **A3** — one line takes its contractual reduction under `OA` (not `CO`); one line's `AMT*B6` disagrees with the derived allowed |
+| `Test_Malformed_Amounts.edi` | **A4** — `BPR*I*1,250.00` and `CAS*CO*45*250USD`. `parseFloat("1,250.00")` is `1`, so this file used to store **$1.00 where $1,250.00 belonged** |
+| `Test_Gapped_Segments.edi` | **A5** — a `CAS` with an empty triple mid-segment (`CAS*PR*1*50*****2*40`) and a `PLB` with an empty pair. Both used to `break` and lose everything after the gap |
+| `Test_Truncated_Envelope.edi` | **B3** — `SE01` declares 40 segments and `GE01` declares 2 transaction sets; the file contains one much shorter set. What a cut transmission looks like |
+| `Test_MultiCheck_TwoST.edi` | **B4** — two `ST`/`SE` transaction sets, i.e. two checks with their own `BPR`, `TRN` and remittance key. Multi-ST shipped in Slice 5 with zero coverage |
+
+All eight were generated to the rules above: placeholder names (`SYNTHETIC ALPHA` … `SYNTHETIC INDIA`),
+digit-run member ids, invented claim and trace numbers, invented amounts. The generator lives in
+the Slice 5.5 PR description rather than the repo — these are fixtures, not build output.
+
+### Two things Slice 5.5 measured about the ORIGINAL 13
+
+Both are authoring inconsistencies in the corpus, not parser bugs, and both now cause flags to
+fire on files that used to look clean. They are recorded here because a future reader will
+otherwise think the parser regressed.
+
+**`AMT*B6` is used inconsistently.** In 005010X221A1, loop 2110 `AMT` with qualifier `B6` is
+*"Allowed — Actual"*. Across the corpus's 37 `AMT*B6` lines:
+
+| What the value equals | Lines |
+| --- | --- |
+| the **billed** amount (not what B6 means) | 25 |
+| billed − contractual, i.e. the allowed amount | 10 |
+| neither | 2 |
+
+Since A3 reads `AMT*B6` and flags a disagreement with the derived allowed, **7 of the 13 files
+now raise `allowed_amount_mismatch`** — including `Test_Guardian_Clean.edi`, which is why the
+"clean baseline" test moved to `Test_Clean_Conformant.edi`. The flag is correct; the data is
+inconsistent.
+
+**Five files declare a wrong `SE01`.** Counting `ST` through `SE` inclusive, as X12 requires:
+
+| File | `SE01` says | Actually |
+| --- | --- | --- |
+| `Test_Applied_To_Deductible.edi` | 43 | 46 |
+| `Test_Bundled_Downgraded.edi` | 41 | 43 |
+| `Test_Denied_Claims.edi` | 42 | 44 |
+| `Test_Reversal_Recoupment.edi` | 32 | 33 |
+| `Test_Secondary_COB.edi` | 48 | 51 |
+
+Those five now raise `envelope_counts_mismatch` — again correctly. B3 exists because a
+**truncated** 835 that still contains a valid `BPR` and some `CLP`s used to parse and ingest as
+if complete, and a file disagreeing with its own segment count is exactly that signal.
+
+**Neither finding justifies editing a fixture.** The corpus rule protects bytes, and these are
+authoring mistakes rather than corruption — the same ruling the PM gave on the transposed
+`SVC01`/`SVC06` files in Slice 5. If a conformant version of one of these scenarios is ever
+needed, it is a NEW file.
+
 ## Consumers
 
+- **Slice 5.5** — the eight files above pin one defect class each; the assertions live in
+  `backend/services/rcm/eraParser.test.js` under "the silent money defects".
 - **Slice 5** — `eraParser` unit tests parse every file here and assert the extracted claims,
   service lines, `CAS` adjustments, `TRN` trace, and `PLB` totals.
 - **Slice 2** — the seeder does **not** read these files. It writes an authored row graph

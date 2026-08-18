@@ -110,6 +110,9 @@ const BATCH_COLUMNS = [
   'status',
   'plb_total_cents',
   'notes',
+  // Slice 5.5: the structured remittance flags. 'notes' used to carry them as
+  // the prose string 'Flagged: a, b' and the UI parsed it.
+  'flags',
 ].join(', ');
 
 const KEY_COLUMNS = ['batch_id', 'remittance_key', 'status', 'posted_at'].join(', ');
@@ -492,6 +495,9 @@ router.get(
             claimCount: num(b.claim_count),
             status: b.status,
             notes: b.notes || '',
+            // Slice 5.5: the structures we parsed and will NOT act on, as a
+            // vocabulary the UI can switch on rather than prose it must parse.
+            flags: Array.isArray(b.flags) ? b.flags : [],
             // The dedupe status. A row here is what makes a re-upload refuse.
             remittanceKey: key ? key.remittance_key : null,
             dedupeStatus: key ? key.status : null,
