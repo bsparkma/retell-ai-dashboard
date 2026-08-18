@@ -129,7 +129,8 @@
  * renders it.
  */
 
-const { parseSegments, subElement, X12FormatError } = require('./x12');
+const { parseInterchange, subElement, X12FormatError } = require('./x12');
+const vocabulary = require('./rcmVocabulary');
 
 // ─── Vocabularies ───────────────────────────────────────────────────────────
 
@@ -225,16 +226,7 @@ const COB_SEQUENCE_TO_INSURANCE_TYPE = Object.freeze({
  * constraint. Writing a flag outside this set is a constraint violation at
  * INSERT time, so the mapping below may only ever produce these.
  */
-const LINE_FLAGS = Object.freeze([
-  'downcode',
-  'bundled',
-  'denied',
-  'partial_pay',
-  'unexplained_adj',
-  'frequency_limit',
-  'not_covered',
-  'pre_auth_required',
-]);
+const LINE_FLAGS = vocabulary.LINE_FLAGS;
 
 /** CARC → line flag. A code absent here contributes no flag. */
 const CARC_TO_LINE_FLAG = Object.freeze({
@@ -254,54 +246,74 @@ const CARC_TO_LINE_FLAG = Object.freeze({
  * `rcm_claims.needs_review_reasons`. That column has no CHECK constraint, so
  * this frozen set is the only thing keeping it a vocabulary rather than prose.
  */
-const REVIEW_REASONS = Object.freeze({
-  /** CLP02 = 22. A takeback: the negative-supplemental path, and irreversible in OD. */
-  REVERSAL: 'reversal_not_postable',
-  /** CLP02 = 4. Nothing to post; the denial reasons are the product. */
-  DENIED: 'claim_denied',
-  /** CLP02 = 2/3/20/21, or a prior-payer AMT*D. Coordination of benefits. */
-  SECONDARY: 'secondary_payer_adjudication',
-  /** AMT*D present on a claim CLP02 calls primary — the file contradicts itself. */
-  PRIOR_PAYER_ON_PRIMARY: 'prior_payer_payment_on_primary_claim',
-  /** A CAS pair whose reason token cannot be a CARC. Money is unaccounted for. */
-  UNPARSEABLE_CAS: 'unparseable_cas',
-  /** The payer changed a procedure code. */
-  DOWNCODE: 'procedure_downcoded',
-  /** The claim carries no service lines at all. */
-  NO_SERVICE_LINES: 'no_service_lines',
-  /** Line paid amounts do not sum to CLP04. */
-  LINE_TOTAL_MISMATCH: 'line_total_mismatch',
-});
+const REVIEW_REASONS = vocabulary.ERA_REVIEW_REASONS;
 
 /**
  * Remittance-level flags — structures we parsed but will not act on. These
  * reach the API response and the upload record, never a posting path.
  */
 const REMITTANCE_FLAGS = Object.freeze({
-  /** PLB present. Provider-level money that belongs to no single claim. */
   PLB_PRESENT: 'plb_adjustments_present',
-  /** BPR02 is negative — the whole remittance is a takeback. */
   NEGATIVE_PAYMENT: 'negative_total_payment',
-  /** BPR04 = NON. The payer says no funds moved. */
   NO_PAYMENT_MADE: 'no_payment_made',
-  /** No CLP at all — e.g. a PLB-only file. Nothing to propose. */
   NO_CLAIMS: 'no_claims_in_remittance',
-  /** Claim paid amounts do not sum to BPR02 (PLB excluded). */
   CLAIM_TOTAL_MISMATCH: 'claim_total_mismatch',
+  // ── Slice 5.5 ──
+  /** B3. SE01/GE01/IEA01 disagree with what we counted — likely truncation. */
+  ENVELOPE_COUNTS_MISMATCH: 'envelope_counts_mismatch',
+  /** B3. A trailer segment is missing outright. */
+  ENVELOPE_INCOMPLETE: 'envelope_incomplete',
+  /** A5. A repeating PLB segment was only partly consumed. */
+  PARTIAL_ADJUSTMENT_SEGMENT: 'partial_adjustment_segment',
+  /** A4. A token where an amount belonged did not validate as a number. */
+  UNREADABLE_AMOUNT: 'unreadable_amount',
+  /** B4. The file carried more than one ST/SE transaction set. */
+  MULTI_TRANSACTION: 'multi_transaction_file',
 });
 
 // ─── Small helpers ──────────────────────────────────────────────────────────
 
 /**
+ * An X12 monetary amount: optional sign, digits, optional decimal part.
+ *
+ * DELIBERATELY NARROW. `parseFloat` reads `"1,250.00"` as `1` and `"250USD"` as
+ * `250` — it stops at the first character it does not understand and reports
+ * nothing. That stored **$1.00 where $1,250.00 belonged** (Slice 5.5 defect A4),
+ * and only tripped a reconciliation if that value happened to participate in a
+ * checked sum. Anything this pattern rejects is refused rather than truncated.
+ */
+const AMOUNT_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
+
+/**
  * Dollars (as they appear in the file) to integer cents.
- * Empty, absent and unparseable all read as 0 — the source's behaviour, and
- * the right one: an absent optional amount IS zero.
+ *
+ * An ABSENT or EMPTY value is 0 — an optional amount the payer did not send
+ * genuinely is zero. A PRESENT but unreadable one is not: `onUnreadable` is
+ * called with the offending token and the result is 0 **with the caller
+ * obliged to flag it**. There is no third state available: the cents columns
+ * are `bigint NOT NULL`, so "unknown" cannot be stored as NULL without a
+ * schema change. The flag is what carries the honesty, and the totals
+ * reconciliation fires alongside it — see docs/RCM_ERA_FIDELITY.md §A4.
+ *
  * @param {unknown} value
+ * @param {(token: string) => void} [onUnreadable]
  * @returns {number}
  */
-function toCents(value) {
-  const n = Number.parseFloat(String(value == null || value === '' ? '0' : value));
-  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+function toCents(value, onUnreadable) {
+  if (value == null) return 0;
+  const token = String(value).trim();
+  if (token === '') return 0;
+
+  if (!AMOUNT_RE.test(token)) {
+    if (typeof onUnreadable === 'function') onUnreadable(token);
+    return 0;
+  }
+  const n = Number.parseFloat(token);
+  if (!Number.isFinite(n)) {
+    if (typeof onUnreadable === 'function') onUnreadable(token);
+    return 0;
+  }
+  return Math.round(n * 100);
 }
 
 /**
@@ -355,6 +367,139 @@ function isPlausibleCarc(token) {
 function addFlag(list, value) {
   if (value && !list.includes(value)) list.push(value);
 }
+
+/** A segment's numbered elements, in element order. */
+function elementsOf(segment) {
+  return Object.keys(segment)
+    .filter((k) => /^\d+$/.test(k))
+    .sort((a, b) => Number(a) - Number(b))
+    .map((k) => segment[k]);
+}
+
+/**
+ * Read one or more CAS segments into adjustments.
+ *
+ * CAS repeats as reason/amount/QUANTITY triples — CAS02-03-04, CAS05-06-07,
+ * CAS08-09-10, and so on to CAS19.
+ *
+ * SLICE 5.5 DEFECT A5. The old loop did `break` on the first empty reason and
+ * on the first implausible one, with NO flag in the empty case. A padded
+ * segment — `CAS*PR*1*50***2*25.50`, which is legal — silently lost every pair
+ * after the gap, and the only trace was a downstream total mismatch, if the
+ * amount happened to be in a checked sum. This SKIPS and FLAGS instead: a
+ * partially consumed repeating segment is a visible review reason, because some
+ * of the money in it is not represented anywhere.
+ *
+ * @param {import('./x12').X12Segment[]} casSegments
+ * @param {'claim'|'line'} scope where the payer reported these
+ * @param {(token: string) => void} onUnreadable
+ * @returns {{ adjustments: ParsedAdjustment[], flags: string[],
+ *             deductibleCents: number, copayCents: number, patientRespCents: number }}
+ */
+function readCasSegments(casSegments, scope, onUnreadable) {
+  /** @type {ParsedAdjustment[]} */
+  const adjustments = [];
+  /** @type {string[]} */
+  const flags = [];
+  let deductibleCents = 0;
+  let copayCents = 0;
+  let patientRespCents = 0;
+
+  for (const cas of casSegments) {
+    const groupCode = (cas['1'] || 'OA').trim().toUpperCase();
+    const values = elementsOf(cas);
+
+    for (let i = 1; i < values.length; i += 3) {
+      const reasonCode = (values[i] || '').trim();
+
+      if (!reasonCode) {
+        // A gap. Only a defect if something FOLLOWS it — trailing empties are
+        // just how a segment ends.
+        if (values.slice(i + 1).some((v) => (v || '').trim() !== '')) {
+          addFlag(flags, 'partial_adjustment_segment');
+        }
+        continue;
+      }
+
+      if (!isPlausibleCarc(reasonCode)) {
+        // Refuse to invent an adjustment, and keep going: the pairs after a bad
+        // one are usually fine, and dropping them too compounds the loss.
+        addFlag(flags, 'unexplained_adj');
+        addFlag(flags, 'partial_adjustment_segment');
+        continue;
+      }
+
+      const amountCents = toCents(values[i + 1], onUnreadable);
+      const quantityRaw = Number.parseInt(values[i + 2] || '1', 10);
+
+      adjustments.push({
+        scope,
+        groupCode,
+        reasonCode,
+        description: describeCarc(reasonCode) || `Adjustment code ${reasonCode}`,
+        amountCents,
+        quantity: Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1,
+      });
+
+      // PR is the PATIENT's money. PR-1 deductible, PR-2/PR-3 coinsurance and
+      // copay; any other PR code is still patient responsibility, which is why
+      // patientRespCents sums the whole group rather than the three we name.
+      if (groupCode === 'PR') {
+        patientRespCents += amountCents;
+        if (reasonCode === '1') deductibleCents += amountCents;
+        else if (reasonCode === '2' || reasonCode === '3') copayCents += amountCents;
+      }
+    }
+  }
+
+  return { adjustments, flags, deductibleCents, copayCents, patientRespCents };
+}
+
+/**
+ * The contractual write-off in a set of adjustments.
+ *
+ * SLICE 5.5 DEFECT A3, half of it. The old code counted only `CO`. A payer who
+ * takes the contractual reduction under `OA` or `PI` — both ordinary — had that
+ * reduction counted as if it were still allowed, which inflated the allowed
+ * amount and therefore produced a WRONG `write_off_cents`, a number Slice 6c
+ * writes into Open Dental.
+ *
+ * `PR` is excluded because it is the patient's money, not a write-off, and `CR`
+ * is a correction/reversal rather than a reduction.
+ */
+const CONTRACTUAL_GROUPS = Object.freeze(['CO', 'OA', 'PI']);
+
+function contractualCentsOf(adjustments) {
+  return adjustments.reduce(
+    (sum, adj) => (CONTRACTUAL_GROUPS.includes(adj.groupCode) ? sum + adj.amountCents : sum),
+    0
+  );
+}
+
+/**
+ * How far a reported and a derived amount may differ before it is a defect.
+ *
+ * One cent, not zero: X12 amounts are decimal strings and a payer rounding a
+ * coinsurance split can legitimately land a cent away from our arithmetic.
+ * Anything wider than this is a disagreement about money, not rounding.
+ */
+const ALLOWED_TOLERANCE_CENTS = 1;
+
+/** Reducer: the patient-responsibility total in a set of adjustments. */
+function prSum(sum, adj) {
+  return adj.groupCode === 'PR' ? sum + adj.amountCents : sum;
+}
+
+/**
+ * A RARC, loosely: a letter prefix (M, MA, N) and digits, e.g. N19, M27, MA61.
+ *
+ * Used only to pick remark codes out of MOA/MIA, whose remark-code positions
+ * differ between the two segments — matching the SHAPE is more robust than
+ * hardcoding element numbers that are right for one segment and wrong for the
+ * other, and the cost of a false positive is a spurious code in a list a human
+ * reads, not a wrong number.
+ */
+const RARC_RE = /^(M|MA|N)\d{1,3}$/;
 
 // ─── Parser ─────────────────────────────────────────────────────────────────
 
@@ -450,7 +595,8 @@ function addFlag(list, value) {
  * @throws {X12FormatError} when the file is not a parseable 835
  */
 function parse835(fileContent) {
-  const segments = parseSegments(fileContent);
+  const { segments, delimiters } = parseInterchange(fileContent);
+  const componentSep = delimiters.component;
 
   const hasIsa = segments.some((s) => s.name === 'ISA');
   const hasGs = segments.some((s) => s.name === 'GS');
@@ -466,6 +612,9 @@ function parse835(fileContent) {
     throw new X12FormatError('No 835 transactions found');
   }
 
+  // B3. Envelope integrity, computed once for the whole interchange.
+  const envelope = checkEnvelope(segments, stIndexes);
+
   /** @type {ParsedRemittance[]} */
   const remittances = [];
 
@@ -474,10 +623,18 @@ function parse835(fileContent) {
     const end = t < stIndexes.length - 1 ? stIndexes[t + 1] : segments.length;
     const tx = segments.slice(start, end);
 
-    const parsed = parseTransaction(tx, remittances.length);
+    const parsed = parseTransaction(tx, remittances.length, componentSep);
     // A transaction with no BPR carries no payment information at all — there
     // is nothing to key, batch, or reconcile. Skipped rather than half-built.
     if (parsed) remittances.push(parsed);
+  }
+
+  // B3/B4 are properties of the FILE, so they land on every remittance in it:
+  // a batch row is what a human looks at, and "this came out of a truncated
+  // transmission" has to be visible from whichever one they opened.
+  for (const remittance of remittances) {
+    for (const flag of envelope.flags) addFlag(remittance.flags, flag);
+    if (stIndexes.length > 1) addFlag(remittance.flags, REMITTANCE_FLAGS.MULTI_TRANSACTION);
   }
 
   // Merged view. Kept because the ported regression tests read it, and because
@@ -506,6 +663,87 @@ function parse835(fileContent) {
     claims: allClaims,
     remittances,
     transactionCount: remittances.length,
+    envelope,
+  };
+}
+
+/**
+ * B3. Does the interchange's own bookkeeping agree with what we counted?
+ *
+ * X12 closes every level with a count, and NONE of them were read before Slice
+ * 5.5. The consequence is the worst kind: **a truncated 835 that still contains
+ * a valid BPR and some CLPs parses and ingests as if complete.** A transmission
+ * cut in half yields a batch whose claims are simply the ones that survived,
+ * with nothing anywhere saying so.
+ *
+ *   SE01  segments in the transaction set, ST and SE inclusive
+ *   GE01  transaction sets in the functional group
+ *   IEA01 functional groups in the interchange
+ *
+ * A missing trailer and a wrong count are different facts and get different
+ * flags: the first says the file stops early, the second says it disagrees with
+ * itself. Neither is fatal — we still parse what is there, because a partial
+ * remittance a human is TOLD is partial is more useful than a refusal.
+ *
+ * @param {import('./x12').X12Segment[]} segments
+ * @param {number[]} stIndexes
+ * @returns {{ flags: string[], expected: object, actual: object }}
+ */
+function checkEnvelope(segments, stIndexes) {
+  /** @type {string[]} */
+  const flags = [];
+
+  const seSegments = segments.filter((s) => s.name === 'SE');
+  const geSegment = segments.find((s) => s.name === 'GE');
+  const ieaSegment = segments.find((s) => s.name === 'IEA');
+
+  if (seSegments.length === 0 || !geSegment || !ieaSegment) {
+    addFlag(flags, REMITTANCE_FLAGS.ENVELOPE_INCOMPLETE);
+  }
+
+  // SE01 per transaction set, against the segments actually between ST and SE.
+  const seCounts = [];
+  for (let t = 0; t < stIndexes.length; t += 1) {
+    const start = stIndexes[t];
+    const end = t < stIndexes.length - 1 ? stIndexes[t + 1] : segments.length;
+    const tx = segments.slice(start, end);
+    const se = tx.find((s) => s.name === 'SE');
+    if (!se) continue;
+
+    // Count ST through SE inclusive — anything after SE belongs to the next
+    // group, not this set.
+    const seOffset = tx.findIndex((s) => s.name === 'SE');
+    const actual = seOffset + 1;
+    const declared = Number.parseInt(se['1'] || '', 10);
+    seCounts.push({ declared, actual });
+    if (Number.isFinite(declared) && declared !== actual) {
+      addFlag(flags, REMITTANCE_FLAGS.ENVELOPE_COUNTS_MISMATCH);
+    }
+  }
+
+  const declaredGe = geSegment ? Number.parseInt(geSegment['1'] || '', 10) : NaN;
+  if (Number.isFinite(declaredGe) && declaredGe !== stIndexes.length) {
+    addFlag(flags, REMITTANCE_FLAGS.ENVELOPE_COUNTS_MISMATCH);
+  }
+
+  const declaredIea = ieaSegment ? Number.parseInt(ieaSegment['1'] || '', 10) : NaN;
+  const gsCount = segments.filter((s) => s.name === 'GS').length;
+  if (Number.isFinite(declaredIea) && declaredIea !== gsCount) {
+    addFlag(flags, REMITTANCE_FLAGS.ENVELOPE_COUNTS_MISMATCH);
+  }
+
+  return {
+    flags,
+    expected: {
+      transactionSets: Number.isFinite(declaredGe) ? declaredGe : null,
+      functionalGroups: Number.isFinite(declaredIea) ? declaredIea : null,
+      segmentCounts: seCounts.map((c) => (Number.isFinite(c.declared) ? c.declared : null)),
+    },
+    actual: {
+      transactionSets: stIndexes.length,
+      functionalGroups: gsCount,
+      segmentCounts: seCounts.map((c) => c.actual),
+    },
   };
 }
 
@@ -515,11 +753,15 @@ function parse835(fileContent) {
  * @param {number} index
  * @returns {ParsedRemittance|null}
  */
-function parseTransaction(tx, index) {
+function parseTransaction(tx, index, componentSep) {
   const bpr = tx.find((s) => s.name === 'BPR');
   if (!bpr) return null;
 
-  const totalPaymentCents = toCents(bpr['2']);
+  /** @type {string[]} */
+  const flags = [];
+  const noteUnreadable = () => addFlag(flags, REMITTANCE_FLAGS.UNREADABLE_AMOUNT);
+
+  const totalPaymentCents = toCents(bpr['2'], noteUnreadable);
   const bpr04 = (bpr['4'] || '').trim().toUpperCase();
   const paymentMethod = parsePaymentMethod(bpr04);
 
@@ -540,7 +782,9 @@ function parseTransaction(tx, index) {
   const payeeN1 = tx.find((s) => s.name === 'N1' && s['1'] === 'PE');
   const payeeName = (payeeN1 && payeeN1['2']) || '';
 
-  const { plbAdjustments, plbTotalCents } = parsePlb(tx);
+  const plb = parsePlb(tx, componentSep, noteUnreadable);
+  const { plbAdjustments, plbTotalCents } = plb;
+  for (const f of plb.flags) addFlag(flags, f);
 
   // Claim windows: [this CLP, next CLP) — never to the end of the transaction,
   // which is how a claim used to inherit the next patient's identity (D12).
@@ -554,11 +798,9 @@ function parseTransaction(tx, index) {
   for (let c = 0; c < clpIndexes.length; c += 1) {
     const from = clpIndexes[c];
     const to = c < clpIndexes.length - 1 ? clpIndexes[c + 1] : tx.length;
-    claims.push(parseClaim(tx.slice(from, to), defaultPayerName, paymentDate));
+    claims.push(parseClaim(tx.slice(from, to), defaultPayerName, paymentDate, componentSep));
   }
 
-  /** @type {string[]} */
-  const flags = [];
   if (plbAdjustments.length > 0) addFlag(flags, REMITTANCE_FLAGS.PLB_PRESENT);
   if (totalPaymentCents < 0) addFlag(flags, REMITTANCE_FLAGS.NEGATIVE_PAYMENT);
   if (bpr04 === 'NON') addFlag(flags, REMITTANCE_FLAGS.NO_PAYMENT_MADE);
@@ -595,28 +837,47 @@ function parseTransaction(tx, index) {
  *
  * Layout: PLB01 provider id · PLB02 fiscal period · then repeating
  * (reasonCode:referenceId, amount) PAIRS from PLB03 onward.
+ *
+ * SLICE 5.5 DEFECT A5, the PLB half. The old loop `break`s on the first empty
+ * element, so a gapped segment lost every pair after the gap. The only trace
+ * was a downstream `claim_total_mismatch` — and only when the lost amount
+ * happened to move the BPR reconciliation. Skip-and-flag instead.
+ *
  * @param {import('./x12').X12Segment[]} tx
+ * @param {string} componentSep the ISA16 this interchange declared (A2)
+ * @param {(token: string) => void} onUnreadable
  */
-function parsePlb(tx) {
+function parsePlb(tx, componentSep, onUnreadable) {
   /** @type {ParsedRemittance['plbAdjustments']} */
   const plbAdjustments = [];
+  /** @type {string[]} */
+  const flags = [];
   let plbTotalCents = 0;
 
   for (const plb of tx.filter((s) => s.name === 'PLB')) {
-    const values = Object.keys(plb)
-      .filter((k) => /^\d+$/.test(k))
-      .sort((a, b) => Number(a) - Number(b))
-      .map((k) => plb[k]);
+    const values = elementsOf(plb);
 
     // Index 2 is PLB03 — the first reason composite. Pairs from there.
     for (let i = 2; i < values.length; i += 2) {
-      const composite = values[i];
+      const composite = (values[i] || '').trim();
       const amount = values[i + 1];
-      if (!composite || amount === undefined || amount === '') break;
 
-      const reasonCode = subElement(composite, 0);
-      const referenceId = subElement(composite, 1);
-      const amountCents = toCents(amount);
+      if (!composite) {
+        if (values.slice(i + 1).some((v) => (v || '').trim() !== '')) {
+          addFlag(flags, REMITTANCE_FLAGS.PARTIAL_ADJUSTMENT_SEGMENT);
+        }
+        continue;
+      }
+      if (amount === undefined || String(amount).trim() === '') {
+        // A reason with no amount is money we cannot account for, not a
+        // terminator — the pairs after it may well be readable.
+        addFlag(flags, REMITTANCE_FLAGS.PARTIAL_ADJUSTMENT_SEGMENT);
+        continue;
+      }
+
+      const reasonCode = subElement(composite, 0, componentSep);
+      const referenceId = subElement(composite, 1, componentSep);
+      const amountCents = toCents(amount, onUnreadable);
 
       plbAdjustments.push({
         reasonCode,
@@ -631,7 +892,7 @@ function parsePlb(tx) {
     }
   }
 
-  return { plbAdjustments, plbTotalCents };
+  return { plbAdjustments, plbTotalCents, flags };
 }
 
 /**
@@ -641,14 +902,20 @@ function parsePlb(tx) {
  * @param {string|null} paymentDate used only as the service-date fallback
  * @returns {ParsedClaim}
  */
-function parseClaim(win, defaultPayerName, paymentDate) {
+function parseClaim(win, defaultPayerName, paymentDate, componentSep) {
   const clp = win[0];
+
+  /** Raised when a token where an amount belonged did not validate (A4). */
+  let sawUnreadableAmount = false;
+  const noteUnreadableAmount = () => {
+    sawUnreadableAmount = true;
+  };
 
   const claimNumber = clp['1'] || '';
   const claimStatusCode = (clp['2'] || '1').trim();
-  const totalBilledCents = toCents(clp['3']);
-  const totalPaidCents = toCents(clp['4']);
-  const patientRespCents = toCents(clp['5']);
+  const totalBilledCents = toCents(clp['3'], noteUnreadableAmount);
+  const totalPaidCents = toCents(clp['4'], noteUnreadableAmount);
+  const patientRespCents = toCents(clp['5'], noteUnreadableAmount);
   const payerClaimControlNumber = clp['7'] || '';
 
   const status = CLAIM_STATUS[claimStatusCode] || { label: `status_${claimStatusCode}`, cobSequence: 1 };
@@ -692,23 +959,64 @@ function parseClaim(win, defaultPayerName, paymentDate) {
   // AMT*D — what a PRIOR payer already paid. Its presence is the substantive
   // signal of coordination of benefits, independent of what CLP02 claims.
   const priorPayerAmt = win.find((s) => s.name === 'AMT' && s['1'] === 'D');
-  const priorPayerPaidCents = toCents(priorPayerAmt && priorPayerAmt['2']);
+  const priorPayerPaidCents = toCents(priorPayerAmt && priorPayerAmt['2'], noteUnreadableAmount);
 
-  const procedures = parseServiceLines(win, isDenied);
+  const procedures = parseServiceLines(win, isDenied, componentSep);
 
-  const totalDeductibleCents = procedures.reduce((sum, p) => sum + p.deductibleCents, 0);
-  const totalCopayCents = procedures.reduce((sum, p) => sum + p.copayCents, 0);
+  // ── A1. CLAIM-LEVEL CAS (loop 2100) ──────────────────────────────────────
+  //
+  // A CAS between the CLP and the first SVC applies to the whole claim, and
+  // payers routinely report deductible and coinsurance there. It used to be
+  // DROPPED ENTIRELY, with no flag: the claim stored total_deductible_cents = 0
+  // and patient_balance_cents = 0 while its own CLP05 correctly said otherwise
+  // — two stored numbers disagreeing, and nothing reconciling them.
+  const firstSvc = win.findIndex((s) => s.name === 'SVC');
+  const claimHeaderWindow = win.slice(1, firstSvc === -1 ? win.length : firstSvc);
+  const claimCas = readCasSegments(
+    claimHeaderWindow.filter((s) => s.name === 'CAS'),
+    'claim',
+    noteUnreadableAmount
+  );
+
+  const totalDeductibleCents =
+    procedures.reduce((sum, p) => sum + p.deductibleCents, 0) + claimCas.deductibleCents;
+  const totalCopayCents =
+    procedures.reduce((sum, p) => sum + p.copayCents, 0) + claimCas.copayCents;
+
+  // The claim's allowed amount nets off contractual reductions wherever they
+  // were reported — on the lines and at claim level alike (A3 counts OA and PI
+  // as contractual now, not only CO).
   const totalAllowedCents =
     totalBilledCents -
-    procedures.reduce(
-      (sum, p) =>
-        sum +
-        p.adjustments.reduce((s, adj) => (adj.groupCode === 'CO' ? s + adj.amountCents : s), 0),
-      0
-    );
+    procedures.reduce((sum, p) => sum + contractualCentsOf(p.adjustments), 0) -
+    contractualCentsOf(claimCas.adjustments);
+
+  // B2. MOA/MIA carry CLAIM-level remark codes and were not read at all.
+  // MOA03-MOA07 and MIA05/MIA20-MIA23 are the remark-code positions; scanning
+  // every element and keeping the ones shaped like a RARC is more robust than
+  // hardcoding positions that differ between the two segments.
+  const claimRemarkCodes = [];
+  for (const seg of win.filter((s) => s.name === 'MOA' || s.name === 'MIA')) {
+    for (const value of elementsOf(seg)) {
+      const token = (value || '').trim().toUpperCase();
+      if (RARC_RE.test(token)) addFlag(claimRemarkCodes, token);
+    }
+  }
 
   /** @type {string[]} */
   const needsReviewReasons = [];
+  for (const f of claimCas.flags) {
+    // The claim-header CAS raises the same defect classes a line-level one
+    // does; they surface as claim review reasons because there is no line.
+    if (f === 'unexplained_adj') addFlag(needsReviewReasons, REVIEW_REASONS.UNPARSEABLE_CAS);
+    if (f === 'partial_adjustment_segment') {
+      addFlag(needsReviewReasons, REVIEW_REASONS.PARTIAL_ADJUSTMENT_SEGMENT);
+    }
+    if (f === 'unreadable_amount') addFlag(needsReviewReasons, REVIEW_REASONS.UNREADABLE_AMOUNT);
+  }
+  if (claimCas.adjustments.length > 0) {
+    addFlag(needsReviewReasons, REVIEW_REASONS.CLAIM_LEVEL_ADJUSTMENTS);
+  }
   if (isReversal) addFlag(needsReviewReasons, REVIEW_REASONS.REVERSAL);
   if (isDenied) addFlag(needsReviewReasons, REVIEW_REASONS.DENIED);
   if (status.cobSequence > 1) addFlag(needsReviewReasons, REVIEW_REASONS.SECONDARY);
@@ -724,7 +1032,19 @@ function parseClaim(win, defaultPayerName, paymentDate) {
     if (proc.flags.includes('unexplained_adj')) {
       addFlag(needsReviewReasons, REVIEW_REASONS.UNPARSEABLE_CAS);
     }
+    if (proc.flags.includes('partial_adjustment_segment')) {
+      addFlag(needsReviewReasons, REVIEW_REASONS.PARTIAL_ADJUSTMENT_SEGMENT);
+    }
+    if (proc.flags.includes('unreadable_amount')) {
+      addFlag(needsReviewReasons, REVIEW_REASONS.UNREADABLE_AMOUNT);
+    }
+    // A3. A reported allowed amount that disagrees with the derived one.
+    if (proc.flags.includes('allowed_mismatch')) {
+      addFlag(needsReviewReasons, REVIEW_REASONS.ALLOWED_AMOUNT_MISMATCH);
+    }
   }
+  if (sawUnreadableAmount) addFlag(needsReviewReasons, REVIEW_REASONS.UNREADABLE_AMOUNT);
+
   // CLP04 is the payer's own total. If our lines do not reach it we have
   // misread something; a claim that quietly posts short is worse than one held.
   const lineSum = procedures.reduce((sum, p) => sum + p.paidCents, 0);
@@ -732,7 +1052,26 @@ function parseClaim(win, defaultPayerName, paymentDate) {
     addFlag(needsReviewReasons, REVIEW_REASONS.LINE_TOTAL_MISMATCH);
   }
 
+  // A1. CLP05 is the payer's own statement of what the patient owes. Reconcile
+  // it against every PR adjustment we found, WHEREVER it was reported — that is
+  // the check that was structurally impossible while claim-level CAS was being
+  // dropped, and it is what would have caught the drop.
+  //
+  // Only when the payer actually sent a CLP05: an omitted one is 0 here and
+  // reconciling against it would flag most of the corpus for a field the file
+  // never claimed.
+  const reportedPatientResp = (clp['5'] || '').trim() !== '';
+  const patientRespSeen =
+    procedures.reduce((sum, p) => sum + p.adjustments.reduce(prSum, 0), 0) +
+    claimCas.patientRespCents;
+  if (reportedPatientResp && patientRespSeen !== patientRespCents) {
+    addFlag(needsReviewReasons, REVIEW_REASONS.PATIENT_RESP_MISMATCH);
+  }
+
   return {
+    claimLevelAdjustments: claimCas.adjustments,
+    remarkCodes: claimRemarkCodes,
+    patientRespSeenCents: patientRespSeen,
     claimNumber,
     claimStatusCode,
     claimStatusLabel: status.label,
@@ -774,9 +1113,10 @@ function parseClaim(win, defaultPayerName, paymentDate) {
  *
  * @param {import('./x12').X12Segment[]} win
  * @param {boolean} claimDenied
+ * @param {string} componentSep the ISA16 this interchange declared (A2)
  * @returns {ParsedProcedure[]}
  */
-function parseServiceLines(win, claimDenied) {
+function parseServiceLines(win, claimDenied, componentSep) {
   const svcIndexes = [];
   win.forEach((s, i) => {
     if (s.name === 'SVC') svcIndexes.push(i);
@@ -801,76 +1141,75 @@ function parseServiceLines(win, claimDenied) {
     }
     const loop = win.slice(svcIndex + 1, loopEnd);
 
+    /** @type {string[]} */
+    const flags = [];
+    const noteUnreadable = () => addFlag(flags, 'unreadable_amount');
+
     // SVC01 is the ADJUDICATED code; SVC06 the ORIGINAL SUBMITTED one, present
     // only when the payer changed it. See NOTE ON DOWNCODES (D4).
-    const adjudicatedCode = subElement(svc['1'], 1) || svc['1'] || '';
-    const submittedRaw = svc['6'] ? subElement(svc['6'], 1) || svc['6'] : '';
+    const adjudicatedCode = subElement(svc['1'], 1, componentSep) || svc['1'] || '';
+    const submittedRaw = svc['6'] ? subElement(svc['6'], 1, componentSep) || svc['6'] : '';
     const billedCode = submittedRaw || adjudicatedCode;
     const isDowncoded = Boolean(submittedRaw) && submittedRaw !== adjudicatedCode;
 
-    const billedCents = toCents(svc['2']);
-    const paidCents = toCents(svc['3']);
+    const billedCents = toCents(svc['2'], noteUnreadable);
+    const paidCents = toCents(svc['3'], noteUnreadable);
 
+    // B1. SVC05 — units actually paid. Fractional units are legal in X12, so
+    // this is not an integer.
+    const unitsRaw = (svc['5'] || '').trim();
+    const unitsPaid = unitsRaw === '' || !AMOUNT_RE.test(unitsRaw) ? null : Number.parseFloat(unitsRaw);
+
+    // B1. REF*6R — the line item control number. The only reliable key for
+    // matching a remitted line back to a submitted claim line; without it
+    // Slice 6's matcher is positional, which breaks the moment a payer
+    // reorders or splits lines.
+    const controlRef = loop.find((s) => s.name === 'REF' && s['1'] === '6R');
+    const lineItemControlNumber = (controlRef && controlRef['2']) || null;
+
+    // B2. The FULL RARC set. X12 gives no CAS↔LQ association, so these belong
+    // to the LINE and are stored on it — not stamped onto every adjustment,
+    // which is what used to store the first RARC three times on a 3-CARC line.
     const remarkCodes = loop
       .filter((s) => s.name === 'LQ' && s['1'] === 'HE' && s['2'])
-      .map((s) => s['2']);
+      .map((s) => s['2'].trim())
+      .filter(Boolean);
 
-    /** @type {ParsedAdjustment[]} */
-    const adjustments = [];
-    /** @type {string[]} */
-    const flags = [];
-    let deductibleCents = 0;
-    let copayCents = 0;
+    const cas = readCasSegments(
+      loop.filter((s) => s.name === 'CAS'),
+      'line',
+      noteUnreadable
+    );
+    const adjustments = cas.adjustments;
+    for (const f of cas.flags) addFlag(flags, f);
+    const { deductibleCents, copayCents } = cas;
 
-    for (const cas of loop.filter((s) => s.name === 'CAS')) {
-      const groupCode = (cas['1'] || 'OA').trim().toUpperCase();
-      const values = Object.keys(cas)
-        .filter((k) => /^\d+$/.test(k))
-        .sort((a, b) => Number(a) - Number(b))
-        .map((k) => cas[k]);
-
-      // Repeating reason/amount/quantity TRIPLES from CAS02.
-      for (let i = 1; i < values.length; i += 3) {
-        const reasonCode = (values[i] || '').trim();
-        if (!reasonCode) break;
-
-        if (!isPlausibleCarc(reasonCode)) {
-          // D5: refuse to invent an adjustment, and say so where it shows.
-          addFlag(flags, 'unexplained_adj');
-          break;
-        }
-
-        const amountCents = toCents(values[i + 1]);
-        const quantityRaw = Number.parseInt(values[i + 2] || '1', 10);
-
-        adjustments.push({
-          groupCode,
-          reasonCode,
-          description: describeCarc(reasonCode) || `Adjustment code ${reasonCode}`,
-          amountCents,
-          quantity: Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1,
-          // RARCs are reported per service line, not per adjustment; the first
-          // one is attached so the structured code has a home (D9).
-          remarkCode: remarkCodes[0] || null,
-        });
-
-        // PR-1 is deductible; PR-2/PR-3 are coinsurance and copay. This is the
-        // patient's money, and it is why a line can pay short without error.
-        if (groupCode === 'PR') {
-          if (reasonCode === '1') deductibleCents += amountCents;
-          else if (reasonCode === '2' || reasonCode === '3') copayCents += amountCents;
-        }
-
-        const mapped = CARC_TO_LINE_FLAG[reasonCode];
-        if (mapped) addFlag(flags, mapped);
-      }
+    for (const adj of adjustments) {
+      const mapped = CARC_TO_LINE_FLAG[adj.reasonCode];
+      if (mapped) addFlag(flags, mapped);
     }
 
-    const contractualCents = adjustments.reduce(
-      (sum, adj) => (adj.groupCode === 'CO' ? sum + adj.amountCents : sum),
-      0
-    );
-    const allowedCents = billedCents - contractualCents;
+    // A3. The allowed amount, READ when the payer reports it and derived only
+    // when it does not. AMT*B6 is the "allowed — actual" amount; the derived
+    // form is billed minus the contractual reduction, which now counts OA and
+    // PI as well as CO.
+    const allowedAmt = loop.find((s) => s.name === 'AMT' && s['1'] === 'B6');
+    const derivedAllowedCents = billedCents - contractualCentsOf(adjustments);
+    const reportedAllowedCents = allowedAmt
+      ? toCents(allowedAmt['2'], noteUnreadable)
+      : null;
+
+    const allowedSource = allowedAmt ? 'reported' : 'derived';
+    const allowedCents = allowedAmt ? reportedAllowedCents : derivedAllowedCents;
+
+    // The two disagreeing is a disagreement about money — write_off_cents is
+    // derived from this and Slice 6c writes it into Open Dental.
+    if (
+      allowedAmt &&
+      Math.abs(reportedAllowedCents - derivedAllowedCents) > ALLOWED_TOLERANCE_CENTS
+    ) {
+      addFlag(flags, 'allowed_mismatch');
+    }
 
     const isDenied = claimDenied && paidCents === 0;
     if (isDowncoded) addFlag(flags, 'downcode');
@@ -884,9 +1223,14 @@ function parseServiceLines(win, claimDenied) {
       description: `Procedure ${adjudicatedCode}`,
       billedCents,
       allowedCents,
+      allowedSource,
+      reportedAllowedCents,
+      derivedAllowedCents,
       deductibleCents,
       copayCents,
       paidCents,
+      unitsPaid,
+      lineItemControlNumber,
       isDowncoded,
       isBundled: flags.includes('bundled'),
       isDenied,

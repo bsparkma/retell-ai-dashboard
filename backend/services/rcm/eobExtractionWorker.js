@@ -129,13 +129,10 @@ async function runExtraction(job) {
   const startedAt = Date.now();
   try {
     const bytes = await blobStore.getEob(upload.file_key);
+    // A6: an over-length document now THROWS DOCUMENT_TOO_LARGE rather than
+    // returning a silently truncated text layer. Nothing to warn about here any
+    // more — the refusal reaches the user through `failure_code`.
     const doc = await extractPdfText(bytes);
-    if (doc.truncated) {
-      console.warn(
-        `[rcm/eob] upload ${uploadId}: document text truncated to the prompt limit ` +
-          `(${doc.pages} pages) — the extraction may be incomplete`
-      );
-    }
 
     // HARD BACKSTOP, immediately before the spend. `check()` above lets the job
     // park cleanly; this one is what makes it impossible to spend past the cap
@@ -172,10 +169,14 @@ async function runExtraction(job) {
     const reason = failureReason(err);
     await pool
       .query(
-        `UPDATE rcm_eob_uploads SET status = 'failed', error_message = $3, processed_at = now(),
-                updated_at = now()
+        `UPDATE rcm_eob_uploads SET status = 'failed', error_message = $3, failure_code = $4,
+                processed_at = now(), updated_at = now()
           WHERE upload_id = $1 AND office_id = $2`,
-        [uploadId, office, reason]
+        // A6: the MESSAGE is the human sentence; the CODE is what the panel
+        // switches on. "too long, split it" and "this PDF is encrypted" are
+        // different conversations and the UI has to be able to tell them apart
+        // without string-matching prose.
+        [uploadId, office, reason, failureCode(err)]
       )
       .catch((e) =>
         console.error(`[rcm/eob] could not record failure on upload ${uploadId}:`, e && e.message)
@@ -210,7 +211,12 @@ async function markPending(pool, uploadId, office, reason) {
  */
 function failureReason(err) {
   const code = err && err.code;
-  if (err instanceof DocumentTextError || code === 'NO_EXTRACTABLE_TEXT' || code === 'PDF_UNREADABLE') {
+  if (
+    err instanceof DocumentTextError ||
+    code === 'NO_EXTRACTABLE_TEXT' ||
+    code === 'PDF_UNREADABLE' ||
+    code === 'DOCUMENT_TOO_LARGE'
+  ) {
     return err.message;
   }
   if (code === 'RCM_EXTRACTION_BUDGET_EXCEEDED') {
@@ -228,6 +234,41 @@ function failureReason(err) {
   if (code === 'LLM_CALL_FAILED') return 'The extraction service could not be reached. Try again.';
   if (code === 'EOB_STORAGE_UNAVAILABLE') return 'Document storage is not configured for this environment.';
   return 'Extraction failed unexpectedly. Try again, or report this upload id.';
+}
+
+/**
+ * The machine-readable half of a failure — `rcm_eob_uploads.failure_code`.
+ *
+ * Slice 5.5 (A6) added this because the panel had only `error_message` to go
+ * on, so distinguishing "split this document" from "this PDF is encrypted"
+ * meant matching prose. The vocabulary is CHECKed in the database; anything
+ * unmapped becomes the honest catch-all rather than a value the constraint
+ * would reject.
+ *
+ * @param {unknown} err
+ * @returns {string} a member of rcmVocabulary.EOB_FAILURE_CODES
+ */
+function failureCode(err) {
+  const code = err && err.code;
+  switch (code) {
+    case 'DOCUMENT_TOO_LARGE':
+      return 'document_too_large';
+    case 'NO_EXTRACTABLE_TEXT':
+      return 'no_extractable_text';
+    case 'PDF_UNREADABLE':
+      return 'pdf_unreadable';
+    case 'RCM_EXTRACTION_BUDGET_EXCEEDED':
+      return 'budget_exhausted';
+    case 'LLM_UNAVAILABLE':
+      return 'llm_unavailable';
+    case 'LLM_BAD_JSON':
+    case 'LLM_EMPTY_RESPONSE':
+    case 'EXTRACTION_MALFORMED':
+    case 'LLM_RESPONSE_TRUNCATED':
+      return 'extraction_invalid';
+    default:
+      return 'extraction_failed';
+  }
 }
 
 /**

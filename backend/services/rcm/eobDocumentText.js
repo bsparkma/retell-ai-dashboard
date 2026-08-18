@@ -91,11 +91,33 @@ async function extractPdfText(buffer) {
     );
   }
 
-  const truncated = raw.length > MAX_DOCUMENT_CHARS;
+  // SLICE 5.5 DEFECT A6. This used to `raw.slice(0, MAX_DOCUMENT_CHARS)` and
+  // return `truncated: true`, whose ONLY consumer was a `console.warn`. A long
+  // bulk EOB therefore lost its tail claims, the model reconciled the totals it
+  // could see, and the user was shown "Proposal ready." — a knowingly partial
+  // extraction presented as a complete one.
+  //
+  // We REFUSE instead. The alternative — store the partial and flag it — was
+  // considered and rejected: a proposal that is missing claims nobody can
+  // enumerate is not reviewable, and Slice 6c would post the ones that survived
+  // while the rest silently never existed. Splitting the document is something
+  // the user can actually do.
+  if (raw.length > MAX_DOCUMENT_CHARS) {
+    throw new DocumentTextError(
+      `This document is too long to extract in one pass (${raw.length.toLocaleString()} characters ` +
+        `of text across ${Number(parsed.total) || 0} pages; the limit is ` +
+        `${MAX_DOCUMENT_CHARS.toLocaleString()}). Split it and upload the parts separately — ` +
+        'extracting only part of it would hide the claims that did not fit.',
+      'DOCUMENT_TOO_LARGE'
+    );
+  }
+
   return {
-    text: truncated ? raw.slice(0, MAX_DOCUMENT_CHARS) : raw,
+    text: raw,
     pages: Number(parsed.total) || 0,
-    truncated,
+    // Retained as an always-false field so a caller reading it does not silently
+    // change meaning; over-length is now a refusal, never a returned state.
+    truncated: false,
   };
 }
 
