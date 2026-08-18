@@ -34,9 +34,35 @@
  *     Both practices' customer keys sit behind ONE developer key, so a
  *     per-office pacer would double the rate against whichever limit applies.
  *
- * It deliberately does NOT slow the voice module down. RCM waits for RCM; the
- * transport's shared per-key slot (config/openDental.js) is what keeps the two
- * modules from bursting past each other.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IT COSTS THE PHONES — decision D-8
+ * ─────────────────────────────────────────────────────────────────────────────
+ * An earlier version of this header said it "deliberately does NOT slow the
+ * voice module down". THAT WAS NOT TRUE AS WRITTEN, and it is the sentence that
+ * would mislead the next reader into thinking there is no tradeoff here.
+ *
+ * `pacedOdGet` passes `minIntervalMs: 1200` down to the TRANSPORT's shared
+ * per-credential slot, and the voice module runs per-office clients against the
+ * same customer keys. So while a biller runs a batch match, a live phone-path
+ * patient lookup on that office's key queues behind RCM's reservation — bounded
+ * and interleaved, never starved, but up to ~1.2s of added latency mid-call for
+ * as long as the batch runs.
+ *
+ * Beau chose that (D-8, 2026-08-17). The alternative — RCM raising only its own
+ * queue and leaving the shared slot at the transport's 120ms default — keeps
+ * phones fast but lets COMBINED traffic against one credential exceed Open
+ * Dental's published 1 req/s, and the 429 backoff that follows degrades both
+ * modules worse than bounded latency degrades one. Total traffic against the
+ * key never exceeding the documented rate is the property being bought.
+ *
+ * Because the key stays under the published rate BY CONSTRUCTION, there is
+ * nothing for RCM to yield to: do NOT add contention backoff here. That
+ * mechanism belongs only to the rejected option.
+ *
+ * The cost is COUNTED rather than assumed — config/openDental.js attributes
+ * 429s per calling module and records the worst wait a non-RCM caller took
+ * behind an RCM reservation, and GET /api/rcm/eob surfaces both. Beau chose
+ * this on reasoning; he should be able to revisit it on data.
  */
 
 /**
@@ -80,15 +106,24 @@ let chain = Promise.resolve();
 /** When the next call may start. */
 let nextSlotAt = 0;
 
-/** Observability — how many calls this process has paced, and total wait. */
-const stats = { calls: 0, waitedMs: 0 };
+/** When the previous call actually started, for the observed-interval counter. */
+let lastStartedAt = 0;
+
+/**
+ * Observability — how many calls this process has paced, how long they waited,
+ * and the total span between consecutive call STARTS (the thing the limiter
+ * actually sees).
+ */
+const stats = { calls: 0, waitedMs: 0, spacedMs: 0 };
 
 /** Test seam — reset the queue and counters. */
 function _resetForTests() {
   chain = Promise.resolve();
   nextSlotAt = 0;
+  lastStartedAt = 0;
   stats.calls = 0;
   stats.waitedMs = 0;
+  stats.spacedMs = 0;
   overrideIntervalMs = null;
 }
 
@@ -133,7 +168,10 @@ function paced(fn) {
      * Safe to compute here rather than reserve because `chain` already
      * serializes this section — only one caller is ever inside it.
      */
-    nextSlotAt = Date.now() + interval;
+    const startedAt = Date.now();
+    if (lastStartedAt) stats.spacedMs += startedAt - lastStartedAt;
+    lastStartedAt = startedAt;
+    nextSlotAt = startedAt + interval;
     stats.calls += 1;
     return fn();
   });
@@ -164,7 +202,23 @@ function paced(fn) {
 function pacedOdGet(odGet) {
   const interval = overrideIntervalMs ?? resolveMinIntervalMs();
   return (path, params, opts) =>
-    paced(() => odGet(path, params, { ...(opts || {}), minIntervalMs: interval }));
+    paced(() =>
+      // `module: 'rcm'` is for ATTRIBUTION only — it buys no priority. It is
+      // what lets the transport count 429s and contention per module, so D-8
+      // can be revisited on measurements instead of on argument.
+      odGet(path, params, { ...(opts || {}), minIntervalMs: interval, module: 'rcm' })
+    );
+}
+
+/**
+ * RCM's OBSERVED interval — total time spent inside the queue divided by the
+ * calls that went through it. Reported next to the configured floor so the two
+ * can be compared rather than assumed equal.
+ * @returns {number|null} null until at least two calls have been paced
+ */
+function observedIntervalMs() {
+  if (stats.calls < 2) return null;
+  return Math.round(stats.spacedMs / (stats.calls - 1));
 }
 
 module.exports = {
@@ -172,6 +226,7 @@ module.exports = {
   resolveMinIntervalMs,
   paced,
   pacedOdGet,
+  observedIntervalMs,
   stats,
   _resetForTests,
   _setIntervalForTests,

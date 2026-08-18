@@ -135,7 +135,10 @@ router.get(
       // office_id in the WHERE — see the header. A cross-office read is
       // structurally a miss, not a refusal that had to be remembered.
       const { rows } = await pool.query(
-        `SELECT upload_id, filename, file_key, content_type, status ` +
+        // `content_type` is deliberately NOT read: it is the client's own
+        // claim about its upload and the header below comes from the blob key.
+        // A column selected but unused is an invitation to reach for it.
+        `SELECT upload_id, filename, file_key, status ` +
           `FROM rcm_eob_uploads WHERE office_id = $1 AND upload_id = $2`,
         [office, uploadId]
       );
@@ -177,19 +180,20 @@ router.get(
       });
     }
 
-    // THE TRAIL IS WRITTEN BEFORE THE BYTES. `audit` throws AuditError on
-    // failure and h() turns that into a 500 — so a document is never served
-    // without a recorded read (hard rule 5). resourceId is the upload id, which
-    // we minted; the filename is PHI and stays out of the trail.
-    await audit(req, {
-      action: 'READ',
-      resourceType: 'rcm_source_document',
-      resourceId: uploadId,
-      result: 'SUCCESS',
-      office,
-      sourceRef: null,
-    });
-
+    /*
+     * FETCH FIRST, AUDIT SECOND, SERVE THIRD.
+     *
+     * The trail must still precede the BYTES — that is hard rule 5 and it is
+     * unchanged: `audit` throws AuditError, h() turns it into a 500, and
+     * nothing is written to the response. What changed is that the fetch no
+     * longer happens after it. Auditing first meant a blob read that failed
+     * left a SUCCESS row for a document nobody was ever shown — the same
+     * "trail claims a read that never happened" defect the Content-Disposition
+     * fix two blocks below was written to eliminate.
+     *
+     * Pulling bytes out of our own private container is not a disclosure. The
+     * disclosure is serving them, and that still cannot happen unrecorded.
+     */
     let bytes;
     try {
       bytes = await store.read(String(upload.file_key));
@@ -198,12 +202,25 @@ router.get(
         `[rcm/documents] office=${office} upload=${uploadId} blob read failed:`,
         (err && err.message) || err
       );
+      // Recorded as an attempt, not as a read: nothing was served.
+      await auditRcmDenial(req, 'rcm_source_document', uploadId, { office, result: 'ERROR' });
       return res.status(502).json({
         success: false,
         error: 'The stored document could not be read',
         code: 'DOCUMENT_READ_FAILED',
       });
     }
+
+    // resourceId is the upload id, which we minted; the filename is PHI and
+    // stays out of the trail.
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'rcm_source_document',
+      resourceId: uploadId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
 
     const filename = safeFilename(upload.filename, `remittance.${store.kind === 'era' ? 'edi' : 'pdf'}`);
 

@@ -92,9 +92,14 @@ const MIN_CANDIDATE_SCORE = 15;
  * otherwise lift a total stranger over a numeric floor — and the whole point of
  * the floor is that a stranger must never appear beside a Confirm button.
  *
- * A genuine name change or a mis-keyed 835 is handled the way it should be:
- * the biller links the patient first, which skips the name search entirely and
- * reads that patient's claims directly.
+ * IT APPLIES ONLY TO THE NAME-SEARCH LANE. When the biller has already LINKED
+ * the patient, the candidates came from `?PatNum=` — that patient's own claims,
+ * by construction — and the remedy above ("link the patient first") has already
+ * been taken. A married-name change is then routine: `SMITH, J` on the
+ * remittance against `JONES, JANE` on a correctly linked chart shares no token,
+ * and disqualifying on it would report `no_candidate` for every claim on the
+ * right patient. On that lane a name disagreement is EVIDENCE (it still costs
+ * −15), not a wall.
  */
 const DISQUALIFYING_TAGS = Object.freeze(['PATIENT_NAME_MISMATCH']);
 
@@ -423,26 +428,40 @@ function odAmount(value) {
  */
 function summariseLines(claimProcs, proceduresByProcNum) {
   return (claimProcs || []).map((cp) => {
-    const procNum = Number(cp.ProcNum);
-    const proc = Number.isFinite(procNum) ? proceduresByProcNum.get(procNum) : undefined;
-    // A claimproc with no procedure of its own (ProcNum 0 is OD's claim-level
-    // row) has nothing that could be deleted. A REAL ProcNum we could not read
-    // is 'unknown'.
-    const hasProcedure = Number.isFinite(procNum) && procNum > 0;
+    /*
+     * "OD said ProcNum 0" AND "OD did not say" ARE DIFFERENT FACTS.
+     *
+     * This used to be `Number(cp.ProcNum) > 0`, and `Number(null)` is 0 while
+     * `Number(undefined)` is NaN — so a claimproc whose ProcNum the API omits
+     * or nulls read as OD's legitimate claim-level `ProcNum 0` row, which has
+     * no procedure to delete and is therefore `deleted: false`. That is the
+     * original soft-delete defect moved from the procedure row to the field:
+     * an unreadable line counted in every total and was eligible for pairing.
+     *
+     * So the ABSENCE of the field is 'unknown', and only an explicit 0 is the
+     * claim-level row.
+     */
+    const raw = cp.ProcNum;
+    const stated = raw !== undefined && raw !== null && raw !== '';
+    const procNum = Number(raw);
+    const usable = stated && Number.isFinite(procNum);
+    const proc = usable ? proceduresByProcNum.get(procNum) : undefined;
     // WHY the row is missing (an unentitled resource, a page cap, a procedure
-    // outside the scan) is already reported as a note by the read shell; here
-    // it is enough that we could not check.
-    const deleted = !hasProcedure
-      ? false
-      : proc
-        ? String(proc.ProcStatus) === DELETED_PROC_STATUS
-        : 'unknown';
+    // outside the scan, or a field OD never sent) is already reported as a note
+    // by the read shell; here it is enough that we could not check.
+    const deleted = !usable
+      ? 'unknown'
+      : procNum === 0
+        ? false // OD's claim-level claimproc: no procedure, nothing to delete
+        : proc
+          ? String(proc.ProcStatus) === DELETED_PROC_STATUS
+          : 'unknown';
     const status = typeof cp.Status === 'string' ? cp.Status : String(cp.Status ?? '');
     // Zero is OD's "no check" for ClaimPaymentNum, not a check numbered zero.
     const payNum = Number(cp.ClaimPaymentNum);
     return {
       claimProcNum: Number(cp.ClaimProcNum),
-      procNum: Number.isFinite(procNum) ? procNum : null,
+      procNum: usable ? procNum : null,
       code: procCode((proc && (proc.procCode || proc.ProcCode)) || cp.CodeSent || ''),
       status,
       feeBilledCents: odAmount(cp.FeeBilled) ?? 0,
@@ -662,7 +681,22 @@ function scoreCandidate(proposal, candidate) {
     od: {
       claimStatus: String(claim.ClaimStatus ?? ''),
       dateService: odDate,
-      claimFeeCents: dollarsToCents(claim.ClaimFee),
+      /**
+       * The claim HEADER's total, verbatim from OD — and CONTAMINATED by
+       * design: `ClaimFee` still includes soft-deleted procedures (G12), which
+       * is the arithmetic that over-applied a reversal by $2.00 in the spike
+       * teardown. Kept because it is what the chart displays and a biller
+       * comparing screens will see it; never used as a line-derived figure.
+       * `billedCents` below is the one to compare against.
+       */
+      claimHeaderFeeCents: dollarsToCents(claim.ClaimFee),
+      /**
+       * The LIVE lines' FeeBilled — the same number the BILLED_AMOUNT_* tags
+       * were computed from, and the one Slice 6c re-verifies against. It used
+       * to be computed here and thrown away, which left `claimHeaderFeeCents`
+       * as the only billed figure that survived into a confirmation.
+       */
+      billedCents: odBilledCents,
       // "As read", for the snapshot 6c re-verifies against. Live lines only.
       insPaidCents: live.reduce((s, l) => s + l.insPayAmtCents, 0),
       writeOffCents: live.reduce((s, l) => s + l.writeOffCents, 0),
@@ -684,9 +718,12 @@ function scoreCandidate(proposal, candidate) {
  *
  * @param {Parameters<typeof scoreCandidate>[0]} proposal
  * @param {ReadonlyArray<Parameters<typeof scoreCandidate>[1]>} candidates
+ * @param {{ patientResolvedByLink?: boolean }} [opts] true when the candidates
+ *   came from a LINKED PatNum rather than from a name search — see
+ *   DISQUALIFYING_TAGS for why that turns the name rule off.
  * @returns {{ candidates: ReturnType<typeof scoreCandidate>[], ambiguous: boolean, margin: number|null }}
  */
-function rankCandidates(proposal, candidates) {
+function rankCandidates(proposal, candidates, { patientResolvedByLink = false } = {}) {
   const scored = (candidates || [])
     .map((c) => scoreCandidate(proposal, c))
     // Highest first; ClaimNum ascending as the tie-break so the order is
@@ -697,7 +734,8 @@ function rankCandidates(proposal, candidates) {
   // Noise is not "a weak candidate", and offering it beside a Confirm button is
   // how a stranger's ClaimNum gets written onto a claim. Dropped candidates are
   // COUNTED and their reason recorded — never silently vanished.
-  const nameMismatch = (c) => c.evidence.some((e) => DISQUALIFYING_TAGS.includes(e.tag));
+  const nameMismatch = (c) =>
+    !patientResolvedByLink && c.evidence.some((e) => DISQUALIFYING_TAGS.includes(e.tag));
   const rejectedForName = scored.filter(nameMismatch).length;
   const offered = scored.filter((c) => !nameMismatch(c) && c.score >= MIN_CANDIDATE_SCORE);
   const rejectedForScore = scored.length - offered.length - rejectedForName;
@@ -709,8 +747,19 @@ function rankCandidates(proposal, candidates) {
     margin,
     /** Examined and not offered. */
     rejected: scored.length - offered.length,
+    /**
+     * WHY they were not offered, split by rule.
+     *
+     * This is what stops `no_candidate` from being a lie. Its documented
+     * meaning is "a search ran against this office's Open Dental and found
+     * nothing", and without these counts a search that found three claims and
+     * disqualified all three is indistinguishable from one that found none —
+     * on the screen a biller acts on.
+     */
     rejectedReasons: { nameMismatch: rejectedForName, belowScore: rejectedForScore },
     minScore: MIN_CANDIDATE_SCORE,
+    /** False when the name rule was off because the patient was already linked. */
+    nameRuleApplied: !patientResolvedByLink,
   };
 }
 

@@ -77,6 +77,31 @@ const router = express.Router();
  */
 router.use(requireOffice);
 
+/**
+ * THE QUEUE ROUTES — the enumerated exceptions to the mount's write gate (D-9).
+ *
+ * The mount is `requireReadWrite('rcm.read', 'rcm.write')`, applied by HTTP
+ * METHOD, so every POST under /api/rcm demands `rcm.write` by default. These
+ * three are POSTs that a read-tier reviewer must be able to press: running a
+ * match reads Open Dental and changes no chart, and marking a claim reviewed
+ * has no Open Dental effect at all. They are exempted from the pair at the
+ * mount and each carries its own `requirePermission('rcm.queue')` instead — the
+ * "a specific gate narrows the general one" idiom config/permissions.js
+ * documents, used here to WIDEN by one tier rather than to narrow.
+ *
+ * Mount-relative and anchored: `/claims/:id/confirm-match` must not match, and
+ * a new POST added under either router must not accidentally land inside one.
+ * `rcmGuard.test.js` walks every route in this module and fails if a path is
+ * exempted here without its own gate.
+ *
+ * @type {ReadonlyArray<RegExp>}
+ */
+const QUEUE_PATHS = Object.freeze([
+  /^\/claims\/[^/]+\/match$/,
+  /^\/claims\/[^/]+\/review$/,
+  /^\/remittances\/[^/]+\/match$/,
+]);
+
 router.use('/summary', require('./summary'));
 router.use('/claims', require('./claims'));
 // Slice 4. The module's first WRITE surface — POST /eob is what the unused
@@ -98,3 +123,4 @@ router.use('/remittances', require('./remittances'));
 router.use('/uploads', require('./documents'));
 
 module.exports = router;
+module.exports.QUEUE_PATHS = QUEUE_PATHS;

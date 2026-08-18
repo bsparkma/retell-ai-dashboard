@@ -443,3 +443,61 @@ test('isCapabilityMiss separates "enable the resource" from "it is down"', () =>
   assert.equal(reads.isCapabilityMiss({ ok: false, status: 0, error: 'ECONNRESET' }), false);
   assert.equal(reads.isCapabilityMiss({ ok: true, status: 200 }), false);
 });
+
+
+// --- Configuration refuses to be wrong quietly -------------------------------
+
+test('a non-integer cap REFUSES TO START rather than reporting "no matching claim"', () => {
+  /*
+   * `Number(process.env.X || default)` turns a typo into NaN, and NaN into
+   * silence: `slice(0, NaN)` returns [], no patients are searched, and the
+   * workbench states as a FACT that Open Dental has no such claim. A
+   * misconfiguration that produces a confident wrong answer is worse than one
+   * that fails to boot.
+   *
+   * Untested until this review round, which is its own small lesson: the throw
+   * was written for a failure mode nobody had made fire.
+   */
+  const NAME = 'RCM_OD_TEST_CAP';
+  const original = process.env[NAME];
+  try {
+    for (const bad of ['three', '0', '-1', '2.5', 'NaN', '1e3x']) {
+      process.env[NAME] = bad;
+      assert.throws(
+        () => reads.intEnv(NAME, 3),
+        /is not a positive integer/,
+        `${JSON.stringify(bad)} must be refused`
+      );
+    }
+
+    // Absent and empty both fall back — an unset variable is not a typo.
+    delete process.env[NAME];
+    assert.equal(reads.intEnv(NAME, 3), 3);
+    process.env[NAME] = '';
+    assert.equal(reads.intEnv(NAME, 3), 3);
+
+    process.env[NAME] = '7';
+    assert.equal(reads.intEnv(NAME, 3), 7);
+  } finally {
+    if (original === undefined) delete process.env[NAME];
+    else process.env[NAME] = original;
+  }
+});
+
+test('findClaimCandidates reports WHICH LANE resolved the patient', () => {
+  // The ranker turns its name-mismatch disqualifier off on the linked lane -
+  // there are no strangers to defend against when the claims came from that
+  // patient's own PatNum, and a married-name change would otherwise disqualify
+  // every claim on the right patient.
+  const byName = happyOd();
+  return reads
+    .findClaimCandidates(byName, PROPOSAL)
+    .then((found) => {
+      assert.equal(found.patientResolvedByLink, false);
+      const linked = happyOd();
+      return reads.findClaimCandidates(linked, { ...PROPOSAL, odPatientId: 12828 });
+    })
+    .then((found) => {
+      assert.equal(found.patientResolvedByLink, true);
+    });
+});

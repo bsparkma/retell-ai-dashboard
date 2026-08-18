@@ -17,6 +17,7 @@ import type { TenantRole } from "@/lib/auth";
 /** Every action the backend map defines. Keep sorted, keep in sync. */
 export const ACTIONS = [
   "admin.all",
+  "rcm.queue",
   "rcm.read",
   "rcm.write",
   "tc.full",
@@ -44,14 +45,17 @@ export function can(
  * them.
  *
  * A hygienist's home is the inbox, not a dashboard they cannot read. `tc` gets
- * the TC dashboard. office/admin keep the module hub they have today — they
- * may hold several modules, and picking one for them would be a regression.
+ * the TC dashboard. A `billing` reviewer holds exactly one surface, so sending
+ * them to a module hub with one tile on it would be a click for nothing.
+ * office/admin keep the module hub they have today — they may hold several
+ * modules, and picking one for them would be a regression.
  */
 export const ROLE_HOME: Record<TenantRole, string> = {
   admin: "/home",
   office: "/home",
   tc: "/tc/dashboard",
   hygiene: "/tc/hygiene/inbox",
+  billing: "/rcm/remittances",
 };
 
 /** The fallback home for a user whose role we could not resolve. */
@@ -91,8 +95,10 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/tc": "tc.full",
   // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
   "/tc/hygiene": "tc.hygiene",
-  // RCM is read-gated at the route; the mutations it will grow are gated on
-  // rcm.write server-side, which no page needs to know about to render.
+  // RCM is read-gated at the route. Its three tiers (rcm.read / rcm.queue /
+  // rcm.write, decision D-9) are enforced server-side per route; a page renders
+  // the same for a reviewer and an approver, and the buttons a reviewer may not
+  // press refuse honestly rather than being hidden.
   "/rcm": "rcm.read",
 };
 

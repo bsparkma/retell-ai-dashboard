@@ -377,10 +377,16 @@ test('the snapshot records what 6c re-verifies against: amounts, line pairs, and
   await withApp({ db, od: odFixture() }, async (app) => {
     const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
     const [candidate] = body.snapshot.candidates;
-    assert.equal(candidate.od.claimFeeCents, 21000);
+    // TWO billed figures, and the difference matters: `billedCents` is the LIVE
+    // lines' FeeBilled — what 6c re-verifies against — while the header total
+    // still includes soft-deleted procedures (G12). They agree on this fixture
+    // because nothing on it is deleted, which is exactly why the CONTAMINATED
+    // one has to be named rather than left as "the billed amount".
+    assert.equal(candidate.od.billedCents, 21000);
+    assert.equal(candidate.od.claimHeaderFeeCents, 21000);
     assert.equal(candidate.linePairs[0].odClaimProcNum, 99001);
     assert.match(body.snapshot.fetchedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.equal(body.snapshot.version, 1);
+    assert.equal(body.snapshot.version, 2);
     assert.equal(body.snapshot.office, 'roland');
   });
 });
@@ -726,16 +732,182 @@ test('a tenant without the rcm module gets MODULE_NOT_ENTITLED on every route', 
   });
 });
 
-test('a role without rcm.write may READ the workbench but not act on it', async () => {
-  // The read/write split is the mount's requireReadWrite, applied by METHOD.
+test('a search that found claims and REJECTED them all does not read as an empty search', async () => {
+  /*
+   * MUST-FIX from review: `no_candidate` means "a search ran against this
+   * office's Open Dental and found nothing". A run that examined three claims
+   * and disqualified all three has the same empty candidate list — so without
+   * the rejection counts reaching the snapshot, the biller is told the chart
+   * has no such claim when the chart had claims we chose not to offer.
+   */
+  const db = seed(new FakeRcmDb());
+  // Same patient, but a claim from another visit: different date, different
+  // code, different money. Real, and correctly not offered.
+  const od = odFixture({
+    claims: [
+      { ClaimNum: 70001, PatNum: 12828, DateService: '2025-01-05', ClaimFee: 50.0, ClaimStatus: 'S' },
+    ],
+    claimProcs: [
+      {
+        ClaimProcNum: 88001,
+        ClaimNum: 70001,
+        ProcNum: 7701,
+        Status: 'NotReceived',
+        FeeBilled: 50.0,
+        InsPayAmt: 0,
+        WriteOff: 0,
+        DedApplied: 0,
+        IsTransfer: false,
+        ClaimPaymentNum: 0,
+      },
+    ],
+    procedures: [{ ProcNum: 7701, PatNum: 12828, procCode: 'D2740', ProcStatus: 'C' }],
+  });
+
+  await withApp({ db, od }, async (app) => {
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, 'no_candidate');
+
+    const snap = res.body.snapshot;
+    assert.equal(snap.candidates.length, 0);
+    assert.equal(snap.rejectedCandidates, 1, 'the claim we examined must be counted');
+    assert.equal(snap.rejectedReasons.belowScore, 1);
+    assert.equal(snap.rejectedReasons.nameMismatch, 0);
+    assert.equal(snap.minScore, 15);
+
+    // And it survives to the read the panel actually renders from.
+    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${Q}`);
+    assert.equal(detail.body.claim.matchSnapshot.rejectedCandidates, 1);
+    assert.deepEqual(detail.body.claim.matchSnapshot.rejectedReasons, {
+      nameMismatch: 0,
+      belowScore: 1,
+    });
+  });
+});
+
+test('a search that found genuinely nothing says zero rejections', async () => {
+  // The other half of the pair: this is what an honest empty search looks like,
+  // and the screen must be able to tell it from the one above.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: new FakeOd({}) }, async (app) => {
+    const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(body.status, 'no_candidate');
+    assert.equal(body.snapshot.rejectedCandidates, 0);
+    assert.deepEqual(body.snapshot.rejectedReasons, { nameMismatch: 0, belowScore: 0 });
+  });
+});
+
+test('a batch run whose FIRST claim throws still records the run', async () => {
+  /*
+   * MUST-FIX from review. The audit obligation used to be handed to claim zero
+   * alone: if it threw before reaching the PHI point — a claim somebody had
+   * already confirmed, the ordinary outcome of re-running a partly-worked
+   * remittance — the catch swallowed it, the loop carried on, and every later
+   * claim read a chart with NO audit row for the entire run.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    db.log.length = 0;
+
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.matched[0].status, 'already_confirmed');
+
+    // The RUN is recorded even though not one chart was read.
+    const run = auditRows(db).filter((r) => r.resource_type === 'rcm_remittance_match');
+    assert.equal(run.length, 1);
+    assert.equal(run[0].resource_id, 'b-1', 'stamped with the remittance, not null');
+  });
+});
+
+test('a batch run audits ONE row per claim, stamped with the claim id', async () => {
+  // A claim is one patient's chart, not one Open Dental call. N charts is N
+  // rows — anything coarser cannot answer "whose chart was read on Tuesday".
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+
+    const perClaim = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
+    assert.equal(perClaim.length, 1);
+    assert.equal(perClaim[0].resource_id, 'c-1');
+    assert.equal(perClaim[0].result, 'SUCCESS');
+  });
+});
+
+test('a role with NO rcm permission at all is refused the whole surface', async () => {
+  // `tc` holds none of rcm.read / rcm.queue / rcm.write. A treatment
+  // coordinator has no business in claims, denials or AR.
   const db = seed(new FakeRcmDb());
   await withApp({ db, role: 'tc', od: odFixture() }, async (app) => {
-    const read = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
-    const write = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    // Whatever this role's read entitlement is, a write must never be broader.
-    if (read.status === 200) assert.equal(write.status, 403);
-    else assert.equal(write.status, 403);
+    for (const [method, path] of [
+      ['GET', `/api/rcm/remittances${Q}`],
+      ['POST', `/api/rcm/claims/c-1/match${Q}`],
+      ['POST', `/api/rcm/claims/c-1/review${Q}`],
+      ['POST', `/api/rcm/claims/c-1/confirm-match${Q}`],
+    ]) {
+      const res = await api(app.baseUrl, method, path, method === 'GET' ? {} : json({}));
+      assert.equal(res.status, 403, `${method} ${path}`);
+    }
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'not_run');
+  });
+});
+
+test('the billing role can READ and WORK the queue, and cannot commit (D-9)', async () => {
+  /*
+   * The reviewer tier. Its whole point is that judging a remittance and
+   * COMMITTING that judgement are different jobs — so running a match (reads
+   * Open Dental, changes no chart) and marking a claim reviewed (no Open Dental
+   * effect at all) are allowed, while confirming — which writes od_claim_num,
+   * the column Slice 6c reads to pick a chart — is not.
+   *
+   * This route reaches its gate through the mount's real `exempt` list, so a
+   * queue path that lost its own requirePermission would 200 here for a role
+   * that must not have it.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, role: 'billing', od: odFixture() }, async (app) => {
+    const list = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(list.status, 200, 'a reviewer must be able to open the workbench');
+
+    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${Q}`);
+    assert.equal(detail.status, 200);
+
+    const matched = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(matched.status, 200, 'running a match reads OD and writes no chart');
+    assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
+
+    const batch = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    assert.equal(batch.status, 200, 'and so does the batch form of it');
+
+    const reviewed = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/review${Q}`,
+      json({ note: 'Carrier owes a corrected EOB — nothing to post.' })
+    );
+    assert.equal(reviewed.status, 200, 'worklist hygiene is not a chart write');
+    // Attributed all the same: a read-tier user who leaves a note is a named
+    // actor, through the same D-5 upsert.
+    assert.equal(db.table('rcm_claims')[0].reviewed_by, 'billing@carein.ai');
+
+    // …and the one thing it must not do.
+    const confirm = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(confirm.status, 403);
+    assert.equal(confirm.body.code, 'FORBIDDEN');
+    assert.equal(confirm.body.action, 'rcm.write');
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, null, 'nothing was linked');
+
+    // Nor upload a new remittance: that is rcm.write too.
+    const upload = await api(app.baseUrl, 'POST', `/api/rcm/era${Q}`, json({}));
+    assert.equal(upload.status, 403);
   });
 });
 
@@ -834,86 +1006,134 @@ test('a header-splitting filename is neutralised rather than echoed', async () =
 
 test('a confirmation is NOT wiped by a match that was already in flight', async () => {
   /*
-   * The lost-confirmation race, driven end to end.
+   * The lost-confirmation race, driven end to end — and driven through the
+   * WRITE-side guard specifically.
    *
-   * The `confirmed` guard reads on one connection and the write lands on
-   * another, with the Open Dental round trips in between. Biller A confirms;
-   * biller B's match — which passed the guard while the claim still read
-   * `candidates` — used to land afterwards and blank od_claim_num,
-   * od_matched_by and od_match_confirmed_at. No error, no audit row recording
-   * the reversal, and the claim silently back in needs-attention.
+   * The `confirmed` check at the top of runClaimMatch reads on one connection;
+   * the snapshot write lands on another, with the Open Dental round trips in
+   * between. Biller B starts a match while the claim still reads `candidates`,
+   * so that check passes. Biller A confirms during the round trips. B's UPDATE
+   * then used to land afterwards and blank od_claim_num, od_matched_by and
+   * od_match_confirmed_at — no error, no record of the reversal, and the claim
+   * silently back in needs-attention.
    *
-   * Simulated by confirming while a match is mid-flight: the fake OD blocks on
-   * a gate the test opens after the confirmation has committed.
+   * The fake Open Dental client BLOCKS on a gate the test opens only after the
+   * confirmation has committed, so the interleaving is deterministic rather
+   * than hopeful. The 409 asserted below therefore CANNOT have come from the
+   * read-side check — that check ran, and passed, before the confirmation
+   * existed.
    */
   const db = seed(new FakeRcmDb());
   const od = odFixture();
 
-  let release;
-  const gate = new Promise((r) => {
-    release = r;
-  });
-  const realGet = od.client.apiGetRaw;
-  let held = false;
-  od.client.apiGetRaw = async (path, params, opts) => {
-    if (!held) {
-      held = true;
-      await gate; // the first OD read of the second match hangs here
-    }
-    return realGet(path, params, opts);
-  };
-
   await withApp({ db, od }, async (app) => {
-    // First match + confirm, completed normally.
-    od.client.apiGetRaw = realGet;
+    const realGet = od.client.apiGetRaw.bind(od.client);
+
+    // A first match, so there is a snapshot to confirm against and the claim
+    // reads `candidates` — the state biller B's read-side check will pass.
     await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
+
+    // Now hold the NEXT match inside its first Open Dental read. Two promises,
+    // because both directions have to be deterministic: `arrival` tells the
+    // test the match really is inside an OD call, and `gate` is how the test
+    // lets it out again.
+    let release = () => {};
+    let arrived = () => {};
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const arrival = new Promise((r) => {
+      arrived = r;
+    });
+    let holding = false;
+    od.client.apiGetRaw = async (path, params, opts) => {
+      if (!holding) {
+        holding = true;
+        arrived();
+        await gate;
+      }
+      return realGet(path, params, opts);
+    };
+
+    db.log.length = 0;
+    const late = api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await arrival; // it is genuinely mid-flight, not merely started
+
+    // …and the confirmation lands while it is stuck there.
+    const confirmed = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(confirmed.status, 200);
     assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
 
-    // Now a SECOND match that passed its guard before the confirmation existed:
-    // force it, so it gets past the read-side check, then assert the write-side
-    // guard is what actually protects the decision.
-    const late = api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    release();
     const res = await late;
 
     assert.equal(res.status, 409, JSON.stringify(res.body));
     assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
 
+    // The UPDATE was ISSUED and matched nothing — this is the write-side guard
+    // firing, not the read-side one answering early.
+    const updates = db.log.filter((q) => /^UPDATE rcm_claims SET od_match_status = \$3/.test(q.sql));
+    assert.equal(updates.length, 1, "the late match must have attempted its write");
+    assert.match(updates[0].sql, /od_match_status <> 'confirmed'/);
+
     const claim = db.table('rcm_claims')[0];
     assert.equal(claim.od_match_status, 'confirmed', 'the decision survived');
     assert.equal(claim.od_claim_num, 53648);
     assert.equal(claim.od_matched_by, 'billing@carein.ai');
-    if (release) release();
+    assert.ok(claim.od_match_confirmed_at, 'and so did its attribution');
+
+    od.client.apiGetRaw = realGet;
   });
 });
 
-test('the guard is in the WHERE, not only in the read', async () => {
+test('a FORCED re-run over a confirmation is audited as its own event, and carries it forward', async () => {
   /*
-   * Structural, because the race above is timing-dependent and this is not.
-   *
-   * The read-side check is the fast path and normally answers first — which is
-   * exactly why it cannot be the only guard. The write must re-assert the
-   * status it checked, so check-and-write is ONE statement and the loser of a
-   * race writes nothing.
+   * `force` is the one way to discard a decision somebody made, and it used to
+   * be indistinguishable in the trail from an ordinary match: same action, same
+   * resource type, and the new snapshot set `confirmed: null` — so who
+   * confirmed, when, and against which ClaimNum were unrecoverable afterwards.
    */
-  const src = require('node:fs').readFileSync(require.resolve('./matchService'), 'utf8');
-  // Located by substring rather than by a multi-line regex: the statement is
-  // built from concatenated template literals, and a pattern loose enough to
-  // span them is loose enough to match the wrong thing.
-  const at = src.indexOf('UPDATE rcm_claims SET od_match_status = $3');
-  assert.ok(at > 0, "matchService's match UPDATE should be findable");
-  const statement = src.slice(at, src.indexOf('[office, claimId, status', at));
-  assert.match(statement, /od_match_status <> 'confirmed'/, 'the status must be re-asserted in the WHERE');
-  assert.match(src, /written\.rowCount === 0/, 'and a losing UPDATE must be detected');
-
-  // And the guard actually fires end to end.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
     await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
     await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    db.log.length = 0;
+
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    assert.equal(res.status, 200);
+
+    // The overwrite is its own audited event, and it is an UPDATE — a person
+    // changed the practice's record — not another read.
+    const superseded = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match_superseded');
+    assert.equal(superseded.length, 1);
+    assert.equal(superseded[0].action, 'UPDATE');
+    assert.equal(superseded[0].resource_id, 'c-1');
+
+    // And the decision it destroyed is still readable.
+    const prior = db.table('rcm_claims')[0].od_match_snapshot.supersededConfirmation;
+    assert.equal(prior.odClaimNum, 53648);
+    assert.equal(prior.confirmedBy, 'billing@carein.ai');
+    assert.ok(prior.confirmedAt);
+    assert.equal(db.table('rcm_claims')[0].od_match_snapshot.confirmed, null);
+  });
+});
+
+test('an ordinary re-run supersedes nothing and says so', async () => {
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
     const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
-    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
+    assert.equal(res.body.snapshot.supersededConfirmation, null);
+    assert.equal(
+      auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match_superseded').length,
+      0
+    );
   });
 });
 
@@ -972,10 +1192,34 @@ test('a match that READ PHI and then failed still leaves a trail', async () => {
 
     const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
     assert.ok(row, 'a PHI read that failed must still be audited');
-    assert.equal(row.result, 'UNAUTHORIZED');
+    // ERROR, not UNAUTHORIZED: a read HAPPENED and did not complete. Filing a
+    // real disclosure as a refusal under-counts accesses on the report the
+    // trail exists to produce, and dilutes the one signal that means "somebody
+    // was refused".
+    assert.equal(row.result, 'ERROR');
     assert.equal(row.resource_id, 'c-1');
     // And the patient's name is not in the trail.
     assert.ok(!JSON.stringify(row).includes('Fixture'));
+  });
+});
+
+test('a routine conflict is NOT filed as a refusal', async () => {
+  // A 409 because somebody else confirmed first is an ordinary outcome of two
+  // people working one remittance. Recording it as UNAUTHORIZED is how the
+  // signal that means "access was refused" stops being readable.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db, od: odFixture() }, async (app) => {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    db.log.length = 0;
+
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
+    assert.equal(
+      auditRows(db).filter((r) => r.result === 'UNAUTHORIZED').length,
+      0,
+      'a conflict is not a refusal'
+    );
   });
 });
 

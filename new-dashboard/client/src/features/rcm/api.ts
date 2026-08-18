@@ -183,6 +183,21 @@ async function toError(res: Response): Promise<RcmApiError> {
  */
 const REQUEST_TIMEOUT_MS = 120_000;
 
+/**
+ * The batch match's own budget, above the server's.
+ *
+ * The server bounds one batch run to `RCM_OD_BATCH_MATCH_BUDGET_MS` (90s by
+ * default) and reports what it did not reach, rather than holding the request
+ * open for the minutes a 25-claim remittance would otherwise take at >=1.2s per
+ * Open Dental CALL. This sits above that so the amber "it may still be running"
+ * notice is the EXCEPTION rather than the normal outcome — which is what it was
+ * at 120s against an unbounded run.
+ *
+ * The right long-term shape is a job the page polls (PR #87's bounded-poll
+ * rules); that needs run state this slice has no table for, so it is 6b's.
+ */
+const BATCH_TIMEOUT_MS = 150_000;
+
 async function post<T>(
   path: string,
   params: Record<string, string | number>,
@@ -225,12 +240,36 @@ async function post<T>(
   return (await res.json()) as T;
 }
 
-async function get<T>(path: string, params: Record<string, string | number>): Promise<T> {
+async function get<T>(
+  path: string,
+  params: Record<string, string | number>,
+  { timeoutMs = REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<T> {
   const qs = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString();
 
-  const res = await fetch(`${BASE}/rcm${path}?${qs}`, { credentials: "include" });
+  // Reads got no timeout at all until this review round, so the initial
+  // remittance load could hang forever on a stalled connection and leave the
+  // page in a spinner with no way back — the same failure the POST timeout was
+  // added to prevent, on the path a user hits first.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/rcm${path}?${qs}`, {
+      credentials: "include",
+      signal: abort.signal,
+    });
+  } catch (err) {
+    if (abort.signal.aborted) {
+      throw new RcmApiError("The request took too long and the page stopped waiting", 0, "TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 401) {
     // Session expired — the shared handler bounces to sign-in rather than
@@ -550,8 +589,15 @@ export interface OdLineFacts {
   isTransfer: boolean;
   /** Non-null ⇒ a check is attached and InsPayAmt is locked. */
   claimPaymentNum: number | null;
-  /** OD's DELETE is a SOFT delete; these are excluded from every total. */
-  deleted: boolean;
+  /**
+   * TRI-STATE, and the third state is the one that matters.
+   *
+   * `true` = ProcStatus "D". `false` = the procedure row says it is live.
+   * `'unknown'` = the procedure row could not be READ, and because OD's DELETE
+   * is a SOFT delete a deleted procedure is indistinguishable from a live one
+   * without it. Unknown lines are out of every total and cannot be paired.
+   */
+  deleted: boolean | "unknown";
   blockedStatus: boolean;
 }
 
@@ -577,12 +623,21 @@ export interface MatchCandidate {
   od: {
     claimStatus: string;
     dateService: string | null;
-    claimFeeCents: number;
+    /**
+     * The claim HEADER's total, verbatim and CONTAMINATED: `ClaimFee` still
+     * counts soft-deleted procedures. Kept because it is what the chart shows;
+     * never the figure to compare against.
+     */
+    claimHeaderFeeCents: number;
+    /** The LIVE lines' FeeBilled — the figure the billed evidence used. */
+    billedCents: number;
     insPaidCents: number;
     writeOffCents: number;
     patientName: string | null;
     lines: OdLineFacts[];
     deletedLineCount: number;
+    /** Lines whose procedure could not be read. Excluded from every total. */
+    unknownDeletedLineCount: number;
   };
   linePairs: LinePair[];
 }
@@ -606,20 +661,42 @@ export interface MatchSnapshot {
   /** The top two are too close to read as an ordering. Displayed, not resolved. */
   ambiguous: boolean;
   margin: number | null;
+  /**
+   * Examined and NOT offered.
+   *
+   * Without these, an empty `candidates` list is ambiguous in the worst way: a
+   * search that found three claims and disqualified all three looks exactly
+   * like one that found none, and `no_candidate` then tells a biller the chart
+   * has no such claim. The panel renders the two differently.
+   */
+  rejectedCandidates: number;
+  rejectedReasons: { nameMismatch: number; belowScore: number };
+  /** The score below which a candidate is not offered at all. */
+  minScore: number;
+  /** False ⇒ the patient was already linked, so the name rule was off. */
+  nameRuleApplied: boolean;
   candidates: MatchCandidate[];
-  confirmed: {
-    odClaimNum: number;
-    odPatNum: number | null;
-    confirmedAt: string;
-    confirmedBy: string;
-    linePairs: LinePair[];
-    odAmountsAsRead: {
-      claimFeeCents: number;
-      insPaidCents: number;
-      writeOffCents: number;
-      claimStatus: string;
-    };
-  } | null;
+  confirmed: MatchConfirmation | null;
+  /** The confirmation a FORCED re-run replaced. Null on an ordinary run. */
+  supersededConfirmation: MatchConfirmation | null;
+}
+
+/** What a human committed, and what Slice 6c re-verifies against at drain time. */
+export interface MatchConfirmation {
+  odClaimNum: number;
+  odPatNum: number | null;
+  confirmedAt: string;
+  confirmedBy: string;
+  linePairs: LinePair[];
+  odAmountsAsRead: {
+    /** Line-derived, deleted and unknown lines excluded. The one to compare. */
+    billedCents: number;
+    /** The raw claim header, which still counts soft-deleted procedures. */
+    claimHeaderFeeCents: number;
+    insPaidCents: number;
+    writeOffCents: number;
+    claimStatus: string;
+  };
 }
 
 /** One CARC/RARC adjustment, resolved into plain English by the server. */
@@ -795,7 +872,11 @@ export interface BatchMatchResponse {
   }[];
   odCalls: number;
   pacingMs: number;
-  /** Claims a cap left unmatched. Stated, never silent. */
+  /** The wall-clock budget one run may spend before it stops and reports. */
+  budgetMs: number;
+  /** True when the CLOCK stopped the run rather than the claim cap. */
+  outOfTime: boolean;
+  /** Claims a cap or the budget left unmatched. Stated, never silent. */
   skipped: number;
   note?: string;
 }
@@ -860,5 +941,10 @@ export function reviewClaim(
 
 /** Match every claim on a remittance. Sequential and paced, server-side. */
 export function matchRemittance(office: RcmOfficeId, batchId: string): Promise<BatchMatchResponse> {
-  return post<BatchMatchResponse>(`/remittances/${encodeURIComponent(batchId)}/match`, { office });
+  return post<BatchMatchResponse>(
+    `/remittances/${encodeURIComponent(batchId)}/match`,
+    { office },
+    {},
+    { timeoutMs: BATCH_TIMEOUT_MS },
+  );
 }

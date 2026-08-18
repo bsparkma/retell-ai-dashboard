@@ -42,9 +42,57 @@ function odSlotKeyFor(client) {
   return `${client.apiUrl || ''}::${client.customerKey || 'default'}`;
 }
 
+/**
+ * Who reserved each slot last, so contention can be ATTRIBUTED.
+ *
+ * Decision D-8 accepts that RCM's 1200ms reservations add bounded latency to
+ * live phone-path lookups on the same credential. Accepting a cost is only
+ * defensible if the cost is measured, so the transport counts it: which module
+ * ate a 429, and the worst wait a NON-RCM caller took behind an RCM
+ * reservation. Nothing here changes behaviour — it only records it.
+ *
+ * @type {Map<string, string>} slot key → module name of the last reserver
+ */
+const OD_SLOT_OWNER = new Map();
+
+/**
+ * Per-module transport counters. Module names are whatever callers pass as
+ * `opts.module`; anything that does not pass one is 'other'.
+ */
+const OD_TRAFFIC = {
+  /** 429s seen, by the module whose request got one. */
+  rateLimited: /** @type {Record<string, number>} */ ({}),
+  /** Requests issued, by module. */
+  requests: /** @type {Record<string, number>} */ ({}),
+  /** Worst single wait (ms) a non-RCM caller took behind an RCM reservation. */
+  worstWaitBehindRcmMs: 0,
+  /** How many times that happened at all. */
+  waitsBehindRcm: 0,
+};
+
+/** @param {Record<string, number>} bucket @param {string} key */
+function bump(bucket, key) {
+  bucket[key] = (bucket[key] || 0) + 1;
+}
+
+/** A copy of the counters, safe to serialise into a response. */
+function odTrafficStats() {
+  return {
+    requests: { ...OD_TRAFFIC.requests },
+    rateLimited: { ...OD_TRAFFIC.rateLimited },
+    worstWaitBehindRcmMs: OD_TRAFFIC.worstWaitBehindRcmMs,
+    waitsBehindRcm: OD_TRAFFIC.waitsBehindRcm,
+  };
+}
+
 /** Test seam — drop every reservation so a suite starts from a known clock. */
 function _resetOdSlotsForTests() {
   OD_SLOTS.clear();
+  OD_SLOT_OWNER.clear();
+  OD_TRAFFIC.requests = {};
+  OD_TRAFFIC.rateLimited = {};
+  OD_TRAFFIC.worstWaitBehindRcmMs = 0;
+  OD_TRAFFIC.waitsBehindRcm = 0;
 }
 
 class OpenDentalService extends EventEmitter {
@@ -192,6 +240,8 @@ class OpenDentalService extends EventEmitter {
         // never demand less. RCM's batch matcher uses this to hold itself to
         // the documented 1 req/s without slowing the voice module's lookups.
         const requested = Number(config.__odMinIntervalMs);
+        const caller = config.__odModule || 'other';
+        bump(OD_TRAFFIC.requests, caller);
         const interval = Math.max(
           MIN_INTERVAL_MS,
           Number.isFinite(requested) && requested > 0 ? requested : 0
@@ -201,7 +251,14 @@ class OpenDentalService extends EventEmitter {
           const now = Date.now();
           const reservedAt = OD_SLOTS.get(slot) || 0;
           const wait = Math.max(0, reservedAt - now);
+          // D-8's cost, measured: a wait this caller took because RCM held the
+          // shared slot. Recorded before the sleep, so it counts the intent.
+          if (wait > 0 && caller !== 'rcm' && OD_SLOT_OWNER.get(slot) === 'rcm') {
+            OD_TRAFFIC.waitsBehindRcm += 1;
+            if (wait > OD_TRAFFIC.worstWaitBehindRcmMs) OD_TRAFFIC.worstWaitBehindRcmMs = wait;
+          }
           OD_SLOTS.set(slot, Math.max(now, reservedAt) + interval);
+          OD_SLOT_OWNER.set(slot, caller);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
         // `__odQuiet` is set by apiGetRaw({ quiet: true }) and today has exactly
@@ -235,6 +292,9 @@ class OpenDentalService extends EventEmitter {
         // safe-fail is preserved: after retries are exhausted we reject, and the matcher
         // treats a failure as "no match → needs_review", never a wrong write.
         if (status === 429 && config) {
+          // Attributed, so "who is over-driving the key" is answerable from
+          // data rather than from argument (D-8).
+          bump(OD_TRAFFIC.rateLimited, config.__odModule || 'other');
           config.__odRetry = (config.__odRetry || 0) + 1;
           if (config.__odRetry <= MAX_RETRIES) {
             const retryAfterSec = parseInt(error.response.headers?.['retry-after'], 10);
@@ -1498,10 +1558,14 @@ class OpenDentalService extends EventEmitter {
    *
    * @param {string} path OD API path beginning with '/', e.g. '/treatplans'
    * @param {Record<string, unknown>} [params] query params (PascalCase, per OD)
-   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number }} [opts]
+   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number, module?: string }} [opts]
    *   `minIntervalMs` RAISES this request's share of the shared per-key throttle
    *   slot; it can never lower it. RCM's batch matcher passes 1200 to hold
-   *   itself to Open Dental's documented 1 req/s.
+   *   itself to Open Dental's documented 1 req/s — which, because the slot is
+   *   shared per CREDENTIAL, means a voice lookup issued during a batch match
+   *   waits behind it (decision D-8; see services/rcm/odPacer.js).
+   *   `module` is ATTRIBUTION ONLY and buys no priority: it is what lets the
+   *   counters above say which module ate a 429 and how long anyone waited.
    * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
    */
   async apiGetRaw(path, params = {}, opts = {}) {
@@ -1526,6 +1590,7 @@ class OpenDentalService extends EventEmitter {
         // console lines when it is set. See setupInterceptors().
         ...(opts.quiet ? { __odQuiet: true } : {}),
         ...(opts.minIntervalMs ? { __odMinIntervalMs: opts.minIntervalMs } : {}),
+        ...(opts.module ? { __odModule: String(opts.module) } : {}),
       });
       return { ok: true, status: response.status, data: response.data };
     } catch (error) {
@@ -1982,4 +2047,5 @@ openDentalServiceSingleton.OpenDentalService = OpenDentalService;
 module.exports = openDentalServiceSingleton;
 module.exports.OpenDentalService = OpenDentalService;
 module.exports.computeOdBackoffMs = computeOdBackoffMs;
-module.exports._resetOdSlotsForTests = _resetOdSlotsForTests; 
+module.exports._resetOdSlotsForTests = _resetOdSlotsForTests;
+module.exports.odTrafficStats = odTrafficStats; 

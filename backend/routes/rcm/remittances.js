@@ -45,6 +45,7 @@ const express = require('express');
 const tenantDb = require('../../platform/tenantDb');
 const { h, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
+const { requirePermission } = require('../../config/permissions');
 const { toClaimSummary, loadClaimBundle, runBatchMatch, CLAIM_LIST_COLUMNS } = require('./matchService');
 
 const router = express.Router();
@@ -426,21 +427,27 @@ router.get(
 
 router.post(
   '/:id/match',
+  // The queue tier (D-9) — see routes/rcm/index.js QUEUE_PATHS. Batch matching
+  // reads Open Dental and changes no chart, so a read-tier reviewer may run it.
+  requirePermission('rcm.queue'),
   h(async (req, res) => {
     const office = req.rcmOffice;
     const batchId = String(req.params.id);
 
-    const claimIds = await tenantDb.withTenantDb(req, async (pool) => {
+    // The claim SUMMARIES, not just their ids: runBatchMatch orders unmatched
+    // claims first so that pressing the button again after a budgeted run makes
+    // forward progress instead of redoing the front of the list.
+    const claims = await tenantDb.withTenantDb(req, async (pool) => {
       const batches = await pool.query(
         `SELECT batch_id FROM rcm_payment_batches WHERE office_id = $1 AND batch_id = $2`,
         [office, batchId]
       );
       if (batches.rows.length === 0) return null;
-      const claims = (await claimsByBatch(pool, office, [batchId])).get(batchId) || [];
-      return claims.map((c) => c.claimId);
+      const rows = (await claimsByBatch(pool, office, [batchId])).get(batchId) || [];
+      return rows.map((c) => ({ claimId: c.claimId, odMatchStatus: c.odMatchStatus }));
     });
 
-    if (claimIds === null) {
+    if (claims === null) {
       await auditRcmDenial(req, 'rcm_remittance', batchId, { office });
       return res.status(404).json({
         success: false,
@@ -457,14 +464,29 @@ router.post(
      * note). Matching a twelve-claim remittance in parallel would be sixty-odd
      * concurrent calls into an API that rate-limits — and the client's own 429
      * backoff would then serialise them anyway, slower and noisier than doing
-     * it deliberately. runBatchMatch paces at RCM_OD_BATCH_PACING_MS (≥1200ms).
+     * it deliberately. Every call is paced by services/rcm/odPacer.
      */
-    // ONE audit row for the whole batch run, matching odAccess's granularity
-    // rule: a twelve-claim match is one operation a human asked for, not twelve.
-    // Handed in so it lands BEFORE the first snapshot — which carries Open
-    // Dental patient names — is persisted.
-    const result = await runBatchMatch(req, office, claimIds, {
-      onPhiRead: () => auditRcmRead(req, 'rcm_claim_match', { office }),
+
+    /*
+     * TWO KINDS OF ROW, AND BOTH ARE NEEDED.
+     *
+     * The RUN is recorded here, unconditionally and before any claim is
+     * touched, so a run in which every claim fails still leaves a trail — the
+     * previous shape hung the whole batch's audit on claim zero succeeding, and
+     * a remittance whose first claim was already confirmed read charts and
+     * recorded nothing.
+     *
+     * Then one row PER CLAIM below, stamped with the claim id. A claim is one
+     * patient's chart, not one Open Dental call, so N charts is N rows —
+     * anything coarser cannot answer "whose chart was read on Tuesday", which
+     * is the only question this log exists to answer.
+     */
+    await auditRcmRead(req, 'rcm_remittance_match', { office, resourceId: batchId });
+
+    const result = await runBatchMatch(req, office, claims, {
+      // Fail-closed per claim: a claim whose read cannot be recorded is
+      // reported as failed rather than matched, and its snapshot is not stored.
+      onPhiRead: (ctx) => auditRcmRead(req, 'rcm_claim_match', { office, resourceId: ctx.claimId }),
     });
 
     return res.json({ success: true, office, batchId, ...result });

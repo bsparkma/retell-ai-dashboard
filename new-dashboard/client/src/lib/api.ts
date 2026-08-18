@@ -157,7 +157,7 @@ async function request<T>(
 
 // --- tenant user management (Roles PR B) ------------------------------------
 
-export type TenantUserRole = "admin" | "office" | "tc" | "hygiene";
+export type TenantUserRole = "admin" | "office" | "tc" | "hygiene" | "billing";
 export type TenantUserStatus = "active" | "disabled";
 
 /** One row of the tenant's `app_user` table, as /api/users renders it. */

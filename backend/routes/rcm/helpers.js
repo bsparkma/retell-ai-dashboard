@@ -94,19 +94,24 @@ function h(fn) {
  * Audit an RCM read. Fail-closed — throws AuditError, which h() turns into a
  * 500 BEFORE the response is written.
  *
- * `resourceId` is null on list/aggregate reads: the thing read is "the office's
- * claims", which has no single id, and stamping a query string there could
- * record PHI. Office IS stamped — it is an identifier, not patient data.
+ * `resourceId` defaults to null for list/aggregate reads: the thing read is
+ * "the office's claims", which has no single id, and stamping a query string
+ * there could record PHI. Where the read DOES have one id we minted — a claim,
+ * a document — pass it. The denial helper always stamped one, and a trail that
+ * can say which id was probed but not which id was read answers the wrong half
+ * of "whose chart was read on Tuesday".
+ *
+ * Office IS stamped — it is an identifier, not patient data.
  *
  * @param {import('express').Request} req
  * @param {string} resourceType
- * @param {{ office: string }} extra
+ * @param {{ office: string, resourceId?: string|number|null }} extra
  */
 async function auditRcmRead(req, resourceType, extra) {
   await audit(req, {
     action: 'READ',
     resourceType,
-    resourceId: null,
+    resourceId: extra.resourceId === undefined ? null : extra.resourceId,
     result: 'SUCCESS',
     office: extra.office,
     sourceRef: null,
@@ -183,24 +188,34 @@ function totalOf(counts) {
  * convert a clean refusal into an outage. The fail-CLOSED rule applies where it
  * matters: on the path that actually serves PHI.
  *
+ * `result` is a parameter because UNAUTHORIZED is not the only best-effort
+ * outcome, and over-using it costs the trail its meaning. A refusal is
+ * UNAUTHORIZED; an operation that READ PHI and then failed downstream is
+ * ERROR — filing that as a refusal under-counts real disclosures on exactly the
+ * report the trail exists to produce. A routine conflict (someone else already
+ * confirmed) writes NEITHER: it is not a refusal of access, and diluting
+ * UNAUTHORIZED with it is how the one signal that means "somebody was refused"
+ * stops being readable.
+ *
  * @param {import('express').Request} req
  * @param {string} resourceType
  * @param {string|number|null} resourceId an id WE minted — never PHI
- * @param {{ office: string }} extra
+ * @param {{ office: string, result?: 'UNAUTHORIZED'|'ERROR' }} extra
  */
 async function auditRcmDenial(req, resourceType, resourceId, extra) {
+  const result = extra.result || 'UNAUTHORIZED';
   try {
     await audit(req, {
       action: 'READ',
       resourceType,
       resourceId,
-      result: 'UNAUTHORIZED',
+      result,
       office: extra.office,
       sourceRef: null,
     });
   } catch (err) {
     console.error(
-      `[rcm] could not record a denied ${resourceType} read:`,
+      `[rcm] could not record a ${result} ${resourceType} read:`,
       (err && err.message) || err
     );
   }

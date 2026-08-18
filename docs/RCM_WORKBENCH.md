@@ -191,7 +191,7 @@ out at drain time that Open Dental will not take it.
 **Line pairing** shows which chart line each of our lines would adjudicate. An
 unpaired line says so rather than being guessed at.
 
-### The honest negative
+### The honest negative — which is actually TWO negatives
 
 ![no candidate](screenshots/rcm-workbench/04-no-candidate.png)
 
@@ -199,6 +199,24 @@ unpaired line says so rather than being guessed at.
 empty screen. "Nobody has checked" and "we checked on Tuesday, against this
 practice's database, and Open Dental has nothing" are different facts a biller
 acts on differently, and a nullable claim number cannot tell them apart.
+
+But so are these two, and they share the same empty candidate list:
+
+![candidates all rejected](screenshots/rcm-workbench/05-candidates-all-rejected.png)
+
+A search that **examined three claims and offered none of them** is not a search
+that found nothing. The first review round carried the rejection counts as far as
+the ranker and dropped them on the way into the snapshot, so the screen told a
+biller the chart had no such claim when the chart had claims we chose not to
+show — the exact failure the four honest states exist to prevent, reintroduced
+one layer up.
+
+The snapshot now carries `rejectedCandidates`, `rejectedReasons`
+(`nameMismatch` / `belowScore`) and `minScore`, the panel renders them, and the
+status chip reads **"Examined — none offered"** rather than "No matching claim in
+Open Dental" — because a chip that asserts one thing above a panel explaining the
+other is a screen arguing with itself. The counts also render when candidates
+WERE offered: "2 offered" and "2 offered, 1 set aside" are different information.
 
 ---
 
@@ -210,7 +228,7 @@ acts on differently, and a nullable claim number cannot tell them apart.
 | --- | --- |
 | `not_run` | Nobody has looked. **Not** the same as "we looked and found none". |
 | `candidates` | A search ran and returned candidates. **Nobody has chosen.** |
-| `no_candidate` | A search ran against this office's Open Dental and found nothing. |
+| `no_candidate` | A search ran against this office's Open Dental and offered nothing. Read `rejectedCandidates` before concluding the chart is empty — see [The honest negative](#the-honest-negative--which-is-actually-two-negatives). |
 | `confirmed` | A human picked one. `od_claim_num` is meaningful **only** here. |
 
 Three database constraints make those states honest rather than conventional:
@@ -287,11 +305,19 @@ presented as a candidate — beside a Confirm button.
   coincidental fee can clear a numeric floor. Sharing no name token with the
   chart means this is not that patient's claim.
 
-A genuine name change or a mis-keyed 835 is handled the way it should be — the
-biller links the patient first, which skips the name search entirely.
+**The name rule applies to the NAME-SEARCH LANE only.** When the biller has
+already linked the patient, the candidates came from `?PatNum=` — that patient's
+own claims by construction — and the remedy ("link the patient first") has
+already been taken. A married-name change is then routine: `SMITH, J` on the
+remittance against `JONES, JANE` on a correctly linked chart shares no token
+after the ≥2-character filter, and disqualifying on it would report
+`no_candidate` for every claim on the right patient. On that lane the
+disagreement is shown as evidence and still costs −15; it is not a wall.
+`findClaimCandidates` reports which lane ran (`patientResolvedByLink`), the panel
+says so, and `nameRuleApplied: false` records it in the snapshot.
 
-Dropped candidates are **counted and reported** (`rejectedCandidates`,
-`rejectedReasons`), never silently vanished.
+Dropped candidates are **counted, explained and rendered** (`rejectedCandidates`,
+`rejectedReasons`, `minScore`), never silently vanished.
 
 ### Nothing auto-decides
 
@@ -339,7 +365,7 @@ money against.
 | --- | --- | --- | --- | --- |
 | `false` | The procedure row says it is live | ✅ | ✅ | ✅ |
 | `true` | `ProcStatus "D"` | ❌ | ❌ | ❌ |
-| `'unknown'` | The procedure row could not be read | ❌ | ✅ | ❌ |
+| `'unknown'` | The procedure row could not be read, **or OD never sent a ProcNum** | ❌ | ✅ | ❌ |
 
 **Money and identity fail differently**, which is why those columns differ. A
 line we cannot vouch for is out of every total — a wrong total is a wrong answer
@@ -350,6 +376,32 @@ has nothing to do with recognising it.
 When any line is `'unknown'`, **no billed-amount tag is emitted at all**. Neither
 MATCH nor MISMATCH is an assertion we can make, so silence is the honest answer
 and the `DELETED_STATUS_UNKNOWN` blocker says why.
+
+**An ABSENT `ProcNum` is unknown too**, and that is the second half of the same
+defect. The check was `Number(cp.ProcNum) > 0` — but `Number(null)` is `0` and
+`Number(undefined)` is `NaN`, so a claimproc whose `ProcNum` Open Dental omits or
+nulls was indistinguishable from OD's legitimate claim-level `ProcNum 0` row,
+which genuinely has no procedure and is genuinely not deleted. The original
+defect, moved from the procedure row to the field. Only an explicit `0` is now
+the claim-level row; anything unstated is `'unknown'`.
+
+### Two billed figures, and which one 6c uses
+
+`ClaimFee` is the claim **header** and still counts soft-deleted procedures, so
+it cannot be the number a re-verification compares against — but it is what the
+chart displays, so a biller comparing screens will see it. Both survive, under
+names that say which is which:
+
+| Field | Source | Use |
+| --- | --- | --- |
+| `od.billedCents` | the LIVE lines' `FeeBilled` | every comparison; persisted into `confirmed.odAmountsAsRead.billedCents` and re-verified by 6c |
+| `od.claimHeaderFeeCents` | `claim.ClaimFee`, verbatim | context only, contaminated by design |
+
+The first review round computed `billedCents` inside `scoreCandidate` and threw
+it away, so the only billed figure that reached a confirmation — and therefore
+6c — was the contaminated one. Renaming rather than silently changing the value
+is why `SNAPSHOT_VERSION` is now **2**: a v1 snapshot is refused and re-run
+instead of being read with the wrong meaning.
 
 ---
 
@@ -438,11 +490,76 @@ concurrency — and the floor separately, so neither can be satisfied by weakeni
 the other. Route suites override the interval to 1 ms; the queue is still real
 there, so a route that accidentally fanned out is still caught.
 
-> ⚠️ **Not fixed here, and not RCM's to fix:** `OD_API_MIN_INTERVAL_MS` defaults
-> to **120 ms** process-wide, i.e. ~8 req/s against a documented 1 req/s limit,
-> for the voice module and TC. That predates this slice and raising it would slow
-> live phone-path lookups, so it is flagged for a deliberate decision rather than
-> changed in an RCM PR.
+### What this costs the phones — decision D-8
+
+An earlier draft of `odPacer.js` said it *"deliberately does NOT slow the voice
+module down"*. **That was not true as written**, and it was the sentence most
+likely to mislead the next reader into thinking there was no tradeoff.
+
+`pacedOdGet` passes `minIntervalMs: 1200` down to the transport's shared
+**per-credential** slot, and voice runs per-office clients against the same
+customer keys. So while a biller runs a batch match, a live phone-path patient
+lookup on that office's key queues behind RCM's reservation — bounded and
+interleaved, never starved, but up to ~1.2 s of added latency mid-call for as
+long as the batch runs.
+
+**Beau ruled on 2026-08-17: keep it (option a).** The alternative — RCM raising
+only its own queue and leaving the shared slot at 120 ms — keeps phones fast but
+lets combined traffic against one credential exceed the published 1 req/s, and
+the 429 backoff that follows degrades *both* modules worse than bounded latency
+degrades one. Total traffic against the key never exceeding the documented rate
+is the property being bought.
+
+Because the key stays under the published rate **by construction**, there is
+nothing for RCM to yield to: contention backoff belongs only to the rejected
+option and is deliberately absent.
+
+The cost is **counted, not assumed**. `config/openDental.js` attributes requests
+and 429s to the calling module (`opts.module`, attribution only — it buys no
+priority) and records the worst wait a non-RCM caller took behind an RCM
+reservation. `GET /api/rcm/eob` surfaces all of it beside the extraction budget:
+
+```json
+"odPacing": {
+  "rcmFloorMs": 1200, "rcmConfiguredMs": 1200, "rcmObservedMs": 1207, "rcmCalls": 412,
+  "requests": { "rcm": 412, "other": 88 },
+  "rateLimited": { "other": 0 },
+  "worstWaitBehindRcmMs": 1194, "waitsBehindRcm": 31
+}
+```
+
+Process-local and reset on restart — a trend indicator, not an SLA. Beau chose
+this on reasoning; he should be able to revisit it on data.
+
+> ⚠️ **Still not fixed here, and still not RCM's to fix:**
+> `OD_API_MIN_INTERVAL_MS` defaults to **120 ms** process-wide for voice and TC.
+> That predates this slice and raising it would slow live phone-path lookups, so
+> it is flagged for a deliberate decision rather than changed in an RCM PR.
+
+### A batch run is bounded by the CLOCK, not only by a claim count
+
+A claim-count cap alone does not bound the request. At ≥1.2 s per Open Dental
+*call*, one unlinked patient with a common surname is 35–40 calls, so a 25-claim
+remittance is minutes to tens of minutes held open on a single HTTP request — and
+the client's timeout then fires as the **normal** outcome, making the result
+panel effectively unreachable. The operation did not fit the transport.
+
+Rather than stretch the transport, the run is bounded to fit it:
+
+- `RCM_OD_BATCH_MATCH_BUDGET_MS` (default **90 s**) stops the loop **between**
+  claims — never mid-claim, because a claim abandoned halfway has read charts and
+  stored nothing, which is the one outcome worse than not starting it.
+- The response carries `outOfTime`, `budgetMs` and `skipped`, and the note says
+  *"Run it again to continue"*. A cap that does not announce itself reads as
+  "everything matched".
+- **Unmatched claims go first** (`not_run` → `no_candidate` → `candidates` →
+  `confirmed`, stable within each). In deposit order every press would redo the
+  front of the list and never reach the tail.
+- The client's own budget is 150 s, above the server's, so the amber "it may
+  still be running" notice is the exception rather than the rule.
+
+The right long-term shape is a **job the page polls** (PR #87's bounded-poll
+rules). That needs run state this slice has no table for, so it is 6b's.
 
 A single claim's failure does not discard the run: each outcome is reported
 individually, and a claim someone has already confirmed is reported as
@@ -501,17 +618,71 @@ renders that as *"not recorded"* — never as "the system did it".
 
 ---
 
+## 6b. Who can do what — decision D-9
+
+Three tiers, not two. The workbench asks a person to look at a remittance and
+judge it, and **that is a different job from committing the judgement**.
+
+| Action | `rcm.read` | `rcm.queue` | `rcm.write` |
+| --- | --- | --- | --- |
+| Open the workbench, list and read remittances | ✅ | | |
+| Open a claim, read its lines and snapshot | ✅ | | |
+| Download the source document | ✅ | | |
+| **Run a match** (reads Open Dental, changes no chart) | | ✅ | |
+| **Mark a claim reviewed**, with a note | | ✅ | |
+| Confirm a match (writes `od_claim_num`) | | | ✅ |
+| Upload an EOB or an 835 | | | ✅ |
+| Approve / enqueue / post (**6b, 6c**) | | | ✅ |
+
+Roles holding each, from [`config/permissions.js`](../backend/config/permissions.js):
+
+| Role | `rcm.read` | `rcm.queue` | `rcm.write` |
+| --- | --- | --- | --- |
+| `admin` | ✅ | ✅ | ✅ |
+| `office` | ✅ | ✅ | ✅ |
+| **`billing`** (new) | ✅ | ✅ | ❌ |
+| `tc` | ❌ | ❌ | ❌ |
+| `hygiene` | ❌ | ❌ | ❌ |
+
+> ⚠️ **`billing` is a NAME, not a decision.** It follows the platform's existing
+> job-shaped vocabulary (`tc`, `hygiene`), but it is the REVIEWER tier —
+> confirming, approving and posting stay with `admin`/`office`. If Beau wants a
+> biller who can commit, this wants renaming (or splitting) **before it reaches
+> anyone's account**. No roster row holds it today.
+
+**How it is wired.** The mount stays
+`requireReadWrite('rcm.read', 'rcm.write')`, applied by HTTP method — so a new
+POST added to this module still inherits the STRONG action by omission, which is
+the property that pair was chosen for. The two queue POSTs are enumerated
+exceptions: `routes/rcm/index.js` exports `QUEUE_PATHS`, the mount passes it as
+`exempt`, and each of those routes carries its own
+`requirePermission('rcm.queue')`. `rcmGuard.test.js` asserts the mount uses the
+router's own list, that every exempted path has a gate of its own, and that
+`confirm-match` is **not** in it.
+
+Routes name an ACTION, never a role — the role lists live in one file.
+
+A read-tier reviewer who leaves a note is still a **named actor**: mark-reviewed
+goes through the same D-5 upsert as everything else.
+
+---
+
 ## 7. Audit
 
-One `audit_log` row per PHI read, **whatever the Open Dental fan-out cost** —
-the same granularity rule `platform/odAccess` applies to a 25-call treatment plan.
+One `audit_log` row per PHI read. The granularity rule `platform/odAccess`
+applies — a 25-call treatment plan is one row — is about not writing a row per
+**call**. A claim is not a call: it is one patient's chart, so **N charts is N
+rows**. Anything coarser cannot answer *"whose chart was read on Tuesday"*, which
+is the only question this log exists to answer.
 
 | Endpoint | Action | `resource_type` | `resource_id` |
 | --- | --- | --- | --- |
 | `GET /remittances`, `GET /remittances/:id` | READ | `rcm_remittance` | null |
 | `GET /claims/:id` | READ | `rcm_claim` | null |
-| `POST /claims/:id/match` | READ | `rcm_claim_match` | null |
-| `POST /remittances/:id/match` | READ | `rcm_claim_match` | null — **one row for the whole run** |
+| `POST /claims/:id/match` | READ | `rcm_claim_match` | the claim id |
+| `POST /remittances/:id/match` | READ | `rcm_remittance_match` | the batch id — **the run, written before any claim is touched** |
+| ” | READ | `rcm_claim_match` | the claim id — **one per claim actually read** |
+| `POST /claims/:id/match?force` over a confirmation | UPDATE | `rcm_claim_match_superseded` | the claim id |
 | `POST /claims/:id/confirm-match` | UPDATE | `rcm_claim_match` | the claim id |
 | `POST /claims/:id/review` | UPDATE | `rcm_claim_review` | the claim id |
 | `GET /uploads/:id/document` | READ | `rcm_source_document` | the upload id |
@@ -519,8 +690,40 @@ the same granularity rule `platform/odAccess` applies to a 25-call treatment pla
 Every one is **fail-closed**: `audit()` throws `AuditError` and `h()` turns that
 into a 500 *before* the response body is written, so PHI is never served without
 a recorded trail (hard rule 5). Patient names and search terms never enter the
-trail; `resource_id` is null on list reads because "the office's claims" has no
-single id, and is stamped on the writes because a claim id is something we minted.
+trail; `resource_id` is null only on the list reads, because "the office's
+claims" has no single id.
+
+Three corrections from the review round, each of which had made the trail lie in
+a different direction:
+
+- **The batch run's obligation belonged to claim zero.** `onPhiRead` was handed
+  only to the first claim, so if that claim threw before reaching the PHI point —
+  a claim somebody had already confirmed, the ordinary outcome of re-running a
+  partly-worked remittance — the catch swallowed it, the loop carried on, and
+  every later claim read a chart with **no audit row for the entire run**. The
+  run is now recorded unconditionally, before the loop, and each claim records
+  its own read.
+- **A refusal and a failed disclosure are not the same row.**
+  `respondToMatchError` wrote `UNAUTHORIZED` unconditionally, before inspecting
+  the error. Routine 409s (someone else confirmed first) diluted the one signal
+  that means "somebody was refused", and a match that genuinely read PHI and then
+  failed downstream filed as a refusal — under-counting real accesses on the
+  report the log exists to produce. Now: an `OdReadError` after a partial read is
+  `ERROR`, an id that resolved to nothing is `UNAUTHORIZED`, a routine conflict
+  writes **nothing**, and a read already audited by `onPhiRead` is not filed
+  twice.
+- **A forced re-run that destroys a confirmation is its own event.** It was
+  byte-identical to an ordinary match, and the new snapshot set `confirmed: null`
+  — so who confirmed, when, and against which ClaimNum were unrecoverable. It now
+  emits `rcm_claim_match_superseded` (action UPDATE, before the overwrite,
+  fail-closed) and the replaced decision is preserved in the new snapshot's
+  `supersededConfirmation`.
+
+**The document proxy fetches bytes BEFORE it audits.** The trail still precedes
+the bytes — that is hard rule 5 and it is unchanged — but auditing first meant a
+blob read that failed left a `SUCCESS` row for a document nobody was ever shown.
+Pulling bytes out of our own private container is not a disclosure; serving them
+is, and that still cannot happen unrecorded.
 
 ---
 
@@ -580,9 +783,17 @@ claim changes the practice's record of that claim.
 
 ## 10. The match snapshot
 
-`rcm_claims.od_match_snapshot` (jsonb, `version: 1`) records **what we saw**:
+`rcm_claims.od_match_snapshot` (jsonb, **`version: 2`**) records **what we saw**:
 candidates, evidence, the OD amounts *as read*, per-line ClaimProcNums, the
-patients considered, every note and truncation, and `fetchedAt`.
+patients considered, the candidates examined and NOT offered and why, every note
+and truncation, and `fetchedAt`.
+
+`confirmMatch` refuses a snapshot whose `version` is not the current one and a
+snapshot stamped with a different office — the latter **unconditionally**, since
+a snapshot that cannot say which practice it was read from is not untrustworthy,
+it is unreadable. v2 renamed `confirmed.odAmountsAsRead.claimFeeCents` to
+`claimHeaderFeeCents` and added `billedCents`; see [Two billed
+figures](#two-billed-figures-and-which-one-6c-uses).
 
 It is a record of a past observation, **never a cache to serve from**. Nothing in
 this slice or the next reads a dollar figure out of it and calls it current.
@@ -685,12 +896,13 @@ a decision that has not been made yet.
 | **Batch-level flags render nowhere** | `eraParser` emits `negative_total_payment`, `no_payment_made`, `plb_adjustments_present`, `claim_total_mismatch`; `eraIngest` persists them into `notes`; `remittances.js` puts `notes` on the wire; neither page renders it. A whole-check takeback surfaces only as "Held — something on this remittance was flagged". | This is the same sin one level up that the PR fixed at claim level: a UI that announces a flag exists and refuses to say which. |
 | **PLB has no breakdown** | A dollar total, no per-adjustment detail, and the "link to the manual SOP" promised in the route comment is prose rather than an anchor in either page. | The SOP does not exist as a document yet. |
 | **EOB-path review reasons miss the label map** | `deriveClaimReviewReasons` emits `low_confidence` and `uncertain_line:<N>`; the map has `low_confidence_extraction` and `uncertain_line`. Thirteen more have no entry. | The fallback humanizes them so nothing is dropped — the honesty rule holds — but the two labels written for that path never fire. |
-| **`rcm.read` and `rcm.write` hold identical role sets** | The split is a no-op today, and `workbench.test.js`'s permission test is structurally incapable of failing because both branches assert the same thing. Anyone who can open the workbench will be able to approve postings in 6b and move money in 6c. | **A product decision for Beau, not a code fix.** Flagged rather than guessed at. |
 | **`GET /remittances/:id` is unbounded and N+1** | `claimsByBatch` has no LIMIT and `loadClaimBundle` runs three queries per claim. A several-hundred-claim carrier check issues ~1200 concurrent queries and returns every patient name on it in one body behind one audit row. | Real carrier checks in this practice are single digits; the shape is wrong for a large payer. |
 | **Non-uuid path ids 500 instead of 404** | And `FakeRcmDb`'s string ids (`'b-1'`, `'c-1'`) structurally hide it: every cross-office 404 test runs on values production could never mint. | Needs a uuid guard at the router and fixture ids that look like production. |
 | **`rcm_user_map.platform_email` has no unique constraint** | A Slice 2 legacy-import row racing a first RCM action produces two rows for one person — the split attribution D-5 exists to prevent. Step 1 of `resolveRcmActor` also does not filter `active = true`. | A migration plus a de-dupe pass over any rows already imported. |
 | **`eob.js` resolves the actor on a different pooled connection** | It calls `resolveRcmActor(pool, …)` and then INSERTs, contradicting `rcmUserMap.js`'s own header ("MUST be called with the same connection/transaction as the write it attributes"). Safe today only because there is no open transaction. | Breaks silently the moment someone wraps that route in a `BEGIN`. |
 | **Candidate 2 in screenshot 03 has an enabled Confirm above a red blocker** | Defensible — confirming only links, and 6c is what refuses to post — but it should be a deliberate decision before 6b, not an accident of layout. | Needs a ruling on whether a blocking pre-flight fact should disable Confirm or merely warn. |
+| **The batch match is a held HTTP request, time-budgeted rather than a job** | 90 s per press, unmatched-first ordering, and "run it again to continue". Correct and bounded, but a large remittance takes several presses and the page cannot show progress mid-run. | The right shape is a job the page polls (PR #87's rules), which needs run state — a table this slice does not have. 6b owns the queue. |
+| **`RCM_OD_MIN_INTERVAL_MS` floors rather than throws** | Every other cap goes through `intEnv` and refuses to start on a garbage value; this one falls back to the 1200 ms floor instead. Safe direction — a typo cannot make RCM faster — so "every cap throws" is simply not literally true. | Deliberate: the failure mode of refusing to boot over a pacing typo is worse than the failure mode of pacing at the floor. Documented rather than changed. |
 
 ---
 

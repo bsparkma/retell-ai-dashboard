@@ -14,6 +14,8 @@
  *   office   everything except /api/admin
  *   tc       TC module + READ-ONLY voice
  *   hygiene  hygiene intake/submissions/inbox only
+ *   billing  RCM review workbench: read it and WORK it, but commit nothing
+ *            (added by RCM Slice 6a, decision D-9 — see the rcm block below)
  *
  * Above them sits the PLATFORM tier: a super_admin (platform_admin row) acts as
  * tenant 'admin' everywhere and short-circuits every check below.
@@ -23,7 +25,7 @@
  * inheriting a permission set that was never chosen for it.
  */
 
-/** @typedef {'admin'|'office'|'tc'|'hygiene'} TenantRole */
+/** @typedef {'admin'|'office'|'tc'|'hygiene'|'billing'} TenantRole */
 
 /**
  * Action → roles that hold it. Frozen: this is configuration, and a route that
@@ -53,20 +55,45 @@ const PERMISSIONS = Object.freeze({
   'tc.hygiene': Object.freeze(['admin', 'office', 'tc', 'hygiene']),
 
   // --- rcm ------------------------------------------------------------------
-  /** Read the RCM surface: claim/batch/queue counts, the claims list. */
-  'rcm.read': Object.freeze(['admin', 'office']),
+  /*
+   * THREE TIERS, NOT TWO (decision D-9).
+   *
+   * The workbench asks a person to look at a remittance and judge it, and that
+   * is a different job from committing the judgement. A `billing` user can open
+   * the workbench, read a remittance, download the source document, RUN A MATCH
+   * (which reads Open Dental and changes nothing about a chart) and MARK A
+   * CLAIM REVIEWED with a note (worklist hygiene, no Open Dental effect at
+   * all). They cannot confirm a match — that writes `od_claim_num`, the column
+   * Slice 6c reads to decide which chart to post money into — and when 6b
+   * lands they will not be able to approve, enqueue or post either.
+   *
+   * That is why running a match and confirming one can no longer share a
+   * permission.
+   */
+
+  /** Read the RCM surface: claim/batch/queue counts, the claims list, the workbench. */
+  'rcm.read': Object.freeze(['admin', 'office', 'billing']),
   /**
-   * Any RCM mutation. NO route holds it yet — Slice 3 mounts reads only.
+   * Work the queue: run a match, mark a claim reviewed.
    *
-   * It exists now so the mount can be requireReadWrite('rcm.read','rcm.write')
-   * rather than a single read gate. Under a single gate the next POST added to
-   * this module would inherit READ permission by omission; under this pair it
-   * demands the stronger action the moment it exists. Same reasoning as the
-   * voice surface, and the same reason routes/tc/index.js registers its
-   * narrower mounts first.
+   * These are POSTs — they write to OUR rows (a match snapshot, a review stamp)
+   * and are therefore not GETs — but neither touches a chart and neither
+   * commits a linkage anything downstream acts on. A reviewer who cannot record
+   * "the carrier owes a corrected EOB, there is nothing here to post" has no way
+   * to clear their queue except by confirming matches they do not believe in.
+   */
+  'rcm.queue': Object.freeze(['admin', 'office', 'billing']),
+  /**
+   * Any OTHER RCM mutation: uploading an EOB or an 835, confirming a match, and
+   * (from 6b) approving, enqueueing and posting.
    *
-   * `tc` and `hygiene` hold neither: a treatment coordinator and a hygienist
-   * have no business in claims, denials, or AR.
+   * The mount is requireReadWrite('rcm.read','rcm.write'), so this is what a
+   * new POST inherits by omission — the strong action, not the queue one. The
+   * two queue routes are the deliberate, enumerated exceptions and each carries
+   * its own requirePermission('rcm.queue'); rcmGuard.test.js pins that list.
+   *
+   * `tc` and `hygiene` hold none of the three: a treatment coordinator and a
+   * hygienist have no business in claims, denials, or AR.
    */
   'rcm.write': Object.freeze(['admin', 'office']),
 
@@ -76,7 +103,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 /** Every role that appears anywhere in the map, for validation and PR C's UI. */
-const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene']);
+const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'billing']);
 
 /**
  * Does `role` hold `action`?

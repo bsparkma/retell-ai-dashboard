@@ -653,7 +653,7 @@ const REGISTRY_KEYS = [
  * @param {{
  *   modules?: string[],
  *   user?: { email: string, name?: string, tenantId?: string } | null,
- *   role?: 'admin'|'office'|'tc'|'hygiene',
+ *   role?: 'admin'|'office'|'tc'|'hygiene'|'billing',
  *   superAdmin?: boolean,
  *   db?: FakeRcmDb,
  *   eraStore?: { isConfigured?: () => boolean, putEraFile?: Function } | null,
@@ -760,11 +760,14 @@ async function bootRcmApp({
     });
   }
   app.use('/api', tenantContext());
+  // The mount mirrors server.js EXACTLY, exempt list included — the D-9 queue
+  // tier is only real if the tests boot the same gate production does.
+  const rcmRouter = require('./index');
   app.use(
     '/api/rcm',
     requireModule('rcm'),
-    requireReadWrite('rcm.read', 'rcm.write'),
-    require('./index')
+    requireReadWrite('rcm.read', 'rcm.write', { exempt: rcmRouter.QUEUE_PATHS }),
+    rcmRouter
   );
 
   return new Promise((resolve) => {

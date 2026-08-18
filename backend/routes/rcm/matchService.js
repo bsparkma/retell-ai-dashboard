@@ -60,8 +60,39 @@ const BATCH_PACING_MS = odPacer.resolveMinIntervalMs();
  */
 const MAX_BATCH_MATCH_CLAIMS = odClaimReads.intEnv('RCM_OD_MAX_BATCH_MATCH_CLAIMS', 25);
 
-/** The snapshot's shape version. 6c reads this before trusting the contents. */
-const SNAPSHOT_VERSION = 1;
+/**
+ * How long ONE batch-match request may spend before it stops and reports what
+ * it got. Wall clock, not a claim count.
+ *
+ * A claim-count cap alone does not bound the request: at ≥1.2s per Open Dental
+ * CALL, one unlinked patient with a common surname is 35–40 calls, so 25 claims
+ * is minutes to tens of minutes on a single held HTTP request. The client's
+ * timeout then fires as the NORMAL outcome and the result panel becomes
+ * unreachable — the operation does not fit the transport.
+ *
+ * Rather than stretch the transport, the run is bounded to fit it: it stops on
+ * the budget, says how many it did not reach, and the biller presses again. The
+ * ordering below is what makes pressing again make progress rather than redo
+ * the front of the list.
+ *
+ * The proper answer is a job the page polls (PR #87's bounded-poll pattern);
+ * that needs run state this slice has no table for, so it is 6b's.
+ */
+const BATCH_MATCH_BUDGET_MS = odClaimReads.intEnv('RCM_OD_BATCH_MATCH_BUDGET_MS', 90000);
+
+/**
+ * The snapshot's shape version. 6c reads this before trusting the contents, and
+ * `confirmMatch` refuses anything that is not this number.
+ *
+ * v2 (this review round) renamed `confirmed.odAmountsAsRead.claimFeeCents` to
+ * `claimHeaderFeeCents` and added `billedCents` beside it. The old name held the
+ * raw OD claim header total, which still includes soft-deleted procedures
+ * (G12) — so 6c, re-verifying "the billed amount has not moved", was comparing
+ * against the one billed figure the tri-state exclusion had not been applied
+ * to. A rename rather than a silent value change, so a v1 snapshot is REFUSED
+ * and re-run instead of being read with the wrong meaning.
+ */
+const SNAPSHOT_VERSION = 2;
 
 /**
  * Columns the list views read. `raw_extracted_json` is deliberately ABSENT —
@@ -317,12 +348,16 @@ function odTransportFor(office) {
  * @param {import('express').Request} req
  * @param {string} office
  * @param {string} claimId
- * @param {{ force?: boolean }} [opts] force re-runs over a confirmed match
+ * @param {{ force?: boolean, onPhiRead?: ((ctx: { claimId: string, force: boolean,
+ *   supersedes: object|null }) => Promise<void>)|null }} [opts] force re-runs
+ *   over a confirmed match; `onPhiRead` is awaited BEFORE anything is stored.
  * @returns {Promise<{ status: string, claimId: string, snapshot: object }>}
  */
 async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = null } = {}) {
+  // The snapshot is loaded, not skipped: a forced re-run has to carry the
+  // confirmation it is about to destroy into the new one (see `supersedes`).
   const claim = await tenantDb.withTenantDb(req, (pool) =>
-    loadClaimBundle(pool, office, claimId, { includeSnapshot: false })
+    loadClaimBundle(pool, office, claimId, { includeSnapshot: true })
   );
   if (!claim) {
     const err = new Error('No such claim for this office');
@@ -336,6 +371,18 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
     err.code = 'MATCH_ALREADY_CONFIRMED';
     throw err;
   }
+
+  /**
+   * The confirmation this run is about to overwrite, if any.
+   *
+   * Only a `force` run can reach this with a confirmation in place. It is
+   * carried into the new snapshot rather than blanked, because otherwise WHO
+   * confirmed, WHEN, and against WHICH ClaimNum are unrecoverable the moment
+   * somebody forces a re-run — and that is precisely the event most worth being
+   * able to reconstruct.
+   */
+  const prior = claim.matchSnapshot && claim.matchSnapshot.confirmed ? claim.matchSnapshot.confirmed : null;
+  const supersedes = force && claim.odMatchStatus === 'confirmed' ? prior : null;
 
   const { odGet, officeName } = odTransportFor(office);
 
@@ -356,7 +403,12 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
       totalBilledCents: claim.totalBilledCents,
       lines: claim.lines,
     },
-    found.candidates
+    found.candidates,
+    // The name-mismatch disqualifier is a defence against OD returning
+    // STRANGERS when a name filter is ignored. On the linked-PatNum lane there
+    // are no strangers to defend against, and a married-name change would
+    // otherwise disqualify every claim on the right patient.
+    { patientResolvedByLink: found.patientResolvedByLink === true }
   );
 
   // Line pairing is computed per candidate at match time so the screen can show
@@ -378,12 +430,27 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
     patientsConsidered: found.patientsConsidered,
     ambiguous: ranked.ambiguous,
     margin: ranked.margin,
-    /** Examined and scored too low to offer. Counted, never silently dropped. */
+    /**
+     * Examined and NOT offered — counted, with the rule that dropped each one.
+     *
+     * These are what keep `no_candidate` honest. Its documented meaning is "a
+     * search ran and Open Dental had nothing"; without them, a search that
+     * found three claims and disqualified all three tells a biller the chart
+     * has no such claim. The screen reads the two differently.
+     */
     rejectedCandidates: ranked.rejected,
+    rejectedReasons: ranked.rejectedReasons,
     minScore: ranked.minScore,
+    /** False ⇒ the patient was already linked, so the name rule was off. */
+    nameRuleApplied: ranked.nameRuleApplied,
     candidates,
-    /** Carried forward across a re-run so a prior confirmation is auditable. */
+    /** A fresh run has confirmed nothing. A human confirming fills this in. */
     confirmed: null,
+    /**
+     * The confirmation a forced re-run replaced — who, when, which ClaimNum.
+     * Null on every ordinary run.
+     */
+    supersededConfirmation: supersedes,
   };
 
   // `no_candidate` is a first-class outcome, not an empty list: it records that
@@ -402,7 +469,7 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
    * bytes"). This is fail-CLOSED: `onPhiRead` throws AuditError and h() turns
    * that into a 500 before anything is stored.
    */
-  if (onPhiRead) await onPhiRead();
+  if (onPhiRead) await onPhiRead({ claimId, force, supersedes });
 
   /*
    * THE GUARD IS IN THE WHERE, NOT ONLY IN THE READ ABOVE.
@@ -452,29 +519,68 @@ async function runClaimMatch(req, office, claimId, { force = false, onPhiRead = 
  *
  * @param {import('express').Request} req
  * @param {string} office
- * @param {ReadonlyArray<string>} claimIds
+ * @param {ReadonlyArray<{ claimId: string, odMatchStatus?: string }|string>} claims
  */
-async function runBatchMatch(req, office, claimIds, { onPhiRead = null } = {}) {
-  const todo = claimIds.slice(0, MAX_BATCH_MATCH_CLAIMS);
-  const skipped = claimIds.length - todo.length;
+async function runBatchMatch(req, office, claims, { onPhiRead = null } = {}) {
+  /*
+   * UNMATCHED FIRST, so pressing the button again makes PROGRESS.
+   *
+   * The run is bounded by BATCH_MATCH_BUDGET_MS as well as by claim count, so a
+   * large remittance takes several presses. In deposit order each press would
+   * redo the front of the list and never reach the tail. Claims nobody has
+   * looked at go first; a stable secondary order keeps the result reproducible.
+   */
+  const RANK = { not_run: 0, no_candidate: 1, candidates: 2, confirmed: 3 };
+  const ordered = claims
+    .map((c, i) => (typeof c === 'string' ? { claimId: c, odMatchStatus: 'not_run', i } : { ...c, i }))
+    .sort((a, b) => (RANK[a.odMatchStatus] ?? 0) - (RANK[b.odMatchStatus] ?? 0) || a.i - b.i);
+
+  const todo = ordered.slice(0, MAX_BATCH_MATCH_CLAIMS);
+  let skipped = ordered.length - todo.length;
+
+  /*
+   * ONE AUDIT ROW PER CHART READ — the obligation belongs to each claim.
+   *
+   * This used to hand `onPhiRead` only to `todo[0]`, on a "one row per human
+   * action" reading of the granularity rule. Two things were wrong with it. If
+   * claim zero threw before reaching the PHI point — a claim somebody had
+   * already confirmed, the mundane outcome of re-running a partly-worked
+   * remittance — the catch swallowed it, the loop carried on, and claims 1..N
+   * read charts and persisted PHI-bearing snapshots with NO audit row for the
+   * whole run. And even when it fired, one row with `resource_id: null` could
+   * not answer "whose chart was read on Tuesday" for up to 25 claims across as
+   * many patients, which is the question the trail exists to answer.
+   *
+   * The granularity rule is about not writing a row per Open Dental CALL. A
+   * claim is not a call: it is one patient's chart. N charts is N rows. The
+   * route writes a separate row for the run itself before this is entered, so
+   * a run in which every claim fails is still recorded.
+   */
 
   /** @type {Array<{ claimId: string, status: string, candidateCount?: number, error?: string }>} */
   const results = [];
   let odCalls = 0;
+  const startedAt = Date.now();
+  let outOfTime = false;
 
   for (let i = 0; i < todo.length; i++) {
     // No sleep here: every OD call this loop causes is already gated by
     // odPacer, so an extra between-claims wait would only add latency without
     // adding a guarantee. The pacing that matters is per CALL.
+    //
+    // The budget is checked BEFORE starting a claim, never mid-claim: a claim
+    // abandoned halfway has read charts and stored nothing, which is the one
+    // outcome worse than not starting it.
+    if (Date.now() - startedAt >= BATCH_MATCH_BUDGET_MS) {
+      outOfTime = true;
+      skipped += todo.length - i;
+      break;
+    }
     try {
-      // ONE audit row for the whole run, written before the FIRST claim's
-      // snapshot lands. A twelve-claim match is one thing a human asked for.
-      const out = await runClaimMatch(req, office, todo[i], {
-        onPhiRead: i === 0 ? onPhiRead : null,
-      });
+      const out = await runClaimMatch(req, office, todo[i].claimId, { onPhiRead });
       odCalls += out.snapshot.odCalls;
       results.push({
-        claimId: todo[i],
+        claimId: todo[i].claimId,
         status: out.status,
         candidateCount: out.snapshot.candidates.length,
         ambiguous: out.snapshot.ambiguous,
@@ -484,25 +590,30 @@ async function runBatchMatch(req, office, claimIds, { onPhiRead = null } = {}) {
       // the expected outcome of re-running a batch someone has partly worked.
       const code = err && err.code;
       results.push({
-        claimId: todo[i],
+        claimId: todo[i].claimId,
         status: code === 'MATCH_ALREADY_CONFIRMED' ? 'already_confirmed' : 'failed',
         ...(code === 'MATCH_ALREADY_CONFIRMED' ? {} : { error: (err && err.message) || 'Match failed' }),
       });
     }
   }
 
+  const note = outOfTime
+    ? `${skipped} claim${skipped === 1 ? '' : 's'} were not reached before this run's ${Math.round(BATCH_MATCH_BUDGET_MS / 1000)}s budget ran out. Run it again to continue — unmatched claims go first.`
+    : skipped > 0
+      ? `${skipped} claim${skipped === 1 ? '' : 's'} were not matched in this run (cap: ${MAX_BATCH_MATCH_CLAIMS}). Run it again to continue.`
+      : null;
+
   return {
     matched: results,
     odCalls,
     pacingMs: BATCH_PACING_MS,
+    budgetMs: BATCH_MATCH_BUDGET_MS,
+    /** True when the WALL CLOCK stopped the run rather than the claim cap. */
+    outOfTime,
     // Stated, never silent: a cap that does not announce itself reads as
     // "everything matched".
     skipped,
-    ...(skipped > 0
-      ? {
-          note: `${skipped} claim${skipped === 1 ? '' : 's'} were not matched in this run (cap: ${MAX_BATCH_MATCH_CLAIMS}). Run it again to continue.`,
-        }
-      : {}),
+    ...(note ? { note } : {}),
   };
 }
 
@@ -571,7 +682,10 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
        * `confirmed.linePairs` and `odAmountsAsRead` out of this structure, and
        * a snapshot written by an older or newer slice may not carry them.
        */
-      if (snapshot.office && snapshot.office !== office) {
+      // UNCONDITIONAL. `snapshot.office && …` skipped the check for a snapshot
+      // with a missing or empty office — and a snapshot that cannot say which
+      // practice it was read from is not trustworthy, it is unreadable.
+      if (snapshot.office !== office) {
         await client.query('ROLLBACK');
         const err = new Error(
           'That match was run against a different office — re-run it for this one before confirming'
@@ -611,8 +725,19 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
           confirmedBy: userKey,
           /** What 6c re-verifies against at drain time. */
           linePairs: candidate.linePairs || [],
+          /*
+           * WHAT 6c RE-VERIFIES AGAINST — line-derived, not the claim header.
+           *
+           * `billedCents` is the LIVE lines' FeeBilled, the same figure the
+           * BILLED_AMOUNT_* evidence was computed from. The header total is
+           * kept beside it under a name that says what it is: `ClaimFee` still
+           * includes soft-deleted procedures (G12), so a re-verification
+           * against it would compare a clean number to a contaminated one and
+           * call the difference a change.
+           */
           odAmountsAsRead: {
-            claimFeeCents: candidate.od.claimFeeCents,
+            billedCents: candidate.od.billedCents,
+            claimHeaderFeeCents: candidate.od.claimHeaderFeeCents,
             insPaidCents: candidate.od.insPaidCents,
             writeOffCents: candidate.od.writeOffCents,
             claimStatus: candidate.od.claimStatus,
@@ -718,6 +843,7 @@ async function markReviewed(req, office, claimId, note, actor) {
 
 module.exports = {
   BATCH_PACING_MS,
+  BATCH_MATCH_BUDGET_MS,
   MAX_BATCH_MATCH_CLAIMS,
   SNAPSHOT_VERSION,
   CLAIM_LIST_COLUMNS,

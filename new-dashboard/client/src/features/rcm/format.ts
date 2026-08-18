@@ -147,6 +147,24 @@ export const MATCH_STATUS_LABELS: Record<OdMatchStatus, string> = {
   confirmed: "Matched",
 };
 
+/**
+ * The chip's words for a claim whose snapshot we can see.
+ *
+ * `no_candidate` is one database status covering two different answers: "Open
+ * Dental has nothing" and "Open Dental had things and none could be offered".
+ * The status column cannot tell them apart — the CHECK constraint has four
+ * values and adding a fifth for a display distinction would be the tail wagging
+ * the dog — but a chip that asserts the first while the panel below explains
+ * the second is a screen arguing with itself.
+ *
+ * @param status the stored status
+ * @param rejectedCandidates from the snapshot; 0 when there is no snapshot
+ */
+export function matchStatusLabel(status: OdMatchStatus, rejectedCandidates = 0): string {
+  if (status === "no_candidate" && rejectedCandidates > 0) return "Examined — none offered";
+  return MATCH_STATUS_LABELS[status];
+}
+
 export const MATCH_STATUS_TONE: Record<OdMatchStatus, string> = {
   not_run: "bg-muted text-muted-foreground",
   candidates: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",

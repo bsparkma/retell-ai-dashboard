@@ -45,6 +45,7 @@ const tenantDb = require('../../platform/tenantDb');
 const odOffices = require('../../config/odOffices');
 const { h, actorEmail, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
 const { audit } = require('../../platform/audit');
+const { requirePermission } = require('../../config/permissions');
 const { CLAIM_STATUSES } = require('./summary');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
 const matchService = require('./matchService');
@@ -196,18 +197,38 @@ function actorOf(req) {
  *
  * Returns true when it answered, so callers read as a guard clause.
  */
-function respondToMatchError(res, office, err, req, claimId) {
+function respondToMatchError(res, office, err, { req, claimId, phiAudited = false } = {}) {
   /*
-   * A FAILED MATCH MAY STILL HAVE READ PHI.
+   * WHAT THE TRAIL SAYS DEPENDS ON WHAT ACTUALLY HAPPENED.
    *
-   * `/patients` can return real names and dates of birth and THEN `/claims`
-   * can 503. The audit row used to be written only after runClaimMatch
-   * returned, so that sequence read a patient's identity out of Open Dental and
-   * recorded nothing at all. Best-effort, for the same reason as the other
-   * refusal paths: the request is already failing.
+   * This block used to write an UNAUTHORIZED row unconditionally, before
+   * inspecting the error, which cost two things at once. Routine conflicts — a
+   * 409 because somebody else confirmed first, a candidate that is no longer in
+   * the snapshot — filed as refusals and diluted the one signal that means
+   * "somebody was refused". And a match that genuinely READ PHI and then failed
+   * downstream also filed as a refusal, under-counting real disclosures on the
+   * report the trail exists to produce.
+   *
+   * So, in order:
+   *  - `phiAudited` — onPhiRead already wrote the SUCCESS read row. The
+   *    disclosure is on record; adding a second row for the same operation
+   *    would double-count it.
+   *  - `OdReadError` — Open Dental answered badly PART WAY THROUGH. /patients
+   *    can return names and dates of birth and then /claims can 503, so PHI may
+   *    well have crossed the wire. ERROR, not UNAUTHORIZED: a read happened and
+   *    did not complete.
+   *  - `CLAIM_NOT_FOUND` — an id that resolved to nothing for this office,
+   *    which also covers "belongs to the other practice". That IS the probe
+   *    worth recording. UNAUTHORIZED.
+   *  - everything else (409 conflicts, an unconnected office) — no row. No PHI
+   *    was read and nobody was refused access to anything.
    */
-  if (req && claimId) {
-    void auditRcmDenial(req, 'rcm_claim_match', claimId, { office });
+  if (req && claimId && !phiAudited) {
+    if (err instanceof OdReadError) {
+      void auditRcmDenial(req, 'rcm_claim_match', claimId, { office, result: 'ERROR' });
+    } else if (err && err.code === 'CLAIM_NOT_FOUND') {
+      void auditRcmDenial(req, 'rcm_claim', claimId, { office });
+    }
   }
 
   if (err instanceof odOffices.OdOfficeError) {
@@ -296,8 +317,19 @@ router.get(
 
 // ─── POST /:id/match ─────────────────────────────────────────────────────────
 
+/**
+ * The queue tier (D-9). These two POSTs are exempt from the mount's
+ * rcm.read/rcm.write pair and gated here instead, so a `billing` reviewer can
+ * work the queue without holding the permission that commits a chart linkage.
+ *
+ * Named as an ACTION, never a role — the role list lives in one file
+ * (config/permissions.js) and nowhere else.
+ */
+const requireQueue = requirePermission('rcm.queue');
+
 router.post(
   '/:id/match',
+  requireQueue,
   h(async (req, res) => {
     const office = req.rcmOffice;
     const claimId = String(req.params.id);
@@ -307,6 +339,9 @@ router.post(
     const force = req.body && req.body.force === true;
 
     let result;
+    // So a failure downstream knows the disclosure is already on record and
+    // does not file the same operation a second time under a different result.
+    let phiAudited = false;
     try {
       // ONE audit row per PHI read, whatever the fan-out cost — a match that
       // made fifteen Open Dental calls is one thing a human asked for, the same
@@ -317,10 +352,33 @@ router.post(
       // auditRcmRead throws AuditError and h() answers 500 with nothing stored.
       result = await matchService.runClaimMatch(req, office, claimId, {
         force,
-        onPhiRead: () => auditRcmRead(req, 'rcm_claim_match', { office }),
+        onPhiRead: async (ctx) => {
+          await auditRcmRead(req, 'rcm_claim_match', { office, resourceId: claimId });
+          /*
+           * A FORCED RE-RUN THAT DESTROYS A CONFIRMATION IS ITS OWN EVENT.
+           *
+           * Without this the audit row for a run that discarded a human's
+           * decision is byte-identical to an ordinary match. It is an UPDATE —
+           * something a person did to the practice's record — and it is written
+           * BEFORE the overwrite, fail-closed, like every other row on this
+           * path. The decision itself survives in the new snapshot's
+           * `supersededConfirmation`.
+           */
+          if (ctx && ctx.supersedes) {
+            await audit(req, {
+              action: 'UPDATE',
+              resourceType: 'rcm_claim_match_superseded',
+              resourceId: claimId,
+              result: 'SUCCESS',
+              office,
+              sourceRef: null,
+            });
+          }
+          phiAudited = true;
+        },
       });
     } catch (err) {
-      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
+      if (respondToMatchError(res, office, err, { req, claimId, phiAudited })) return undefined;
       throw err;
     }
 
@@ -336,6 +394,9 @@ router.post(
 
 // ─── POST /:id/confirm-match ─────────────────────────────────────────────────
 
+// NO requireQueue here, deliberately: confirming writes `od_claim_num`, the
+// column Slice 6c reads to decide which chart to post money into. It stays on
+// the mount's `rcm.write`, which the queue tier does not hold.
 router.post(
   '/:id/confirm-match',
   h(async (req, res) => {
@@ -355,7 +416,7 @@ router.post(
     try {
       result = await matchService.confirmMatch(req, office, claimId, odClaimNum, actorOf(req));
     } catch (err) {
-      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
+      if (respondToMatchError(res, office, err, { req, claimId })) return undefined;
       throw err;
     }
 
@@ -381,6 +442,7 @@ const MAX_REVIEW_NOTE = 2000;
 
 router.post(
   '/:id/review',
+  requireQueue,
   h(async (req, res) => {
     const office = req.rcmOffice;
     const claimId = String(req.params.id);
@@ -399,7 +461,7 @@ router.post(
     try {
       result = await matchService.markReviewed(req, office, claimId, note || null, actorOf(req));
     } catch (err) {
-      if (respondToMatchError(res, office, err, req, claimId)) return undefined;
+      if (respondToMatchError(res, office, err, { req, claimId })) return undefined;
       throw err;
     }
 

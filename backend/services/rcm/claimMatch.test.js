@@ -391,6 +391,150 @@ test('deleted lines are excluded from the OD amounts recorded in the snapshot', 
   assert.ok(blockerCodes(r).includes('DELETED_PROCEDURES_EXCLUDED'));
 });
 
+// --- The tri-state `deleted`, exercised on the branch it was written for -----
+
+/**
+ * A claimproc whose procedure the read shell could NOT return.
+ *
+ * The dangerous case, and the reason `deleted` is tri-state: `DELETE
+ * /procedurelogs` is a SOFT delete (G12), so without the procedure row a
+ * deleted line and a live one are indistinguishable - and an Open Dental key
+ * without the `/procedurelogs` resource returns no rows at all, silently.
+ */
+function unreadable(over = {}) {
+  return candidate({
+    claimProcs: [claimProc(), claimProc({ ClaimProcNum: 99002, ProcNum: 8802, FeeBilled: 100.0 })],
+    // 8802 deliberately absent from the map.
+    procedures: [procedure()],
+    ...over,
+  });
+}
+
+test("a procedure that could not be read is 'unknown', not 'not deleted'", () => {
+  const lines = m.summariseLines(
+    [claimProc(), claimProc({ ClaimProcNum: 99002, ProcNum: 8802 })],
+    new Map([[8801, procedure()]])
+  );
+  assert.equal(lines[0].deleted, false);
+  assert.equal(lines[1].deleted, 'unknown');
+});
+
+test('an ABSENT ProcNum is unknown - not mistaken for the claim-level row', () => {
+  /*
+   * `Number(null)` is 0 and `Number(undefined)` is NaN, so a claimproc whose
+   * ProcNum Open Dental omits or nulls used to read as OD's legitimate
+   * claim-level `ProcNum 0` row - which has no procedure and is therefore
+   * correctly `deleted: false`. That is the original soft-delete defect moved
+   * from the procedure row to the FIELD.
+   */
+  const lines = m.summariseLines(
+    [
+      claimProc({ ClaimProcNum: 1, ProcNum: undefined }),
+      claimProc({ ClaimProcNum: 2, ProcNum: null }),
+      claimProc({ ClaimProcNum: 3, ProcNum: '' }),
+      claimProc({ ClaimProcNum: 4, ProcNum: 0 }), // OD's claim-level row
+    ],
+    new Map()
+  );
+  assert.deepEqual(
+    lines.map((l) => l.deleted),
+    ['unknown', 'unknown', 'unknown', false]
+  );
+  assert.deepEqual(
+    lines.map((l) => l.procNum),
+    [null, null, null, 0]
+  );
+});
+
+test('an unknown line is EXCLUDED from every amount', () => {
+  const scored = m.scoreCandidate(proposal(), unreadable());
+  // $210 live + $100 unreadable. Only the live one counts.
+  assert.equal(scored.od.billedCents, 21000);
+  assert.equal(scored.od.unknownDeletedLineCount, 1);
+  // ...and the claim HEADER total is untouched and still contaminated, which is
+  // exactly why it is named `claimHeaderFeeCents` rather than "the billed
+  // amount". 6c re-verifies against `billedCents`.
+  assert.equal(scored.od.claimHeaderFeeCents, 21000);
+});
+
+test('an unknown line suppresses the billed tag entirely - neither MATCH nor MISMATCH', () => {
+  // Silence is the honest answer: the chart total is neither trustworthy nor
+  // knowably wrong, so asserting either would be an assertion we cannot make.
+  const scored = m.scoreCandidate(proposal(), unreadable());
+  assert.equal(has(scored, 'BILLED_AMOUNT_MATCH'), false);
+  assert.equal(has(scored, 'BILLED_AMOUNT_NEAR'), false);
+  assert.equal(has(scored, 'BILLED_AMOUNT_MISMATCH'), false);
+  assert.ok(blockerCodes(scored).includes('DELETED_STATUS_UNKNOWN'));
+  // Blocking, not a caution: 6c would be PUTting money against a line that may
+  // be a soft-deleted procedure.
+  const blocker = scored.blockers.find((b) => b.code === 'DELETED_STATUS_UNKNOWN');
+  assert.equal(blocker.blocking, true);
+  assert.equal(blocker.count, 1);
+});
+
+test('an unknown line is NOT PAIRABLE', () => {
+  // Pairing writes a ClaimProcNum that Slice 6c PUTs money against. An unread
+  // procedure may be a soft-deleted one, so it is ineligible exactly like a
+  // deleted, transferred, blocked or already-paid line.
+  const lines = m.summariseLines(
+    [claimProc({ ClaimProcNum: 99002, ProcNum: 8802 })],
+    new Map() // 8802 unreadable
+  );
+  assert.equal(lines[0].deleted, 'unknown');
+  const [pair] = m.pairLines(proposal().lines, lines);
+  assert.equal(pair.odClaimProcNum, null);
+  assert.equal(pair.reason, 'no postable line on this claim');
+});
+
+test('an unknown line still lends its CODE - money and identity fail differently', () => {
+  /*
+   * A line we cannot vouch for is out of every TOTAL, because a wrong total is
+   * a wrong answer with no flag on it. But its code still answers "is this the
+   * same claim?", and excluding it there would make a claim harder to recognise
+   * for a reason that has nothing to do with recognising it.
+   */
+  const scored = m.scoreCandidate(
+    proposal({ lines: [{ lineId: 'pl-1', position: 1, billedCode: 'D2740', billedCents: 10000 }] }),
+    candidate({
+      claimProcs: [claimProc({ ClaimProcNum: 99002, ProcNum: 8802, CodeSent: 'D2740' })],
+      procedures: [], // 8802 unreadable
+    })
+  );
+  assert.ok(has(scored, 'CODES_ALL_PRESENT'), 'the code is still evidence');
+  assert.equal(scored.od.billedCents, 0, 'but the money is not');
+});
+
+test('a KNOWN-deleted line is out of BOTH money and identity', () => {
+  // The one case with positive evidence the procedure is gone.
+  const scored = m.scoreCandidate(
+    proposal(),
+    candidate({ procedures: [procedure({ ProcStatus: 'D' })] })
+  );
+  assert.equal(scored.od.billedCents, 0);
+  assert.equal(scored.od.deletedLineCount, 1);
+  assert.ok(blockerCodes(scored).includes('DELETED_PROCEDURES_EXCLUDED'));
+  assert.equal(has(scored, 'CODES_ALL_PRESENT'), false);
+});
+
+test('the billed total 6c re-verifies against drops a deleted line the header keeps', () => {
+  /*
+   * The $2.00 reversal from the spike teardown, in miniature: `ClaimFee` is the
+   * claim header and still counts soft-deleted procedures, so the two figures
+   * MUST be able to disagree - and both must survive, under names that say
+   * which is which.
+   */
+  const scored = m.scoreCandidate(
+    proposal(),
+    candidate({
+      claim: { ClaimFee: 410.0 }, // header still counts the deleted $200
+      claimProcs: [claimProc(), claimProc({ ClaimProcNum: 99002, ProcNum: 8802, FeeBilled: 200.0 })],
+      procedures: [procedure(), procedure({ ProcNum: 8802, ProcStatus: 'D' })],
+    })
+  );
+  assert.equal(scored.od.claimHeaderFeeCents, 41000, 'the header, verbatim and contaminated');
+  assert.equal(scored.od.billedCents, 21000, 'the live lines, which is what 6c compares');
+});
+
 // ─── Ranking and ambiguity ───────────────────────────────────────────────────
 
 test('candidates are ranked highest first', () => {
@@ -454,6 +598,33 @@ test('a name mismatch disqualifies at ANY score', () => {
   assert.equal(ranked.rejectedReasons.nameMismatch, 1);
 });
 
+test('a candidate that BARELY clears the floor is still ranked, far below the winner', () => {
+  /*
+   * The floor excludes noise, not weak-but-real candidates - but a suite where
+   * every offered candidate is strong never proves that ranking works ACROSS
+   * the range it is supposed to span. This one scores a surname match plus a
+   * near date and nothing else, which is the thinnest thing the LOW band is
+   * meant to hold.
+   */
+  const barely = candidate({
+    claim: { ClaimNum: 60002, PatNum: 4242, DateService: '2026-03-05', ClaimFee: 210.0 },
+    claimProcs: [claimProc({ ClaimNum: 60002, ClaimProcNum: 70004, ProcNum: 9904, FeeBilled: 210.0 })],
+    procedures: [procedure({ ProcNum: 9904, procCode: 'D9999' })],
+    patient: { PatNum: 4242, LName: 'Fixture', FName: 'Different' },
+  });
+  const alone = m.scoreCandidate(proposal({ claimNumber: '' }), barely);
+  assert.ok(
+    alone.score >= m.MIN_CANDIDATE_SCORE && alone.score < 30,
+    `expected a barely-passing score, got ${alone.score}`
+  );
+
+  const ranked = m.rankCandidates(proposal(), [barely, candidate()]);
+  assert.equal(ranked.candidates.length, 2, 'it is offered');
+  assert.equal(ranked.candidates[0].odClaimNum, 53648, 'and it is not the winner');
+  assert.equal(ranked.candidates[1].confidence, 'LOW');
+  assert.ok(ranked.margin > m.AMBIGUITY_MARGIN, 'a gap this wide is not ambiguous');
+});
+
 test('the floor is low enough to keep a weak-but-real candidate', () => {
   // A surname match plus a near date clears it. The floor excludes noise, not
   // the LOW band — that band exists precisely for candidates worth a look.
@@ -465,6 +636,34 @@ test('the floor is low enough to keep a weak-but-real candidate', () => {
   });
   const ranked = m.rankCandidates(proposal({ claimNumber: '' }), [partial]);
   assert.equal(ranked.candidates.length, 1, 'a surname + near-date match must survive the floor');
+});
+
+test('the name rule is OFF when the patient was already linked', () => {
+  /*
+   * The disqualifier defends against Open Dental returning STRANGERS when a
+   * name filter is ignored. On the linked-PatNum lane there are no strangers to
+   * defend against - the claims came from that patient's own chart - and a
+   * married-name change ("SMITH, J" on the remittance, "JONES, JANE" on a
+   * correctly linked chart) shares no token after the >=2-character filter.
+   * Left on, it would report no_candidate for every claim on the right patient.
+   */
+  const married = candidate({
+    claim: { ClaimNum: 53648, PatNum: 12828, DateService: '2026-03-02', ClaimFee: 210.0 },
+    patient: { PatNum: 12828, LName: 'Jones', FName: 'Jane' },
+  });
+  const p = proposal({ patientName: 'Smith, J' });
+
+  const byName = m.rankCandidates(p, [married]);
+  assert.deepEqual(byName.candidates, [], 'the name-search lane still refuses it');
+  assert.equal(byName.rejectedReasons.nameMismatch, 1);
+  assert.equal(byName.nameRuleApplied, true);
+
+  const byLink = m.rankCandidates(p, [married], { patientResolvedByLink: true });
+  assert.equal(byLink.candidates.length, 1, 'the linked lane offers it');
+  assert.equal(byLink.rejectedReasons.nameMismatch, 0);
+  assert.equal(byLink.nameRuleApplied, false);
+  // The disagreement is still EVIDENCE, and still costs the candidate points.
+  assert.ok(has(byLink.candidates[0], 'PATIENT_NAME_MISMATCH'));
 });
 
 test('two indistinguishable candidates are AMBIGUOUS and neither is chosen', () => {

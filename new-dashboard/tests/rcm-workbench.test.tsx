@@ -181,12 +181,16 @@ function candidate(over: Record<string, unknown> = {}) {
     od: {
       claimStatus: "S",
       dateService: "2026-03-02",
-      claimFeeCents: 21000,
+      // The header total and the live-lines total, which are allowed to differ:
+      // `ClaimFee` still counts soft-deleted procedures (G12).
+      claimHeaderFeeCents: 21000,
+      billedCents: 21000,
       insPaidCents: 0,
       writeOffCents: 0,
       patientName: "Fixture, Synthetic",
       lines: [],
       deletedLineCount: 0,
+      unknownDeletedLineCount: 0,
     },
     linePairs: [
       {
@@ -215,8 +219,13 @@ function snapshot(over: Record<string, unknown> = {}) {
     patientsConsidered: [{ patNum: 12828, name: "Fixture, Synthetic" }],
     ambiguous: false,
     margin: 40,
+    rejectedCandidates: 0,
+    rejectedReasons: { nameMismatch: 0, belowScore: 0 },
+    minScore: 15,
+    nameRuleApplied: true,
     candidates: [candidate()],
     confirmed: null,
+    supersededConfirmation: null,
     ...over,
   };
 }
@@ -673,6 +682,104 @@ describe("the claim match panel", () => {
     expect(panel.textContent).toContain("No matching claim in Open Dental");
     expect(panel.textContent).toContain("a recorded outcome, not a missing one");
     expect(panel.textContent).toContain("Roland Family Dental");
+    // The honest empty search says so explicitly, so it cannot be confused with
+    // the one below.
+    expect(panel.textContent).toContain("nothing was set aside");
+  });
+
+  it("a search that examined claims and offered none of them does NOT read as empty", async () => {
+    /*
+     * The two have the same empty candidate list. Telling a biller the chart
+     * has no such claim when three were found and discarded is the exact
+     * failure the four honest states exist to prevent, one layer up.
+     */
+    state.claim = claim({
+      odMatchStatus: "no_candidate",
+      odMatchAt: "2026-03-03T15:00:00.000Z",
+      matchSnapshot: snapshot({
+        candidates: [],
+        rejectedCandidates: 3,
+        rejectedReasons: { nameMismatch: 2, belowScore: 1 },
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const panel = await screen.findByTestId("no-candidate");
+    expect(panel.textContent).toContain("Nothing here is safe to offer");
+    expect(panel.textContent).toContain("3 Open Dental claims were examined and set aside");
+    expect(panel.textContent).toContain("2 on a different patient's name");
+    expect(panel.textContent).toContain("1 scoring below 15");
+    // And it must NOT claim the chart has nothing — including in the status
+    // chip, or the screen would be arguing with itself.
+    expect(panel.textContent).not.toContain("No matching claim in Open Dental");
+    expect(screen.getByTestId("claim-match-status").textContent).toContain(
+      "Examined — none offered",
+    );
+  });
+
+  it("says how many candidates were set aside even when some were offered", async () => {
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({ rejectedCandidates: 2, rejectedReasons: { nameMismatch: 2, belowScore: 0 } }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const meta = await screen.findByTestId("match-rejected");
+    expect(meta.textContent).toContain("2 Open Dental claims examined and not offered");
+    expect(meta.textContent).toContain("2 on a different patient's name");
+  });
+
+  it("says when the name rule was off because the patient is already linked", async () => {
+    // A married-name change on a correctly linked chart is routine; the panel
+    // has to explain why a name disagreement did not disqualify anything.
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({ nameRuleApplied: false }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const note = await screen.findByTestId("match-name-rule-off");
+    expect(note.textContent).toContain("already linked");
+  });
+
+  it("shows the live-lines billed total, and says when lines could not be read", async () => {
+    /*
+     * The header total still counts soft-deleted procedures, so the number on
+     * screen has to be the one the billed evidence was actually computed from —
+     * otherwise a biller reads a figure no comparison on this page was made
+     * against.
+     */
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({
+        candidates: [
+          candidate({
+            od: {
+              claimStatus: "S",
+              dateService: "2026-03-02",
+              claimHeaderFeeCents: 41000,
+              billedCents: 21000,
+              insPaidCents: 0,
+              writeOffCents: 0,
+              patientName: "Fixture, Synthetic",
+              lines: [],
+              deletedLineCount: 0,
+              unknownDeletedLineCount: 2,
+            },
+          }),
+        ],
+      }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const card = await screen.findByTestId("candidate-53648");
+    expect(card.textContent).toContain("$210.00");
+    expect(card.textContent).not.toContain("$410.00");
+    expect(screen.getByTestId("unknown-lines-53648").textContent).toContain("2 lines unread");
   });
 
   it("surfaces the pre-flight facts Slice 6c will refuse on", async () => {

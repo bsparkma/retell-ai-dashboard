@@ -50,6 +50,7 @@ import {
   RCM_OFFICE_LABELS,
   type ClaimDetailResponse,
   type MatchCandidate,
+  type MatchSnapshot,
   type RcmOfficeId,
   type WorkbenchClaim,
 } from "@/features/rcm/api";
@@ -59,8 +60,8 @@ import {
   evidenceTone,
   lineFlagLabel,
   lineFlagTone,
-  MATCH_STATUS_LABELS,
   MATCH_STATUS_TONE,
+  matchStatusLabel,
   money,
   NO_ACTION_REASONS,
   reviewReasonLabel,
@@ -236,7 +237,7 @@ export default function ClaimMatchPage() {
           className={`rounded-full px-2.5 py-1 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
           data-testid="claim-match-status"
         >
-          {MATCH_STATUS_LABELS[claim.odMatchStatus]}
+          {matchStatusLabel(claim.odMatchStatus, snapshot?.rejectedCandidates ?? 0)}
           {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
         </span>
       </div>
@@ -419,13 +420,42 @@ export default function ClaimMatchPage() {
                   data-testid="no-candidate"
                 >
                   <Ban size={20} className="mx-auto text-muted-foreground/60" />
-                  <p className="mt-2 text-sm font-medium text-foreground">
-                    No matching claim in Open Dental
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}. This is a
-                    recorded outcome, not a missing one.
-                  </p>
+                  {/*
+                    "WE FOUND NOTHING" AND "WE FOUND THINGS AND OFFERED NONE OF
+                    THEM" ARE DIFFERENT ANSWERS.
+
+                    Both leave `candidates` empty, and telling a biller the chart
+                    has no such claim when the chart had claims we discarded is
+                    the exact failure the four honest states exist to prevent.
+                  */}
+                  {snapshot.rejectedCandidates > 0 ? (
+                    <>
+                      <p className="mt-2 text-sm font-medium text-foreground">
+                        Nothing here is safe to offer
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}.{" "}
+                        {snapshot.rejectedCandidates} Open Dental claim
+                        {snapshot.rejectedCandidates === 1 ? " was" : "s were"} examined and set
+                        aside — {rejectionSummary(snapshot)}.
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        That is not the same as the chart having no such claim. If one of them is
+                        right, link the patient first and run this again.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="mt-2 text-sm font-medium text-foreground">
+                        No matching claim in Open Dental
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}. Nothing
+                        was found and nothing was set aside. This is a recorded outcome, not a
+                        missing one.
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="mt-3 space-y-3">
@@ -446,6 +476,27 @@ export default function ClaimMatchPage() {
       </div>
     </div>
   );
+}
+
+/**
+ * Why candidates were set aside, in the server's own two categories.
+ *
+ * Written as a sentence rather than as counts alone because the two reasons ask
+ * for different next steps: a name mismatch means "link the patient first", a
+ * low score means "there was nothing much to go on".
+ */
+function rejectionSummary(snapshot: MatchSnapshot): string {
+  const { nameMismatch, belowScore } = snapshot.rejectedReasons;
+  const parts: string[] = [];
+  if (nameMismatch > 0) {
+    parts.push(
+      `${nameMismatch} on a different patient's name`,
+    );
+  }
+  if (belowScore > 0) {
+    parts.push(`${belowScore} scoring below ${snapshot.minScore}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "no reason recorded";
 }
 
 function Fact({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
@@ -489,6 +540,23 @@ function MatchMeta({
             The top candidates are within {rules.ambiguityMargin} points of each other. The ranking
             below is not a recommendation — read the evidence and decide.
           </span>
+        </div>
+      )}
+
+      {/* Also shown when candidates WERE offered: "3 offered, 2 set aside" is
+          different information from "3 offered". */}
+      {snapshot.rejectedCandidates > 0 && (
+        <div className="mt-2 text-muted-foreground" data-testid="match-rejected">
+          {snapshot.rejectedCandidates} Open Dental claim
+          {snapshot.rejectedCandidates === 1 ? "" : "s"} examined and not offered —{" "}
+          {rejectionSummary(snapshot)}.
+        </div>
+      )}
+
+      {!snapshot.nameRuleApplied && (
+        <div className="mt-2 text-muted-foreground" data-testid="match-name-rule-off">
+          This patient is already linked, so claims were read from their chart directly and a name
+          disagreement was shown as evidence rather than used to disqualify.
         </div>
       )}
 
@@ -558,10 +626,24 @@ function CandidateCard({
           </div>
         </div>
         <div className="text-right">
+          {/*
+            The LIVE lines' total, not the claim header. `ClaimFee` still counts
+            soft-deleted procedures, so showing it here would put a number on
+            screen that no comparison on this page was made against.
+          */}
           <div className="font-mono text-sm tabular-nums text-foreground">
-            {money(c.od.claimFeeCents)}
+            {money(c.od.billedCents)}
           </div>
           <div className="font-mono text-xs tabular-nums text-muted-foreground">billed in chart</div>
+          {c.od.unknownDeletedLineCount > 0 && (
+            <div
+              className="font-mono text-[11px] tabular-nums text-amber-700 dark:text-amber-400"
+              data-testid={`unknown-lines-${c.odClaimNum}`}
+            >
+              {c.od.unknownDeletedLineCount} line
+              {c.od.unknownDeletedLineCount === 1 ? "" : "s"} unread
+            </div>
+          )}
         </div>
       </div>
 

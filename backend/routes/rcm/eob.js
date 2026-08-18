@@ -32,6 +32,8 @@ const { h, actorEmail, auditRcmRead, num, iso } = require('./helpers');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const blobStore = require('../../services/rcm/eobBlobStore');
 const budget = require('../../services/rcm/extractionBudget');
+const odPacer = require('../../services/rcm/odPacer');
+const openDental = require('../../config/openDental');
 const queue = require('../../services/rcm/eobExtractionQueue');
 const { looksLikePdf } = require('../../services/rcm/eobDocumentText');
 
@@ -365,6 +367,25 @@ router.get(
       // Breaker state, surfaced honestly. When `paused` is true, an 'uploaded'
       // row is waiting on the clock, not stuck — and `resetsAt` says when.
       extraction: { ...budget.status(), queue: queue.stats() },
+      /*
+       * WHAT D-8 COSTS, MEASURED.
+       *
+       * Beau chose on reasoning that RCM holds the shared per-credential Open
+       * Dental slot at 1200ms, which means a live phone-path lookup can wait
+       * behind a batch match. He should be able to revisit that on data, so the
+       * data is here: 429s attributed to the module whose request got one,
+       * RCM's observed interval against its configured floor, and the worst
+       * wait any non-RCM caller took behind an RCM reservation.
+       *
+       * Process-local and reset on restart — a trend indicator, not an SLA.
+       */
+      odPacing: {
+        rcmFloorMs: odPacer.FLOOR_MS,
+        rcmConfiguredMs: odPacer.resolveMinIntervalMs(),
+        rcmObservedMs: odPacer.observedIntervalMs(),
+        rcmCalls: odPacer.stats.calls,
+        ...openDental.odTrafficStats(),
+      },
     });
   })
 );

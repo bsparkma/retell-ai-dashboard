@@ -34,9 +34,70 @@ test('server.js mounts /api/rcm exactly once, with the module + permission guard
   assert.match(mounts[0], /requireModule\('rcm'\)/, 'the /api/rcm mount must carry requireModule(rcm)');
   assert.match(
     mounts[0],
-    /requireReadWrite\('rcm\.read', 'rcm\.write'\)/,
+    /requireReadWrite\('rcm\.read', 'rcm\.write'/,
     "the /api/rcm mount must gate reads and writes separately, so the module's first " +
       'mutation demands rcm.write instead of inheriting read permission'
+  );
+  // The queue tier's exceptions must come from the MODULE, not be spelled out
+  // here: a list written at the mount is a list nobody maintains beside the
+  // routes it exempts.
+  assert.match(
+    mounts[0],
+    /exempt: rcmRouter\.QUEUE_PATHS/,
+    "the queue-tier exemptions must be the router's own exported list"
+  );
+});
+
+// --- the queue tier (D-9) ---------------------------------------------------
+
+test('every exempted queue path carries its own permission gate', () => {
+  /*
+   * `exempt` bypasses the mount's read/write pair ENTIRELY, so an exempted
+   * route with no gate of its own is wide open to anyone the module guard let
+   * through. Each one must therefore name an action itself.
+   *
+   * Checked from source rather than by request because the failure this
+   * prevents is a route ADDED later inside an existing pattern — which no
+   * request-level test would think to send.
+   */
+  const { QUEUE_PATHS } = require('./index');
+  assert.ok(QUEUE_PATHS.length > 0, 'there should be at least one exempted queue path');
+
+  const claims = fs.readFileSync(path.join(__dirname, 'claims.js'), 'utf8');
+  const remittances = fs.readFileSync(path.join(__dirname, 'remittances.js'), 'utf8');
+
+  // The concrete routes those patterns match, and the file each lives in.
+  const routes = [
+    {
+      path: '/claims/c-1/match',
+      src: claims,
+      decl: "router.post(\n  '/:id/match',\n  requireQueue,",
+    },
+    {
+      path: '/claims/c-1/review',
+      src: claims,
+      decl: "router.post(\n  '/:id/review',\n  requireQueue,",
+    },
+    {
+      path: '/remittances/b-1/match',
+      src: remittances,
+      decl: "requirePermission('rcm.queue')",
+    },
+  ];
+
+  for (const r of routes) {
+    assert.ok(
+      QUEUE_PATHS.some((rx) => rx.test(r.path)),
+      `${r.path} should be covered by QUEUE_PATHS`
+    );
+    assert.ok(r.src.includes(r.decl), `${r.path} must carry its own rcm.queue gate`);
+  }
+
+  // And the one that must NOT be exempt: confirming writes od_claim_num, the
+  // column Slice 6c reads to decide which chart to post money into.
+  assert.ok(
+    !QUEUE_PATHS.some((rx) => rx.test('/claims/c-1/confirm-match')),
+    'confirm-match must stay on rcm.write'
   );
 });
 

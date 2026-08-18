@@ -405,8 +405,15 @@ async function findClaimCandidates(odGet, proposal) {
   /** @type {Record<string, unknown>[]} */
   let patients = [];
   const linkedPatNum = Number(proposal.odPatientId);
+  /**
+   * WHICH LANE produced the patients, reported so the ranker can apply the
+   * name-mismatch disqualifier only where it makes sense. On the linked lane
+   * the candidates are that patient's own claims by construction, so a name
+   * disagreement is a married-name change, not a stranger.
+   */
+  const patientResolvedByLink = Number.isFinite(linkedPatNum) && linkedPatNum > 0;
 
-  if (Number.isFinite(linkedPatNum) && linkedPatNum > 0) {
+  if (patientResolvedByLink) {
     // Already linked. A linked PatNum belongs to THIS office's database by
     // construction (it was stored on an office_id-carrying row), and the
     // caller has already asserted the client matches that office.
@@ -429,6 +436,7 @@ async function findClaimCandidates(odGet, proposal) {
       notes,
       truncated,
       odCalls,
+      patientResolvedByLink,
       fetchedAt: new Date().toISOString(),
     };
   }
@@ -552,6 +560,7 @@ async function findClaimCandidates(odGet, proposal) {
     notes,
     truncated,
     odCalls,
+    patientResolvedByLink,
     // The instant the observation was made. Slice 6c re-verifies against the
     // snapshot this stamps, so it is data, not decoration.
     fetchedAt: new Date().toISOString(),

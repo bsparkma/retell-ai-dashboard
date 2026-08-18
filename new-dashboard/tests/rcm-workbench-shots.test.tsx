@@ -248,12 +248,16 @@ const CANDIDATES = [
     od: {
       claimStatus: "S",
       dateService: "2026-03-02",
-      claimFeeCents: 146840,
+      // The claim header still counts the deleted $200 procedure; the live
+      // lines do not. The screen shows the live figure.
+      claimHeaderFeeCents: 166840,
+      billedCents: 146840,
       insPaidCents: 0,
       writeOffCents: 0,
       patientName: "Fixture, Synthetic",
       lines: [],
       deletedLineCount: 1,
+      unknownDeletedLineCount: 0,
     },
     linePairs: [
       { lineId: "pl-1", position: 1, code: "D0150", odClaimProcNum: 99001, odCode: "D0150", billedDeltaCents: 0, reason: null },
@@ -290,12 +294,14 @@ const CANDIDATES = [
     od: {
       claimStatus: "R",
       dateService: "2026-02-26",
-      claimFeeCents: 48440,
+      claimHeaderFeeCents: 48440,
+      billedCents: 48440,
       insPaidCents: 31200,
       writeOffCents: 17240,
       patientName: "Fixture, Synthetic",
       lines: [],
       deletedLineCount: 0,
+      unknownDeletedLineCount: 0,
     },
     linePairs: [
       { lineId: "pl-1", position: 1, code: "D0150", odClaimProcNum: 98801, odCode: "D0150", billedDeltaCents: 0, reason: null },
@@ -305,7 +311,7 @@ const CANDIDATES = [
 ];
 
 const SNAPSHOT = {
-  version: 1,
+  version: 2,
   fetchedAt: "2026-03-03T15:04:00.000Z",
   office: "roland",
   officeName: "Roland Family Dental",
@@ -315,8 +321,15 @@ const SNAPSHOT = {
   patientsConsidered: [{ patNum: 12828, name: "Fixture, Synthetic" }],
   ambiguous: false,
   margin: 47,
+  // One more claim was read and set aside. Shown on the panel, because "2
+  // offered" and "2 offered, 1 set aside" are different facts.
+  rejectedCandidates: 1,
+  rejectedReasons: { nameMismatch: 0, belowScore: 1 },
+  minScore: 15,
+  nameRuleApplied: true,
   candidates: CANDIDATES,
   confirmed: null,
+  supersededConfirmation: null,
 };
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -473,11 +486,49 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       ...CLAIM_CLEAN,
       odMatchStatus: "no_candidate",
       odMatchAt: "2026-03-03T15:04:00.000Z",
-      matchSnapshot: { ...SNAPSHOT, candidates: [], patientsConsidered: [], notes: [] },
+      // A genuinely empty search: nothing found AND nothing set aside. The
+      // screenshot has to show the state that says so, not the one that says
+      // "we looked at three and discarded them".
+      matchSnapshot: {
+        ...SNAPSHOT,
+        candidates: [],
+        patientsConsidered: [],
+        notes: [],
+        rejectedCandidates: 0,
+        rejectedReasons: { nameMismatch: 0, belowScore: 0 },
+      },
     };
 
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
     await waitFor(() => screen.getByTestId("no-candidate"));
     dump("04-no-candidate");
+  });
+
+  it("05 — claims were found and NONE of them could be offered", async () => {
+    /*
+     * The other empty outcome, and the one that used to be indistinguishable
+     * from 04. Both have no candidates; only one of them means the chart has
+     * nothing. A biller acts differently on each, so they must not read alike.
+     */
+    shotState.claim = {
+      ...CLAIM_CLEAN,
+      odMatchStatus: "no_candidate",
+      odMatchAt: "2026-03-03T15:04:00.000Z",
+      matchSnapshot: {
+        ...SNAPSHOT,
+        candidates: [],
+        notes: [],
+        patientsConsidered: [
+          { patNum: 12828, name: "Fixture, Synthetic" },
+          { patNum: 13901, name: "Fixture, Sample" },
+        ],
+        rejectedCandidates: 3,
+        rejectedReasons: { nameMismatch: 2, belowScore: 1 },
+      },
+    };
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => screen.getByTestId("no-candidate"));
+    dump("05-candidates-all-rejected");
   });
 });
