@@ -34,10 +34,137 @@ test('server.js mounts /api/rcm exactly once, with the module + permission guard
   assert.match(mounts[0], /requireModule\('rcm'\)/, 'the /api/rcm mount must carry requireModule(rcm)');
   assert.match(
     mounts[0],
-    /requireReadWrite\('rcm\.read', 'rcm\.write'\)/,
+    /requireReadWrite\('rcm\.read', 'rcm\.write'/,
     "the /api/rcm mount must gate reads and writes separately, so the module's first " +
       'mutation demands rcm.write instead of inheriting read permission'
   );
+  // The queue tier's exceptions must come from the MODULE, not be spelled out
+  // here: a list written at the mount is a list nobody maintains beside the
+  // routes it exempts.
+  assert.match(
+    mounts[0],
+    /writeExempt: rcmRouter\.QUEUE_PATHS/,
+    "the queue-tier exemptions must be the router's own exported list, and must " +
+      'skip only the WRITE gate — a GET at one of those paths still needs rcm.read'
+  );
+});
+
+// --- the queue tier (D-9) ---------------------------------------------------
+
+/**
+ * Every route the RCM router actually mounts, with the permission actions its
+ * own middleware names.
+ *
+ * WALKED, not hand-listed. The previous version of this checked three paths it
+ * had been told about by looking for an exact source substring, which failed in
+ * both directions: a fourth `QUEUE_PATHS` regex covering an UNGATED route would
+ * have passed, and reformatting a gated one would have broken it. What the
+ * exemption actually opens is a question about the assembled router, so it is
+ * asked of the assembled router.
+ *
+ * Express keeps the mount path only as a compiled regexp, so it is decoded back
+ * — `^\/claims\/?(?=\/|$)` → `/claims`.
+ */
+function routeTable(router, prefix = '') {
+  /** @type {Array<{ method: string, path: string, actions: string[] }>} */
+  const out = [];
+  for (const layer of router.stack || []) {
+    if (layer.route) {
+      const actions = layer.route.stack
+        .map((l) => l.handle && l.handle.permissionAction)
+        .filter(Boolean);
+      for (const method of Object.keys(layer.route.methods)) {
+        out.push({ method: method.toUpperCase(), path: prefix + layer.route.path, actions });
+      }
+      continue;
+    }
+    if (layer.handle && Array.isArray(layer.handle.stack)) {
+      const mount = (layer.regexp ? layer.regexp.source : '')
+        .replace(/^\^/, '')
+        .replace(/\\\/\?\(\?=\\\/\|\$\)$/, '')
+        .replace(/\\\//g, '/');
+      out.push(...routeTable(layer.handle, prefix + mount));
+    }
+  }
+  return out;
+}
+
+/** Would express route this method+path here? Path patterns use :params. */
+function concrete(path) {
+  return path.replace(/:[^/]+/g, 'x');
+}
+
+test('every path the queue exemption opens is gated on rcm.queue', () => {
+  /*
+   * `writeExempt` skips the mount's rcm.write gate for these paths, so a route
+   * matching one with no gate of its own is reachable by anyone the module
+   * guard let through. The exemption and the gates have to agree, in both
+   * directions.
+   */
+  const { QUEUE_PATHS } = require('./index');
+  const routes = routeTable(require('./index'));
+  assert.ok(routes.length > 5, `expected the router to expose its routes, got ${routes.length}`);
+
+  for (const rx of QUEUE_PATHS) {
+    const matched = routes.filter((r) => rx.test(concrete(r.path)));
+    assert.ok(
+      matched.length > 0,
+      `${rx} matches no route in this module — a stale exemption is a hole waiting for a route`
+    );
+    for (const r of matched) {
+      assert.ok(
+        r.actions.includes('rcm.queue'),
+        `${r.method} ${r.path} is exempted from the write gate but carries no rcm.queue gate ` +
+          `(actions: ${r.actions.join(', ') || 'none'})`
+      );
+    }
+  }
+});
+
+test('no GET is reachable through the queue exemption', () => {
+  /*
+   * The exemption is matched on PATH, not on method. `writeExempt` is what
+   * keeps a future `GET /claims/:id/match` behind `rcm.read` rather than behind
+   * nothing — this asserts the second half: that no such GET exists today, so
+   * the pairing cannot rot unnoticed.
+   */
+  const { QUEUE_PATHS } = require('./index');
+  for (const r of routeTable(require('./index'))) {
+    if (r.method !== 'GET' && r.method !== 'HEAD') continue;
+    for (const rx of QUEUE_PATHS) {
+      assert.ok(
+        !rx.test(concrete(r.path)),
+        `${r.method} ${r.path} matches the queue exemption ${rx} — it would bypass its tier`
+      );
+    }
+  }
+});
+
+test('confirm-match is NOT exempt — it stays on rcm.write', () => {
+  const { QUEUE_PATHS } = require('./index');
+  assert.ok(
+    !QUEUE_PATHS.some((rx) => rx.test('/claims/x/confirm-match')),
+    'confirming writes od_claim_num, the column Slice 6c reads to pick a chart'
+  );
+});
+
+test('a role holding neither tier is refused the batch match at runtime', async () => {
+  // The guard above is structural. This is the same claim made by a request:
+  // `tc` holds no rcm action at all, and POST /remittances/:id/match is
+  // exempted from the mount's write gate — so if its own gate ever went
+  // missing, only this would notice.
+  const { baseUrl, close } = await bootRcmApp({ role: 'tc' });
+  try {
+    const res = await api(baseUrl, 'POST', '/api/rcm/remittances/b-1/match?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.code, 'FORBIDDEN');
+    assert.equal(res.body.action, 'rcm.queue');
+  } finally {
+    await close();
+  }
 });
 
 // --- the ladder -------------------------------------------------------------

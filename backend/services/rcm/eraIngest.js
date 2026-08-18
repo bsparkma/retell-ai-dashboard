@@ -135,12 +135,16 @@ async function findAlreadyProcessed(client, officeId, remittances) {
  *   officeId: string,
  *   parsed: ReturnType<typeof import('./eraParser').parse835>,
  *   file: { filename: string, key: string, hash: string, sizeBytes: number, contentType: string },
- * }} params
+ *   actorKey?: string|null,
+ * }} params `actorKey` is the rcm_user_map key of the person who uploaded the
+ *   file, resolved by the route through decision D-5. NULL means system — and
+ *   is what every row written before Slice 6a carries, which the workbench
+ *   renders as "not recorded" rather than as an automated upload.
  * @returns {Promise<{ uploadId: string, batches: object[], counts: object } | { conflict: object[] }>}
  *   `conflict` is returned — not thrown — when a reservation is refused, so the
  *   caller can roll back and answer with a specific 409 rather than a 500.
  */
-async function ingestParsedEra(client, { officeId, parsed, file }) {
+async function ingestParsedEra(client, { officeId, parsed, file, actorKey = null }) {
   /** @type {object[]} */
   const conflicts = [];
 
@@ -181,7 +185,7 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
   const batches = [];
 
   for (const { remittance, remittanceKey } of reserved) {
-    const written = await writeRemittance(client, { officeId, remittance, file, counts });
+    const written = await writeRemittance(client, { officeId, remittance, file, counts, actorKey });
     await finalizeRemittanceKey(client, { officeId, remittanceKey, batchId: written.batchId });
     // `index` is the transaction's ordinal in the FILE, carried explicitly so
     // the caller pairs a batch with its parsed remittance by identity rather
@@ -194,8 +198,8 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
   const uploadRes = await client.query(
     `INSERT INTO rcm_eob_uploads
        (office_id, filename, file_key, file_url, file_hash, file_size_bytes,
-        content_type, result_batch_id, status, processed_at)
-     VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'extracted', now())
+        content_type, result_batch_id, status, processed_at, uploaded_by)
+     VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'extracted', now(), $8)
      RETURNING upload_id`,
     [
       officeId,
@@ -205,6 +209,7 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
       file.sizeBytes,
       file.contentType,
       batches.length > 0 ? batches[0].batchId : null,
+      actorKey,
     ]
   );
 
@@ -215,7 +220,7 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
  * One check: its batch, its claims, their lines and adjustments.
  * @returns {Promise<{ batchId: string, status: string, claims: object[] }>}
  */
-async function writeRemittance(client, { officeId, remittance, file, counts }) {
+async function writeRemittance(client, { officeId, remittance, file, counts, actorKey = null }) {
   const status = batchStatusFor(remittance, remittance.claims);
   const isEft = remittance.paymentMethod === 'eft';
 
@@ -223,8 +228,8 @@ async function writeRemittance(client, { officeId, remittance, file, counts }) {
     `INSERT INTO rcm_payment_batches
        (office_id, check_number, eft_number, payment_method, payer, deposit_date,
         total_amount_cents, claim_count, status, era_file_key, trace_number,
-        trace_originator_id, plb_adjustments, plb_total_cents, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        trace_originator_id, plb_adjustments, plb_total_cents, notes, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING batch_id`,
     [
       officeId,
@@ -248,6 +253,10 @@ async function writeRemittance(client, { officeId, remittance, file, counts }) {
       JSON.stringify(remittance.plbAdjustments),
       remittance.plbTotalCents,
       remittance.flags.length > 0 ? `Flagged: ${remittance.flags.join(', ')}` : '',
+      // D-5: the batch is created BY the person who uploaded the file. Slice 5
+      // wrote NULL here and said so ("the staff crosswalk is deferred to Slice
+      // 6"); this is that deferral being discharged.
+      actorKey,
     ]
   );
   const batchId = batchRes.rows[0].batch_id;

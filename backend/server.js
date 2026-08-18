@@ -310,21 +310,30 @@ async function bootstrap() {
   // entitlement flips (intentional — see routes/tc/index.js).
   app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
 
+  // Required once, above the mount, because the mount's own guard needs the
+  // router's exported QUEUE_PATHS — the exceptions belong to the module that
+  // owns those routes, not to this file.
+  const rcmRouter = require('./routes/rcm');
+
   // RCM (Revenue Cycle Management) module — Slice 3 mount. ONE mount for the
   // whole /api/rcm/* surface. Ships DARK for the same reason TC did: no tenant
   // is entitled to 'rcm' yet, so everything under it 403s MODULE_NOT_ENTITLED
   // until the entitlement flips from the Platform Console.
   //
-  // requireReadWrite rather than a single read gate, even though this slice
-  // mounts GETs only: the first mutation this module grows must demand
-  // rcm.write, and that needs to be true by construction rather than by
-  // whoever adds it remembering. Office scoping is router-wide one level down
-  // — see routes/rcm/index.js for the ordering constraint that keeps it so.
+  // requireReadWrite rather than a single read gate: a mutation this module
+  // grows must demand rcm.write by construction rather than by whoever adds it
+  // remembering. Office scoping is router-wide one level down — see
+  // routes/rcm/index.js for the ordering constraint that keeps it so.
+  //
+  // QUEUE_PATHS are the module's own enumerated exceptions (D-9): POSTs a
+  // read-tier reviewer must be able to press. `writeExempt`, not `exempt` — a
+  // GET later added at one of those paths still needs rcm.read. They carry
+  // requirePermission('rcm.queue') at the route.
   app.use(
     '/api/rcm',
     requireModule('rcm'),
-    requireReadWrite('rcm.read', 'rcm.write'),
-    require('./routes/rcm')
+    requireReadWrite('rcm.read', 'rcm.write', { writeExempt: rcmRouter.QUEUE_PATHS }),
+    rcmRouter
   );
 
   // Health check endpoint

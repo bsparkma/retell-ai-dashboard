@@ -134,44 +134,23 @@ const { parseSegments, subElement, X12FormatError } = require('./x12');
 // ─── Vocabularies ───────────────────────────────────────────────────────────
 
 /**
- * CARC (Claim Adjustment Reason Code) descriptions, ported verbatim except
- * where noted. These land in `rcm_procedure_adjustments.reason_description`,
- * which is what a human reads when asking why a line paid short.
+ * CARC (Claim Adjustment Reason Code) descriptions.
+ *
+ * `describeCarc` is the SHARED accessor over the published X12 list ingested in
+ * ./x12Codes.generated.js — one home for "what does this code mean", read at
+ * parse time here and again at render time by the Slice 6a review workbench.
+ *
+ * Called rather than indexed on purpose: the accessor normalizes the token
+ * (`trim().toUpperCase()`) and this file's raw `reasonCode` does not, so
+ * indexing the table directly would miss ` b15 ` where the workbench found it —
+ * and the two layers would then disagree about the same adjustment.
+ *
+ * These land in `rcm_procedure_adjustments.reason_description`, which is what a
+ * human reads when asking why a line paid short. D10 (CARC 97 is the bundling
+ * text, not "Benefit maximum reached" — that is 119) is satisfied by the
+ * published list itself rather than by a hand-maintained correction.
  */
-const CARC_DESCRIPTIONS = Object.freeze({
-  1: 'Deductible amount',
-  2: 'Coinsurance amount',
-  3: 'Copayment amount',
-  4: 'Procedure code inconsistent with modifier',
-  5: 'Procedure code/modifier combination invalid',
-  16: 'Claim lacks information for adjudication',
-  18: 'Duplicate claim/service',
-  22: 'Reimbursement adjusted - care already paid',
-  23: 'Impact of prior payer adjudication',
-  24: 'Charges are covered under capitation',
-  27: 'Expenses incurred after coverage terminated',
-  29: 'Time limit for filing has expired',
-  31: 'Patient cannot be identified as our insured',
-  45: 'Charge exceeds fee schedule/maximum allowable',
-  49: 'Not covered unless emergency',
-  50: 'Non-covered service',
-  51: 'Services delivered to patient in different location',
-  54: 'Procedure not separately payable',
-  59: 'Processed based on multiple procedure rules',
-  96: 'Non-covered charge',
-  // D10: the source said "Benefit maximum reached" here, which is CARC 119.
-  97: 'Payment is included in the allowance for another service',
-  109: 'Claim not covered by this payer/contractor',
-  119: 'Benefit maximum reached for this time period',
-  122: 'Psychiatric reduction',
-  151: 'Payment adjusted - automatic pre-payment review',
-  169: 'Alternate benefit has been provided',
-  197: 'Precertification/authorization absent',
-  234: 'Additional patient information required',
-  253: 'Sequestration - reduction in federal payment',
-  B15: 'Procedure has been combined with another procedure',
-  B16: 'New patient qualifications not met',
-});
+const { describeCarc } = require('./adjustmentCodes');
 
 /** PLB (Provider Level Balance) adjustment reason codes. Ported verbatim. */
 const PLB_REASON_DESCRIPTIONS = Object.freeze({
@@ -867,7 +846,7 @@ function parseServiceLines(win, claimDenied) {
         adjustments.push({
           groupCode,
           reasonCode,
-          description: CARC_DESCRIPTIONS[reasonCode] || `Adjustment code ${reasonCode}`,
+          description: describeCarc(reasonCode) || `Adjustment code ${reasonCode}`,
           amountCents,
           quantity: Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1,
           // RARCs are reported per service line, not per adjustment; the first
@@ -923,7 +902,6 @@ function parseServiceLines(win, claimDenied) {
 module.exports = {
   parse835,
   // Exported for tests and for the route's flag handling — not for redefinition.
-  CARC_DESCRIPTIONS,
   PLB_REASON_DESCRIPTIONS,
   CLAIM_STATUS,
   LINE_FLAGS,

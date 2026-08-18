@@ -43,6 +43,7 @@ import {
   Loader2,
   AlertTriangle,
   Receipt,
+  ScrollText,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -114,13 +115,20 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       ],
     },
   ],
-  /* RCM (Slice 3): one page. The group exists now so the module switcher can
-     see a nav item for it — switchableModules filters on exactly this, so a
-     module with an empty nav is unreachable from the switcher. */
+  /* RCM. The group exists so the module switcher can see a nav item for it —
+     switchableModules filters on exactly this, so a module with an empty nav is
+     unreachable from the switcher.
+
+     Slice 6a added Remittances, which is where the actual WORK happens; the
+     Overview keeps the ingestion panels and the per-office counters. Ordered
+     work-first, because that is what a biller opens the module to do. */
   rcm: [
     {
       title: "Revenue Cycle",
-      items: [{ path: "/rcm", label: "Overview", icon: Receipt }],
+      items: [
+        { path: "/rcm/remittances", label: "Remittances", icon: ScrollText },
+        { path: "/rcm", label: "Overview", icon: Receipt },
+      ],
     },
   ],
   /* Ordered to match DentaFlow's sidebar (Dashboard → Pipeline → Nurture →

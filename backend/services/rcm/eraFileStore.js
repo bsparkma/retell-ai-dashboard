@@ -119,4 +119,25 @@ async function putEraFile({ tenantSlug, bytes, contentType }) {
   return { key, bytes: bytes.length, hash: hashBytes(bytes) };
 }
 
-module.exports = { isConfigured, putEraFile, hashBytes };
+/**
+ * Read one stored remittance file back (Slice 6a).
+ *
+ * The container is private, shared-key auth is disabled on the account, and
+ * there are no SAS tokens — so this is the ONLY way the raw 835 a biller
+ * uploaded can be looked at again, and it exists because a workbench that shows
+ * a parsed remittance without a route back to the source document asks people
+ * to trust a parser they cannot check.
+ *
+ * Deliberately takes a KEY, not an upload id: authorising the read — tenant,
+ * office, entitlement, and an audit row — is the route's job, one layer up
+ * (routes/rcm/documents.js), and a store that resolved ids would be a second
+ * place that authorisation could be forgotten.
+ *
+ * @param {string} key the opaque blob key from rcm_eob_uploads.file_key
+ * @returns {Promise<Buffer>}
+ */
+async function getEraFile(key) {
+  return getContainerClient().getBlockBlobClient(key).downloadToBuffer();
+}
+
+module.exports = { isConfigured, putEraFile, getEraFile, hashBytes };

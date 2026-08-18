@@ -16,7 +16,8 @@
  *                     practice legitimately has none of everything
  */
 import { useEffect, useState } from "react";
-import { AlertCircle, FileText, Layers, ListChecks, Loader2 } from "lucide-react";
+import { Link } from "wouter";
+import { AlertCircle, FileText, Layers, ListChecks, Loader2, ScrollText } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
 import EobUploadPanel from "./EobUploadPanel";
@@ -73,6 +74,18 @@ export default function RcmOverview() {
       <p className="mt-1 text-sm text-muted-foreground">
         Claims, payment batches, and the posting queue.
       </p>
+
+      {/* Slice 6a. This page is the INTAKE surface; the work happens next door.
+          Before the workbench existed, the only visible evidence that an upload
+          had landed was the counter below it. */}
+      <Link
+        href="/rcm/remittances"
+        className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline"
+        data-testid="rcm-open-workbench"
+      >
+        <ScrollText size={14} />
+        Open the review workbench
+      </Link>
 
       {scope.offices.length === 0 ? (
         <Notice

@@ -15,6 +15,91 @@ function computeOdBackoffMs(attempt, retryAfterSec) {
   return Math.min(500 * 2 ** (Math.max(1, attempt) - 1), 8000);
 }
 
+/**
+ * Reserved-slot timestamps, keyed by the Open Dental credential.
+ *
+ * Module-level rather than per-instance because the RATE LIMIT IS A PROPERTY OF
+ * THE KEY, not of a JavaScript object: docs/RCM_OD_WRITES.md records Open
+ * Dental's published throttle as **1 request / 1 s** on the paid tier. Every
+ * client sharing a credential must therefore share one queue, or the spacing
+ * each of them computes is fiction.
+ *
+ * Keyed by customer key because that is what selects the practice database; the
+ * developer key is process-wide. Two offices with distinct customer keys queue
+ * independently, which is correct — they are separate credentials.
+ *
+ * @type {Map<string, number>}
+ */
+const OD_SLOTS = new Map();
+
+/**
+ * The slot key for a client. Never logged, never returned — it is only ever a
+ * Map key inside this module.
+ * @param {{ customerKey?: string, apiUrl?: string }} client
+ * @returns {string}
+ */
+function odSlotKeyFor(client) {
+  return `${client.apiUrl || ''}::${client.customerKey || 'default'}`;
+}
+
+/**
+ * Who reserved each slot last, so contention can be ATTRIBUTED.
+ *
+ * Decision D-8 accepts that RCM's 1200ms reservations add bounded latency to
+ * live phone-path lookups on the same credential. Accepting a cost is only
+ * defensible if the cost is measured, so the transport counts it: which module
+ * ate a 429, and the worst wait a NON-RCM caller took behind an RCM
+ * reservation. Nothing here changes behaviour — it only records it.
+ *
+ * @type {Map<string, string>} slot key → module name of the last reserver
+ */
+const OD_SLOT_OWNER = new Map();
+
+/**
+ * Transport counters, keyed by whatever callers pass as `opts.module`.
+ *
+ * Today that is `rcm` and `other`, and NOT because the rest of the platform is
+ * one thing: RCM is simply the only caller passing the field. Voice and TC
+ * share the `other` bucket until they tag their own calls, which is a main-line
+ * change rather than an RCM one. Read `other` as "everything else on this
+ * credential", not as a module.
+ */
+const OD_TRAFFIC = {
+  /** 429s seen, by the module whose request got one. */
+  rateLimited: /** @type {Record<string, number>} */ ({}),
+  /** Requests issued, by module. */
+  requests: /** @type {Record<string, number>} */ ({}),
+  /** Worst single wait (ms) a non-RCM caller took behind an RCM reservation. */
+  worstWaitBehindRcmMs: 0,
+  /** How many times that happened at all. */
+  waitsBehindRcm: 0,
+};
+
+/** @param {Record<string, number>} bucket @param {string} key */
+function bump(bucket, key) {
+  bucket[key] = (bucket[key] || 0) + 1;
+}
+
+/** A copy of the counters, safe to serialise into a response. */
+function odTrafficStats() {
+  return {
+    requests: { ...OD_TRAFFIC.requests },
+    rateLimited: { ...OD_TRAFFIC.rateLimited },
+    worstWaitBehindRcmMs: OD_TRAFFIC.worstWaitBehindRcmMs,
+    waitsBehindRcm: OD_TRAFFIC.waitsBehindRcm,
+  };
+}
+
+/** Test seam — drop every reservation so a suite starts from a known clock. */
+function _resetOdSlotsForTests() {
+  OD_SLOTS.clear();
+  OD_SLOT_OWNER.clear();
+  OD_TRAFFIC.requests = {};
+  OD_TRAFFIC.rateLimited = {};
+  OD_TRAFFIC.worstWaitBehindRcmMs = 0;
+  OD_TRAFFIC.waitsBehindRcm = 0;
+}
+
 class OpenDentalService extends EventEmitter {
   /**
    * @param {{ customerKey?: string, officeKey?: string|null }} [options]
@@ -144,16 +229,45 @@ class OpenDentalService extends EventEmitter {
     // Throttle (item 7): the OD API rate-limits bursts (429 "Too many requests"). Space
     // outgoing requests by a minimum interval so patient-match bursts don't trip it. A
     // reserved-slot timestamp serializes spacing even under concurrent callers.
+    //
+    // THE SLOT IS SHARED PER KEY, NOT PER INSTANCE. It used to live on `this`,
+    // which meant the per-office clients from config/odOffices and the
+    // process-wide singleton behind platform/odAccess spaced themselves
+    // independently and therefore not at all: three instances at 120ms each is
+    // 25 req/s against one rate-limited credential. The rate limit belongs to
+    // the KEY, so the reservation does too. See ROUTE_SLOTS below.
     const MIN_INTERVAL_MS = parseInt(process.env.OD_API_MIN_INTERVAL_MS || '120', 10);
-    this._odNextSlotAt = 0;
 
     // Request interceptor — space requests, then log.
     this.client.interceptors.request.use(
       async (config) => {
-        if (MIN_INTERVAL_MS > 0) {
+        // A caller may demand MORE spacing than the process default; it can
+        // never demand less. RCM's batch matcher passes 1200 to hold traffic
+        // against this CREDENTIAL to Open Dental's documented 1 req/s — which
+        // means a voice lookup issued during a batch match waits behind it.
+        // Bounded and interleaved, never starved, and chosen deliberately
+        // (decision D-8; see services/rcm/odPacer.js for the alternative and
+        // why it was rejected).
+        const requested = Number(config.__odMinIntervalMs);
+        const caller = config.__odModule || 'other';
+        bump(OD_TRAFFIC.requests, caller);
+        const interval = Math.max(
+          MIN_INTERVAL_MS,
+          Number.isFinite(requested) && requested > 0 ? requested : 0
+        );
+        if (interval > 0) {
+          const slot = odSlotKeyFor(this);
           const now = Date.now();
-          const wait = Math.max(0, this._odNextSlotAt - now);
-          this._odNextSlotAt = Math.max(now, this._odNextSlotAt) + MIN_INTERVAL_MS;
+          const reservedAt = OD_SLOTS.get(slot) || 0;
+          const wait = Math.max(0, reservedAt - now);
+          // D-8's cost, measured: a wait this caller took because RCM held the
+          // shared slot. Recorded before the sleep, so it counts the intent.
+          if (wait > 0 && caller !== 'rcm' && OD_SLOT_OWNER.get(slot) === 'rcm') {
+            OD_TRAFFIC.waitsBehindRcm += 1;
+            if (wait > OD_TRAFFIC.worstWaitBehindRcmMs) OD_TRAFFIC.worstWaitBehindRcmMs = wait;
+          }
+          OD_SLOTS.set(slot, Math.max(now, reservedAt) + interval);
+          OD_SLOT_OWNER.set(slot, caller);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
         // `__odQuiet` is set by apiGetRaw({ quiet: true }) and today has exactly
@@ -187,6 +301,9 @@ class OpenDentalService extends EventEmitter {
         // safe-fail is preserved: after retries are exhausted we reject, and the matcher
         // treats a failure as "no match → needs_review", never a wrong write.
         if (status === 429 && config) {
+          // Attributed, so "who is over-driving the key" is answerable from
+          // data rather than from argument (D-8).
+          bump(OD_TRAFFIC.rateLimited, config.__odModule || 'other');
           config.__odRetry = (config.__odRetry || 0) + 1;
           if (config.__odRetry <= MAX_RETRIES) {
             const retryAfterSec = parseInt(error.response.headers?.['retry-after'], 10);
@@ -1450,7 +1567,14 @@ class OpenDentalService extends EventEmitter {
    *
    * @param {string} path OD API path beginning with '/', e.g. '/treatplans'
    * @param {Record<string, unknown>} [params] query params (PascalCase, per OD)
-   * @param {{ timeoutMs?: number }} [opts]
+   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number, module?: string }} [opts]
+   *   `minIntervalMs` RAISES this request's share of the shared per-key throttle
+   *   slot; it can never lower it. RCM's batch matcher passes 1200 to hold
+   *   itself to Open Dental's documented 1 req/s — which, because the slot is
+   *   shared per CREDENTIAL, means a voice lookup issued during a batch match
+   *   waits behind it (decision D-8; see services/rcm/odPacer.js).
+   *   `module` is ATTRIBUTION ONLY and buys no priority: it is what lets the
+   *   counters above say which module ate a 429 and how long anyone waited.
    * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
    */
   async apiGetRaw(path, params = {}, opts = {}) {
@@ -1474,6 +1598,8 @@ class OpenDentalService extends EventEmitter {
         // Carried through to the interceptors, which skip their per-request
         // console lines when it is set. See setupInterceptors().
         ...(opts.quiet ? { __odQuiet: true } : {}),
+        ...(opts.minIntervalMs ? { __odMinIntervalMs: opts.minIntervalMs } : {}),
+        ...(opts.module ? { __odModule: String(opts.module) } : {}),
       });
       return { ok: true, status: response.status, data: response.data };
     } catch (error) {
@@ -1929,4 +2055,6 @@ const openDentalServiceSingleton = new OpenDentalService();
 openDentalServiceSingleton.OpenDentalService = OpenDentalService;
 module.exports = openDentalServiceSingleton;
 module.exports.OpenDentalService = OpenDentalService;
-module.exports.computeOdBackoffMs = computeOdBackoffMs; 
+module.exports.computeOdBackoffMs = computeOdBackoffMs;
+module.exports._resetOdSlotsForTests = _resetOdSlotsForTests;
+module.exports.odTrafficStats = odTrafficStats; 

@@ -35,13 +35,14 @@ export interface TenantInfo {
  *   office   everything except the Admin page
  *   tc       TC module + read-only voice
  *   hygiene  hygiene intake/submissions/inbox only
+ *   reviewer RCM review workbench — read it and work it, commit nothing (D-9)
  *
  * `null` means no role resolved — a disabled account, or the control plane was
  * unreachable when /auth/me answered.
  */
-export type TenantRole = "admin" | "office" | "tc" | "hygiene";
+export type TenantRole = "admin" | "office" | "tc" | "hygiene" | "reviewer";
 
-const TENANT_ROLES: readonly string[] = ["admin", "office", "tc", "hygiene"];
+const TENANT_ROLES: readonly string[] = ["admin", "office", "tc", "hygiene", "reviewer"];
 
 export interface AuthUser {
   name: string;

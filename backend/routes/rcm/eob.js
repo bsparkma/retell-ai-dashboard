@@ -28,9 +28,12 @@ const multer = require('multer');
 
 const tenantDb = require('../../platform/tenantDb');
 const { audit } = require('../../platform/audit');
-const { h, auditRcmRead, num, iso } = require('./helpers');
+const { h, actorEmail, auditRcmRead, num, iso } = require('./helpers');
+const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const blobStore = require('../../services/rcm/eobBlobStore');
 const budget = require('../../services/rcm/extractionBudget');
+const odPacer = require('../../services/rcm/odPacer');
+const openDental = require('../../config/openDental');
 const queue = require('../../services/rcm/eobExtractionQueue');
 const { looksLikePdf } = require('../../services/rcm/eobDocumentText');
 
@@ -250,15 +253,23 @@ router.post(
     // reconciliation sweep can find. Orphan beats lie.
     const stored = await blobStore.putEob({ tenantSlug, data: file.buffer });
 
-    const inserted = await tenantDb.withTenantDb(req, (pool) =>
-      pool.query(
+    const inserted = await tenantDb.withTenantDb(req, async (pool) => {
+      // D-5 (Slice 6a): who brought this document in. Resolved on the same
+      // connection as the INSERT that references it — `uploaded_by` is a FK to
+      // rcm_user_map, and the row is created here on a person's first RCM
+      // action rather than requiring an administrator to pre-seed a crosswalk.
+      const uploadedBy = await resolveRcmActor(pool, {
+        email: actorEmail(req),
+        displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+      });
+      return pool.query(
         `INSERT INTO rcm_eob_uploads
-           (office_id, filename, file_key, file_url, file_hash, file_size_bytes, content_type, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'uploaded')
+           (office_id, filename, file_key, file_url, file_hash, file_size_bytes, content_type, status, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'uploaded', $8)
          RETURNING ${LIST_COLUMNS}`,
-        [office, filename, stored.key, stored.url, fileHash, stored.bytes, 'application/pdf']
-      )
-    );
+        [office, filename, stored.key, stored.url, fileHash, stored.bytes, 'application/pdf', uploadedBy]
+      );
+    });
     const row = inserted.rows[0];
 
     // Audited BEFORE the 201: a PHI document entering the system without a
@@ -356,6 +367,25 @@ router.get(
       // Breaker state, surfaced honestly. When `paused` is true, an 'uploaded'
       // row is waiting on the clock, not stuck — and `resetsAt` says when.
       extraction: { ...budget.status(), queue: queue.stats() },
+      /*
+       * WHAT D-8 COSTS, MEASURED.
+       *
+       * Beau chose on reasoning that RCM holds the shared per-credential Open
+       * Dental slot at 1200ms, which means a live phone-path lookup can wait
+       * behind a batch match. He should be able to revisit that on data, so the
+       * data is here: 429s attributed to the module whose request got one,
+       * RCM's observed interval against its configured floor, and the worst
+       * wait any non-RCM caller took behind an RCM reservation.
+       *
+       * Process-local and reset on restart — a trend indicator, not an SLA.
+       */
+      odPacing: {
+        rcmFloorMs: odPacer.FLOOR_MS,
+        rcmConfiguredMs: odPacer.resolveMinIntervalMs(),
+        rcmObservedMs: odPacer.observedIntervalMs(),
+        rcmCalls: odPacer.stats.calls,
+        ...openDental.odTrafficStats(),
+      },
     });
   })
 );
