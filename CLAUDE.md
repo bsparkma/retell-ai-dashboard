@@ -698,6 +698,7 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 | Health probes, Azure Monitor alerts, reading Log Analytics | [docs/PROBES_AND_ALERTS.md](docs/PROBES_AND_ALERTS.md) |
 | Secrets and Key Vault | [docs/SECRETS.md](docs/SECRETS.md) |
 | TC module | [docs/TC_SCHEMA.md](docs/TC_SCHEMA.md), [docs/TC_IMPORT.md](docs/TC_IMPORT.md), [docs/TC_OD_READS.md](docs/TC_OD_READS.md) |
+| RCM module | [docs/RCM_SCHEMA.md](docs/RCM_SCHEMA.md), [docs/RCM_OD_WRITES.md](docs/RCM_OD_WRITES.md), [docs/RCM_FIXTURES.md](docs/RCM_FIXTURES.md), [docs/RCM_EOB_INGESTION.md](docs/RCM_EOB_INGESTION.md) |
 | Dashboard conventions | [new-dashboard/HANDOFF.md](new-dashboard/HANDOFF.md), [new-dashboard/NOTES.md](new-dashboard/NOTES.md) |
 
 Most other root-level `*.md` files describe a DigitalOcean droplet or an on-prem PM2 box

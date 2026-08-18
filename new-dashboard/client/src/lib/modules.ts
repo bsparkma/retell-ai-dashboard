@@ -12,7 +12,7 @@
  * won't render.
  */
 
-import { KanbanSquare, PhoneCall, type LucideIcon } from "lucide-react";
+import { KanbanSquare, PhoneCall, Receipt, type LucideIcon } from "lucide-react";
 
 export const MODULE_IDS = ["voice", "rcm", "tc", "scheduling"] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
@@ -43,6 +43,13 @@ export const MODULES: Partial<Record<ModuleId, ModuleDef>> = {
     description: "Case pipeline, follow-ups, pre-auth, and patient presentations.",
     icon: KanbanSquare,
     basePath: "/tc",
+  },
+  rcm: {
+    id: "rcm",
+    label: "RCM",
+    description: "Claims, payment batches, and the posting queue.",
+    icon: Receipt,
+    basePath: "/rcm",
   },
 };
 

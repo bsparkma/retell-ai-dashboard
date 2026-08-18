@@ -310,6 +310,23 @@ async function bootstrap() {
   // entitlement flips (intentional — see routes/tc/index.js).
   app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
 
+  // RCM (Revenue Cycle Management) module — Slice 3 mount. ONE mount for the
+  // whole /api/rcm/* surface. Ships DARK for the same reason TC did: no tenant
+  // is entitled to 'rcm' yet, so everything under it 403s MODULE_NOT_ENTITLED
+  // until the entitlement flips from the Platform Console.
+  //
+  // requireReadWrite rather than a single read gate, even though this slice
+  // mounts GETs only: the first mutation this module grows must demand
+  // rcm.write, and that needs to be true by construction rather than by
+  // whoever adds it remembering. Office scoping is router-wide one level down
+  // — see routes/rcm/index.js for the ordering constraint that keeps it so.
+  app.use(
+    '/api/rcm',
+    requireModule('rcm'),
+    requireReadWrite('rcm.read', 'rcm.write'),
+    require('./routes/rcm')
+  );
+
   // Health check endpoint
   app.get('/api/health', async (req, res) => {
     const liveCallManager = require('./services/liveCallManager');
@@ -369,6 +386,18 @@ async function bootstrap() {
   app.use('*', (req, res) => {
     res.status(404).json({ message: 'Route not found' });
   });
+
+  // Retire EOB extractions a previous process was running when it died. A row
+  // left at 'processing' claims work is happening when the in-process queue that
+  // owned it no longer exists.
+  //
+  // MUST stay ABOVE server.listen(): the sweep marks EVERY 'processing' row
+  // failed, so running it once the port is open would let it race an extraction
+  // this process had just started. It also depends on maxReplicas=1 — see
+  // services/rcm/eobStartupSweep.js. Never blocks startup.
+  await require('./services/rcm/eobStartupSweep')
+    .sweepInterruptedExtractions()
+    .catch((err) => console.warn('[rcm/eob] startup sweep failed:', err && err.message));
 
   // Initialize unified call store and start server
   await unifiedCallStore.initialize().then(async () => {

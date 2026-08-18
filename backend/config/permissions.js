@@ -52,6 +52,24 @@ const PERMISSIONS = Object.freeze({
   /** The hygiene handoff surface only — intake, my submissions, inbox. */
   'tc.hygiene': Object.freeze(['admin', 'office', 'tc', 'hygiene']),
 
+  // --- rcm ------------------------------------------------------------------
+  /** Read the RCM surface: claim/batch/queue counts, the claims list. */
+  'rcm.read': Object.freeze(['admin', 'office']),
+  /**
+   * Any RCM mutation. NO route holds it yet — Slice 3 mounts reads only.
+   *
+   * It exists now so the mount can be requireReadWrite('rcm.read','rcm.write')
+   * rather than a single read gate. Under a single gate the next POST added to
+   * this module would inherit READ permission by omission; under this pair it
+   * demands the stronger action the moment it exists. Same reasoning as the
+   * voice surface, and the same reason routes/tc/index.js registers its
+   * narrower mounts first.
+   *
+   * `tc` and `hygiene` hold neither: a treatment coordinator and a hygienist
+   * have no business in claims, denials, or AR.
+   */
+  'rcm.write': Object.freeze(['admin', 'office']),
+
   // --- admin ---------------------------------------------------------------
   /** /api/admin/* — scheduler start/stop, costs, queues, config, connection tests. */
   'admin.all': Object.freeze(['admin']),
