@@ -52,17 +52,70 @@ it out of a PDF.
 **The default view is NEEDS ATTENTION**, the same philosophy as the voice
 worklist: the default is the work, not the archive. The predicate is computed
 **server-side** and arrives on the row, so the list and the detail cannot
-disagree about whether something is finished:
+disagree about whether something is finished.
 
-| Reason | When |
+#### Needs attention means a human still owes an ACTION
+
+Not "the file has facts on it". That distinction is the whole predicate, and
+getting it wrong is what made a fully-worked remittance sit in the queue for
+ever — see [the bug that produced this rule](#the-bug-this-rule-came-from).
+
+| Obligation | When |
+| --- | --- |
+| `claims_unreviewed` | A claim on this batch has not been marked reviewed |
+| `batch_no_claims` | The remittance has **no claims at all** — unworkable, not finished |
+
+Everything else is an **observation**: true, worth reading, and not work that
+anybody can discharge in this slice. Observations ride on the row as
+`attentionObservations`, render as grey chips beside the amber ones, and never
+put a remittance in the queue.
+
+| Observation | When |
 | --- | --- |
 | `batch_<status>` | The batch is anything but `ready` or `posted` — Slice 5 holds a batch `open` when **anything** on it was flagged |
 | `claims_flagged` | A claim carries a review reason |
 | `claims_unmatched` | A claim has no confirmed Open Dental match |
-| `claims_unreviewed` | A claim has not been marked reviewed |
 
-The count of what the filter is hiding is **always visible, on both tabs**. A
-filter that does not state its own scope is one people forget is on.
+**A claim is DISPOSITIONED when a human marks it reviewed.** What they saw — the
+flags, the honest `no_candidate`, an ambiguous ranking — stays visible and is
+recorded in their note. That is evidence of work done, not an outstanding
+obligation.
+
+**No auto-review.** A claim with no flags at all, matched and confirmed, still
+owes an explicit disposition. A biller marking "looked, nothing to do" is real
+work, and the audit row is what proves it happened.
+
+When Slice 6b introduces the next obligation — approvable, awaiting posting — it
+becomes a new `reasons` value with its own clear condition, rather than another
+fact quietly widening the filter.
+
+##### The bug this rule came from
+
+The first version counted four things and needed attention if any held: the
+batch was not `ready`, a claim carried a review reason, a claim was not
+`confirmed`, a claim was not reviewed. **Three of those are permanent facts
+about the file** that no action available in this slice can change.
+
+On staging a biller opened the Delta multi-claim batch, ran the match on both
+claims (honest `no_candidate` — the fixture PatNums do not exist in that
+database), read the flags, marked both claims reviewed with a note, went back to
+the list, and the batch was still there. It was still there because Slice 5 held
+it `open` over a downcode and an unreadable CAS (correct, and it stays open
+until posting exists), because the claims carry their review reasons for ever,
+and because `no_candidate` is not `confirmed`.
+
+Reviewing cleared exactly one of four reasons, so the review action was a no-op
+against the filter and the list was not a worklist at all — it was "not yet
+posted". Telling somebody who has finished that she still owes something is the
+honest-states rule failing by **crying wolf**, and it costs what every false
+alarm costs: the true ones stop being read.
+
+`batch_open` is the clearest case. Nearly every real 835 carries a downcode or a
+PLB, so if `open` alone holds a remittance, nothing ever leaves.
+
+The count of what the filter is hiding is **always visible, on both tabs**, and
+is computed from the same predicate. A filter that does not state its own scope
+is one people forget is on.
 
 **Source is labelled** (`835` / `EOB PDF`) and is not cosmetic: an 835 is PARSED
 and can only be malformed; an EOB PDF was READ by a model and can be WRONG. A
@@ -933,8 +986,13 @@ SELECT action, resource_type, resource_id, office, user_id, created_at
  ORDER BY created_at DESC LIMIT 10;
 ```
 
-6. Mark the claim reviewed with a note. Back on the list it leaves the
-   needs-attention view once every claim on the batch is reviewed.
+6. Mark **every** claim on the batch reviewed, each with a note. Back on the
+   list the batch **leaves the needs-attention view** — even though the batch is
+   still `open`, the claims still carry their flags, and neither is matched.
+   Those three are facts about the file, not work anybody can discharge here;
+   they stay visible as grey chips under **All**, and the count in the header
+   drops with the row. Reviewing one of two claims is not enough: the other
+   still owes a disposition.
 7. Open the extracted synthetic EOB's remittance and confirm its proposal claim
    renders the same way.
 8. Confirm **nothing** was written to Open Dental — no `claimproc`, no

@@ -24,11 +24,15 @@
  * NEEDS ATTENTION IS THE DEFAULT VIEW
  * ─────────────────────────────────────────────────────────────────────────────
  * Same philosophy as the voice worklist: the default is the work, not the
- * archive. A batch needs attention when anything under it does — a review
- * reason on a claim, a claim with no confirmed Open Dental match, or a batch
- * status of anything but `ready`. That predicate is computed HERE, server-side,
- * from the same rows the detail renders, so the list and the detail cannot
- * disagree about whether something is done.
+ * archive — and "the work" means an ACTION a human still owes, never a fact the
+ * file happens to carry. A batch needs attention while any claim on it has not
+ * been dispositioned (marked reviewed). Flags, an honest `no_candidate` and a
+ * batch held `open` are shown beside it as observations and hold nothing.
+ * See `attentionFor` below for why, and for what it cost to learn.
+ *
+ * That predicate is computed HERE, server-side, from the same rows the detail
+ * renders, so the list, the count and the detail cannot disagree about whether
+ * something is done.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * NO OPEN DENTAL WRITES, AND NO POSTING
@@ -88,38 +92,93 @@ function parseBound(raw, fallback, max) {
 }
 
 /**
- * Does this batch still owe a human something?
+ * Does this batch still owe a human an ACTION?
  *
- * Deliberately generous — a batch leaves the needs-attention view only when
- * every claim under it is confirmed against Open Dental AND marked reviewed AND
- * carries no outstanding review reason, and the batch itself reads `ready` or
- * `posted`. The failure mode of being too generous is one extra row on a
- * screen; the failure mode of being too strict is a flagged reversal quietly
- * dropping out of the work list.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * OBLIGATIONS, NOT FACTS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The first version of this counted four things and needed attention if any of
+ * them held: the batch was not `ready`, some claim carried a review reason,
+ * some claim was not `confirmed`, some claim was not reviewed. Three of those
+ * are PERMANENT FACTS ABOUT THE FILE that no action available in this slice can
+ * change.
+ *
+ * A biller on staging did everything the screen lets her do — ran the match on
+ * both claims (honest `no_candidate`; the fixture PatNums do not exist in that
+ * database), read the flags, marked both claims reviewed with a note — and the
+ * batch stayed in the needs-attention view. It stayed because Slice 5 held the
+ * batch `open` over a downcode and an unreadable CAS (correct, and it stays
+ * open until posting exists), because the claims carry their review reasons
+ * forever, and because `no_candidate` is not `confirmed`. Reviewing cleared
+ * exactly one of four reasons, so the review action was a no-op against the
+ * filter and the list was not a worklist at all — it was "not yet posted".
+ *
+ * Telling somebody who has finished that they still owe something is the
+ * honest-states rule failing by crying wolf, which costs the same thing every
+ * false alarm costs: the true ones stop being read.
+ *
+ * So: **needs attention means a human still owes an action.** A claim is
+ * DISPOSITIONED when a human marked it reviewed. What they saw — flags, no
+ * candidate, ambiguity — stays visible as an observation and is recorded in
+ * their note; that is evidence of work done, not an outstanding obligation.
+ *
+ * `observations` ride alongside so the screen still says WHY a remittance was
+ * worth looking at, and so Slice 6b can add its own obligations (approvable,
+ * awaiting posting) without having to re-litigate which of these is which.
+ *
+ * NO AUTO-REVIEW. A claim with no flags, matched and confirmed, still owes an
+ * explicit disposition: a biller marking "looked, nothing to do" is real work
+ * and the audit row is what proves it happened.
  *
  * @param {{ status: string }} batch
  * @param {ReadonlyArray<{ needsReviewReasons: string[], odMatchStatus: string, reviewedAt: string|null }>} claims
- * @returns {{ needsAttention: boolean, reasons: string[] }}
+ * @returns {{ needsAttention: boolean, reasons: string[], observations: string[] }}
  */
 function attentionFor(batch, claims) {
-  /** @type {string[]} */
+  /** Outstanding ACTIONS. These, and only these, decide `needsAttention`. */
   const reasons = [];
+  /** FACTS worth showing. They never make a remittance need attention. */
+  const observations = [];
 
-  // Slice 5's contract: a batch is held `open` when ANYTHING on it was flagged
-  // — a reversal, a PLB, a downcode, an unreadable adjustment, a total that
-  // does not reconcile. `ready` means "a person could act on this now".
-  if (batch.status !== 'ready' && batch.status !== 'posted') reasons.push(`batch_${batch.status}`);
-
-  const flagged = claims.filter((c) => c.needsReviewReasons.length > 0).length;
-  if (flagged) reasons.push('claims_flagged');
-
-  const unmatched = claims.filter((c) => c.odMatchStatus !== 'confirmed').length;
-  if (unmatched) reasons.push('claims_unmatched');
+  // ── The obligations ───────────────────────────────────────────────────────
 
   const unreviewed = claims.filter((c) => !c.reviewedAt).length;
   if (unreviewed) reasons.push('claims_unreviewed');
 
-  return { needsAttention: reasons.length > 0, reasons };
+  /*
+   * A batch with NO claims is not finished, it is unworkable.
+   *
+   * "Every claim is reviewed" is vacuously true of an empty list, so without
+   * this an 835 that produced a payment batch and no claim rows — a parse
+   * problem, or a check naming payments whose claims were never created —
+   * would read as done the moment it landed. That is the same failure as the
+   * one above, pointing the other way: silence where somebody should look.
+   * It cannot be dispositioned by reviewing claims, so it is its own reason.
+   */
+  if (claims.length === 0) reasons.push('batch_no_claims');
+
+  // ── The observations ──────────────────────────────────────────────────────
+
+  // Slice 5's contract: a batch is held `open` when ANYTHING on it was flagged
+  // — a reversal, a PLB, a downcode, an unreadable adjustment, a total that
+  // does not reconcile. Nearly every real 835 carries one of those, so on its
+  // own it can never be the thing that holds a remittance in the queue: if it
+  // were, nothing would ever leave. `ready` means "a person could act on this
+  // now", and posting is what will move it — in 6b.
+  if (batch.status !== 'ready' && batch.status !== 'posted') {
+    observations.push(`batch_${batch.status}`);
+  }
+
+  const flagged = claims.filter((c) => c.needsReviewReasons.length > 0).length;
+  if (flagged) observations.push('claims_flagged');
+
+  // `no_candidate` is a finished search with a real, negative answer. It is not
+  // an unfinished task, and there is no action in this slice that turns it into
+  // `confirmed` when Open Dental genuinely has no such claim.
+  const unmatched = claims.filter((c) => c.odMatchStatus !== 'confirmed').length;
+  if (unmatched) observations.push('claims_unmatched');
+
+  return { needsAttention: reasons.length > 0, reasons, observations };
 }
 
 /** Map a batch row + its claims to the list/detail wire shape. */
@@ -166,7 +225,10 @@ function toBatchWire(batch, claims, source, actors) {
     },
 
     needsAttention: attention.needsAttention,
+    /** Outstanding ACTIONS — the ones that put this row in the queue. */
     attentionReasons: attention.reasons,
+    /** FACTS worth reading. Shown, but never a reason to hold a remittance. */
+    attentionObservations: attention.observations,
     reviewReasonCount: claims.reduce((n, c) => n + c.needsReviewReasons.length, 0),
     unmatchedClaimCount: claims.filter((c) => c.odMatchStatus !== 'confirmed').length,
   };

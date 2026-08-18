@@ -833,8 +833,20 @@ export interface Remittance {
     plbTotalCents: number;
     balanced: boolean;
   };
+  /**
+   * Does a human still owe an ACTION on this remittance?
+   *
+   * Computed from `attentionReasons` alone. Facts about the file — a downcode
+   * that held the batch `open`, a claim Open Dental has no match for — are
+   * `attentionObservations` and never put a row in the queue: a biller who has
+   * done everything the screen lets her do must not be told she still owes
+   * something, or the true alarms stop being read.
+   */
   needsAttention: boolean;
+  /** Outstanding ACTIONS. Today there is one: `claims_unreviewed`. */
   attentionReasons: string[];
+  /** FACTS worth reading, shown beside the reasons and never driving them. */
+  attentionObservations: string[];
   reviewReasonCount: number;
   unmatchedClaimCount: number;
   upload: RemittanceUpload | null;

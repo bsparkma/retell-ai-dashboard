@@ -208,7 +208,9 @@ function remittance(over: Record<string, unknown> = {}) {
       balanced: totalAmountCents === claimTotalCents,
     },
     needsAttention: true,
-    attentionReasons: ["batch_open", "claims_flagged", "claims_unmatched"],
+    // The obligation is the disposition. The rest is what she is looking AT.
+    attentionReasons: ["claims_unreviewed"],
+    attentionObservations: ["batch_open", "claims_flagged", "claims_unmatched"],
     reviewReasonCount: 2,
     unmatchedClaimCount: 2,
     upload: {
@@ -433,7 +435,8 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
         claimCount: 3,
         status: "open",
         source: "eob",
-        attentionReasons: ["batch_open", "claims_unmatched"],
+        attentionReasons: ["claims_unreviewed"],
+        attentionObservations: ["batch_open", "claims_unmatched"],
         reviewReasonCount: 0,
         unmatchedClaimCount: 3,
       }),
@@ -447,6 +450,7 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
         claimCount: 4,
         status: "ready",
         attentionReasons: ["claims_unreviewed"],
+        attentionObservations: [],
         reviewReasonCount: 0,
         unmatchedClaimCount: 0,
       }),

@@ -117,12 +117,24 @@ export function lineFlagTone(flag: string): string {
   return "bg-muted text-muted-foreground";
 }
 
-// ─── Batch-level attention reasons (computed server-side) ────────────────────
+// ─── Batch-level attention (computed server-side) ────────────────────────────
 
+/**
+ * Two vocabularies, deliberately separate.
+ *
+ * REASONS are outstanding actions and are the only thing that puts a remittance
+ * in the needs-attention view. OBSERVATIONS are facts about the file — true,
+ * worth reading, and never work anybody can discharge in this slice. Merging
+ * them is what made a fully-reviewed batch keep saying it needed attention.
+ */
 export const ATTENTION_LABELS: Record<string, string> = {
+  claims_unreviewed: "Claims not yet reviewed",
+  batch_no_claims: "No claims on this remittance",
+};
+
+export const OBSERVATION_LABELS: Record<string, string> = {
   claims_flagged: "Claims flagged for review",
   claims_unmatched: "Claims not matched to Open Dental",
-  claims_unreviewed: "Claims not yet reviewed",
   batch_open: "Held — something on this remittance was flagged",
   batch_unbalanced: "Totals do not reconcile",
   batch_error: "The batch is in error",
@@ -130,7 +142,7 @@ export const ATTENTION_LABELS: Record<string, string> = {
 };
 
 export function attentionLabel(reason: string): string {
-  return ATTENTION_LABELS[reason] ?? humanize(reason);
+  return ATTENTION_LABELS[reason] ?? OBSERVATION_LABELS[reason] ?? humanize(reason);
 }
 
 // ─── Match state ─────────────────────────────────────────────────────────────
