@@ -235,20 +235,33 @@ router.post(
       // the retry path. There is no separate retry endpoint and no background
       // rescan: re-uploading the document is the human action that restarts it,
       // which also covers a process restart that lost the in-memory queue.
-      await tenantDb.withTenantDb(req, (pool) =>
+      // SLICE 5.5 REVIEW. The `23505` guard below protects the INSERT path; this
+      // one is the same race on the RETRY path. Two concurrent re-uploads of a
+      // document whose prior row is 'failed'/'uploaded' both read that row, both
+      // flip it, and both enqueue — two extractions of one upload_id, i.e. the
+      // cost the budget breaker exists to prevent, spent twice.
+      //
+      // The UPDATE re-asserts the status it expects, so exactly one caller can
+      // win the transition. The loser did not requeue and says so rather than
+      // claiming a restart it did not cause.
+      const claimed = await tenantDb.withTenantDb(req, (pool) =>
         pool.query(
-          `UPDATE rcm_eob_uploads SET status = 'uploaded', error_message = NULL, updated_at = now()
-            WHERE upload_id = $1 AND office_id = $2`,
+          `UPDATE rcm_eob_uploads
+              SET status = 'uploaded', error_message = NULL, failure_code = NULL,
+                  updated_at = now()
+            WHERE upload_id = $1 AND office_id = $2 AND status IN ('uploaded', 'failed')
+            RETURNING upload_id`,
           [prior.upload_id, office]
         )
       );
-      queue.enqueue({ tenantId, tenantSlug, office, uploadId: prior.upload_id });
+      const requeued = claimed.rows.length > 0;
+      if (requeued) queue.enqueue({ tenantId, tenantSlug, office, uploadId: prior.upload_id });
       await auditEobWrite(req, office, prior.upload_id);
       return res.status(200).json({
         success: true,
         office,
         duplicate: true,
-        requeued: true,
+        requeued,
         upload: { ...toWire(prior), status: 'uploaded', message: null },
         extraction: budget.status(),
       });

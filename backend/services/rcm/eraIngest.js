@@ -345,8 +345,17 @@ async function writeClaim(client, { officeId, batchId, position, claim, remittan
   // A1. Adjustments the payer reported at CLAIM level (loop 2100) — no service
   // line to hang them on, which is why `procedure_line_id` is nullable and
   // `scope` says which kind this is. These used to be dropped entirely.
+  // B2 (review). A group code the schema cannot hold used to `continue` here
+  // with NO flag and NO counter — a silent drop introduced by the very slice
+  // that exists to end silent drops. The line-level path raises
+  // `unstorable_adjustment_group` for exactly this case; mirror it, because a
+  // claim-level `CAS*XX*1*5000` is $50 of a patient's money disappearing.
+  let claimAdjSkipped = false;
   for (const adj of claim.claimLevelAdjustments || []) {
-    if (!ADJUSTMENT_GROUP_CODES.includes(adj.groupCode)) continue;
+    if (!ADJUSTMENT_GROUP_CODES.includes(adj.groupCode)) {
+      claimAdjSkipped = true;
+      continue;
+    }
     await client.query(
       `INSERT INTO rcm_procedure_adjustments
          (procedure_line_id, claim_id, office_id, scope, group_code, reason_code,
@@ -390,6 +399,7 @@ async function writeClaim(client, { officeId, batchId, position, claim, remittan
   );
 
   const extraReasons = [];
+  if (claimAdjSkipped) extraReasons.push(UNSTORABLE_ADJUSTMENT);
   for (let i = 0; i < claim.procedures.length; i += 1) {
     const skipped = await writeLine(client, {
       officeId,

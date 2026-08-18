@@ -159,6 +159,14 @@ class FakeRcmDb {
           const [, col, literal] = m;
           return (r) => r[col] === literal;
         }
+        // `status IN ('uploaded', 'failed')` — the EOB retry path re-asserts the
+        // statuses it is allowed to claim, which is what makes the transition
+        // atomic against a concurrent re-upload.
+        if ((m = term.match(/^(\w+) IN \(([^)]+)\)$/i))) {
+          const [, col, list] = m;
+          const allowed = [...list.matchAll(/'([^']*)'/g)].map((x) => x[1]);
+          return (r) => allowed.includes(r[col]);
+        }
         // `era_file_key = ANY($2::text[])` — era.js's list joins a page of
         // uploads back to the batches they produced.
         if ((m = term.match(/^(\w+) = ANY\(\$(\d+)(?:::\w+\[\])?\)$/))) {

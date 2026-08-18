@@ -47,8 +47,19 @@ class X12FormatError extends Error {
 /**
  * Read the three delimiters an interchange declares in its ISA header.
  *
+ * ISA11 is the REPETITION separator (005010; in 004010 that position was the
+ * standards-identifier). It is read here for completeness of the delimiter
+ * contract — A2 was the fix for reading delimiters from the file rather than
+ * assuming them, and reading two of three would have been half a fix.
+ *
+ * Nothing in the 835 parser splits on it yet, and that is correct rather than
+ * lazy: no 835 segment this parser reads (BPR, TRN, CLP, SVC, CAS, PLB, AMT,
+ * REF, NM1, DTM, MOA/MIA, LQ) has a repeating data element in 005010X221A1.
+ * It is exposed on the returned delimiter set so a future consumer — an 837, or
+ * an 835 element that gains repetition — has it available without re-deriving.
+ *
  * @param {string} text the whole document, leading whitespace already trimmed
- * @returns {{ element: string, component: string, segment: string }}
+ * @returns {{ element: string, component: string, segment: string, repetition: string }}
  */
 function readDelimiters(text) {
   if (!text.startsWith('ISA')) {
@@ -69,7 +80,10 @@ function readDelimiters(text) {
   if (!tail || tail.length < 2) {
     throw new X12FormatError('ISA header is truncated — no ISA16/segment terminator');
   }
-  return { element, component: tail[0], segment: tail[1] };
+  // ISA11 — the 11th element of the ISA segment.
+  const repetition = isaFields[11] || '';
+
+  return { element, component: tail[0], segment: tail[1], repetition };
 }
 
 /**

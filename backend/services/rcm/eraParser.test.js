@@ -679,15 +679,148 @@ test('A3: an OA/PI contractual reduction is a write-off, not extra allowed', () 
   assert.ok(!line.flags.includes('allowed_mismatch'), 'reported and derived agree');
 });
 
-test('A3: AMT*B6 is READ and preferred, and a disagreement is flagged', () => {
+test('A3: AMT*B6 is EVIDENCE — the DERIVED value is what allowed_cents holds', () => {
+  // An earlier revision of this slice preferred the reported value, and this
+  // test pinned it. That was a money regression: on the majority of the corpus
+  // B6 carries the BILLED amount, so preferring it set allowed := billed and
+  // made write_off_cents ZERO — worse than develop, on the very number Slice 6c
+  // writes into Open Dental's ClaimProc.WriteOff.
   const parsed = parse835(fixture('Test_Reported_Allowed.edi'));
   const line = parsed.claims[0].procedures[1];
+
+  assert.equal(line.reportedAllowedCents, 18_000, 'the payer figure is kept...');
+  assert.equal(line.derivedAllowedCents, 10_000, '...and the arithmetic is kept...');
+  assert.equal(line.allowedCents, 10_000, '...and the ARITHMETIC is what counts');
+
+  // `allowed_source` is the provenance of the payer's STATED allowed amount,
+  // not of allowed_cents — which is always derived.
   assert.equal(line.allowedSource, 'reported');
-  assert.equal(line.reportedAllowedCents, 18_000);
-  assert.equal(line.derivedAllowedCents, 10_000);
-  assert.equal(line.allowedCents, 18_000, "the payer's own figure wins");
+
+  // The disagreement is the finding, and it still fires.
   assert.ok(line.flags.includes('allowed_mismatch'));
   assert.ok(parsed.claims[0].needsReviewReasons.includes('allowed_amount_mismatch'));
+});
+
+test('A3: the STORED write-off equals the CAS contractual amount, on every corpus line', () => {
+  // THE TEST WHOSE ABSENCE LET THE REGRESSION THROUGH. No test in the suite
+  // asserted a stored write-off, so 1170 green tests said nothing while
+  // write_off_cents went to zero across most of the corpus.
+  //
+  // write_off_cents = billed - allowed, and it is what Slice 6c writes into
+  // ClaimProc.WriteOff. It must equal what the file's own CAS says was
+  // contractual — including on the 25-of-37 lines whose AMT*B6 carries the
+  // billed amount and would zero it if reported were preferred.
+  const CONTRACTUAL = ['CO', 'OA', 'PI'];
+  let checked = 0;
+
+  for (const name of fs.readdirSync(FIXTURES).filter((f) => f.endsWith('.edi'))) {
+    const parsed = parse835(fixture(name));
+    for (const claim of parsed.claims) {
+      // A line carrying an unreadable amount cannot be reconciled by
+      // construction — that is exactly what totals_unreconciled says.
+      if (claim.needsReviewReasons.includes('totals_unreconciled')) continue;
+
+      for (const line of claim.procedures) {
+        const contractual = line.adjustments
+          .filter((a) => CONTRACTUAL.includes(a.groupCode))
+          .reduce((sum, a) => sum + a.amountCents, 0);
+        assert.equal(
+          line.billedCents - line.allowedCents,
+          contractual,
+          `${name} ${line.code}: stored write-off must equal the CAS contractual amount`
+        );
+        checked += 1;
+      }
+    }
+  }
+  assert.ok(checked > 50, `expected to check the whole corpus, checked ${checked} lines`);
+});
+
+test('A3: the five lines the review named have their write-offs back', () => {
+  // Reproduces the PM's table exactly, so a change that re-breaks any one of
+  // them names the fixture rather than failing an aggregate.
+  const expected = [
+    ['Test_Guardian_Clean.edi', 'D0120', 200],
+    ['Test_Guardian_Clean.edi', 'D0274', 1_800],
+    ['Test_Delta_Dental_MultiClaim.edi', 'D2750', 50_400],
+    ['Test_Cigna_Downcode.edi', 'D0150', 4_500],
+    ['Test_Principal_Major.edi', 'D2750', 35_000],
+  ];
+  for (const [name, code, writeOff] of expected) {
+    const parsed = parse835(fixture(name));
+    const line = parsed.claims.flatMap((c) => c.procedures).find((p) => p.code === code);
+    assert.ok(line, `${name} should carry ${code}`);
+    assert.equal(line.billedCents - line.allowedCents, writeOff, `${name} ${code}`);
+  }
+});
+
+test('B1: the claim allowed total and its lines agree, across the whole corpus', () => {
+  // Two stored numbers describing one sum, with nothing comparing them, is the
+  // defect class A1 exists to end. This is that check one level up.
+  for (const name of fs.readdirSync(FIXTURES).filter((f) => f.endsWith('.edi'))) {
+    const parsed = parse835(fixture(name));
+    for (const claim of parsed.claims) {
+      assert.ok(
+        !claim.needsReviewReasons.includes('claim_line_allowed_mismatch'),
+        `${name} ${claim.claimNumber}: claim allowed should reconcile with its lines`
+      );
+    }
+  }
+});
+
+test('B1: a claim whose header disagrees with its lines about billed is flagged', () => {
+  // CLP03 says $300 billed; the single line says $200. The claim's allowed and
+  // the sum of its lines' allowed therefore cannot both be right.
+  const parsed = parse835(
+    build835(
+      [
+        'CLP*MISMATCH*1*300*100**12*ICN9',
+        'NM1*QC*1*SYNTHETIC*ALPHA****MI*111222333',
+        'SVC*AD:D2750*200*100',
+        'CAS*CO*45*100',
+      ].join(SEG)
+    )
+  );
+  const claim = parsed.claims[0];
+  assert.equal(claim.totalAllowedCents, 20_000, 'CLP03 300 less the 100 contractual');
+  assert.equal(
+    claim.procedures.reduce((s, p) => s + p.allowedCents, 0),
+    10_000,
+    'the line says 200 less 100'
+  );
+  assert.ok(claim.needsReviewReasons.includes('claim_line_allowed_mismatch'));
+});
+
+test('B3: an unreadable amount makes the claim say its totals are unreconciled', () => {
+  // The A4 flag alone was not enough. A refused CONTRACTUAL amount reads as 0,
+  // which inflates the derived allowed and zeroes the write-off — while
+  // claim_total_mismatch, line_total_mismatch and patient_resp_mismatch all
+  // compare figures the bad token never touched. A $100 write-off could vanish
+  // into totals that reconciled perfectly.
+  const parsed = parse835(
+    build835(
+      [
+        'CLP*UNREAD*1*200*100**12*ICN8',
+        'NM1*QC*1*SYNTHETIC*BRAVO****MI*222333444',
+        'SVC*AD:D2750*200*100',
+        'CAS*CO*45*1,00',
+      ].join(SEG)
+    )
+  );
+  const claim = parsed.claims[0];
+  const line = claim.procedures[0];
+
+  assert.ok(line.flags.includes('unreadable_amount'));
+  // The write-off IS wrong — nothing can recover a number we could not read —
+  // but the claim now refuses to present its totals as reconciled.
+  assert.equal(line.billedCents - line.allowedCents, 0);
+  assert.ok(claim.needsReviewReasons.includes('unreadable_amount'));
+  assert.ok(claim.needsReviewReasons.includes('totals_unreconciled'));
+
+  // And none of the pre-existing reconciliations would have caught it.
+  for (const quiet of ['claim_total_mismatch', 'line_total_mismatch', 'patient_resp_mismatch']) {
+    assert.ok(!claim.needsReviewReasons.includes(quiet), `${quiet} genuinely does not fire here`);
+  }
 });
 
 test('A3: a line with no AMT*B6 records that its allowed amount was DERIVED', () => {

@@ -1,0 +1,118 @@
+/**
+ * The RCM vocabulary, in words a biller reads.
+ *
+ * `backend/services/rcm/rcmVocabulary.js` says the vocabulary exists so nobody
+ * ever sees a raw slug. That promise is only kept HERE — a reason with no entry
+ * in these maps renders as `partial_adjustment_segment`, and it renders that way
+ * on a proposal it is also BLOCKING, so the biller is stopped by a string they
+ * cannot read.
+ *
+ * Slice 5.5 shipped ten new vocabulary members without touching this file and
+ * did exactly that. `rcm-labels.test.ts` now reads the backend vocabulary and
+ * fails if any member is unlabelled, so the two cannot drift again.
+ *
+ * Shared by the ERA upload panel and the Slice 6 workbench: one wording for one
+ * concept, wherever a biller meets it.
+ */
+
+/**
+ * Claim-level review reasons — `rcm_claims.needs_review_reasons`.
+ *
+ * Both ingestion doors write into this column, so both vocabularies are here.
+ * The wording says what a HUMAN must do or know, not what the parser noticed.
+ */
+export const REVIEW_LABELS: Record<string, string> = {
+  // ── ERA (the 835 parser and ingest) ──
+  reversal_not_postable: "Reversal / takeback — cannot be posted",
+  claim_denied: "Denied by the carrier",
+  secondary_payer_adjudication: "Secondary payer (coordination of benefits)",
+  prior_payer_payment_on_primary_claim: "Prior payer's payment on a claim marked primary",
+  unparseable_cas: "An adjustment could not be read",
+  unstorable_adjustment_group: "An adjustment used an unknown group code",
+  procedure_downcoded: "The carrier changed a procedure code",
+  no_service_lines: "No service lines",
+  line_total_mismatch: "Line payments do not sum to the claim total",
+  claim_level_adjustments_present: "Deductible or coinsurance was reported for the whole claim, not per procedure",
+  patient_resp_mismatch: "The patient responsibility on the lines does not match the claim total",
+  allowed_amount_mismatch: "The carrier's stated allowed amount disagrees with its own adjustments",
+  unreadable_amount: "An amount on this claim could not be read",
+  partial_adjustment_segment: "Part of an adjustment could not be read — some money is unaccounted for",
+  claim_line_allowed_mismatch: "The claim's allowed total does not match the sum of its lines",
+  totals_unreconciled: "Totals could not be reconciled — check every amount before posting",
+
+  // ── EOB (the PDF extraction) ──
+  low_confidence: "The reader was not confident about this document",
+  missing_npi: "No provider NPI was found",
+  missing_dob: "No date of birth was found",
+  missing_check_number: "No check number was found",
+  missing_subscriber_id: "No subscriber ID was found",
+  missing_payer: "No payer was found",
+  missing_claim_number: "No claim number was found",
+  missing_patient_name: "No patient name was found",
+  no_procedures_extracted: "No procedures were read from this claim",
+  paid_total_mismatch: "The procedure payments do not sum to the claim total",
+  billed_total_mismatch: "The procedure charges do not sum to the claim total",
+  invalid_service_date: "The service date could not be read",
+  service_date_in_future: "The service date is in the future",
+  negative_amount: "A negative amount was read — most often a misread column",
+  no_claims_extracted: "No claims were read from this document",
+  batch_paid_total_mismatch: "The claim payments do not sum to the check total",
+};
+
+/**
+ * Remittance-level flags — `rcm_payment_batches.flags`.
+ *
+ * Facts about a whole check. Written by BOTH doors since Slice 5.5: an EOB
+ * extraction reaches the ones it can establish, an 835 reaches all of them.
+ */
+export const FLAG_LABELS: Record<string, string> = {
+  plb_adjustments_present: "Provider-level adjustments (PLB) — not attached to any claim",
+  negative_total_payment: "Negative total — this remittance is a takeback",
+  no_payment_made: "The payer reports no payment made",
+  no_claims_in_remittance: "No claims in this remittance",
+  claim_total_mismatch: "Claim payments do not sum to the check total",
+  envelope_counts_mismatch: "The file disagrees with its own segment counts — it may be truncated",
+  envelope_incomplete: "The file is missing a closing segment — it may be truncated",
+  partial_adjustment_segment: "Part of a provider-level adjustment could not be read",
+  unreadable_amount: "An amount on this remittance could not be read",
+  multi_transaction_file: "This file contained more than one check",
+};
+
+/**
+ * Why an EOB upload failed — `rcm_eob_uploads.failure_code`.
+ *
+ * `error_message` already carries the server's own sentence, which is usually
+ * the better thing to show. These are the short forms for a chip or a heading.
+ */
+export const FAILURE_LABELS: Record<string, string> = {
+  pdf_unreadable: "This PDF could not be opened",
+  no_extractable_text: "This PDF has no text layer — most likely a scan",
+  document_too_large: "This document is too long to read in one pass",
+  extraction_invalid: "The reader returned an unusable answer",
+  budget_exhausted: "The daily extraction cost cap is used up",
+  llm_unavailable: "Document reading is not configured in this environment",
+  extraction_failed: "Extraction failed",
+};
+
+/**
+ * A vocabulary member in words, falling back to the slug.
+ *
+ * The fallback is deliberate and stays: an unmapped value must render as an
+ * ugly string rather than vanish, because a review reason that disappears is a
+ * proposal that looks cleaner than it is. The test is what keeps the fallback
+ * from ever being reached in practice.
+ */
+export function label(map: Record<string, string>, key: string): string {
+  return map[key] ?? key;
+}
+
+/**
+ * `uncertain_line:3` → "Line 3 was read with low confidence".
+ *
+ * The one PARAMETERISED reason, so it cannot live in a lookup table.
+ */
+export function reviewLabel(reason: string): string {
+  const uncertain = /^uncertain_line:([1-9][0-9]*)$/.exec(reason);
+  if (uncertain) return `Line ${uncertain[1]} was read with low confidence`;
+  return label(REVIEW_LABELS, reason);
+}

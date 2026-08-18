@@ -32,42 +32,13 @@ import {
   type EraUploadResult,
   type RcmOfficeId,
 } from "@/features/rcm/api";
+import { REVIEW_LABELS, FLAG_LABELS, label, reviewLabel } from "@/features/rcm/labels";
 
 /** Integer cents → "$1,234.56". Formatting is the component's job, not the API's. */
 function money(cents: number): string {
   return (cents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-/**
- * A machine-readable reason turned into something a biller reads.
- *
- * The map is exhaustive over what the parser emits today; an unmapped reason
- * falls back to its own slug rather than being hidden, so a new backend reason
- * shows up as an ugly string instead of silently disappearing.
- */
-const REVIEW_LABELS: Record<string, string> = {
-  reversal_not_postable: "Reversal / takeback — cannot be posted",
-  claim_denied: "Denied by the carrier",
-  secondary_payer_adjudication: "Secondary payer (coordination of benefits)",
-  prior_payer_payment_on_primary_claim: "Prior payer's payment on a claim marked primary",
-  unparseable_cas: "An adjustment could not be read",
-  unstorable_adjustment_group: "An adjustment used an unknown group code",
-  procedure_downcoded: "The carrier changed a procedure code",
-  no_service_lines: "No service lines",
-  line_total_mismatch: "Line payments do not sum to the claim total",
-};
-
-const FLAG_LABELS: Record<string, string> = {
-  plb_adjustments_present: "Provider-level adjustments (PLB) — not attached to any claim",
-  negative_total_payment: "Negative total — this remittance is a takeback",
-  no_payment_made: "The payer reports no payment made",
-  no_claims_in_remittance: "No claims in this remittance",
-  claim_total_mismatch: "Claim payments do not sum to the check total",
-};
-
-function label(map: Record<string, string>, key: string): string {
-  return map[key] ?? key;
-}
 
 type UploadState =
   | { kind: "idle" }
@@ -246,7 +217,7 @@ function UploadResult({ result, office }: { result: EraUploadResult; office: Rcm
             ))}
             {review.map((r) => (
               <li key={r} className="text-xs text-amber-700 dark:text-amber-500">
-                • {label(REVIEW_LABELS, r)}
+                • {reviewLabel(r)}
               </li>
             ))}
           </ul>

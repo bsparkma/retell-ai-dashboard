@@ -22,13 +22,26 @@
  *  4. `rcm_eob_uploads` gets content-addressed dedupe and a machine-readable
  *     failure code.
  *
- * NOTHING HERE IS DESTRUCTIVE. Every column is added nullable or with a default
+ * `up` IS NON-DESTRUCTIVE. Every column is added nullable or with a default
  * that matches what the old code already meant, so existing staging rows keep
  * their meaning. The two CHECKs are the exception and are deliberately
  * VALIDATING: if a staging row already holds a reason outside the vocabulary,
  * this migration FAILS rather than quietly accepting it. That is the point —
  * an unknown reason in that column is exactly the defect the CHECK exists to
  * prevent, and discovering one is worth a failed migration.
+ *
+ * `down` REFUSES rather than deleting. An earlier revision dropped every
+ * claim-level adjustment so the restored NOT NULL would hold — under a header
+ * that claimed nothing here was destructive. A rollback that quietly deletes
+ * financial rows is worse than one that stops and tells you what is in the way.
+ *
+ * ⚠ BACKUP/RESTORE ORDERING. `rcm_claims_review_reasons_check` calls the
+ * user-defined function `rcm_is_review_reason`. `pg_dump` emits functions
+ * before tables, so a plain `pg_restore` of a full dump is fine — but a
+ * SELECTIVE restore (`-t rcm_claims`) or any restore that recreates the table
+ * without the function FAILS, because the CHECK cannot resolve it. Restore the
+ * whole schema, or create the two functions first. See docs/RCM_ERA_FIDELITY.md
+ * §"Backup and restore".
  */
 
 /** Mirrors rcmVocabulary.REVIEW_REASONS. The test asserts they cannot drift. */
@@ -48,6 +61,8 @@ const REVIEW_REASONS = [
   'allowed_amount_mismatch',
   'unreadable_amount',
   'partial_adjustment_segment',
+  'claim_line_allowed_mismatch',
+  'totals_unreconciled',
   // EOB (eobExtraction.js)
   'low_confidence',
   'missing_npi',
@@ -106,6 +121,12 @@ const EOB_FAILURE_CODES = [
   'llm_unavailable',
   'extraction_failed',
 ];
+
+/** Mirrors rcmVocabulary.ALLOWED_SOURCES. */
+const ALLOWED_SOURCES = ['reported', 'derived'];
+
+/** Mirrors rcmVocabulary.ADJUSTMENT_SCOPES. */
+const ADJUSTMENT_SCOPES = ['claim', 'line'];
 
 /** `'a','b','c'` — a SQL string list. */
 function sqlList(values) {
@@ -187,7 +208,7 @@ exports.up = (pgm) => {
     scope: { type: 'text', notNull: true, default: 'line' },
   });
   pgm.addConstraint('rcm_procedure_adjustments', 'rcm_procedure_adjustments_scope_check', {
-    check: `scope IN (${sqlList(['claim', 'line'])})`,
+    check: `scope IN (${sqlList(ADJUSTMENT_SCOPES)})`,
   });
   // The two must agree: a line-scoped adjustment has a line, a claim-scoped one
   // does not. Without this the nullable FK above would let a line-scoped row
@@ -224,8 +245,21 @@ exports.up = (pgm) => {
     remark_codes: { type: 'text[]', notNull: true, default: '{}' },
   });
   pgm.addConstraint('rcm_procedure_lines', 'rcm_procedure_lines_allowed_source_check', {
-    check: `allowed_source IN (${sqlList(['reported', 'derived'])})`,
+    check: `allowed_source IN (${sqlList(ALLOWED_SOURCES)})`,
   });
+
+  // B2 leaves `rcm_procedure_adjustments.remark_code` UNWRITTEN BY THE ERA PATH.
+  // It is not dropped: the EOB extraction still populates it (its model returns
+  // one remark per adjustment, which is a different and legitimate shape), and
+  // dropping a NOT NULL DEFAULT '' column that another writer uses would be a
+  // second change riding on this one. Said out loud in the database so a reader
+  // of the schema alone is not misled into thinking the ERA path fills it.
+  pgm.sql(`
+    COMMENT ON COLUMN rcm_procedure_adjustments.remark_code IS
+      'EOB path only. The ERA path leaves this NULL and stores the full RARC set '
+      'on rcm_procedure_lines.remark_codes, because X12 associates LQ*HE remark '
+      'codes with the SERVICE LINE and gives no CAS-to-LQ mapping at all.';
+  `);
 
   // ── 6. Claim-level remark codes ──────────────────────────────────────────
   // B2. MOA / MIA carry claim-level remark codes and were not read at all.
@@ -246,6 +280,36 @@ exports.up = (pgm) => {
   // one carve-out: a FAILED upload does not reserve the hash, so a document that
   // failed extraction can be retried. Only rows that produced (or are producing)
   // a proposal hold the claim.
+  // GUARD FIRST. Staging holds real uploaded remittances, and the pre-existing
+  // read-then-write race this index closes is exactly what produces duplicate
+  // (office_id, file_hash) rows — so the index creation can abort on live data.
+  // Postgres' own error names one pair and stops; this names them all, with the
+  // query an operator needs, before anything is attempted.
+  pgm.sql(`
+    DO $$
+    DECLARE
+      dupes text;
+    BEGIN
+      SELECT string_agg(format('%s/%s x%s', office_id, left(file_hash, 12), n), ', ')
+        INTO dupes
+        FROM (
+          SELECT office_id, file_hash, count(*) AS n
+            FROM rcm_eob_uploads
+           WHERE status <> 'failed' AND file_hash IS NOT NULL
+           GROUP BY office_id, file_hash
+          HAVING count(*) > 1
+        ) d;
+
+      IF dupes IS NOT NULL THEN
+        RAISE EXCEPTION
+          'rcm_eob_uploads already holds duplicate (office_id, file_hash) rows: %. '
+          'These are duplicate proposals from the read-then-write race this index closes. '
+          'Resolve them before migrating — see docs/RCM_ERA_FIDELITY.md "Before you deploy".',
+          dupes;
+      END IF;
+    END $$;
+  `);
+
   pgm.createIndex('rcm_eob_uploads', ['office_id', 'file_hash'], {
     name: 'rcm_eob_uploads_office_hash_unique',
     unique: true,
@@ -282,8 +346,26 @@ exports.down = (pgm) => {
   pgm.dropConstraint('rcm_procedure_adjustments', 'rcm_procedure_adjustments_scope_line_check');
   pgm.dropConstraint('rcm_procedure_adjustments', 'rcm_procedure_adjustments_scope_check');
   pgm.dropColumns('rcm_procedure_adjustments', ['scope']);
-  // Claim-scoped rows have no line and would violate the restored NOT NULL.
-  pgm.sql(`DELETE FROM rcm_procedure_adjustments WHERE procedure_line_id IS NULL`);
+
+  // Claim-scoped adjustments have no service line and would violate the
+  // restored NOT NULL. REFUSE rather than delete them: they are the money a
+  // payer reported at claim level, and a rollback is not a mandate to discard
+  // financial rows. The operator decides what happens to them.
+  pgm.sql(`
+    DO $$
+    DECLARE
+      n bigint;
+    BEGIN
+      SELECT count(*) INTO n FROM rcm_procedure_adjustments WHERE procedure_line_id IS NULL;
+      IF n > 0 THEN
+        RAISE EXCEPTION
+          'Cannot roll back: % claim-level adjustment row(s) have no service line and '
+          'would be destroyed by restoring procedure_line_id NOT NULL. Export or delete '
+          'them deliberately first: SELECT * FROM rcm_procedure_adjustments '
+          'WHERE procedure_line_id IS NULL;', n;
+      END IF;
+    END $$;
+  `);
   pgm.alterColumn('rcm_procedure_adjustments', 'procedure_line_id', { notNull: true });
 
   pgm.dropConstraint('rcm_payment_batches', 'rcm_payment_batches_flags_check');

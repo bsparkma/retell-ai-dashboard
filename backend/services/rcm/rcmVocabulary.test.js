@@ -56,6 +56,17 @@ test('the EOB failure-code vocabulary matches the migration exactly', () => {
   );
 });
 
+test('the allowed-source and adjustment-scope vocabularies match the migration', () => {
+  // Slice 5.5 review: these two were mirrored into the migration as INLINE
+  // lists, so the drift test could not see them and they could have diverged
+  // silently. Named consts now, under the same guard as the others.
+  assert.deepEqual(migrationList('ALLOWED_SOURCES').sort(), [...vocabulary.ALLOWED_SOURCES].sort());
+  assert.deepEqual(
+    migrationList('ADJUSTMENT_SCOPES').sort(),
+    [...vocabulary.ADJUSTMENT_SCOPES].sort()
+  );
+});
+
 test('the parameterised uncertain_line reason is accepted, and near-misses are not', () => {
   // The one reason the DB CHECK cannot express as `<@ ARRAY[…]`, which is why
   // the migration validates each element through an IMMUTABLE function.

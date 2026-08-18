@@ -292,8 +292,15 @@ const AMOUNT_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
  * called with the offending token and the result is 0 **with the caller
  * obliged to flag it**. There is no third state available: the cents columns
  * are `bigint NOT NULL`, so "unknown" cannot be stored as NULL without a
- * schema change. The flag is what carries the honesty, and the totals
- * reconciliation fires alongside it — see docs/RCM_ERA_FIDELITY.md §A4.
+ * schema change.
+ *
+ * THE FLAG IS NOT ENOUGH ON ITS OWN, and an earlier revision of this comment
+ * wrongly claimed the totals reconciliation would corroborate it. It does not:
+ * a refused CONTRACTUAL amount reads as 0, which inflates the derived allowed
+ * and zeroes the write-off, while `claim_total_mismatch`, `line_total_mismatch`
+ * and `patient_resp_mismatch` all compare figures the bad token never touched.
+ * `parseClaim` therefore raises `totals_unreconciled` on any claim carrying an
+ * unreadable amount — see docs/RCM_ERA_FIDELITY.md §A4.
  *
  * @param {unknown} value
  * @param {(token: string) => void} [onUnreadable]
@@ -1043,7 +1050,23 @@ function parseClaim(win, defaultPayerName, paymentDate, componentSep) {
       addFlag(needsReviewReasons, REVIEW_REASONS.ALLOWED_AMOUNT_MISMATCH);
     }
   }
-  if (sawUnreadableAmount) addFlag(needsReviewReasons, REVIEW_REASONS.UNREADABLE_AMOUNT);
+  // ── B3 (review). AN UNREADABLE AMOUNT MUST MAKE A TOTAL DISAGREE. ─────────
+  //
+  // A4 refuses a token it cannot parse and flags the line. That is necessary
+  // and it is not sufficient: a refused CONTRACTUAL amount reads as 0, which
+  // inflates the derived allowed and zeroes the write-off, and NOTHING ELSE
+  // NOTICES. `claim_total_mismatch` compares paid amounts (untouched),
+  // `line_total_mismatch` compares paid amounts (untouched), and
+  // `patient_resp_mismatch` only sees PR. A $100 write-off can vanish into
+  // totals that reconcile perfectly, leaving `unreadable_amount` standing alone.
+  //
+  // So the claim says so directly: if any amount on it could not be read, its
+  // totals are NOT reconciled and must not be treated as though they were.
+  const lineUnreadable = procedures.some((p) => p.flags.includes('unreadable_amount'));
+  if (sawUnreadableAmount || lineUnreadable) {
+    addFlag(needsReviewReasons, REVIEW_REASONS.UNREADABLE_AMOUNT);
+    addFlag(needsReviewReasons, REVIEW_REASONS.TOTALS_UNRECONCILED);
+  }
 
   // CLP04 is the payer's own total. If our lines do not reach it we have
   // misread something; a claim that quietly posts short is worse than one held.
@@ -1060,6 +1083,19 @@ function parseClaim(win, defaultPayerName, paymentDate, componentSep) {
   // Only when the payer actually sent a CLP05: an omitted one is 0 here and
   // reconciling against it would flag most of the corpus for a field the file
   // never claimed.
+  // B1 (review). The claim's allowed total and its lines' allowed totals are two
+  // stored numbers describing one sum, and before this NOTHING compared them.
+  // `rcm_claims.total_allowed_cents` is derived from CLP03; each line's is
+  // derived from its own SVC02. They agree only if the claim header and its
+  // lines agree about what was billed — after subtracting any contractual
+  // reduction reported at CLAIM level, which belongs to no line and is
+  // therefore legitimately absent from the line sum.
+  const lineAllowedSum = procedures.reduce((sum, p) => sum + p.allowedCents, 0);
+  const expectedClaimAllowed = lineAllowedSum - contractualCentsOf(claimCas.adjustments);
+  if (procedures.length > 0 && totalAllowedCents !== expectedClaimAllowed) {
+    addFlag(needsReviewReasons, REVIEW_REASONS.CLAIM_LINE_ALLOWED_MISMATCH);
+  }
+
   const reportedPatientResp = (clp['5'] || '').trim() !== '';
   const patientRespSeen =
     procedures.reduce((sum, p) => sum + p.adjustments.reduce(prSum, 0), 0) +
@@ -1189,21 +1225,39 @@ function parseServiceLines(win, claimDenied, componentSep) {
       if (mapped) addFlag(flags, mapped);
     }
 
-    // A3. The allowed amount, READ when the payer reports it and derived only
-    // when it does not. AMT*B6 is the "allowed — actual" amount; the derived
-    // form is billed minus the contractual reduction, which now counts OA and
-    // PI as well as CO.
+    // ── A3. DERIVED WINS. REPORTED IS EVIDENCE, NOT TRUTH. ─────────────────
+    //
+    // `derived = billed - contractual` is built from two payer-stated numbers
+    // that must reconcile against the payer's own paid amount. `AMT*B6` is ONE
+    // unverified field, and this corpus proves it is populated inconsistently:
+    // 25 of its 37 B6 lines carry the BILLED amount rather than the allowed one
+    // (backend/test/fixtures/rcm/README.md). When a single unchecked value
+    // disagrees with arithmetic that reconciles, the arithmetic is the better
+    // estimate and the disagreement is the FINDING.
+    //
+    // An earlier revision of this slice preferred the reported value. On the
+    // majority of the corpus that set allowed := billed, which made
+    // `write_off_cents` ZERO — so a Delta claim whose own CAS says $504.00 was
+    // contractual would have posted a $0.00 write-off and left $504.00 sitting
+    // in the patient's AR. NEVER COMPUTE A WRITE-OFF FROM A VALUE YOU DID NOT
+    // RECONCILE.
     const allowedAmt = loop.find((s) => s.name === 'AMT' && s['1'] === 'B6');
     const derivedAllowedCents = billedCents - contractualCentsOf(adjustments);
-    const reportedAllowedCents = allowedAmt
-      ? toCents(allowedAmt['2'], noteUnreadable)
-      : null;
+    const reportedAllowedCents = allowedAmt ? toCents(allowedAmt['2'], noteUnreadable) : null;
 
+    // `allowed_cents` — and therefore `write_off_cents`, the number Slice 6c
+    // writes into Open Dental's ClaimProc.WriteOff — is ALWAYS the derived one.
+    const allowedCents = derivedAllowedCents;
+
+    // `allowed_source` is the provenance of the PAYER'S STATED allowed amount,
+    // i.e. of `reportedAllowedCents` — not of `allowedCents`, which is always
+    // derived. 'reported' means the payer sent an AMT*B6 we could compare
+    // against; 'derived' means it said nothing and our arithmetic stands alone.
     const allowedSource = allowedAmt ? 'reported' : 'derived';
-    const allowedCents = allowedAmt ? reportedAllowedCents : derivedAllowedCents;
 
-    // The two disagreeing is a disagreement about money — write_off_cents is
-    // derived from this and Slice 6c writes it into Open Dental.
+    // The two disagreeing now means: the payer's stated allowed disagrees with
+    // the payer's own arithmetic. A true and useful statement, and the reason
+    // we keep both numbers rather than choosing silently.
     if (
       allowedAmt &&
       Math.abs(reportedAllowedCents - derivedAllowedCents) > ALLOWED_TOLERANCE_CENTS

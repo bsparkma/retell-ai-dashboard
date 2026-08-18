@@ -77,6 +77,20 @@ const ERA_REVIEW_REASONS = Object.freeze({
    * not represented anywhere.
    */
   PARTIAL_ADJUSTMENT_SEGMENT: 'partial_adjustment_segment',
+  /**
+   * B1 (Slice 5.5 review). The claim's own allowed total does not equal the
+   * sum of its lines, after accounting for adjustments reported at claim
+   * level. Two stored numbers about one sum, disagreeing — the exact defect
+   * class A1 exists to end, one level up.
+   */
+  CLAIM_LINE_ALLOWED_MISMATCH: 'claim_line_allowed_mismatch',
+  /**
+   * B3 (Slice 5.5 review). An amount on this claim could not be read, so every
+   * total it belongs to is untrustworthy. Raised ALONGSIDE `unreadable_amount`
+   * rather than instead of it: that flag says a token was bad, this one says
+   * the sums are therefore not reconciled.
+   */
+  TOTALS_UNRECONCILED: 'totals_unreconciled',
 });
 
 /**

@@ -36,6 +36,7 @@ const budget = require('./extractionBudget');
 const blobStore = require('./eobBlobStore');
 const llm = require('./rcmLlm');
 const { extractPdfText, DocumentTextError } = require('./eobDocumentText');
+const { REMITTANCE_FLAGS, EOB_FAILURE_CODES } = require('./rcmVocabulary');
 const {
   EOB_EXTRACTION_SCHEMA,
   SYSTEM_PROMPT,
@@ -169,9 +170,16 @@ async function runExtraction(job) {
     const reason = failureReason(err);
     await pool
       .query(
+        // SLICE 5.5 REVIEW. `AND result_batch_id IS NULL` closes a window where
+        // the proposal transaction COMMITS and then something after it throws —
+        // a client error, a released pool, a serialization failure surfacing
+        // late. Without the guard this marks a row 'failed' while its batch and
+        // claims exist, which RELEASES the content hash (the unique index
+        // excludes 'failed'), and the next upload of the same PDF ingests it a
+        // second time. A row that produced a batch is never a failure.
         `UPDATE rcm_eob_uploads SET status = 'failed', error_message = $3, failure_code = $4,
                 processed_at = now(), updated_at = now()
-          WHERE upload_id = $1 AND office_id = $2`,
+          WHERE upload_id = $1 AND office_id = $2 AND result_batch_id IS NULL`,
         // A6: the MESSAGE is the human sentence; the CODE is what the panel
         // switches on. "too long, split it" and "this PDF is encrypted" are
         // different conversations and the UI has to be able to tell them apart
@@ -237,6 +245,26 @@ function failureReason(err) {
 }
 
 /**
+ * The remittance flags an extracted EOB batch carries.
+ *
+ * Drawn from the SAME frozen vocabulary the ERA path uses
+ * (`rcmVocabulary.REMITTANCE_FLAGS`), because a biller reading the workbench
+ * should not have to know which door a proposal came through. Only the members
+ * an EOB can actually establish are reachable here: an extraction has no
+ * envelope to validate and no PLB to carry.
+ *
+ * @param {import('./eobExtraction').ExtractedEob} extracted
+ * @param {boolean} balanced
+ * @returns {string[]}
+ */
+function batchFlags(extracted, balanced) {
+  const flags = [];
+  if (!balanced) flags.push('claim_total_mismatch');
+  if (extracted.claims.length === 0) flags.push('no_claims_in_remittance');
+  return flags.filter((f) => REMITTANCE_FLAGS.includes(f));
+}
+
+/**
  * The machine-readable half of a failure — `rcm_eob_uploads.failure_code`.
  *
  * Slice 5.5 (A6) added this because the panel had only `error_message` to go
@@ -271,6 +299,15 @@ function failureCode(err) {
   }
 }
 
+// A code outside the vocabulary would be rejected by the DB CHECK, turning a
+// handled failure into an unhandled one. Asserted at load rather than trusted.
+for (const code of ['document_too_large', 'no_extractable_text', 'pdf_unreadable',
+  'budget_exhausted', 'llm_unavailable', 'extraction_invalid', 'extraction_failed']) {
+  if (!EOB_FAILURE_CODES.includes(code)) {
+    throw new Error(`[rcm/eob] failureCode() can emit '${code}', which is not in the vocabulary`);
+  }
+}
+
 /**
  * Write the whole proposal in ONE transaction.
  *
@@ -298,8 +335,8 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
     const batchRes = await client.query(
       `INSERT INTO rcm_payment_batches
          (office_id, check_number, eft_number, payment_method, payer, deposit_date,
-          total_amount_cents, claim_count, status, era_file_key, era_file_url, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          total_amount_cents, claim_count, status, era_file_key, era_file_url, notes, flags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING batch_id`,
       [
         office,
@@ -317,8 +354,16 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
         // No URL is stored on the batch — the upload row already holds it, and
         // two copies of a location is two things to keep in step.
         null,
+        // B6 (Slice 5.5 review). `notes` is PROSE FOR A HUMAN and nothing
+        // switches on it. It used to end in the machine token '· UNBALANCED',
+        // which made it a signal the UI would have had to string-match — the
+        // same mistake the ERA path made with 'Flagged: a, b'.
         `EOB upload · ${extracted.claims.length} claim(s) · ${extracted.confidence}% confidence · ` +
-          `claims paid ${paidSum}¢ vs check ${checkTotal}¢${balanced ? '' : ' · UNBALANCED'}`,
+          `claims paid ${paidSum}¢ vs check ${checkTotal}¢`,
+        // …and the SIGNAL goes in the same CHECKed column the ERA path writes,
+        // so one UI switch serves both ingestion doors. Before this, every EOB
+        // batch showed no flags at all while its real state sat in that string.
+        batchFlags(extracted, balanced),
       ]
     );
     const batchId = batchRes.rows[0].batch_id;

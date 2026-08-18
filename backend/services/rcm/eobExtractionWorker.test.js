@@ -499,7 +499,12 @@ test('an unbalanced bulk check is flagged on every claim in the batch', async ()
         'a reviewer works one claim at a time — a batch-only flag is a flag nobody sees'
       );
     }
-    assert.match(h.db.table('rcm_payment_batches')[0].notes, /UNBALANCED/);
+    // Slice 5.5 (B6): the SIGNAL is in the CHECKed `flags` column the UI switches
+    // on — the same one the ERA path writes — not a machine token appended to
+    // prose. `notes` stays a human summary and nothing parses it.
+    const batch = h.db.table('rcm_payment_batches')[0];
+    assert.deepEqual(batch.flags, ['claim_total_mismatch']);
+    assert.doesNotMatch(batch.notes, /UNBALANCED/);
   } finally {
     h.restore();
   }
