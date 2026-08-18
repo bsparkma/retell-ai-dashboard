@@ -125,6 +125,12 @@ interface CallPatientPanelProps {
   odPatientName: string | null;
   sentBy: CallActor | null;
   onSend: () => void;
+  /**
+   * May this person write to a chart? UX only — the server gates the write on
+   * voice.chart_write regardless. A `tc` user still sees the MATCH, because who
+   * called is a fact worth knowing; what they lose is the button that would 403.
+   */
+  canChartWrite: boolean;
   /** (M6) The whole call — the TC handoff reads office/patient/case state off it. */
   call: UnifiedCall;
   onSentToTc: (result: SendToTcResult) => void;
@@ -132,7 +138,7 @@ interface CallPatientPanelProps {
 
 function CallPatientPanel({
   patient, loading, source, callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
-  syncStatus, odPatientId, odPatientName, sentBy, onSend, call, onSentToTc,
+  syncStatus, odPatientId, odPatientName, sentBy, onSend, canChartWrite, call, onSentToTc,
 }: CallPatientPanelProps) {
   const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
   const sent = syncStatus === "synced";
@@ -160,9 +166,11 @@ function CallPatientPanel({
               <UserCheck size={13} /> Matched: {matchedName}
             </div>
             <p className="text-[11px] text-sky-700/80">Auto-matched — review the note before it's written to the chart.</p>
-            <Button size="sm" className="w-full gap-1.5 text-xs" onClick={onSend}>
-              <Send size={12} /> Send to chart
-            </Button>
+            {canChartWrite && (
+              <Button size="sm" className="w-full gap-1.5 text-xs" onClick={onSend}>
+                <Send size={12} /> Send to chart
+              </Button>
+            )}
           </div>
         )}
 
@@ -750,6 +758,18 @@ export default function CallDetail() {
   }
 
   const displayCall = call;
+  /**
+   * May this person file a chart note?
+   *
+   * UX ONLY — every send goes through routes gated on `voice.chart_write`, so a
+   * `tc` user who calls the API anyway still gets a 403. What this removes is the
+   * button that offers work the server will refuse: read-only voice is a real
+   * role, and a button that always fails is worse than no button.
+   *
+   * A super_admin follows the platform tier, same as everywhere else.
+   */
+  const canChartWrite = auth.status === "authenticated"
+    && (auth.user.isSuperAdmin || can(auth.user.permissions, "voice.chart_write"));
   // Defensive default for the same reason the worklist row has one: a hand-built
   // fixture (tests) may not carry `notes`, and a page that throws is worse than a
   // page showing none. Server records always carry an array.
@@ -975,7 +995,7 @@ export default function CallDetail() {
                     <FileText size={14} className="text-primary" /> Transcript
                   </CardTitle>
                   {/* Contextual send (item 4): full transcript = a large note, deliberate. */}
-                  {displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
+                  {canChartWrite && displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
                     <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2"
                       onClick={() => startSend("transcript")}>
                       <Send size={11} /> Send full transcript to chart
@@ -1026,7 +1046,7 @@ export default function CallDetail() {
                   <Bot size={14} className="text-primary" /> AI Analysis
                 </CardTitle>
                 {/* Contextual send (item 4): the compact summary block. */}
-                {analysis.summary && displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
+                {canChartWrite && analysis.summary && displayCall.odSyncStatus !== "synced" && !displayCall.notAPatient && (
                   <Button variant="outline" size="sm" className="h-7 gap-1 text-[11px] px-2"
                     onClick={() => startSend("summary")}>
                     <Send size={11} /> Send summary to chart
@@ -1094,6 +1114,7 @@ export default function CallDetail() {
             odPatientName={displayCall.odPatientName}
             sentBy={displayCall.sentBy}
             onSend={() => startSend("summary")}
+            canChartWrite={canChartWrite}
             call={displayCall}
             onSentToTc={handleSentToTc}
           />
