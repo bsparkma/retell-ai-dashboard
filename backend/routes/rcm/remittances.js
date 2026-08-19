@@ -424,8 +424,16 @@ async function claimsByBatch(pool, office, batchIds) {
  * an EOB PDF is READ by a model and can be WRONG. A biller deciding how hard to
  * scrutinise a line needs to know which they are looking at.
  *
+ * AND, for an EOB, HOW the model got the text it read: a text layer, or OCR
+ * over page images. That is a second distinction on top of the first and it
+ * matters for the same reason — an 835 can only be malformed, a text-layer PDF
+ * can be mis-READ, and a scan can be mis-SEEN before it is ever mis-read. The
+ * biller deciding how hard to scrutinise a $4,000 check should be told which.
+ *
  * @returns {Promise<Map<string, { source: '835'|'eob', uploadId: string, filename: string,
- *                                 uploadedAt: string|null, uploadedBy: string|null }>>}
+ *                                 uploadedAt: string|null, uploadedBy: string|null,
+ *                                 textSource: string|null, ocrPageCount: number|null,
+ *                                 ocrMeanConfidence: number|null }>>}
  */
 async function uploadsByBatch(pool, office, batches) {
   /** @type {Map<string, any>} */
@@ -438,13 +446,15 @@ async function uploadsByBatch(pool, office, batches) {
   const [byKey, byResult] = await Promise.all([
     eraKeys.length
       ? pool.query(
-          `SELECT upload_id, filename, file_key, uploaded_at, uploaded_by FROM rcm_eob_uploads ` +
+          `SELECT upload_id, filename, file_key, uploaded_at, uploaded_by, ` +
+            `text_source, ocr_page_count, ocr_mean_confidence FROM rcm_eob_uploads ` +
             `WHERE office_id = $1 AND file_key = ANY($2::text[])`,
           [office, eraKeys]
         )
       : Promise.resolve({ rows: [] }),
     pool.query(
-      `SELECT upload_id, filename, result_batch_id, uploaded_at, uploaded_by FROM rcm_eob_uploads ` +
+      `SELECT upload_id, filename, result_batch_id, uploaded_at, uploaded_by, ` +
+        `text_source, ocr_page_count, ocr_mean_confidence FROM rcm_eob_uploads ` +
         `WHERE office_id = $1 AND result_batch_id = ANY($2::uuid[])`,
       [office, batchIds]
     ),
@@ -462,6 +472,13 @@ async function uploadsByBatch(pool, office, batches) {
       filename: upload.filename,
       uploadedAt: iso(upload.uploaded_at),
       uploadedByKey: upload.uploaded_by || null,
+      // null on an 835 (nothing was READ — the file was parsed) and on any
+      // document not yet extracted. The screen renders those two the same way:
+      // it says nothing, rather than guessing.
+      textSource: upload.text_source || null,
+      ocrPageCount: upload.ocr_page_count == null ? null : num(upload.ocr_page_count),
+      ocrMeanConfidence:
+        upload.ocr_mean_confidence == null ? null : Number(upload.ocr_mean_confidence),
     });
   }
   return out;
@@ -682,6 +699,9 @@ router.get(
               uploadedBy: upload.uploadedByKey
                 ? (loaded.actors[upload.uploadedByKey] || {}).displayName || upload.uploadedByKey
                 : null,
+              textSource: upload.textSource,
+              ocrPageCount: upload.ocrPageCount,
+              ocrMeanConfidence: upload.ocrMeanConfidence,
             }
           : null,
       };
@@ -791,6 +811,14 @@ router.get(
                 ? (loaded.actors[loaded.upload.uploadedByKey] || {}).displayName ||
                   loaded.upload.uploadedByKey
                 : null,
+              /**
+               * PROVENANCE. 'text_layer' | 'ocr' | null — and null genuinely
+               * means "we do not know", covering both an 835 (parsed, not read)
+               * and any EOB extracted before this slice.
+               */
+              textSource: loaded.upload.textSource,
+              ocrPageCount: loaded.upload.ocrPageCount,
+              ocrMeanConfidence: loaded.upload.ocrMeanConfidence,
               /** The authorised download; the blob key itself never ships. */
               documentUrl: `/api/rcm/uploads/${loaded.upload.uploadId}/document?office=${office}`,
             }

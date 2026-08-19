@@ -30,6 +30,21 @@
  * answer is parsed or stored. Tokens are spent whether or not we like the
  * answer, and a breaker that only counted successful extractions would under-
  * report exactly on the documents that burn the most retries.
+ *
+ * ── THERE ARE TWO COST RAILS, AND NEITHER CONSUMES THE OTHER ─────────────────
+ * `extractionBudget` guards Azure OpenAI tokens; `ocrBudget` guards Azure
+ * Document Intelligence pages (charged inside `eobDocumentText`, at the moment
+ * the pages are read). Separate caps, separate reset clocks, separate honest
+ * states — a document parked by one is told WHICH one parked it and when that
+ * one resets. A morning of scanned faxes must not be able to silently eat the
+ * money that reads the afternoon's digital EOBs.
+ *
+ * ── OCR IS A PRE-STEP, NOT A BRANCH ──────────────────────────────────────────
+ * Nothing in this file asks whether a document was scanned. `extractPdfText`
+ * hands back a string and says how it got it; the only two things that reach the
+ * database because of it are the PROVENANCE columns on the upload and the
+ * `ocr_low_confidence` review reason on the claims. The prompt, the schema, the
+ * normalisation and every row shape below are identical either way.
  */
 
 const budget = require('./extractionBudget');
@@ -133,6 +148,12 @@ async function runExtraction(job) {
     // A6: an over-length document now THROWS DOCUMENT_TOO_LARGE rather than
     // returning a silently truncated text layer. Nothing to warn about here any
     // more — the refusal reaches the user through `failure_code`.
+    //
+    // This is ALSO where OCR happens, when the text layer yields nothing: the
+    // escalation, the OCR cost rail and the confidence floor all live behind
+    // this one call, so there stays exactly ONE place a document becomes a
+    // string. `doc.source`, `doc.ocrPages`, `doc.ocrMeanConfidence` and
+    // `doc.reviewReasons` are the whole of what that difference costs us here.
     const doc = await extractPdfText(bytes);
 
     // HARD BACKSTOP, immediately before the spend. `check()` above lets the job
@@ -163,10 +184,35 @@ async function runExtraction(job) {
       extracted,
       processingTimeSec,
       today: officeToday(),
+      // How this document became text, carried through to the proposal so the
+      // provenance and the rows it describes are committed together.
+      provenance: {
+        textSource: doc.source,
+        ocrPages: doc.ocrPages,
+        ocrMeanConfidence: doc.ocrMeanConfidence,
+        reviewReasons: Array.isArray(doc.reviewReasons) ? doc.reviewReasons : [],
+      },
     });
 
     return { status: 'extracted', claimId: result.claimId, batchId: result.batchId };
   } catch (err) {
+    // ── The OCR rail tripping is a PAUSE, not a failure ─────────────────────
+    // Nothing about THIS document is wrong; we simply declined to spend on it
+    // today. It stays at 'uploaded' with a reason and a reset time, exactly as a
+    // tripped extraction budget does — and it says WHICH cap, because "the daily
+    // cost cap is used up" over two different caps is not an answer anyone can
+    // act on. Re-uploading the document is what restarts it after the reset.
+    if (err && err.code === 'RCM_OCR_BUDGET_EXCEEDED') {
+      const capDollars = ((err.capCents || 0) / 100).toFixed(2);
+      const paused =
+        `Reading scanned documents is paused — the daily OCR cap of $${capDollars} is used up. ` +
+        'This is a separate cap from the extraction cap. The document is stored and will be ' +
+        'read after the cap resets.';
+      await markPending(pool, uploadId, office, paused);
+      console.log(`[rcm/eob] upload ${uploadId} parked: OCR budget spent until ${err.resetsAt}`);
+      return { status: 'deferred', reason: paused, resetsAt: err.resetsAt };
+    }
+
     const reason = failureReason(err);
     await pool
       .query(
@@ -232,6 +278,36 @@ function failureReason(err) {
     // by a concurrent job. Rare, honest, and retryable after the reset.
     return 'Extraction paused — the daily cost cap was reached while this document was processing.';
   }
+  // ── OCR ────────────────────────────────────────────────────────────────────
+  // OCR_UNREADABLE and OCR_TIMED_OUT already carry advice written for the person
+  // holding the paper ("rescan at 300 dpi", "split it"). That advice IS the
+  // state; summarising it into something generic would throw away the only part
+  // a poster can act on.
+  if (code === 'OCR_UNREADABLE' || code === 'OCR_TIMED_OUT') return err.message;
+  if (code === 'OCR_ANALYZE_FAILED') {
+    return (
+      'The document reader could not open this file. If it is a scan, rescan it as a PDF ' +
+      'at 300 dpi; otherwise ask the payer for a text PDF, or enter this EOB manually.'
+    );
+  }
+  if (code === 'OCR_CALL_FAILED') return 'The document reader could not be reached. Try again.';
+  if (code === 'OCR_NO_PAGES') {
+    return (
+      'The document reader returned no pages for this file, so what it read cannot be ' +
+      'attributed to anything. Try again; if it is a scan, rescan it as a PDF at 300 dpi.'
+    );
+  }
+  if (code === 'RCM_OCR_DOCUMENT_EXCEEDS_CAP') {
+    // NOT "wait for the reset" — the reset refuses it again. The only advice
+    // that works is the one that changes the document.
+    return (
+      `${err.message} Split it and upload the parts separately, or ask an administrator ` +
+      'to raise the daily OCR cap.'
+    );
+  }
+  if (code === 'OCR_UNAVAILABLE') {
+    return 'Reading scanned documents is not configured in this environment.';
+  }
   if (code === 'LLM_UNAVAILABLE') return 'Extraction is not available: no LLM deployment is configured.';
   if (code === 'LLM_RESPONSE_TRUNCATED') {
     return 'The remittance was too long to extract in one pass. Split it and upload the pages separately.';
@@ -287,6 +363,29 @@ function failureCode(err) {
       return 'pdf_unreadable';
     case 'RCM_EXTRACTION_BUDGET_EXCEEDED':
       return 'budget_exhausted';
+    // The OCR rail's own code. Reachable here only when the cap is consumed by a
+    // concurrent job between the gate and the spend — the ordinary tripped path
+    // never gets this far, because it PAUSES the upload above.
+    case 'RCM_OCR_BUDGET_EXCEEDED':
+      return 'ocr_budget_exhausted';
+    // A PERMANENT refusal, not today's cap. Its own code because the advice is
+    // the opposite one: splitting works, waiting never does.
+    case 'RCM_OCR_DOCUMENT_EXCEEDS_CAP':
+      return 'ocr_document_exceeds_cap';
+    // The reader worked and the SCAN was bad: too faint, too low-resolution, or
+    // read with an average confidence too low to review against.
+    case 'OCR_UNREADABLE':
+      return 'ocr_unreadable';
+    // The reader never got that far — it refused the file, timed out, or could
+    // not be reached at all.
+    case 'OCR_ANALYZE_FAILED':
+    case 'OCR_CALL_FAILED':
+    case 'OCR_TIMED_OUT':
+    case 'OCR_UNAVAILABLE':
+    // Zero pages with content: read, but unbillable and unattributable. The
+    // reader answered and the answer is unusable, which is this bucket.
+    case 'OCR_NO_PAGES':
+      return 'ocr_failed';
     case 'LLM_UNAVAILABLE':
       return 'llm_unavailable';
     case 'LLM_BAD_JSON':
@@ -302,7 +401,8 @@ function failureCode(err) {
 // A code outside the vocabulary would be rejected by the DB CHECK, turning a
 // handled failure into an unhandled one. Asserted at load rather than trusted.
 for (const code of ['document_too_large', 'no_extractable_text', 'pdf_unreadable',
-  'budget_exhausted', 'llm_unavailable', 'extraction_invalid', 'extraction_failed']) {
+  'budget_exhausted', 'llm_unavailable', 'extraction_invalid', 'extraction_failed',
+  'ocr_unreadable', 'ocr_failed', 'ocr_budget_exhausted', 'ocr_document_exceeds_cap']) {
   if (!EOB_FAILURE_CODES.includes(code)) {
     throw new Error(`[rcm/eob] failureCode() can emit '${code}', which is not in the vocabulary`);
   }
@@ -320,7 +420,20 @@ for (const code of ['document_too_large', 'no_extractable_text', 'pdf_unreadable
  * Insert order is parent-first because the FKs are immediate: batch → claims →
  * lines → adjustments → batch-claim links → the upload's result pointers.
  */
-async function persistProposal(pool, { office, upload, extracted, processingTimeSec, today }) {
+async function persistProposal(
+  pool,
+  { office, upload, extracted, processingTimeSec, today, provenance }
+) {
+  // Defaulted rather than required, so a caller that predates the OCR slice —
+  // or a test that does not care — records "read from the text layer", which is
+  // what that caller unambiguously did.
+  const prov = provenance || {
+    textSource: 'text_layer',
+    ocrPages: null,
+    ocrMeanConfidence: null,
+    reviewReasons: [],
+  };
+  const ocrReasons = Array.isArray(prov.reviewReasons) ? prov.reviewReasons : [];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -359,7 +472,12 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
         // which made it a signal the UI would have had to string-match — the
         // same mistake the ERA path made with 'Flagged: a, b'.
         `EOB upload · ${extracted.claims.length} claim(s) · ${extracted.confidence}% confidence · ` +
-          `claims paid ${paidSum}¢ vs check ${checkTotal}¢`,
+          `claims paid ${paidSum}¢ vs check ${checkTotal}¢ · ` +
+          // Prose only. The SIGNAL a screen switches on is the provenance
+          // columns on rcm_eob_uploads; this line is here because a biller
+          // reading the batch note should not have to click through to learn
+          // that these numbers came off a picture. (B6: nothing parses `notes`.)
+          describeProvenance(prov),
         // …and the SIGNAL goes in the same CHECKed column the ERA path writes,
         // so one UI switch serves both ingestion doors. Before this, every EOB
         // batch showed no flags at all while its real state sat in that string.
@@ -379,7 +497,12 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
       // A whole-check imbalance is stamped on EVERY claim in the batch: the
       // reviewer works one claim at a time, and a flag that lives only on the
       // batch is a flag they never see.
-      const reasons = [...new Set([...claimReasons, ...batchReasons])];
+      // ...and so is a fact about the READING. `ocr_low_confidence` is a
+      // property of the document, so it belongs on every claim that came out of
+      // it — for exactly the reason the batch reasons do: a reviewer works one
+      // claim at a time, and a flag that lives only on the document is a flag
+      // she never sees.
+      const reasons = [...new Set([...claimReasons, ...batchReasons, ...ocrReasons])];
       const patientBalance = claim.totalDeductibleCents + claim.totalCopayCents;
 
       const claimRes = await client.query(
@@ -518,13 +641,31 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
       );
     }
 
-    // The flip, in the same transaction as everything it points at.
+    // The flip, in the same transaction as everything it points at — and so is
+    // the PROVENANCE. A row that says "read by OCR" is a row whose claims exist,
+    // for the same reason 'extracted' is: a screen that told a biller how a
+    // proposal was read, about a proposal that had not been written, would be
+    // the honest-states rule failing in the place it costs most.
     await client.query(
       `UPDATE rcm_eob_uploads
           SET status = 'extracted', result_claim_id = $3, result_batch_id = $4,
+              text_source = $5, ocr_page_count = $6, ocr_mean_confidence = $7,
               error_message = NULL, processed_at = now(), updated_at = now()
         WHERE upload_id = $1 AND office_id = $2`,
-      [upload.upload_id, office, claimIds[0] || null, batchId]
+      [
+        upload.upload_id,
+        office,
+        claimIds[0] || null,
+        batchId,
+        prov.textSource,
+        // NULL on the text-layer path, and NULL is enforced there by
+        // `rcm_eob_uploads_ocr_provenance_check` — 0 would read as "OCR ran and
+        // found no pages", which is a different and untrue thing.
+        prov.textSource === 'ocr' ? prov.ocrPages : null,
+        prov.textSource === 'ocr' && prov.ocrMeanConfidence != null
+          ? Number(prov.ocrMeanConfidence.toFixed(3))
+          : null,
+      ]
     );
 
     await client.query('COMMIT');
@@ -541,4 +682,22 @@ async function persistProposal(pool, { office, upload, extracted, processingTime
   }
 }
 
-module.exports = { runExtraction, officeToday, failureReason };
+/**
+ * The provenance, in words, for the batch `notes` line.
+ *
+ * A number a person can act on: "94% confidence" is the difference between
+ * skimming a proposal and checking every column against the paper.
+ *
+ * @param {{ textSource: string, ocrPages: number|null, ocrMeanConfidence: number|null }} prov
+ */
+function describeProvenance(prov) {
+  if (prov.textSource !== 'ocr') return 'read from the PDF text layer';
+  const pages = prov.ocrPages == null ? 'unknown' : String(prov.ocrPages);
+  const confidence =
+    prov.ocrMeanConfidence == null
+      ? 'confidence not reported'
+      : `${(prov.ocrMeanConfidence * 100).toFixed(0)}% confidence`;
+  return `read by OCR (${pages} page(s), ${confidence})`;
+}
+
+module.exports = { runExtraction, officeToday, failureReason, describeProvenance };

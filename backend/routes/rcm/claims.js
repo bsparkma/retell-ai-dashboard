@@ -281,7 +281,8 @@ router.get(
       const claim = await matchService.loadClaimBundle(pool, office, claimId);
       if (!claim) return null;
       const actors = await describeActors(pool, [claim.odMatchedByKey, claim.reviewedByKey]);
-      return { claim, actors };
+      const provenance = await readProvenance(pool, office, claimId);
+      return { claim, actors, provenance };
     });
 
     if (!loaded) {
@@ -304,6 +305,19 @@ router.get(
         ...claim,
         odMatchedBy: odMatchedByKey ? (loaded.actors[odMatchedByKey] || {}).displayName || odMatchedByKey : null,
         reviewedBy: reviewedByKey ? (loaded.actors[reviewedByKey] || {}).displayName || reviewedByKey : null,
+        /**
+         * HOW THE NUMBERS ON THIS CLAIM WERE READ.
+         *
+         * `confidence` on the claim is the extraction model's confidence in its
+         * reading of a STRING. This is a fact about where that string came from,
+         * which is a different question and the one that decides how hard to
+         * check the amounts: parsed out of a text layer, or read by OCR off a
+         * picture of a fax.
+         *
+         * null on an 835 (parsed, never read) and on anything not yet extracted.
+         * The screen says nothing in that case rather than guessing.
+         */
+        provenance: loaded.provenance,
       },
       /**
        * The tolerances and bands the scores were produced with, so the panel
@@ -319,6 +333,45 @@ router.get(
     });
   })
 );
+
+/**
+ * How this claim's document became text, or null when we do not know.
+ *
+ * TWO STATEMENTS, NOT A JOIN, and both office-scoped in the WHERE. `office_id`
+ * is a column on BOTH tables, so joining on `eob_file_key` alone would be a
+ * cross-office read waiting for a blob key collision; scoping each statement is
+ * the same discipline every other read in this module follows.
+ *
+ * The link is `rcm_claims.eob_file_key` → `rcm_eob_uploads.file_key`, which both
+ * ingestion doors already populate — so an 835 resolves to its upload row too
+ * and correctly reports `textSource: null`: that file was PARSED, never read.
+ *
+ * @returns {Promise<{ uploadId: string, textSource: string|null,
+ *   ocrPageCount: number|null, ocrMeanConfidence: number|null }|null>}
+ */
+async function readProvenance(pool, office, claimId) {
+  const claim = await pool.query(
+    `SELECT eob_file_key FROM rcm_claims WHERE office_id = $1 AND claim_id = $2`,
+    [office, claimId]
+  );
+  const fileKey = claim.rows[0] && claim.rows[0].eob_file_key;
+  if (!fileKey) return null;
+
+  const upload = await pool.query(
+    `SELECT upload_id, text_source, ocr_page_count, ocr_mean_confidence ` +
+      `FROM rcm_eob_uploads WHERE office_id = $1 AND file_key = $2 LIMIT 1`,
+    [office, fileKey]
+  );
+  const row = upload.rows[0];
+  if (!row) return null;
+
+  return {
+    uploadId: row.upload_id,
+    textSource: row.text_source || null,
+    ocrPageCount: row.ocr_page_count == null ? null : num(row.ocr_page_count),
+    ocrMeanConfidence: row.ocr_mean_confidence == null ? null : Number(row.ocr_mean_confidence),
+  };
+}
 
 // ─── POST /:id/match ─────────────────────────────────────────────────────────
 

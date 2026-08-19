@@ -22,20 +22,59 @@ const path = require('node:path');
 const vocabulary = require('./rcmVocabulary');
 const { deriveClaimReviewReasons, deriveBatchReviewReasons } = require('./eobExtraction');
 
-const MIGRATION = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'migrations-tenant', '1787060000000_rcm_fidelity.js'),
-  'utf8'
-);
+const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations-tenant');
 
-/** Pull a `const NAME = [ 'a', 'b' ];` literal out of the migration source. */
+/**
+ * Every tenant migration, oldest first — filenames are timestamp-prefixed, so a
+ * plain sort IS run order.
+ */
+const MIGRATIONS = fs
+  .readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith('.js'))
+  .sort()
+  .map((f) => ({ file: f, source: fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }));
+
+/**
+ * Pull a `const NAME = [ 'a', 'b' ];` literal out of the LAST migration that
+ * declares it.
+ *
+ * This used to read one hard-coded file (`…_rcm_fidelity.js`). That worked while
+ * exactly one migration owned each vocabulary, and would have quietly stopped
+ * testing anything the moment a later migration widened one: the older file
+ * still declares the older list, so the assertion would compare the code against
+ * a vocabulary the database no longer enforces — a green test over a real drift.
+ *
+ * "Last declaration wins" is the same rule Postgres itself applies to
+ * `CREATE OR REPLACE FUNCTION` and to a dropped-and-re-added CHECK, which is
+ * what makes it the right rule here rather than merely a convenient one.
+ */
+function migrationDeclaring(name) {
+  const pattern = new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`);
+  for (let i = MIGRATIONS.length - 1; i >= 0; i--) {
+    const m = MIGRATIONS[i].source.match(pattern);
+    if (m) return { ...MIGRATIONS[i], body: m[1] };
+  }
+  return assert.fail(`no migration declares ${name}`);
+}
+
 function migrationList(name) {
-  const m = MIGRATION.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
-  assert.ok(m, `migration must declare ${name}`);
-  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+  return [...migrationDeclaring(name).body.matchAll(/'([^']+)'/g)].map((x) => x[1]);
 }
 
 test('the review-reason vocabulary matches the migration exactly', () => {
   assert.deepEqual(migrationList('REVIEW_REASONS').sort(), [...vocabulary.REVIEW_REASONS].sort());
+});
+
+test('"last declaration wins" resolves to the migration that actually owns each list', () => {
+  // The mechanism, pinned rather than assumed. If a later migration widens one
+  // of these and this assertion is not updated with it, the failure names the
+  // file — which is the whole point of resolving by recency instead of by a
+  // hard-coded path.
+  assert.equal(migrationDeclaring('REVIEW_REASONS').file, '1787100000000_rcm_ocr.js');
+  assert.equal(migrationDeclaring('EOB_FAILURE_CODES').file, '1787100000000_rcm_ocr.js');
+  // ...and the lists the OCR migration does NOT touch still resolve to 5.5.
+  assert.equal(migrationDeclaring('LINE_FLAGS').file, '1787060000000_rcm_fidelity.js');
+  assert.equal(migrationDeclaring('REMITTANCE_FLAGS').file, '1787060000000_rcm_fidelity.js');
 });
 
 test('the line-flag vocabulary matches the migration exactly', () => {
@@ -76,8 +115,13 @@ test('the parameterised uncertain_line reason is accepted, and near-misses are n
   for (const bad of ['uncertain_line', 'uncertain_line:', 'uncertain_line:0', 'uncertain_line:x', 'uncertain_line:-1']) {
     assert.equal(vocabulary.isReviewReason(bad), false, `${bad} must not validate`);
   }
-  // And the migration's regex is the same one, character for character.
-  assert.ok(MIGRATION.includes("'^uncertain_line:[1-9][0-9]*$'"));
+  // And the regex in the migration that currently OWNS the vocabulary is the
+  // same one, character for character. It follows the list: replacing
+  // `rcm_is_review_reason` replaces the pattern with it, so checking an older
+  // migration would be checking a definition the database has since dropped.
+  assert.ok(
+    migrationDeclaring('REVIEW_REASONS').source.includes("'^uncertain_line:[1-9][0-9]*$'")
+  );
 });
 
 test('every reason the ERA parser can emit is in the vocabulary', () => {

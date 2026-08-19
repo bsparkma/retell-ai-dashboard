@@ -36,6 +36,7 @@ import {
   CircleSlash,
   Info,
   Loader2,
+  ScanLine,
   Search,
   ShieldCheck,
 } from "lucide-react";
@@ -69,6 +70,7 @@ import {
   reviewReasonLabel,
   stamp,
 } from "@/features/rcm/format";
+import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
@@ -286,6 +288,29 @@ export default function ClaimMatchPage() {
           </h2>
 
           <div className="mt-2 rounded-xl border border-border bg-card">
+            {/* HOW THESE FOUR NUMBERS WERE READ.
+                At the top of "what the carrier said" rather than in a footer,
+                because it qualifies every figure below it. `confidence` on the
+                claim is the extraction model's confidence in reading a STRING;
+                this says where that string came from, and a biller deciding
+                whether to check the paper needs the second one.
+                Rendered only when the answer is known — an 835 was parsed, not
+                read, and says nothing here. */}
+            {provenanceLabel(data.claim.provenance) && (
+              <div
+                className="flex items-start gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
+                data-testid="claim-provenance"
+              >
+                <ScanLine size={13} className="mt-0.5 shrink-0" />
+                <span>
+                  {provenanceLabel(data.claim.provenance)}
+                  {provenanceNote(data.claim.provenance) && (
+                    <> · {provenanceNote(data.claim.provenance)}</>
+                  )}
+                </span>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3 border-b border-border p-4 sm:grid-cols-4">
               <Fact label="Billed" value={money(claim.totalBilledCents)} />
               <Fact label="Allowed" value={money(claim.totalAllowedCents)} />

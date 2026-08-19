@@ -619,6 +619,56 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
     dump("02-remittance-detail");
   });
 
+  it("06 — a remittance read by OCR, and what that costs the reader", async () => {
+    /*
+     * THE SCANNED DOOR.
+     *
+     * Everything else in this file photographs a remittance that arrived as an
+     * 835 or as a text-layer PDF. This one arrived as a fax: page images, no
+     * text, read by Azure Document Intelligence. The two things that differ on
+     * the screen — and the ONLY two things that differ anywhere downstream —
+     * are both here:
+     *
+     *   1. the provenance chip beside the source document, and
+     *   2. `ocr_low_confidence` on the claim, grey because it is annotating.
+     *
+     * A grey chip beside an amber one in the same row is the picture worth
+     * having: the split is what tells a biller which flags will withhold her
+     * proposal and which are telling her something true about how it was read.
+     */
+    shotState.detail = {
+      office: "roland",
+      remittance: {
+        ...remittance({ totalAmountCents: 53800, claimTotalCents: 45200 }),
+        source: "eob",
+        plbAdjustments: [],
+        upload: {
+          uploadId: "u-9",
+          filename: "faxed-eob-2026-03-02.pdf",
+          uploadedAt: "2026-03-02T10:00:00.000Z",
+          uploadedBy: "Billing User",
+          documentUrl: "/api/rcm/uploads/u-9/document?office=roland",
+          // The measured shape of a real read: pages Azure billed, and how sure
+          // it was. 0.82 sits just under the 0.85 floor, which is why the claim
+          // below carries the reason.
+          textSource: "ocr",
+          ocrPageCount: 3,
+          ocrMeanConfidence: 0.82,
+        },
+      },
+      claims: [
+        {
+          ...CLAIM_FLAGGED,
+          needsReviewReasons: [...CLAIM_FLAGGED.needsReviewReasons, "ocr_low_confidence"],
+        },
+      ],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => screen.getByTestId("source-provenance"));
+    dump("06-ocr-provenance");
+  });
+
   it("03 — the match panel, with candidates and their evidence", async () => {
     shotState.claim = { ...CLAIM_FLAGGED, odMatchStatus: "candidates", matchSnapshot: SNAPSHOT };
 
