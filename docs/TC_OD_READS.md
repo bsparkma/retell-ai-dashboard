@@ -58,18 +58,37 @@ write is Slice 6, and the read has no consumer without it.
 
 ### Office law
 
-Every route takes the office from `?office=` and **refuses any office without an
-Open Dental connection** with a structured 503:
+Every route takes the office from `?office=` and resolves **that office's own**
+Open Dental client through `config/odOffices`:
 
-```json
-{ "success": false, "code": "OFFICE_NOT_CONNECTED", "office": "valley" }
+```js
+assertOfficeMatch(req.tcOffice, getOdOffice(req.tcOffice))   // in requireOdOffice
 ```
 
-Today that is `valley`. This is a **correctness guard, not a placeholder**: the
-OD customer key scopes to exactly one practice database (Roland's), and OD list
-reads are not clinic-scoped, so a Valley read through this key would silently
-return **Roland's** patients. The per-location credential work is a separate
-slice; until it lands, refusing is the only correct answer.
+`assertOfficeMatch` runs **again on every OD call** inside `odGetFor`, not only in
+the gate, so no code between the two can substitute another practice's client.
+
+This matters because the OD customer key selects exactly one practice database and
+OD list reads are not clinic-scoped: a Valley read through Roland's key returns
+**Roland's** patients. PatNum numbering restarts per database — `7115` is the
+synthetic "Stedi TestValley" in Riley and a different, real person in Roland.
+
+An office that is unknown, switched off, or has no customer key is refused with a
+structured 503 and **never** falls back to another practice:
+
+```json
+{ "success": false, "code": "OFFICE_NOT_CONNECTED",
+  "reason": "OFFICE_OD_KEY_MISSING", "office": "valley" }
+```
+
+`code` is what the UI renders as the honest "OD not connected for this office yet"
+state; `reason` carries the precise `odOffices` code — `OFFICE_UNKNOWN`,
+`OFFICE_NOT_OD_CONNECTED` or `OFFICE_OD_KEY_MISSING` — so a log says which it was.
+
+Reads ride the transport's shared per-credential slot (`config/openDental.js`) with
+the voice module's, tagged `module: 'tc'` for 429/contention attribution. They do
+**not** join `services/rcm/odPacer`'s serialized 1200ms batch queue — a treatment
+plan is up to 25 GETs on a screen somebody is waiting on.
 
 ---
 
@@ -266,6 +285,56 @@ not as an empty treatment plan.
 | `TC_OD_TP_ATTACH_CAP` | `25` | Procedures read per Active/Inactive plan (legacy parity) |
 | `TC_OD_MAX_SCAN_PAGES` | `40` | Page cap for the practice-wide TP scan (100/page) |
 | `TC_OD_CLINIC_NUM` | *(unset)* | Adds a `ClinicNum` filter. Leave unset until verified |
+
+## Riley/valley key permission probe (2026-08-19)
+
+Beau's expectation was that the Riley customer key is fully permissioned. It is
+— this is the proof rather than the assumption.
+
+Read-only GETs against the **live Riley (`valley`) Open Dental database**, issued
+through `odOffices.getOdOffice('valley').client` from inside
+`rg-carein-staging/ca-carein-backend`, so the practice's key was used in place and
+never printed. Every call spaced 1.4 s (Open Dental's published rate is 1 req/s).
+No writes; nothing in OD changed. Row counts only — no field values left the
+container.
+
+| Resource | Form probed | Status | Note |
+|---|---|---|---|
+| `/providers` | list | **200** | 30 rows — the `/status` reachability probe |
+| `/patients` | `?LName=` | **200** | last-name lane |
+| `/patients` | `?FName=` | **200** | first-name lane (the merge that makes prefix search work) |
+| `/patients/:patNum` | `7115` | **200** | "Stedi TestValley" |
+| `/treatplans` | `?PatNum=7115` | **200** | 1 row |
+| `/proctps` | `?TreatPlanNum=<real>` | **200** | 0 rows for this plan; the RESOURCE is entitled |
+| `/treatplanattaches` | `?TreatPlanNum=<real>` | **200** | 1 row |
+| `/procedurelogs` | `?PatNum=` | **200** | |
+| `/procedurelogs` | `?ProcStatus=TP&Offset=0` | **200** | 100 rows — the unaccepted finder's sweep |
+| `/procedurelogs/:procNum` | `<real>` | **200** | |
+| `/patplans` | `?PatNum=7115` | **200** | 1 row |
+| `/inssubs/:num` | `<real>` | **200** | |
+| `/insplans/:num` | `<real>` | **200** | |
+| `/carriers/:num` | `<real>` | **200** | |
+| `/benefits` | `?PlanNum=<real>` | **200** | 11 rows |
+| `/claimprocs` | `?PatNum=7115` | **200** | 1 row |
+| `/claims` | `?PatNum=7115` | **200** | 0 rows for this patient |
+| `/appointments` | `?PatNum=&AptStatus=Scheduled` | **200** | 0 rows for this patient |
+
+**Zero 401s and zero 403s.** Every resource `/api/tc/od/*` reads is entitled on the
+Riley key, and the plural names win there exactly as they do on Roland.
+
+One non-200 is worth recording because it is easy to misread as a permission gap:
+
+```
+GET /benefits?PlanNum=1   → 404  "InsPlan not found."
+```
+
+That is a genuine not-found for a PlanNum that does not exist in Riley, not a
+refusal. Re-probed with the PlanNum resolved from `7115`'s own `/patplans` chain it
+returns 200 with 11 rows. **Probe entitlement with real ids**, or a missing record
+reads as a missing permission — and "not entitled" is exactly the wrong thing to
+conclude about a practice's key.
+
+---
 
 ## Live probe transcript (2026-08-04)
 

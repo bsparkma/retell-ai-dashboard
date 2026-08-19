@@ -49,18 +49,19 @@ const { OpenDentalService } = require('./openDental');
  * DefNum 486 must therefore NEVER be written to Riley's database (486 is not a
  * CommLogType there at all), and 451 must never be written to Roland's.
  *
- * `odEnabled` is THE reversible switch for the voice module: flip it and that
- * office's calls get the full worklist action set; flip it back and they don't.
+ * `odEnabled` is THE reversible switch for an office's Open Dental access: flip it
+ * and that office's calls get the full worklist action set and its TC screens read
+ * its charts; flip it back and neither does.
  *
- * It lives here rather than on officeAgents.OFFICES[].odConnected — which would
- * have been the smaller edit — because that flag is NOT voice-only. The TC module
- * gates its own Open Dental routes on it (backend/routes/tc/od.js), and TC still
- * reaches OD through the single process-wide client via odAccess. Flipping the
- * shared flag would therefore have opened /api/tc/od/* for valley and served
- * ROLAND's patients, treatment plans, insurance and claims under a Riley office
- * selector — the very contamination this module exists to prevent, in a module
- * that has not been made office-aware. Keeping the two switches separate lets the
- * voice path go live while TC stays honestly refused until its own slice.
+ * It is now the ONLY such switch. There was briefly a second one —
+ * officeAgents.OFFICES[].odConnected — because the TC module gated
+ * /api/tc/od/* on it while still reaching Open Dental through the single
+ * process-wide client (platform/odAccess) built from ROLAND's key. Flipping one
+ * shared flag would then have served Roland's patients, treatment plans, insurance
+ * and claims under a Riley office selector: the exact contamination this module
+ * exists to prevent. TC has since been moved onto this registry, so the second
+ * flag protected nothing and was retired rather than left to drift. Both modules
+ * now ask `isOdReady(officeKey)` — intent AND credentials, per office.
  *
  * @typedef {Object} OdOfficeSettings
  * @property {string} officeKey            frozen internal office key

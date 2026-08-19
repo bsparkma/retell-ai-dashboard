@@ -58,11 +58,10 @@ const OD_SLOT_OWNER = new Map();
 /**
  * Transport counters, keyed by whatever callers pass as `opts.module`.
  *
- * Today that is `rcm` and `other`, and NOT because the rest of the platform is
- * one thing: RCM is simply the only caller passing the field. Voice and TC
- * share the `other` bucket until they tag their own calls, which is a main-line
- * change rather than an RCM one. Read `other` as "everything else on this
- * credential", not as a module.
+ * Today that is `rcm`, `tc` and `other`, and NOT because the rest of the platform
+ * is one thing: those are simply the callers that pass the field. The voice module
+ * has not tagged its calls yet, so read `other` as "everything else on this
+ * credential" — which is mostly voice — rather than as a module.
  */
 const OD_TRAFFIC = {
   /** 429s seen, by the module whose request got one. */
@@ -1553,9 +1552,12 @@ class OpenDentalService extends EventEmitter {
   // than grow ~10 more bespoke methods on this class, TC composes reads from one
   // typed primitive.
   //
-  // Deliberately read-only: `path` is a GET path only, and there is no
-  // write counterpart. Callers reach this through odAccess.odApiGet (the ONE
-  // seam) — never the singleton directly.
+  // Deliberately read-only: `path` is a GET path only, and there is no write
+  // counterpart. Callers reach this through a seam that names the practice they
+  // mean — config/odOffices.getOdOffice(officeKey).client for the office-scoped
+  // paths (voice chart writes, all of /api/tc/od, RCM's claim reads), or
+  // platform/odAccess.odApiGet for the tenant-level one — never the singleton
+  // directly.
   //
   // Inherits the class's throttle interceptor (OD_API_MIN_INTERVAL_MS spacing)
   // and 429 backoff-retry, so a fan-out of 25 procedure lookups can't burst OD.

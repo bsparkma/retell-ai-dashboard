@@ -1,14 +1,19 @@
 'use strict';
 
 /**
- * /api/tc/od — Open Dental reads (Slice 5).
+ * /api/tc/od — Open Dental reads, per office.
  *
- * The OD transport (odAccess.odApiGet) is stubbed with a scripted fake OD so the
- * suite exercises the REAL routers, the REAL office gate, the REAL audit writes
- * and the REAL multi-call composition — without touching a live practice.
+ * Each office's REAL client instance (config/odOffices) is stubbed with a scripted
+ * fake OD, so the suite exercises the REAL routers, the REAL office resolution,
+ * the REAL audit writes and the REAL multi-call composition — without touching a
+ * live practice. Stubbing the CLIENT rather than the registry is deliberate: the
+ * handle is frozen on purpose (an office must not be re-pointed at another
+ * practice at runtime), and it leaves the office→client wiring under test.
  *
  * What is asserted, in the order the slice's risks run:
- *   1. office law   — valley refuses with OFFICE_NOT_CONNECTED on every route
+ *   1. office law   — each office reads its OWN database and only its own; an
+ *                     office that is unknown, switched off or unkeyed is refused
+ *                     and NEVER falls back to Roland
  *   2. input        — a non-numeric PatNum never reaches an OD URL
  *   3. read-only    — no route issues a non-GET OD call
  *   4. shapes       — treatment plan Saved / Active / alias-fallback / PARTIAL
@@ -21,39 +26,86 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { bootTcApp, api, auditRows } = require('./tcTestUtils');
-const odAccess = require('../../platform/odAccess');
+const odOffices = require('../../config/odOffices');
 const odReads = require('./odReads');
 
-// ── Fake OD ─────────────────────────────────────────────────────────────────
+// ── Per-office fake OD ──────────────────────────────────────────────────────
+
+const savedEnv = {};
+const OD_KEY_ENV = {
+  roland: 'OPENDENTAL_CUSTOMER_KEY',
+  valley: 'OPENDENTAL_CUSTOMER_KEY_VALLEY',
+};
+
+test.before(() => {
+  for (const k of [...Object.values(OD_KEY_ENV), 'OPENDENTAL_ALLOW_MOCK']) {
+    savedEnv[k] = process.env[k];
+  }
+  // Distinct per office so an assertion can prove WHICH credential was used.
+  process.env[OD_KEY_ENV.roland] = 'test-roland-customer-key';
+  process.env[OD_KEY_ENV.valley] = 'test-valley-customer-key';
+  delete process.env.OPENDENTAL_ALLOW_MOCK;
+  odOffices.resetOdOfficeCache();
+});
+
+test.after(() => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  odOffices.resetOdOfficeCache();
+});
 
 /**
  * Script OD by path prefix. Each handler gets (path, params) and returns either
  * a raw array/object (→ 200) or an explicit {ok,status,error} outcome.
+ *
+ * `routes` is either a flat path map, which every office answers identically, or
+ * an office-keyed map ({ roland: {...}, valley: {...} }) when a test needs the two
+ * practices to hold DIFFERENT records — which is the only way to prove which
+ * database a request actually reached.
  */
-function fakeOd(routes) {
-  const calls = [];
-  const impl = async (path, params = {}) => {
-    calls.push({ path, params });
-    const key = Object.keys(routes)
-      .filter((k) => path === k || path.startsWith(k))
-      .sort((a, b) => b.length - a.length)[0];
-    if (!key) return { ok: false, status: 404, data: 'not a valid resource', error: 'not a valid resource' };
-    const out = await routes[key](path, params);
-    if (out && typeof out === 'object' && 'ok' in out) return out;
-    return { ok: true, status: 200, data: out };
-  };
-  return { impl, calls };
+function routesByOffice(routes) {
+  const flat = Object.keys(routes).every((k) => k.startsWith('/'));
+  return flat ? { roland: routes, valley: routes } : routes;
 }
 
-/** Install the fake as odAccess.odApiGet for the duration of `fn`. */
+/**
+ * Install the fake on every office's own client for the duration of `fn`.
+ * Recorded calls carry the office, so "a valley request never touched Roland's
+ * client" is a fact the suite can read off rather than infer.
+ */
 async function withOd(routes, fn) {
-  const original = odAccess.odApiGet;
-  const od = fakeOd(routes);
-  odAccess.odApiGet = (_req, path, params, opts) => od.impl(path, params, opts);
+  const table = routesByOffice(routes);
+  const calls = [];
+  const patched = [];
+
+  for (const officeKey of Object.keys(OD_KEY_ENV)) {
+    const { client } = odOffices.getOdOffice(officeKey);
+    assert.ok(
+      !patched.some((x) => x.client === client),
+      'each office must hold its OWN client instance, or nothing here proves anything'
+    );
+    patched.push({ client, original: client.apiGetRaw });
+    client.apiGetRaw = async (path, params = {}, opts = {}) => {
+      calls.push({ office: officeKey, path, params, opts });
+      const office = table[officeKey] || {};
+      const key = Object.keys(office)
+        .filter((k) => path === k || path.startsWith(k))
+        .sort((a, b) => b.length - a.length)[0];
+      if (!key) {
+        return { ok: false, status: 404, data: 'not a valid resource', error: 'not a valid resource' };
+      }
+      const out = await office[key](path, params);
+      if (out && typeof out === 'object' && 'ok' in out) return out;
+      return { ok: true, status: 200, data: out };
+    };
+  }
+
   try {
-    return await fn(od);
+    return await fn({ calls });
   } finally {
-    odAccess.odApiGet = original;
+    for (const { client, original } of patched) client.apiGetRaw = original;
   }
 }
 
@@ -69,31 +121,209 @@ const PATIENT = {
 
 // ── 1. Office law ───────────────────────────────────────────────────────────
 
-test('valley refuses every OD route with 503 OFFICE_NOT_CONNECTED', async () => {
+/**
+ * The two practices' fixtures. PatNum 7115 is the point of the whole slice: it is
+ * "Stedi TestValley" in Riley/valley and a DIFFERENT, REAL person in Roland, so a
+ * read that ignored the office would print one practice's chart under the other's
+ * selector. Roland's row here is the synthetic 12827 fixture, never that person.
+ */
+const ROLAND_ONLY = { PatNum: 12827, FName: 'Stedi', LName: 'Test 2', Birthdate: '1990-01-01', PatStatus: 'Patient' };
+const VALLEY_ONLY = { PatNum: 7115, FName: 'Stedi', LName: 'TestValley', Birthdate: '1985-02-02', PatStatus: 'Patient' };
+
+/** Each office answers only for its OWN PatNum; the other one is a 404. */
+const PER_OFFICE_PATIENTS = {
+  roland: {
+    '/patients/12827': () => ROLAND_ONLY,
+    '/patients': (_p, params) =>
+      String(params.LName || params.FName || '').length ? [ROLAND_ONLY] : [],
+  },
+  valley: {
+    '/patients/7115': () => VALLEY_ONLY,
+    '/patients': (_p, params) =>
+      String(params.LName || params.FName || '').length ? [VALLEY_ONLY] : [],
+  },
+};
+
+test('valley reads VALLEY\'s Open Dental — the office selects the database', async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd(PER_OFFICE_PATIENTS, async (od) => {
+      const res = await api(baseUrl, 'GET', '/api/tc/od/patients/7115?office=valley');
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body.patient.patNum, 7115);
+      assert.equal(res.body.patient.lastName, 'TestValley');
+      assert.ok(od.calls.length > 0);
+      assert.deepEqual(
+        [...new Set(od.calls.map((c) => c.office))],
+        ['valley'],
+        "a valley read must never touch Roland's client"
+      );
+    });
+  } finally {
+    await close();
+  }
+});
+
+test('a Roland PatNum asked for under valley reaches valley and 404s — it never crosses', async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd(PER_OFFICE_PATIENTS, async (od) => {
+      // 12827 exists in Roland. Under ?office=valley the honest answer is "not
+      // here" — NOT Roland's record wearing a Riley label.
+      const res = await api(baseUrl, 'GET', '/api/tc/od/patients/12827?office=valley');
+      assert.equal(res.status, 404);
+      assert.equal(res.body.code, 'NOT_FOUND');
+      assert.deepEqual([...new Set(od.calls.map((c) => c.office))], ['valley']);
+    });
+  } finally {
+    await close();
+  }
+});
+
+test('and the mirror: a valley PatNum asked for under roland stays in Roland', async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd(PER_OFFICE_PATIENTS, async (od) => {
+      const res = await api(baseUrl, 'GET', '/api/tc/od/patients/7115?office=roland');
+      assert.equal(res.status, 404);
+      assert.deepEqual([...new Set(od.calls.map((c) => c.office))], ['roland']);
+    });
+  } finally {
+    await close();
+  }
+});
+
+test('every OD route is office-scoped, not just the patient read', async () => {
   const { baseUrl, close } = await bootTcApp();
   try {
     await withOd({ '/': () => [] }, async (od) => {
       const paths = [
         '/api/tc/od/status',
         '/api/tc/od/patients?q=test',
-        '/api/tc/od/patients/12828',
-        '/api/tc/od/treatment-plan/12828',
+        '/api/tc/od/patients/7115',
+        '/api/tc/od/treatment-plan/7115',
         '/api/tc/od/unaccepted',
-        '/api/tc/od/cob-procedures/12828',
-        '/api/tc/od/insurance/12828',
-        '/api/tc/od/next-appointment/12828',
+        '/api/tc/od/cob-procedures/7115',
+        '/api/tc/od/insurance/7115',
+        '/api/tc/od/next-appointment/7115',
       ];
       for (const p of paths) {
         const url = p.includes('?') ? `${p}&office=valley` : `${p}?office=valley`;
         const res = await api(baseUrl, 'GET', url);
-        assert.equal(res.status, 503, `${p} must refuse valley`);
-        assert.equal(res.body.code, 'OFFICE_NOT_CONNECTED', `${p} must use the UI's gating code`);
-        assert.equal(res.body.office, 'valley');
+        assert.ok(res.status < 500, `${p} should be served for valley (got ${res.status})`);
       }
-      assert.equal(od.calls.length, 0, 'a refused office must never reach Open Dental');
+      assert.ok(od.calls.length > 0);
+      assert.deepEqual(
+        [...new Set(od.calls.map((c) => c.office))],
+        ['valley'],
+        'not one OD call from a valley request may land on another practice'
+      );
     });
   } finally {
     await close();
+  }
+});
+
+test("TC tags its OD calls so the credential's 429s can be attributed", async () => {
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    await withOd({ '/patients': () => [ROLAND_ONLY] }, async (od) => {
+      await api(baseUrl, 'GET', '/api/tc/od/patients?q=Test&office=roland');
+      assert.ok(od.calls.length > 0);
+      // Attribution only — it buys no priority, and TC deliberately does NOT
+      // join RCM's serialized 1200ms queue (see the PACING note in od.js).
+      assert.ok(
+        od.calls.every((c) => c.opts && c.opts.module === 'tc'),
+        'every TC OD call must carry module:\'tc\''
+      );
+      assert.ok(
+        od.calls.every((c) => !c.opts || c.opts.minIntervalMs === undefined),
+        'TC must not raise the shared slot to a batch interval'
+      );
+    });
+  } finally {
+    await close();
+  }
+});
+
+test('an office with no customer key is refused, and NEVER falls back to Roland', async () => {
+  const saved = process.env[OD_KEY_ENV.valley];
+  delete process.env[OD_KEY_ENV.valley];
+  odOffices.resetOdOfficeCache();
+
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    // Only Roland has a client to stub now, so any leak would show up as a call
+    // on it. Patch it directly rather than through withOd, which expects both.
+    const roland = odOffices.getOdOffice('roland').client;
+    const original = roland.apiGetRaw;
+    const leaked = [];
+    roland.apiGetRaw = async (path, params) => {
+      leaked.push({ path, params });
+      return { ok: true, status: 200, data: [ROLAND_ONLY] };
+    };
+    try {
+      const res = await api(baseUrl, 'GET', '/api/tc/od/patients/7115?office=valley');
+      assert.equal(res.status, 503);
+      // OFFICE_NOT_CONNECTED is what the shared OD UI renders as the honest
+      // "OD not connected for this office yet" state; `reason` says which of the
+      // three refusals it was without anyone having to guess.
+      assert.equal(res.body.code, 'OFFICE_NOT_CONNECTED');
+      assert.equal(res.body.reason, 'OFFICE_OD_KEY_MISSING');
+      assert.equal(res.body.office, 'valley');
+      assert.equal(leaked.length, 0, "a missing valley key must never borrow Roland's client");
+    } finally {
+      roland.apiGetRaw = original;
+    }
+  } finally {
+    await close();
+    if (saved === undefined) delete process.env[OD_KEY_ENV.valley];
+    else process.env[OD_KEY_ENV.valley] = saved;
+    odOffices.resetOdOfficeCache();
+  }
+});
+
+test('an office switched off is refused with the switched-off reason', async () => {
+  const settings = odOffices.OFFICE_OD_SETTINGS.valley;
+  const saved = settings.odEnabled;
+  settings.odEnabled = false;
+  odOffices.resetOdOfficeCache();
+
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    const res = await api(baseUrl, 'GET', '/api/tc/od/patients/7115?office=valley');
+    assert.equal(res.status, 503);
+    assert.equal(res.body.code, 'OFFICE_NOT_CONNECTED');
+    assert.equal(res.body.reason, 'OFFICE_NOT_OD_CONNECTED');
+  } finally {
+    await close();
+    settings.odEnabled = saved;
+    odOffices.resetOdOfficeCache();
+  }
+});
+
+test('the unmapped office bucket has no Open Dental path at all', async () => {
+  // Two layers, and both matter. At the ROUTE, 'unknown' is not a TC office, so
+  // requireOffice 400s before any OD resolution happens.
+  const { baseUrl, close } = await bootTcApp();
+  try {
+    const res = await api(baseUrl, 'GET', '/api/tc/od/patients/1?office=unknown');
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'INVALID_OFFICE');
+  } finally {
+    await close();
+  }
+
+  // At the REGISTRY, which is the layer that would have to hold if a future
+  // route ever accepted a wider office set, it is a 409 OFFICE_UNKNOWN.
+  assert.throws(
+    () => odOffices.getOdOffice('unknown'),
+    (err) => err.name === 'OdOfficeError' && err.code === 'OFFICE_UNKNOWN'
+  );
+  try {
+    odOffices.getOdOffice('unknown');
+  } catch (err) {
+    assert.equal(odOffices.httpStatusFor(err), 409);
   }
 });
 
@@ -786,19 +1016,25 @@ test('no upcoming appointment is a null result, not an error', async () => {
 
 // ── 8. Read-only guarantee ──────────────────────────────────────────────────
 
-test('no OD route reaches a write method, and odApiGet has no write counterpart', async () => {
-  const writeish = Object.keys(odAccess).filter((k) => /^odApi(Post|Put|Patch|Delete)$/i.test(k));
-  assert.deepEqual(writeish, [], 'the TC OD seam must stay read-only');
-
+test('no OD route reaches a write method — the transport is GET-only by construction', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  for (const file of ['od.js', 'odReads.js']) {
+
+  for (const file of ['od.js', 'odReads.js', 'odPatientSearch.js']) {
     const src = fs.readFileSync(path.join(__dirname, file), 'utf8');
     assert.ok(!/router\.(post|put|patch|delete)\s*\(/.test(src), `${file} must expose only GET routes`);
     assert.ok(
-      !/odAccess\.(bookAppointment|updateAppointment|cancelAppointment|createCommLog)/.test(src),
-      `${file} must not reach an OD write method`
+      !/(bookAppointment|updateAppointment|cancelAppointment|createCommLog|apiPost|apiPut|apiDelete)/.test(src),
+      `${file} must not name an Open Dental write method`
     );
+
+    // The office handle carries a FULL OpenDentalService, writes included — which
+    // is exactly why it must never escape the transport closure. Every member
+    // these files touch on it has to be apiGetRaw, and nothing else.
+    const members = [...src.matchAll(/\.client\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+    for (const m of members) {
+      assert.equal(m, 'apiGetRaw', `${file} reached client.${m} — only apiGetRaw is allowed`);
+    }
   }
 });
 

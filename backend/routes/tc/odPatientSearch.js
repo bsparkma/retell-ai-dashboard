@@ -23,14 +23,15 @@
  *     matches names by PREFIX, so DOB is load-bearing, not decoration. No phone,
  *     no email, no patient status: none of them help choose, and all of them are
  *     PHI this surface has no reason to serve.
- *  3. IT IS PER-OFFICE. The rest of /od reads through platform/odAccess, the
- *     TENANT-level seam bound to one configured OD client — Roland. This route
- *     resolves the office's own client through config/odOffices, the same
- *     registry the voice chart-write path uses. Riley is a SEPARATE Open Dental
- *     database and PatNum numbering restarts in each one (PatNum 7115 is the
- *     Riley test patient and a different, real person in Roland), so a search
- *     that ignored the office would offer the wrong practice's patients for
- *     someone to attach to a chart.
+ *  3. IT IS PER-OFFICE — and it got there first. This route resolved the
+ *     office's own client through config/odOffices while the rest of /od still
+ *     read through platform/odAccess, the TENANT-level seam bound to one
+ *     configured OD client (Roland). /od has since been moved onto the same
+ *     registry, so the difference is now historical rather than structural.
+ *     Riley is a SEPARATE Open Dental database and PatNum numbering restarts
+ *     in each one (PatNum 7115 is the Riley test patient and a different, real
+ *     person in Roland), so a search that ignored the office would offer the
+ *     wrong practice's patients for someone to attach to a chart.
  *
  * OFFICE LAW. The office comes from the validated `?office=` param and is
  * checked against the frozen office list before anything else happens; an
@@ -131,7 +132,11 @@ router.get(
       // back thin) runs against whichever office's client we just resolved. The
       // merge is not optional: the Roland test patient is LName "Test", FName
       // "MangoTest", and a last-name-only search misses it entirely.
-      const odGet = (path, params, opts) => od.client.apiGetRaw(path, params, opts);
+      // `module: 'tc'` is ATTRIBUTION ONLY — it buys no priority. It is what
+      // lets config/openDental.js count TC's 429s and TC's waits behind an RCM
+      // reservation separately from everything else on the credential.
+      const odGet = (path, params, opts) =>
+        od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'tc' });
       result = await odReads.searchPatients(odGet, q, {
         limit: intParam(req.query.limit, 20, 1, 50),
       });

@@ -5,9 +5,8 @@
 // `handler_id` (a.k.a. `agent_id` on some raw shapes), so we key on both.
 //
 // Current reality is single-office: everything belongs to **Roland**. Valley
-// Fort Smith is defined but has NO agents mapped yet and NO OD connection — it
-// must render as an empty worklist with the "OD not connected for this office
-// yet" state, NOT a copy of Roland's calls. When Valley goes live, adding it is
+// Fort Smith is defined but has NO agents mapped yet — it must render as an
+// empty worklist, NOT a copy of Roland's calls. When Valley goes live, adding it is
 // literally ONE line: map its agent id to 'valley' in AGENT_OFFICE below.
 //
 // Agent ids below were discovered from the live call store (data/unified_calls.json,
@@ -17,9 +16,20 @@
 
 /**
  * @typedef {Object} OfficeConfig
+ *
+ * Deliberately carries NO `odConnected` flag. It used to, and
+ * backend/routes/tc/od.js was its last reader: TC reached Open Dental through the
+ * single process-wide client, so it needed a switch it could hold OFF for valley
+ * while the voice module's own switch (odOffices.OFFICE_OD_SETTINGS[].odEnabled)
+ * was ON. TC now resolves its client PER OFFICE through config/odOffices like
+ * everything else, so the second flag gated nothing — and a boolean claiming
+ * valley is "not OD connected" while valley reads its own Open Dental every day is
+ * worse than no boolean at all. Ask `odOffices.isOdReady(officeKey)`, or
+ * `odOffices.describeOffice(officeKey)` for the UI shape: both report intent AND
+ * credentials, per office.
+ *
  * @property {string}  officeId     stable id used in the office_id query param
  * @property {string}  officeName   display name for the office selector
- * @property {boolean} odConnected  false → UI shows "OD not connected for this office yet"
  */
 
 // Internal office KEYS (roland / valley / unknown) are FROZEN identifiers used in
@@ -29,12 +39,13 @@
 // frozen even though the office is branded/known as Riley.
 /** @type {Record<string, OfficeConfig>} */
 const OFFICES = {
-  roland: { officeId: 'roland', officeName: 'Roland', odConnected: true },
-  valley: { officeId: 'valley', officeName: 'Valley Fort Smith', odConnected: false },
+  roland: { officeId: 'roland', officeName: 'Roland' },
+  valley: { officeId: 'valley', officeName: 'Valley Fort Smith' },
   // Bucket for Mango calls whose called line isn't in MANGO_LINE_OFFICE yet. These
   // still ingest and stay triageable; the UI surfaces the raw line so an admin can
-  // see which number to add. odConnected:false → no OD write path.
-  unknown: { officeId: 'unknown', officeName: 'Unmapped', odConnected: false },
+  // see which number to add. It has no OFFICE_OD_SETTINGS entry, so odOffices
+  // refuses it with OFFICE_UNKNOWN — there is no OD path of any kind.
+  unknown: { officeId: 'unknown', officeName: 'Unmapped' },
 };
 
 // The office any unmapped Retell agent (or a call with no agent id) belongs to today.
@@ -75,8 +86,8 @@ const AGENT_OFFICE = {
 // Real office DIDs supplied by Beau. Keys are E.164-normalized. This is the single
 // source of truth for line→office attribution — structured as DATA (an E.164→officeId
 // table) precisely so a future office-management admin UI can edit the SAME object.
-// Valley/Riley is mapped for ATTRIBUTION only — OFFICES.valley is odConnected:false, so
-// its calls are attributed but have no OD write path until the per-location slice.
+// Valley/Riley is OD-connected in its own right (odOffices.OFFICE_OD_SETTINGS.valley),
+// so a line mapped here both attributes the call and gives it a chart path.
 // Any called_number NOT here → UNMAPPED_OFFICE ('unknown') + warn-once (never Roland).
 /** @type {Record<string, string>} E.164 DID → officeId (frozen internal key) */
 const MANGO_LINE_OFFICE = {
