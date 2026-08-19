@@ -115,6 +115,20 @@ const EOB_REVIEW_REASONS = Object.freeze({
   NEGATIVE_AMOUNT: 'negative_amount',
   NO_CLAIMS_EXTRACTED: 'no_claims_extracted',
   BATCH_PAID_TOTAL_MISMATCH: 'batch_paid_total_mismatch',
+
+  // ── OCR slice ──
+  /**
+   * The document had no text layer and was read by Azure Document Intelligence,
+   * which reported an average word confidence below the documented floor
+   * (`eobDocumentText.OCR_CONFIDENCE_FLOOR`, 0.85).
+   *
+   * It lands on EVERY claim read from that document, because confidence is a
+   * property of the READING and the reading produced all of them. It WIDENS
+   * review and resolves nothing: a misread dollar column still looks like a
+   * number, so the only safe response is to make a human look, and D-11 rules it
+   * ANNOTATING because it does not by itself say any amount is wrong.
+   */
+  OCR_LOW_CONFIDENCE: 'ocr_low_confidence',
 });
 
 /**
@@ -220,7 +234,11 @@ const REMITTANCE_FLAGS = Object.freeze([
 const EOB_FAILURE_CODES = Object.freeze([
   /** The PDF is encrypted, corrupt, or otherwise unreadable by pdf-parse. */
   'pdf_unreadable',
-  /** No text layer — almost always a scan. (OCR is a separate slice.) */
+  /**
+   * No text layer AND no OCR provider configured in this environment. Before
+   * the OCR slice this was every scan; now it is only the ones nothing was
+   * armed to read.
+   */
   'no_extractable_text',
   /**
    * A6. Over MAX_DOCUMENT_CHARS. We refuse rather than storing a knowingly
@@ -235,6 +253,31 @@ const EOB_FAILURE_CODES = Object.freeze([
   'llm_unavailable',
   /** Anything else, with the message carrying what we know. */
   'extraction_failed',
+
+  // ── OCR slice ──
+  /**
+   * OCR ran and could not produce usable text — almost nothing came back, or the
+   * average confidence was below `OCR_CONFIDENCE_UNUSABLE` (0.55). The message
+   * tells the poster to rescan at 300 dpi or enter the EOB manually, which is
+   * something they can actually do.
+   */
+  'ocr_unreadable',
+  /**
+   * Document Intelligence itself refused or failed on the file (unsupported
+   * media, corrupt page data, transport). Distinct from `ocr_unreadable`: there
+   * the reader worked and the SCAN was bad; here the reader never got that far.
+   */
+  'ocr_failed',
+  /**
+   * The OCR daily cost cap is spent. A SEPARATE rail from `budget_exhausted`,
+   * with a separate cap and a separate reset clock — a biller stopped by one
+   * must not be told the other stopped her.
+   *
+   * Reachable as a `failure_code` only when the cap is consumed by a concurrent
+   * job between the gate and the spend; the normal tripped path PAUSES the
+   * upload (status stays `uploaded`) and sets no failure code at all.
+   */
+  'ocr_budget_exhausted',
 ]);
 
 /**
@@ -372,6 +415,21 @@ const REASON_GATE = Object.freeze({
   negative_amount: 'blocking',
   no_claims_extracted: 'blocking',
   batch_paid_total_mismatch: 'blocking',
+  /**
+   * OCR slice. ANNOTATING, on the same principle as the `missing_*` reasons: it
+   * is a fact about how confidently the document was READ, not a claim that any
+   * stored amount is wrong. Every arithmetic check the EOB path already runs
+   * still runs on OCR output — `paid_total_mismatch`, `billed_total_mismatch`
+   * and `batch_paid_total_mismatch` are all blocking, so a misreading that
+   * actually moved a number is caught by the checks that exist for that, and
+   * blocking here as well would withhold every scanned claim on a signal that
+   * cannot distinguish a faint fax from a wrong figure.
+   *
+   * It is not cosmetic either: it is on every claim from the document, it is
+   * always visible, and the provenance line beside it says how many pages were
+   * read and how sure the reader was.
+   */
+  ocr_low_confidence: 'annotating',
 
   // ── Remittance flags ──────────────────────────────────────────────────────
   /** Provider-level money acted on by nobody here. It does not make claims wrong. */

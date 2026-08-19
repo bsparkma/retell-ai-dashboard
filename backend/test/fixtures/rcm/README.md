@@ -161,3 +161,10 @@ needed, it is a NEW file.
   directly ([`backend/scripts/rcm-seed-fixtures.cjs`](../../../scripts/rcm-seed-fixtures.cjs)).
   The two fixture layers are independent on purpose, so a parser change cannot alter what the
   seeder writes.
+
+## The EOB PDFs are a separate corpus
+
+[`eob/`](eob/) holds three synthetic **PDF** fixtures for the OCR pre-step — a text-layer
+EOB, a rasterised "scan" of the same page, and a deliberately degraded copy — plus the
+script that generates them and the confidence numbers Azure actually returned for each. They
+are unrelated to the 835 files above and are documented in [`eob/README.md`](eob/README.md).

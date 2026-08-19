@@ -38,10 +38,17 @@ import {
   type EobUploadStatus,
   type RcmOfficeId,
 } from "@/features/rcm/api";
+import { provenanceLabel } from "@/features/rcm/labels";
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "loaded"; uploads: EobUpload[]; extraction: EobExtractionState }
+  | {
+      kind: "loaded";
+      uploads: EobUpload[];
+      extraction: EobExtractionState;
+      /** Optional: a server that predates the OCR slice does not send it. */
+      ocr: EobExtractionState | null;
+    }
   | { kind: "failed"; message: string };
 
 /** Chip styling per status. Keyed by the closed union, so a new state won't compile. */
@@ -136,7 +143,12 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   const refresh = useCallback(async () => {
     try {
       const page = await listEobUploads(office, { limit: 25 });
-      setState({ kind: "loaded", uploads: page.uploads, extraction: page.extraction });
+      setState({
+        kind: "loaded",
+        uploads: page.uploads,
+        extraction: page.extraction,
+        ocr: page.ocr ?? null,
+      });
     } catch (err: unknown) {
       // The server's own words, the same way the summary card does it.
       const message =
@@ -249,6 +261,7 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   );
 
   const extraction = state.kind === "loaded" ? state.extraction : null;
+  const ocr = state.kind === "loaded" ? state.ocr : null;
 
   return (
     <div
@@ -264,8 +277,14 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
         )}
       </div>
 
-      {/* The breaker, stated plainly. A paused cap is not an error — the
-          document is safe and the work is waiting on a clock. */}
+      {/* The breakers, stated plainly. A paused cap is not an error — the
+          document is safe and the work is waiting on a clock.
+
+          TWO BANNERS, NEVER ONE. The two caps guard different resources on
+          different meters, and either can be spent while the other is untouched.
+          A single "cost cap reached" line would leave "why did my scan not read
+          when there is $3 of extraction budget left?" unanswerable from the
+          screen — which is the question the split exists to answer. */}
       {extraction?.paused && (
         <div
           className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
@@ -275,6 +294,20 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
           <span>
             Extraction paused — the daily cap of {formatCents(extraction.capCents)} is used up.
             Uploads are still accepted and will extract after {formatWhen(extraction.resetsAt)}.
+          </span>
+        </div>
+      )}
+
+      {ocr?.paused && (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+          data-testid={`rcm-eob-ocr-paused-${office}`}
+        >
+          <PauseCircle size={16} className="mt-0.5 flex-shrink-0" />
+          <span>
+            Scanned documents paused — the separate daily cap for reading scans (
+            {formatCents(ocr.capCents)}) is used up. PDFs with a text layer still extract
+            normally; scans are kept and will be read after {formatWhen(ocr.resetsAt)}.
           </span>
         </div>
       )}
@@ -351,6 +384,15 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
                     <div className="mt-0.5 text-xs text-muted-foreground">
                       {formatWhen(u.uploadedAt)}
                       {u.fileSizeBytes !== null && ` · ${formatBytes(u.fileSizeBytes)}`}
+                      {/* HOW it was read, once there is an answer. Nothing is
+                          shown before extraction: "not read yet" is the truth
+                          there, and a guess would be worse than a blank. */}
+                      {provenanceLabel(u) && (
+                        <span data-testid={`rcm-eob-provenance-${u.uploadId}`}>
+                          {" · "}
+                          {provenanceLabel(u)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <span
@@ -410,13 +452,28 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
         </div>
       )}
 
-      {/* Spend, shown even when the cap is not reached. A cost rail nobody can
-          see is a cost rail nobody trusts. */}
-      {extraction && !extraction.paused && (
-        <p className="mt-4 text-xs text-muted-foreground" data-testid={`rcm-eob-spend-${office}`}>
-          Extraction spend today: {formatCents(extraction.usedCents)} of{" "}
-          {formatCents(extraction.capCents)}.
-        </p>
+      {/* Spend, shown even when neither cap is reached. A cost rail nobody can
+          see is a cost rail nobody trusts — and TWO lines rather than a sum,
+          because a single total would hide which one is about to stop the work.
+          They are printed adjacently so the difference is obvious without
+          anybody having to know there are two Azure resources behind them. */}
+      {(extraction || ocr) && (
+        <div className="mt-4 space-y-0.5">
+          {extraction && !extraction.paused && (
+            <p className="text-xs text-muted-foreground" data-testid={`rcm-eob-spend-${office}`}>
+              Extraction spend today: {formatCents(extraction.usedCents)} of{" "}
+              {formatCents(extraction.capCents)}.
+            </p>
+          )}
+          {ocr && !ocr.paused && (
+            <p className="text-xs text-muted-foreground" data-testid={`rcm-eob-ocr-spend-${office}`}>
+              Scan-reading (OCR) spend today: {formatCents(ocr.usedCents)} of{" "}
+              {formatCents(ocr.capCents)}
+              {typeof ocr.pagesRead === "number" && ` · ${ocr.pagesRead} page${ocr.pagesRead === 1 ? "" : "s"} read`}. A
+              separate cap from the extraction one.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

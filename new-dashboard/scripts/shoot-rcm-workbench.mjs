@@ -76,6 +76,7 @@ const HEIGHT = {
   "02-remittance-detail": 1900,
   "03-claim-match": 1000,
   "04-no-candidate": 700,
+  "06-ocr-provenance": 700,
   "approve-01-checklist": 1330,
   "approve-02-refused": 1330,
   "approve-03-partial": 1230,

@@ -57,6 +57,12 @@ export const REVIEW_LABELS: Record<string, string> = {
   negative_amount: "A negative amount was read — most often a misread column",
   no_claims_extracted: "No claims were read from this document",
   batch_paid_total_mismatch: "The claim payments do not sum to the check total",
+
+  // ── OCR ──
+  // Says what the biller must DO, not what the reader noticed: check the amounts
+  // against the document, which is the one action this reason implies.
+  ocr_low_confidence:
+    "This document was scanned — check the amounts against the image before approving",
 };
 
 /**
@@ -92,6 +98,12 @@ export const FAILURE_LABELS: Record<string, string> = {
   budget_exhausted: "The daily extraction cost cap is used up",
   llm_unavailable: "Document reading is not configured in this environment",
   extraction_failed: "Extraction failed",
+  // ── OCR ──
+  // Three codes rather than one because they are three different conversations:
+  // rescan the paper, try again later, or wait for the cap to reset.
+  ocr_unreadable: "This scan is too faint or too low-resolution to read",
+  ocr_failed: "The document reader could not open this file",
+  ocr_budget_exhausted: "The daily cap for reading scanned documents is used up",
 };
 
 
@@ -169,6 +181,10 @@ export const REASON_GATE: Record<string, "blocking" | "annotating"> = {
   negative_amount: "blocking",
   no_claims_extracted: "blocking",
   batch_paid_total_mismatch: "blocking",
+  // Annotating: a fact about how confidently the document was READ, not a claim
+  // that any stored amount is wrong. The arithmetic checks above are the ones
+  // that catch a misreading which actually moved a number, and they all block.
+  ocr_low_confidence: "annotating",
 
   // ── Remittance flags ──
   plb_adjustments_present: "annotating",
@@ -248,4 +264,54 @@ export function reviewLabel(reason: string): string {
   const uncertain = /^uncertain_line:([1-9][0-9]*)$/.exec(reason);
   if (uncertain) return `Line ${uncertain[1]} was read with low confidence`;
   return label(REVIEW_LABELS, reason);
+}
+
+/**
+ * "Read from the PDF text layer" / "Read by OCR (3 pages, 94% confidence)".
+ *
+ * ONE WORDING, THREE SCREENS. The remittance detail, the claim detail and the
+ * upload panel all answer the same question, and a biller who saw it phrased
+ * three ways would reasonably wonder whether they meant three different things.
+ *
+ * Returns null when the provenance is unknown — an 835 (parsed, never read) or
+ * anything extracted before the OCR slice. The caller renders NOTHING in that
+ * case. Filling the gap with "text layer" would be the screen asserting
+ * something nobody recorded, which is the failure this whole field exists to
+ * prevent.
+ */
+export function provenanceLabel(
+  provenance: {
+    textSource: "text_layer" | "ocr" | null;
+    ocrPageCount: number | null;
+    ocrMeanConfidence: number | null;
+  } | null,
+): string | null {
+  if (!provenance || !provenance.textSource) return null;
+  if (provenance.textSource === "text_layer") return "Read from the PDF text layer";
+
+  const pages =
+    provenance.ocrPageCount == null
+      ? null
+      : `${provenance.ocrPageCount} page${provenance.ocrPageCount === 1 ? "" : "s"}`;
+  // "confidence not reported" rather than a number we do not have. A 100% badge
+  // on a document nobody measured is worse than an admission.
+  const confidence =
+    provenance.ocrMeanConfidence == null
+      ? "confidence not reported"
+      : `${Math.round(provenance.ocrMeanConfidence * 100)}% confidence`;
+  const detail = [pages, confidence].filter(Boolean).join(", ");
+  return `Read by OCR (${detail})`;
+}
+
+/**
+ * The one-line reason a reader should care, shown beside the label above.
+ *
+ * Only on the OCR path: a text layer is exact, and saying so at length would
+ * make the ordinary case look like it needed explaining.
+ */
+export function provenanceNote(
+  provenance: { textSource: "text_layer" | "ocr" | null } | null,
+): string | null {
+  if (!provenance || provenance.textSource !== "ocr") return null;
+  return "These figures were read off a page image, not parsed from the file.";
 }

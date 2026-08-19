@@ -41,6 +41,7 @@ import {
   Info,
   Loader2,
   RefreshCw,
+  ScanLine,
 } from "lucide-react";
 import {
   getRemittance,
@@ -69,7 +70,7 @@ import {
   SOURCE_TITLES,
   stamp,
 } from "@/features/rcm/format";
-import { FLAG_LABELS, label } from "@/features/rcm/labels";
+import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { describePlbAdjustment } from "@/features/rcm/plb";
 import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
 import { useOffice } from "@/contexts/OfficeContext";
@@ -405,6 +406,25 @@ export default function RemittanceDetailPage() {
                 before the staff crosswalk existed genuinely have no name. */}
             {r.upload.uploadedBy ?? <em className="not-italic text-muted-foreground/70">not recorded</em>}
           </span>
+
+          {/* HOW THE NUMBERS ON THIS SCREEN WERE READ.
+              Beside the document link rather than buried in the claims table:
+              it applies to the whole remittance, and it is the first thing a
+              biller checking a large check should know. A grey chip, because it
+              is a fact rather than a warning — every arithmetic check on this
+              page still applies, and the ones that block still block.
+              Absent entirely for an 835 (parsed, never read) and for anything
+              extracted before the OCR slice. */}
+          {provenanceLabel(r.upload) && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
+              data-testid="source-provenance"
+              title={provenanceNote(r.upload) ?? undefined}
+            >
+              <ScanLine size={12} />
+              {provenanceLabel(r.upload)}
+            </span>
+          )}
         </div>
       )}
 

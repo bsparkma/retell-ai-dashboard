@@ -32,6 +32,7 @@ const { h, actorEmail, auditRcmRead, num, iso } = require('./helpers');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const blobStore = require('../../services/rcm/eobBlobStore');
 const budget = require('../../services/rcm/extractionBudget');
+const ocrBudget = require('../../services/rcm/ocrBudget');
 const odPacer = require('../../services/rcm/odPacer');
 const openDental = require('../../config/openDental');
 const queue = require('../../services/rcm/eobExtractionQueue');
@@ -90,6 +91,12 @@ const LIST_COLUMNS = [
   'result_batch_id',
   'uploaded_at',
   'processed_at',
+  // How this document became text. Returned because a biller looking at a list
+  // of uploads should be able to see which of them a machine READ off a picture
+  // before she opens any of them.
+  'text_source',
+  'ocr_page_count',
+  'ocr_mean_confidence',
 ].join(', ');
 
 /** Map a DB row to the wire shape. camelCase out. */
@@ -111,6 +118,24 @@ function toWire(row) {
     resultBatchId: row.result_batch_id || null,
     uploadedAt: iso(row.uploaded_at),
     processedAt: iso(row.processed_at),
+    /**
+     * PROVENANCE. 'text_layer' | 'ocr' | null.
+     *
+     * null means "not read yet" and is the honest value for every row that has
+     * not reached 'extracted' — including every row written before the OCR
+     * slice. It is NOT defaulted to 'text_layer' anywhere: a screen asserting
+     * how a document was read, about a document nothing has read, is exactly the
+     * kind of confident wrongness the module's honest-states rule forbids.
+     */
+    textSource: row.text_source || null,
+    /** Pages Azure actually read and billed. null on the text-layer path. */
+    ocrPageCount: row.ocr_page_count == null ? null : num(row.ocr_page_count),
+    /**
+     * 0–1. null = the reader did not report one, which is a different fact from
+     * "the reader was certain" and renders differently.
+     */
+    ocrMeanConfidence:
+      row.ocr_mean_confidence == null ? null : Number(row.ocr_mean_confidence),
   };
 }
 
@@ -264,6 +289,7 @@ router.post(
         requeued,
         upload: { ...toWire(prior), status: 'uploaded', message: null },
         extraction: budget.status(),
+        ocr: ocrBudget.status(),
       });
     }
 
@@ -326,6 +352,7 @@ router.post(
         duplicate: true,
         upload: toWire(winner),
         extraction: budget.status(),
+        ocr: ocrBudget.status(),
       });
     }
 
@@ -347,6 +374,16 @@ router.post(
       // "extraction paused" straight away rather than leaving a document
       // sitting at 'uploaded' with no explanation.
       extraction: budget.status(),
+      /**
+       * The SECOND rail, reported beside the first and never merged into it.
+       *
+       * They guard different resources on different meters, so one can be spent
+       * while the other is untouched — and the biller who is stopped has to be
+       * told which. A single "cost cap" number would make "why did my scan not
+       * read when the extraction budget shows $3 left?" unanswerable from the
+       * screen.
+       */
+      ocr: ocrBudget.status(),
     });
   })
 );
@@ -424,6 +461,8 @@ router.get(
       // Breaker state, surfaced honestly. When `paused` is true, an 'uploaded'
       // row is waiting on the clock, not stuck — and `resetsAt` says when.
       extraction: { ...budget.status(), queue: queue.stats() },
+      /** The OCR rail. Separate cap, separate clock — see the POST above. */
+      ocr: ocrBudget.status(),
       /*
        * WHAT D-8 COSTS, MEASURED.
        *

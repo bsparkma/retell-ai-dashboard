@@ -331,7 +331,41 @@ export function listRcmClaims(
 export const EOB_UPLOAD_STATUSES = ["uploaded", "processing", "extracted", "failed"] as const;
 export type EobUploadStatus = (typeof EOB_UPLOAD_STATUSES)[number];
 
-export interface EobUpload {
+/**
+ * How a document became text — `rcm_eob_uploads.text_source`.
+ *
+ * A closed union, like `EobUploadStatus` and `TranscribeStatus`: a third source
+ * added server-side becomes a compile error here rather than a chip that
+ * silently renders as nothing.
+ */
+export const TEXT_SOURCES = ["text_layer", "ocr"] as const;
+export type TextSource = (typeof TEXT_SOURCES)[number];
+
+/**
+ * WHERE THE NUMBERS ON A PROPOSAL CAME FROM.
+ *
+ * Not the same question as `confidence` on a claim, which is the extraction
+ * model's confidence in its reading of a STRING. This is about how that string
+ * was obtained: parsed out of a PDF's own text layer, or read by OCR off a
+ * picture of a fax. A biller checking a $4,000 check decides how hard to look
+ * from this, so it is carried all the way to the screen rather than inferred.
+ *
+ * `textSource: null` genuinely means WE DO NOT KNOW — an 835 (parsed, never
+ * read), or an EOB extracted before the OCR slice. The screen shows nothing at
+ * all in that case; it never guesses "text layer".
+ */
+export interface DocumentProvenance {
+  textSource: TextSource | null;
+  /** Pages Azure Document Intelligence read and billed. null off the OCR path. */
+  ocrPageCount: number | null;
+  /**
+   * 0–1, word-count weighted. null = the reader did not report one, which is a
+   * different fact from "the reader was certain" and renders differently.
+   */
+  ocrMeanConfidence: number | null;
+}
+
+export interface EobUpload extends DocumentProvenance {
   uploadId: string;
   officeId: RcmOfficeId;
   /** The name as uploaded. PHI — EOB filenames routinely carry patient names. */
@@ -351,7 +385,15 @@ export interface EobUpload {
   processedAt: string | null;
 }
 
-/** The daily extraction cost breaker, as the server reports it. */
+/**
+ * A daily cost breaker, as the server reports it.
+ *
+ * There are TWO, on separate resources with separate meters: Azure OpenAI tokens
+ * (`extraction`) and Azure Document Intelligence pages (`ocr`). They share this
+ * shape because a screen should render them the same way, and they are never
+ * merged because a biller who is stopped has to be told WHICH cap stopped her
+ * and when THAT one resets.
+ */
 export interface EobExtractionState {
   /** True = the daily cap is spent. Uploads still succeed; extraction waits. */
   paused: boolean;
@@ -365,6 +407,15 @@ export interface EobExtractionState {
   /** False = the counter is memory-only, so a restart would forget the spend. */
   persisted: boolean;
   queue?: { pending: number; deferred: number; running: boolean };
+  /**
+   * Which rail this is. Present on the OCR breaker and absent on the extraction
+   * one, so a component handed a breaker can always say which cap it is showing
+   * rather than depending on which key it was read from.
+   */
+  rail?: "ocr";
+  /** OCR only: pages read today, and the price the cap is denominated in. */
+  pagesRead?: number;
+  centsPerKPage?: number;
 }
 
 export interface EobUploadPage {
@@ -374,6 +425,8 @@ export interface EobUploadPage {
   limit: number;
   offset: number;
   extraction: EobExtractionState;
+  /** The OCR rail. Optional so a client can talk to a server that predates it. */
+  ocr?: EobExtractionState;
 }
 
 export interface EobUploadResult {
@@ -384,6 +437,7 @@ export interface EobUploadResult {
   requeued?: boolean;
   upload: EobUpload;
   extraction?: EobExtractionState;
+  ocr?: EobExtractionState;
 }
 
 /** This office's EOB uploads, newest first, plus the cost-breaker state. */
@@ -909,7 +963,7 @@ export interface ApprovalResult {
   note: string;
 }
 
-export interface RemittanceUpload {
+export interface RemittanceUpload extends DocumentProvenance {
   uploadId: string;
   /** PHI — remittance filenames routinely carry a patient and a payer. */
   filename: string;
@@ -1024,7 +1078,13 @@ export interface MatchRules {
 
 export interface ClaimDetailResponse {
   office: RcmOfficeId;
-  claim: WorkbenchClaim;
+  /**
+   * `provenance` lives HERE rather than on `WorkbenchClaim` because the claim
+   * shape is also what the remittance list and detail return, and there it comes
+   * from the batch's own upload row. One fact, resolved once per screen, rather
+   * than the same join repeated per claim in a table.
+   */
+  claim: WorkbenchClaim & { provenance: DocumentProvenance | null };
   matchRules: MatchRules;
 }
 
