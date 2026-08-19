@@ -129,6 +129,15 @@ const CLAIM_LIST_COLUMNS = [
   'review_note',
   'created_at',
   /*
+   * THE APPROVAL LINKAGE (Slice 6b). Cheap scalars, deliberately — the list
+   * needs to know THAT a claim was approved into a posting plan, never what the
+   * plan contains. `posting_queue_id` is also what makes a second enqueue
+   * impossible: it is single-valued, so a claim can belong to one plan.
+   */
+  'posting_queue_id',
+  'approved_at',
+  'approved_by',
+  /*
    * A PROJECTION OF THE SNAPSHOT, not the snapshot.
    *
    * The list has to be able to tell "Open Dental had nothing" from "Open Dental
@@ -220,6 +229,10 @@ function toClaimSummary(row) {
     reviewedAt: iso(row.reviewed_at),
     reviewedByKey: row.reviewed_by || null,
     reviewNote: row.review_note || null,
+    /** Non-null ⇒ a human approved this claim into a posting plan (Slice 6b). */
+    postingQueueId: row.posting_queue_id || null,
+    approvedAt: iso(row.approved_at),
+    approvedByKey: row.approved_by || null,
     createdAt: iso(row.created_at),
   };
 }
@@ -404,6 +417,29 @@ async function runClaimMatch(
     err.code = 'CLAIM_NOT_FOUND';
     throw err;
   }
+  /*
+   * A CLAIM ON A POSTING PLAN CANNOT BE RE-MATCHED — and this used to be a 500.
+   *
+   * A forced re-run NULLs `od_claim_num` and sets the status off `confirmed`.
+   * Slice 6b added `rcm_claims_approved_is_confirmed_check`, so on an APPROVED
+   * claim that UPDATE is refused by the database — and the refusal arrived as
+   * INTERNAL_ERROR, after the Open Dental read had already happened. A chart
+   * read for an operation that could never have completed.
+   *
+   * Refused here, before the transport is even resolved. It is not a permission
+   * matter and not a race: the claim is on a plan somebody authorised, and the
+   * ClaimProcNums on that plan are the ones 6c will post against. Releasing it
+   * needs the plan released first, which is 6c's to build.
+   */
+  if (claim.postingQueueId) {
+    const err = new Error(
+      'This claim is on a posting plan — it cannot be re-matched until the plan is released'
+    );
+    err.httpStatus = 409;
+    err.code = 'CLAIM_ON_POSTING_PLAN';
+    throw err;
+  }
+
   if (claim.odMatchStatus === 'confirmed') {
     if (!force) {
       const err = new Error('This claim already has a confirmed Open Dental match');
@@ -764,6 +800,23 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
           };
         }
         await client.query('ROLLBACK');
+        /*
+         * A DIFFERENT ClaimNum on a QUEUED claim is a different refusal.
+         *
+         * "Release that first" is honest advice on an ordinary confirmed claim
+         * and impossible advice on an approved one: the plan holds this claim's
+         * ClaimProcNums and `rcm_claims_approved_is_confirmed_check` will not
+         * let the linkage move while it does. Saying the reachable thing beats
+         * saying the tidy thing.
+         */
+        if (row.posting_queue_id) {
+          const err = new Error(
+            `This claim is on a posting plan against Open Dental claim ${existing} — the plan must be released before it can point anywhere else`
+          );
+          err.httpStatus = 409;
+          err.code = 'CLAIM_ON_POSTING_PLAN';
+          throw err;
+        }
         const err = new Error(
           `This claim is already linked to Open Dental claim ${existing} — release that first`
         );

@@ -419,11 +419,26 @@ Each with the file and function that would own it.
 
 ---
 
-## Proposed: blocking reasons versus annotating ones (NOT IMPLEMENTED)
+## Blocking reasons versus annotating ones — **RATIFIED as D-11, Slice 6b**
+
+> **STATUS: adopted.** The split below is implemented as
+> `REASON_GATE` in `backend/services/rcm/rcmVocabulary.js` and documented in
+> [RCM_APPROVAL_GATE.md §3](RCM_APPROVAL_GATE.md#3-d-11--blocking-reasons-versus-annotating-ones).
+> `allowed_amount_mismatch` was ruled **annotating**, as recommended below.
+>
+> **One half was NOT adopted.** `eraIngest.batchStatusFor` still holds a batch at
+> `open` when anything at all is flagged — see "Implementing it" at the end of
+> this section. The gate decides what may be POSTED; `open` still means
+> "something on this file was flagged", and changing what `ready` promises stayed
+> a separate decision.
+>
+> The map also had to be EXTENDED beyond the lists below, which cover the ERA
+> reasons and the remittance flags: the EOB review reasons and the line flags are
+> vocabularies a proposal can also carry, and a reason absent from the map is
+> blocking. `rcmVocabulary.test.js` asserts every member of all three appears.
 
 `eraIngest.batchStatusFor` holds a batch at `open` if **any** flag or review
-reason is present. The split below is **proposed and not implemented** — it
-changes what `ready` promises, which is the PM's call.
+reason is present.
 
 The principle: **a reason BLOCKS when acting on the proposal could move the
 wrong amount of money, or money that should not move at all. It ANNOTATES when
@@ -506,6 +521,14 @@ is a number rather than an argument.
 annotating reasons still appear in the workbench, they just stop being gates.
 The set belongs in `rcmVocabulary.js` next to the reasons themselves, with the
 same drift test.
+
+> **What Slice 6b actually did.** The set landed in `rcmVocabulary.js` with the
+> drift test, as proposed — but it is consulted by the **approval gate** and the
+> **workbench chip colour**, and NOT by `batchStatusFor`, which is unchanged. So
+> `ready` still promises exactly what it promised in Slice 5, and the measured
+> ready/open counts in the table above are still the CURRENT behaviour rather
+> than a description of what shipped. Making `ready` mean "approvable" remains
+> available as a follow-up, and is now a one-line change.
 
 ## Part D (OCR) is a separate PR
 

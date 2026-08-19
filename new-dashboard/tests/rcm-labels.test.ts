@@ -14,7 +14,16 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { REVIEW_LABELS, FLAG_LABELS, FAILURE_LABELS, reviewLabel, label } from "../client/src/features/rcm/labels";
+import {
+  REVIEW_LABELS,
+  FLAG_LABELS,
+  FAILURE_LABELS,
+  LINE_FLAG_LABELS,
+  REASON_GATE,
+  isBlockingReason,
+  reviewLabel,
+  label,
+} from "../client/src/features/rcm/labels";
 
 const VOCAB = fs.readFileSync(
   path.join(__dirname, "..", "..", "backend", "services", "rcm", "rcmVocabulary.js"),
@@ -92,5 +101,65 @@ describe("the RCM vocabulary is fully labelled", () => {
     for (const flag of ["envelope_counts_mismatch", "envelope_incomplete", "multi_transaction_file"]) {
       expect(FLAG_LABELS[flag], flag).toBeTruthy();
     }
+  });
+});
+
+/**
+ * D-11's map is mirrored on the client so a chip can be coloured without a round
+ * trip — and `labels.ts` says in its own header that a test keeps the two
+ * honest. This is that test. It did not exist when the header claimed it did,
+ * which is worse than no claim at all.
+ *
+ * A screen showing a reason in amber while the gate lets it through — or, far
+ * worse, in grey while the gate withholds it — is the honest-states rule failing
+ * in the most expensive place there is.
+ */
+describe("the D-11 gate map does not drift from the backend", () => {
+  /** Pull `REASON_GATE`'s verdicts out of the backend source. */
+  function backendGate(): Record<string, string> {
+    const open = VOCAB.indexOf("const REASON_GATE = Object.freeze({");
+    expect(open, "rcmVocabulary.js must declare REASON_GATE").toBeGreaterThan(-1);
+    const body = VOCAB.slice(open, VOCAB.indexOf("});", open));
+    // Strip block and line comments: half the map is prose explaining a verdict,
+    // and prose is not an entry.
+    const code = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const out: Record<string, string> = {};
+    for (const m of code.matchAll(/([a-z0-9_]+):\s*'(blocking|annotating)'/g)) out[m[1]] = m[2];
+    return out;
+  }
+
+  it("agrees with the backend about every single slug", () => {
+    const gate = backendGate();
+    expect(Object.keys(gate).length).toBeGreaterThan(30);
+
+    const disagreements: string[] = [];
+    for (const [reason, verdict] of Object.entries(gate)) {
+      const mine = REASON_GATE[reason];
+      if (mine !== verdict) {
+        disagreements.push(`${reason}: backend says ${verdict}, client says ${mine ?? "nothing"}`);
+      }
+    }
+    expect(disagreements, disagreements.join("; ")).toEqual([]);
+  });
+
+  it("names nothing the backend does not", () => {
+    // A client-only verdict would paint a chip the gate disagrees with — a
+    // screen arguing with the server about what stops a posting.
+    const gate = backendGate();
+    const orphans = Object.keys(REASON_GATE).filter((r) => !(r in gate));
+    expect(orphans, `client verdicts the backend has none for: ${orphans.join(", ")}`).toEqual([]);
+  });
+
+  it("fails closed on an unknown slug, exactly like the backend", () => {
+    expect(isBlockingReason("a_reason_nobody_has_written_yet")).toBe(true);
+    expect(isBlockingReason("uncertain_line:3")).toBe(true);
+    // And an annotating one really does read as not-blocking.
+    expect(isBlockingReason("procedure_downcoded")).toBe(false);
+    expect(isBlockingReason("allowed_amount_mismatch")).toBe(false);
+  });
+
+  it("labels every line flag, including the three Slice 5.5 added", () => {
+    const unlabelled = members("LINE_FLAGS").filter((f) => !LINE_FLAG_LABELS[f]);
+    expect(unlabelled, `unlabelled line flags: ${unlabelled.join(", ")}`).toEqual([]);
   });
 });

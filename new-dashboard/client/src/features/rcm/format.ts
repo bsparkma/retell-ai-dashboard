@@ -13,6 +13,7 @@
  * — the same rule the Slice 5 upload panel already follows.
  */
 import type { MatchConfidence, OdMatchStatus } from "@/features/rcm/api";
+import { LINE_FLAG_LABELS, reasonTone } from "@/features/rcm/labels";
 
 /** Integer cents → "$1,234.56". The ONLY division by 100 in this feature. */
 export function money(cents: number): string {
@@ -51,28 +52,25 @@ export function humanize(slug: string): string {
   return slug.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 }
 
-// ─── Claim-level review reasons (Slices 4 and 5 produce these) ───────────────
+// ─── Claim-level review reasons, remittance flags, line flags ────────────────
 
 /**
- * The machine-readable reasons a claim is held for a human.
+ * ONE VOCABULARY, ONE HOME — `features/rcm/labels.ts`.
  *
- * This is where the ERA parser's detect-and-flag decisions and the EOB
- * extractor's uncertainty flags finally get SEEN. Slice 5 wrote them into
- * `needs_review_reasons` and nothing rendered them.
+ * This file used to keep its own `REVIEW_REASON_LABELS`, and it went stale the
+ * moment Slice 5.5 added ten members: it carried `low_confidence_extraction`
+ * and `uncertain_line`, neither of which the backend has ever emitted (the real
+ * slugs are `low_confidence` and the parameterised `uncertain_line:<N>`), so
+ * both entries were dead while the thirteen genuine EOB reasons rendered as raw
+ * slugs. Two maps for one vocabulary is how that happens.
+ *
+ * `labels.ts` is the one the ERA upload panel already used and the one
+ * `rcm-labels.test.ts` checks against the backend source. The workbench now
+ * reads it too, so a reason added to the backend fails ONE test and is fixed in
+ * ONE place.
  */
-export const REVIEW_REASON_LABELS: Record<string, string> = {
-  reversal_not_postable: "Reversal / takeback — cannot be posted",
-  claim_denied: "Denied by the carrier",
-  secondary_payer_adjudication: "Secondary payer (coordination of benefits)",
-  prior_payer_payment_on_primary_claim: "Prior payer's money on a claim marked primary",
-  unparseable_cas: "An adjustment could not be read",
-  unstorable_adjustment_group: "An adjustment used an unknown group code",
-  procedure_downcoded: "The carrier changed a procedure code",
-  no_service_lines: "No service lines",
-  line_total_mismatch: "Line payments do not sum to the claim total",
-  low_confidence_extraction: "The extraction was low-confidence",
-  uncertain_line: "A line was read with low confidence",
-};
+export { FLAG_LABELS, isBlockingReason, reasonTone } from "@/features/rcm/labels";
+export { reviewLabel as reviewReasonLabel } from "@/features/rcm/labels";
 
 /**
  * Which reasons mean "there is nothing to post here", as opposed to "look
@@ -85,36 +83,24 @@ export const NO_ACTION_REASONS = new Set([
   "prior_payer_payment_on_primary_claim",
 ]);
 
-export function reviewReasonLabel(reason: string): string {
-  return REVIEW_REASON_LABELS[reason] ?? humanize(reason);
-}
-
-// ─── Line flags (rcm_procedure_lines.flags) ──────────────────────────────────
-
-export const LINE_FLAG_LABELS: Record<string, string> = {
-  downcode: "Downcoded",
-  bundled: "Bundled",
-  denied: "Denied",
-  partial_pay: "Partial payment",
-  unexplained_adj: "Unexplained adjustment",
-  frequency_limit: "Frequency limit",
-  not_covered: "Not covered",
-  pre_auth_required: "Pre-auth required",
-};
-
 export function lineFlagLabel(flag: string): string {
   return LINE_FLAG_LABELS[flag] ?? humanize(flag);
 }
 
-/** Tailwind classes for a line flag chip. Warning tone for anything unread. */
+/**
+ * Tailwind classes for a line flag chip.
+ *
+ * Denial and non-coverage stay ROSE: they are not gate failures — a denial is a
+ * complete adjudication with nothing to post — but they are the two a biller
+ * most needs to spot in a table of numbers. Everything else takes the D-11
+ * tone, so a flag that will withhold the claim reads amber here and amber on
+ * the approval checklist rather than being one colour in each place.
+ */
 export function lineFlagTone(flag: string): string {
   if (flag === "denied" || flag === "not_covered") {
     return "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300";
   }
-  if (flag === "unexplained_adj") {
-    return "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
-  }
-  return "bg-muted text-muted-foreground";
+  return reasonTone(flag);
 }
 
 // ─── Batch-level attention (computed server-side) ────────────────────────────
@@ -130,6 +116,11 @@ export function lineFlagTone(flag: string): string {
 export const ATTENTION_LABELS: Record<string, string> = {
   claims_unreviewed: "Claims not yet reviewed",
   batch_no_claims: "No claims on this remittance",
+  // ── Slice 6b: the approval obligations ──
+  /** An APPROVER owes an action: the work is done and nobody has pressed it. */
+  claims_awaiting_approval: "Ready to approve for posting",
+  /** An approve ran and left a claim out. Somebody owes a fix or a disposition. */
+  claims_withheld: "Claims withheld at approval",
 };
 
 export const OBSERVATION_LABELS: Record<string, string> = {
@@ -139,6 +130,13 @@ export const OBSERVATION_LABELS: Record<string, string> = {
   batch_unbalanced: "Totals do not reconcile",
   batch_error: "The batch is in error",
   batch_posting: "A posting run holds this batch",
+  /**
+   * Slice 6b. The SYSTEM owes the next step and no human does, which is why it
+   * is grey — and until 6c ships, "queued" means a person authorised a posting
+   * and nothing has been written to Open Dental. It becomes an obligation again
+   * only when a drain fails a row and has somewhere to say so.
+   */
+  claims_queued: "Queued for posting",
 };
 
 export function attentionLabel(reason: string): string {

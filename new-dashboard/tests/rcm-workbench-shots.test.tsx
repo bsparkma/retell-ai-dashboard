@@ -197,6 +197,7 @@ function remittance(over: Record<string, unknown> = {}) {
     claimCount: 2,
     status: "open",
     source: "835",
+    flags: [] as string[],
     notes: "",
     createdAt: "2026-03-02T10:00:00.000Z",
     createdBy: "Billing User",
@@ -213,6 +214,10 @@ function remittance(over: Record<string, unknown> = {}) {
     attentionObservations: ["batch_open", "claims_flagged", "claims_unmatched"],
     reviewReasonCount: 2,
     unmatchedClaimCount: 2,
+    queuedClaimCount: 0,
+    // Slice 6b: null = nobody has pressed Approve on this remittance yet.
+    approvalAttemptedAt: null,
+    approvalAttemptedBy: null,
     upload: {
       uploadId: "u-1",
       filename: "Test_Delta_Dental_MultiClaim.edi",
@@ -341,6 +346,10 @@ const shotState = vi.hoisted(() => ({
   needsAttentionCount: 0,
   detail: null as unknown,
   claim: null as unknown,
+  /** Slice 6b — what the approval gate says, and what a press returns. */
+  approval: null as unknown,
+  approveResult: null as unknown,
+  approveError: null as unknown,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -360,14 +369,26 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/rcm/api")>();
   return {
     ...real,
-    listRemittances: vi.fn(async (office: string) => ({
-      office,
-      remittances: shotState.remittances,
-      total: shotState.remittances.length,
-      limit: 100,
-      offset: 0,
-      needsAttentionCount: shotState.needsAttentionCount,
-    })),
+    listRemittances: vi.fn(async (office: string, opts: { view?: string } = {}) => {
+      const all = shotState.remittances as { needsAttention?: boolean }[];
+      const view = opts.view === "attention" ? "attention" : "all";
+      const selected = view === "attention" ? all.filter((r) => r.needsAttention) : all;
+      return {
+        office,
+        view,
+        remittances: selected,
+        total: all.length,
+        limit: 50,
+        offset: 0,
+        needsAttentionCount: shotState.needsAttentionCount,
+        matchingCount: selected.length,
+      };
+    }),
+    getApprovalPreview: vi.fn(async () => shotState.approval),
+    approveRemittance: vi.fn(async () => {
+      if (shotState.approveError) throw shotState.approveError;
+      return shotState.approveResult;
+    }),
     getRemittance: vi.fn(async () => shotState.detail),
     getClaim: vi.fn(async (office: string) => ({
       office,
@@ -416,6 +437,26 @@ function dump(name: string) {
 beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("carein.office", "roland");
+  /*
+   * A DEFAULT for the approval gate, because RemittanceDetail loads the
+   * checklist on mount now. Without one, every shot of the detail page renders
+   * the panel's failure state — which would be a picture of a bug rather than
+   * of the screen.
+   */
+  shotState.approval = {
+    office: "roland",
+    batchId: "b-1",
+    canApprove: true,
+    approveRequires: "rcm.write",
+    claims: [],
+    postableCount: 0,
+    withheldCount: 0,
+    queuedCount: 0,
+    balanced: true,
+    differenceCents: 0,
+  };
+  shotState.approveResult = null;
+  shotState.approveError = null;
 });
 afterEach(cleanup);
 
@@ -467,6 +508,107 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       office: "roland",
       remittance: { ...remittance({ totalAmountCents: 53800, claimTotalCents: 45200 }), plbAdjustments: [] },
       claims: [CLAIM_FLAGGED, CLAIM_REVERSAL],
+    };
+    /*
+     * THE GATE'S ANSWER FOR THESE TWO CLAIMS — and it has to be a state the real
+     * gate can produce.
+     *
+     * The first version said "0 postable, 2 withheld" while listing NO claims,
+     * which is a shape the server cannot return: the counts are derived from the
+     * list. Worse, an earlier draft showed a `no_candidate` claim PASSING
+     * `SNAPSHOT_CURRENT` — impossible, because a claim with no confirmation
+     * fails that check by construction.
+     *
+     * A screenshot of an impossible state is a screenshot of a bug, and it is
+     * the version people trust because it is in the docs. Both claims here are
+     * unmatched, so both fail `MATCH_CONFIRMED` and everything downstream of a
+     * confirmation with it — exactly what the staging walk produces.
+     */
+    const unmatched = (over: Record<string, unknown>) => ({
+      postable: false,
+      alreadyQueued: false,
+      failed: ["MATCH_CONFIRMED", "SNAPSHOT_CURRENT", "NO_BLOCKING_PREFLIGHT", "LINES_PAIRED"],
+      checks: [
+        { code: "OFFICE_CONSISTENT", label: "Belongs to this office", passed: true, detail: null, fix: "" },
+        {
+          code: "MATCH_CONFIRMED",
+          label: "Matched to an Open Dental claim",
+          passed: false,
+          detail: "match is no_candidate",
+          fix: "Open the claim, run the match, and confirm the right one. Posting needs a ClaimNum, and nothing may choose it but a person.",
+        },
+        {
+          code: "SNAPSHOT_CURRENT",
+          label: "The match record is current and complete",
+          passed: false,
+          detail: "the record carries no confirmation",
+          fix: "The stored match was recorded in an older format or against another office. Run the match again and re-confirm it.",
+        },
+        { code: "REVIEWED", label: "Reviewed by a person", passed: true, detail: null, fix: "" },
+        { code: "NOT_REVERSAL", label: "Not a reversal or takeback", passed: true, detail: null, fix: "" },
+        { code: "NOT_RECOUPMENT", label: "Not a recoupment", passed: true, detail: null, fix: "" },
+        { code: "NOT_PATIENT_RESPONSIBILITY_ONLY", label: "The carrier actually paid something", passed: true, detail: null, fix: "" },
+        { code: "NO_BLOCKING_REASON", label: "No blocking review reason", passed: true, detail: null, fix: "" },
+        {
+          code: "NO_BLOCKING_PREFLIGHT",
+          label: "Open Dental will accept the write",
+          passed: false,
+          detail: "cannot be checked without a current match record",
+          fix: "The chart claim carries a fact Open Dental refuses to write over. Resolve it in Open Dental and run the match again.",
+        },
+        {
+          code: "LINES_PAIRED",
+          label: "Every line is paired to a chart line",
+          passed: false,
+          detail: "1 of 1 lines have no ClaimProcNum",
+          fix: "At least one procedure line has no ClaimProcNum. Re-run the match; if it still cannot pair, the chart and the remittance disagree about what was done.",
+        },
+        { code: "CLAIMPROC_NOT_ALREADY_PLANNED", label: "No chart line is already on another posting plan", passed: true, detail: null, fix: "" },
+        { code: "CLAIM_TOTALS_AGREE", label: "The amounts reconcile", passed: true, detail: null, fix: "" },
+      ],
+      ...over,
+    });
+
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        unmatched({ claimId: "c-1", claimNumber: "53701", patientName: "Sample, Placeholder" }),
+        /*
+         * The second claim is the REVERSAL the card below it shows, so its
+         * checklist has to say so too. A panel asserting "not a takeback" above
+         * a card headed "Reversal / takeback — cannot be posted" is the screen
+         * arguing with itself, which is exactly what these pictures are for
+         * catching.
+         */
+        (() => {
+          const c = unmatched({
+            claimId: "c-2",
+            claimNumber: "53210",
+            patientName: "Example, Testcase",
+          });
+          const fail = (code: string, detail: string) => {
+            const check = c.checks.find((x) => x.code === code)!;
+            check.passed = false;
+            check.detail = detail;
+            check.fix =
+              code === "NOT_REVERSAL"
+                ? "A takeback is a negative supplemental, which cannot be undone in Open Dental. Handle it in Open Dental directly, following the practice takeback procedure."
+                : "The carrier is taking money back on this claim. Recoupments are the one irreversible Open Dental operation and are not approvable here.";
+          };
+          fail("NOT_REVERSAL", "the carrier reversed this claim");
+          fail("NOT_RECOUPMENT", "the remittance moves -8600 cents");
+          c.failed = c.checks.filter((x) => !x.passed).map((x) => x.code);
+          return c;
+        })(),
+      ],
+      postableCount: 0,
+      withheldCount: 2,
+      queuedCount: 0,
+      balanced: false,
+      differenceCents: 8600,
     };
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
@@ -534,5 +676,220 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
     await waitFor(() => screen.getByTestId("no-candidate"));
     dump("05-candidates-all-rejected");
+  });
+  // ─── Slice 6b — the approval gate ──────────────────────────────────────────
+
+  /**
+   * The fixtures below are the SEEDED ones: one confirmed-and-reviewed postable
+   * claim and one withheld claim, the same pair `scripts/rcm-seed-fixtures.cjs`
+   * plants in a dev or staging tenant. Synthetic throughout — every name, code
+   * and dollar figure lives in this file, so a screenshot physically cannot
+   * contain a real patient.
+   */
+  const CHECKS_PASS = [
+    { code: "OFFICE_CONSISTENT", label: "Belongs to this office", passed: true, detail: null, fix: "" },
+    { code: "MATCH_CONFIRMED", label: "Matched to an Open Dental claim", passed: true, detail: "ClaimNum 9800000001", fix: "" },
+    { code: "SNAPSHOT_CURRENT", label: "The match record is current and complete", passed: true, detail: null, fix: "" },
+    { code: "REVIEWED", label: "Reviewed by a person", passed: true, detail: null, fix: "" },
+    { code: "NOT_REVERSAL", label: "Not a reversal or takeback", passed: true, detail: null, fix: "" },
+    { code: "NOT_RECOUPMENT", label: "Not a recoupment", passed: true, detail: null, fix: "" },
+    { code: "NOT_PATIENT_RESPONSIBILITY_ONLY", label: "The carrier actually paid something", passed: true, detail: null, fix: "" },
+    { code: "NO_BLOCKING_REASON", label: "No blocking review reason", passed: true, detail: null, fix: "" },
+    { code: "NO_BLOCKING_PREFLIGHT", label: "Open Dental will accept the write", passed: true, detail: null, fix: "" },
+    { code: "LINES_PAIRED", label: "Every line is paired to a chart line", passed: true, detail: null, fix: "" },
+    { code: "CLAIM_TOTALS_AGREE", label: "The amounts reconcile", passed: true, detail: null, fix: "" },
+  ];
+
+  function failing(code: string, detail: string, fix: string) {
+    return CHECKS_PASS.map((c) =>
+      c.code === code ? { ...c, passed: false, detail, fix } : c,
+    );
+  }
+
+  const POSTABLE_CLAIM = {
+    claimId: "c-1",
+    claimNumber: "FIXCLM-ROL-0001",
+    patientName: "Stedi Test 2",
+    postable: true,
+    alreadyQueued: false,
+    failed: [] as string[],
+    checks: CHECKS_PASS,
+  };
+
+  const WITHHELD_CLAIM = {
+    claimId: "c-2",
+    claimNumber: "FIXCLM-VAL-0002",
+    patientName: "Stedi TestValley",
+    postable: false,
+    alreadyQueued: false,
+    failed: ["NOT_RECOUPMENT"],
+    checks: failing(
+      "NOT_RECOUPMENT",
+      "the remittance moves -4000 cents",
+      "The carrier is taking money back on this claim. Recoupments are the one irreversible Open Dental operation and are not approvable here.",
+      // Its own ClaimNum: two claims sharing one would be a fixture arguing
+      // with itself in a picture people read carefully.
+    ).map((c) =>
+      c.code === "MATCH_CONFIRMED" ? { ...c, detail: "ClaimNum 9800000102" } : c,
+    ),
+  };
+
+  it("approve-01 — the checklist, with mixed pass and fail", async () => {
+    shotState.detail = {
+      office: "roland",
+      remittance: {
+        ...remittance({ flags: ["plb_adjustments_present"] }),
+        plbAdjustments: [],
+      },
+      claims: [CLAIM_FLAGGED],
+    };
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [POSTABLE_CLAIM, WITHHELD_CLAIM],
+      postableCount: 1,
+      withheldCount: 1,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    // Open the passing claim too, so the shot shows both states expanded.
+    fireEvent.click(screen.getByTestId("approval-toggle-c-1"));
+    await waitFor(() => screen.getByTestId("approval-checks-c-1"));
+    dump("approve-01-checklist");
+  });
+
+  it("approve-02 — an honest refusal: nothing on this remittance is postable", async () => {
+    const { RcmApiError } = await import("@/features/rcm/api");
+    shotState.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [CLAIM_FLAGGED],
+    };
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        {
+          ...WITHHELD_CLAIM,
+          claimId: "c-1",
+          claimNumber: "FIXCLM-ROL-0002",
+          patientName: "Test, MangoTest",
+          failed: ["MATCH_CONFIRMED"],
+          checks: failing(
+            "MATCH_CONFIRMED",
+            "match is no_candidate",
+            "Open the claim, run the match, and confirm the right one. Posting needs a ClaimNum, and nothing may choose it but a person.",
+          ),
+        },
+        WITHHELD_CLAIM,
+      ],
+      postableCount: 0,
+      withheldCount: 2,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+    shotState.approveError = new RcmApiError(
+      "Nothing on this remittance can be posted yet.",
+      409,
+      "NOTHING_APPROVABLE",
+      {
+        claims: [
+          { claimId: "c-1", claimNumber: "FIXCLM-ROL-0002", patientName: "Test, MangoTest", postable: false, alreadyQueued: false, failed: ["MATCH_CONFIRMED"], checks: [] },
+          { claimId: "c-2", claimNumber: "FIXCLM-VAL-0002", patientName: "Stedi TestValley", postable: false, alreadyQueued: false, failed: ["NOT_RECOUPMENT"], checks: [] },
+        ],
+      },
+    );
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    dump("approve-02-refused");
+    shotState.approveError = null;
+  });
+
+  it("approve-03 — a partial approve: what was queued, and what was not", async () => {
+    shotState.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [CLAIM_FLAGGED],
+    };
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [POSTABLE_CLAIM, WITHHELD_CLAIM],
+      postableCount: 1,
+      withheldCount: 1,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+    shotState.approveResult = {
+      office: "roland",
+      batchId: "b-1",
+      queueId: "43ae34f7-690c-5f10-b264-6211b95fca8a",
+      approvedBy: "Fixture Lead",
+      queued: [
+        {
+          claimId: "c-1",
+          claimNumber: "FIXCLM-ROL-0001",
+          patientName: "Stedi Test 2",
+          odClaimNum: 9800000001,
+          lines: 2,
+          totalCents: 11200,
+        },
+      ],
+      withheld: [
+        {
+          claimId: "c-2",
+          claimNumber: "FIXCLM-VAL-0002",
+          patientName: "Stedi TestValley",
+          reasons: ["NOT_RECOUPMENT"],
+          checks: WITHHELD_CLAIM.checks,
+        },
+      ],
+      alreadyQueued: [],
+      intendedTotalCents: 11200,
+      note: "Queued for posting — nothing has been written to Open Dental yet.",
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    fireEvent.click(screen.getByTestId("approve-button"));
+    await waitFor(() => screen.getByTestId("approve-result"));
+    dump("approve-03-partial");
+  });
+
+  it("approve-04 — the reviewer's view: same checklist, disabled button", async () => {
+    shotState.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [CLAIM_FLAGGED],
+    };
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: false,
+      approveRequires: "rcm.write",
+      claims: [POSTABLE_CLAIM, WITHHELD_CLAIM],
+      postableCount: 1,
+      withheldCount: 1,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    dump("approve-04-reviewer");
   });
 });

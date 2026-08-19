@@ -32,7 +32,7 @@ import {
   type EraUploadResult,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { REVIEW_LABELS, FLAG_LABELS, label, reviewLabel } from "@/features/rcm/labels";
+import { REVIEW_LABELS, FLAG_LABELS, isBlockingReason, label, reviewLabel } from "@/features/rcm/labels";
 
 /** Integer cents → "$1,234.56". Formatting is the component's job, not the API's. */
 function money(cents: number): string {
@@ -209,14 +209,37 @@ function UploadResult({ result, office }: { result: EraUploadResult; office: Rcm
       {(flagged.length > 0 || review.length > 0) && (
         <div className="mt-3 border-t border-border/60 pt-2" data-testid={`rcm-era-flags-${office}`}>
           <div className="text-xs font-medium text-foreground">Held for review</div>
+          {/*
+            D-11's split, applied here too. Amber will WITHHOLD the claim at the
+            approval gate; grey is true and changes nothing about what to post.
+            Colouring every flag amber — as this panel did — meant a downcode
+            and a truncated envelope looked equally alarming, which is how a
+            biller learns to read past both.
+          */}
           <ul className="mt-1 space-y-0.5">
             {flagged.map((f) => (
-              <li key={f} className="text-xs text-amber-700 dark:text-amber-500">
+              <li
+                key={f}
+                data-testid={`era-flag-${f}`}
+                className={`text-xs ${
+                  isBlockingReason(f)
+                    ? "text-amber-700 dark:text-amber-500"
+                    : "text-muted-foreground"
+                }`}
+              >
                 • {label(FLAG_LABELS, f)}
               </li>
             ))}
             {review.map((r) => (
-              <li key={r} className="text-xs text-amber-700 dark:text-amber-500">
+              <li
+                key={r}
+                data-testid={`era-reason-${r}`}
+                className={`text-xs ${
+                  isBlockingReason(r)
+                    ? "text-amber-700 dark:text-amber-500"
+                    : "text-muted-foreground"
+                }`}
+              >
                 • {reviewLabel(r)}
               </li>
             ))}

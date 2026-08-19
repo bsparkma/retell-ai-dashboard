@@ -47,10 +47,12 @@ const express = require('express');
 
 // Namespace import — see the note in summary.js.
 const tenantDb = require('../../platform/tenantDb');
-const { h, auditRcmRead, auditRcmDenial, num, iso, isoDate } = require('./helpers');
+const { h, actorEmail, auditRcmRead, auditRcmDenial, isUuid, num, iso, isoDate } = require('./helpers');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
-const { requirePermission } = require('../../config/permissions');
+const { requirePermission, holdsPermission } = require('../../config/permissions');
+const { audit } = require('../../platform/audit');
 const { toClaimSummary, loadClaimBundle, runBatchMatch, CLAIM_LIST_COLUMNS } = require('./matchService');
+const approvalGate = require('./approvalGate');
 
 const router = express.Router();
 
@@ -79,6 +81,20 @@ const BATCH_COLUMNS = [
   'claim_count',
   'status',
   'era_file_key',
+  /*
+   * Slice 5.5's structured remittance flags. Selected here because Slice 6a
+   * shipped without them and the detail screen could only say "Held — something
+   * on this remittance was flagged" — the same sin one level up that Slice 6a
+   * fixed at claim level. A whole-check takeback deserves to be named.
+   */
+  'flags',
+  /*
+   * Slice 6b. WHETHER SOMEBODY HAS PRESSED APPROVE, whatever came of it — the
+   * fact that turns "this claim is not ready" into "this claim was withheld".
+   * See attentionFor.
+   */
+  'approval_attempted_at',
+  'approval_attempted_by',
   'notes',
   'created_by',
   'created_at',
@@ -123,18 +139,57 @@ function parseBound(raw, fallback, max) {
  * their note; that is evidence of work done, not an outstanding obligation.
  *
  * `observations` ride alongside so the screen still says WHY a remittance was
- * worth looking at, and so Slice 6b can add its own obligations (approvable,
- * awaiting posting) without having to re-litigate which of these is which.
+ * worth looking at.
  *
  * NO AUTO-REVIEW. A claim with no flags, matched and confirmed, still owes an
  * explicit disposition: a biller marking "looked, nothing to do" is real work
  * and the audit row is what proves it happened.
  *
- * @param {{ status: string }} batch
- * @param {ReadonlyArray<{ needsReviewReasons: string[], odMatchStatus: string, reviewedAt: string|null }>} claims
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SLICE 6b'S OBLIGATIONS, ADDED WITHOUT WIDENING THE FILTER BY ACCIDENT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Approval is the first ACTION this module has that a fact can be waiting on,
+ * so it is the first thing since `claims_unreviewed` that earns a place in
+ * `reasons`. Three of them, and the division is the same one D-12 settled:
+ *
+ *   claims_awaiting_approval  an APPROVER owes an action — the work is done and
+ *                             somebody with posting permission has not pressed
+ *                             the button.
+ *   claims_withheld           an approve RAN and left a claim out. SOMEBODY owes
+ *                             a fix, or a manual disposition. It can only fire
+ *                             after somebody has actually pressed the button,
+ *                             which is what keeps it from crying wolf at a
+ *                             biller who has finished everything the screen
+ *                             lets her do.
+ *
+ *                             "Ran" means ATTEMPTED, not "produced a queue row".
+ *                             The first version keyed on the queue existing, and
+ *                             a wholly-refused approve rolls back — so pressing
+ *                             Approve, being told "nothing here can be posted
+ *                             and here is why", and going back to the list made
+ *                             the remittance VANISH from the default view. The
+ *                             same crying-wolf rule, failing the other way:
+ *                             silence at the exact moment somebody was told they
+ *                             owed work. `approval_attempted_at` is the stamp
+ *                             that survives the rollback.
+ *   claims_queued             an OBSERVATION. The system owes the next step and
+ *                             no human does; it becomes an obligation again only
+ *                             when 6c fails a row and has somewhere to say so.
+ *
+ * Which of the two obligations a claim produces is decided by
+ * `approvalGate.looksApprovable`, the cheap necessary subset of the gate — see
+ * its header for why the list is allowed to be imprecise between two
+ * obligations and never about whether one exists.
+ *
+ * @param {{ status: string, flags?: string[] }} batch
+ * @param {ReadonlyArray<{ needsReviewReasons: string[], odMatchStatus: string,
+ *                         reviewedAt: string|null, postingQueueId: string|null }>} claims
+ * @param {{ hasQueue?: boolean, attempted?: boolean }} [approval] whether an
+ *   approval has been ATTEMPTED on this remittance (or produced a plan) — the
+ *   fact that turns "not ready yet" into "withheld"
  * @returns {{ needsAttention: boolean, reasons: string[], observations: string[] }}
  */
-function attentionFor(batch, claims) {
+function attentionFor(batch, claims, approval = {}) {
   /** Outstanding ACTIONS. These, and only these, decide `needsAttention`. */
   const reasons = [];
   /** FACTS worth showing. They never make a remittance need attention. */
@@ -157,7 +212,48 @@ function attentionFor(batch, claims) {
    */
   if (claims.length === 0) reasons.push('batch_no_claims');
 
+  /*
+   * THE APPROVAL OBLIGATIONS — only once every claim has been dispositioned.
+   *
+   * Guarded on `unreviewed === 0` on purpose: while a claim is still unreviewed
+   * the outstanding action is the review, and stacking "and also approve it"
+   * beside it would put two chips on one row for one piece of work. The queue
+   * shows the NEXT thing owed, not every thing eventually owed.
+   */
+  const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
+  const unqueued = claims.filter((c) => !c.postingQueueId);
+  if (unreviewed === 0 && claims.length > 0) {
+    if (unqueued.some((c) => approvalGate.looksApprovable(c, batchFlags))) {
+      reasons.push('claims_awaiting_approval');
+    }
+    /*
+     * A claim is WITHHELD, rather than merely not ready, once an approval has
+     * actually been RUN on this remittance and left it out. Before that there is
+     * nothing to be withheld from: an unapprovable claim that a biller has
+     * reviewed with "the carrier owes a corrected EOB" is finished work, and
+     * calling it an obligation is exactly the false alarm this predicate was
+     * rewritten to stop raising.
+     *
+     * `attempted` OR `hasQueue`, not just the queue: a wholly-refused approve
+     * writes no plan, and keying on the plan alone dropped the remittance out of
+     * the view in the same breath as telling its owner it needed work.
+     */
+    const approvalRan = approval.attempted === true || approval.hasQueue === true;
+    if (approvalRan && unqueued.some((c) => !approvalGate.looksApprovable(c, batchFlags))) {
+      reasons.push('claims_withheld');
+    }
+  }
+
   // ── The observations ──────────────────────────────────────────────────────
+
+  /*
+   * QUEUED IS AN OBSERVATION, and the wording on the screen matters as much as
+   * the classification: until 6c ships, "queued for posting" means a person
+   * authorised it and NOTHING HAS BEEN WRITTEN TO OPEN DENTAL. That is exactly
+   * true, and it stops being true the day the drain lands — at which point this
+   * is the line that has to change with it.
+   */
+  if (claims.some((c) => c.postingQueueId)) observations.push('claims_queued');
 
   // Slice 5's contract: a batch is held `open` when ANYTHING on it was flagged
   // — a reversal, a PLB, a downcode, an unreadable adjustment, a total that
@@ -182,8 +278,12 @@ function attentionFor(batch, claims) {
 }
 
 /** Map a batch row + its claims to the list/detail wire shape. */
-function toBatchWire(batch, claims, source, actors) {
-  const attention = attentionFor({ status: batch.status }, claims);
+function toBatchWire(batch, claims, source, actors, approval = {}) {
+  const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
+  const attention = attentionFor({ status: batch.status, flags: batchFlags }, claims, {
+    ...approval,
+    attempted: batch.approval_attempted_at != null,
+  });
   const claimTotalCents = claims.reduce((sum, c) => sum + c.totalPaidCents, 0);
   const createdBy = batch.created_by ? actors[batch.created_by] : null;
 
@@ -203,6 +303,13 @@ function toBatchWire(batch, claims, source, actors) {
     status: batch.status,
     /** '835' when an ERA produced it, 'eob' when a PDF extraction did. */
     source,
+    /**
+     * Slice 5.5's remittance-level facts, as a vocabulary rather than as prose.
+     * The workbench colours them by the D-11 split: a blocking flag is amber
+     * because it will withhold every claim on this check, an annotating one is
+     * grey. Both are always shown.
+     */
+    flags: batchFlags,
     notes: batch.notes || '',
     createdAt: iso(batch.created_at),
     createdBy: createdBy ? createdBy.displayName : null,
@@ -231,7 +338,41 @@ function toBatchWire(batch, claims, source, actors) {
     attentionObservations: attention.observations,
     reviewReasonCount: claims.reduce((n, c) => n + c.needsReviewReasons.length, 0),
     unmatchedClaimCount: claims.filter((c) => c.odMatchStatus !== 'confirmed').length,
+    /** How many claims a human has approved into a posting plan. */
+    queuedClaimCount: claims.filter((c) => c.postingQueueId).length,
+    /**
+     * When somebody last pressed Approve, whatever came of it. Null means
+     * nobody has — which is why a claim that cannot be posted is "not ready"
+     * rather than "withheld".
+     */
+    approvalAttemptedAt: iso(batch.approval_attempted_at),
+    approvalAttemptedBy: batch.approval_attempted_by
+      ? (actors[batch.approval_attempted_by] || {}).displayName || batch.approval_attempted_by
+      : null,
   };
+}
+
+/**
+ * Which of these batches already carry a posting plan.
+ *
+ * ONE query for a whole page. It is what tells `attentionFor` the difference
+ * between "not approvable yet" and "an approve ran and left this out" — and the
+ * only thing 6b's list needs to know about the queue. The plan's CONTENTS are
+ * never read here: a list has no use for them, and one of them is a per-line
+ * record of money about to move.
+ *
+ * @param {{ query: Function }} pool
+ * @param {string} office
+ * @param {ReadonlyArray<string>} batchIds
+ * @returns {Promise<Set<string>>}
+ */
+async function batchesWithQueue(pool, office, batchIds) {
+  if (batchIds.length === 0) return new Set();
+  const rows = await pool.query(
+    `SELECT batch_id FROM rcm_posting_queue WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
+    [office, batchIds]
+  );
+  return new Set(rows.rows.map((r) => r.batch_id));
 }
 
 /**
@@ -326,6 +467,91 @@ async function uploadsByBatch(pool, office, batches) {
   return out;
 }
 
+/**
+ * The narrow claim scan the LIST predicate runs on.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE WHOLE OFFICE, AND WHY THESE COLUMNS AND NO OTHERS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Slice 6a computed `needsAttentionCount` over the PAGE while `total` counted
+ * the office, so the header could truthfully read "12 needing attention · 640
+ * total" about two different populations — and a remittance needing attention
+ * and older than the hundredth newest was invisible AND uncounted, on a screen
+ * whose stated premise is that the default is the work.
+ *
+ * The predicate is not expressible in SQL: it reads `needs_review_reasons`
+ * through the D-11 gate map, which lives in `rcmVocabulary.js` and must have
+ * exactly one home — mirroring it into a WHERE clause would create the second
+ * source of truth that whole file exists to prevent. So the scan runs in JS,
+ * over the office, on the SIX columns the predicate actually reads.
+ *
+ * NO PHI. No patient name, no subscriber id, no amount. The expensive claim
+ * summaries are loaded only for the page that is about to be rendered.
+ *
+ * @param {{ query: Function }} pool
+ * @param {string} office
+ * @returns {Promise<Map<string, Array<object>>>} batch_id → predicate rows
+ */
+async function attentionScan(pool, office) {
+  const links = await pool.query(
+    `SELECT batch_id, claim_id FROM rcm_batch_claim_payments WHERE office_id = $1`,
+    [office]
+  );
+  const claimIds = [...new Set(links.rows.map((r) => r.claim_id).filter(Boolean))];
+  /** @type {Map<string, Array<object>>} */
+  const out = new Map();
+  if (claimIds.length === 0) return out;
+
+  const claims = await pool.query(
+    `SELECT claim_id, reviewed_at, od_match_status, needs_review_reasons, posting_queue_id ` +
+      `FROM rcm_claims WHERE office_id = $1 AND claim_id = ANY($2::uuid[])`,
+    [office, claimIds]
+  );
+  const byId = new Map(
+    claims.rows.map((r) => [
+      r.claim_id,
+      {
+        reviewedAt: iso(r.reviewed_at),
+        odMatchStatus: r.od_match_status || 'not_run',
+        needsReviewReasons: Array.isArray(r.needs_review_reasons) ? r.needs_review_reasons : [],
+        postingQueueId: r.posting_queue_id || null,
+      },
+    ])
+  );
+
+  for (const link of links.rows) {
+    const row = link.claim_id ? byId.get(link.claim_id) : null;
+    if (!row) continue;
+    if (!out.has(link.batch_id)) out.set(link.batch_id, []);
+    out.get(link.batch_id).push(row);
+  }
+  return out;
+}
+
+
+/**
+ * The one 404 this router serves, so every path answers a probe identically.
+ *
+ * Audited, because walking ids must not be a silent activity — and this covers
+ * "belongs to the other office" too, since `office_id` is in every WHERE.
+ * Best-effort (see auditRcmDenial): turning a refusal into a 500 because the
+ * trail could not be written would hand a prober a way to tell "no such id"
+ * from "audit is down".
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {string} office
+ * @param {string} batchId
+ */
+async function notFound(req, res, office, batchId) {
+  await auditRcmDenial(req, 'rcm_remittance', isUuid(batchId) ? batchId : null, { office });
+  return res.status(404).json({
+    success: false,
+    error: 'No such remittance for this office',
+    code: 'REMITTANCE_NOT_FOUND',
+  });
+}
+
 // ─── GET / — the remittance list ─────────────────────────────────────────────
 
 router.get(
@@ -334,30 +560,103 @@ router.get(
     const office = req.rcmOffice;
     const limit = parseBound(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT) || DEFAULT_LIMIT;
     const offset = parseBound(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
+    /*
+     * THE VIEW IS APPLIED SERVER-SIDE, BUT ITS DEFAULT IS `all`.
+     *
+     * Slice 6a filtered in the browser, over a 100-row page, while the header
+     * counted the whole office — so "12 needing attention · 640 total" was two
+     * statements about two different populations, and a remittance needing
+     * attention and older than the hundredth newest was invisible AND uncounted.
+     * The filter and both counts now run here, over everything.
+     *
+     * The DEFAULT stays `all` even though the workbench opens on
+     * "Needs attention": a list endpoint that silently hides most of the list is
+     * a trap for the next caller. The screen asks for the view it wants; the
+     * counts come back for both either way. An unrecognised value falls back to
+     * the default rather than 400ing — refusing a whole list over a typo in a
+     * display preference is the worse failure.
+     */
+    const view = req.query.view === 'attention' ? 'attention' : 'all';
 
     const loaded = await tenantDb.withTenantDb(req, async (pool) => {
-      const [page, count] = await Promise.all([
+      // Every batch for the office, but only the columns the predicate and the
+      // ordering need. The full BATCH_COLUMNS read happens for the page alone.
+      const [all, scan] = await Promise.all([
         pool.query(
-          `SELECT ${BATCH_COLUMNS} FROM rcm_payment_batches WHERE office_id = $1 ` +
-            `ORDER BY deposit_date DESC NULLS LAST, created_at DESC LIMIT $2 OFFSET $3`,
-          [office, limit, offset]
+          `SELECT batch_id, status, flags, approval_attempted_at FROM rcm_payment_batches ` +
+            `WHERE office_id = $1 ORDER BY deposit_date DESC NULLS LAST, created_at DESC`,
+          [office]
         ),
-        pool.query(`SELECT COUNT(*)::int AS n FROM rcm_payment_batches WHERE office_id = $1`, [
-          office,
-        ]),
+        attentionScan(pool, office),
       ]);
+      const queued = await batchesWithQueue(
+        pool,
+        office,
+        all.rows.map((r) => r.batch_id)
+      );
 
-      const batchIds = page.rows.map((r) => r.batch_id);
+      // The predicate, over the WHOLE population, with the same function the
+      // detail screen uses. This is what makes the two counts below true of one
+      // set of rows.
+      const marked = all.rows.map((row) => ({
+        batchId: row.batch_id,
+        needsAttention: attentionFor(
+          { status: row.status, flags: Array.isArray(row.flags) ? row.flags : [] },
+          scan.get(row.batch_id) || [],
+          {
+            hasQueue: queued.has(row.batch_id),
+            attempted: row.approval_attempted_at != null,
+          }
+        ).needsAttention,
+      }));
+
+      const attentionCount = marked.filter((m) => m.needsAttention).length;
+      const selected = view === 'attention' ? marked.filter((m) => m.needsAttention) : marked;
+      const pageIds = selected.slice(offset, offset + limit).map((m) => m.batchId);
+
+      if (pageIds.length === 0) {
+        return {
+          batches: [],
+          claims: new Map(),
+          uploads: new Map(),
+          actors: {},
+          queued,
+          total: marked.length,
+          attentionCount,
+          matching: selected.length,
+        };
+      }
+
+      const page = await pool.query(
+        `SELECT ${BATCH_COLUMNS} FROM rcm_payment_batches ` +
+          `WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
+        [office, pageIds]
+      );
+      // The page query loses the ORDER BY (it selects by id set), so the
+      // already-ordered id list is what restores it.
+      const byId = new Map(page.rows.map((r) => [r.batch_id, r]));
+      const ordered = pageIds.map((id) => byId.get(id)).filter(Boolean);
+
       const [claims, uploads] = await Promise.all([
-        claimsByBatch(pool, office, batchIds),
-        uploadsByBatch(pool, office, page.rows),
+        claimsByBatch(pool, office, pageIds),
+        uploadsByBatch(pool, office, ordered),
       ]);
       const actors = await describeActors(pool, [
-        ...page.rows.map((b) => b.created_by),
+        ...ordered.map((b) => b.created_by),
+        ...ordered.map((b) => b.approval_attempted_by),
         ...[...uploads.values()].map((u) => u.uploadedByKey),
       ]);
 
-      return { batches: page.rows, total: num(count.rows[0] && count.rows[0].n), claims, uploads, actors };
+      return {
+        batches: ordered,
+        claims,
+        uploads,
+        actors,
+        queued,
+        total: marked.length,
+        attentionCount,
+        matching: selected.length,
+      };
     });
 
     // A remittance list names patients one level down, and the batch rows carry
@@ -368,7 +667,9 @@ router.get(
     const remittances = loaded.batches.map((batch) => {
       const claims = loaded.claims.get(batch.batch_id) || [];
       const upload = loaded.uploads.get(batch.batch_id) || null;
-      const wire = toBatchWire(batch, claims, upload ? upload.source : null, loaded.actors);
+      const wire = toBatchWire(batch, claims, upload ? upload.source : null, loaded.actors, {
+        hasQueue: loaded.queued.has(batch.batch_id),
+      });
       return {
         ...wire,
         upload: upload
@@ -389,12 +690,21 @@ router.get(
     return res.json({
       success: true,
       office,
+      /** Which population `remittances` was paged out of. */
+      view,
       remittances,
+      /** Every remittance this office holds — NOT the page, and NOT the filter. */
       total: loaded.total,
+      /**
+       * How many of that same population need attention. Computed over the
+       * whole set with the same predicate, so "12 needing attention · 640
+       * total" is a statement about one population rather than two.
+       */
+      needsAttentionCount: loaded.attentionCount,
+      /** How many rows the CURRENT view holds — what `offset`/`limit` page. */
+      matchingCount: loaded.matching,
       limit,
       offset,
-      /** So the client's default filter and the server's predicate agree. */
-      needsAttentionCount: remittances.filter((r) => r.needsAttention).length,
     });
   })
 );
@@ -406,6 +716,9 @@ router.get(
   h(async (req, res) => {
     const office = req.rcmOffice;
     const batchId = String(req.params.id);
+
+    // A malformed id is NOT FOUND, not a 500. See helpers.isUuid.
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
 
     const loaded = await tenantDb.withTenantDb(req, async (pool) => {
       // office_id is in the WHERE, not merely checked afterwards: a batch that
@@ -430,26 +743,29 @@ router.get(
 
       const actors = await describeActors(pool, [
         batch.created_by,
+        batch.approval_attempted_by,
         upload && upload.uploadedByKey,
         ...claims.map((c) => c.odMatchedByKey),
         ...claims.map((c) => c.reviewedByKey),
+        ...claims.map((c) => c.approvedByKey),
       ]);
 
-      return { batch, claims, details, upload, actors };
+      const queued = await batchesWithQueue(pool, office, [batchId]);
+
+      return { batch, claims, details, upload, actors, hasQueue: queued.has(batchId) };
     });
 
-    if (!loaded) {
-      await auditRcmDenial(req, 'rcm_remittance', batchId, { office });
-      return res.status(404).json({
-        success: false,
-        error: 'No such remittance for this office',
-        code: 'REMITTANCE_NOT_FOUND',
-      });
-    }
+    if (!loaded) return notFound(req, res, office, batchId);
 
     await auditRcmRead(req, 'rcm_remittance', { office });
 
-    const wire = toBatchWire(loaded.batch, loaded.claims, loaded.upload ? loaded.upload.source : null, loaded.actors);
+    const wire = toBatchWire(
+      loaded.batch,
+      loaded.claims,
+      loaded.upload ? loaded.upload.source : null,
+      loaded.actors,
+      { hasQueue: loaded.hasQueue }
+    );
 
     return res.json({
       success: true,
@@ -496,6 +812,8 @@ router.post(
     const office = req.rcmOffice;
     const batchId = String(req.params.id);
 
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
     // The claim SUMMARIES, not just their ids: runBatchMatch orders unmatched
     // claims first so that pressing the button again after a budgeted run makes
     // forward progress instead of redoing the front of the list.
@@ -509,14 +827,7 @@ router.post(
       return rows.map((c) => ({ claimId: c.claimId, odMatchStatus: c.odMatchStatus }));
     });
 
-    if (claims === null) {
-      await auditRcmDenial(req, 'rcm_remittance', batchId, { office });
-      return res.status(404).json({
-        success: false,
-        error: 'No such remittance for this office',
-        code: 'REMITTANCE_NOT_FOUND',
-      });
-    }
+    if (claims === null) return notFound(req, res, office, batchId);
 
     /*
      * SEQUENTIAL, WITH PACING. Never a request-scoped fan-out.
@@ -559,6 +870,199 @@ router.post(
   })
 );
 
+
+// ─── The approval gate (Slice 6b) ────────────────────────────────────────────
+
+/**
+ * Turn an ApprovalError into its HTTP answer, or say it was not ours.
+ *
+ * Every refusal here is a REFUSAL, not an error: a remittance that cannot be
+ * posted yet is the gate working. They are audited as `ERROR` rather than
+ * `UNAUTHORIZED` — nobody was denied ACCESS, and diluting UNAUTHORIZED with
+ * routine gate outcomes is how the one signal that means "somebody was refused"
+ * stops being readable. That lesson is already written into auditRcmDenial's
+ * header; this is the first route to need the distinction on a write path.
+ *
+ * @returns {boolean} true when the response has been sent
+ */
+function respondToApprovalError(req, res, office, err, batchId) {
+  if (!(err instanceof approvalGate.ApprovalError)) return false;
+  void auditRcmDenial(req, 'rcm_posting_approval', batchId, {
+    office,
+    result: err.httpStatus === 404 ? 'UNAUTHORIZED' : 'ERROR',
+  });
+  const body = {
+    success: false,
+    error: err.message,
+    code: err.code,
+  };
+  if (Array.isArray(err.claims)) body.claims = err.claims;
+  if (typeof err.differenceCents === 'number') body.differenceCents = err.differenceCents;
+  res.status(err.httpStatus).json(body);
+  return true;
+}
+
+/**
+ * GET /:id/approval — THE PRE-FLIGHT CHECKLIST, before anything is pressed.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE CHECKLIST IS ITS OWN ENDPOINT, AND WHY IT IS A READ
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A biller should be able to see exactly which claims will be withheld, and
+ * why, and go fix them — without pressing the button to find out. Pressing a
+ * button to discover a refusal is how people learn to press buttons hopefully.
+ *
+ * It runs on `rcm.read`, which the `reviewer` tier holds (D-9), so the person
+ * who does the reviewing can see the consequences of her own work even though
+ * she cannot approve it. The response says so in a field rather than leaving the
+ * screen to infer it from a role name: `canApprove` is the server's answer, and
+ * `approveRequires` names the permission a colleague would need.
+ *
+ * It is computed by the SAME function the POST uses, so the screen cannot
+ * predict an outcome the button then contradicts.
+ */
+router.get(
+  '/:id/approval',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const preview = await approvalGate.previewApproval(req, office, batchId);
+    if (!preview) return notFound(req, res, office, batchId);
+
+    // The checklist names patients. Fail-closed, like every PHI read here.
+    await auditRcmRead(req, 'rcm_posting_approval', { office, resourceId: batchId });
+
+    return res.json({
+      success: true,
+      office,
+      batchId,
+      /**
+       * May THIS caller press it? The screen renders the same checklist either
+       * way — seeing why a claim is withheld is not a posting act — and only
+       * the button changes.
+       */
+      canApprove: holdsPermission(req, 'rcm.write'),
+      approveRequires: 'rcm.write',
+      claims: preview.claims.map((c) => ({
+        claimId: c.claimId,
+        claimNumber: c.claimNumber,
+        patientName: c.patientName,
+        postable: c.postable,
+        alreadyQueued: c.alreadyQueued,
+        checks: c.checks,
+        failed: c.failed,
+      })),
+      postableCount: preview.postable.length,
+      withheldCount: preview.withheld.length,
+      queuedCount: preview.alreadyQueued.length,
+      /** The batch's own arithmetic. False holds the WHOLE approve. */
+      balanced: preview.batchBalanced,
+      differenceCents: preview.batchDifferenceCents,
+    });
+  })
+);
+
+/**
+ * POST /:id/approve — the gate.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PERMISSION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This route is deliberately NOT in `routes/rcm/index.js` QUEUE_PATHS, so the
+ * mount's `requireReadWrite('rcm.read','rcm.write')` demands `rcm.write` for it
+ * by construction — a `reviewer` never reaches this handler at all. The
+ * in-handler check below is therefore defence in depth rather than the primary
+ * gate: it exists so that a future remount, or a route copied to a path that IS
+ * exempt, still refuses. Same `holdsPermission` the middleware uses, so the two
+ * cannot disagree about super_admins and machine tokens.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT COMES OUT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `{ queued, withheld, alreadyQueued }` — what was enqueued, what was not and
+ * why, and what a previous approval had already taken. Partial success is real
+ * success and says exactly which claims it covered. NOTHING has been written to
+ * Open Dental: this route creates rows in OUR database describing an intent,
+ * and 6c is what acts on them.
+ */
+router.post(
+  '/:id/approve',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    if (!holdsPermission(req, 'rcm.write')) {
+      // A refusal of ACCESS — the one case on this route that IS
+      // UNAUTHORIZED, as distinct from the gate's own refusals below.
+      await auditRcmDenial(req, 'rcm_posting_approval', batchId, {
+        office,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        success: false,
+        error:
+          'Approving a remittance for posting needs posting permission — ask an approver to press it',
+        code: 'APPROVE_REQUIRES_WRITE',
+        action: 'rcm.write',
+      });
+    }
+
+    let result;
+    try {
+      result = await approvalGate.approveRemittance(req, office, batchId, {
+        email: actorEmail(req),
+        displayName: (req.user && (req.user.name || req.user.displayName)) || null,
+      });
+    } catch (err) {
+      if (respondToApprovalError(req, res, office, err, batchId)) return undefined;
+      throw err;
+    }
+
+    /*
+     * CREATE, and the resource is the APPROVAL rather than the remittance.
+     *
+     * A person authorised money to move; that is a new thing in the world, not
+     * an update to a batch. Written AFTER the commit on purpose — unlike a PHI
+     * read, where the trail must precede the disclosure, here the fact being
+     * recorded is one that has already durably happened, and auditing before
+     * the commit would record an approval a rollback then erased.
+     */
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'rcm_posting_approval',
+      resourceId: batchId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({
+      success: true,
+      office,
+      batchId,
+      queueId: result.queueId,
+      approvedBy: result.approvedBy,
+      /** What this press enqueued. */
+      queued: result.queued,
+      /** What it did not, per claim, with every failing condition. */
+      withheld: result.withheld,
+      /** What an earlier press had already taken. */
+      alreadyQueued: result.alreadyQueued,
+      /** The plan's total, read back off the lines actually written. */
+      intendedTotalCents: result.intendedTotalCents,
+      /**
+       * The literal, current truth, and the words the screen prints. It stops
+       * being true the day Slice 6c ships, which is the day this line changes.
+       */
+      note: 'Queued for posting — nothing has been written to Open Dental yet.',
+    });
+  })
+);
+
 module.exports = router;
 module.exports.attentionFor = attentionFor;
 module.exports.BATCH_COLUMNS = BATCH_COLUMNS;
+module.exports.batchesWithQueue = batchesWithQueue;

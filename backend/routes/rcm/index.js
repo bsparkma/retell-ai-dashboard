@@ -37,15 +37,30 @@
  *   POST /claims/:id/review        worklist hygiene         (attributed, D-5)
  *   GET  /uploads/:id/document     the authorised source-document proxy
  *
- * ZERO OPEN DENTAL WRITES IN THIS SLICE. The only transport reachable from any
- * of the above is `apiGetRaw` on the office's own client, which has no write
- * counterpart; `rcmNoOdWrites.test.js` fails if one appears. There is no
- * approve, no enqueue and no post route, and `rcm_posting_queue` is untouched.
+ * Slice 6b made the workbench's Approve button real — and it is the first thing
+ * under this mount that AUTHORISES money to move, without moving any:
+ *   GET  /remittances/:id/approval  the pre-flight checklist, per claim
+ *   POST /remittances/:id/approve   write the posting plan   (attributed, D-5)
  *
- * NOT here, and not yet: the approval gate (6b), any Open Dental write (6c),
- * the recoupment gate (6d), reconciliation, VCC and metrics (8/9), Stedi. The
- * only tables anything under this mount touches are rcm_* and the platform
- * audit_log.
+ * ZERO OPEN DENTAL WRITES, AND ZERO OPEN DENTAL CALLS ON THE APPROVE PATH.
+ *
+ * The only transport reachable from the match layer is `apiGetRaw` on the
+ * office's own client, which has no write counterpart. The approval gate reaches
+ * no Open Dental module at all: it re-reads what a match already recorded and
+ * writes an intent. `rcmNoOdWrites.test.js` drives approve to SUCCESS against a
+ * client whose every verb throws and asserts not one was called — approving is
+ * not posting, and that is a test rather than a sentence. It also names the one
+ * file allowed to write `rcm_posting_queue` (./approvalGate.js).
+ *
+ * `POST /remittances/:id/approve` is deliberately NOT in QUEUE_PATHS below, so
+ * the mount's requireReadWrite demands `rcm.write` for it by construction. The
+ * CHECKLIST beside it is a GET and therefore runs on `rcm.read`, which the
+ * `reviewer` tier holds: seeing why a claim is withheld is not a posting act.
+ *
+ * NOT here, and not yet: the drain and any Open Dental write (6c), the
+ * recoupment typed-confirmation gate (6d), reconciliation, VCC and metrics
+ * (8/9), Stedi. The only tables anything under this mount touches are rcm_* and
+ * the platform audit_log.
  */
 
 const express = require('express');
@@ -115,10 +130,11 @@ router.use('/eob', require('./eob'));
 // mount's requireReadWrite for every non-GET method, and the same
 // requireOffice above. Still no Open Dental (eraNoOdImports covers this one).
 router.use('/era', require('./era'));
-// Slice 6a — the review workbench. `/remittances` is the screen a biller opens
-// a check on; `/uploads/:id/document` is the authorised proxy back to the bytes
-// it was parsed from. Both sit BELOW requireOffice like everything else, so a
-// cross-office read is a miss rather than a refusal somebody had to remember.
+// Slice 6a — the review workbench, and Slice 6b's approval gate on top of it.
+// `/remittances` is the screen a biller opens a check on; `/uploads/:id/document`
+// is the authorised proxy back to the bytes it was parsed from. Both sit BELOW
+// requireOffice like everything else, so a cross-office read is a miss rather
+// than a refusal somebody had to remember.
 router.use('/remittances', require('./remittances'));
 router.use('/uploads', require('./documents'));
 

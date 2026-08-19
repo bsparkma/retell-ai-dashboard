@@ -143,3 +143,88 @@ test('the remittance flags the ERA parser can raise are all storable', () => {
     assert.ok(vocabulary.REMITTANCE_FLAGS.includes(flag), `${flag} must be storable`);
   }
 });
+
+// ─── D-11: the blocking / annotating gate map ────────────────────────────────
+
+test('EVERY vocabulary member has a verdict — the fail-closed default is a backstop', () => {
+  /*
+   * `isBlockingReason` treats anything absent from REASON_GATE as BLOCKING, which
+   * is the right default and a terrible routine path: a reason added without a
+   * verdict would silently start withholding every claim that carries it, and
+   * the first sign would be a biller unable to post a check nobody changed.
+   *
+   * So the default must be unreachable in practice. Three vocabularies reach the
+   * gate — claim review reasons, remittance flags and line flags — and every
+   * member of all three has to be named.
+   */
+  const all = [
+    ...vocabulary.REVIEW_REASONS,
+    ...vocabulary.REMITTANCE_FLAGS,
+    ...vocabulary.LINE_FLAGS,
+  ];
+  const missing = [...new Set(all)].filter(
+    (r) => !Object.prototype.hasOwnProperty.call(vocabulary.REASON_GATE, r)
+  );
+  assert.deepEqual(
+    missing,
+    [],
+    `these vocabulary members have no blocking/annotating verdict: ${missing.join(', ')}`
+  );
+});
+
+test('the gate map names nothing that is not in a vocabulary', () => {
+  // The other direction. A verdict for a slug nothing can emit is dead weight
+  // that reads as coverage — and it is how a renamed reason keeps its old
+  // verdict while the new name falls through to the default.
+  const all = new Set([
+    ...vocabulary.REVIEW_REASONS,
+    ...vocabulary.REMITTANCE_FLAGS,
+    ...vocabulary.LINE_FLAGS,
+  ]);
+  const orphans = vocabulary.GATED_REASONS.filter((r) => !all.has(r));
+  assert.deepEqual(orphans, [], `gate verdicts for slugs no vocabulary contains: ${orphans.join(', ')}`);
+});
+
+test('every verdict is exactly blocking or annotating', () => {
+  for (const [reason, verdict] of Object.entries(vocabulary.REASON_GATE)) {
+    assert.ok(
+      verdict === 'blocking' || verdict === 'annotating',
+      `${reason} has verdict '${verdict}'`
+    );
+  }
+});
+
+test('an UNKNOWN slug blocks — fail closed, in both helpers', () => {
+  assert.equal(vocabulary.isBlockingReason('a_reason_nobody_has_written_yet'), true);
+  assert.equal(vocabulary.isBlockingReason(''), true);
+  assert.equal(vocabulary.isBlockingReason(null), true);
+  assert.equal(vocabulary.isBlockingReason(undefined), true);
+  // The parameterised one is handled explicitly rather than by the default:
+  // reaching the fallback for it would be an accident that happened to be right.
+  assert.equal(vocabulary.isBlockingReason('uncertain_line:3'), true);
+  // …and it is not a prefix match on a made-up neighbour.
+  assert.equal(vocabulary.isBlockingReason('uncertain_line:0'), true);
+});
+
+test('blockingReasonsIn keeps order, de-duplicates, and drops the annotating ones', () => {
+  const found = vocabulary.blockingReasonsIn([
+    'procedure_downcoded', // annotating
+    'totals_unreconciled', // blocking
+    'plb_adjustments_present', // annotating
+    'totals_unreconciled', // the same one again
+    'unreadable_amount', // blocking
+    '', // nothing
+  ]);
+  assert.deepEqual(found, ['totals_unreconciled', 'unreadable_amount']);
+  assert.deepEqual(vocabulary.blockingReasonsIn([]), []);
+  assert.deepEqual(vocabulary.blockingReasonsIn(null), []);
+});
+
+test('D-11 ruled allowed_amount_mismatch ANNOTATING, and the takeback BLOCKING', () => {
+  // The two verdicts the ruling actually turned on. Named individually so a
+  // change to either is a deliberate edit to this test, not a diff nobody read.
+  assert.equal(vocabulary.REASON_GATE.allowed_amount_mismatch, 'annotating');
+  assert.equal(vocabulary.REASON_GATE.reversal_not_postable, 'blocking');
+  assert.equal(vocabulary.REASON_GATE.claim_denied, 'annotating');
+  assert.equal(vocabulary.REASON_GATE.envelope_incomplete, 'blocking');
+});

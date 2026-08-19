@@ -109,8 +109,29 @@ function claim(over: Record<string, unknown> = {}) {
     reviewedAt: null,
     reviewedBy: null,
     reviewNote: null,
+    // Slice 6b: the approval linkage. Null = no human has approved this claim
+    // into a posting plan.
+    postingQueueId: null,
+    approvedAt: null,
     createdAt: "2026-03-02T10:00:00.000Z",
     lines: [line()],
+    ...over,
+  };
+}
+
+/** One claim's pre-flight checklist, as the gate returns it. */
+function approvalClaim(over: Record<string, unknown> = {}) {
+  return {
+    claimId: "c-1",
+    claimNumber: "53648",
+    patientName: "Fixture, Synthetic",
+    postable: true,
+    alreadyQueued: false,
+    failed: [] as string[],
+    checks: [
+      { code: "MATCH_CONFIRMED", label: "Matched to an Open Dental claim", passed: true, detail: "ClaimNum 53648", fix: "Open the claim, run the match, and confirm the right one." },
+      { code: "REVIEWED", label: "Reviewed by a person", passed: true, detail: null, fix: "Mark the claim reviewed, with a note." },
+    ],
     ...over,
   };
 }
@@ -132,6 +153,8 @@ function remittance(over: Record<string, unknown> = {}) {
     claimCount: 1,
     status: "ready",
     source: "835",
+    // Slice 5.5's structured remittance flags, which Slice 6b finally renders.
+    flags: [] as string[],
     notes: "",
     createdAt: "2026-03-02T10:00:00.000Z",
     createdBy: "Billing User",
@@ -148,6 +171,10 @@ function remittance(over: Record<string, unknown> = {}) {
     attentionObservations: ["claims_unmatched"],
     reviewReasonCount: 0,
     unmatchedClaimCount: 1,
+    queuedClaimCount: 0,
+    // Slice 6b: null = nobody has pressed Approve on this remittance yet.
+    approvalAttemptedAt: null,
+    approvalAttemptedBy: null,
     upload: {
       uploadId: "u-1",
       filename: "delta_fixture_multiclaim.edi",
@@ -238,6 +265,12 @@ function snapshot(over: Record<string, unknown> = {}) {
 const state = vi.hoisted(() => ({
   remittances: [] as unknown[],
   needsAttentionCount: 0,
+  /** Slice 6b — what the approval gate says, and what a press did. */
+  approval: null as unknown,
+  approvalError: null as Error | null,
+  approveResult: null as unknown,
+  approveError: null as Error | null,
+  approved: [] as string[],
   detail: null as unknown,
   claim: null as unknown,
   listError: null as Error | null,
@@ -283,16 +316,84 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/rcm/api")>();
   return {
     ...real,
-    listRemittances: vi.fn(async (office: string) => {
-      if (state.listError) throw state.listError;
-      return {
-        office,
-        remittances: state.remittances,
-        total: state.remittances.length,
-        limit: 100,
-        offset: 0,
-        needsAttentionCount: state.needsAttentionCount,
-      };
+    /*
+     * THE FILTER IS THE SERVER'S (Slice 6b), so the mock has to apply it.
+     *
+     * The page used to fetch everything and filter in the browser, which is why
+     * this mock could ignore the tab. It now sends `view` and renders whatever
+     * comes back — so a mock that returned the whole list on the attention tab
+     * would test a component the server never feeds.
+     */
+    listRemittances: vi.fn(
+      async (office: string, opts: { view?: string; limit?: number; offset?: number } = {}) => {
+        if (state.listError) throw state.listError;
+        const view = opts.view === "attention" ? "attention" : "all";
+        const all = state.remittances as { needsAttention?: boolean }[];
+        const selected = view === "attention" ? all.filter((r) => r.needsAttention) : all;
+        const offset = opts.offset ?? 0;
+        const limit = opts.limit ?? 50;
+        return {
+          office,
+          view,
+          remittances: selected.slice(offset, offset + limit),
+          total: all.length,
+          needsAttentionCount: state.needsAttentionCount,
+          matchingCount: selected.length,
+          limit,
+          offset,
+        };
+      },
+    ),
+    /*
+     * The approval checklist, which RemittanceDetail now loads on mount.
+     *
+     * `state.approval` lets a test choose what the gate says; the default is a
+     * postable claim with an approver signed in, because that is the shape most
+     * of the detail tests want in the background while they assert something
+     * else entirely.
+     */
+    getApprovalPreview: vi.fn(async (office: string, batchId: string) => {
+      if (state.approvalError) throw state.approvalError;
+      return (
+        state.approval ?? {
+          office,
+          batchId,
+          canApprove: true,
+          approveRequires: "rcm.write",
+          claims: [approvalClaim()],
+          postableCount: 1,
+          withheldCount: 0,
+          queuedCount: 0,
+          balanced: true,
+          differenceCents: 0,
+        }
+      );
+    }),
+    approveRemittance: vi.fn(async (office: string, batchId: string) => {
+      if (state.approveError) throw state.approveError;
+      state.approved.push(batchId);
+      return (
+        state.approveResult ?? {
+          office,
+          batchId,
+          queueId: "q-1",
+          approvedBy: "Billing User",
+          queued: [
+            {
+              claimId: "c-1",
+              claimNumber: "53648",
+              patientName: "Fixture, Synthetic",
+              odClaimNum: 53648,
+              lines: 1,
+              totalCents: 15000,
+            },
+          ],
+          withheld: [],
+          alreadyQueued: [],
+          intendedTotalCents: 15000,
+          note: "Queued for posting — nothing has been written to Open Dental yet.",
+        }
+      );
     }),
     getRemittance: vi.fn(async (office: string) => {
       if (state.detailError) throw state.detailError;
@@ -376,6 +477,11 @@ beforeEach(() => {
   localStorage.setItem("carein.office", "roland");
   state.remittances = [];
   state.needsAttentionCount = 0;
+  state.approval = null;
+  state.approvalError = null;
+  state.approveResult = null;
+  state.approveError = null;
+  state.approved = [];
   state.detail = null;
   state.claim = null;
   state.listError = null;
@@ -434,8 +540,10 @@ describe("the remittance list", () => {
     renderAt(<RemittanceList />, "/rcm/remittances");
     await waitFor(() => expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy());
 
+    // The tab is a `view` parameter now, so switching it re-fetches rather
+    // than re-filtering an array already in the browser.
     fireEvent.click(screen.getByTestId("remittance-filter-all"));
-    expect(screen.getByTestId("remittance-row-b-2")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("remittance-row-b-2")).toBeTruthy());
   });
 
   it("a fully reviewed remittance LEAVES the queue but keeps its chips", async () => {
@@ -470,7 +578,7 @@ describe("the remittance list", () => {
 
     // …and everything it showed is still there under All.
     fireEvent.click(screen.getByTestId("remittance-filter-all"));
-    expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy());
     expect(screen.getByTestId("attention-observation-batch_open")).toBeTruthy();
     expect(screen.getByTestId("attention-observation-claims_flagged").textContent).toBe("2 flagged");
     expect(screen.getByTestId("attention-observation-claims_unmatched").textContent).toBe(
@@ -673,13 +781,236 @@ describe("the remittance detail", () => {
     expect(lines.textContent).toContain("Downcoded");
   });
 
-  it("renders Approve DISABLED and says why", async () => {
+  it("renders the approval CHECKLIST before anything is pressed (Slice 6b)", async () => {
+    /*
+     * The whole point of the checklist: a biller can see which claims will be
+     * withheld, and why, without pressing the button to find out. Pressing a
+     * button to discover a refusal is how people learn to press buttons
+     * hopefully.
+     */
+    state.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        approvalClaim(),
+        approvalClaim({
+          claimId: "c-2",
+          claimNumber: "53712",
+          patientName: "Sample, Placeholder",
+          postable: false,
+          failed: ["REVIEWED"],
+          checks: [
+            { code: "MATCH_CONFIRMED", label: "Matched to an Open Dental claim", passed: true, detail: "ClaimNum 53712", fix: "Run the match and confirm one." },
+            { code: "REVIEWED", label: "Reviewed by a person", passed: false, detail: "nobody has dispositioned this claim", fix: "Mark the claim reviewed, with a note." },
+          ],
+        }),
+      ],
+      postableCount: 1,
+      withheldCount: 1,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
 
-    const approve = await screen.findByTestId("approve-disabled");
-    expect((approve as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("approve-note").textContent).toContain("next release");
-    expect(screen.getByTestId("approve-note").textContent).toContain("writes to a patient's chart");
+    await screen.findByTestId("approval-panel");
+    expect(screen.getByTestId("approval-counts").textContent).toContain("1 of 2 claims can be posted");
+    expect(screen.getByTestId("approval-counts").textContent).toContain("1 withheld");
+
+    // Mixed pass/fail, per claim, with the FIX under the failure.
+    expect(screen.getByTestId("approval-state-c-1").textContent).toContain("Ready to post");
+    expect(screen.getByTestId("approval-state-c-2").textContent).toContain("Withheld");
+    expect(screen.getByTestId("check-fix-REVIEWED").textContent).toContain("Mark the claim reviewed");
+
+    // The button is LIVE, and it says what it will do.
+    const approve = screen.getByTestId("approve-button") as HTMLButtonElement;
+    expect(approve.disabled).toBe(false);
+    expect(approve.textContent).toContain("Approve 1 claim for posting");
+  });
+
+  it("a reviewer sees the same checklist and a disabled button naming the tier", async () => {
+    /*
+     * D-9. Seeing why a claim is withheld is not a posting act, and the person
+     * who did the reviewing is best placed to fix what she is looking at.
+     */
+    state.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: false,
+      approveRequires: "rcm.write",
+      claims: [approvalClaim()],
+      postableCount: 1,
+      withheldCount: 0,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await screen.findByTestId("approval-panel");
+    expect((screen.getByTestId("approve-button") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("approve-needs-permission").textContent).toContain("rcm.write");
+    // The checklist itself is unchanged — the tier decides the button, not the truth.
+    expect(screen.getByTestId("approval-state-c-1").textContent).toContain("Ready to post");
+  });
+
+  it("says plainly that nothing has reached Open Dental yet", async () => {
+    /*
+     * HONEST STATES, and the words matter: until Slice 6c ships, "queued for
+     * posting" means a person authorised it and the money has not moved. The
+     * sentence is the SERVER'S, so it changes on the day it stops being true.
+     */
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+
+    fireEvent.click(screen.getByTestId("approve-button"));
+
+    const result = await screen.findByTestId("approve-result");
+    expect(result.textContent).toContain("Queued 1 claim for posting");
+    expect(screen.getByTestId("approve-honest-state").textContent).toBe(
+      "Queued for posting — nothing has been written to Open Dental yet.",
+    );
+    expect(state.approved).toEqual(["b-1"]);
+  });
+
+  it("a partial approve names what was queued AND what was withheld", async () => {
+    state.approveResult = {
+      office: "roland",
+      batchId: "b-1",
+      queueId: "q-1",
+      approvedBy: "Billing User",
+      queued: [
+        { claimId: "c-1", claimNumber: "53648", patientName: "Fixture, Synthetic", odClaimNum: 53648, lines: 1, totalCents: 15000 },
+      ],
+      withheld: [
+        {
+          claimId: "c-2",
+          claimNumber: "53712",
+          patientName: "Sample, Placeholder",
+          reasons: ["NOT_REVERSAL"],
+          checks: [
+            { code: "NOT_REVERSAL", label: "Not a reversal or takeback", passed: false, detail: "the carrier reversed this claim", fix: "Handle it in Open Dental directly." },
+          ],
+        },
+      ],
+      alreadyQueued: [],
+      intendedTotalCents: 15000,
+      note: "Queued for posting — nothing has been written to Open Dental yet.",
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    fireEvent.click(screen.getByTestId("approve-button"));
+
+    const withheld = await screen.findByTestId("approve-withheld");
+    expect(withheld.textContent).toContain("1 claim not queued");
+    expect(withheld.textContent).toContain("Sample, Placeholder");
+    expect(withheld.textContent).toContain("Not a reversal or takeback");
+    // Partial success is REAL success — the queued half is stated too.
+    expect(screen.getByTestId("approve-result").textContent).toContain("Queued 1 claim");
+  });
+
+  it("an honest refusal keeps the checklist on screen and lists the reasons", async () => {
+    const { RcmApiError } = await import("@/features/rcm/api");
+    state.approveError = new RcmApiError(
+      "Nothing on this remittance can be posted yet.",
+      409,
+      "NOTHING_APPROVABLE",
+      {
+        claims: [
+          { claimId: "c-1", claimNumber: "53648", patientName: "Fixture, Synthetic", postable: false, alreadyQueued: false, failed: ["REVIEWED"], checks: [] },
+        ],
+      },
+    );
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await screen.findByTestId("approval-panel");
+    fireEvent.click(screen.getByTestId("approve-button"));
+
+    const err = await screen.findByTestId("approve-error");
+    expect(err.textContent).toContain("Nothing on this remittance can be posted yet.");
+    expect(err.textContent).toContain("REVIEWED");
+    // The data stays on screen — a refusal is the gate working, and the
+    // checklist is precisely what explains it.
+    expect(screen.getByTestId("approval-panel")).toBeTruthy();
+  });
+
+  it("renders remittance-level flags, coloured by the D-11 split", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: {
+        ...remittance({ flags: ["envelope_incomplete", "plb_adjustments_present"] }),
+        plbAdjustments: [],
+      },
+      claims: [claim()],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const flags = await screen.findByTestId("remittance-flags");
+    // Slice 6a said only "Held — something on this remittance was flagged".
+    expect(flags.textContent).toContain("missing a closing segment");
+    expect(flags.textContent).toContain("Provider-level adjustments");
+    // Blocking reads amber; annotating reads grey.
+    expect(screen.getByTestId("remittance-flag-envelope_incomplete").className).toContain("amber");
+    expect(screen.getByTestId("remittance-flag-plb_adjustments_present").className).toContain("muted");
+  });
+
+  it("itemises the PLB rather than showing a bare total", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: {
+        ...remittance({ plbTotalCents: -4200, flags: ["plb_adjustments_present"] }),
+        plbAdjustments: [
+          { reasonCode: "WO", description: "Overpayment recovery", referenceId: "ACCT-1", amountCents: -5000 },
+          { reasonCode: "L6", description: "Interest owed", referenceId: null, amountCents: 800 },
+          // A code with no published description: rendered BARE, not guessed at.
+          { reasonCode: "ZZ", description: "Provider adjustment (ZZ)", referenceId: null, amountCents: 0 },
+        ],
+      },
+      claims: [claim()],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const plb = await screen.findByTestId("plb-detail");
+    expect(plb.textContent).toContain("Overpayment recovery");
+    expect(plb.textContent).toContain("Interest owed");
+    expect(plb.textContent).toContain("ACCT-1");
+    expect(plb.textContent).toContain("ZZ");
+    expect(plb.textContent).not.toContain("Provider adjustment (ZZ)");
+    // The manual route is a real link, not prose. (Slice 6a promised one.)
+    expect(screen.getByTestId("plb-sop-link").getAttribute("href")).toBe("/rcm/sop/takeback");
+  });
+
+  it("predicts the gate on a claim card whose Confirm is still enabled", async () => {
+    /*
+     * THE RULING: confirming only LINKS a proposal to a chart claim, so it
+     * stays available above a red blocker — but the card has to say that the
+     * confirmation cannot be approved, and why. Otherwise the consequence first
+     * appears at the gate, after the linkage is already committed.
+     */
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [claim({ needsReviewReasons: ["totals_unreconciled", "procedure_downcoded"] })],
+    };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await screen.findByTestId("claim-flags-c-1");
+    expect(screen.getByTestId("claim-not-approvable-c-1").textContent).toContain(
+      "cannot be approved for posting",
+    );
+    // Blocking amber, annotating grey — the same split the gate uses.
+    expect(screen.getByTestId("claim-reason-totals_unreconciled").className).toContain("amber");
+    expect(screen.getByTestId("claim-reason-procedure_downcoded").className).toContain("muted");
+    // And Match is still offered: linking is not posting.
+    expect(screen.getByTestId("open-claim-c-1")).toBeTruthy();
   });
 
   it("links to the source document and says who uploaded it", async () => {
