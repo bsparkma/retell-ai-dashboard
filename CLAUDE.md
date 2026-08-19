@@ -268,9 +268,26 @@ returns the same handle, which is why the idiom is
 838, 870`, `routes/retellTools.js:66`, `routes/unifiedCalls.js:390`. Its header calls it
 *"the safety heart of this slice."*
 
-There are **two** OD switches on purpose: `OFFICE_OD_SETTINGS[x].odEnabled` gates voice,
-`officeAgents.OFFICES[x].odConnected` gates TC. Today valley is `true` for voice and
-`false` for TC. `odOffices.test.js:206` pins that they move independently.
+There is **one** OD switch: `OFFICE_OD_SETTINGS[x].odEnabled`, read by both voice and
+TC through `isOdReady(officeKey)` (intent AND credentials, per office). Today both
+offices are `true`.
+
+There was briefly a second, `officeAgents.OFFICES[x].odConnected`, which gated
+`/api/tc/od/*`: TC reached Open Dental through the single process-wide client built
+from **Roland's** key, so connecting Riley for voice had to leave TC shut or TC would
+have served Roland's charts under a Riley selector. TC now resolves its client per
+office through this registry (`backend/routes/tc/od.js requireOdOffice` —
+`assertOfficeMatch(office, getOdOffice(office))`, re-asserted per OD call in
+`odGetFor`), so the second flag gated nothing and was **removed**. `OFFICES` entries
+now carry `officeId` and `officeName` only; `odOffices.test.js` pins that no second
+switch has crept back.
+
+TC's OD reads ride the transport's shared per-**credential** slot
+(`config/openDental.js`), the same one voice uses, and tag `module: 'tc'` so 429s and
+waits are attributed. They deliberately do **not** enter `services/rcm/odPacer`'s
+serialized 1200ms queue: that queue exists so a biller's batch cannot degrade
+interactive paths, and a TC treatment plan is a fan-out of up to 25 GETs on a screen
+somebody is waiting on.
 
 ### 2.6 Matching, resolve, and link-only
 

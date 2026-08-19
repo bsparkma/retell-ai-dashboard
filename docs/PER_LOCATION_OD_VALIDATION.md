@@ -206,10 +206,17 @@ talking to a practice this was never validated against.
   `opendental-customer-key-valley` from the vault makes valley report
   disconnected and refuse every OD operation — it never falls back to Roland.
 
-## 7. Deliberately NOT done
+## 7. Deliberately NOT done — and since done
 
-`officeAgents.OFFICES.valley.odConnected` stays **false**. It gates the TC
-module's OD routes (`backend/routes/tc/od.js`), and TC still reaches Open Dental
-through the single Roland-bound client. Flipping it would serve Roland's
-patients, treatment plans and claims under a Riley selector. TC needs its own
-office-aware slice before that flag can move.
+At the time of this validation, `officeAgents.OFFICES.valley.odConnected` stayed
+**false**. It gated the TC module's OD routes (`backend/routes/tc/od.js`), and TC
+still reached Open Dental through the single Roland-bound client; flipping it
+would have served Roland's patients, treatment plans and claims under a Riley
+selector.
+
+**That slice has since landed.** `/api/tc/od/*` resolves its client per office
+through this same registry, gates on `odOffices.isOdReady(office)`, and re-asserts
+`assertOfficeMatch` on every OD call. The second flag protected nothing once that
+was true, so it was removed rather than flipped — `officeAgents.OFFICES` entries
+now carry `officeId` and `officeName` only. Rollback for TC is the same lever as
+for voice: `odEnabled: true → false` on the office.
