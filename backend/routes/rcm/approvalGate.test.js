@@ -25,7 +25,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { FakeRcmDb, bootRcmApp, api, auditRows } = require('./rcmTestUtils');
+const { FakeRcmDb, FakeOd, bootRcmApp, api, auditRows } = require('./rcmTestUtils');
 const approvalGate = require('./approvalGate');
 
 // ─── Ids. Real uuids, because production could never mint 'b-1' ──────────────
@@ -562,12 +562,24 @@ test('a reviewer cannot approve — and the refusal names the tier', async () =>
   await withApp({ db, role: 'reviewer' }, async (app) => {
     const res = await approve(app);
     assert.equal(res.status, 403);
-    // The mount's requireReadWrite refuses first (approve is deliberately NOT
-    // in QUEUE_PATHS), so the code is the platform's FORBIDDEN and the action
-    // it names is what a colleague would need. The route's own
-    // APPROVE_REQUIRES_WRITE check behind it is defence in depth.
+    /*
+     * THE ORIGIN OF THE REFUSAL IS PINNED, not just its status.
+     *
+     * `FORBIDDEN` is the MOUNT's code: approve is deliberately not in
+     * QUEUE_PATHS, so `requireReadWrite` refuses before the handler runs and the
+     * route's own APPROVE_REQUIRES_WRITE check never fires. Asserting the code
+     * is what makes that structural — if somebody exempts the path later, this
+     * test goes red instead of quietly relying on defence in depth.
+     */
+    assert.equal(res.body.code, 'FORBIDDEN');
     assert.equal(res.body.action, 'rcm.write');
+
+    // AND NO SIDE EFFECT. Not a queue row, not a linkage, and not even the
+    // attempt stamp — the handler was never reached.
     assert.equal(db.table('rcm_posting_queue').length, 0);
+    assert.equal(db.table('rcm_posting_queue_line').length, 0);
+    assert.equal(db.table('rcm_claims')[0].posting_queue_id, null);
+    assert.equal(db.table('rcm_payment_batches')[0].approval_attempted_at, undefined);
   });
 });
 
@@ -684,4 +696,369 @@ test('the cheap list predicate is a strict subset of the real gate', () => {
   // Annotating reasons never hide a remittance from the approval queue.
   assert.equal(approvalGate.looksApprovable({ ...claim, needsReviewReasons: ['procedure_downcoded'] }, []), true);
   assert.equal(approvalGate.looksApprovable(claim, ['plb_adjustments_present']), true);
+});
+
+// ─── Review fixes (PR #96) ───────────────────────────────────────────────────
+
+test('F1: two claims on ONE remittance cannot both take the same chart line', async () => {
+  /*
+   * Nothing makes `(office_id, od_claim_num)` unique across `rcm_claims`, so two
+   * claims can be confirmed to one Open Dental claim and pair to the same
+   * ClaimProcNums. When both are on the SAME remittance the collision happens
+   * inside one press, which the per-claim pre-check cannot see — it consults
+   * plans that already exist. It used to reach the index and come back as a
+   * race ("somebody else was writing"), which is a confusing thing to tell
+   * somebody who pressed the button once.
+   *
+   * Partial success is real success: the first claim posts, the second is
+   * withheld and named.
+   */
+  const db = addSecondClaim(seed(new FakeRcmDb()));
+  // The second claim's confirmed match resolves to the SAME chart line.
+  db.table('rcm_procedure_lines').find((l) => l.claim_id === CLAIM2).od_claim_proc_num = 99001;
+
+  await withApp({ db }, async (app) => {
+    // The CHECKLIST predicts it, before anything is pressed.
+    const pre = await checklist(app);
+    assert.equal(pre.body.postableCount, 1, 'one of the two, not both');
+    assert.equal(pre.body.withheldCount, 1);
+    const held = pre.body.claims.find((c) => !c.postable);
+    assert.ok(held.failed.includes('CLAIMPROC_NOT_ALREADY_PLANNED'));
+    assert.match(
+      held.checks.find((c) => c.code === 'CLAIMPROC_NOT_ALREADY_PLANNED').detail,
+      /also on another claim in this same remittance/
+    );
+
+    // And the button agrees — no crash, no race message, one line planned.
+    const res = await approve(app);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.queued.length, 1);
+    assert.equal(res.body.withheld.length, 1);
+    assert.equal(db.table('rcm_posting_queue_line').length, 1);
+  });
+});
+
+test('F1: the pre-check names the claim whose chart line is already planned', async () => {
+  const db = addSecondClaim(seed(new FakeRcmDb()));
+  const second = db.table('rcm_procedure_lines').find((l) => l.claim_id === CLAIM2);
+  second.od_claim_proc_num = 99001;
+
+  // CLAIM was approved earlier; CLAIM2 now collides with its plan.
+  db.seed('rcm_posting_queue', [
+    {
+      queue_id: 'aaaaaaaa-1111-4111-8111-111111111111',
+      office_id: 'roland',
+      batch_id: BATCH,
+      remittance_key: 'EARLIER',
+      status: 'approved',
+      approved_by: 'user-1',
+    },
+  ]);
+  db.seed('rcm_posting_queue_line', [
+    {
+      queue_line_id: 'bbbbbbbb-1111-4111-8111-111111111111',
+      queue_id: 'aaaaaaaa-1111-4111-8111-111111111111',
+      office_id: 'roland',
+      position: 1,
+      od_claim_proc_num: 99001,
+      claim_id: CLAIM,
+      intended_ins_pay_amt_cents: 15000,
+      is_supplemental: false,
+      status: 'pending',
+    },
+  ]);
+  Object.assign(db.table('rcm_claims').find((c) => c.claim_id === CLAIM), {
+    posting_queue_id: 'aaaaaaaa-1111-4111-8111-111111111111',
+    approved_at: new Date(),
+    approved_by: 'user-1',
+  });
+
+  await withApp({ db }, async (app) => {
+    // Predicted BEFORE the button, which is the whole point of the checklist.
+    const pre = await checklist(app);
+    assert.equal(pre.status, 200, JSON.stringify(pre.body));
+    assert.ok(failedFor(pre.body.claims, CLAIM2).includes('CLAIMPROC_NOT_ALREADY_PLANNED'));
+    const check = pre.body.claims
+      .find((c) => c.claimId === CLAIM2)
+      .checks.find((c) => c.code === 'CLAIMPROC_NOT_ALREADY_PLANNED');
+    assert.match(check.detail, /ClaimProcNum 99001/);
+    assert.equal(pre.body.postableCount, 0);
+
+    // And the button agrees, with no crash and nothing written.
+    const res = await approve(app);
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'NOTHING_APPROVABLE');
+    assert.equal(db.table('rcm_posting_queue_line').length, 1, 'the earlier plan is untouched');
+  });
+});
+
+test('F1: losing the RACE to the index is a named 409, and rolls back', async () => {
+  /*
+   * The pre-check reads on this connection and cannot see another transaction's
+   * uncommitted line. The database is still the guarantee — this asserts that
+   * losing to it reaches the biller as a refusal rather than as INTERNAL_ERROR.
+   *
+   * The race is simulated by planting the conflicting line between the check and
+   * the write, which is exactly what a concurrent approve would have done.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    db.failWhen = (sql) => {
+      if (!/INSERT INTO rcm_posting_queue_line/.test(sql)) return false;
+      db.table('rcm_posting_queue_line').push({
+        queue_line_id: 'cccccccc-1111-4111-8111-111111111111',
+        queue_id: 'someone-elses-plan',
+        office_id: 'roland',
+        position: 99,
+        od_claim_proc_num: 99001,
+        is_supplemental: false,
+      });
+      db.failWhen = null;
+      return false;
+    };
+
+    const res = await approve(app);
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'CLAIMPROC_ALREADY_PLANNED');
+    assert.match(res.body.error, /somebody else/i);
+
+    // Rolled back: no plan, no linkage. Only the planted row survives.
+    assert.equal(db.table('rcm_posting_queue').length, 0);
+    assert.equal(db.table('rcm_claims')[0].posting_queue_id, null);
+  });
+});
+
+test('F1: any OTHER unique violation is still a 500 — it is a bug, not a refusal', () => {
+  // Dressing an unexpected constraint failure as a tidy refusal would hide it.
+  const claim = { claimId: CLAIM, claimNumber: '53648', patientName: 'Fixture, Synthetic' };
+  const other = Object.assign(new Error('dup'), { code: '23505', constraint: 'something_else' });
+  assert.equal(approvalGate.asClaimprocConflict(other, claim), null);
+
+  const notUnique = Object.assign(new Error('boom'), { code: '23503' });
+  assert.equal(approvalGate.asClaimprocConflict(notUnique, claim), null);
+
+  const ours = Object.assign(new Error('dup'), {
+    code: '23505',
+    constraint: 'rcm_posting_queue_line_claimproc_unique',
+  });
+  assert.equal(approvalGate.asClaimprocConflict(ours, claim).code, 'CLAIMPROC_ALREADY_PLANNED');
+});
+
+test('F2: a wholly-refused approve is RECORDED, so the remittance stays in the queue', async () => {
+  /*
+   * The hole: a refusal rolls back, so it left no queue row — and
+   * `claims_withheld` fired only when a queue row existed. A biller who pressed
+   * Approve, was told "nothing here can be posted and here is why", and went
+   * back to the list found the remittance GONE from the default view.
+   */
+  const db = seed(new FakeRcmDb(), { reviewed: false });
+  await withApp({ db }, async (app) => {
+    assert.equal(
+      db.table('rcm_payment_batches')[0].approval_attempted_at,
+      undefined,
+      'nobody has pressed it yet'
+    );
+
+    const res = await approve(app);
+    assert.equal(res.status, 409);
+    assert.equal(db.table('rcm_posting_queue').length, 0, 'and nothing was queued');
+
+    /*
+     * Re-read rather than holding a reference across the call: the refusal
+     * ROLLED BACK, and a rollback restores the snapshot, so the row object the
+     * table held beforehand is not the row object it holds now. Which is the
+     * whole point — the stamp is written on its own connection, AFTER that
+     * rollback, and is the only thing that survives it.
+     */
+    const batch = db.table('rcm_payment_batches')[0];
+    assert.ok(batch.approval_attempted_at, 'the attempt is on the record');
+    assert.ok(batch.approval_attempted_by, 'and it names who');
+  });
+});
+
+test('F2: after a refused approve the remittance is WITHHELD, not merely unready', async () => {
+  const db = seed(new FakeRcmDb(), { reviewed: false });
+  await withApp({ db }, async (app) => {
+    // Reviewed now, but still unapprovable for another reason.
+    Object.assign(db.table('rcm_claims')[0], {
+      reviewed_at: new Date(),
+      reviewed_by: 'user-1',
+      needs_review_reasons: ['totals_unreconciled'],
+    });
+
+    const before = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(before.body.remittances[0].needsAttention, false, 'nothing owed BEFORE anyone tries');
+
+    await approve(app);
+
+    const after = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    const row = after.body.remittances[0];
+    assert.equal(row.needsAttention, true, 'somebody was told this needs work — it stays in view');
+    assert.deepEqual(row.attentionReasons, ['claims_withheld']);
+    assert.ok(row.approvalAttemptedAt, 'and the wire says when it was tried');
+    assert.equal(after.body.needsAttentionCount, 1);
+  });
+});
+
+test('F3: a claim stamped with ANOTHER office is withheld and NAMED', async () => {
+  /*
+   * `loadForApproval` used to select claims `WHERE office_id = $1`, so a foreign
+   * claim dropped silently out of the checklist while its payment still counted
+   * in the batch sum. The only symptom was REMITTANCE_UNBALANCED naming nobody.
+   */
+  const db = addSecondClaim(seed(new FakeRcmDb()));
+  const foreign = db.table('rcm_claims').find((c) => c.claim_id === CLAIM2);
+  foreign.office_id = 'valley';
+  foreign.patient_name = 'Valley, Patient';
+
+  await withApp({ db }, async (app) => {
+    const pre = await checklist(app);
+    assert.equal(pre.status, 200, JSON.stringify(pre.body));
+
+    const row = pre.body.claims.find((c) => c.claimId === CLAIM2);
+    assert.ok(row, 'the foreign claim is still SHOWN — dropping it is what hid the defect');
+    assert.equal(row.postable, false);
+    assert.ok(row.failed.includes('OFFICE_CONSISTENT'));
+    const check = row.checks.find((c) => c.code === 'OFFICE_CONSISTENT');
+    assert.equal(check.passed, false);
+    assert.match(check.detail, /valley/);
+
+    // AND NO CROSS-OFFICE PHI. This office has no business reading the other
+    // practice's patient on its own screen.
+    assert.equal(row.patientName, "(a claim belonging to another practice)");
+    assert.ok(!JSON.stringify(pre.body).includes('Valley, Patient'));
+
+    // The remaining conditions say they were not evaluated rather than
+    // asserting anything about a row we should not be reading.
+    for (const c of row.checks.filter((x) => x.code !== 'OFFICE_CONSISTENT')) {
+      assert.equal(c.passed, false);
+      assert.match(c.detail, /not evaluated/);
+    }
+  });
+});
+
+test('F4: a confirmed ClaimNum missing from the candidates FAILS, it does not pass', async () => {
+  /*
+   * The lookup returned undefined, `blockers` defaulted to `[]`, and
+   * NO_BLOCKING_PREFLIGHT passed — absence read as clean, which is the module's
+   * recurring defect shape.
+   */
+  const db = seed(new FakeRcmDb(), {
+    // A snapshot whose confirmation names 53648 but whose candidate list does not.
+    snapshot: {
+      ...snapshot(),
+      candidates: [{ odClaimNum: 99999, blockers: [], linePairs: [] }],
+    },
+  });
+  await withApp({ db }, async (app) => {
+    const pre = await checklist(app);
+    const failed = failedFor(pre.body.claims, CLAIM);
+    assert.ok(failed.includes('SNAPSHOT_CURRENT'), JSON.stringify(failed));
+    assert.ok(
+      failed.includes('NO_BLOCKING_PREFLIGHT'),
+      'the check whose empty list is dangerous must not pass on absence'
+    );
+    assert.equal(pre.body.postableCount, 0);
+
+    const res = await approve(app);
+    assert.equal(res.status, 409);
+    assert.equal(db.table('rcm_posting_queue').length, 0);
+  });
+});
+
+test('F5: a claim on a posting plan cannot be re-matched, and no chart is read', async () => {
+  /*
+   * A forced re-run NULLs `od_claim_num` and moves the status off `confirmed`,
+   * which `rcm_claims_approved_is_confirmed_check` refuses — so it used to 500
+   * AFTER the Open Dental read had already happened. A chart read for an
+   * operation that could never have completed.
+   */
+  const db = seed(new FakeRcmDb(), { postingQueueId: 'aaaaaaaa-1111-4111-8111-111111111111' });
+  Object.assign(db.table('rcm_claims')[0], {
+    approved_at: new Date(),
+    approved_by: 'user-1',
+  });
+  const od = new FakeOd({ patients: [], claims: [], claimProcs: [], procedures: [] });
+
+  await withApp({ db, od }, async (app) => {
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/${CLAIM}/match${Q}`, json({ force: true }));
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'CLAIM_ON_POSTING_PLAN');
+
+    // BEFORE any Open Dental call — that is the half that mattered.
+    assert.deepEqual(od.methodsUsed(), []);
+    // And the confirmation is intact.
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
+    assert.equal(db.table('rcm_claims')[0].od_match_status, 'confirmed');
+  });
+});
+
+test('F5: a queued claim cannot be re-pointed at a different Open Dental claim', async () => {
+  const db = seed(new FakeRcmDb(), { postingQueueId: 'aaaaaaaa-1111-4111-8111-111111111111' });
+  Object.assign(db.table('rcm_claims')[0], { approved_at: new Date(), approved_by: 'user-1' });
+
+  await withApp({ db }, async (app) => {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/${CLAIM}/confirm-match${Q}`,
+      json({ odClaimNum: 77777 })
+    );
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'CLAIM_ON_POSTING_PLAN');
+    // "Release that first" was impossible advice here; the message says the
+    // reachable thing instead.
+    assert.match(res.body.error, /posting plan/i);
+    assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648);
+  });
+
+  // Re-confirming the SAME ClaimNum stays idempotent — it asks for a decision
+  // that is already recorded, and gets it.
+  const db2 = seed(new FakeRcmDb(), { postingQueueId: 'aaaaaaaa-1111-4111-8111-111111111111' });
+  Object.assign(db2.table('rcm_claims')[0], { approved_at: new Date(), approved_by: 'user-1' });
+  await withApp({ db: db2 }, async (app) => {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/claims/${CLAIM}/confirm-match${Q}`,
+      json({ odClaimNum: 53648 })
+    );
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.alreadyConfirmed, true);
+  });
+});
+
+test('the approve reads the claims FOR UPDATE, inside one transaction', async () => {
+  /*
+   * The lock is what makes "re-read and re-check inside the transaction" mean
+   * anything: without it two approvals both read a postable claim and the second
+   * write lands on top of the first. Mirrors the confirm-match lock test.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    db.log.length = 0;
+    assert.equal((await approve(app)).status, 200);
+
+    const sql = db.log.map((q) => q.sql);
+    const begin = sql.indexOf('BEGIN');
+    const commit = sql.indexOf('COMMIT');
+    assert.ok(begin > -1 && commit > begin, 'BEGIN … COMMIT');
+
+    const read = db.log
+      .slice(begin, commit)
+      .filter((q) => /^SELECT .* FROM rcm_claims WHERE/.test(q.sql));
+    assert.ok(read.length > 0, 'the claims are read inside the transaction');
+    assert.match(read[0].sql, / FOR UPDATE$/, 'and held for its length');
+
+    // Every write lands between the two, so a refusal after any of them undoes
+    // all of them.
+    for (const pattern of [
+      /^INSERT INTO rcm_posting_queue /,
+      /^INSERT INTO rcm_posting_queue_line /,
+      /^UPDATE rcm_claims SET posting_queue_id/,
+    ]) {
+      const at = sql.findIndex((q) => pattern.test(q));
+      assert.ok(at > begin && at < commit, `${pattern} must be inside the transaction`);
+    }
+  });
 });

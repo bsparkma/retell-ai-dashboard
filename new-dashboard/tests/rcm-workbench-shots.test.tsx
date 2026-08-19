@@ -215,6 +215,9 @@ function remittance(over: Record<string, unknown> = {}) {
     reviewReasonCount: 2,
     unmatchedClaimCount: 2,
     queuedClaimCount: 0,
+    // Slice 6b: null = nobody has pressed Approve on this remittance yet.
+    approvalAttemptedAt: null,
+    approvalAttemptedBy: null,
     upload: {
       uploadId: "u-1",
       filename: "Test_Delta_Dental_MultiClaim.edi",
@@ -507,17 +510,100 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       claims: [CLAIM_FLAGGED, CLAIM_REVERSAL],
     };
     /*
-     * The gate's answer for THESE two claims, so the panel in the shot agrees
-     * with the claims under it. Both are unmatched in this fixture and one is a
-     * takeback, which is why nothing on this remittance is postable — the same
-     * state the staging walk produces.
+     * THE GATE'S ANSWER FOR THESE TWO CLAIMS — and it has to be a state the real
+     * gate can produce.
+     *
+     * The first version said "0 postable, 2 withheld" while listing NO claims,
+     * which is a shape the server cannot return: the counts are derived from the
+     * list. Worse, an earlier draft showed a `no_candidate` claim PASSING
+     * `SNAPSHOT_CURRENT` — impossible, because a claim with no confirmation
+     * fails that check by construction.
+     *
+     * A screenshot of an impossible state is a screenshot of a bug, and it is
+     * the version people trust because it is in the docs. Both claims here are
+     * unmatched, so both fail `MATCH_CONFIRMED` and everything downstream of a
+     * confirmation with it — exactly what the staging walk produces.
      */
+    const unmatched = (over: Record<string, unknown>) => ({
+      postable: false,
+      alreadyQueued: false,
+      failed: ["MATCH_CONFIRMED", "SNAPSHOT_CURRENT", "NO_BLOCKING_PREFLIGHT", "LINES_PAIRED"],
+      checks: [
+        { code: "OFFICE_CONSISTENT", label: "Belongs to this office", passed: true, detail: null, fix: "" },
+        {
+          code: "MATCH_CONFIRMED",
+          label: "Matched to an Open Dental claim",
+          passed: false,
+          detail: "match is no_candidate",
+          fix: "Open the claim, run the match, and confirm the right one. Posting needs a ClaimNum, and nothing may choose it but a person.",
+        },
+        {
+          code: "SNAPSHOT_CURRENT",
+          label: "The match record is current and complete",
+          passed: false,
+          detail: "the record carries no confirmation",
+          fix: "The stored match was recorded in an older format or against another office. Run the match again and re-confirm it.",
+        },
+        { code: "REVIEWED", label: "Reviewed by a person", passed: true, detail: null, fix: "" },
+        { code: "NOT_REVERSAL", label: "Not a reversal or takeback", passed: true, detail: null, fix: "" },
+        { code: "NOT_RECOUPMENT", label: "Not a recoupment", passed: true, detail: null, fix: "" },
+        { code: "NOT_PATIENT_RESPONSIBILITY_ONLY", label: "The carrier actually paid something", passed: true, detail: null, fix: "" },
+        { code: "NO_BLOCKING_REASON", label: "No blocking review reason", passed: true, detail: null, fix: "" },
+        {
+          code: "NO_BLOCKING_PREFLIGHT",
+          label: "Open Dental will accept the write",
+          passed: false,
+          detail: "cannot be checked without a current match record",
+          fix: "The chart claim carries a fact Open Dental refuses to write over. Resolve it in Open Dental and run the match again.",
+        },
+        {
+          code: "LINES_PAIRED",
+          label: "Every line is paired to a chart line",
+          passed: false,
+          detail: "1 of 1 lines have no ClaimProcNum",
+          fix: "At least one procedure line has no ClaimProcNum. Re-run the match; if it still cannot pair, the chart and the remittance disagree about what was done.",
+        },
+        { code: "CLAIMPROC_NOT_ALREADY_PLANNED", label: "No chart line is already on another posting plan", passed: true, detail: null, fix: "" },
+        { code: "CLAIM_TOTALS_AGREE", label: "The amounts reconcile", passed: true, detail: null, fix: "" },
+      ],
+      ...over,
+    });
+
     shotState.approval = {
       office: "roland",
       batchId: "b-1",
       canApprove: true,
       approveRequires: "rcm.write",
-      claims: [],
+      claims: [
+        unmatched({ claimId: "c-1", claimNumber: "53701", patientName: "Sample, Placeholder" }),
+        /*
+         * The second claim is the REVERSAL the card below it shows, so its
+         * checklist has to say so too. A panel asserting "not a takeback" above
+         * a card headed "Reversal / takeback — cannot be posted" is the screen
+         * arguing with itself, which is exactly what these pictures are for
+         * catching.
+         */
+        (() => {
+          const c = unmatched({
+            claimId: "c-2",
+            claimNumber: "53210",
+            patientName: "Example, Testcase",
+          });
+          const fail = (code: string, detail: string) => {
+            const check = c.checks.find((x) => x.code === code)!;
+            check.passed = false;
+            check.detail = detail;
+            check.fix =
+              code === "NOT_REVERSAL"
+                ? "A takeback is a negative supplemental, which cannot be undone in Open Dental. Handle it in Open Dental directly, following the practice takeback procedure."
+                : "The carrier is taking money back on this claim. Recoupments are the one irreversible Open Dental operation and are not approvable here.";
+          };
+          fail("NOT_REVERSAL", "the carrier reversed this claim");
+          fail("NOT_RECOUPMENT", "the remittance moves -8600 cents");
+          c.failed = c.checks.filter((x) => !x.passed).map((x) => x.code);
+          return c;
+        })(),
+      ],
       postableCount: 0,
       withheldCount: 2,
       queuedCount: 0,

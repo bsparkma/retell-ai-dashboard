@@ -107,6 +107,10 @@ const CHECKS = Object.freeze({
     label: 'Every line is paired to a chart line',
     fix: 'At least one procedure line has no ClaimProcNum. Re-run the match; if it still cannot pair, the chart and the remittance disagree about what was done.',
   },
+  CLAIMPROC_NOT_ALREADY_PLANNED: {
+    label: 'No chart line is already on another posting plan',
+    fix: 'Another claim in this practice is already planned to post money against one of these Open Dental lines. Two proposals have been confirmed to the same chart claim — release one of them before approving.',
+  },
   CLAIM_TOTALS_AGREE: {
     label: 'The amounts reconcile',
     fix: 'What the remittance says this claim was paid does not equal the sum of its lines. The difference is money nobody can account for.',
@@ -168,6 +172,7 @@ function isRecoupment(claim, payment) {
  * @param {ReadonlyArray<object>} input.lines
  * @param {{ paidCents: number, batchClaimPaymentId: string|null }|null} input.payment
  * @param {ReadonlyArray<string>} input.batchFlags
+ * @param {Map<number, { claimId: string, queueId: string }>} [input.plannedClaimprocs]
  * @returns {{ claimId: string, patientName: string, claimNumber: string,
  *             postable: boolean, alreadyQueued: boolean,
  *             checks: Array<{ code: string, label: string, passed: boolean, detail: string|null, fix: string }>,
@@ -175,14 +180,48 @@ function isRecoupment(claim, payment) {
  *               lines: Array<{ lineId: string, position: number, odClaimProcNum: number,
  *                              insPayAmtCents: number, writeOffCents: number, dedAppliedCents: number }> } }}
  */
-function evaluateClaim({ office, claim, lines, payment, batchFlags }) {
+function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaimprocs = new Map() }) {
   /** @type {Array<{ code: string, label: string, passed: boolean, detail: string|null, fix: string }>} */
   const checks = [];
   const add = (code, passed, detail) =>
     checks.push({ code, label: CHECKS[code].label, passed, detail: detail || null, fix: CHECKS[code].fix });
 
   // ── Identity ──────────────────────────────────────────────────────────────
-  add('OFFICE_CONSISTENT', claim.officeId === office, claim.officeId === office ? null : `stamped ${claim.officeId}`);
+
+  /*
+   * OFFICE IS EVALUATED PER CLAIM, AND THIS CHECK USED TO BE UNREACHABLE.
+   *
+   * `loadForApproval` selected claims `WHERE office_id = $1`, so a claim
+   * belonging to the other practice simply DROPPED OUT of the checklist — while
+   * its payment still counted in the batch's own sum. The only symptom was a
+   * `REMITTANCE_UNBALANCED` refusal naming no claim, which is the hardest
+   * possible version of the problem to act on. The claims are now loaded by
+   * BATCH and their office is judged here.
+   *
+   * A stranger's claim is REDACTED before it reaches this function (see
+   * `toForeignClaim`): the mismatch is named and withheld, and no other
+   * practice's patient name is rendered on this office's screen to do it. The
+   * remaining conditions are not evaluated, and say so — asserting anything
+   * about a row this office should not be reading would be a guess.
+   */
+  if (claim.officeId !== office) {
+    add('OFFICE_CONSISTENT', false, `stamped ${claim.officeId}`);
+    for (const code of CHECK_ORDER) {
+      if (code !== 'OFFICE_CONSISTENT') add(code, false, 'not evaluated — this claim is not this practice\'s');
+    }
+    return {
+      claimId: claim.claimId,
+      patientName: claim.patientName,
+      claimNumber: claim.claimNumber,
+      alreadyQueued: false,
+      postable: false,
+      checks,
+      failed: checks.filter((c) => !c.passed).map((c) => c.code),
+      intent: null,
+      batchClaimPaymentId: payment ? payment.batchClaimPaymentId : null,
+    };
+  }
+  add('OFFICE_CONSISTENT', true, null);
 
   const confirmed = claim.odMatchStatus === 'confirmed' && claim.odClaimNum != null;
   add('MATCH_CONFIRMED', confirmed, confirmed ? `ClaimNum ${claim.odClaimNum}` : `match is ${claim.odMatchStatus}`);
@@ -199,12 +238,33 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags }) {
    * stale between the confirmation and the approval.
    */
   const snapshot = claim.matchSnapshot;
+
+  /*
+   * THE CANDIDATE ITSELF MUST BE IN THE SNAPSHOT — F4, and it failed OPEN.
+   *
+   * `NO_BLOCKING_PREFLIGHT` below reads the confirmed candidate's `blockers`.
+   * When the confirmed ClaimNum was not among `snapshot.candidates` the lookup
+   * returned undefined, `blockers` defaulted to `[]`, and the check PASSED —
+   * absence read as clean, which is this module's recurring defect shape and
+   * the one it has spent three slices learning to refuse.
+   *
+   * `confirmMatch` will not confirm a ClaimNum that was not offered, so the only
+   * ways to reach it are a snapshot rewritten underneath a confirmation or a row
+   * edited by hand. Both are exactly the cases where posting on the strength of
+   * an empty blocker list would be worst.
+   */
+  const candidate =
+    snapshot && Array.isArray(snapshot.candidates)
+      ? snapshot.candidates.find((c) => Number(c.odClaimNum) === Number(claim.odClaimNum)) || null
+      : null;
+
   const snapshotUsable =
     Boolean(snapshot) &&
     Number(snapshot.version) === SNAPSHOT_VERSION &&
     snapshot.office === office &&
     Boolean(snapshot.confirmed) &&
-    Number(snapshot.confirmed.odClaimNum) === Number(claim.odClaimNum);
+    Number(snapshot.confirmed.odClaimNum) === Number(claim.odClaimNum) &&
+    candidate !== null;
   add(
     'SNAPSHOT_CURRENT',
     snapshotUsable,
@@ -216,7 +276,9 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags }) {
           ? `recorded against ${snapshot.office}`
           : !snapshot.confirmed
             ? 'the record carries no confirmation'
-            : 'the confirmation names a different Open Dental claim'
+            : Number(snapshot.confirmed.odClaimNum) !== Number(claim.odClaimNum)
+              ? 'the confirmation names a different Open Dental claim'
+              : 'the confirmed claim is not among the candidates the match recorded'
   );
 
   // ── The human decisions ───────────────────────────────────────────────────
@@ -264,18 +326,20 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags }) {
    * point where money is half-written. Read from the snapshot, never from a
    * fresh Open Dental call — this file makes none.
    */
-  const candidate = snapshotUsable
-    ? (snapshot.candidates || []).find((c) => Number(c.odClaimNum) === Number(claim.odClaimNum))
-    : null;
   const odBlockers = candidate ? (candidate.blockers || []).filter((b) => b.blocking) : [];
   add(
+    // `candidate !== null` is re-asserted rather than inferred from
+    // `snapshotUsable`: this is the check whose empty list is dangerous, and it
+    // should not depend on another condition remembering to require it.
     'NO_BLOCKING_PREFLIGHT',
-    snapshotUsable && odBlockers.length === 0,
-    !snapshotUsable
-      ? 'cannot be checked without a current match record'
-      : odBlockers.length
-        ? odBlockers.map((b) => b.code).join(', ')
-        : null
+    snapshotUsable && candidate !== null && odBlockers.length === 0,
+    !candidate
+      ? 'cannot be checked — the confirmed claim is not in the match record'
+      : !snapshotUsable
+        ? 'cannot be checked without a current match record'
+        : odBlockers.length
+          ? odBlockers.map((b) => b.code).join(', ')
+          : null
   );
 
   // ── The intent this claim would enqueue ───────────────────────────────────
@@ -298,6 +362,40 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags }) {
       : paired.length === lines.length
         ? null
         : `${lines.length - paired.length} of ${lines.length} lines have no ClaimProcNum`
+  );
+
+  /*
+   * ALREADY PLANNED SOMEWHERE ELSE — F1, and it used to be a 500.
+   *
+   * Nothing makes `(office_id, od_claim_num)` unique across `rcm_claims`:
+   * `confirmMatch` guards only its own row, and a re-uploaded EOB that slipped
+   * the dedupe produces a second batch with a second set of claims. Two claims
+   * can therefore be confirmed to one Open Dental claim, and their line pairing
+   * resolves to the same ClaimProcNums.
+   *
+   * The partial unique index then refused the second approve with a raw 23505,
+   * which `h()` turned into INTERNAL_ERROR — after the gate had already told the
+   * biller the claim was postable. A constraint doing its job must not surface
+   * as a crash: it is a refusal, and it belongs on the checklist BEFORE the
+   * button, like every other one.
+   *
+   * The database remains the guarantee — `approveRemittance` still translates a
+   * 23505 it loses a race to (see there). This is what makes the common case
+   * legible rather than what makes it safe.
+   */
+  const conflicts = [];
+  if (claim.postingQueueId == null) {
+    for (const line of lines) {
+      const planned = line.odClaimProcNum == null ? null : plannedClaimprocs.get(Number(line.odClaimProcNum));
+      if (planned && planned.claimId !== claim.claimId) {
+        conflicts.push(`ClaimProcNum ${line.odClaimProcNum}`);
+      }
+    }
+  }
+  add(
+    'CLAIMPROC_NOT_ALREADY_PLANNED',
+    conflicts.length === 0,
+    conflicts.length ? `${conflicts.join(', ')} already on a posting plan` : null
   );
 
   /*
@@ -405,10 +503,18 @@ function looksApprovable(claim, batchFlags) {
  * @param {ReadonlyArray<object>} input.claims
  * @param {Map<string, object[]>} input.linesByClaim
  * @param {Map<string, { paidCents: number, batchClaimPaymentId: string|null }>} input.paymentsByClaim
+ * @param {Map<number, { claimId: string, queueId: string }>} [input.plannedClaimprocs]
  * @returns {{ claims: ReturnType<typeof evaluateClaim>[], postable: object[], withheld: object[],
  *             alreadyQueued: object[], batchBalanced: boolean, batchDifferenceCents: number }}
  */
-function evaluateRemittance({ office, batch, claims, linesByClaim, paymentsByClaim }) {
+function evaluateRemittance({
+  office,
+  batch,
+  claims,
+  linesByClaim,
+  paymentsByClaim,
+  plannedClaimprocs = new Map(),
+}) {
   const evaluated = claims.map((claim) =>
     evaluateClaim({
       office,
@@ -416,8 +522,45 @@ function evaluateRemittance({ office, batch, claims, linesByClaim, paymentsByCla
       lines: linesByClaim.get(claim.claimId) || [],
       payment: paymentsByClaim.get(claim.claimId) || null,
       batchFlags: batch.flags,
+      plannedClaimprocs,
     })
   );
+
+  /*
+   * AND A COLLISION WITHIN THIS ONE APPROVE.
+   *
+   * `CLAIMPROC_NOT_ALREADY_PLANNED` consults plans that already EXIST, which is
+   * everything the per-claim pass can know. It cannot see the other claims in
+   * the same press — and two claims on one remittance confirmed to the same Open
+   * Dental claim pair to the same ClaimProcNums, so the first insert succeeded
+   * and the second hit the index. The refusal was correct and read as a race
+   * ("somebody else was writing"), which is a confusing thing to tell somebody
+   * who pressed the button once.
+   *
+   * So the postable set is checked against ITSELF, in the batch's own order.
+   * The first claim to claim a ClaimProcNum keeps it; the later one is withheld
+   * with the same named condition. Which of two duplicates wins is arbitrary —
+   * that they cannot BOTH post the same chart line is not.
+   */
+  const claimedHere = new Map();
+  for (const evaluation of evaluated) {
+    if (!evaluation.postable || !evaluation.intent) continue;
+    const collisions = [];
+    for (const line of evaluation.intent.lines) {
+      const owner = claimedHere.get(line.odClaimProcNum);
+      if (owner && owner !== evaluation.claimId) collisions.push(`ClaimProcNum ${line.odClaimProcNum}`);
+    }
+    if (collisions.length > 0) {
+      const check = evaluation.checks.find((c) => c.code === 'CLAIMPROC_NOT_ALREADY_PLANNED');
+      check.passed = false;
+      check.detail = `${collisions.join(', ')} is also on another claim in this same remittance`;
+      evaluation.failed = evaluation.checks.filter((c) => !c.passed).map((c) => c.code);
+      evaluation.postable = false;
+      evaluation.intent = null;
+      continue;
+    }
+    for (const line of evaluation.intent.lines) claimedHere.set(line.odClaimProcNum, evaluation.claimId);
+  }
 
   /*
    * THE BATCH'S OWN INTEGRITY, checked once and separately from any claim.
@@ -432,6 +575,7 @@ function evaluateRemittance({ office, batch, claims, linesByClaim, paymentsByCla
 
   return {
     claims: evaluated,
+    // Recomputed AFTER the self-collision pass above, not before it.
     postable: evaluated.filter((c) => c.postable),
     withheld: evaluated.filter((c) => !c.postable && !c.alreadyQueued),
     alreadyQueued: evaluated.filter((c) => c.alreadyQueued),
@@ -502,6 +646,36 @@ function toApprovalClaim(row) {
   };
 }
 
+/**
+ * A claim the batch names but that belongs to ANOTHER PRACTICE.
+ *
+ * It has to be judged — silently dropping it is what hid the mismatch behind an
+ * unexplained `REMITTANCE_UNBALANCED` — but it must not be RENDERED. This office
+ * has no business seeing the other practice's patient on its own screen, so the
+ * name is replaced before the row leaves the loader and every amount is dropped:
+ * the only fact anybody needs is which claim, and that it is not ours.
+ *
+ * @param {Record<string, unknown>} row
+ */
+function toForeignClaim(row) {
+  return {
+    claimId: row.claim_id,
+    officeId: row.office_id,
+    claimNumber: row.claim_number,
+    patientName: "(a claim belonging to another practice)",
+    odClaimNum: null,
+    odMatchStatus: 'not_run',
+    matchSnapshot: null,
+    reviewedAt: null,
+    needsReviewReasons: [],
+    totalPaidCents: 0,
+    patientBalanceCents: 0,
+    postingQueueId: null,
+    approvedAt: null,
+    approvedByKey: null,
+  };
+}
+
 /** @param {Record<string, unknown>} row */
 function toApprovalLine(row) {
   return {
@@ -556,16 +730,37 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
   }
 
   if (claimIds.length === 0) {
-    return { batch, claims: [], linesByClaim: new Map(), paymentsByClaim };
+    return {
+      batch,
+      claims: [],
+      linesByClaim: new Map(),
+      paymentsByClaim,
+      plannedClaimprocs: new Map(),
+    };
   }
 
+  /*
+   * BY CLAIM ID, NOT BY OFFICE — and that is the F3 fix.
+   *
+   * Every other read in this module filters on `office_id` so a foreign row is
+   * a MISS rather than a refusal somebody had to remember. Here that idiom was
+   * wrong: the claim ids come from THIS office's batch links, and a claim among
+   * them stamped with the other practice is a defect this gate exists to catch.
+   * Filtering it out made `OFFICE_CONSISTENT` unreachable and turned a nameable
+   * mismatch into an unexplained unbalanced total.
+   *
+   * The office boundary is not weakened — nothing is served. A foreign row is
+   * redacted by `toForeignClaim` on the way out and can only ever be withheld.
+   */
   const claims = await client.query(
     `SELECT ${APPROVAL_CLAIM_COLUMNS} FROM rcm_claims ` +
-      `WHERE office_id = $1 AND claim_id = ANY($2::uuid[])` +
+      `WHERE claim_id = ANY($1::uuid[])` +
       (lock ? ' FOR UPDATE' : ''),
-    [office, claimIds]
+    [claimIds]
   );
-  const byId = new Map(claims.rows.map((r) => [r.claim_id, toApprovalClaim(r)]));
+  const byId = new Map(
+    claims.rows.map((r) => [r.claim_id, r.office_id === office ? toApprovalClaim(r) : toForeignClaim(r)])
+  );
 
   const lines = await client.query(
     `SELECT ${LINE_COLUMNS} FROM rcm_procedure_lines ` +
@@ -579,10 +774,41 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
     linesByClaim.get(row.claim_id).push(toApprovalLine(row));
   }
 
+  /*
+   * WHICH OF THESE CLAIMPROCS ARE ALREADY ON A PLAN — F1's pre-check.
+   *
+   * One query for the whole remittance, over the exact set of ClaimProcNums it
+   * would touch. `is_supplemental = false` mirrors the partial unique index's
+   * own predicate, so the check and the constraint agree about what collides.
+   */
+  const claimProcNums = [
+    ...new Set(
+      [...linesByClaim.values()]
+        .flat()
+        .map((l) => l.odClaimProcNum)
+        .filter((n) => n != null)
+    ),
+  ];
+  /** @type {Map<number, { claimId: string, queueId: string }>} */
+  const plannedClaimprocs = new Map();
+  if (claimProcNums.length > 0) {
+    const planned = await client.query(
+      `SELECT od_claim_proc_num, claim_id, queue_id FROM rcm_posting_queue_line ` +
+        `WHERE office_id = $1 AND is_supplemental = false AND od_claim_proc_num = ANY($2::bigint[])`,
+      [office, claimProcNums]
+    );
+    for (const row of planned.rows) {
+      plannedClaimprocs.set(num(row.od_claim_proc_num), {
+        claimId: row.claim_id,
+        queueId: row.queue_id,
+      });
+    }
+  }
+
   // Ordered by the batch's own positions, so the checklist reads in the order
   // the remittance lists its claims.
   const ordered = claimIds.map((id) => byId.get(id)).filter(Boolean);
-  return { batch, claims: ordered, linesByClaim, paymentsByClaim };
+  return { batch, claims: ordered, linesByClaim, paymentsByClaim, plannedClaimprocs };
 }
 
 /**
@@ -617,6 +843,65 @@ class ApprovalError extends Error {
 }
 
 /**
+ * Record that a human pressed Approve on this remittance, whatever came of it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS ITS OWN TRANSACTION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The case that needs it most is the one that ROLLED BACK. A wholly-refused
+ * approve leaves no queue row, and `claims_withheld` fired only when a queue row
+ * existed — so a biller who pressed Approve, was told "nothing here can be
+ * posted, and here is why", and went back to the list found the remittance GONE
+ * from the needs-attention view. Silence at the exact moment somebody was told
+ * they owed work.
+ *
+ * So the stamp is written on its own connection, after the gate's transaction
+ * has finished one way or the other. It is BEST EFFORT: failing to record an
+ * attempt must not turn a clean refusal into a 500, and must not undo a
+ * successful enqueue that has already committed. A missing stamp costs a
+ * worklist chip; a rolled-back approval would cost the biller their work.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} batchId
+ * @param {{ email: string, displayName?: string }} actor
+ * @returns {Promise<void>}
+ */
+async function recordApprovalAttempt(req, office, batchId, actor) {
+  try {
+    await tenantDb.withTenantDb(req, async (pool) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // D-5, on this connection so the FK below sees the row.
+        const userKey = await resolveRcmActor(client, actor);
+        await client.query(
+          `UPDATE rcm_payment_batches SET approval_attempted_at = now(), ` +
+            `approval_attempted_by = $3, updated_at = now() ` +
+            `WHERE office_id = $1 AND batch_id = $2`,
+          [office, batchId, userKey]
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          /* the original error is the one worth reporting */
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+    });
+  } catch (err) {
+    console.error(
+      `[rcm] could not record the approval attempt on ${batchId}:`,
+      (err && err.message) || err
+    );
+  }
+}
+
+/**
  * Approve a remittance: evaluate, then write the durable record of intent.
  *
  * ONE transaction. The claims are locked FOR UPDATE, re-evaluated under the
@@ -631,6 +916,41 @@ class ApprovalError extends Error {
  * @returns {Promise<object>}
  */
 async function approveRemittance(req, office, batchId, actor) {
+  /*
+   * THE ATTEMPT IS RECORDED WHATEVER HAPPENED — including, and especially, a
+   * refusal that rolled everything else back. See recordApprovalAttempt.
+   *
+   * Recorded on the way OUT of both paths rather than in a `finally`, because
+   * one exit must not be stamped: a remittance that does not exist for this
+   * office has no row to stamp and no worklist entry to keep, and upserting a
+   * user-map row for somebody probing ids would be a write with no purpose.
+   * Everything else IS stamped, including a partial approve — that remittance
+   * still has withheld claims, and a human still owes them an action.
+   */
+  let result;
+  try {
+    result = await runApproval(req, office, batchId, actor);
+  } catch (err) {
+    if (!(err instanceof ApprovalError && err.code === 'REMITTANCE_NOT_FOUND')) {
+      await recordApprovalAttempt(req, office, batchId, actor);
+    }
+    throw err;
+  }
+  await recordApprovalAttempt(req, office, batchId, actor);
+  return result;
+}
+
+/**
+ * The approval itself. Separated from `approveRemittance` only so the attempt
+ * stamp above can wrap every exit path without indenting the whole body.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} batchId
+ * @param {{ email: string, displayName?: string }} actor
+ * @returns {Promise<object>}
+ */
+async function runApproval(req, office, batchId, actor) {
   return tenantDb.withTenantDb(req, async (pool) => {
     const client = await pool.connect();
     try {
@@ -691,13 +1011,27 @@ async function approveRemittance(req, office, batchId, actor) {
        * see a row, and exactly one created it.
        */
       const remittanceKey = await resolveRemittanceKey(client, office, loaded.batch);
+      /*
+       * `carrier_eob_date` IS POPULATED HERE, from the batch's deposit date.
+       *
+       * Open Dental's `DateCP` is not writable — `PUT` returns 200 and ignores
+       * the write (G2) — so the carrier's own adjudication date has nowhere to
+       * live in the chart and lives on the plan instead. 6c puts it in the note.
+       * Leaving the column NULL would have made that note say nothing, which is
+       * the failure G2 exists to stop the module pretending its way past.
+       *
+       * The deposit date is the closest thing an 835 gives us: for an EFT it is
+       * BPR16, for a check it is what the parser read off the remittance. Null
+       * when the file carried neither, which the note then omits rather than
+       * inventing.
+       */
       const inserted = await client.query(
         `INSERT INTO rcm_posting_queue ` +
-          `(office_id, batch_id, remittance_key, status, is_recoupment, intended_total_cents, ` +
-          `posted_total_cents, approved_by) ` +
-          `VALUES ($1, $2, $3, 'approved', false, 0, 0, $4) ` +
+          `(office_id, batch_id, remittance_key, status, is_recoupment, carrier_eob_date, ` +
+          `intended_total_cents, posted_total_cents, approved_by) ` +
+          `VALUES ($1, $2, $3, 'approved', false, $4, 0, 0, $5) ` +
           `ON CONFLICT (office_id, remittance_key) DO NOTHING RETURNING queue_id`,
-        [office, loaded.batch.batchId, remittanceKey, approvedBy]
+        [office, loaded.batch.batchId, remittanceKey, loaded.batch.depositDate, approvedBy]
       );
 
       let queueId = inserted.rows.length ? inserted.rows[0].queue_id : null;
@@ -778,25 +1112,34 @@ async function approveRemittance(req, office, batchId, actor) {
 
         for (const line of claim.intent.lines) {
           position += 1;
-          await client.query(
-            `INSERT INTO rcm_posting_queue_line ` +
-              `(queue_id, office_id, position, od_claim_proc_num, od_claim_num, claim_id, ` +
-              `batch_claim_payment_id, intended_ins_pay_amt_cents, intended_write_off_cents, ` +
-              `intended_ded_applied_cents, is_supplemental, status) ` +
-              `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, 'pending')`,
-            [
-              queueId,
-              office,
-              position,
-              line.odClaimProcNum,
-              claim.intent.odClaimNum,
-              claim.claimId,
-              claim.batchClaimPaymentId,
-              line.insPayAmtCents,
-              line.writeOffCents,
-              line.dedAppliedCents,
-            ]
-          );
+          try {
+            await client.query(
+              `INSERT INTO rcm_posting_queue_line ` +
+                `(queue_id, office_id, position, od_claim_proc_num, od_claim_num, claim_id, ` +
+                `batch_claim_payment_id, intended_ins_pay_amt_cents, intended_write_off_cents, ` +
+                `intended_ded_applied_cents, is_supplemental, status) ` +
+                `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, 'pending')`,
+              [
+                queueId,
+                office,
+                position,
+                line.odClaimProcNum,
+                claim.intent.odClaimNum,
+                claim.claimId,
+                claim.batchClaimPaymentId,
+                line.insPayAmtCents,
+                line.writeOffCents,
+                line.dedAppliedCents,
+              ]
+            );
+          } catch (err) {
+            // The database is the guarantee; this is what makes losing to it
+            // legible. See asClaimprocConflict.
+            const conflict = asClaimprocConflict(err, claim);
+            if (!conflict) throw err;
+            await client.query('ROLLBACK');
+            throw conflict;
+          }
         }
 
         intendedTotal += claim.intent.totalCents;
@@ -865,6 +1208,38 @@ async function approveRemittance(req, office, batchId, actor) {
   });
 }
 
+/** Postgres' unique-violation SQLSTATE. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Turn a lost race with the claimproc uniqueness into the refusal it is.
+ *
+ * `CLAIMPROC_NOT_ALREADY_PLANNED` catches the ordinary case on the checklist,
+ * before anything is written. This is what happens when two approvals are in
+ * flight at once and the pre-check on one connection could not see the other's
+ * uncommitted line: the index refuses, and without this the refusal reached the
+ * biller as `INTERNAL_ERROR` — a constraint doing exactly its job, presented as
+ * a crash.
+ *
+ * Only the CLAIMPROC index is translated. Any other unique violation is a bug
+ * we have not thought about, and dressing it as a tidy refusal would hide it.
+ *
+ * @param {unknown} err
+ * @param {{ claimNumber: string, patientName: string }} claim
+ * @returns {ApprovalError|null} null when this is not that error
+ */
+function asClaimprocConflict(err, claim) {
+  const e = /** @type {{ code?: string, constraint?: string }} */ (err);
+  if (!e || e.code !== UNIQUE_VIOLATION) return null;
+  if (e.constraint && e.constraint !== 'rcm_posting_queue_line_claimproc_unique') return null;
+  return new ApprovalError(
+    'CLAIMPROC_ALREADY_PLANNED',
+    409,
+    `An Open Dental line on claim ${claim.claimNumber} was put on a posting plan by somebody else while this approval was being written. Nothing was queued; open the remittance again.`,
+    { claimId: claim.claimId }
+  );
+}
+
 /**
  * The remittance key this plan is guarded by.
  *
@@ -908,6 +1283,8 @@ module.exports = {
   ApprovalError,
   isPatientResponsibilityOnly,
   isRecoupment,
+  asClaimprocConflict,
+  recordApprovalAttempt,
   evaluateClaim,
   looksApprovable,
   evaluateRemittance,

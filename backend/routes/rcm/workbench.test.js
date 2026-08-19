@@ -1730,3 +1730,201 @@ test('there is still no POST endpoint — approving is not posting', async () =>
     assert.equal(db.table('rcm_posting_queue').length, 0);
   });
 });
+
+// ─── Review fixes (PR #96) — the list side ───────────────────────────────────
+
+test('batch FLAGS reach the wire, on both the list and the detail', async () => {
+  /*
+   * Slice 5.5 wrote them and nothing rendered them, so a whole-check takeback
+   * surfaced only as "Held — something on this remittance was flagged".
+   */
+  const db = seed(new FakeRcmDb(), { batchStatus: 'open' });
+  db.table('rcm_payment_batches')[0].flags = ['envelope_incomplete', 'plb_adjustments_present'];
+
+  await withApp({ db }, async (app) => {
+    const list = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.deepEqual(list.body.remittances[0].flags, [
+      'envelope_incomplete',
+      'plb_adjustments_present',
+    ]);
+
+    const detail = await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`);
+    assert.deepEqual(detail.body.remittance.flags, [
+      'envelope_incomplete',
+      'plb_adjustments_present',
+    ]);
+  });
+});
+
+test('a batch with no flags column value still ships an ARRAY, never undefined', async () => {
+  // The client maps over it. `Array.isArray` in toBatchWire is what keeps a row
+  // written before Slice 5.5 from breaking the screen that renders it.
+  const db = seed(new FakeRcmDb());
+  delete db.table('rcm_payment_batches')[0].flags;
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.deepEqual(body.remittances[0].flags, []);
+  });
+});
+
+test('view=attention filters SERVER-side, and both counts describe the whole office', async () => {
+  /*
+   * Slice 6a filtered a page in the browser while the header counted the office,
+   * so "12 needing attention · 640 total" was two statements about two different
+   * populations — and a remittance needing attention below the hundredth newest
+   * was invisible AND uncounted.
+   */
+  const db = seed(new FakeRcmDb());
+  // Nine more batches, five of which are finished work.
+  for (let i = 2; i <= 10; i += 1) {
+    const id = `8acb0e32-35ae-5cd8-9692-7b5e318a31${String(i).padStart(2, '0')}`;
+    db.seed('rcm_payment_batches', [
+      { ...db.table('rcm_payment_batches')[0], batch_id: id, deposit_date: `2026-02-${String(i).padStart(2, '0')}` },
+    ]);
+    // Batches 2-6 carry a reviewed claim (nothing owed); 7-10 carry none at all,
+    // which is its own obligation.
+    if (i <= 6) {
+      const claimId = `d1e2b359-a8d7-51a8-978c-7adf27bccc${String(i).padStart(2, '0')}`;
+      db.seed('rcm_claims', [
+        {
+          ...db.table('rcm_claims')[0],
+          claim_id: claimId,
+          od_match_status: 'no_candidate',
+          od_claim_num: null,
+          reviewed_at: new Date(),
+          reviewed_by: 'billing@carein.ai',
+        },
+      ]);
+      db.seed('rcm_batch_claim_payments', [
+        {
+          batch_claim_payment_id: `5f46bb33-d78e-573d-87a6-bb42a7bd74${String(i).padStart(2, '0')}`,
+          batch_id: id,
+          claim_id: claimId,
+          office_id: 'roland',
+          position: 1,
+          paid_cents: 15000,
+        },
+      ]);
+    }
+  }
+
+  await withApp({ db }, async (app) => {
+    // 10 batches: 1 unreviewed claim, 5 reviewed (done), 4 with no claims.
+    const all = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=all`);
+    assert.equal(all.body.view, 'all');
+    assert.equal(all.body.total, 10);
+    assert.equal(all.body.matchingCount, 10);
+    assert.equal(all.body.needsAttentionCount, 5, 'one unreviewed + four with no claims');
+    assert.equal(all.body.remittances.length, 10);
+
+    const attention = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=attention`);
+    assert.equal(attention.body.view, 'attention');
+    assert.equal(attention.body.remittances.length, 5, 'the SERVER filtered');
+    // Both counts still describe the whole office, not the page or the filter.
+    assert.equal(attention.body.total, 10);
+    assert.equal(attention.body.needsAttentionCount, 5);
+    assert.equal(attention.body.matchingCount, 5);
+    for (const r of attention.body.remittances) assert.equal(r.needsAttention, true);
+  });
+});
+
+test('paging walks the FILTERED population, and the counts do not move', async () => {
+  const db = seed(new FakeRcmDb());
+  for (let i = 2; i <= 6; i += 1) {
+    db.seed('rcm_payment_batches', [
+      {
+        ...db.table('rcm_payment_batches')[0],
+        batch_id: `8acb0e32-35ae-5cd8-9692-7b5e318a31${String(i).padStart(2, '0')}`,
+        deposit_date: `2026-02-${String(i).padStart(2, '0')}`,
+      },
+    ]);
+  }
+
+  await withApp({ db }, async (app) => {
+    const first = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=attention&limit=2&offset=0`);
+    assert.equal(first.body.remittances.length, 2);
+    assert.equal(first.body.matchingCount, 6);
+    assert.equal(first.body.needsAttentionCount, 6);
+    assert.equal(first.body.total, 6);
+
+    const second = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=attention&limit=2&offset=2`);
+    assert.equal(second.body.remittances.length, 2);
+    // A DIFFERENT page of the same population, not the same rows again.
+    const firstIds = first.body.remittances.map((r) => r.batchId);
+    const secondIds = second.body.remittances.map((r) => r.batchId);
+    assert.deepEqual(firstIds.filter((id) => secondIds.includes(id)), []);
+    assert.equal(second.body.matchingCount, 6, 'and the counts are page-independent');
+
+    const past = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=attention&limit=2&offset=99`);
+    assert.deepEqual(past.body.remittances, [], 'past the end is empty, not an error');
+    assert.equal(past.body.matchingCount, 6);
+  });
+});
+
+test('an unknown view falls back to the default rather than 400ing the list', async () => {
+  // A filter is a display preference. Refusing a whole list over a typo in a
+  // query string is the worse failure.
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}&view=sideways`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.view, 'all');
+  });
+});
+
+test('a PARTIALLY-withheld remittance stays in the queue; a fully-queued one leaves', async () => {
+  /*
+   * The two halves of the Slice 6b obligation, on one fixture. Queued is an
+   * OBSERVATION — the system owes the next step and no human does. Withheld is
+   * an OBLIGATION — somebody owes a fix or a manual disposition.
+   */
+  const db = seed(new FakeRcmDb());
+  addSecondClaim(db);
+  db.seed('rcm_posting_queue', [
+    {
+      queue_id: '9a0d5b6c-1111-4111-8111-111111111111',
+      office_id: 'roland',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      remittance_key: 'K',
+      status: 'approved',
+    },
+  ]);
+  for (const claim of db.table('rcm_claims')) {
+    Object.assign(claim, {
+      od_match_status: 'confirmed',
+      od_claim_num: 53648,
+      reviewed_at: new Date(),
+      reviewed_by: 'billing@carein.ai',
+    });
+  }
+  // ONE of the two is on the plan; the other carries a blocking reason.
+  Object.assign(db.table('rcm_claims')[0], {
+    posting_queue_id: '9a0d5b6c-1111-4111-8111-111111111111',
+    approved_at: new Date(),
+    approved_by: 'billing@carein.ai',
+  });
+  db.table('rcm_claims')[1].needs_review_reasons = ['totals_unreconciled'];
+
+  await withApp({ db }, async (app) => {
+    const held = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    const row = held.body.remittances[0];
+    assert.equal(row.needsAttention, true, 'a withheld claim keeps the remittance in view');
+    assert.deepEqual(row.attentionReasons, ['claims_withheld']);
+    assert.ok(row.attentionObservations.includes('claims_queued'));
+    assert.equal(row.queuedClaimCount, 1);
+
+    // Now the second one goes on the plan too. Nothing is owed by anybody.
+    Object.assign(db.table('rcm_claims')[1], {
+      posting_queue_id: '9a0d5b6c-1111-4111-8111-111111111111',
+      approved_at: new Date(),
+      approved_by: 'billing@carein.ai',
+      needs_review_reasons: [],
+    });
+
+    const done = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(done.body.remittances[0].needsAttention, false);
+    assert.deepEqual(done.body.remittances[0].attentionReasons, []);
+    assert.ok(done.body.remittances[0].attentionObservations.includes('claims_queued'));
+    assert.equal(done.body.needsAttentionCount, 0);
+  });
+});

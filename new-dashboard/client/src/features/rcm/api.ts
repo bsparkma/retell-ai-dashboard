@@ -970,6 +970,16 @@ export interface Remittance {
   unmatchedClaimCount: number;
   /** How many claims a human has already approved into a posting plan. */
   queuedClaimCount: number;
+  /**
+   * When somebody last pressed Approve, whatever came of it.
+   *
+   * Null means nobody has — which is the difference between a claim that is
+   * "not ready" and one that was WITHHELD. A wholly-refused approve rolls back
+   * and leaves no plan, so this stamp is the only thing that survives it, and it
+   * is what keeps the remittance in the needs-attention view afterwards.
+   */
+  approvalAttemptedAt: string | null;
+  approvalAttemptedBy: string | null;
   upload: RemittanceUpload | null;
 }
 

@@ -133,46 +133,84 @@ export const LINE_FLAG_LABELS: Record<string, string> = {
  *
  * FAIL CLOSED, like the backend: anything not named here reads as blocking.
  */
-export const BLOCKING_REASONS = new Set<string>([
-  // ERA claim review reasons
-  "reversal_not_postable",
-  "secondary_payer_adjudication",
-  "prior_payer_payment_on_primary_claim",
-  "unparseable_cas",
-  "no_service_lines",
-  "line_total_mismatch",
-  "unstorable_adjustment_group",
-  "patient_resp_mismatch",
-  "unreadable_amount",
-  "partial_adjustment_segment",
-  "claim_line_allowed_mismatch",
-  "totals_unreconciled",
-  // EOB claim review reasons
-  "low_confidence",
-  "no_procedures_extracted",
-  "paid_total_mismatch",
-  "billed_total_mismatch",
-  "negative_amount",
-  "no_claims_extracted",
-  "batch_paid_total_mismatch",
-  // Remittance flags
-  "negative_total_payment",
-  "no_claims_in_remittance",
-  "claim_total_mismatch",
-  "envelope_counts_mismatch",
-  "envelope_incomplete",
-]);
+export const REASON_GATE: Record<string, "blocking" | "annotating"> = {
+  // ── ERA claim review reasons ──
+  reversal_not_postable: "blocking",
+  claim_denied: "annotating",
+  secondary_payer_adjudication: "blocking",
+  prior_payer_payment_on_primary_claim: "blocking",
+  unparseable_cas: "blocking",
+  procedure_downcoded: "annotating",
+  no_service_lines: "blocking",
+  line_total_mismatch: "blocking",
+  unstorable_adjustment_group: "blocking",
+  claim_level_adjustments_present: "annotating",
+  patient_resp_mismatch: "blocking",
+  allowed_amount_mismatch: "annotating",
+  unreadable_amount: "blocking",
+  partial_adjustment_segment: "blocking",
+  claim_line_allowed_mismatch: "blocking",
+  totals_unreconciled: "blocking",
+
+  // ── EOB claim review reasons ──
+  low_confidence: "blocking",
+  missing_npi: "annotating",
+  missing_dob: "annotating",
+  missing_check_number: "annotating",
+  missing_subscriber_id: "annotating",
+  missing_payer: "annotating",
+  missing_claim_number: "annotating",
+  missing_patient_name: "annotating",
+  no_procedures_extracted: "blocking",
+  paid_total_mismatch: "blocking",
+  billed_total_mismatch: "blocking",
+  invalid_service_date: "annotating",
+  service_date_in_future: "annotating",
+  negative_amount: "blocking",
+  no_claims_extracted: "blocking",
+  batch_paid_total_mismatch: "blocking",
+
+  // ── Remittance flags ──
+  plb_adjustments_present: "annotating",
+  negative_total_payment: "blocking",
+  no_payment_made: "annotating",
+  no_claims_in_remittance: "blocking",
+  claim_total_mismatch: "blocking",
+  envelope_counts_mismatch: "blocking",
+  envelope_incomplete: "blocking",
+  multi_transaction_file: "annotating",
+
+  // ── Line flags ──
+  downcode: "annotating",
+  bundled: "annotating",
+  denied: "annotating",
+  partial_pay: "annotating",
+  unexplained_adj: "annotating",
+  frequency_limit: "annotating",
+  not_covered: "annotating",
+  pre_auth_required: "annotating",
+  allowed_mismatch: "annotating",
+};
 
 /**
  * Does this reason stop a claim being approved?
  *
- * `uncertain_line:<N>` is handled explicitly — the parameterised reason can
- * never live in a set, and a line the model was unsure about is money read with
- * low confidence.
+ * FAIL CLOSED — anything not in the map reads as BLOCKING, exactly as the
+ * backend's `isBlockingReason` does.
+ *
+ * This was a Set of blocking reasons first, which failed OPEN: an unmapped slug
+ * came back `false` and would have rendered a grey chip beside a claim the gate
+ * silently withheld — a screen quietly disagreeing with the server about what
+ * stops a posting. The mirror test caught it on its first run, which is the
+ * argument for having written it.
+ *
+ * `uncertain_line:<N>` is handled explicitly: the parameterised reason can never
+ * live in a lookup, and reaching the fail-closed branch for it would be an
+ * accident that happened to be right.
  */
 export function isBlockingReason(reason: string): boolean {
   if (/^uncertain_line:[1-9][0-9]*$/.test(reason)) return true;
-  return BLOCKING_REASONS.has(reason);
+  return REASON_GATE[reason] !== "annotating";
 }
 
 /**

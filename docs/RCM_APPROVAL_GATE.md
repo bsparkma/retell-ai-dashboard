@@ -12,7 +12,7 @@ The one thing the workbench's disabled **Approve** button has been waiting for.
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Migration | `backend/migrations-tenant/1787080000000_rcm_posting_approval.js` (additive only) |
 | Code | [`backend/routes/rcm/approvalGate.js`](../backend/routes/rcm/approvalGate.js), [`backend/services/rcm/rcmVocabulary.js`](../backend/services/rcm/rcmVocabulary.js), [`new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx`](../new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx) |
-| Tests | `approvalGate.test.js` (35), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (65), `rcmVocabulary.test.js`, `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` |
+| Tests | `approvalGate.test.js` (46), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (74), `rcmVocabulary.test.js` (17), `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` (11) |
 
 ---
 
@@ -27,6 +27,13 @@ Approving writes a **posting plan** to CareIN's own database:
   identifiers from the confirmed match snapshot;
 - a linkage on each approved claim: `posting_queue_id`, `approved_at`,
   `approved_by`.
+
+`carrier_eob_date` on the queue row is populated from the batch's **deposit
+date** — BPR16 for an EFT, what the parser read off the remittance for a check.
+It exists because Open Dental's `DateCP` is not writable: a `PUT` returns 200 and
+ignores it (G2), so the carrier's own adjudication date has nowhere to live in
+the chart and 6c puts it in the note instead. Null when the file carried neither
+date, which the note then omits rather than inventing.
 
 **Nothing reaches Open Dental.** `rcmNoOdWrites.test.js` drives the approve path
 to *success* against a client whose every verb throws, and asserts not one
@@ -70,7 +77,7 @@ that withheld it. `approvalGate.test.js` walks the obvious attempts —
 `{force:true}`, `{override:true}`, `{claimIds:[…], skipChecks:true}`,
 `?force=true&override=1` — and asserts all four are refused.
 
-### The eleven conditions
+### The twelve conditions
 
 Evaluated in this order, which is the order a biller reads them: identity first,
 then the human decisions, then facts about the file, then the arithmetic.
@@ -87,9 +94,22 @@ then the human decisions, then facts about the file, then the arithmetic.
 | `NO_BLOCKING_REASON` | A blocking member of any vocabulary is present (see §3) |
 | `NO_BLOCKING_PREFLIGHT` | The confirmed candidate's snapshot carries a blocking `OD_BLOCKERS` fact |
 | `LINES_PAIRED` | Any procedure line has no `od_claim_proc_num` |
+| `CLAIMPROC_NOT_ALREADY_PLANNED` | One of this claim's chart lines is already on a posting plan — another claim's, or another claim on this same remittance |
 | `CLAIM_TOTALS_AGREE` | The claim total, the sum of its lines, and what the batch says it moved do not all agree |
 
-Two of these deserve their own note:
+Four of these deserve their own note:
+
+**`OFFICE_CONSISTENT` is reachable, and it was not at first.** `loadForApproval`
+selected claims `WHERE office_id = $1` — the module's idiom everywhere else, and
+wrong here. A claim on this batch stamped with the other practice simply dropped
+out of the checklist while its payment still counted in the batch's sum, so the
+only symptom was a `REMITTANCE_UNBALANCED` refusal naming nobody. The claims are
+now loaded **by batch** and their office is judged per claim.
+
+The office boundary is not weakened: a foreign row is redacted before it leaves
+the loader — the patient name is replaced, every amount dropped, and only
+`OFFICE_CONSISTENT` is evaluated. The mismatch is named and withheld without this
+office reading the other practice's patient off its own screen.
 
 **`NOT_PATIENT_RESPONSIBILITY_ONLY` is "paid nothing AND patient owes", not
 "paid nothing".** A genuine zero — a full contractual write-off, an
@@ -104,8 +124,28 @@ against a ClaimProcNum; a line without one is a payment we cannot say where to
 put. Posting the paired lines and leaving the rest would put the chart into
 exactly the half-written state §8 exists to make recoverable, with nothing
 recording which half. Refusing the whole claim keeps the unit of posting the same
-as the unit the carrier adjudicated. **This is deliberately strict and could be
-relaxed with a ruling.**
+as the unit the carrier adjudicated. **Deliberately strict, and ruled to stay
+that way**: if 6c's end-to-end run shows Open Dental genuinely has no claimproc
+for some line shape, it relaxes with data rather than in advance.
+
+**`CLAIMPROC_NOT_ALREADY_PLANNED` exists because two claims can name one chart
+claim.** Nothing makes `(office_id, od_claim_num)` unique across `rcm_claims`:
+`confirmMatch` guards only its own row, and a re-uploaded EOB that slipped the
+dedupe produces a second batch with a second set of claims. Both confirm to the
+same Open Dental claim and pair to the same ClaimProcNums.
+
+The partial unique index then refused the second approve with a raw `23505`,
+which `h()` turned into `INTERNAL_ERROR` — after the gate had already told the
+biller the claim was postable. A constraint doing its job must not reach a user
+as a crash. It is checked in **three** places now, and all three are needed:
+
+1. against plans that already exist, per claim, on the checklist;
+2. against the other claims **in this same press** — the per-claim pass cannot
+   see them, and two duplicates on one remittance collided at the insert;
+3. and the `23505` itself is translated into `CLAIMPROC_ALREADY_PLANNED` 409
+   inside the transaction, because the pre-check on one connection cannot see
+   another transaction's uncommitted line. The database stays the guarantee;
+   (1) and (2) are what make the common case legible.
 
 ### The batch's own arithmetic holds the WHOLE approve
 
@@ -137,6 +177,16 @@ tenth and why:
 "approved 0 claims" reads as *done* on a busy screen, so it is a 409
 `NOTHING_APPROVABLE` carrying the per-claim reasons.
 
+**And the attempt is recorded even when everything rolls back.**
+`rcm_payment_batches.approval_attempted_at` is written on its own connection,
+after the gate's transaction has finished either way. Without it a wholly-refused
+approve left no trace at all — no queue row, so no `claims_withheld` obligation —
+and the remittance **dropped out of the needs-attention view at the exact moment
+its owner was told it needed work**. The same crying-wolf rule the 6a predicate
+was rewritten for, failing in the opposite direction: silence where somebody
+definitely owes an action. Best effort, deliberately: failing to record an
+attempt must never turn a clean refusal into a 500 or undo a committed enqueue.
+
 ### Re-approve is allowed and idempotent
 
 A second press enqueues only the claims that were withheld before and now pass.
@@ -154,6 +204,7 @@ both approvals. Nothing is ever created twice.
 | `REMITTANCE_UNBALANCED` | 409 | The check's own arithmetic does not reconcile |
 | `NOTHING_APPROVABLE` | 409 | Nothing on this remittance can be posted yet; `claims` carries why |
 | `CLAIM_ALREADY_QUEUED` | 409 | Somebody approved a claim between the locked read and the write |
+| `CLAIMPROC_ALREADY_PLANNED` | 409 | Somebody's concurrent approve took one of these chart lines first |
 | `QUEUE_ALREADY_RUNNING` | 409 | A plan for this remittance is past `approved` — cannot fire until 6c |
 
 ---
@@ -260,6 +311,27 @@ so 6d does not have to drop and rebuild the constraint protecting everything els
 
 Office is in both keys, because ClaimProcNum numbering restarts in every Open
 Dental database — the same reason PatNum 7115 is two different people.
+
+### A queued claim cannot be re-matched or re-pointed
+
+`rcm_claims_approved_is_confirmed_check` means a forced re-run on an approved
+claim — which NULLs `od_claim_num` and moves the status off `confirmed` — is
+refused by the database. It used to surface as `INTERNAL_ERROR` **after** the
+Open Dental read had already happened: a chart read for an operation that could
+never have completed.
+
+Both paths now refuse before any Open Dental call, with `CLAIM_ON_POSTING_PLAN`
+409:
+
+- `POST /claims/:id/match` with `force`, checked in `runClaimMatch` as soon as
+  the claim is loaded and before the transport is even resolved;
+- `POST /claims/:id/confirm-match` with a **different** ClaimNum, under the
+  existing row lock. The same ClaimNum stays idempotent — it asks for a decision
+  already recorded and gets it. "Release that first" was honest advice on an
+  ordinary confirmed claim and impossible advice on an approved one, so the
+  message says the reachable thing instead.
+
+Releasing a plan is 6c's to build.
 
 ---
 
@@ -374,31 +446,42 @@ is ever enqueued on the strength of it.
 ## 8. Migration rehearsal (PostgreSQL 17)
 
 `up` → objects present → `down 1` → `up` again → `down` all the way, all clean on
-a throwaway `postgres:17` container. The constraint proofs:
+a throwaway `postgres:17` container.
+
+**Eight behaviours are exercised against the live constraints: four REFUSALS and
+four things that must still be allowed.** Both halves matter — a constraint that
+refuses everything is as wrong as one that refuses nothing, and three of the four
+allowances are cases an over-eager index would have broken.
+
+The four refusals:
 
 ```
-=== a SECOND enqueue of the same claimproc must be REFUSED ===
-ERROR:  duplicate key value violates unique constraint "rcm_posting_queue_line_claimproc_unique"
-DETAIL:  Key (office_id, od_claim_proc_num)=(roland, 99001) already exists.
+duplicate key value violates unique constraint "rcm_posting_queue_line_claimproc_unique"
+  DETAIL:  Key (office_id, od_claim_proc_num)=(roland, 99001) already exists.
 
-=== the same claimproc as a SUPPLEMENTAL is still allowed (6d's path) ===
-INSERT 0 1
+new row for relation "rcm_claims" violates check constraint
+  "rcm_claims_approval_check"                       -- a half-recorded approval
 
-=== the OTHER office may plan its own claimproc 99001 ===
+new row for relation "rcm_claims" violates check constraint
+  "rcm_claims_approved_is_confirmed_check"          -- queued but not confirmed
+
+new row for relation "rcm_payment_batches" violates check constraint
+  "rcm_payment_batches_approval_attempt_check"      -- a half-recorded attempt
+```
+
+The four allowances:
+
+```
+the same claimproc as a SUPPLEMENTAL          INSERT 0 1   (6d's recoupment path)
+the OTHER office planning its own 99001       INSERT 0 1   (numbering is per database)
+a fully-recorded approval on a confirmed claim INSERT 0 1
+a recorded ATTEMPT with no queue row at all   UPDATE 1     (the refusal case)
+
  office_id | position | od_claim_proc_num | is_supplemental
 -----------+----------+-------------------+-----------------
  roland    |        1 |             99001 | f
  roland    |        3 |             99001 | t
  valley    |        1 |             99001 | f
-
-=== a half-recorded approval must be REFUSED ===
-ERROR:  new row for relation "rcm_claims" violates check constraint "rcm_claims_approval_check"
-
-=== an approved claim that is NOT confirmed must be REFUSED ===
-ERROR:  new row for relation "rcm_claims" violates check constraint "rcm_claims_approved_is_confirmed_check"
-
-=== a fully-recorded approval on a CONFIRMED claim is accepted ===
-INSERT 0 1
 ```
 
 ---
@@ -415,6 +498,17 @@ Each was logged in the #88 or #89 review and is fixed here.
 | **Server-side needs-attention + paging** | `GET /remittances` takes `view=attention\|all`, computes the predicate over the WHOLE office, and returns `total`, `needsAttentionCount` and `matchingCount` over the same population. "12 needing attention · 640 total" is now one statement about one set. The client stopped filtering a 100-row page and got a real pager. The API's default view is `all` — a list endpoint that silently hides most of the list is a trap for the next caller; the screen asks for the view it wants. |
 | **Non-uuid `:id` → 404** | `helpers.isUuid` guards the three `/:id` routes. Postgres refuses a non-uuid literal in a uuid comparison, so a malformed id used to 500 — and the shape of the error told a prober which ids were real. `FakeRcmDb` fixtures now use real uuids, so the tests exercise it. |
 | **The seeder could not run** | `scripts/rcm-seed-fixtures.cjs` set `od_claim_num` and left `od_match_status` at its `not_run` default, which Slice 6a's CHECK forbids in both directions — every `--execute` against a migrated database would have failed. Fixed, with the whole confirmation and a review stamp rather than just the status, and a test that pins it. |
+
+### And five found in review (PR #96)
+
+| | What it was, and what it is now |
+| --- | --- |
+| **A unique violation was a 500** | Two claims can be confirmed to one Open Dental claim, so the partial index refused the second approve with a raw `23505` — `INTERNAL_ERROR`, after the gate had said "postable". Now a named condition on the checklist, a self-collision pass over the postable set, and a `CLAIMPROC_ALREADY_PLANNED` 409 for the race. |
+| **A refused approve made the remittance vanish** | `claims_withheld` keyed on a queue row existing; a full refusal rolls back and leaves none. `approval_attempted_at` is written outside the transaction and is what keeps the row in the queue. |
+| **`OFFICE_CONSISTENT` was unreachable** | Claims were loaded office-scoped, so a foreign claim dropped out of the checklist and surfaced only as an unexplained unbalanced total. Loaded by batch now, judged per claim, and redacted so naming it discloses nothing. |
+| **`NO_BLOCKING_PREFLIGHT` failed open** | A confirmed ClaimNum absent from `snapshot.candidates` gave `blockers = []` and the check PASSED. Absence read as clean — the module's recurring defect shape. The candidate's existence is now required by `SNAPSHOT_CURRENT` and re-asserted here. |
+| **Force re-match on a queued claim 500'd** | After the Open Dental read, on the new CHECK. Refused with `CLAIM_ON_POSTING_PLAN` before any chart is touched, on both the match and the confirm paths. |
+| **`labels.ts` described a drift test that did not exist** | It does now — and on its first run it caught the client failing **OPEN** on an unknown slug, the exact opposite of the header's promise. The client mirrors the full verdict map rather than a blocking set. |
 
 ---
 
@@ -434,10 +528,19 @@ Each was logged in the #88 or #89 review and is fixed here.
 
 ## 11. Staging validation
 
-The **negative walk**, which is the acceptance for staging:
+The **negative walk**, which is the acceptance for staging.
+
+> **Which remittance.** This is the **Delta batch Beau uploaded in the Slice 5
+> walk** — a real 835 whose two claims are `no_candidate` (the fixture PatNums do
+> not exist in that database) and which Beau marked reviewed during the 6a walk.
+> It is NOT one of the seeder's fixtures: `rcm-seed-fixtures.cjs` now produces
+> confirmed, reviewed claims on purpose, so that a POSTABLE state exists to
+> demonstrate at all. The two coexist in the same tenant and this walk wants the
+> uploaded one.
 
 1. Sign in as an `admin` or `office` user and open **/rcm → Remittances**.
-2. Open the Delta batch (both claims `no_candidate`, both reviewed).
+2. Open the **Delta batch from the Slice 5 upload** — both claims
+   `no_candidate`, both reviewed.
 3. The approval checklist shows **both claims withheld**, each failing
    `MATCH_CONFIRMED` — "match is no_candidate" — with the fix under it.
 4. Press **Approve**. Expect an honest refusal listing both claims and their
@@ -455,7 +558,22 @@ SELECT action, resource_type, resource_id, result, office, user_id, ts
  ORDER BY ts DESC LIMIT 5;                          -- one CREATE / ERROR row
 ```
 
-6. Back on the list, the remittance shows **`claims_withheld`** as an obligation.
+6. Back on the list, the remittance is **still there**, showing
+   **`claims_withheld`** as an obligation. This is the step that would have
+   failed before review: the refusal rolled back, nothing was queued, and the
+   remittance dropped out of the default view in the same breath as telling its
+   owner it needed work. `approval_attempted_at` is what keeps it:
+
+```sql
+SELECT check_number, approval_attempted_at, approval_attempted_by
+  FROM rcm_payment_batches WHERE office_id = 'roland';   -- stamped, despite the rollback
+```
+
+7. For the POSITIVE side, open one of the seeded fixture remittances instead:
+   Roland's third claim is confirmed, reviewed and postable with nobody having
+   approved it, so the checklist shows a live button and the list shows
+   `claims_awaiting_approval`. Valley's second claim is the recoupment and is
+   permanently withheld on `NOT_RECOUPMENT`.
 
 The **positive path** (confirmed + reviewed → queued) is proven by the route
 tests and by the seeded screenshot until 6c's gated end-to-end run on the

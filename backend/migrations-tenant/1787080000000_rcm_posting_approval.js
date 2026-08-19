@@ -39,7 +39,21 @@
  *    6b gate at all, so the exemption opens nothing today; it is here so 6d does
  *    not have to drop and rebuild the constraint that protects everything else.
  *
- * 3. A CHECK that a queued claim is a CONFIRMED one
+ * 3. `rcm_payment_batches.approval_attempted_at` / `approval_attempted_by`
+ *
+ *    THE RECORD THAT SOMEBODY TRIED. Added in review, and it fixes a real hole:
+ *    a wholly-refused approve ROLLS BACK, so it left no queue row — and
+ *    `claims_withheld` fired only when a queue row existed. A biller who pressed
+ *    Approve, was told "nothing here can be posted, and here is why", and went
+ *    back to the list then found the remittance GONE from the default view,
+ *    because with nothing queued no obligation fired.
+ *
+ *    That is the crying-wolf rule failing in the opposite direction: silence
+ *    where somebody definitely owes an action. The stamp is written OUTSIDE the
+ *    gate's transaction precisely because the interesting case is the one that
+ *    rolled back.
+ *
+ * 4. A CHECK that a queued claim is a CONFIRMED one
  *
  *    `od_claim_num` is meaningful only in the confirmed state (the Slice 6a
  *    migration makes that a CHECK in both directions), and every queue line
@@ -68,7 +82,7 @@
 const APP_ROLE = process.env.AUDIT_APP_ROLE || 'carein_app';
 
 /** Tables this migration touches. Used only by the grant re-assertion below. */
-const TOUCHED_TABLES = ['rcm_claims', 'rcm_posting_queue_line'];
+const TOUCHED_TABLES = ['rcm_claims', 'rcm_posting_queue_line', 'rcm_payment_batches'];
 
 /**
  * @param {MigrationBuilder} pgm
@@ -124,14 +138,34 @@ exports.up = (pgm) => {
     name: 'rcm_claims_office_queue_idx',
   });
 
-  // ── 2. One claimproc, one ordinary adjudication ───────────────────────────
+  // ── 2. Somebody tried to approve this remittance ──────────────────────────
+  pgm.addColumns('rcm_payment_batches', {
+    /**
+     * When a human last pressed Approve on this remittance — WHETHER OR NOT
+     * anything was queued.
+     *
+     * `approved_at` on the queue row records a success. This records the
+     * ATTEMPT, which is the fact the worklist needs: a refused approve is
+     * exactly the moment a claim becomes withheld rather than merely not-ready,
+     * and without it the remittance silently left the needs-attention view at
+     * the instant its owner was told it needed work.
+     */
+    approval_attempted_at: { type: 'timestamptz' },
+    approval_attempted_by: { type: 'text', references: 'rcm_user_map', onDelete: 'RESTRICT' },
+  });
+  pgm.addConstraint('rcm_payment_batches', 'rcm_payment_batches_approval_attempt_check', {
+    check: `(approval_attempted_at IS NULL AND approval_attempted_by IS NULL)
+            OR (approval_attempted_at IS NOT NULL AND approval_attempted_by IS NOT NULL)`,
+  });
+
+  // ── 3. One claimproc, one ordinary adjudication ───────────────────────────
   pgm.createIndex('rcm_posting_queue_line', ['office_id', 'od_claim_proc_num'], {
     name: 'rcm_posting_queue_line_claimproc_unique',
     unique: true,
     where: 'is_supplemental = false',
   });
 
-  // ── 3. Grants, re-asserted ────────────────────────────────────────────────
+  // ── 4. Grants, re-asserted ────────────────────────────────────────────────
   // Column additions inherit their table's grants, so this is a no-op on any
   // database that ran the Slice 1 migration. It is here so that is provable
   // rather than assumed, and it skips with a NOTICE when the role is absent
@@ -170,6 +204,8 @@ exports.down = (pgm) => {
   pgm.dropIndex('rcm_posting_queue_line', ['office_id', 'od_claim_proc_num'], {
     name: 'rcm_posting_queue_line_claimproc_unique',
   });
+  pgm.dropConstraint('rcm_payment_batches', 'rcm_payment_batches_approval_attempt_check');
+  pgm.dropColumns('rcm_payment_batches', ['approval_attempted_at', 'approval_attempted_by']);
   pgm.dropConstraint('rcm_claims', 'rcm_claims_approved_is_confirmed_check');
   pgm.dropConstraint('rcm_claims', 'rcm_claims_approval_check');
   pgm.dropIndex('rcm_claims', ['office_id', 'posting_queue_id'], {

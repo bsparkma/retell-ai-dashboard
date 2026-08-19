@@ -172,6 +172,9 @@ function remittance(over: Record<string, unknown> = {}) {
     reviewReasonCount: 0,
     unmatchedClaimCount: 1,
     queuedClaimCount: 0,
+    // Slice 6b: null = nobody has pressed Approve on this remittance yet.
+    approvalAttemptedAt: null,
+    approvalAttemptedBy: null,
     upload: {
       uploadId: "u-1",
       filename: "delta_fixture_multiclaim.edi",

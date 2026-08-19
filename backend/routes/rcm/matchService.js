@@ -417,6 +417,29 @@ async function runClaimMatch(
     err.code = 'CLAIM_NOT_FOUND';
     throw err;
   }
+  /*
+   * A CLAIM ON A POSTING PLAN CANNOT BE RE-MATCHED — and this used to be a 500.
+   *
+   * A forced re-run NULLs `od_claim_num` and sets the status off `confirmed`.
+   * Slice 6b added `rcm_claims_approved_is_confirmed_check`, so on an APPROVED
+   * claim that UPDATE is refused by the database — and the refusal arrived as
+   * INTERNAL_ERROR, after the Open Dental read had already happened. A chart
+   * read for an operation that could never have completed.
+   *
+   * Refused here, before the transport is even resolved. It is not a permission
+   * matter and not a race: the claim is on a plan somebody authorised, and the
+   * ClaimProcNums on that plan are the ones 6c will post against. Releasing it
+   * needs the plan released first, which is 6c's to build.
+   */
+  if (claim.postingQueueId) {
+    const err = new Error(
+      'This claim is on a posting plan — it cannot be re-matched until the plan is released'
+    );
+    err.httpStatus = 409;
+    err.code = 'CLAIM_ON_POSTING_PLAN';
+    throw err;
+  }
+
   if (claim.odMatchStatus === 'confirmed') {
     if (!force) {
       const err = new Error('This claim already has a confirmed Open Dental match');
@@ -777,6 +800,23 @@ async function confirmMatch(req, office, claimId, odClaimNum, actor) {
           };
         }
         await client.query('ROLLBACK');
+        /*
+         * A DIFFERENT ClaimNum on a QUEUED claim is a different refusal.
+         *
+         * "Release that first" is honest advice on an ordinary confirmed claim
+         * and impossible advice on an approved one: the plan holds this claim's
+         * ClaimProcNums and `rcm_claims_approved_is_confirmed_check` will not
+         * let the linkage move while it does. Saying the reachable thing beats
+         * saying the tidy thing.
+         */
+        if (row.posting_queue_id) {
+          const err = new Error(
+            `This claim is on a posting plan against Open Dental claim ${existing} — the plan must be released before it can point anywhere else`
+          );
+          err.httpStatus = 409;
+          err.code = 'CLAIM_ON_POSTING_PLAN';
+          throw err;
+        }
         const err = new Error(
           `This claim is already linked to Open Dental claim ${existing} — release that first`
         );

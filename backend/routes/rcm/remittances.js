@@ -88,6 +88,13 @@ const BATCH_COLUMNS = [
    * fixed at claim level. A whole-check takeback deserves to be named.
    */
   'flags',
+  /*
+   * Slice 6b. WHETHER SOMEBODY HAS PRESSED APPROVE, whatever came of it — the
+   * fact that turns "this claim is not ready" into "this claim was withheld".
+   * See attentionFor.
+   */
+  'approval_attempted_at',
+  'approval_attempted_by',
   'notes',
   'created_by',
   'created_at',
@@ -148,11 +155,23 @@ function parseBound(raw, fallback, max) {
  *   claims_awaiting_approval  an APPROVER owes an action — the work is done and
  *                             somebody with posting permission has not pressed
  *                             the button.
- *   claims_withheld           an approve ran and left a claim out. SOMEBODY owes
- *                             a fix, or a manual disposition. This can only fire
- *                             after an approval exists, which is what keeps it
- *                             from crying wolf at a biller who has finished
- *                             everything the screen lets her do.
+ *   claims_withheld           an approve RAN and left a claim out. SOMEBODY owes
+ *                             a fix, or a manual disposition. It can only fire
+ *                             after somebody has actually pressed the button,
+ *                             which is what keeps it from crying wolf at a
+ *                             biller who has finished everything the screen
+ *                             lets her do.
+ *
+ *                             "Ran" means ATTEMPTED, not "produced a queue row".
+ *                             The first version keyed on the queue existing, and
+ *                             a wholly-refused approve rolls back — so pressing
+ *                             Approve, being told "nothing here can be posted
+ *                             and here is why", and going back to the list made
+ *                             the remittance VANISH from the default view. The
+ *                             same crying-wolf rule, failing the other way:
+ *                             silence at the exact moment somebody was told they
+ *                             owed work. `approval_attempted_at` is the stamp
+ *                             that survives the rollback.
  *   claims_queued             an OBSERVATION. The system owes the next step and
  *                             no human does; it becomes an obligation again only
  *                             when 6c fails a row and has somewhere to say so.
@@ -165,8 +184,9 @@ function parseBound(raw, fallback, max) {
  * @param {{ status: string, flags?: string[] }} batch
  * @param {ReadonlyArray<{ needsReviewReasons: string[], odMatchStatus: string,
  *                         reviewedAt: string|null, postingQueueId: string|null }>} claims
- * @param {{ hasQueue?: boolean }} [approval] whether a posting plan already
- *   exists for this remittance — the fact that turns "not ready" into "withheld"
+ * @param {{ hasQueue?: boolean, attempted?: boolean }} [approval] whether an
+ *   approval has been ATTEMPTED on this remittance (or produced a plan) — the
+ *   fact that turns "not ready yet" into "withheld"
  * @returns {{ needsAttention: boolean, reasons: string[], observations: string[] }}
  */
 function attentionFor(batch, claims, approval = {}) {
@@ -208,13 +228,18 @@ function attentionFor(batch, claims, approval = {}) {
     }
     /*
      * A claim is WITHHELD, rather than merely not ready, once an approval has
-     * actually run on this remittance and left it out. Before that there is
+     * actually been RUN on this remittance and left it out. Before that there is
      * nothing to be withheld from: an unapprovable claim that a biller has
      * reviewed with "the carrier owes a corrected EOB" is finished work, and
      * calling it an obligation is exactly the false alarm this predicate was
      * rewritten to stop raising.
+     *
+     * `attempted` OR `hasQueue`, not just the queue: a wholly-refused approve
+     * writes no plan, and keying on the plan alone dropped the remittance out of
+     * the view in the same breath as telling its owner it needed work.
      */
-    if (approval.hasQueue && unqueued.some((c) => !approvalGate.looksApprovable(c, batchFlags))) {
+    const approvalRan = approval.attempted === true || approval.hasQueue === true;
+    if (approvalRan && unqueued.some((c) => !approvalGate.looksApprovable(c, batchFlags))) {
       reasons.push('claims_withheld');
     }
   }
@@ -255,7 +280,10 @@ function attentionFor(batch, claims, approval = {}) {
 /** Map a batch row + its claims to the list/detail wire shape. */
 function toBatchWire(batch, claims, source, actors, approval = {}) {
   const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
-  const attention = attentionFor({ status: batch.status, flags: batchFlags }, claims, approval);
+  const attention = attentionFor({ status: batch.status, flags: batchFlags }, claims, {
+    ...approval,
+    attempted: batch.approval_attempted_at != null,
+  });
   const claimTotalCents = claims.reduce((sum, c) => sum + c.totalPaidCents, 0);
   const createdBy = batch.created_by ? actors[batch.created_by] : null;
 
@@ -312,6 +340,15 @@ function toBatchWire(batch, claims, source, actors, approval = {}) {
     unmatchedClaimCount: claims.filter((c) => c.odMatchStatus !== 'confirmed').length,
     /** How many claims a human has approved into a posting plan. */
     queuedClaimCount: claims.filter((c) => c.postingQueueId).length,
+    /**
+     * When somebody last pressed Approve, whatever came of it. Null means
+     * nobody has — which is why a claim that cannot be posted is "not ready"
+     * rather than "withheld".
+     */
+    approvalAttemptedAt: iso(batch.approval_attempted_at),
+    approvalAttemptedBy: batch.approval_attempted_by
+      ? (actors[batch.approval_attempted_by] || {}).displayName || batch.approval_attempted_by
+      : null,
   };
 }
 
@@ -546,8 +583,8 @@ router.get(
       // ordering need. The full BATCH_COLUMNS read happens for the page alone.
       const [all, scan] = await Promise.all([
         pool.query(
-          `SELECT batch_id, status, flags FROM rcm_payment_batches WHERE office_id = $1 ` +
-            `ORDER BY deposit_date DESC NULLS LAST, created_at DESC`,
+          `SELECT batch_id, status, flags, approval_attempted_at FROM rcm_payment_batches ` +
+            `WHERE office_id = $1 ORDER BY deposit_date DESC NULLS LAST, created_at DESC`,
           [office]
         ),
         attentionScan(pool, office),
@@ -566,7 +603,10 @@ router.get(
         needsAttention: attentionFor(
           { status: row.status, flags: Array.isArray(row.flags) ? row.flags : [] },
           scan.get(row.batch_id) || [],
-          { hasQueue: queued.has(row.batch_id) }
+          {
+            hasQueue: queued.has(row.batch_id),
+            attempted: row.approval_attempted_at != null,
+          }
         ).needsAttention,
       }));
 
@@ -603,6 +643,7 @@ router.get(
       ]);
       const actors = await describeActors(pool, [
         ...ordered.map((b) => b.created_by),
+        ...ordered.map((b) => b.approval_attempted_by),
         ...[...uploads.values()].map((u) => u.uploadedByKey),
       ]);
 
@@ -702,6 +743,7 @@ router.get(
 
       const actors = await describeActors(pool, [
         batch.created_by,
+        batch.approval_attempted_by,
         upload && upload.uploadedByKey,
         ...claims.map((c) => c.odMatchedByKey),
         ...claims.map((c) => c.reviewedByKey),

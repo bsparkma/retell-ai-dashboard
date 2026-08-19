@@ -73,7 +73,7 @@ mkdirSync(tmpDir, { recursive: true });
  */
 const HEIGHT = {
   "01-remittance-list": 620,
-  "02-remittance-detail": 1010,
+  "02-remittance-detail": 1900,
   "03-claim-match": 1000,
   "04-no-candidate": 700,
   "approve-01-checklist": 1330,

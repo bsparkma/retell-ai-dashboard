@@ -81,6 +81,70 @@ const JSONB_COLUMNS = new Set([
   'row_details',
 ]);
 
+/**
+ * The UNIQUE INDEXES this fake enforces on a plain INSERT.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY A FAKE ENFORCES CONSTRAINTS AT ALL
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Because a route's REFUSAL PATH is code, and code nothing exercises is code
+ * that does not work. Slice 6b's approval gate translates a `23505` on the
+ * claimproc index into a named 409; without the index here that translation
+ * could only be reached against a live Postgres, so in the default suite it
+ * would have been decorative — and the defect it fixes (a constraint doing its
+ * job, surfacing to a biller as INTERNAL_ERROR) is exactly the sort that hides.
+ *
+ * The error is shaped like pg's: `code` and `constraint` are what the route
+ * switches on, so a translation that keyed on the message would still fail here.
+ *
+ * `where` mirrors the index's own partial predicate. The real index is
+ * `WHERE is_supplemental = false` — a supplemental deliberately MAY reuse a
+ * claimproc (that is 6d's recoupment path), and a fake that refused it would
+ * fail a route that works.
+ *
+ * @type {Record<string, Array<{ name: string, columns: string[], where?: (row: any) => boolean }>>}
+ */
+const UNIQUE_INDEXES = Object.freeze({
+  rcm_posting_queue_line: [
+    {
+      name: 'rcm_posting_queue_line_claimproc_unique',
+      columns: ['office_id', 'od_claim_proc_num'],
+      where: (row) => row.is_supplemental !== true,
+    },
+    {
+      name: 'rcm_posting_queue_line_position_unique',
+      columns: ['queue_id', 'position'],
+    },
+  ],
+  rcm_posting_queue: [
+    { name: 'rcm_posting_queue_office_remittance_unique', columns: ['office_id', 'remittance_key'] },
+  ],
+});
+
+/** Throw a pg-shaped unique violation if `row` collides with an existing one. */
+function assertUniqueIndexes(table, row, existing) {
+  for (const index of UNIQUE_INDEXES[table] || []) {
+    if (index.where && !index.where(row)) continue;
+    if (index.columns.some((c) => row[c] == null)) continue;
+    const clash = existing.some(
+      (r) =>
+        (!index.where || index.where(r)) &&
+        index.columns.every((c) => String(r[c]) === String(row[c]))
+    );
+    if (!clash) continue;
+    const err = new Error(
+      `duplicate key value violates unique constraint "${index.name}"`
+    );
+    // The shape routes switch on — see approvalGate.asClaimprocConflict.
+    err.code = '23505';
+    err.constraint = index.name;
+    err.detail = `Key (${index.columns.join(', ')})=(${index.columns
+      .map((c) => row[c])
+      .join(', ')}) already exists.`;
+    throw err;
+  }
+}
+
 /** Parse a jsonb column's bound text, exactly as pg does on the way back out. */
 function coerceJsonb(col, value) {
   if (!JSONB_COLUMNS.has(col) || typeof value !== 'string') return value;
@@ -167,6 +231,18 @@ class FakeRcmDb {
           const [, col, list] = m;
           const allowed = [...list.matchAll(/'([^']*)'/g)].map((x) => x[1]);
           return (r) => allowed.includes(r[col]);
+        }
+        // `is_supplemental = false` — an UNQUOTED literal, which the quoted
+        // form above does not match. The approval gate's planned-claimproc
+        // probe mirrors the partial unique index's own predicate, so this is
+        // how the fake expresses the same partiality.
+        if ((m = term.match(/^(\w+) = (true|false)$/i))) {
+          const [, col, literal] = m;
+          const want = literal.toLowerCase() === 'true';
+          // `!== true` rather than `=== false`: pg treats a NULL boolean as not
+          // matching either literal, and the index's predicate is written the
+          // permissive way round for exactly that reason.
+          return (r) => (want ? r[col] === true : r[col] !== true);
         }
         // `era_file_key = ANY($2::text[])` — era.js's list joins a page of
         // uploads back to the batches they produced.
@@ -321,6 +397,7 @@ class FakeRcmDb {
       cols.forEach((c, i) => {
         row[c] = coerceJsonb(c, literalOrParam(values[i], params));
       });
+      assertUniqueIndexes(m[1], row, this.table(m[1]));
       this.table(m[1]).push(row);
 
       const returning = m[3].match(/RETURNING (.+)$/i);
