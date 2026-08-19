@@ -694,6 +694,7 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 | Per-office OD proof and validation | [docs/PER_LOCATION_OD_VALIDATION.md](docs/PER_LOCATION_OD_VALIDATION.md) |
 | OD cloud API contract (authoritative) | [docs/OD_API_CONTRACT.md](docs/OD_API_CONTRACT.md) |
 | Mango ingestion + transcription | [docs/MANGO_TRANSCRIPTION.md](docs/MANGO_TRANSCRIPTION.md) |
+| RCM approval gate + the D-11 blocking/annotating split | [docs/RCM_APPROVAL_GATE.md](docs/RCM_APPROVAL_GATE.md) |
 | Audit log schema | [docs/AUDIT.md](docs/AUDIT.md) |
 | Health probes, Azure Monitor alerts, reading Log Analytics | [docs/PROBES_AND_ALERTS.md](docs/PROBES_AND_ALERTS.md) |
 | Secrets and Key Vault | [docs/SECRETS.md](docs/SECRETS.md) |

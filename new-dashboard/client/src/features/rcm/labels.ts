@@ -94,6 +94,101 @@ export const FAILURE_LABELS: Record<string, string> = {
   extraction_failed: "Extraction failed",
 };
 
+
+/**
+ * Line flags — `rcm_procedure_lines.flags`.
+ *
+ * The workbench had its own copy of this in `format.ts`, three flags out of
+ * date since Slice 5.5. One map, here, beside the others.
+ */
+export const LINE_FLAG_LABELS: Record<string, string> = {
+  downcode: "Downcoded",
+  bundled: "Bundled",
+  denied: "Denied",
+  partial_pay: "Partial payment",
+  unexplained_adj: "Unexplained adjustment",
+  frequency_limit: "Frequency limit",
+  not_covered: "Not covered",
+  pre_auth_required: "Pre-auth required",
+  // ── Slice 5.5 ──
+  unreadable_amount: "An amount on this line could not be read",
+  partial_adjustment_segment: "Part of an adjustment on this line could not be read",
+  allowed_mismatch: "The stated allowed amount disagrees with the adjustments",
+};
+
+/**
+ * D-11: which reasons BLOCK an approval, and which merely annotate.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A MIRROR, AND THE TEST IS WHAT MAKES IT ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The authority is `backend/services/rcm/rcmVocabulary.js` REASON_GATE, and the
+ * gate that actually withholds a claim reads it there. This copy exists so a
+ * chip can be coloured without a round trip, and `rcm-labels.test.ts` reads the
+ * backend source and fails if the two disagree about a single slug.
+ *
+ * A screen showing a reason in amber while the gate lets it through — or the
+ * reverse — is the honest-states rule failing in the most expensive place there
+ * is, so "these must not drift" is enforced rather than hoped for.
+ *
+ * FAIL CLOSED, like the backend: anything not named here reads as blocking.
+ */
+export const BLOCKING_REASONS = new Set<string>([
+  // ERA claim review reasons
+  "reversal_not_postable",
+  "secondary_payer_adjudication",
+  "prior_payer_payment_on_primary_claim",
+  "unparseable_cas",
+  "no_service_lines",
+  "line_total_mismatch",
+  "unstorable_adjustment_group",
+  "patient_resp_mismatch",
+  "unreadable_amount",
+  "partial_adjustment_segment",
+  "claim_line_allowed_mismatch",
+  "totals_unreconciled",
+  // EOB claim review reasons
+  "low_confidence",
+  "no_procedures_extracted",
+  "paid_total_mismatch",
+  "billed_total_mismatch",
+  "negative_amount",
+  "no_claims_extracted",
+  "batch_paid_total_mismatch",
+  // Remittance flags
+  "negative_total_payment",
+  "no_claims_in_remittance",
+  "claim_total_mismatch",
+  "envelope_counts_mismatch",
+  "envelope_incomplete",
+]);
+
+/**
+ * Does this reason stop a claim being approved?
+ *
+ * `uncertain_line:<N>` is handled explicitly — the parameterised reason can
+ * never live in a set, and a line the model was unsure about is money read with
+ * low confidence.
+ */
+export function isBlockingReason(reason: string): boolean {
+  if (/^uncertain_line:[1-9][0-9]*$/.test(reason)) return true;
+  return BLOCKING_REASONS.has(reason);
+}
+
+/**
+ * Chip colours for a review reason or a remittance flag.
+ *
+ * AMBER means this will withhold the claim; GREY means it is true and does not
+ * change what to post. BOTH ARE ALWAYS SHOWN — the split decides the weight, it
+ * never decides visibility. A reason that vanished would make a proposal look
+ * cleaner than it is, which is the failure the whole vocabulary exists to
+ * prevent.
+ */
+export function reasonTone(reason: string): string {
+  return isBlockingReason(reason)
+    ? "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+    : "bg-muted text-muted-foreground";
+}
 /**
  * A vocabulary member in words, falling back to the slug.
  *

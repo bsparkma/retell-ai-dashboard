@@ -221,9 +221,35 @@ async function auditRcmDenial(req, resourceType, resourceId, extra) {
   }
 }
 
+/**
+ * A uuid, or nothing.
+ *
+ * Every `:id` in this module is a uuid we minted. Postgres refuses a
+ * non-uuid literal in a `uuid` comparison with `invalid input syntax for type
+ * uuid`, which `h()` turned into a 500 INTERNAL_ERROR — so probing
+ * `/api/rcm/claims/../../etc` and probing a real-looking id that does not
+ * exist produced two DIFFERENT answers, and the shape of the error told the
+ * prober which was which.
+ *
+ * A malformed id is simply not found. `FakeRcmDb`'s fixtures use real uuids so
+ * the tests exercise this rather than running on values production could never
+ * mint.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isUuid(value) {
+  return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+/** RFC 4122 shape, any version — Postgres accepts the same set. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+
 module.exports = {
   OFFICES,
   requireOffice,
+  isUuid,
   auditRcmDenial,
   actorEmail,
   h,

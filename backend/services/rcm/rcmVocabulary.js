@@ -263,6 +263,188 @@ const ALLOWED_SOURCES = Object.freeze([
  */
 const ADJUSTMENT_SCOPES = Object.freeze(['claim', 'line']);
 
+// ─── D-11: which reasons BLOCK an approval, and which merely annotate ───────
+
+/**
+ * THE GATE MAP. One frozen fact per vocabulary member: does it stop a posting,
+ * or does it only tell a biller something true?
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE PRINCIPLE (docs/RCM_ERA_FIDELITY.md, ratified as D-11)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A reason BLOCKS when acting on the proposal could move the WRONG AMOUNT of
+ * money, or money that should not move at all. It ANNOTATES when it tells a
+ * biller something true that does not change what to post.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS DATA AND NOT AN `if`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Exactly two consumers read it, and they must never disagree: the approval
+ * gate (a blocking reason withholds the claim) and the workbench (annotating
+ * renders grey, blocking renders amber — both stay visible, always). A screen
+ * that showed a reason in amber while the gate let it through, or the reverse,
+ * would be the honest-states rule failing in the most expensive place there is.
+ *
+ * `batchStatusFor` in eraIngest.js is deliberately NOT a consumer. It still
+ * holds a batch `open` when anything at all is flagged, because `open` means
+ * "something on this file was flagged" — a different question from "may this
+ * claim be posted". Changing what `ready` promises is a separate decision.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ONE FLAT MAP OVER THREE VOCABULARIES
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Claim review reasons, remittance flags and line flags all reach the gate, and
+ * two of the slugs (`unreadable_amount`, `partial_adjustment_segment`) appear
+ * in more than one vocabulary meaning the same thing. One map, one verdict per
+ * slug, and `rcmVocabulary.test.js` asserts every member of all three appears
+ * here — so the fail-closed default below can never fire silently.
+ *
+ * @type {Readonly<Record<string, 'blocking'|'annotating'>>}
+ */
+const REASON_GATE = Object.freeze({
+  // ── ERA claim review reasons ──────────────────────────────────────────────
+  /** A takeback. The negative-supplemental path is irreversible in OD (G10). */
+  reversal_not_postable: 'blocking',
+  /** A denial is a correct, complete adjudication with nothing to post. */
+  claim_denied: 'annotating',
+  /** COB: what the other payer already did changes what we should post. */
+  secondary_payer_adjudication: 'blocking',
+  /** The file contradicts itself about who paid first. */
+  prior_payer_payment_on_primary_claim: 'blocking',
+  /** Money in a CAS we could not account for. */
+  unparseable_cas: 'blocking',
+  /** The payer changed a code and we recorded both. The money is not uncertain. */
+  procedure_downcoded: 'annotating',
+  /** Nothing to post, and the file says there should be. */
+  no_service_lines: 'blocking',
+  /** Our lines do not reach the payer's own claim total. */
+  line_total_mismatch: 'blocking',
+  /** An adjustment could not be stored at all — money is unrepresented. */
+  unstorable_adjustment_group: 'blocking',
+  /** WHERE a deductible was reported is a display fact; the amount is correct. */
+  claim_level_adjustments_present: 'annotating',
+  /** Two stored numbers disagree about what the patient owes. */
+  patient_resp_mismatch: 'blocking',
+  /**
+   * D-11's one contested call, ruled ANNOTATING.
+   *
+   * Since A3 we always post the DERIVED write-off; the reported AMT*B6 is
+   * evidence and is never the figure written to Open Dental. So a disagreement
+   * says the payer's file is internally inconsistent — not that the number we
+   * would post is wrong — and `line_total_mismatch` independently catches the
+   * case where our own arithmetic is actually wrong. It fires on 7 of the 13
+   * original fixtures, so this single verdict is most of what the split buys.
+   */
+  allowed_amount_mismatch: 'annotating',
+  /** A number we could not read; whatever it belonged to is wrong. */
+  unreadable_amount: 'blocking',
+  /** Part of a segment lost — some money is unrepresented. */
+  partial_adjustment_segment: 'blocking',
+  /** Two numbers disagree about the allowed total. */
+  claim_line_allowed_mismatch: 'blocking',
+  /** The sums are not trustworthy, by construction. */
+  totals_unreconciled: 'blocking',
+
+  // ── EOB claim review reasons ──────────────────────────────────────────────
+  // The same principle, applied to a MODEL'S READING rather than to a parse:
+  // absence of an IDENTIFIER annotates (identity is settled by the human's own
+  // confirmed match, which the gate demands anyway); absence of confidence in
+  // an AMOUNT blocks.
+  /** The reader was unsure about the whole document; every amount is suspect. */
+  low_confidence: 'blocking',
+  missing_npi: 'annotating',
+  missing_dob: 'annotating',
+  missing_check_number: 'annotating',
+  missing_subscriber_id: 'annotating',
+  missing_payer: 'annotating',
+  missing_claim_number: 'annotating',
+  missing_patient_name: 'annotating',
+  /** Nothing to post, and the document says there should be. */
+  no_procedures_extracted: 'blocking',
+  /** The procedure payments do not sum to the claim total. */
+  paid_total_mismatch: 'blocking',
+  /** The charges do not sum — and billed is what 6c re-verifies against. */
+  billed_total_mismatch: 'blocking',
+  /** A date, not an amount. DateCP is not writable anyway (G2). */
+  invalid_service_date: 'annotating',
+  service_date_in_future: 'annotating',
+  /** "Most often a misread column" — and a real one is the 6d recoupment path. */
+  negative_amount: 'blocking',
+  no_claims_extracted: 'blocking',
+  batch_paid_total_mismatch: 'blocking',
+
+  // ── Remittance flags ──────────────────────────────────────────────────────
+  /** Provider-level money acted on by nobody here. It does not make claims wrong. */
+  plb_adjustments_present: 'annotating',
+  /** The whole remittance is a takeback. */
+  negative_total_payment: 'blocking',
+  /** BPR04 = NON is a legitimate zero-dollar remittance. The claims are correct. */
+  no_payment_made: 'annotating',
+  /** Nothing to propose, and the file says there should be. */
+  no_claims_in_remittance: 'blocking',
+  /** Claim payments do not reach the check total. */
+  claim_total_mismatch: 'blocking',
+  /** The file may be TRUNCATED — claims may be missing entirely. */
+  envelope_counts_mismatch: 'blocking',
+  envelope_incomplete: 'blocking',
+  /** Each ST/SE became its own batch with its own key; nothing is uncertain. */
+  multi_transaction_file: 'annotating',
+
+  // ── Line flags ────────────────────────────────────────────────────────────
+  // Most restate a claim reason one level down; they are listed so the map is
+  // exhaustive over every vocabulary a proposal can carry.
+  downcode: 'annotating',
+  bundled: 'annotating',
+  denied: 'annotating',
+  partial_pay: 'annotating',
+  unexplained_adj: 'annotating',
+  frequency_limit: 'annotating',
+  not_covered: 'annotating',
+  pre_auth_required: 'annotating',
+  /** A3's line-level twin of `allowed_amount_mismatch`, and ruled the same way. */
+  allowed_mismatch: 'annotating',
+});
+
+/**
+ * Does this reason stop a claim being approved?
+ *
+ * FAIL CLOSED: anything not in the map is blocking. A reason added to a
+ * vocabulary without a verdict must halt money, not wave it through — and
+ * `rcmVocabulary.test.js` asserts every vocabulary member IS in the map, so
+ * this default is a backstop rather than a routine path.
+ *
+ * `uncertain_line:<N>` is handled explicitly rather than by the default: the
+ * parameterised reason can never appear in a lookup table, and reaching the
+ * fail-closed branch for it would be an accident that happened to be right.
+ *
+ * @param {unknown} reason
+ * @returns {boolean}
+ */
+function isBlockingReason(reason) {
+  const value = String(reason == null ? '' : reason);
+  // A line the model was unsure about is money read with low confidence.
+  if (UNCERTAIN_LINE_PATTERN.test(value)) return true;
+  return REASON_GATE[value] !== 'annotating';
+}
+
+/**
+ * The blocking members of a list, in the order given, de-duplicated.
+ * @param {ReadonlyArray<unknown>} reasons
+ * @returns {string[]}
+ */
+function blockingReasonsIn(reasons) {
+  /** @type {string[]} */
+  const out = [];
+  for (const reason of reasons || []) {
+    const value = String(reason == null ? '' : reason);
+    if (value && isBlockingReason(value) && !out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Every slug the gate map covers — the exhaustiveness test reads this. */
+const GATED_REASONS = Object.freeze(Object.keys(REASON_GATE));
+
 module.exports = {
   ERA_REVIEW_REASONS,
   EOB_REVIEW_REASONS,
@@ -274,4 +456,8 @@ module.exports = {
   EOB_FAILURE_CODES,
   ALLOWED_SOURCES,
   ADJUSTMENT_SCOPES,
+  REASON_GATE,
+  GATED_REASONS,
+  isBlockingReason,
+  blockingReasonsIn,
 };

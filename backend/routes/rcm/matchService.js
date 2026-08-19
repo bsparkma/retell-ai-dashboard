@@ -129,6 +129,15 @@ const CLAIM_LIST_COLUMNS = [
   'review_note',
   'created_at',
   /*
+   * THE APPROVAL LINKAGE (Slice 6b). Cheap scalars, deliberately — the list
+   * needs to know THAT a claim was approved into a posting plan, never what the
+   * plan contains. `posting_queue_id` is also what makes a second enqueue
+   * impossible: it is single-valued, so a claim can belong to one plan.
+   */
+  'posting_queue_id',
+  'approved_at',
+  'approved_by',
+  /*
    * A PROJECTION OF THE SNAPSHOT, not the snapshot.
    *
    * The list has to be able to tell "Open Dental had nothing" from "Open Dental
@@ -220,6 +229,10 @@ function toClaimSummary(row) {
     reviewedAt: iso(row.reviewed_at),
     reviewedByKey: row.reviewed_by || null,
     reviewNote: row.review_note || null,
+    /** Non-null ⇒ a human approved this claim into a posting plan (Slice 6b). */
+    postingQueueId: row.posting_queue_id || null,
+    approvedAt: iso(row.approved_at),
+    approvedByKey: row.approved_by || null,
     createdAt: iso(row.created_at),
   };
 }

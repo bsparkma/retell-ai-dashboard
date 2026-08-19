@@ -53,6 +53,7 @@ const PRIMARY_KEYS = Object.freeze({
   rcm_batch_claim_payments: 'batch_claim_payment_id',
   rcm_bank_transactions: 'bank_transaction_id',
   rcm_posting_queue: 'queue_id',
+  rcm_posting_queue_line: 'queue_line_id',
   rcm_remittance_keys: 'remittance_key_id',
   rcm_user_map: 'user_key',
   rcm_activity_events: 'activity_id',
@@ -378,6 +379,26 @@ class FakeRcmDb {
     if ((m = text.match(/^SELECT COUNT\(\*\)::int AS n FROM (\w+) WHERE (.+)$/i))) {
       const rows = this.table(m[1]).filter(this.wherePredicate(m[2], params));
       return { rows: [{ n: rows.length }] };
+    }
+
+    // approvalGate.js: SELECT COALESCE(SUM(col), 0)::bigint AS alias FROM t WHERE …
+    //
+    // Its own shape rather than the generic SELECT below, which would have
+    // projected the literal aggregate expression as a column name and returned
+    // `undefined` — a plan whose header total silently read 0 while its lines
+    // said otherwise. The whole reason this fake refuses unknown SQL is so a
+    // query it cannot really answer fails loudly instead of quietly.
+    if (
+      (m = text.match(
+        /^SELECT COALESCE\(SUM\((\w+)\), 0\)::bigint AS (\w+) FROM (\w+) WHERE (.+)$/i
+      ))
+    ) {
+      const [, col, alias, table, where] = m;
+      const rows = this.table(table).filter(this.wherePredicate(where, params));
+      const total = rows.reduce((n, r) => n + Number(r[col] || 0), 0);
+      // pg hands a bigint back as a STRING; the routes' `num()` is what copes
+      // with that, and a fake returning a number would hide a route that forgot.
+      return { rows: [{ [alias]: String(total) }] };
     }
 
     // eob.js dedup probe: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT <n>

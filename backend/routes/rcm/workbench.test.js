@@ -58,7 +58,7 @@ function seed(db, over = {}) {
   const office = over.office || 'roland';
   db.seed('rcm_payment_batches', [
     {
-      batch_id: over.batchId || 'b-1',
+      batch_id: over.batchId || '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
       office_id: office,
       payer: 'DELTA DENTAL OF ARKANSAS',
       check_number: '830200001',
@@ -80,7 +80,7 @@ function seed(db, over = {}) {
   ]);
   db.seed('rcm_claims', [
     {
-      claim_id: over.claimId || 'c-1',
+      claim_id: over.claimId || 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: office,
       claim_number: '53648',
       check_number: '830200001',
@@ -113,17 +113,21 @@ function seed(db, over = {}) {
   ]);
   db.seed('rcm_batch_claim_payments', [
     {
-      batch_claim_payment_id: 'bcp-1',
-      batch_id: over.batchId || 'b-1',
-      claim_id: over.claimId || 'c-1',
+      batch_claim_payment_id: '5f46bb33-d78e-573d-87a6-bb42a7bd7478',
+      batch_id: over.batchId || '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      claim_id: over.claimId || 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: office,
       position: 1,
+      // What the remittance says this claim moved. It must equal the claim's own
+      // total and the sum of its lines — Slice 6b's gate refuses when the three
+      // disagree, so a fixture that leaves it unset is an inconsistent fixture.
+      paid_cents: 15000,
     },
   ]);
   db.seed('rcm_procedure_lines', [
     {
-      line_id: 'pl-1',
-      claim_id: over.claimId || 'c-1',
+      line_id: 'a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90',
+      claim_id: over.claimId || 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: office,
       position: 1,
       billed_code: 'D0150',
@@ -148,9 +152,9 @@ function seed(db, over = {}) {
   ]);
   db.seed('rcm_procedure_adjustments', [
     {
-      adjustment_id: 'adj-1',
-      procedure_line_id: 'pl-1',
-      claim_id: over.claimId || 'c-1',
+      adjustment_id: 'f448f6a4-77e4-5070-8a44-8fe4968caa77',
+      procedure_line_id: 'a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90',
+      claim_id: over.claimId || 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: office,
       group_code: 'CO',
       reason_code: '45',
@@ -165,7 +169,7 @@ function seed(db, over = {}) {
   ]);
   db.seed('rcm_eob_uploads', [
     {
-      upload_id: 'u-1',
+      upload_id: '57c97173-8178-5976-997e-9de296795b28',
       office_id: office,
       filename: 'delta_fixture_multiclaim.edi',
       file_key: 'tenant/carein/rcm/era/k1.edi',
@@ -192,7 +196,7 @@ function addSecondClaim(db, over = {}) {
   db.seed('rcm_claims', [
     {
       ...first,
-      claim_id: over.claimId || 'c-2',
+      claim_id: over.claimId || 'ae21fad8-8cbb-5424-9780-b30be1cf31c9',
       claim_number: '53712',
       patient_name: 'Sample, Placeholder',
       od_match_status: 'not_run',
@@ -202,11 +206,12 @@ function addSecondClaim(db, over = {}) {
   ]);
   db.seed('rcm_batch_claim_payments', [
     {
-      batch_claim_payment_id: 'bcp-2',
-      batch_id: 'b-1',
-      claim_id: over.claimId || 'c-2',
+      batch_claim_payment_id: 'aa0f152d-3a6e-58aa-aa86-89bbf4b3af17',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      claim_id: over.claimId || 'ae21fad8-8cbb-5424-9780-b30be1cf31c9',
       office_id: first.office_id,
       position: 2,
+      paid_cents: 0,
     },
   ]);
   return db;
@@ -314,7 +319,17 @@ test('a batch held open by a flag is SHOWN as open, but that is not work', async
   });
 });
 
-test('a fully worked remittance leaves the needs-attention view', async () => {
+test('a reviewed, confirmed remittance now owes an APPROVAL (Slice 6b)', async () => {
+  /*
+   * WHAT CHANGED, AND WHY IT IS NOT THE 6a BUG COMING BACK.
+   *
+   * Under Slice 6a this remittance left the queue: a biller had done everything
+   * the screen let her do. Slice 6b gives the screen one more thing to do, so
+   * "confirmed and reviewed and nobody has approved it" is now an outstanding
+   * ACTION rather than a permanent fact — which is the D-12 rule working, not
+   * the crying-wolf failure repeating. The difference is that a human can
+   * discharge this one by pressing a button.
+   */
   const db = seed(new FakeRcmDb());
   Object.assign(db.table('rcm_claims')[0], {
     od_match_status: 'confirmed',
@@ -324,8 +339,43 @@ test('a fully worked remittance leaves the needs-attention view', async () => {
   });
   await withApp({ db }, async (app) => {
     const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.equal(body.remittances[0].needsAttention, true);
+    assert.deepEqual(body.remittances[0].attentionReasons, ['claims_awaiting_approval']);
+    assert.equal(body.needsAttentionCount, 1);
+  });
+});
+
+test('and once it is APPROVED it leaves the view — queued is an observation', async () => {
+  /*
+   * The other half. A queued claim owes nothing to any human: the system owes
+   * the next step. It becomes an obligation again only when 6c fails a row and
+   * has somewhere to say so.
+   */
+  const db = seed(new FakeRcmDb());
+  Object.assign(db.table('rcm_claims')[0], {
+    od_match_status: 'confirmed',
+    od_claim_num: 53648,
+    reviewed_at: new Date(),
+    reviewed_by: 'billing@carein.ai',
+    posting_queue_id: '9a0d5b6c-1111-4111-8111-111111111111',
+    approved_at: new Date(),
+    approved_by: 'billing@carein.ai',
+  });
+  db.seed('rcm_posting_queue', [
+    {
+      queue_id: '9a0d5b6c-1111-4111-8111-111111111111',
+      office_id: 'roland',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      remittance_key: 'K',
+      status: 'approved',
+    },
+  ]);
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     assert.equal(body.remittances[0].needsAttention, false);
     assert.deepEqual(body.remittances[0].attentionReasons, []);
+    assert.ok(body.remittances[0].attentionObservations.includes('claims_queued'));
+    assert.equal(body.remittances[0].queuedClaimCount, 1);
     assert.equal(body.needsAttentionCount, 0);
   });
 });
@@ -360,12 +410,12 @@ test('REVIEWING a flagged, unmatched batch is what clears it — the staging wal
     assert.equal(before.body.needsAttentionCount, 1);
 
     // One of two reviewed: still owed.
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${Q}`, json({ note: 'Downcode is correct.' }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`, json({ note: 'Downcode is correct.' }));
     const half = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     assert.equal(half.body.remittances[0].needsAttention, true, 'one claim still owes a disposition');
 
     // Both reviewed: nothing left that a human can do in this slice.
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-2/review${Q}`, json({ note: 'Carrier owes a corrected EOB.' }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/ae21fad8-8cbb-5424-9780-b30be1cf31c9/review${Q}`, json({ note: 'Carrier owes a corrected EOB.' }));
     const after = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     const r = after.body.remittances[0];
 
@@ -433,7 +483,7 @@ test('an empty office lists honestly rather than erroring', async () => {
 test('the detail carries lines, CARC codes and — newly — RARC descriptions', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/b-1${Q}`);
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`);
     assert.equal(res.status, 200);
 
     const [claim] = res.body.claims;
@@ -460,8 +510,8 @@ test('the detail links to the source document without ever shipping the blob key
   // A key in a response is a key in a browser cache.
   const db = seed(new FakeRcmDb());
   await withApp({ db }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/b-1${Q}`);
-    assert.equal(res.body.remittance.upload.documentUrl, '/api/rcm/uploads/u-1/document?office=roland');
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`);
+    assert.equal(res.body.remittance.upload.documentUrl, '/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document?office=roland');
     assert.ok(!JSON.stringify(res.body).includes('tenant/carein/rcm/era/k1.edi'));
   });
 });
@@ -471,7 +521,7 @@ test("another office's remittance is NOT FOUND, not refused", async () => {
   // cross-office read structurally a miss.
   const db = seed(new FakeRcmDb(), { office: 'valley' });
   await withApp({ db }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/b-1${Q}`);
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`);
     assert.equal(res.status, 404);
     assert.equal(res.body.code, 'REMITTANCE_NOT_FOUND');
   });
@@ -490,7 +540,7 @@ test('a missing office is a 400 before anything is read', async () => {
 test('a match stores candidates and evidence — and changes NOTHING about the linkage', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.equal(res.body.status, 'candidates');
     assert.equal(res.body.snapshot.candidates.length, 1);
@@ -511,7 +561,7 @@ test('a match stores candidates and evidence — and changes NOTHING about the l
 test('the snapshot records what 6c re-verifies against: amounts, line pairs, and when', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     const [candidate] = body.snapshot.candidates;
     // TWO billed figures, and the difference matters: `billedCents` is the LIVE
     // lines' FeeBilled — what 6c re-verifies against — while the header total
@@ -532,7 +582,7 @@ test('no candidate is a STORED outcome, distinct from never having looked', asyn
   // are different facts a biller acts on differently.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: new FakeOd({}) }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.equal(res.body.status, 'no_candidate');
 
@@ -549,7 +599,7 @@ test('an office with no Open Dental connection refuses honestly, and reads nothi
   // than as a failed match — different problems, different fixes.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: null }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.ok([409, 503].includes(res.status), `unexpected ${res.status}`);
     assert.equal(res.body.code, 'OFFICE_NOT_CONNECTED');
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'not_run');
@@ -560,7 +610,7 @@ test('an Open Dental outage is a 502 and leaves the claim un-matched, not no_can
   const db = seed(new FakeRcmDb());
   const od = new FakeOd({ fail: { '/patients': { status: 503, error: 'gateway' } } });
   await withApp({ db, od }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.status, 502);
     assert.equal(res.body.code, 'OD_READ_FAILED');
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'not_run');
@@ -580,11 +630,11 @@ test('matching a claim that does not exist for this office is a 404', async () =
 test('confirming links the claim, the patient and every line, and attributes it', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -606,8 +656,8 @@ test('D-5: the first attributed action CREATES the rcm_user_map row', async () =
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
     assert.equal(db.table('rcm_user_map').length, 0);
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
 
     const rows = db.table('rcm_user_map');
     assert.equal(rows.length, 1);
@@ -623,9 +673,9 @@ test('D-5: the first attributed action CREATES the rcm_user_map row', async () =
 test('D-5: a second action REUSES the row rather than minting another', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${Q}`, json({ note: 'checked' }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`, json({ note: 'checked' }));
     assert.equal(db.table('rcm_user_map').length, 1);
   });
 });
@@ -645,8 +695,8 @@ test('D-5: an IMPORTED row for the same person is reused under its legacy key', 
     },
   ]);
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
 
     assert.equal(db.table('rcm_user_map').length, 1);
     assert.equal(db.table('rcm_claims')[0].od_matched_by, 'u_7f3a');
@@ -661,7 +711,7 @@ test('confirming without a match first is refused — the ClaimNum must have bee
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(res.status, 409);
@@ -673,11 +723,11 @@ test('confirming without a match first is refused — the ClaimNum must have bee
 test('confirming a ClaimNum that was not among the candidates is refused', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 999999 })
     );
     assert.equal(res.status, 409);
@@ -689,7 +739,7 @@ test('confirming a ClaimNum that was not among the candidates is refused', async
 test('a missing or nonsense odClaimNum is a 400, not a NULL write', async () => {
   await withApp({ db: seed(new FakeRcmDb()), od: odFixture() }, async (app) => {
     for (const body of [{}, { odClaimNum: 'abc' }, { odClaimNum: 0 }, { odClaimNum: -1 }]) {
-      const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json(body));
+      const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json(body));
       assert.equal(res.status, 400, JSON.stringify(body));
       assert.equal(res.body.code, 'INVALID_CLAIM_NUM');
     }
@@ -700,15 +750,15 @@ test('re-running a match over a CONFIRMED claim is refused unless explicitly for
   // Re-run allowed explicitly, never a silent overwrite of somebody's decision.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
 
-    const blocked = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const blocked = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(blocked.status, 409);
     assert.equal(blocked.body.code, 'MATCH_ALREADY_CONFIRMED');
     assert.equal(db.table('rcm_claims')[0].od_claim_num, 53648, 'the decision survived');
 
-    const forced = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    const forced = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({ force: true }));
     assert.equal(forced.status, 200);
     // A forced re-run un-confirms: the linkage was derived from a snapshot that
     // no longer exists, so keeping it would leave a ClaimNum nobody stands behind.
@@ -725,7 +775,7 @@ test('marking reviewed is attributed and has NO Open Dental effect', async () =>
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/review${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`,
       json({ note: 'Carrier owes a corrected EOB — nothing to post.' })
     );
     assert.equal(res.status, 200);
@@ -752,7 +802,7 @@ test('an over-long note is refused rather than truncated', async () => {
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/review${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`,
       json({ note: 'x'.repeat(2001) })
     );
     assert.equal(res.status, 400);
@@ -763,7 +813,7 @@ test('an over-long note is refused rather than truncated', async () => {
 test('an empty note stores NULL rather than an empty string', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${Q}`, json({ note: '   ' }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`, json({ note: '   ' }));
     assert.equal(db.table('rcm_claims')[0].review_note, null);
   });
 });
@@ -773,10 +823,10 @@ test('an empty note stores NULL rather than an empty string', async () => {
 test('a batch match reports each claim individually', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.matched, [
-      { claimId: 'c-1', status: 'candidates', candidateCount: 1, ambiguous: false },
+      { claimId: 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d', status: 'candidates', candidateCount: 1, ambiguous: false },
     ]);
     // Pacing is a documented floor, not an env value that can be lowered away.
     assert.ok(res.body.pacingMs >= 1200);
@@ -795,15 +845,18 @@ test('a batch match writes ONE row for the run and one per CHART', async () => {
   const db = seed(new FakeRcmDb());
   addSecondClaim(db);
   await withApp({ db, od: odFixture() }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(res.body.matched.length, 2);
 
     const run = auditRows(db).filter((r) => r.resource_type === 'rcm_remittance_match');
     assert.equal(run.length, 1, 'the run itself, once');
-    assert.equal(run[0].resource_id, 'b-1');
+    assert.equal(run[0].resource_id, '8acb0e32-35ae-5cd8-9692-7b5e318a31c2');
 
     const charts = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
-    assert.deepEqual(charts.map((r) => r.resource_id).sort(), ['c-1', 'c-2']);
+    assert.deepEqual(
+      charts.map((r) => r.resource_id).sort(),
+      ['d1e2b359-a8d7-51a8-978c-7adf27bccc8d', 'ae21fad8-8cbb-5424-9780-b30be1cf31c9'].sort()
+    );
     for (const row of charts) {
       assert.equal(row.office, 'roland');
       assert.equal(row.result, 'SUCCESS');
@@ -822,13 +875,13 @@ test('a chart read that failed part way through a BATCH is still recorded', asyn
   const db = seed(new FakeRcmDb());
   const od = odFixture({ fail: { '/claims': { status: 503, error: 'gateway' } } });
   await withApp({ db, od }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.equal(res.body.matched[0].status, 'failed');
 
     const charts = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
     assert.equal(charts.length, 1, 'the chart was read; the trail has to say so');
-    assert.equal(charts[0].resource_id, 'c-1');
+    assert.equal(charts[0].resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
     assert.equal(charts[0].result, 'ERROR', 'a disclosure that did not complete');
   });
 });
@@ -843,7 +896,7 @@ test('a budgeted run stops on the CLOCK and says so, unmatched claims first', as
    */
   const db = seed(new FakeRcmDb());
   addSecondClaim(db);
-  // c-1 has already been looked at; c-2 has not. Unmatched goes first.
+  // d1e2b359-a8d7-51a8-978c-7adf27bccc8d has already been looked at; ae21fad8-8cbb-5424-9780-b30be1cf31c9 has not. Unmatched goes first.
   db.table('rcm_claims')[0].od_match_status = 'no_candidate';
 
   const original = process.env.RCM_OD_BATCH_MATCH_BUDGET_MS;
@@ -854,13 +907,13 @@ test('a budgeted run stops on the CLOCK and says so, unmatched claims first', as
     delete require.cache[require.resolve('./remittances')];
     delete require.cache[require.resolve('./index')];
     await withApp({ db, od: odFixture() }, async (app) => {
-      const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+      const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
       assert.equal(res.status, 200, JSON.stringify(res.body));
 
       // One claim got in before the budget was spent; the other did not.
       assert.equal(res.body.outOfTime, true, 'the CLOCK stopped it, not the claim cap');
       assert.equal(res.body.matched.length, 1);
-      assert.equal(res.body.matched[0].claimId, 'c-2', 'the unmatched claim went first');
+      assert.equal(res.body.matched[0].claimId, 'ae21fad8-8cbb-5424-9780-b30be1cf31c9', 'the unmatched claim went first');
       assert.equal(res.body.skipped, 1);
       assert.match(res.body.note, /budget/i);
       assert.match(res.body.note, /run it again/i);
@@ -877,7 +930,7 @@ test('a budgeted run stops on the CLOCK and says so, unmatched claims first', as
 test('a batch match on another office\'s remittance is a 404', async () => {
   const db = seed(new FakeRcmDb(), { office: 'valley' });
   await withApp({ db, od: odFixture() }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(res.status, 404);
   });
 });
@@ -888,9 +941,9 @@ test('every PHI read writes exactly one audit row, and search terms never appear
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
     await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
-    await api(app.baseUrl, 'GET', `/api/rcm/remittances/b-1${Q}`);
-    await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${Q}`);
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${Q}`);
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
 
     const rows = auditRows(db);
     assert.equal(rows.length, 4);
@@ -913,14 +966,14 @@ test('every PHI read writes exactly one audit row, and search terms never appear
 test('an attributed write is audited as an UPDATE naming the claim', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${Q}`, json({ note: 'ok' }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`, json({ note: 'ok' }));
 
     const updates = auditRows(db).filter((r) => r.action === 'UPDATE');
     assert.deepEqual(updates.map((r) => r.resource_type), ['rcm_claim_match', 'rcm_claim_review']);
     // resourceId IS stamped here — a claim id we minted, never PHI.
-    for (const row of updates) assert.equal(row.resource_id, 'c-1');
+    for (const row of updates) assert.equal(row.resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
   });
 });
 
@@ -931,13 +984,13 @@ test('a tenant without the rcm module gets MODULE_NOT_ENTITLED on every route', 
   await withApp({ db, modules: ['voice'] }, async (app) => {
     for (const [method, path] of [
       ['GET', `/api/rcm/remittances${Q}`],
-      ['GET', `/api/rcm/remittances/b-1${Q}`],
-      ['GET', `/api/rcm/claims/c-1${Q}`],
-      ['POST', `/api/rcm/claims/c-1/match${Q}`],
-      ['POST', `/api/rcm/claims/c-1/confirm-match${Q}`],
-      ['POST', `/api/rcm/claims/c-1/review${Q}`],
-      ['POST', `/api/rcm/remittances/b-1/match${Q}`],
-      ['GET', `/api/rcm/uploads/u-1/document${Q}`],
+      ['GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`],
+      ['GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`],
+      ['POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`],
+      ['GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`],
     ]) {
       const res = await api(app.baseUrl, method, path, method === 'GET' ? {} : json({}));
       assert.equal(res.status, 403, `${method} ${path}`);
@@ -980,7 +1033,7 @@ test('a search that found claims and REJECTED them all does not read as an empty
   });
 
   await withApp({ db, od }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.equal(res.body.status, 'no_candidate');
 
@@ -992,7 +1045,7 @@ test('a search that found claims and REJECTED them all does not read as an empty
     assert.equal(snap.minScore, 15);
 
     // And it survives to the read the panel actually renders from.
-    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${Q}`);
+    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${Q}`);
     assert.equal(detail.body.claim.matchSnapshot.rejectedCandidates, 1);
     assert.deepEqual(detail.body.claim.matchSnapshot.rejectedReasons, {
       nameMismatch: 0,
@@ -1006,7 +1059,7 @@ test('a search that found genuinely nothing says zero rejections', async () => {
   // and the screen must be able to tell it from the one above.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: new FakeOd({}) }, async (app) => {
-    const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const { body } = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(body.status, 'no_candidate');
     assert.equal(body.snapshot.rejectedCandidates, 0);
     assert.deepEqual(body.snapshot.rejectedReasons, { nameMismatch: 0, belowScore: 0 });
@@ -1023,18 +1076,18 @@ test('a batch run whose FIRST claim throws still records the run', async () => {
    */
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
     db.log.length = 0;
 
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(res.status, 200);
     assert.equal(res.body.matched[0].status, 'already_confirmed');
 
     // The RUN is recorded even though not one chart was read.
     const run = auditRows(db).filter((r) => r.resource_type === 'rcm_remittance_match');
     assert.equal(run.length, 1);
-    assert.equal(run[0].resource_id, 'b-1', 'stamped with the remittance, not null');
+    assert.equal(run[0].resource_id, '8acb0e32-35ae-5cd8-9692-7b5e318a31c2', 'stamped with the remittance, not null');
   });
 });
 
@@ -1043,11 +1096,11 @@ test('a batch run audits ONE row per claim, stamped with the claim id', async ()
   // rows — anything coarser cannot answer "whose chart was read on Tuesday".
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
 
     const perClaim = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
     assert.equal(perClaim.length, 1);
-    assert.equal(perClaim[0].resource_id, 'c-1');
+    assert.equal(perClaim[0].resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
     assert.equal(perClaim[0].result, 'SUCCESS');
   });
 });
@@ -1059,9 +1112,9 @@ test('a role with NO rcm permission at all is refused the whole surface', async 
   await withApp({ db, role: 'tc', od: odFixture() }, async (app) => {
     for (const [method, path] of [
       ['GET', `/api/rcm/remittances${Q}`],
-      ['POST', `/api/rcm/claims/c-1/match${Q}`],
-      ['POST', `/api/rcm/claims/c-1/review${Q}`],
-      ['POST', `/api/rcm/claims/c-1/confirm-match${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`],
+      ['POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`],
     ]) {
       const res = await api(app.baseUrl, method, path, method === 'GET' ? {} : json({}));
       assert.equal(res.status, 403, `${method} ${path}`);
@@ -1082,13 +1135,13 @@ test('the reviewer role cannot UN-confirm what it could not confirm (D-9)', asyn
    */
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
   });
 
   await withApp({ db, role: 'reviewer', od: odFixture() }, async (app) => {
     db.log.length = 0;
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({ force: true }));
 
     assert.equal(res.status, 403, JSON.stringify(res.body));
     assert.equal(res.body.code, 'FORCE_REQUIRES_WRITE');
@@ -1109,7 +1162,7 @@ test('the reviewer role cannot UN-confirm what it could not confirm (D-9)', asyn
     const denied = auditRows(db).filter((r) => r.result === 'UNAUTHORIZED');
     assert.equal(denied.length, 1);
     assert.equal(denied[0].resource_type, 'rcm_claim_match');
-    assert.equal(denied[0].resource_id, 'c-1');
+    assert.equal(denied[0].resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
   });
 });
 
@@ -1118,8 +1171,8 @@ test('a reviewer CAN force a re-run of a claim nobody confirmed', async () => {
   // unconfirmed match discards nothing a human stood behind.
   const db = seed(new FakeRcmDb());
   await withApp({ db, role: 'reviewer', od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({ force: true }));
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
   });
@@ -1135,9 +1188,9 @@ test('confirming LOCKS the row it read', async () => {
    */
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     db.log.length = 0;
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
 
     const read = db.log.filter((q) => /^SELECT .* FROM rcm_claims WHERE/.test(q.sql));
     assert.ok(read.length > 0, 'confirm must read the claim');
@@ -1160,11 +1213,11 @@ test('confirming the SAME claim twice is idempotent; a different one is refused'
   // ALREADY_SENT_TO_CHART.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     const first = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(first.status, 200);
@@ -1172,7 +1225,7 @@ test('confirming the SAME claim twice is idempotent; a different one is refused'
     const again = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(again.status, 200, JSON.stringify(again.body));
@@ -1190,7 +1243,7 @@ test('confirming the SAME claim twice is idempotent; a different one is refused'
     const conflict = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53649 })
     );
     assert.equal(conflict.status, 409);
@@ -1216,20 +1269,20 @@ test('the reviewer role can READ and WORK the queue, and cannot commit (D-9)', a
     const list = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
     assert.equal(list.status, 200, 'a reviewer must be able to open the workbench');
 
-    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${Q}`);
+    const detail = await api(app.baseUrl, 'GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${Q}`);
     assert.equal(detail.status, 200);
 
-    const matched = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const matched = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(matched.status, 200, 'running a match reads OD and writes no chart');
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
 
-    const batch = await api(app.baseUrl, 'POST', `/api/rcm/remittances/b-1/match${Q}`, json({}));
+    const batch = await api(app.baseUrl, 'POST', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match${Q}`, json({}));
     assert.equal(batch.status, 200, 'and so does the batch form of it');
 
     const reviewed = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/review${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${Q}`,
       json({ note: 'Carrier owes a corrected EOB — nothing to post.' })
     );
     assert.equal(reviewed.status, 200, 'worklist hygiene is not a chart write');
@@ -1241,7 +1294,7 @@ test('the reviewer role can READ and WORK the queue, and cannot commit (D-9)', a
     const confirm = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(confirm.status, 403);
@@ -1267,7 +1320,7 @@ test('an anonymous caller is 401 before any office or module check', async () =>
 test("another office's document is NOT FOUND", async () => {
   const db = seed(new FakeRcmDb(), { office: 'valley' });
   await withApp({ db }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`);
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`);
     assert.equal(res.status, 404);
     assert.equal(res.body.code, 'DOCUMENT_NOT_FOUND');
   });
@@ -1277,7 +1330,7 @@ test('an unconfigured blob store refuses with the module\'s own 503, not a crash
   const db = seed(new FakeRcmDb());
   // eraStore: null leaves the REAL, unconfigured store in place.
   await withApp({ db, eraStore: null }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`);
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`);
     assert.equal(res.status, 503);
     assert.equal(res.body.code, 'RCM_STORAGE_UNAVAILABLE');
 
@@ -1286,7 +1339,7 @@ test('an unconfigured blob store refuses with the module\'s own 503, not a crash
     // and the attempt is what a HIPAA trail most needs to have.
     const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_source_document');
     assert.equal(row.result, 'UNAUTHORIZED');
-    assert.equal(row.resource_id, 'u-1');
+    assert.equal(row.resource_id, '57c97173-8178-5976-997e-9de296795b28');
   });
 });
 
@@ -1294,7 +1347,7 @@ test('a document with an unrecognised key is a 500, never a misleading 404', asy
   const db = seed(new FakeRcmDb());
   db.table('rcm_eob_uploads')[0].file_key = 'tenant/carein/other/thing.bin';
   await withApp({ db }, async (app) => {
-    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`);
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`);
     assert.equal(res.status, 500);
     assert.equal(res.body.code, 'DOCUMENT_KEY_UNRECOGNISED');
   });
@@ -1308,7 +1361,7 @@ test('a served document is audited BEFORE the bytes, with the filename kept out 
   eraFileStore.getEraFile = async () => Buffer.from('ISA*00*…~');
   try {
     await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
-      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`, { raw: true });
       assert.equal(res.status, 200);
       assert.equal(res.bytes.toString(), 'ISA*00*…~');
       assert.match(res.headers['content-disposition'], /delta_fixture_multiclaim\.edi/);
@@ -1317,7 +1370,7 @@ test('a served document is audited BEFORE the bytes, with the filename kept out 
 
       const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_source_document');
       assert.equal(row.action, 'READ');
-      assert.equal(row.resource_id, 'u-1');
+      assert.equal(row.resource_id, '57c97173-8178-5976-997e-9de296795b28');
       assert.ok(!JSON.stringify(row).includes('delta_fixture'), 'the filename is PHI');
     });
   } finally {
@@ -1335,7 +1388,7 @@ test('a header-splitting filename is neutralised rather than echoed', async () =
   eraFileStore.getEraFile = async () => Buffer.from('x');
   try {
     await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
-      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`, { raw: true });
       assert.equal(res.status, 200);
       assert.ok(!res.headers['x-injected']);
       assert.ok(!res.headers['content-disposition'].includes('\n'));
@@ -1375,7 +1428,7 @@ test('a confirmation is NOT wiped by a match that was already in flight', async 
 
     // A first match, so there is a snapshot to confirm against and the claim
     // reads `candidates` — the state biller B's read-side check will pass.
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(db.table('rcm_claims')[0].od_match_status, 'candidates');
 
     // Now hold the NEXT match inside its first Open Dental read. Two promises,
@@ -1401,14 +1454,14 @@ test('a confirmation is NOT wiped by a match that was already in flight', async 
     };
 
     db.log.length = 0;
-    const late = api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const late = api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     await arrival; // it is genuinely mid-flight, not merely started
 
     // …and the confirmation lands while it is stuck there.
     const confirmed = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(confirmed.status, 200);
@@ -1445,11 +1498,11 @@ test('a FORCED re-run over a confirmation is audited as its own event, and carri
    */
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
     db.log.length = 0;
 
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({ force: true }));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({ force: true }));
     assert.equal(res.status, 200);
 
     // The overwrite is its own audited event, and it is an UPDATE — a person
@@ -1457,7 +1510,7 @@ test('a FORCED re-run over a confirmation is audited as its own event, and carri
     const superseded = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match_superseded');
     assert.equal(superseded.length, 1);
     assert.equal(superseded[0].action, 'UPDATE');
-    assert.equal(superseded[0].resource_id, 'c-1');
+    assert.equal(superseded[0].resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
 
     // And the decision it destroyed is still readable.
     const prior = db.table('rcm_claims')[0].od_match_snapshot.supersededConfirmation;
@@ -1471,8 +1524,8 @@ test('a FORCED re-run over a confirmation is audited as its own event, and carri
 test('an ordinary re-run supersedes nothing and says so', async () => {
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.body.snapshot.supersededConfirmation, null);
     assert.equal(
       auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match_superseded').length,
@@ -1487,7 +1540,7 @@ test("confirming against ANOTHER OFFICE'S snapshot is refused", async () => {
   // valley must never be confirmable under roland (hard rule 3).
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     // Re-stamp the stored snapshot as if it had been taken for the other office.
     const claim = db.table('rcm_claims')[0];
     claim.od_match_snapshot = { ...claim.od_match_snapshot, office: 'valley' };
@@ -1495,7 +1548,7 @@ test("confirming against ANOTHER OFFICE'S snapshot is refused", async () => {
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(res.status, 409);
@@ -1509,14 +1562,14 @@ test('confirming against an older snapshot SHAPE is refused', async () => {
   // 6c reads confirmed.linePairs and odAmountsAsRead out of this structure.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     const claim = db.table('rcm_claims')[0];
     claim.od_match_snapshot = { ...claim.od_match_snapshot, version: 0 };
 
     const res = await api(
       app.baseUrl,
       'POST',
-      `/api/rcm/claims/c-1/confirm-match${Q}`,
+      `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`,
       json({ odClaimNum: 53648 })
     );
     assert.equal(res.status, 409);
@@ -1531,7 +1584,7 @@ test('a match that READ PHI and then failed still leaves a trail', async () => {
   const db = seed(new FakeRcmDb());
   const od = odFixture({ fail: { '/claims': { status: 503, error: 'gateway' } } });
   await withApp({ db, od }, async (app) => {
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.status, 502);
 
     const [row] = auditRows(db).filter((r) => r.resource_type === 'rcm_claim_match');
@@ -1541,7 +1594,7 @@ test('a match that READ PHI and then failed still leaves a trail', async () => {
     // trail exists to produce, and dilutes the one signal that means "somebody
     // was refused".
     assert.equal(row.result, 'ERROR');
-    assert.equal(row.resource_id, 'c-1');
+    assert.equal(row.resource_id, 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d');
     // And the patient's name is not in the trail.
     assert.ok(!JSON.stringify(row).includes('Fixture'));
   });
@@ -1553,11 +1606,11 @@ test('a routine conflict is NOT filed as a refusal', async () => {
   // signal that means "access was refused" stops being readable.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${Q}`, json({ odClaimNum: 53648 }));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${Q}`, json({ odClaimNum: 53648 }));
     db.log.length = 0;
 
-    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    const res = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
     assert.equal(res.body.code, 'MATCH_ALREADY_CONFIRMED');
     assert.equal(
       auditRows(db).filter((r) => r.result === 'UNAUTHORIZED').length,
@@ -1573,7 +1626,7 @@ test('the audit row lands BEFORE the snapshot, which carries OD patient names', 
   // through GET /claims/:id, with nothing recorded.
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${Q}`, json({}));
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${Q}`, json({}));
 
     const auditAt = db.log.findIndex((q) => /INSERT INTO audit_log/i.test(q.sql));
     const snapshotAt = db.log.findIndex((q) =>
@@ -1608,7 +1661,7 @@ test('the document proxy never reflects a client-declared content type', async (
   eraFileStore.getEraFile = async () => Buffer.from('<script>alert(1)</script>');
   try {
     await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
-      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`, { raw: true });
       assert.equal(res.status, 200);
       // Derived from the blob KEY path, which we mint — not from the row.
       assert.equal(res.headers['content-type'], 'application/edi-x12');
@@ -1633,7 +1686,7 @@ test('a non-Latin-1 filename serves rather than 500ing after the audit row', asy
   eraFileStore.getEraFile = async () => Buffer.from('ISA*00*');
   try {
     await withApp({ db, eraStore: { isConfigured: () => true } }, async (app) => {
-      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/u-1/document${Q}`, { raw: true });
+      const res = await api(app.baseUrl, 'GET', `/api/rcm/uploads/57c97173-8178-5976-997e-9de296795b28/document${Q}`, { raw: true });
       assert.equal(res.status, 200);
       const cd = res.headers['content-disposition'];
       // An ASCII form every client understands, plus the real name encoded.
@@ -1649,22 +1702,31 @@ test('a non-Latin-1 filename serves rather than 500ing after the audit row', asy
 
 // ─── What this slice deliberately does NOT have ──────────────────────────────
 
-test('there is no approve, post or enqueue endpoint under /api/rcm', async () => {
-  // The workbench's Approve button is rendered DISABLED so the layout is right
-  // when 6b lands. There is nothing behind it to call, and that is on purpose.
+test('there is still no POST endpoint — approving is not posting', async () => {
+  /*
+   * Slice 6b added exactly ONE mutation: `POST /remittances/:id/approve`, which
+   * writes a plan to OUR database. Everything that would MOVE money is still
+   * absent, and this is the list that has to stay 404 until 6c ships behind its
+   * own gated staging event.
+   *
+   * `/approve` has moved off this list because it now exists. What replaces it
+   * as the guarantee is `rcmNoOdWrites.test.js`, which drives approve to
+   * success and asserts the Open Dental client was never called at all.
+   */
   const db = seed(new FakeRcmDb());
   await withApp({ db, od: odFixture() }, async (app) => {
     for (const path of [
-      '/api/rcm/claims/c-1/approve',
-      '/api/rcm/claims/c-1/post',
-      '/api/rcm/remittances/b-1/approve',
-      '/api/rcm/remittances/b-1/post',
-      '/api/rcm/remittances/b-1/enqueue',
+      '/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/approve',
+      '/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/post',
+      '/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/post',
+      '/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/drain',
       '/api/rcm/queue',
+      '/api/rcm/queue/drain',
     ]) {
       const res = await api(app.baseUrl, 'POST', `${path}${Q}`, json({}));
       assert.equal(res.status, 404, `${path} must not exist yet`);
     }
+    // And nothing on this fixture is approvable, so nothing was queued either.
     assert.equal(db.table('rcm_posting_queue').length, 0);
   });
 });

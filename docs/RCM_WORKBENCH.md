@@ -33,7 +33,8 @@ Two consequences worth stating:
 
 - **The Approve button is present and DISABLED**, with copy saying why, so the
   layout is right when 6b lands. There is no endpoint behind it, and
-  `rcmNoOdWrites.test.js` asserts there is none to find.
+  `rcmNoOdWrites.test.js` asserts there is none to find. *(Slice 6b made it live
+  — see [RCM_APPROVAL_GATE.md](RCM_APPROVAL_GATE.md).)*
 - **`rcm_posting_queue` is untouched.** A test fails if any RCM source writes to
   it: a workbench that could enqueue would ship the approval decision without
   the approval gate.
@@ -1012,6 +1013,12 @@ Found in the Slice 6a review, deliberately **not** expanded into this PR. None
 produces a wrong number today; each is a real edge that will bite at scale or on
 a decision that has not been made yet.
 
+> **Six of these are now FIXED in Slice 6b** — paging and the two counts,
+> batch-level flags, the PLB breakdown and its SOP anchor, the EOB label map,
+> non-uuid path ids, and the ruling on Confirm above a red blocker. See
+> [RCM_APPROVAL_GATE.md §9](RCM_APPROVAL_GATE.md#9-debts-this-slice-paid) for
+> what changed and §10 there for what is still open.
+
 | | Limit | Why it waits |
 | --- | --- | --- |
 | **Paging** | `needsAttentionCount` is page-scoped while `total` is global, and the list is capped at 100 with no pagination — so the header can read "12 needing attention · 640 total". A remittance needing attention and older than the 100th newest is invisible *and* uncounted, on a screen whose stated premise is that the default is the work. | Harmless on seed data, wrong the first busy quarter. Needs a server-side count and real paging, which is its own slice of work. |
@@ -1029,9 +1036,11 @@ a decision that has not been made yet.
 
 ---
 
-## 14. What Slice 6b adds
+## 14. What Slice 6b added
 
-The Approve button becomes real. Concretely:
+**Shipped.** See [RCM_APPROVAL_GATE.md](RCM_APPROVAL_GATE.md) for the gate, the
+D-11 split, the idempotency proofs and the screens. In summary — the Approve
+button became real:
 
 - an approval gate that turns a confirmed, reviewed claim into an
   `rcm_posting_queue` row with `approved_by` **NOT NULL** (reusing D-5's
@@ -1045,7 +1054,16 @@ The Approve button becomes real. Concretely:
 - `is_recoupment` gating, so a negative supplemental — the single irreversible
   Open Dental operation — needs a harder gate than everything else.
 
-Nothing in 6a writes any of those rows, and a test fails if it starts to.
+Nothing in 6a writes any of those rows, and `rcmNoOdWrites.test.js` now names
+the ONE file that may (`routes/rcm/approvalGate.js`) and drives the approve path
+to success against an Open Dental client whose every verb throws — asserting not
+one method was called. **Approving is not posting**, and that is a test rather
+than a sentence.
+
+Two things landed differently from the sketch above: `is_recoupment` is never set
+true by 6b (a recoupment cannot pass the gate at all — the column is 6d's to
+use), and the claim-level idempotency lives on `rcm_claims.posting_queue_id`
+rather than being inferred from the queue.
 
 Then 6c drains the queue (the first chart writes, behind `assertOfficeMatch`, and
 re-verifying against the snapshot above), and 6d adds the recoupment gate.

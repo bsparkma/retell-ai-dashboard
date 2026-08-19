@@ -155,7 +155,7 @@ test('a role holding neither tier is refused the batch match at runtime', async 
   // missing, only this would notice.
   const { baseUrl, close } = await bootRcmApp({ role: 'tc' });
   try {
-    const res = await api(baseUrl, 'POST', '/api/rcm/remittances/b-1/match?office=roland', {
+    const res = await api(baseUrl, 'POST', '/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match?office=roland', {
       body: JSON.stringify({}),
       json: true,
     });

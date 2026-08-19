@@ -26,6 +26,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const shotsDir = resolve(here, "../tests/.shots");
 const assetsDir = resolve(here, "../dist/public/assets");
 const outDir = resolve(here, "../../docs/screenshots/rcm-workbench");
+/**
+ * Slice 6b's shots live in their own directory, because they document a
+ * different thing: the workbench is what a biller READS, the approval gate is
+ * what she DOES. One run produces both — the dumps are named by their
+ * destination rather than shot twice.
+ */
+const approveDir = resolve(here, "../../docs/screenshots/rcm-approve");
 const tmpDir = resolve(shotsDir, ".render");
 
 const CHROME = [
@@ -54,6 +61,7 @@ if (!cssFile) {
 const css = readFileSync(resolve(assetsDir, cssFile), "utf8");
 
 mkdirSync(outDir, { recursive: true });
+mkdirSync(approveDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
 
 /**
@@ -68,7 +76,14 @@ const HEIGHT = {
   "02-remittance-detail": 1010,
   "03-claim-match": 1000,
   "04-no-candidate": 700,
+  "approve-01-checklist": 1330,
+  "approve-02-refused": 1330,
+  "approve-03-partial": 1230,
+  "approve-04-reviewer": 1060,
 };
+
+/** Where a dump's picture belongs. */
+const dirFor = (name) => (name.startsWith("approve-") ? approveDir : outDir);
 
 const dumps = readdirSync(shotsDir).filter((f) => f.endsWith(".html")).sort();
 if (dumps.length === 0) {
@@ -98,7 +113,7 @@ for (const dump of dumps) {
   const htmlPath = resolve(tmpDir, `${name}.html`);
   writeFileSync(htmlPath, page, "utf8");
 
-  const out = resolve(outDir, `${name}.png`);
+  const out = resolve(dirFor(name), `${name}.png`);
   execFileSync(
     CHROME,
     [

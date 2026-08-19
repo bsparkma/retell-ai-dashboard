@@ -19,6 +19,24 @@
  * one, and this file is what makes that a test failure rather than a review
  * comment.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT SLICE 6b CHANGED, AND WHAT IT DID NOT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6b writes `rcm_posting_queue` — the durable record of INTENDED posting — so
+ * the flat "no RCM source touches the posting queue" test below could not
+ * survive as written. It has been REPLACED rather than deleted, by two stronger
+ * statements:
+ *
+ *   1. only the APPROVAL GATE may name the queue (an enumerated file list, the
+ *      same idiom the OD read seam uses), so a workbench route cannot start
+ *      enqueueing without appearing in this file's diff; and
+ *   2. driving the whole approve surface CREATES queue rows and reaches NO Open
+ *      Dental verb at all — not a write, not even a read.
+ *
+ * (2) is the one that matters. "Approving is not posting" is the central claim
+ * of Slice 6b, and it is only a testable claim if something asserts that the
+ * money-authorising path never touches a chart.
+ *
  * FOUR LAYERS, because each catches what the others miss:
  *
  *   1. BEHAVIOURAL — boot the real router with a client whose every write verb
@@ -127,11 +145,19 @@ function odFixture() {
   });
 }
 
-/** A proposal claim on a batch, seeded straight into the fake tenant DB. */
-function seedProposal(db) {
+/**
+ * A proposal claim on a batch, seeded straight into the fake tenant DB.
+ *
+ * `approvable` seeds the extra state Slice 6b's gate demands — a confirmed
+ * match with a current snapshot, a review, a paired line and a batch claim
+ * payment whose amounts reconcile — so the approve path can be driven to
+ * SUCCESS here. A test that only ever drove approve to a refusal would prove
+ * nothing about whether the successful path touches Open Dental.
+ */
+function seedProposal(db, { approvable = false } = {}) {
   db.seed('rcm_payment_batches', [
     {
-      batch_id: 'b-1',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
       office_id: 'roland',
       payer: 'DELTA DENTAL OF ARKANSAS',
       check_number: '830200001',
@@ -146,7 +172,7 @@ function seedProposal(db) {
   ]);
   db.seed('rcm_claims', [
     {
-      claim_id: 'c-1',
+      claim_id: 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: 'roland',
       claim_number: '53648',
       check_number: '830200001',
@@ -171,12 +197,19 @@ function seedProposal(db) {
     },
   ]);
   db.seed('rcm_batch_claim_payments', [
-    { batch_claim_payment_id: 'l-1', batch_id: 'b-1', claim_id: 'c-1', office_id: 'roland', position: 1 },
+    {
+      batch_claim_payment_id: 'e9247d49-d687-56bc-ba36-ebbf4f05b56c',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      claim_id: 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
+      office_id: 'roland',
+      position: 1,
+      paid_cents: 15000,
+    },
   ]);
   db.seed('rcm_procedure_lines', [
     {
-      line_id: 'pl-1',
-      claim_id: 'c-1',
+      line_id: 'a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90',
+      claim_id: 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
       office_id: 'roland',
       position: 1,
       billed_code: 'D0150',
@@ -200,7 +233,7 @@ function seedProposal(db) {
   ]);
   db.seed('rcm_eob_uploads', [
     {
-      upload_id: 'u-1',
+      upload_id: '57c97173-8178-5976-997e-9de296795b28',
       office_id: 'roland',
       filename: 'delta_fixture.edi',
       file_key: 'tenant/carein/rcm/era/k1.edi',
@@ -210,6 +243,35 @@ function seedProposal(db) {
       uploaded_by: null,
     },
   ]);
+
+  if (approvable) {
+    const claim = db.table('rcm_claims')[0];
+    claim.od_match_status = 'confirmed';
+    claim.od_claim_num = 53648;
+    claim.od_patient_id = 12828;
+    claim.od_match_confirmed_at = new Date('2026-03-02T11:00:00Z');
+    claim.od_matched_by = 'user-1';
+    claim.reviewed_at = new Date('2026-03-02T11:05:00Z');
+    claim.reviewed_by = 'user-1';
+    claim.od_match_snapshot = {
+      version: 2,
+      office: 'roland',
+      candidates: [{ odClaimNum: 53648, blockers: [], linePairs: [] }],
+      confirmed: {
+        odClaimNum: 53648,
+        odPatNum: 12828,
+        confirmedAt: '2026-03-02T11:00:00.000Z',
+        confirmedBy: 'user-1',
+        linePairs: [{ lineId: 'a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90', odClaimProcNum: 99001 }],
+        odAmountsAsRead: { billedCents: 21000, claimHeaderFeeCents: 21000, insPaidCents: 0, writeOffCents: 0, claimStatus: 'S' },
+      },
+    };
+    db.table('rcm_procedure_lines')[0].od_claim_proc_num = 99001;
+    db.seed('rcm_user_map', [
+      { user_key: 'user-1', platform_email: 'biller@example.invalid', display_name: 'Fixture Biller', active: true },
+    ]);
+  }
+
   return db;
 }
 
@@ -221,23 +283,27 @@ test('driving the whole workbench surface calls only apiGetRaw on the OD client'
     const q = '?office=roland';
     // Every endpoint this slice adds, including the two that mutate our rows.
     await api(app.baseUrl, 'GET', `/api/rcm/remittances${q}`);
-    await api(app.baseUrl, 'GET', `/api/rcm/remittances/b-1${q}`);
-    await api(app.baseUrl, 'GET', `/api/rcm/claims/c-1${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${q}`);
 
-    const matched = await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/match${q}`, {
+    const matched = await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/match${q}`, {
       body: JSON.stringify({}),
       json: true,
     });
     assert.equal(matched.status, 200, JSON.stringify(matched.body));
 
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/confirm-match${q}`, {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/confirm-match${q}`, {
       body: JSON.stringify({ odClaimNum: 53648 }),
       json: true,
     });
-    await api(app.baseUrl, 'POST', `/api/rcm/claims/c-1/review${q}`, {
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${q}`, {
       body: JSON.stringify({ note: 'checked' }),
       json: true,
     });
+
+    // Slice 6b's checklist — a read, and one a `reviewer` can make.
+    const checklist = await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/approval${q}`);
+    assert.equal(checklist.status, 200, JSON.stringify(checklist.body));
 
     // THE ASSERTION. Not "no write was observed to fail" — no write verb was
     // reached at all, which is a stronger and more durable claim.
@@ -254,7 +320,7 @@ test('a batch match over a remittance also reaches only apiGetRaw', async () => 
   const od = odFixture();
   const app = await bootRcmApp({ db, od });
   try {
-    const res = await api(app.baseUrl, 'POST', '/api/rcm/remittances/b-1/match?office=roland', {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/match?office=roland', {
       body: JSON.stringify({}),
       json: true,
     });
@@ -363,17 +429,77 @@ test('no rcm source names an Open Dental write method', () => {
   );
 });
 
-test('no rcm source touches the posting queue — approval and posting are 6b/6c', () => {
+test('only the approval gate may write the posting queue', () => {
+  /**
+   * The queue is the record that a human authorised money to move. Exactly one
+   * file may create one, for the same reason exactly two files may name an Open
+   * Dental module: a second writer is a second policy, and the second one is
+   * always the one nobody reviewed.
+   */
+  const APPROVAL_LAYER = new Set(['rcm/approvalGate.js']);
   const offenders = [];
   for (const { label, code } of rcmSources()) {
-    if (/INSERT INTO rcm_posting_queue|UPDATE rcm_posting_queue/i.test(code)) {
-      offenders.push(label);
-    }
+    if (!/INSERT INTO rcm_posting_queue|UPDATE rcm_posting_queue/i.test(code)) continue;
+    if (!APPROVAL_LAYER.has(label)) offenders.push(label);
   }
   assert.deepEqual(
     offenders,
     [],
-    'rcm_posting_queue is Slice 6b/6c. A workbench that could enqueue would ship ' +
-      'the approval decision without the approval gate. Found: ' + offenders.join(', ')
+    'Enqueueing is the approval decision. A route that can write rcm_posting_queue ' +
+      'without going through routes/rcm/approvalGate.js has shipped that decision ' +
+      'without the gate. Found: ' + offenders.join(', ')
   );
+});
+
+test('the approval gate itself reaches no Open Dental module at all', () => {
+  /*
+   * The GRAPH test, not a grep. Approving is a decision about OUR rows: it
+   * re-reads what a match already recorded and writes an intent. If it could
+   * reach a chart it would be posting, one refactor away — and the whole shape
+   * of 6b (approve now, post later, behind its own gated event) depends on the
+   * two being separable.
+   */
+  const found = modulesReachableFrom('./approvalGate', [...OD_READ_SEAM, ...OD_WRITE_SURFACE]);
+  assert.deepEqual(
+    found,
+    [],
+    'the approval gate must not be able to touch Open Dental even to read it. Found: ' +
+      found.join(', ')
+  );
+});
+
+test('APPROVING creates queue rows and calls NOTHING on Open Dental', async () => {
+  /*
+   * THE CENTRAL CLAIM OF SLICE 6b, as a test.
+   *
+   * The approve path is driven to real success — rows land in
+   * rcm_posting_queue and rcm_posting_queue_line with the intended per-line
+   * amounts — and the Open Dental client, whose every verb throws, records that
+   * not one method was called. Approving is not posting.
+   */
+  const db = seedProposal(new FakeRcmDb(), { approvable: true });
+  const od = odFixture();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      '/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/approve?office=roland',
+      { body: JSON.stringify({}), json: true }
+    );
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.queued.length, 1);
+
+    // The durable intent exists…
+    assert.equal(db.table('rcm_posting_queue').length, 1);
+    const lines = db.table('rcm_posting_queue_line');
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].od_claim_proc_num, 99001);
+    assert.equal(lines[0].intended_ins_pay_amt_cents, 15000);
+
+    // …and no chart was touched to create it. Not a write; not even a read.
+    assert.deepEqual(od.methodsUsed(), []);
+  } finally {
+    await app.close();
+  }
 });

@@ -15,11 +15,20 @@
  * for one would be worse than admitting there is none.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE APPROVE BUTTON IS PRESENT AND DISABLED
+ * THE APPROVE BUTTON IS LIVE (Slice 6b) — AND STILL WRITES NO CHART
  * ─────────────────────────────────────────────────────────────────────────────
- * Deliberately, so the layout is right when Slice 6b lands and so nobody builds
- * a habit around a button that will move. There is no endpoint behind it, and
- * `rcmNoOdWrites.test.js` asserts there is none to find.
+ * `ApprovalPanel` below carries the gate: the pre-flight checklist BEFORE
+ * anything is pressed, the button, and what a press did. Approving creates a
+ * posting PLAN in CareIN's own database. Nothing on this screen reaches Open
+ * Dental — `rcmNoOdWrites.test.js` drives the approve path to success against a
+ * client whose every verb throws and asserts not one was called.
+ *
+ * The Confirm button on a claim with a red blocker stays ENABLED, deliberately.
+ * Linking a proposal to a chart claim is not posting, and a biller who can see
+ * the right claim should be able to say so. What changed in 6b is that the
+ * consequence is now PREDICTED where the confirmation happens — the claim card
+ * says the confirmation cannot be approved, and the checklist says why — rather
+ * than being discovered at drain time.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
@@ -32,7 +41,6 @@ import {
   Info,
   Loader2,
   RefreshCw,
-  ShieldCheck,
 } from "lucide-react";
 import {
   getRemittance,
@@ -48,17 +56,22 @@ import {
   batchStatusLabel,
   batchStatusTone,
   day,
+  isBlockingReason,
   lineFlagLabel,
   lineFlagTone,
   matchStatusLabel,
   MATCH_STATUS_TONE,
   money,
   NO_ACTION_REASONS,
+  reasonTone,
   reviewReasonLabel,
   SOURCE_LABELS,
   SOURCE_TITLES,
   stamp,
 } from "@/features/rcm/format";
+import { FLAG_LABELS, label } from "@/features/rcm/labels";
+import { describePlbAdjustment } from "@/features/rcm/plb";
+import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
 import { useOffice } from "@/contexts/OfficeContext";
 
 export default function RemittanceDetailPage() {
@@ -245,25 +258,39 @@ export default function RemittanceDetailPage() {
           </button>
 
           {/*
-            SLICE 6b LIVES HERE. Present and disabled so the layout is right when
-            approval lands, and so the copy states plainly why it cannot be
-            pressed rather than leaving a dead control to be discovered.
+            SLICE 6b: the Approve button now lives in ApprovalPanel below, beside
+            the checklist that explains it. A control whose precondition is three
+            screens away from it is a control people press hopefully.
           */}
-          <button
-            disabled
-            data-testid="approve-disabled"
-            title="Posting arrives in the next release. Nothing on this screen writes to a patient's chart."
-            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-foreground/10 px-3 py-1.5 text-sm font-medium text-muted-foreground"
-          >
-            <ShieldCheck size={14} />
-            Approve for posting
-          </button>
         </div>
       </div>
 
-      <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-note">
-        Posting arrives in the next release — nothing on this screen writes to a patient's chart.
-      </p>
+      {/*
+        ── REMITTANCE-LEVEL FLAGS ──────────────────────────────────────────────
+        Slice 5.5 wrote these into `rcm_payment_batches.flags` and nothing
+        rendered them, so a whole-check TAKEBACK surfaced only as "Held —
+        something on this remittance was flagged". That is the same sin one level
+        up that Slice 6a fixed at claim level: a UI announcing a flag exists and
+        refusing to say which.
+
+        Coloured by the D-11 split, from the same map the gate reads: amber will
+        withhold every claim on this check, grey is true and changes nothing
+        about what to post. Both are always shown.
+      */}
+      {r.flags.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-1.5" data-testid="remittance-flags">
+          {r.flags.map((flag) => (
+            <span
+              key={flag}
+              data-testid={`remittance-flag-${flag}`}
+              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${reasonTone(flag)}`}
+            >
+              {isBlockingReason(flag) && <AlertTriangle size={11} />}
+              {label(FLAG_LABELS, flag)}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* ── The balance check ──────────────────────────────────────────────── */}
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -304,6 +331,57 @@ export default function RemittanceDetailPage() {
           </p>
         </div>
       </div>
+
+      {/*
+        ── PROVIDER-LEVEL ADJUSTMENTS, ITEMISED ────────────────────────────────
+        A dollar total is not enough to act on. A PLB is money moved at the
+        provider level — an interest payment, a forward balance, a prior
+        overpayment being recovered — and which of those it is decides whether a
+        biller does anything at all. Slice 6a showed the total and stopped; the
+        per-adjustment rows have been stored since Slice 5.
+      */}
+      {r.plbAdjustments.length > 0 && (
+        <div
+          className="mt-4 rounded-xl border border-border bg-card px-4 py-3"
+          data-testid="plb-detail"
+        >
+          <div className="text-sm font-medium text-foreground">
+            Provider-level adjustments (PLB) · {money(r.plbTotalCents)}
+          </div>
+          <ul className="mt-2 space-y-1 text-xs">
+            {r.plbAdjustments.map((raw, i) => {
+              const adj = describePlbAdjustment(raw);
+              return (
+                <li key={`${adj.code}-${i}`} className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-mono font-medium text-foreground">{adj.code}</span>
+                  <span className="font-mono tabular-nums text-muted-foreground">
+                    {money(adj.amountCents)}
+                  </span>
+                  {/* Null = a code the published list does not carry. Rendered
+                      bare rather than glossed with a guess. */}
+                  {adj.description && (
+                    <span className="text-muted-foreground">{adj.description}</span>
+                  )}
+                  {adj.reference && (
+                    <span className="font-mono text-muted-foreground/70">ref {adj.reference}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-2 text-xs text-muted-foreground">
+            CareIN does not post provider-level money — it belongs to no single claim.{" "}
+            <Link
+              href="/rcm/sop/takeback"
+              className="underline underline-offset-2 hover:text-foreground"
+              data-testid="plb-sop-link"
+            >
+              Handle it manually
+            </Link>
+            .
+          </p>
+        </div>
+      )}
 
       {/* ── The source document ────────────────────────────────────────────── */}
       {r.upload && (
@@ -397,6 +475,9 @@ export default function RemittanceDetailPage() {
         </div>
       )}
 
+      {/* ── The approval gate ──────────────────────────────────────────────── */}
+      <ApprovalPanel office={office} batchId={r.batchId} onApproved={load} />
+
       {/* ── Claims ─────────────────────────────────────────────────────────── */}
       <h2 className="mt-8 text-lg font-semibold tracking-tight text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
         Claims
@@ -472,6 +553,16 @@ function ClaimCard({
   onToggle: () => void;
 }) {
   const deadEnd = claim.needsReviewReasons.some((r) => NO_ACTION_REASONS.has(r));
+  /**
+   * THE GATE IS PREDICTED HERE, AND IT BITES IN THE PANEL ABOVE.
+   *
+   * The ruling on "a Confirm button enabled above a red blocker": confirming
+   * only LINKS a proposal to a chart claim, so it stays available — but the card
+   * has to say that this confirmation cannot be approved, and why. Otherwise the
+   * only place the consequence appears is at the gate, after somebody has
+   * already committed the linkage.
+   */
+  const blocking = claim.needsReviewReasons.filter(isBlockingReason);
 
   return (
     <div className="rounded-xl border border-border bg-card" data-testid={`claim-card-${claim.claimId}`}>
@@ -490,6 +581,15 @@ function ClaimCard({
             {claim.reviewedAt && (
               <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
                 Reviewed
+              </span>
+            )}
+            {claim.postingQueueId && (
+              <span
+                className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+                title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
+                data-testid={`claim-queued-${claim.claimId}`}
+              >
+                Queued for posting
               </span>
             )}
           </div>
@@ -521,17 +621,37 @@ function ClaimCard({
       {/* Review reasons — the flags Slices 4 and 5 wrote and nothing rendered. */}
       {claim.needsReviewReasons.length > 0 && (
         <div className="border-t border-border px-4 py-3" data-testid={`claim-flags-${claim.claimId}`}>
+          {/*
+            D-11: amber will WITHHOLD this claim at the approval gate; grey is
+            true and does not change what to post. Both are always shown — a
+            reason that vanished would make a proposal look cleaner than it is.
+          */}
           <div className="flex flex-wrap gap-1.5">
             {claim.needsReviewReasons.map((reason) => (
               <span
                 key={reason}
-                className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                data-testid={`claim-reason-${reason}`}
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${reasonTone(reason)}`}
               >
-                <AlertTriangle size={11} />
+                {isBlockingReason(reason) && <AlertTriangle size={11} />}
                 {reviewReasonLabel(reason)}
               </span>
             ))}
           </div>
+
+          {blocking.length > 0 && (
+            <p
+              className="mt-2 flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-300"
+              data-testid={`claim-not-approvable-${claim.claimId}`}
+            >
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                Matching this claim to a chart is still worth doing — but it cannot be approved for
+                posting while {blocking.length === 1 ? "this holds" : "these hold"}. See the approval
+                checklist above.
+              </span>
+            </p>
+          )}
           {deadEnd && (
             // Detect-and-flag means exactly that. A recoupment is the single
             // IRREVERSIBLE Open Dental operation, so there is no action offered

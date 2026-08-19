@@ -30,6 +30,7 @@ import RcmOverview from "./pages/rcm/RcmOverview";
 import RemittanceList from "./pages/rcm/RemittanceList";
 import RemittanceDetail from "./pages/rcm/RemittanceDetail";
 import ClaimMatch from "./pages/rcm/ClaimMatch";
+import TakebackSop from "./pages/rcm/TakebackSop";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
@@ -125,6 +126,10 @@ export function Router() {
         <Route path="/rcm/remittances" component={RemittanceList} />
         <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
         <Route path="/rcm/claims/:id" component={ClaimMatch} />
+        {/* The manual route out of the one thing CareIN will not do. It is a
+            real page rather than prose because Slice 6a promised "the practice's
+            takeback procedure" and pointed nowhere. */}
+        <Route path="/rcm/sop/takeback" component={TakebackSop} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />

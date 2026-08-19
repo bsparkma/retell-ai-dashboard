@@ -27,6 +27,21 @@ const test = require('node:test');
 
 const seeder = require('../scripts/rcm-seed-fixtures.cjs');
 const migration = require('../migrations-tenant/1786622400000_rcm_schema.js');
+/**
+ * The migrations that ADD columns to the Slice 1 tables.
+ *
+ * The column check below used to read the Slice 1 migration alone, which was
+ * true while the seeder only wrote Slice 1 columns. Slice 6a added the match
+ * and review columns and Slice 6b the approval linkage; a fixture claim has to
+ * carry them (Slice 6a's CHECK makes `od_claim_num` without
+ * `od_match_status = 'confirmed'` illegal), so the schema this test compares
+ * against is the whole chain, not its first link.
+ */
+const COLUMN_ADDITIONS = [
+  require('../migrations-tenant/1787040000000_rcm_od_match.js'),
+  require('../migrations-tenant/1787060000000_rcm_fidelity.js'),
+  require('../migrations-tenant/1787080000000_rcm_posting_approval.js'),
+];
 
 const {
   OFFICES,
@@ -87,16 +102,29 @@ class MemoryTarget {
 /** The Slice 1 migration's column definitions, by table — the drift guard's source. */
 function migrationColumns() {
   const created = [];
+  const added = [];
   const pgm = {
     sql: () => {},
     func: (expr) => ({ __func: expr }),
     createTable: (name, cols) => created.push({ name, cols }),
+    addColumns: (name, cols) => added.push({ name, cols }),
     dropTable: () => {},
+    dropColumns: () => {},
+    dropConstraint: () => {},
+    dropIndex: () => {},
     addConstraint: () => {},
     createIndex: () => {},
+    alterColumn: () => {},
   };
   migration.up(pgm);
-  return new Map(created.map((t) => [t.name, t.cols]));
+  for (const later of COLUMN_ADDITIONS) later.up(pgm);
+
+  const out = new Map(created.map((t) => [t.name, { ...t.cols }]));
+  for (const { name, cols } of added) {
+    if (!out.has(name)) continue;
+    Object.assign(out.get(name), cols);
+  }
+  return out;
 }
 
 /**
@@ -489,27 +517,100 @@ test('nothing in the fixture reads as having reached Open Dental', () => {
   }
 });
 
-test('exactly one office carries the recoupment, and its negative line is a supplemental', () => {
+test('the recoupment is on the remittance and NOT on any posting plan', () => {
+  /*
+   * WHAT CHANGED IN SLICE 6b, AND WHY IT HAD TO.
+   *
+   * Slice 2 seeded the recoupment as a queued negative supplemental — the
+   * one-way-door case, present so later slices had one to render. Slice 6b's
+   * approval gate refuses a recoupment outright (`NOT_RECOUPMENT`), so a queue
+   * row containing one is a state the system can no longer produce, and a
+   * fixture that holds an unreachable state is a fixture that lies.
+   *
+   * The takeback therefore stays exactly where it operationally belongs — on
+   * the remittance, as a negative claim payment a biller can see and cannot
+   * post — and the plan simply does not cover it. Slice 6d's typed-confirmation
+   * path is what will ever put one on a queue.
+   */
   const plan = buildFixturePlan();
-  const queues = plan.rows.filter((r) => r.table === 'rcm_posting_queue');
-  const recoup = queues.filter((q) => q.row.is_recoupment === true);
-  assert.equal(recoup.length, 1, 'Slice 6/7 needs exactly one one-way-door case to render');
-  assert.equal(recoup[0].office, 'valley');
 
-  const negatives = plan.rows.filter(
+  // The money is still there, on the batch, and still negative.
+  const negativePayments = plan.rows.filter(
+    (r) => r.table === 'rcm_batch_claim_payments' && r.row.paid_cents < 0
+  );
+  assert.equal(negativePayments.length, 1, 'exactly one takeback to render');
+  assert.equal(negativePayments[0].office, 'valley');
+
+  // And nothing plans to write it.
+  const negativeLines = plan.rows.filter(
     (r) => r.table === 'rcm_posting_queue_line' && r.row.intended_ins_pay_amt_cents < 0
   );
-  assert.equal(negatives.length, 1);
-  assert.equal(negatives[0].office, 'valley');
-  assert.equal(negatives[0].row.is_supplemental, true);
+  assert.deepEqual(negativeLines, [], 'a recoupment cannot reach the posting queue in 6b');
 
-  // Every other line is a plain PUT, not a supplemental.
-  for (const r of plan.rows.filter((row) => row.table === 'rcm_posting_queue_line' && row !== negatives[0])) {
+  // No plan claims to hold one, and every planned line is a plain PUT.
+  for (const r of plan.rows.filter((row) => row.table === 'rcm_posting_queue')) {
+    assert.equal(r.row.is_recoupment, false, `${r.office}: 6b never sets is_recoupment`);
+  }
+  for (const r of plan.rows.filter((row) => row.table === 'rcm_posting_queue_line')) {
     assert.equal(r.row.is_supplemental, false);
   }
 });
 
-test('cent amounts balance: batch total = claim payments = intended line amounts', () => {
+test('every fixture claim is confirmed AND reviewed, or the gate could never run', () => {
+  /*
+   * Slice 6a's CHECK: a claim carrying `od_claim_num` MUST be
+   * `od_match_status = 'confirmed'` with an attributed confirmation. The Slice 2
+   * seeder set the ClaimNum and left the status at its `not_run` default, so
+   * every `--execute` against a migrated database would have failed on that
+   * constraint. This is the test that keeps it fixed.
+   */
+  const plan = buildFixturePlan();
+  const claims = plan.rows.filter((r) => r.table === 'rcm_claims');
+  assert.ok(claims.length >= 5);
+  for (const { row, key } of claims) {
+    assert.equal(row.od_match_status, 'confirmed', key);
+    assert.ok(row.od_claim_num, key);
+    assert.ok(row.od_match_confirmed_at, `${key}: a confirmation is an attributed act`);
+    assert.ok(row.od_matched_by, key);
+    assert.ok(row.reviewed_at, `${key}: the gate refuses an unreviewed claim`);
+    assert.ok(row.reviewed_by, key);
+    // The snapshot the gate reads `confirmed.linePairs` and `odAmountsAsRead`
+    // out of, in the version confirmMatch currently writes.
+    assert.equal(row.od_match_snapshot.version, 2, key);
+    assert.equal(row.od_match_snapshot.office, row.office_id, key);
+    assert.equal(row.od_match_snapshot.confirmed.odClaimNum, row.od_claim_num, key);
+  }
+});
+
+test('the fixture carries BOTH approval states, so the checklist has something to show', () => {
+  const plan = buildFixturePlan();
+  const claims = plan.rows.filter((r) => r.table === 'rcm_claims');
+  const queued = claims.filter((c) => c.row.posting_queue_id);
+  const awaiting = claims.filter((c) => !c.row.posting_queue_id);
+
+  assert.ok(queued.length >= 1, 'at least one claim a human already approved');
+  assert.ok(awaiting.length >= 2, 'one postable-and-awaiting, one permanently withheld');
+
+  // An approval is one fact — which plan, when, by whom. All three or none.
+  for (const { row, key } of claims) {
+    const parts = [row.posting_queue_id, row.approved_at, row.approved_by];
+    const set = parts.filter((v) => v != null).length;
+    assert.ok(set === 0 || set === 3, `${key}: half-recorded approval`);
+  }
+});
+
+test('cent amounts balance — the CHECK and the PLAN are two different totals', () => {
+  /*
+   * Slice 2 could assert one equation because everything was queued. With a
+   * withheld claim the fixture has to say which total it means:
+   *
+   *   the CHECK  must account for every cent the carrier moved, withheld claims
+   *              included — the check is the check.
+   *   the PLAN   must equal what was APPROVED, and no more.
+   *
+   * Which is the same distinction the gate draws between "this remittance
+   * balances" and "this claim is postable".
+   */
   const plan = buildFixturePlan();
   for (const office of OFFICES) {
     const batch = plan.rows.find((r) => r.table === 'rcm_payment_batches' && r.office === office);
@@ -522,8 +623,16 @@ test('cent amounts balance: batch total = claim payments = intended line amounts
     const queue = plan.rows.find((r) => r.table === 'rcm_posting_queue' && r.office === office);
 
     assert.equal(batch.row.total_amount_cents, claimPayments, `${office}: batch total vs claim payments`);
-    assert.equal(claimPayments, intended, `${office}: claim payments vs intended lines`);
     assert.equal(queue.row.intended_total_cents, intended, `${office}: queue total vs its lines`);
+    assert.equal(intended, plan.money[office].approvedPayments, `${office}: plan vs what was approved`);
+    /*
+     * The plan and the check DIFFER in both offices, and in opposite
+     * directions — which is the clearest possible statement that they are two
+     * different totals. Roland's plan is SMALLER (a postable claim nobody has
+     * approved yet). Valley's is LARGER (the check is netted down by a takeback
+     * the plan refuses to carry).
+     */
+    assert.notEqual(intended, claimPayments, `${office}: something here is deliberately not on the plan`);
     assert.equal(plan.money[office].batchTotal, claimPayments);
   }
 });

@@ -80,6 +80,26 @@ export class RcmApiError extends Error {
   get forbidden(): boolean {
     return this.status === 403 && this.code === "FORBIDDEN";
   }
+
+  /**
+   * This user may read the workbench but not approve a posting.
+   *
+   * TWO codes, one meaning. `POST /remittances/:id/approve` is deliberately NOT
+   * exempt from the mount's rcm.read/rcm.write pair, so the platform gate
+   * refuses a `reviewer` first with the generic FORBIDDEN — carrying the action
+   * that failed. The route's own APPROVE_REQUIRES_WRITE check sits behind it as
+   * defence in depth. The screen says the same sentence either way.
+   */
+  get approveForbidden(): boolean {
+    if (this.status !== 403) return false;
+    return this.code === "APPROVE_REQUIRES_WRITE" || this.details.action === "rcm.write";
+  }
+
+  /** The per-claim checklist a gate refusal carries, if it carries one. */
+  get refusedClaims(): ApprovalClaim[] {
+    const raw = this.details.claims;
+    return Array.isArray(raw) ? (raw as ApprovalClaim[]) : [];
+  }
 }
 
 /** Counts keyed by the status vocabulary of one rcm_* table. */
@@ -779,6 +799,15 @@ export interface WorkbenchClaim {
   reviewedAt: string | null;
   reviewedBy: string | null;
   reviewNote: string | null;
+  /**
+   * Non-null ⇒ a human approved this claim into a posting plan (Slice 6b).
+   *
+   * A cheap scalar, deliberately: the screen needs to know THAT the claim was
+   * approved, never what the plan contains. It is also the claim-level
+   * idempotency guard — single-valued, so a claim can belong to one plan.
+   */
+  postingQueueId: string | null;
+  approvedAt: string | null;
   createdAt: string | null;
   lines: ClaimLine[];
   matchSnapshot?: MatchSnapshot | null;
@@ -795,6 +824,90 @@ export interface WorkbenchClaim {
 
 /** A claim as the remittance detail lists it (no snapshot — the panel loads that). */
 export type RemittanceClaim = Omit<WorkbenchClaim, "matchSnapshot">;
+
+// ─── The approval gate (Slice 6b) ────────────────────────────────────────────
+
+/**
+ * One pre-flight condition, as the server evaluated it.
+ *
+ * `fix` is the server's own copy about what to DO — held there rather than in
+ * the client so a screen cannot invent an instruction the gate does not agree
+ * with. `detail` is the specific number or reason behind a failure.
+ */
+export interface ApprovalCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string | null;
+  fix: string;
+}
+
+export interface ApprovalClaim {
+  claimId: string;
+  claimNumber: string;
+  /** PHI — the checklist names patients, which is why reading it is audited. */
+  patientName: string;
+  postable: boolean;
+  /** An earlier approval already took this claim. */
+  alreadyQueued: boolean;
+  checks: ApprovalCheck[];
+  /** The codes that failed, in the order they were evaluated. */
+  failed: string[];
+}
+
+/** What WOULD happen, computed by the same function the button runs. */
+export interface ApprovalPreview {
+  office: RcmOfficeId;
+  batchId: string;
+  /** May THIS user press it? The server's answer, not a role name. */
+  canApprove: boolean;
+  /** The permission a colleague would need. */
+  approveRequires: string;
+  claims: ApprovalClaim[];
+  postableCount: number;
+  withheldCount: number;
+  queuedCount: number;
+  /** The batch's own arithmetic. False holds the WHOLE approve. */
+  balanced: boolean;
+  differenceCents: number;
+}
+
+export interface QueuedClaim {
+  claimId: string;
+  claimNumber: string;
+  patientName: string;
+  odClaimNum: number;
+  lines: number;
+  totalCents: number;
+}
+
+export interface WithheldClaim {
+  claimId: string;
+  claimNumber: string;
+  patientName: string;
+  reasons: string[];
+  checks: ApprovalCheck[];
+}
+
+export interface ApprovalResult {
+  office: RcmOfficeId;
+  batchId: string;
+  queueId: string;
+  approvedBy: string;
+  /** What this press enqueued. Partial success is real success. */
+  queued: QueuedClaim[];
+  /** What it did not, per claim, with every failing condition. */
+  withheld: WithheldClaim[];
+  /** What an earlier press had already taken. */
+  alreadyQueued: { claimId: string; claimNumber: string; patientName: string }[];
+  intendedTotalCents: number;
+  /**
+   * The server's own sentence, and the literal current truth. It stops being
+   * true the day Slice 6c ships — which is why the screen prints the server's
+   * words rather than its own.
+   */
+  note: string;
+}
 
 export interface RemittanceUpload {
   uploadId: string;
@@ -822,6 +935,12 @@ export interface Remittance {
   status: string;
   /** '835' = parsed, and can only be malformed. 'eob' = READ by a model, and can be WRONG. */
   source: "835" | "eob" | null;
+  /**
+   * Slice 5.5's remittance-level facts, as a vocabulary rather than as prose.
+   * Coloured by the D-11 split: a BLOCKING flag withholds every claim on this
+   * check, an annotating one does not. Both are always shown.
+   */
+  flags: string[];
   notes: string;
   createdAt: string | null;
   createdBy: string | null;
@@ -849,17 +968,32 @@ export interface Remittance {
   attentionObservations: string[];
   reviewReasonCount: number;
   unmatchedClaimCount: number;
+  /** How many claims a human has already approved into a posting plan. */
+  queuedClaimCount: number;
   upload: RemittanceUpload | null;
 }
 
 export interface RemittanceListPage {
   office: RcmOfficeId;
+  /** Which population `remittances` was paged out of. */
+  view: RemittanceView;
   remittances: Remittance[];
+  /** Every remittance this office holds — NOT the page, and NOT the filter. */
   total: number;
+  /**
+   * How many of that same population need attention, computed server-side over
+   * the whole set. "12 needing attention · 640 total" is now one statement about
+   * one population; in Slice 6a it was two statements about two.
+   */
+  needsAttentionCount: number;
+  /** How many rows the current view holds — what limit/offset page. */
+  matchingCount: number;
   limit: number;
   offset: number;
-  needsAttentionCount: number;
 }
+
+/** Which population the list endpoint pages. */
+export type RemittanceView = "attention" | "all";
 
 export interface RemittanceDetail {
   office: RcmOfficeId;
@@ -912,15 +1046,56 @@ export interface BatchMatchResponse {
   note?: string;
 }
 
-/** Every payment batch for this office, needs-attention count included. */
+/**
+ * Every payment batch for this office, with BOTH counts.
+ *
+ * `view` is applied server-side, over the whole office rather than over a page.
+ * Slice 6a filtered a 100-row page in the browser while the header counted
+ * everything, so the two numbers described two different populations and a
+ * remittance older than the hundredth newest was invisible AND uncounted.
+ */
 export function listRemittances(
   office: RcmOfficeId,
-  opts: { limit?: number; offset?: number } = {},
+  opts: { limit?: number; offset?: number; view?: RemittanceView } = {},
 ): Promise<RemittanceListPage> {
   const params: Record<string, string | number> = { office };
   if (opts.limit !== undefined) params.limit = opts.limit;
   if (opts.offset !== undefined) params.offset = opts.offset;
+  if (opts.view !== undefined) params.view = opts.view;
   return get<RemittanceListPage>("/remittances", params);
+}
+
+/**
+ * The pre-flight checklist: per claim, every condition, with pass/fail.
+ *
+ * A READ, on `rcm.read`, so the person who did the reviewing can see the
+ * consequences of her own work even though she cannot approve it. It is
+ * computed by the same function the button runs, so the screen cannot predict
+ * an outcome the button then contradicts.
+ */
+export function getApprovalPreview(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<ApprovalPreview> {
+  return get<ApprovalPreview>(`/remittances/${encodeURIComponent(batchId)}/approval`, { office });
+}
+
+/**
+ * Approve a remittance for posting. Needs `rcm.write`.
+ *
+ * The body is EMPTY, and that is the design: the gate re-reads every condition
+ * from the database and trusts nothing the client sent. There is no force flag,
+ * no override and no claim selection to pass — the only way a withheld claim
+ * becomes postable is for a human to fix what withheld it.
+ *
+ * Nothing is written to Open Dental. This creates rows describing an INTENT;
+ * Slice 6c is what acts on them.
+ */
+export function approveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<ApprovalResult> {
+  return post<ApprovalResult>(`/remittances/${encodeURIComponent(batchId)}/approve`, { office }, {});
 }
 
 /** One remittance: header, balance check, and every claim with its lines. */

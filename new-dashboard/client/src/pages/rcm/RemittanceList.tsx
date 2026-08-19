@@ -23,6 +23,20 @@
  * the filter never hides how much it is hiding.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * THE FILTER IS THE SERVER'S TOO (Slice 6b)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Slice 6a filtered a 100-row page IN THE BROWSER while the header counted the
+ * whole office, so "12 needing attention · 640 total" was two statements about
+ * two different populations — and a remittance needing attention and older than
+ * the hundredth newest was invisible AND uncounted, on a screen whose stated
+ * premise is that the default is the work.
+ *
+ * The tab is now a `view` parameter: the server applies the predicate over
+ * everything, pages the result, and returns BOTH counts over the same set. The
+ * page changes when the tab does, which is why `filter` is in the load's
+ * dependencies.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * ONE LIST PER OFFICE, NEVER A MERGED ONE
  * ─────────────────────────────────────────────────────────────────────────────
  * Office is a correctness boundary in this module, not a filter. `/api/rcm` has
@@ -50,6 +64,7 @@ import {
   RCM_OFFICE_LABELS,
   type Remittance,
   type RcmOfficeId,
+  type RemittanceView,
 } from "@/features/rcm/api";
 import {
   attentionLabel,
@@ -61,7 +76,10 @@ import {
   SOURCE_TITLES,
 } from "@/features/rcm/format";
 
-type Filter = "attention" | "all";
+type Filter = RemittanceView;
+
+/** Rows per page. The server caps at 200; this is what a screen reads well. */
+const PAGE_SIZE = 50;
 
 export default function RemittanceList() {
   const scope = useRcmOfficeScope();
@@ -164,14 +182,21 @@ export default function RemittanceList() {
 function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Filter }) {
   const [state, setState] = useState<
     | { kind: "loading" }
-    | { kind: "loaded"; rows: Remittance[]; total: number; attention: number }
+    | { kind: "loaded"; rows: Remittance[]; total: number; attention: number; matching: number }
     | { kind: "failed"; message: string }
   >({ kind: "loading" });
+  /** Which page of the CURRENT view. Reset whenever the view changes. */
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => setOffset(0), [filter, office]);
 
   const load = useCallback(() => {
     let cancelled = false;
     setState({ kind: "loading" });
-    listRemittances(office, { limit: 100 })
+    // `view` goes to the SERVER. The rows that come back are already the ones
+    // this tab shows, so nothing is filtered again here — which is what makes
+    // paging correct rather than paging-then-filtering.
+    listRemittances(office, { limit: PAGE_SIZE, offset, view: filter })
       .then((page) => {
         if (!cancelled) {
           setState({
@@ -179,6 +204,7 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
             rows: page.remittances,
             total: page.total,
             attention: page.needsAttentionCount,
+            matching: page.matchingCount,
           });
         }
       })
@@ -197,16 +223,11 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
     return () => {
       cancelled = true;
     };
-  }, [office]);
+  }, [office, offset, filter]);
 
   useEffect(load, [load]);
 
-  const rows =
-    state.kind === "loaded"
-      ? filter === "attention"
-        ? state.rows.filter((r) => r.needsAttention)
-        : state.rows
-      : [];
+  const rows = state.kind === "loaded" ? state.rows : [];
 
   return (
     <section data-testid={`remittances-${office}`}>
@@ -216,6 +237,8 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
           {state.kind === "loaded" && (
             // The count is ALWAYS visible, on both tabs. A filter that does not
             // say how much it is hiding is a filter people forget is on.
+            // Both numbers are computed server-side over the SAME population,
+            // which is what makes this sentence true rather than merely short.
             <span data-testid={`remittance-counts-${office}`}>
               {state.attention} needing attention · {state.total} total
             </span>
@@ -277,6 +300,41 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
           {rows.map((r) => (
             <RemittanceRow key={r.batchId} office={office} remittance={r} />
           ))}
+        </div>
+      )}
+
+      {/*
+        REAL PAGING, over the filtered population. It appears only when there is
+        more than one page — and it states the range, because "Next" with no
+        idea how much is left is the same failure as a filter that will not say
+        what it is hiding.
+      */}
+      {state.kind === "loaded" && state.matching > PAGE_SIZE && (
+        <div
+          className="mt-3 flex items-center justify-between text-xs text-muted-foreground"
+          data-testid={`remittance-pager-${office}`}
+        >
+          <span>
+            {offset + 1}–{Math.min(offset + rows.length, state.matching)} of {state.matching}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+              disabled={offset === 0}
+              data-testid={`remittance-prev-${office}`}
+              className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setOffset((o) => o + PAGE_SIZE)}
+              disabled={offset + rows.length >= state.matching}
+              data-testid={`remittance-next-${office}`}
+              className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
     </section>
@@ -372,7 +430,9 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
                   ? `${r.reviewReasonCount} flagged`
                   : reason === "claims_unmatched" && r.unmatchedClaimCount > 0
                     ? `${r.unmatchedClaimCount} unmatched`
-                    : attentionLabel(reason)}
+                    : reason === "claims_queued" && r.queuedClaimCount > 0
+                      ? `${r.queuedClaimCount} queued`
+                      : attentionLabel(reason)}
               </span>
             ))}
           </>
