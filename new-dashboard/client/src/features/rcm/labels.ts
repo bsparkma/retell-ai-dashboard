@@ -104,6 +104,9 @@ export const FAILURE_LABELS: Record<string, string> = {
   ocr_unreadable: "This scan is too faint or too low-resolution to read",
   ocr_failed: "The document reader could not open this file",
   ocr_budget_exhausted: "The daily cap for reading scanned documents is used up",
+  // Not "come back tomorrow" — tomorrow refuses it too. The only thing that
+  // works is splitting the document, so that is what the label says.
+  ocr_document_exceeds_cap: "This document is larger than a whole day's scan-reading cap — split it",
 };
 
 

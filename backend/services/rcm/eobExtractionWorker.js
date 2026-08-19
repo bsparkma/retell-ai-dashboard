@@ -291,6 +291,20 @@ function failureReason(err) {
     );
   }
   if (code === 'OCR_CALL_FAILED') return 'The document reader could not be reached. Try again.';
+  if (code === 'OCR_NO_PAGES') {
+    return (
+      'The document reader returned no pages for this file, so what it read cannot be ' +
+      'attributed to anything. Try again; if it is a scan, rescan it as a PDF at 300 dpi.'
+    );
+  }
+  if (code === 'RCM_OCR_DOCUMENT_EXCEEDS_CAP') {
+    // NOT "wait for the reset" — the reset refuses it again. The only advice
+    // that works is the one that changes the document.
+    return (
+      `${err.message} Split it and upload the parts separately, or ask an administrator ` +
+      'to raise the daily OCR cap.'
+    );
+  }
   if (code === 'OCR_UNAVAILABLE') {
     return 'Reading scanned documents is not configured in this environment.';
   }
@@ -354,6 +368,10 @@ function failureCode(err) {
     // never gets this far, because it PAUSES the upload above.
     case 'RCM_OCR_BUDGET_EXCEEDED':
       return 'ocr_budget_exhausted';
+    // A PERMANENT refusal, not today's cap. Its own code because the advice is
+    // the opposite one: splitting works, waiting never does.
+    case 'RCM_OCR_DOCUMENT_EXCEEDS_CAP':
+      return 'ocr_document_exceeds_cap';
     // The reader worked and the SCAN was bad: too faint, too low-resolution, or
     // read with an average confidence too low to review against.
     case 'OCR_UNREADABLE':
@@ -364,6 +382,9 @@ function failureCode(err) {
     case 'OCR_CALL_FAILED':
     case 'OCR_TIMED_OUT':
     case 'OCR_UNAVAILABLE':
+    // Zero pages with content: read, but unbillable and unattributable. The
+    // reader answered and the answer is unusable, which is this bucket.
+    case 'OCR_NO_PAGES':
       return 'ocr_failed';
     case 'LLM_UNAVAILABLE':
       return 'llm_unavailable';
@@ -381,7 +402,7 @@ function failureCode(err) {
 // handled failure into an unhandled one. Asserted at load rather than trusted.
 for (const code of ['document_too_large', 'no_extractable_text', 'pdf_unreadable',
   'budget_exhausted', 'llm_unavailable', 'extraction_invalid', 'extraction_failed',
-  'ocr_unreadable', 'ocr_failed', 'ocr_budget_exhausted']) {
+  'ocr_unreadable', 'ocr_failed', 'ocr_budget_exhausted', 'ocr_document_exceeds_cap']) {
   if (!EOB_FAILURE_CODES.includes(code)) {
     throw new Error(`[rcm/eob] failureCode() can emit '${code}', which is not in the vocabulary`);
   }

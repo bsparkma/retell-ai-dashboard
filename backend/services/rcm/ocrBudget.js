@@ -66,6 +66,7 @@
  */
 
 const { DurableState } = require('../durableState');
+const { localDayKey, nextLocalMidnightIso } = require('../localDayClock');
 
 /**
  * $2.00/day, in integer cents.
@@ -145,17 +146,17 @@ class OcrBudget {
   }
 
   /**
-   * Day key 'YYYY-MM-DD' in the budget timezone. DST-correct via Intl zone data
-   * (en-CA formats as YYYY-MM-DD).
+   * Day key 'YYYY-MM-DD' in the budget timezone.
+   *
+   * Shared with the extraction rail through `services/localDayClock.js`. The
+   * COUNTERS stay this rail's own — sharing the calendar is what stops a DST
+   * fix needing three landings; sharing a counter would let one resource's
+   * spend hide another's, which is the whole thing this file exists to prevent.
+   *
    * @param {Date} [now] injectable for tests
    */
   _todayKey(now = new Date()) {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: this.timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(now);
+    return localDayKey(this.timezone, now);
   }
 
   /** Load persisted accounting once per process (best-effort; never throws). */
@@ -196,35 +197,12 @@ class OcrBudget {
 
   /**
    * The instant the budget next rolls — the NEXT midnight in the budget zone.
-   *
-   * Same algorithm as `extractionBudget.nextResetIso`, itself ported from
-   * `transcriptionService.nextBudgetResetIso`: jump by the remaining wall-clock
-   * seconds of the local day, then re-read and correct, so a spring-forward /
-   * fall-back day lands on midnight rather than 01:00 / 23:00.
-   *
+   * DST-correct; see `services/localDayClock.js` for why it iterates.
    * @param {Date} [now] injectable for tests
    * @returns {string} ISO-8601
    */
   nextResetIso(now = new Date()) {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-      timeZone: this.timezone,
-      hourCycle: 'h23',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    const localSeconds = (d) => {
-      const [h, m, s] = fmt.format(d).split(':').map(Number);
-      return h * 3600 + m * 60 + s;
-    };
-    const DAY = 24 * 3600;
-    let ms = now.getTime() + (DAY - localSeconds(now)) * 1000;
-    for (let i = 0; i < 3; i++) {
-      const off = localSeconds(new Date(ms));
-      if (off === 0) break;
-      ms += (off > DAY / 2 ? DAY - off : -off) * 1000;
-    }
-    return new Date(ms).toISOString();
+    return nextLocalMidnightIso(this.timezone, now);
   }
 
   /**
@@ -236,10 +214,25 @@ class OcrBudget {
    * per-page meter can actually answer. Without it the answer degrades to "there
    * is something left", which is all the token rail can ever say.
    *
+   * ─────────────────────────────────────────────────────────────────────────
+   * `exceedsCapEntirely` — "not today" vs "not EVER"
+   * ─────────────────────────────────────────────────────────────────────────
+   * A document whose own estimate is larger than the WHOLE cap fails
+   * `used + estimate <= cap` even at zero spend, so waiting for midnight
+   * changes nothing: it is refused again tomorrow, and every tomorrow after
+   * that. Parking it as "will be read after the cap resets" would be a nightly
+   * false promise about a document that can never be read at this cap.
+   *
+   * Unreachable at the $2.00 default (which buys ~1,333 pages) and directly
+   * reachable the day an operator lowers `RCM_OCR_MAX_CENTS_PER_DAY`. That is
+   * exactly the kind of state a cost rail must be honest about rather than
+   * lucky about, so the two refusals are distinguishable HERE and the caller
+   * turns the second into a terminal failure with advice a person can act on.
+   *
    * @param {number|null} [pages] estimated page count, when known
    * @param {Date} [now] injectable for tests
-   * @returns {{ allowed: boolean, usedCents: number, capCents: number,
-   *             remainingCents: number, estimatedCents: number,
+   * @returns {{ allowed: boolean, exceedsCapEntirely: boolean, usedCents: number,
+   *             capCents: number, remainingCents: number, estimatedCents: number,
    *             resetsAt: string, dayKey: string }}
    */
   check(pages = null, now = new Date()) {
@@ -254,6 +247,9 @@ class OcrBudget {
         : this.centsUsed + estimatedCents <= cap;
     return {
       allowed,
+      // Deliberately independent of `usedCents`: this is a fact about the
+      // DOCUMENT against the cap, not about today's remaining budget.
+      exceedsCapEntirely: !unlimited && pages != null && estimatedCents > cap,
       usedCents: this.centsUsed,
       capCents: cap,
       remainingCents: unlimited ? Infinity : Math.max(0, cap - this.centsUsed),
@@ -274,6 +270,22 @@ class OcrBudget {
   assertAllowed(pages = null, now = new Date()) {
     const state = this.check(pages, now);
     if (state.allowed) return state;
+
+    // NOT EVER, rather than NOT TODAY. A different code, because the caller
+    // must fail this document permanently instead of parking it for a reset
+    // that will refuse it again — see `exceedsCapEntirely` above.
+    if (state.exceedsCapEntirely) {
+      const err = new Error(
+        `This document needs ${state.estimatedCents}¢ of OCR, which is more than the entire ` +
+          `daily cap of $${(state.capCents / 100).toFixed(2)}. Waiting will not help.`
+      );
+      err.code = 'RCM_OCR_DOCUMENT_EXCEEDS_CAP';
+      err.estimatedCents = state.estimatedCents;
+      err.capCents = state.capCents;
+      err.usedCents = state.usedCents;
+      throw err;
+    }
+
     if (!this._trippedLogged) {
       this._trippedLogged = true;
       console.warn(

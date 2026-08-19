@@ -110,13 +110,19 @@ const EOB_FAILURE_CODES = [
   'ocr_unreadable',
   'ocr_failed',
   'ocr_budget_exhausted',
+  'ocr_document_exceeds_cap',
 ];
 
 /** How a document's text was obtained — `rcm_eob_uploads.text_source`. */
 const TEXT_SOURCES = ['text_layer', 'ocr'];
 
 /** The failure codes that only the OCR path can produce; `down` refuses on these. */
-const OCR_ONLY_FAILURE_CODES = ['ocr_unreadable', 'ocr_failed', 'ocr_budget_exhausted'];
+const OCR_ONLY_FAILURE_CODES = [
+  'ocr_unreadable',
+  'ocr_failed',
+  'ocr_budget_exhausted',
+  'ocr_document_exceeds_cap',
+];
 
 /**
  * The least-privilege application role, resolved exactly as every other

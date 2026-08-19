@@ -179,7 +179,15 @@ function harness(opts = {}) {
   tenantDb.getTenantPool = async () => db;
   blobStore.getEob = async () => {
     if (opts.blobError) throw opts.blobError;
-    return opts.pdf || pdfWithText('PLAN PAID 163.00 CHECK CHK-100200');
+    // Long enough to BE a document by the escalation floor's own measure.
+    // The shorter version this used to carry cleared the floor only because
+    // pdf-parse's per-page marker was being counted as text — the very defect
+    // meaningfulTextLength() closes — so with that fixed it would escalate to
+    // OCR and every text-layer assertion below would be testing the wrong path.
+    return (
+      opts.pdf ||
+      pdfWithText('EXAMPLE DENTAL PLAN EOB - CHECK CHK-100200 - PLAN PAID 163.00 OF 167.00 BILLED')
+    );
   };
   const ocrOpts = opts.ocr || {};
   documentOcr.isConfigured = () => ocrOpts.configured === true;
@@ -591,6 +599,30 @@ function pdfWithNoTextLayer() {
   );
 }
 
+/**
+ * The same thing with N pages, for the cost arithmetic.
+ *
+ * The cap has to be a positive whole number of cents to mean anything —
+ * `Math.trunc` sends a fractional one to 0, which BOTH rails read as UNLIMITED
+ * — so "unaffordable in full" is produced with a bigger document rather than
+ * with a smaller cap. At 150¢/1,000 pages, seven pages round up to 2¢, which is
+ * the smallest document that cannot fit a 1¢ cap.
+ */
+function pagesWithNoTextLayer(pageCount) {
+  const kids = Array.from({ length: pageCount }, (_, i) => `${i + 3} 0 R`).join(' ');
+  const pages = Array.from(
+    { length: pageCount },
+    (_, i) => `${i + 3} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n`
+  ).join('');
+  return Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+      `2 0 obj<</Type/Pages/Kids[${kids}]/Count ${pageCount}>>endobj\n` +
+      pages +
+      'trailer<</Root 1 0 R>>\n',
+    'latin1'
+  );
+}
+
 test('a scanned document records HOW it was read, in the same transaction as its claims', async () => {
   const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, pages: 3 } });
   try {
@@ -699,6 +731,63 @@ test('a spent OCR budget PAUSES the document — it does not fail or drop it', a
     // And the EXTRACTION rail is untouched: the document never got that far, so
     // there is nothing to charge it for.
     assert.equal(budget.check().usedCents, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a document bigger than the whole OCR cap FAILS — it is not parked forever', async () => {
+  /*
+   * The nightly false promise this closes: a document whose own page count costs
+   * more than the entire daily cap fails `used + estimate <= cap` even at zero
+   * spend, so parking it as "will be read after the cap resets" is a promise
+   * re-broken every midnight. It is refused permanently instead, with the only
+   * advice that actually works.
+   *
+   * Seven pages cost 2¢ against a 1¢ cap: unaffordable in full, at zero spend.
+   */
+  const h = harness({
+    pdf: pagesWithNoTextLayer(7),
+    ocr: { configured: true },
+    ocrCapCents: '1',
+  });
+  try {
+    const result = await runExtraction(JOB);
+
+    // FAILED, not deferred — the whole point.
+    assert.equal(result.status, 'failed');
+    assert.notEqual(result.status, 'deferred');
+    assert.equal(h.calls.ocr, 0, 'and nothing was sent to Azure');
+    assert.equal(h.calls.llm, 0);
+
+    const row = upload(h.db);
+    assert.equal(row.status, 'failed');
+    assert.equal(row.failure_code, 'ocr_document_exceeds_cap');
+    assert.match(row.error_message, /Split it/i, 'the advice that works');
+    assert.ok(
+      !/after the cap resets|come back/i.test(row.error_message),
+      'and NOT the advice that never will'
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('a zero-page read is a failure, not a free success', async () => {
+  // Azure returning `content` with an empty `pages[]`: unbillable and
+  // unattributable. Before this it charged 0¢, passed both confidence gates,
+  // and died on the provenance CHECK at the last statement of the transaction —
+  // surfacing to the poster as a generic extraction failure.
+  const noPages = new Error('Document Intelligence reported no pages for this document');
+  noPages.code = 'OCR_NO_PAGES';
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, error: noPages } });
+  try {
+    const result = await runExtraction(JOB);
+    assert.equal(result.status, 'failed');
+    const row = upload(h.db);
+    assert.equal(row.failure_code, 'ocr_failed');
+    assert.match(row.error_message, /no pages/i);
+    assert.equal(row.text_source ?? null, null, 'and no provenance is claimed');
   } finally {
     h.restore();
   }

@@ -40,6 +40,10 @@
  * exactly as it did before this slice. Unconfigured is a legal state, not a
  * degraded one.
  *
+ * ⚠ THE FLOOR IS MEASURED AGAINST REAL TEXT, NOT PAGE FURNITURE — see
+ * `meaningfulTextLength`. Counting the raw string made the trigger fail on
+ * exactly the documents it exists for.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * PHI
  * ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +71,51 @@ const MAX_DOCUMENT_CHARS = 120_000;
 
 /** Below this, there is no document — a text layer of a dozen characters is noise. */
 const MIN_DOCUMENT_CHARS = 40;
+
+/**
+ * `-- 3 of 12 --`, which `pdf-parse` stamps into the text of EVERY page.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS EXISTS — THE TRIGGER FAILED ON THE DOCUMENTS IT WAS BUILT FOR
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The marker is ~16 characters, and pdf-parse emits one PER PAGE whether or not
+ * the page has any text at all. So an image-only scan's "text layer" grows with
+ * its page count, out of pure page furniture:
+ *
+ *     1 page  → 12 chars   escalates to OCR ✔
+ *     2 pages → 28 chars   escalates to OCR ✔
+ *     3 pages → 44 chars   DOES NOT ESCALATE ✘
+ *     4 pages → 60 chars   DOES NOT ESCALATE ✘
+ *
+ * Measured against the raw string, a three-page faxed EOB therefore looked like
+ * a text PDF, was never sent to OCR, and had the literal string
+ * `-- 1 of 3 --\n\n\n\n-- 2 of 3 --\n\n\n\n-- 3 of 3 --` sent to the extraction
+ * model instead — a paid call returning nothing, on precisely the multi-page
+ * scan this slice was built to read. Both committed scan fixtures are ONE page,
+ * so nothing caught it until the cost arithmetic needed a seven-page document.
+ *
+ * The pattern is pdf-parse's rendering, not a PDF standard, so it is pinned by
+ * `eobDocumentText.test.js` — if a pdf-parse upgrade changes the format, that
+ * test fails rather than this silently reverting to counting furniture.
+ */
+const PDF_PAGE_MARKER = /^[ \t]*--[ \t]*\d+[ \t]+of[ \t]+\d+[ \t]*--[ \t]*$/gm;
+
+/**
+ * How much REAL text a document yielded — the number the escalation floor is
+ * measured against.
+ *
+ * Page markers and whitespace are removed for the MEASUREMENT only; the text
+ * handed to the extraction prompt is the untouched original, because on a
+ * genuine text PDF those markers are useful page delimiters for the model.
+ * `MAX_DOCUMENT_CHARS` is likewise measured against the raw string, since that
+ * limit is about the size of the prompt actually sent.
+ *
+ * @param {string} raw
+ * @returns {number}
+ */
+function meaningfulTextLength(raw) {
+  return raw.replace(PDF_PAGE_MARKER, '').replace(/\s+/g, '').length;
+}
 
 /**
  * The documented confidence floor. Below it, every claim read from the document
@@ -115,6 +164,43 @@ function envFraction(key, fallback) {
   const n = Number(process.env[key]);
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
 }
+
+/**
+ * The two floors must be ordered, or they mean the opposite of what they say.
+ *
+ * With `unusable` above `min`, the refusal branch swallows the whole annotate
+ * band: every document between the two values is REFUSED where the operator
+ * who set them expected it to be flagged and reviewed. Nothing would say so —
+ * the documents would simply stop arriving, which is the quietest possible
+ * failure for a pair of numbers whose entire job is to be legible.
+ *
+ * So it is a STARTUP failure, not a runtime surprise: a container with the two
+ * inverted refuses to boot, the same way the RCM integer-env guards do. The
+ * check runs at module load, which is after the container's env is set and
+ * before any document has been accepted.
+ *
+ * @param {number} min the annotate floor
+ * @param {number} unusable the refusal floor
+ * @throws {Error} when they are misordered
+ */
+function assertFloorsOrdered(min, unusable) {
+  if (unusable > min) {
+    throw new Error(
+      `[rcm/ocr] RCM_OCR_UNUSABLE_CONFIDENCE (${unusable}) is above ` +
+        `RCM_OCR_MIN_CONFIDENCE (${min}). The refusal floor must sit BELOW the review ` +
+        'floor, or every document between them is refused instead of flagged for review. ' +
+        'Lower the refusal floor, or raise the review floor.'
+    );
+  }
+  return true;
+}
+
+// Asserted at LOAD, so a misconfigured container fails to start rather than
+// silently refusing documents it was configured to annotate.
+assertFloorsOrdered(
+  envFraction('RCM_OCR_MIN_CONFIDENCE', OCR_CONFIDENCE_FLOOR),
+  envFraction('RCM_OCR_UNUSABLE_CONFIDENCE', OCR_CONFIDENCE_UNUSABLE)
+);
 
 /**
  * The A6 refusal, worded for whichever path produced the text.
@@ -185,7 +271,11 @@ async function extractPdfText(buffer, deps = {}) {
   const pageCount = Number(parsed.total) || 0;
 
   // ── The escalation, triggered by the honest failure we already detect ──────
-  if (raw.length < MIN_DOCUMENT_CHARS) {
+  //
+  // Measured on real text, NOT on the raw string: pdf-parse's per-page
+  // `-- N of M --` markers otherwise carry a multi-page scan over the floor on
+  // page furniture alone. See PDF_PAGE_MARKER.
+  if (meaningfulTextLength(raw) < MIN_DOCUMENT_CHARS) {
     return readByOcr(buffer, pageCount, deps);
   }
 
@@ -240,9 +330,15 @@ async function readByOcr(buffer, pageCount, deps) {
   const budget = deps.ocrBudget || require('./ocrBudget');
 
   // THE HARD BACKSTOP, with the page count, so a document we cannot afford IN
-  // FULL is refused before a byte is sent rather than half-read. The thrown
-  // error carries `RCM_OCR_BUDGET_EXCEEDED`, which the worker turns into a
-  // PAUSE — the upload stays, waits for the reset, and is never dropped.
+  // FULL is refused before a byte is sent rather than half-read.
+  //
+  // TWO different refusals come out of here, and the difference matters to the
+  // person who uploaded the document:
+  //   RCM_OCR_BUDGET_EXCEEDED       today's cap is spent → the worker PAUSES
+  //                                 the upload and it is read after the reset.
+  //   RCM_OCR_DOCUMENT_EXCEEDS_CAP  this document is bigger than the WHOLE cap
+  //                                 → no reset can ever admit it, so the worker
+  //                                 FAILS it terminally and says to split it.
   budget.assertAllowed(pageCount || null);
 
   const result = await ocr.analyze(buffer);
@@ -316,4 +412,8 @@ module.exports = {
   OCR_CONFIDENCE_FLOOR,
   OCR_CONFIDENCE_UNUSABLE,
   RESCAN_ADVICE,
+  meaningfulTextLength,
+  // Exported so the ordering rule can be tested directly with arbitrary values.
+  // The module-load call above is the one that actually guards a container.
+  assertFloorsOrdered,
 };

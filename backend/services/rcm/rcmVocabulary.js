@@ -278,6 +278,18 @@ const EOB_FAILURE_CODES = Object.freeze([
    * upload (status stays `uploaded`) and sets no failure code at all.
    */
   'ocr_budget_exhausted',
+  /**
+   * This ONE document needs more OCR than the entire daily cap, so no reset can
+   * ever admit it.
+   *
+   * Distinct from `ocr_budget_exhausted` because the answer to the user is the
+   * opposite one. "The cap is spent, come back tomorrow" is true of a spent
+   * rail; said about a document that cannot fit even at zero spend it is a
+   * NIGHTLY FALSE PROMISE, and the upload would park, re-wake, and be refused
+   * again forever. This is the honest permanent state, and its message tells
+   * the poster the thing that actually works: split the document.
+   */
+  'ocr_document_exceeds_cap',
 ]);
 
 /**

@@ -312,15 +312,50 @@ test('with no `content`, the per-page lines are the fallback', async () => {
   }
 });
 
-test('a response with no pages is a zero-page read, not a free one', async () => {
+test('a response with no pages is REFUSED, not returned as a free read', async () => {
   const h = harness([ACCEPTED, { status: 200, json: { status: 'succeeded', analyzeResult: {} } }]);
   try {
-    const result = await ocr.analyze(PDF);
-    // The caller turns this into an honest refusal. What must NOT happen is a
-    // page count that quietly reads as "nothing to bill".
-    assert.equal(result.pages, 0);
-    assert.equal(result.text, '');
-    assert.equal(result.meanConfidence, null);
+    await assert.rejects(() => ocr.analyze(PDF), (err) => {
+      assert.equal(err.code, 'OCR_NO_PAGES');
+      return true;
+    });
+  } finally {
+    h.restore();
+  }
+});
+
+test('zero pages WITH long content is refused too — the dangerous half of that case', async () => {
+  /*
+   * Azure can return `content` alongside an empty `pages[]`, and this is the
+   * shape that used to get through: the text is long enough to clear
+   * MIN_DOCUMENT_CHARS, confidence is null so neither floor fires, and the
+   * result reaches the database — where `rcm_eob_uploads_ocr_provenance_check`
+   * (ocr_page_count > 0) rolls the whole proposal back at the very last
+   * statement and the poster is shown a generic `extraction_failed` for a
+   * document that was in fact read.
+   *
+   * It also billed 0¢ for work that really ran. Refusing at the boundary is
+   * what makes `pages >= 1` an invariant the rest of the slice can rely on.
+   */
+  const h = harness([
+    ACCEPTED,
+    {
+      status: 200,
+      json: {
+        status: 'succeeded',
+        analyzeResult: { content: 'EXAMPLE DENTAL PLAN - EXPLANATION OF BENEFITS '.repeat(20), pages: [] },
+      },
+    },
+  ]);
+  try {
+    await assert.rejects(() => ocr.analyze(PDF), (err) => {
+      assert.equal(err.code, 'OCR_NO_PAGES');
+      // The message carries the character count, so "it read something but we
+      // cannot attribute it" is diagnosable rather than mysterious.
+      assert.match(err.message, /no pages/i);
+      assert.match(err.message, /characters of text/);
+      return true;
+    });
   } finally {
     h.restore();
   }

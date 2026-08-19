@@ -80,6 +80,11 @@ class TranscriptionService {
    * formats as YYYY-MM-DD); a fixed -5/-6 offset would be wrong for half the year.
    * @param {Date} [now] injectable for tests
    */
+  // FOLLOW-UP (main-line): this and nextBudgetResetIso below are the THIRD copy
+  // of the local-day clock. `services/localDayClock.js` is the extracted one and
+  // the two RCM budgets already use it; replacing these two methods with
+  // localDayKey()/nextLocalMidnightIso() is a behaviour-free change deliberately
+  // left out of an RCM billing slice, because this rail is on the voice path.
   _todayKey(now = new Date()) {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: this.budgetTimezone,

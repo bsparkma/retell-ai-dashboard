@@ -65,6 +65,18 @@ test('the review-reason vocabulary matches the migration exactly', () => {
   assert.deepEqual(migrationList('REVIEW_REASONS').sort(), [...vocabulary.REVIEW_REASONS].sort());
 });
 
+test('"last declaration wins" resolves to the migration that actually owns each list', () => {
+  // The mechanism, pinned rather than assumed. If a later migration widens one
+  // of these and this assertion is not updated with it, the failure names the
+  // file — which is the whole point of resolving by recency instead of by a
+  // hard-coded path.
+  assert.equal(migrationDeclaring('REVIEW_REASONS').file, '1787100000000_rcm_ocr.js');
+  assert.equal(migrationDeclaring('EOB_FAILURE_CODES').file, '1787100000000_rcm_ocr.js');
+  // ...and the lists the OCR migration does NOT touch still resolve to 5.5.
+  assert.equal(migrationDeclaring('LINE_FLAGS').file, '1787060000000_rcm_fidelity.js');
+  assert.equal(migrationDeclaring('REMITTANCE_FLAGS').file, '1787060000000_rcm_fidelity.js');
+});
+
 test('the line-flag vocabulary matches the migration exactly', () => {
   assert.deepEqual(migrationList('LINE_FLAGS').sort(), [...vocabulary.LINE_FLAGS].sort());
 });

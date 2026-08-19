@@ -110,6 +110,71 @@ test('a job it cannot afford IN FULL is refused before anything is sent', () => 
   }
 });
 
+test('a document bigger than the WHOLE cap is refused terminally, not deferred', () => {
+  // Reachable the day an operator lowers the cap. 10¢ buys ~66 pages; a
+  // 200-page document costs 30¢ and can never fit, not today and not after any
+  // reset — so parking it as "will be read after the cap resets" would be a
+  // promise re-broken every midnight, forever.
+  const { budget, restore } = freshBudget({ RCM_OCR_MAX_CENTS_PER_DAY: '10' });
+  try {
+    const state = budget.check(200);
+    assert.equal(state.usedCents, 0, 'at ZERO spend — this is not about today');
+    assert.equal(state.allowed, false);
+    assert.equal(state.exceedsCapEntirely, true);
+    assert.equal(state.estimatedCents, 30);
+
+    assert.throws(
+      () => budget.assertAllowed(200),
+      (err) => {
+        // A DIFFERENT code from the ordinary tripped rail, because the caller
+        // must fail this document rather than park it.
+        assert.equal(err.code, 'RCM_OCR_DOCUMENT_EXCEEDS_CAP');
+        assert.notEqual(err.code, 'RCM_OCR_BUDGET_EXCEEDED');
+        assert.equal(err.estimatedCents, 30);
+        assert.equal(err.capCents, 10);
+        assert.match(err.message, /Waiting will not help/);
+        // No `resetsAt`: there is no reset that changes this answer, and
+        // offering one would be the false promise itself.
+        assert.equal(err.resetsAt, undefined);
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('a document that merely does not fit TODAY is still an ordinary pause', () => {
+  const { budget, restore } = freshBudget({ RCM_OCR_MAX_CENTS_PER_DAY: '10' });
+  try {
+    budget.charge(50); // 8¢ of 10¢
+    const state = budget.check(20); // 3¢ — fits the cap, not today's remainder
+    assert.equal(state.allowed, false);
+    assert.equal(state.exceedsCapEntirely, false, 'it fits the cap; it does not fit today');
+    assert.throws(
+      () => budget.assertAllowed(20),
+      (err) => {
+        assert.equal(err.code, 'RCM_OCR_BUDGET_EXCEEDED');
+        assert.ok(err.resetsAt, 'and there IS a reset worth waiting for');
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('an unlimited cap has nothing to exceed', () => {
+  const { budget, restore } = freshBudget({ RCM_OCR_MAX_CENTS_PER_DAY: '0' });
+  try {
+    const state = budget.check(1_000_000);
+    assert.equal(state.allowed, true);
+    assert.equal(state.exceedsCapEntirely, false);
+  } finally {
+    restore();
+  }
+});
+
 test('assertAllowed REFUSES at the point of spend, with a typed code and a reset', () => {
   const { budget, restore } = freshBudget({ RCM_OCR_MAX_CENTS_PER_DAY: '5' });
   try {

@@ -1,13 +1,26 @@
 'use strict';
 
 /**
- * Generator for the three EOB PDF fixtures in this directory.
+ * Generator for the three EOB PDF fixtures in test/fixtures/rcm/eob/.
  *
- *     node backend/test/fixtures/rcm/eob/make-eob-fixtures.js
+ *     node backend/scripts/make-eob-fixtures.js
  *
  * Run it only to REGENERATE the fixtures. The tests read the committed PDFs and
  * never invoke this file — a test that generated its own inputs would be testing
  * this script rather than the code under test, and would need Chromium in CI.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠ IT LIVES IN scripts/, NOT BESIDE THE FIXTURES, AND MUST STAY THERE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Node 22's test runner treats EVERY `.js` file under a directory named `test/`
+ * as a test file. A bare `node --test` — which is exactly what CI runs — therefore
+ * executed this script as though it were a suite: it succeeded silently, launched
+ * Chromium, and REWROTE the committed fixtures on every test run. The degraded
+ * page is blurred and rotated and so renders slightly differently each time, so
+ * the corpus the tests assert against and the docs describe drifted underneath
+ * them, with nothing failing to say so.
+ *
+ * Anything executable that is not a test belongs outside `test/`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * NO REAL SCAN, EVER
@@ -44,7 +57,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const OUT_DIR = __dirname;
+/** The fixtures themselves stay beside the corpus they belong to. */
+const OUT_DIR = path.resolve(__dirname, '..', 'test', 'fixtures', 'rcm', 'eob');
 
 /**
  * The EOB itself. Invented payer, invented people, invented money.

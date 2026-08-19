@@ -203,8 +203,11 @@ function delay(ms) {
  *
  * @param {Buffer} buffer the document bytes (PDF or image)
  * @returns {Promise<OcrResult>}
+ * INVARIANT: a successful return always has `pages >= 1`. A zero-page answer is
+ * refused here rather than handed on — see the guard at the end.
+ *
  * @throws {DocumentOcrError} `OCR_UNAVAILABLE` | `OCR_CALL_FAILED` |
- *         `OCR_ANALYZE_FAILED` | `OCR_TIMED_OUT`
+ *         `OCR_ANALYZE_FAILED` | `OCR_TIMED_OUT` | `OCR_NO_PAGES`
  */
 async function analyze(buffer) {
   const endpoint = endpointUrl();
@@ -340,7 +343,36 @@ async function analyze(buffer) {
       );
     }
 
-    return summarize(body.analyzeResult, model, Date.now() - startedAt);
+    const result = summarize(body.analyzeResult, model, Date.now() - startedAt);
+
+    /*
+     * ZERO PAGES IS A REFUSAL, EVEN WITH CONTENT.
+     *
+     * Azure can return `content` alongside an empty `pages[]`. Letting that
+     * through was a three-way lie waiting to happen: the cost rail charges 0¢
+     * for work that really ran (a free read), the provenance CHECK
+     * `rcm_eob_uploads_ocr_provenance_check` requires `ocr_page_count > 0` so
+     * the transaction rolls back at the very end, and the poster is shown a
+     * generic `extraction_failed` for a document that was actually read.
+     *
+     * Stamping a fabricated `1` was the alternative and is worse: it would
+     * invent the number the screen prints as fact and the rail bills against.
+     *
+     * So the boundary refuses it. Long content with no pages is a response we
+     * cannot bill honestly, cannot describe honestly, and therefore will not
+     * present as a success. It is rare enough to be a real fault and is
+     * reported as one, with the page count in the message.
+     */
+    if (result.pages < 1) {
+      throw new DocumentOcrError(
+        `Document Intelligence reported no pages for this document ` +
+          `(${result.text.length} characters of text). It cannot be billed or ` +
+          'attributed, so it is not treated as a successful read.',
+        'OCR_NO_PAGES'
+      );
+    }
+
+    return result;
   }
 }
 
@@ -386,9 +418,9 @@ function summarize(analyzeResult, model, elapsedMs) {
 
   return {
     text: typeof text === 'string' ? text.trim() : '',
-    // `pages.length` is what Azure processed and therefore what it bills. A
-    // response with no pages array is a zero-page read, which the caller turns
-    // into an honest refusal rather than a free lunch.
+    // `pages.length` is what Azure processed and therefore what it bills.
+    // `summarize` stays a pure mapping and may return 0 here; `analyze` is what
+    // refuses that, so the invariant is enforced in exactly one place.
     pages: pages.length,
     // null, never 1.0, when nothing reported a confidence. "We do not know how
     // sure the reader was" and "the reader was certain" are different facts and

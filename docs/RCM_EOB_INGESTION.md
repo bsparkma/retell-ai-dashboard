@@ -285,7 +285,7 @@ elapsed milliseconds. The bytes are never written to disk on either side of the 
 | `RCM_OCR_BUDGET_TZ` | `America/Chicago` | Day boundary for the OCR breaker. |
 | `RCM_OCR_CENTS_PER_KPAGE` | `150` | $1.50 per **1,000** pages — the S0 `prebuilt-read` list price, verified against the Azure retail price API on 2026-08-19. |
 | `RCM_OCR_MIN_CONFIDENCE` | `0.85` | Below this mean word confidence, every claim from the document gets `ocr_low_confidence`. |
-| `RCM_OCR_UNUSABLE_CONFIDENCE` | `0.55` | Below this, the document is REFUSED with rescan advice instead of annotated. |
+| `RCM_OCR_UNUSABLE_CONFIDENCE` | `0.55` | Below this, the document is REFUSED with rescan advice instead of annotated. **Must be ≤ `RCM_OCR_MIN_CONFIDENCE`** — the container refuses to start otherwise. |
 | `RCM_OCR_TIMEOUT_MS` | `120000` | The whole submit-and-poll cycle. |
 | `RCM_OCR_POLL_INTERVAL_MS` | `2000` | How often the long-running operation is polled. |
 
@@ -549,6 +549,7 @@ Container logs show one line per extraction with the token count and the running
 | Extraction worker (blob → LLM → rows, one transaction) | `backend/services/rcm/eobExtractionWorker.js` |
 | Queue seam | `backend/services/rcm/eobExtractionQueue.js` |
 | Startup sweep (interrupted → failed) | `backend/services/rcm/eobStartupSweep.js` |
+| Local-day clock, shared by the rails | `backend/services/localDayClock.js` |
 | Cost breaker (Azure OpenAI tokens) | `backend/services/rcm/extractionBudget.js` |
 | Cost breaker (Document Intelligence pages) | `backend/services/rcm/ocrBudget.js` |
 | OCR transport (Document Intelligence) | `backend/services/rcm/documentOcr.js` |
@@ -557,7 +558,8 @@ Container logs show one line per extraction with the token count and the running
 | Azure OpenAI seam | `backend/services/rcm/rcmLlm.js` |
 | UI | `new-dashboard/client/src/pages/rcm/EobUploadPanel.tsx` |
 | API client | `new-dashboard/client/src/features/rcm/api.ts` |
-| EOB PDF fixtures + their generator | `backend/test/fixtures/rcm/eob/` |
+| EOB PDF fixtures | `backend/test/fixtures/rcm/eob/` |
+| ...and their generator (outside `test/` on purpose) | `backend/scripts/make-eob-fixtures.js` |
 | Screenshots | `docs/screenshots/rcm-eob/` |
 
 Related: [RCM_SCHEMA.md](RCM_SCHEMA.md) (the `rcm_*` tables),
@@ -599,6 +601,18 @@ escalates when its text layer yields fewer than `MIN_DOCUMENT_CHARS` (40) — th
 condition that used to raise `NO_EXTRACTABLE_TEXT`. **A text-layer PDF therefore never pays
 for OCR**, and it structurally cannot: the escalation lives on the far side of a read that
 already failed.
+
+> ⚠ **The floor counts REAL text, not page furniture.** `pdf-parse` stamps a `-- 3 of 12 --`
+> marker into the text of every page — about 16 characters — whether or not the page has any
+> text at all. Measured against the raw string, an image-only scan crosses the 40-character
+> floor on page count alone: 1 page → 12 chars (escalates), 3 pages → 44 chars (**did not**),
+> 4 pages → 60 chars (**did not**). A three-page faxed EOB was therefore treated as a text
+> PDF and had its own page markers sent to the extraction model as the document. The floor is
+> measured through `meaningfulTextLength()`, which strips the markers and whitespace for the
+> MEASUREMENT only — the prompt still receives the untouched text, because on a genuine text
+> PDF those markers are useful page delimiters. The pattern is pdf-parse's rendering rather
+> than a PDF standard, so a test pins it against the real fixture and fails loudly if an
+> upgrade changes the format.
 
 **OCR is a pre-step, not a second engine.** Both paths produce a string that goes to the
 same prompt, against the same schema, producing the same rows. Nothing downstream of
@@ -660,6 +674,19 @@ raises either cap.**
 A tripped OCR rail is a **pause**, not a failure: the upload stays at `uploaded` with a
 reason naming the OCR cap and its own reset time. Nothing is dropped.
 
+**Unless waiting cannot help.** A document whose own page count costs more than the *entire*
+cap fails `used + estimate <= cap` even at zero spend, so a reset refuses it again — and
+again, every midnight. Parking it would be a nightly false promise, so the rail reports that
+case separately (`exceedsCapEntirely`) and it becomes a **terminal failure**
+(`ocr_document_exceeds_cap`) whose message says the thing that actually works: split the
+document, or have the cap raised. Unreachable at the $2.00 default, which buys ~1,333 pages;
+directly reachable the day an operator lowers `RCM_OCR_MAX_CENTS_PER_DAY`.
+
+> A cap must be a positive **whole number of cents**. Both rails `Math.trunc` it, so
+> `RCM_OCR_MAX_CENTS_PER_DAY=0.5` becomes `0`, which means **unlimited**. Inherited from
+> `extractionBudget` and identical in both; flagged for a main-line fix to the pair rather
+> than changed in one of them here.
+
 ### Provenance: what the biller sees
 
 `rcm_eob_uploads` records how each document was read, written **inside the same transaction
@@ -715,6 +742,15 @@ claim built out of that, because the amounts she would check against are themsel
 misread ones. So it is a refusal, and the message says what to do: *"rescan at 300 dpi in
 black and white, ask the payer for a text PDF, or enter this EOB manually."*
 
+The refusal is `confidence < unusable`, so a document sitting **exactly on** the refusal floor
+is annotated rather than thrown away.
+
+**The two floors are validated against each other at startup.** With the refusal floor set
+*above* the review floor, the refusal branch swallows the whole annotate band and every
+document between them is rejected where the operator expected it flagged — with nothing
+anywhere saying so; the documents would simply stop arriving. A container configured that way
+refuses to boot, naming both values and which way to fix them.
+
 `ocr_low_confidence` is **annotating** under D-11 — a grey chip, not amber. It is a fact
 about how confidently the document was read, not a claim that any stored amount is wrong,
 and every arithmetic check the EOB path already runs (`paid_total_mismatch`,
@@ -737,6 +773,7 @@ is the same defect as a digital one that did, so it is the same refusal — same
 | `ocr_unreadable` | the reader worked; the SCAN was bad | rescan at 300 dpi, or enter it manually |
 | `ocr_failed` | the reader never got that far — refused the file, timed out, or was unreachable | try again; if it is a scan, rescan as PDF |
 | `ocr_budget_exhausted` | the OCR cap was consumed between the gate and the spend by a concurrent job | wait for the OCR reset (the normal tripped path pauses instead and sets no code) |
+| `ocr_document_exceeds_cap` | this one document needs more OCR than the whole daily cap, so no reset can ever admit it | split the document, or have the cap raised — **not** "come back tomorrow" |
 
 ### Known limits
 
@@ -757,11 +794,18 @@ is the same defect as a digital one that did, so it is the same refusal — same
   requires `%PDF-` magic bytes. See §7.
 - **One page count.** Azure's count and the PDF's own can disagree. Both are stored:
   `ocr_page_count` is what ran and what was billed.
+- **Zero pages is refused, even with content.** Document Intelligence can return `content`
+  alongside an empty `pages[]`. That answer is unbillable (it would charge 0¢ for work that
+  really ran) and unattributable (the provenance CHECK requires `ocr_page_count > 0`), and
+  stamping a fabricated `1` would invent the number the screen prints as fact. So `analyze()`
+  refuses it — `pages >= 1` is an invariant the rest of the slice relies on — and the poster
+  sees `ocr_failed` with the character count, rather than a generic failure after a
+  transaction rolled back at its last statement.
 
 ### The fixtures
 
 `backend/test/fixtures/rcm/eob/` — three committed PDFs and the script that made them
-(`make-eob-fixtures.js`, run only to regenerate). **No real scan is used anywhere**: there is
+(`backend/scripts/make-eob-fixtures.js`, run only to regenerate — it lives outside `test/` deliberately, because Node runs every `.js` under `test/` as a test). **No real scan is used anywhere**: there is
 no redaction that survives OCR, since the whole point is that a machine reads the pixels.
 
 | fixture | how it was made | what it proves |

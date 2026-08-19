@@ -1,6 +1,10 @@
 # Synthetic EOB PDF fixtures — RCM OCR
 
-Three PDFs of the same invented EOB, and the script that made them. They exist so the OCR
+Three PDFs of the same invented EOB. The script that makes them lives in
+[`backend/scripts/make-eob-fixtures.js`](../../../../scripts/make-eob-fixtures.js) and **must stay
+outside `test/`** — Node 22 runs every `.js` under a `test/` directory as a test file, so while
+it sat here a bare `node --test` executed it, launched Chromium and silently rewrote these
+fixtures on every test run. They exist so the OCR
 pre-step (`backend/services/rcm/eobDocumentText.js`) can be tested against a real scanned
 page rather than against an assertion that one would behave a certain way.
 
@@ -48,7 +52,7 @@ pages for text already present in the file for nothing.
 ## Regenerating them
 
 ```bash
-node backend/test/fixtures/rcm/eob/make-eob-fixtures.js
+node backend/scripts/make-eob-fixtures.js
 ```
 
 Needs Chromium (via the `puppeteer` already in `backend/package.json`). **The tests never run
@@ -59,6 +63,19 @@ The JPEG bytes go into the PDF **verbatim**: PDF's `/DCTDecode` filter *is* the 
 so nothing decodes or re-encodes an image and no image library enters the dependency tree.
 That is also what makes these genuine rasterisations — real glyph rendering, real
 antialiasing, real JPEG artefacts — rather than a drawing of text.
+
+## The multi-page case is built in the test, not committed here
+
+Every scan fixture in this directory is ONE page, and that is what let a real defect through:
+`pdf-parse` stamps a `-- N of M --` marker into the text of every page, so an image-only
+scan of three pages or more crossed the 40-character escalation floor on page furniture alone
+and was never sent to OCR. Both fixtures being single-page meant no test noticed.
+
+The regression is pinned in `eobDocumentText.test.js` with hand-built blank multi-page PDFs
+rather than with a committed rasterised twelve-page scan. The property under test is what
+pdf-parse writes for a page with no text, and a blank page reproduces that **exactly** — the
+real one-page fixture and a hand-built one both yield the identical `"-- 1 of 1 --"`. A few
+hundred kilobytes of committed pixels would prove nothing further.
 
 ## Do not edit the PDFs by hand
 

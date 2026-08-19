@@ -31,6 +31,9 @@ const {
   MAX_DOCUMENT_CHARS,
   OCR_CONFIDENCE_FLOOR,
   OCR_CONFIDENCE_UNUSABLE,
+  assertFloorsOrdered,
+  meaningfulTextLength,
+  MIN_DOCUMENT_CHARS,
 } = require('./eobDocumentText');
 
 const FIXTURES = path.join(__dirname, '..', '..', 'test', 'fixtures', 'rcm', 'eob');
@@ -139,6 +142,96 @@ test('an image-only PDF escalates to OCR, and is priced by its page count first'
   assert.deepEqual(doc.reviewReasons, [], '0.99 is well above the floor — nothing to flag');
 });
 
+/**
+ * An image-only PDF of N pages, built rather than fixtured.
+ *
+ * The committed scans are the real thing and are what the rest of this file
+ * drives; the property HERE is what `pdf-parse` puts in the text layer of a page
+ * that has none, which a hand-built blank page reproduces exactly — the real
+ * one-page fixture and a hand-built one both yield the identical
+ * `"-- 1 of 1 --"`. Committing a rasterised twelve-page scan to assert a string
+ * about page furniture would be several hundred kilobytes for no extra proof.
+ */
+function blankPagesPdf(pageCount) {
+  const kids = Array.from({ length: pageCount }, (_, i) => `${i + 3} 0 R`).join(' ');
+  const pages = Array.from(
+    { length: pageCount },
+    (_, i) => `${i + 3} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n`
+  ).join('');
+  return Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+      `2 0 obj<</Type/Pages/Kids[${kids}]/Count ${pageCount}>>endobj\n` +
+      pages +
+      'trailer<</Root 1 0 R>>\n',
+    'latin1'
+  );
+}
+
+test('a MULTI-PAGE scan escalates too — page furniture is not a text layer', async () => {
+  /*
+   * THE REGRESSION THIS PINS.
+   *
+   * `pdf-parse` stamps `-- 3 of 12 --` into the text of every page, ~16
+   * characters, whether or not the page has any text. Measured against the raw
+   * string, an image-only scan therefore crosses the 40-character floor on page
+   * count alone:
+   *
+   *     1 page → 12 chars ✔ escalates      3 pages → 44 chars ✘ did not
+   *     2 pages → 28 chars ✔ escalates     4 pages → 60 chars ✘ did not
+   *
+   * A three-page faxed EOB was thus treated as a text PDF, never sent to OCR,
+   * and had its page markers sent to the extraction model as the document — a
+   * paid call returning nothing, on exactly the multi-page scan this slice
+   * exists to read. Both committed scan fixtures are ONE page, so nothing
+   * noticed until the cost arithmetic needed a seven-page document.
+   *
+   * Every page count from 1 to 12, because the defect was a function of the
+   * count and a spot check at one value is what let it through.
+   */
+  for (const pageCount of [1, 2, 3, 4, 5, 7, 12]) {
+    const ocr = fakeOcr();
+    const doc = await extractPdfText(blankPagesPdf(pageCount), {
+      ocr,
+      ocrBudget: fakeBudget(),
+    });
+    assert.equal(
+      ocr.calls.analyze,
+      1,
+      `a ${pageCount}-page image-only PDF must reach OCR, not the extraction prompt`
+    );
+    assert.equal(doc.source, 'ocr');
+  }
+});
+
+test('the page-marker pattern still matches what pdf-parse emits', async () => {
+  // The pattern is pdf-parse's RENDERING, not a PDF standard. Pinned against the
+  // real committed fixture so an upgrade that changes the format fails here,
+  // loudly, rather than silently reverting the floor to counting furniture.
+  const { PDFParse } = require('pdf-parse');
+  const parser = new PDFParse({ data: SCANNED });
+  const parsed = await parser.getText();
+  await parser.destroy();
+
+  const rawText = (parsed.text || '').trim();
+  assert.ok(rawText.length > 0, 'pdf-parse still emits SOMETHING for an image-only page');
+  assert.match(rawText, /--\s*\d+\s+of\s+\d+\s*--/, 'and it is still the page marker');
+  assert.equal(
+    meaningfulTextLength(rawText),
+    0,
+    `page furniture must measure as zero real text; saw ${JSON.stringify(rawText)}`
+  );
+  assert.ok(meaningfulTextLength(rawText) < MIN_DOCUMENT_CHARS);
+});
+
+test('meaningfulTextLength strips furniture without touching real content', () => {
+  assert.equal(meaningfulTextLength('-- 1 of 1 --'), 0);
+  assert.equal(meaningfulTextLength('-- 1 of 3 --\n\n-- 2 of 3 --\n\n-- 3 of 3 --'), 0);
+  // A real page keeps its content, and the marker is not counted toward it.
+  assert.equal(meaningfulTextLength('-- 1 of 2 --\nPAID 163.00'), 'PAID163.00'.length);
+  // A line that merely looks a bit like a marker is NOT furniture.
+  assert.ok(meaningfulTextLength('-- 1 of 3 claims paid --') > 0);
+});
+
 test('with no OCR provider configured, a scan fails exactly as it did before', async () => {
   const ocr = fakeOcr({ configured: false });
   const budget = fakeBudget();
@@ -216,6 +309,42 @@ test('the degraded fixture fails honestly, with the rescan advice', async () => 
   assert.deepEqual(budget.seen.charged, [1]);
 });
 
+test('exactly AT the refusal floor is annotated, not refused', async () => {
+  // The refusal is `confidence < unusable`, so the boundary value itself belongs
+  // to the annotate band. Pinned because an off-by-one here silently converts a
+  // whole class of reviewable documents into rejections, and the only symptom
+  // would be documents quietly not arriving.
+  const doc = await extractPdfText(SCANNED, {
+    ocr: fakeOcr({ meanConfidence: OCR_CONFIDENCE_UNUSABLE }),
+    ocrBudget: fakeBudget(),
+  });
+  assert.equal(doc.source, 'ocr');
+  // Below the review floor, so it is flagged — but it was NOT thrown away.
+  assert.deepEqual(doc.reviewReasons, ['ocr_low_confidence']);
+});
+
+test('the two confidence floors must be ordered, and a container says so at startup', () => {
+  // Ordered: fine, in every arrangement including equal.
+  assert.equal(assertFloorsOrdered(0.85, 0.55), true);
+  assert.equal(assertFloorsOrdered(0.6, 0.6), true, 'equal floors collapse the band but do not invert it');
+  assert.equal(assertFloorsOrdered(1, 0), true);
+
+  // Inverted: the refusal branch would swallow the entire annotate band, so
+  // every document between the two values is REFUSED where the operator who set
+  // them expected it flagged. Nothing downstream would say so.
+  assert.throws(
+    () => assertFloorsOrdered(0.55, 0.85),
+    (err) => {
+      assert.match(err.message, /RCM_OCR_UNUSABLE_CONFIDENCE/);
+      assert.match(err.message, /RCM_OCR_MIN_CONFIDENCE/);
+      // The message says which way to fix it, because "these are wrong" without
+      // a direction is the same puzzle one step further on.
+      assert.match(err.message, /Lower the refusal floor, or raise the review floor/);
+      return true;
+    }
+  );
+});
+
 test('a readable-length but hopeless-confidence scan is refused, not annotated', async () => {
   const ocr = fakeOcr({ meanConfidence: OCR_CONFIDENCE_UNUSABLE - 0.05 });
 
@@ -281,6 +410,42 @@ test('the text-layer truncation refusal is unchanged', async () => {
 });
 
 // ─── 5. The cost rail ────────────────────────────────────────────────────────
+
+test('a document bigger than the whole cap is refused TERMINALLY, not paused', async () => {
+  const ocr = fakeOcr();
+  // The gate's other answer: not "come back after the reset" but "no reset will
+  // ever admit this". The seam just propagates it; the worker is what turns the
+  // two codes into a pause and a failure respectively.
+  const budget = {
+    seen: { asserted: [], charged: [] },
+    assertAllowed(pages) {
+      this.seen.asserted.push(pages);
+      const err = new Error(
+        'This document needs 30¢ of OCR, which is more than the entire daily cap of $0.10. ' +
+          'Waiting will not help.'
+      );
+      err.code = 'RCM_OCR_DOCUMENT_EXCEEDS_CAP';
+      err.estimatedCents = 30;
+      err.capCents = 10;
+      throw err;
+    },
+    charge(pages) {
+      this.seen.charged.push(pages);
+      return { chargedCents: 0, usedCents: 0, capCents: 10, pages };
+    },
+  };
+
+  await assert.rejects(
+    () => extractPdfText(SCANNED, { ocr, ocrBudget: budget }),
+    (err) => {
+      assert.equal(err.code, 'RCM_OCR_DOCUMENT_EXCEEDS_CAP');
+      assert.equal(err.resetsAt, undefined, 'no reset is promised, because none would help');
+      return true;
+    }
+  );
+  assert.equal(ocr.calls.analyze, 0);
+  assert.deepEqual(budget.seen.charged, []);
+});
 
 test('a spent OCR budget stops the document BEFORE Azure, and is not a failure', async () => {
   const ocr = fakeOcr();
