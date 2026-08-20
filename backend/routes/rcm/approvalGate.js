@@ -121,6 +121,67 @@ const CHECKS = Object.freeze({
 const CHECK_ORDER = Object.freeze(Object.keys(CHECKS));
 
 /**
+ * Plan statuses that mean "a drain has already had this plan" (Slice 6c).
+ *
+ * `posting` is deliberately NOT one of them — that plan really is under way, and
+ * that is the one status the original single sentence was ever true for.
+ *
+ * Everything here is a plan that has RUN. It cannot take more claims either way,
+ * but the reason differs enough that the sentence differs with it: see
+ * `alreadyRanMessage`.
+ */
+const TERMINAL_QUEUE_STATUSES = Object.freeze([
+  'posted',
+  'partially_posted',
+  'failed',
+  'blocked',
+]);
+
+/**
+ * What to tell a biller whose claim cannot join an already-run plan.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE LIMITATION THIS SENTENCE EXISTS TO STOP HIDING
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `rcm_posting_queue` is unique on `(office_id, remittance_key)`: **a remittance
+ * gets exactly ONE posting plan, ever.** So a claim withheld at approval and
+ * fixed after its remittance's plan has run has nowhere to go — it cannot post
+ * through CareIN at all, and the money goes in by hand in Open Dental until a
+ * later slice adds a follow-on plan.
+ *
+ * Until 6c this was invisible behind *"a posting run is already under way"*,
+ * which read as "wait a minute and try again" — advice that would never come
+ * good.
+ *
+ * @param {string} status
+ * @returns {string}
+ */
+function alreadyRanMessage(status) {
+  if (status === 'posted') {
+    return (
+      'The posting run for this remittance has already finished and its payment is in Open ' +
+      'Dental, so this claim cannot join it. Post this one by hand in Open Dental — CareIN ' +
+      'cannot start a second run for the same check yet.'
+    );
+  }
+  if (status === 'partially_posted') {
+    return (
+      'The posting run for this remittance has already put money in Open Dental and stopped ' +
+      'part-way, so this claim cannot join it. Resolve that run on the Posting screen first; ' +
+      'this claim posts by hand in Open Dental.'
+    );
+  }
+  // `failed` and `blocked`: a drain has had the plan and it is not accepting
+  // more claims. It CAN be drained again — which is what the Posting screen is
+  // for — but this claim is not going to be part of it.
+  return (
+    "This remittance's posting plan has already been started and is not accepting more " +
+    'claims. Resolve it on the Posting screen and drain it; this claim posts by hand in ' +
+    'Open Dental.'
+  );
+}
+
+/**
  * Is every cent on this claim the patient's?
  *
  * Deliberately NOT a review reason — there is no vocabulary member for it, and
@@ -1051,18 +1112,43 @@ async function runApproval(req, office, batchId, actor) {
         /*
          * A PLAN THAT HAS ALREADY LEFT 'approved' IS NOT ONE TO APPEND TO.
          *
-         * Once 6c starts draining, adding lines to a running plan would mean a
-         * claim whose money the drain never saw. Nothing sets a status past
-         * 'approved' in this slice, so this cannot fire today — it is here
-         * because the day it can is the day it matters, and it is cheaper than
-         * remembering.
+         * Adding lines to a plan the drain has already walked would mean a claim
+         * whose money the drain never saw.
+         *
+         * ── TWO REFUSALS, BECAUSE THEY ARE TWO DIFFERENT FACTS (6c) ───────────
+         *
+         * Until 6c there was one sentence — *"a posting run is already under
+         * way"* — and the day the drain shipped, that sentence became FALSE for
+         * most of the statuses that reach here. A plan that is `posted` is not
+         * under way; it has finished. Telling a biller to wait for something that
+         * already ended is the honest-states rule failing in the message rather
+         * than in the column, and it hid the real consequence underneath.
+         *
+         * That consequence is worth saying plainly: `rcm_posting_queue` is unique
+         * on `(office_id, remittance_key)`, so a remittance gets exactly ONE
+         * plan, ever. A claim withheld at approval and fixed AFTER its
+         * remittance's plan has drained therefore has nowhere to go — it cannot
+         * post through CareIN at all, and the money goes in by hand in Open
+         * Dental until a later slice adds a follow-on plan. See
+         * docs/RCM_POSTING.md §15.
          */
-        if (existing.rows[0].status !== 'approved') {
+        const existingStatus = String(existing.rows[0].status);
+        if (TERMINAL_QUEUE_STATUSES.includes(existingStatus)) {
+          await client.query('ROLLBACK');
+          throw new ApprovalError(
+            'QUEUE_ALREADY_RAN',
+            409,
+            alreadyRanMessage(existingStatus),
+            { queueStatus: existingStatus }
+          );
+        }
+        if (existingStatus !== 'approved') {
           await client.query('ROLLBACK');
           throw new ApprovalError(
             'QUEUE_ALREADY_RUNNING',
             409,
-            'A posting run for this remittance is already under way — it cannot take more claims.'
+            'A posting run for this remittance is already under way — it cannot take more claims.',
+            { queueStatus: existingStatus }
           );
         }
         queueId = existing.rows[0].queue_id;
@@ -1278,6 +1364,8 @@ async function resolveRemittanceKey(client, office, batch) {
 module.exports = {
   CHECKS,
   CHECK_ORDER,
+  TERMINAL_QUEUE_STATUSES,
+  alreadyRanMessage,
   APPROVAL_BATCH_COLUMNS,
   APPROVAL_CLAIM_COLUMNS,
   ApprovalError,

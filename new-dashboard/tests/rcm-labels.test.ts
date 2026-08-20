@@ -24,6 +24,14 @@ import {
   reviewLabel,
   label,
 } from "../client/src/features/rcm/labels";
+// Slice 6c — the attention vocabulary and the drain's own copy maps.
+import { ATTENTION_LABELS, OBSERVATION_LABELS } from "../client/src/features/rcm/format";
+import {
+  blockedCopy,
+  LINE_STATE_COPY,
+  QUEUE_STATE_COPY,
+} from "../client/src/features/rcm/posting";
+import { QUEUE_COLLISION_COPY } from "../client/src/features/rcm/api";
 
 const VOCAB = fs.readFileSync(
   path.join(__dirname, "..", "..", "backend", "services", "rcm", "rcmVocabulary.js"),
@@ -161,5 +169,177 @@ describe("the D-11 gate map does not drift from the backend", () => {
   it("labels every line flag, including the three Slice 5.5 added", () => {
     const unlabelled = members("LINE_FLAGS").filter((f) => !LINE_FLAG_LABELS[f]);
     expect(unlabelled, `unlabelled line flags: ${unlabelled.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * Slice 6c — the two maps the drain added, pinned against the backend the same
+ * way the vocabulary above is.
+ *
+ * The 6b review found `labels.ts` describing a drift test that did not exist,
+ * and on its first run that test caught the client failing OPEN on an unknown
+ * slug. These two maps are the same shape of promise — "every reason a screen
+ * can be handed has words a biller can read" — so they get the same enforcement
+ * rather than a comment saying they should.
+ */
+describe("the drain's vocabularies", () => {
+  const REMITTANCES = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "routes", "rcm", "remittances.js"),
+    "utf8",
+  );
+  const DRAIN = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "services", "rcm", "postingDrain.js"),
+    "utf8",
+  );
+
+  /** Every `reasons.push('x')` / `observations.push('x')` literal in the source. */
+  function pushed(kind: "reasons" | "observations"): string[] {
+    const found = new Set<string>();
+    const re = new RegExp(`${kind}\\.push\\(\\s*'([a-z_]+)'`, "g");
+    for (const m of REMITTANCES.matchAll(re)) found.add(m[1]);
+    return [...found];
+  }
+
+  it("labels every attention OBLIGATION the list can raise", () => {
+    const reasons = pushed("reasons");
+    // Guard the guard: a regex that matched nothing would pass vacuously.
+    expect(reasons).toContain("posting_failed");
+    const unlabelled = reasons.filter((r) => !ATTENTION_LABELS[r]);
+    expect(unlabelled, `unlabelled obligations: ${unlabelled.join(", ")}`).toEqual([]);
+  });
+
+  it("labels every attention OBSERVATION the list can raise", () => {
+    // `batch_${status}` is built from the batch status and is covered by its own
+    // entries; only the literals are checked here.
+    const observations = pushed("observations");
+    expect(observations).toContain("claims_posted");
+    expect(observations).toContain("claims_queued");
+    const unlabelled = observations.filter((o) => !OBSERVATION_LABELS[o]);
+    expect(unlabelled, `unlabelled observations: ${unlabelled.join(", ")}`).toEqual([]);
+  });
+
+  it("writes copy for every reason the drain can BLOCK a plan with", () => {
+    /*
+     * `blocked` means a human is being told to go do something. A slug with no
+     * copy renders as itself, which tells them nothing — the exact failure the
+     * fail-closed fallback in posting.ts exists to soften and this test exists to
+     * stop happening at all.
+     */
+    const slugs = [...DRAIN.matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
+    const blockReasons = slugs.filter((s) => s !== "already_received_matching");
+    expect(blockReasons.length).toBeGreaterThan(5);
+
+    const missing = blockReasons.filter((r) => {
+      const copy = blockedCopy(r);
+      // The fallback returns the slug with its underscores swapped for spaces;
+      // anything that produces THAT has no real copy written for it.
+      return !copy || copy.label === r.replace(/_/g, " ");
+    });
+    expect(missing, `block reasons with no copy: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("still fails closed on a block reason nobody has written copy for", () => {
+    const copy = blockedCopy("a_refusal_from_a_later_slice");
+    expect(copy).not.toBeNull();
+    expect(copy!.label).toBe("a refusal from a later slice");
+    expect(copy!.fix).toMatch(/no Open Dental call was made/);
+    // And null in means null out — an unblocked plan shows no chip.
+    expect(blockedCopy(null)).toBeNull();
+  });
+
+  it("labels every per-line state the CHECK constraint can hold", () => {
+    const MIGRATION = fs.readFileSync(
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "backend",
+        "migrations-tenant",
+        "1787120000000_rcm_posting_drain.js",
+      ),
+      "utf8",
+    );
+    const block = MIGRATION.match(/const LINE_STATUSES = \[([\s\S]+?)\];/);
+    expect(block).not.toBeNull();
+    const states = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(states).toContain("skipped_already_posted");
+
+    const unlabelled = states.filter((s) => !(s in LINE_STATE_COPY));
+    expect(unlabelled, `unlabelled line states: ${unlabelled.join(", ")}`).toEqual([]);
+  });
+
+  it("labels every plan state, and invents none the database cannot store", () => {
+    const MIGRATION = fs.readFileSync(
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "backend",
+        "migrations-tenant",
+        "1787120000000_rcm_posting_drain.js",
+      ),
+      "utf8",
+    );
+    const block = MIGRATION.match(/const QUEUE_STATUSES = \[([\s\S]+?)\];/);
+    const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(stored).toContain("blocked");
+
+    /*
+     * The client maps a LABEL to copy, never a stored word — the server ships
+     * both — so what is checked here is that every stored word has SOME label the
+     * server could send, and that the copy map holds nothing extra.
+     */
+    const labels = new Set(Object.keys(QUEUE_STATE_COPY));
+    const serverLabels = new Set([
+      "queued",
+      "running",
+      "posted",
+      "partially_posted",
+      "failed",
+      "blocked",
+    ]);
+    expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
+    expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);
+    expect(stored.length).toBe(serverLabels.size);
+  });
+});
+
+/**
+ * Slice 6c — the two queue-collision refusal codes.
+ *
+ * The approval panel renders the SERVER's sentence, which varies by plan status
+ * and is always the better one. What this pins is that the client knows both
+ * codes exist: a code the backend can throw and the client has never heard of
+ * reaches a biller as a blank toast, which is the same failure shape as an
+ * unlabelled reason slug one level up.
+ */
+describe("the queue-collision refusals", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "routes", "rcm", "approvalGate.js"),
+    "utf8",
+  );
+
+  it("knows every queue-collision code the gate can throw", () => {
+    const thrown = [...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]);
+    expect(new Set(thrown)).toEqual(new Set(["QUEUE_ALREADY_RUNNING", "QUEUE_ALREADY_RAN"]));
+
+    const unknown = thrown.filter((c) => !QUEUE_COLLISION_COPY[c]);
+    expect(unknown, `codes with no client copy: ${unknown.join(", ")}`).toEqual([]);
+  });
+
+  it("does not say the same thing twice — the two codes mean opposite advice", () => {
+    // RUNNING: waiting is the answer. RAN: waiting will never help.
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RUNNING).not.toBe(
+      QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN,
+    );
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RUNNING).toMatch(/wait/i);
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN).toMatch(/by hand in Open Dental/i);
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN).not.toMatch(/under way/i);
+  });
+
+  it("names nothing the backend cannot throw", () => {
+    const thrown = new Set([...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]));
+    const orphans = Object.keys(QUEUE_COLLISION_COPY).filter((c) => !thrown.has(c));
+    expect(orphans, `client copy for codes the gate never sends: ${orphans.join(", ")}`).toEqual([]);
   });
 });

@@ -44,6 +44,7 @@ import {
   AlertTriangle,
   Receipt,
   ScrollText,
+  Banknote,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -121,12 +122,19 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
 
      Slice 6a added Remittances, which is where the actual WORK happens; the
      Overview keeps the ingestion panels and the per-office counters. Ordered
-     work-first, because that is what a biller opens the module to do. */
+     work-first, because that is what a biller opens the module to do.
+
+     Slice 6c added Posting, and its position IS the workflow: a check is
+     reviewed and approved on Remittances, then posted from here. Below rather
+     than above, because nothing reaches it until a human has approved
+     something — a first item that is empty for every new practice would read as
+     the module's front door. */
   rcm: [
     {
       title: "Revenue Cycle",
       items: [
         { path: "/rcm/remittances", label: "Remittances", icon: ScrollText },
+        { path: "/rcm/posting", label: "Posting", icon: Banknote },
         { path: "/rcm", label: "Overview", icon: Receipt },
       ],
     },

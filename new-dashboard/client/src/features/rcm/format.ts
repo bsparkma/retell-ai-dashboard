@@ -121,6 +121,17 @@ export const ATTENTION_LABELS: Record<string, string> = {
   claims_awaiting_approval: "Ready to approve for posting",
   /** An approve ran and left a claim out. Somebody owes a fix or a disposition. */
   claims_withheld: "Claims withheld at approval",
+  // ── Slice 6c: the drain ──
+  /**
+   * A posting run did not finish — blocked, failed, or PARTLY posted.
+   *
+   * An obligation rather than an observation, and `partially_posted` is the
+   * reason: money reached the chart and the check may not exist, which is the
+   * failure window the whole posting queue exists to survive. A state like that
+   * sitting quietly on a list nobody opens is the most expensive silence there
+   * is in this module.
+   */
+  posting_failed: "Posting needs attention",
 };
 
 export const OBSERVATION_LABELS: Record<string, string> = {
@@ -132,11 +143,19 @@ export const OBSERVATION_LABELS: Record<string, string> = {
   batch_posting: "A posting run holds this batch",
   /**
    * Slice 6b. The SYSTEM owes the next step and no human does, which is why it
-   * is grey — and until 6c ships, "queued" means a person authorised a posting
-   * and nothing has been written to Open Dental. It becomes an obligation again
-   * only when a drain fails a row and has somewhere to say so.
+   * is grey — "queued" means a person authorised a posting and nothing has been
+   * written to Open Dental.
+   *
+   * 6c narrowed it rather than replacing it: a plan that FAILED now raises
+   * `posting_failed` instead, so this chip means what it has always said.
    */
   claims_queued: "Queued for posting",
+  /**
+   * Slice 6c. Finished: the money is on the chart and every write was verified
+   * by reading it back. An observation, because nobody owes anything — the
+   * remittance stays visible under "All" and leaves the work view.
+   */
+  claims_posted: "Posted to Open Dental",
 };
 
 export function attentionLabel(reason: string): string {

@@ -2,7 +2,7 @@
  * Photograph the RCM workbench dumps produced by tests/rcm-workbench-shots.test.tsx.
  *
  *   pnpm exec vite build                                # produces the real CSS
- *   RCM_SHOTS=1 pnpm exec vitest run tests/rcm-workbench-shots.test.tsx
+ *   RCM_SHOTS=1 pnpm exec vitest run tests/rcm-workbench-shots.test.tsx tests/rcm-posting-shots.test.tsx
  *   node scripts/shoot-rcm-workbench.mjs
  *
  * Wraps each dump in the app's OWN built stylesheet — so the picture is the
@@ -33,6 +33,13 @@ const outDir = resolve(here, "../../docs/screenshots/rcm-workbench");
  * destination rather than shot twice.
  */
 const approveDir = resolve(here, "../../docs/screenshots/rcm-approve");
+/**
+ * Slice 6c's shots, same reasoning one step further along: the approval gate is
+ * what a biller DECIDES, the posting queue is what the system then DOES to a
+ * patient's chart. Separate directory so the docs can cite one without dragging
+ * the other along.
+ */
+const postingDir = resolve(here, "../../docs/screenshots/rcm-posting");
 const tmpDir = resolve(shotsDir, ".render");
 
 const CHROME = [
@@ -62,6 +69,7 @@ const css = readFileSync(resolve(assetsDir, cssFile), "utf8");
 
 mkdirSync(outDir, { recursive: true });
 mkdirSync(approveDir, { recursive: true });
+mkdirSync(postingDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
 
 /**
@@ -81,10 +89,20 @@ const HEIGHT = {
   "approve-02-refused": 1330,
   "approve-03-partial": 1230,
   "approve-04-reviewer": 1060,
+  "posting-01-queued": 500,
+  "posting-02-running": 500,
+  "posting-03-partially-posted": 530,
+  "posting-04-blocked": 560,
+  "posting-05-posted": 500,
+  "posting-06-reviewer": 470,
 };
 
 /** Where a dump's picture belongs. */
-const dirFor = (name) => (name.startsWith("approve-") ? approveDir : outDir);
+const dirFor = (name) => {
+  if (name.startsWith("approve-")) return approveDir;
+  if (name.startsWith("posting-")) return postingDir;
+  return outDir;
+};
 
 const dumps = readdirSync(shotsDir).filter((f) => f.endsWith(".html")).sort();
 if (dumps.length === 0) {

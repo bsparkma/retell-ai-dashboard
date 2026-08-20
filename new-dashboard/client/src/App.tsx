@@ -30,6 +30,7 @@ import RcmOverview from "./pages/rcm/RcmOverview";
 import RemittanceList from "./pages/rcm/RemittanceList";
 import RemittanceDetail from "./pages/rcm/RemittanceDetail";
 import ClaimMatch from "./pages/rcm/ClaimMatch";
+import PostingQueue from "./pages/rcm/PostingQueue";
 import TakebackSop from "./pages/rcm/TakebackSop";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
@@ -126,6 +127,13 @@ export function Router() {
         <Route path="/rcm/remittances" component={RemittanceList} />
         <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
         <Route path="/rcm/claims/:id" component={ClaimMatch} />
+        {/* Slice 6c — the posting queue and the one button in this product that
+            writes to a patient's chart. It inherits rcm.read from the /rcm
+            prefix in ROUTE_PERMISSIONS like every other page here, so a
+            `reviewer` can WATCH plans post; the Drain button itself demands
+            rcm.write server-side and the page renders the server's own
+            `canDrain` answer rather than inspecting a role name. */}
+        <Route path="/rcm/posting" component={PostingQueue} />
         {/* The manual route out of the one thing CareIN will not do. It is a
             real page rather than prose because Slice 6a promised "the practice's
             takeback procedure" and pointed nowhere. */}

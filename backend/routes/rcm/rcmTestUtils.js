@@ -38,6 +38,13 @@ const eraFileStore = require('../../services/rcm/eraFileStore');
 // the real registry ever resolving a customer key.
 const odOffices = require('../../config/odOffices');
 const odPacer = require('../../services/rcm/odPacer');
+/*
+ * Slice 6c. The posting config cache is PROCESS-WIDE and keyed by office, so a
+ * suite that resolved roland's DefNums would otherwise hand them to the next
+ * suite's valley — the one cross-office leak this whole module exists to make
+ * impossible. Reset with the pacer, at both ends of a boot.
+ */
+const odOfficeConfig = require('../../services/rcm/odOfficeConfig');
 
 /**
  * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
@@ -79,6 +86,12 @@ const JSONB_COLUMNS = new Set([
   'frequency_limits',
   'claim_details',
   'row_details',
+  // Slice 6c: the per-line read-back verdict. Stored as jsonb and READ AS AN
+  // OBJECT by the queue detail route, so a fake that kept the string would make
+  // `line.readback.agreed` undefined — i.e. it would report an unverified write
+  // as verified-with-no-evidence, which is the exact failure the column exists
+  // to make impossible.
+  'readback',
 ]);
 
 /**
@@ -634,13 +647,39 @@ function literalOrParam(value, params, row) {
   const quoted = value.match(/^'(.*)'$/);
   if (quoted) return quoted[1];
 
+  // A BARE COLUMN NAME. `COALESCE(started_at, now())` — the drain stamps the
+  // first attempt's start time and leaves it alone on every retry, so a plan
+  // says when posting first began rather than when it was last tried.
+  //
+  // Checked before the compound forms below so a column may appear as an
+  // argument to any of them.
+  if (row && /^[a-z_][a-z0-9_]*$/i.test(value) && Object.prototype.hasOwnProperty.call(row, value)) {
+    return row[value];
+  }
+
+  // `attempt_count = attempt_count + 1` — the drain counts its own tries in the
+  // same statement that claims the row, so the count cannot drift from the
+  // claim it belongs to.
+  let m;
+  if ((m = value.match(/^(\w+) \+ (\d+)$/))) {
+    return Number((row && row[m[1]]) || 0) + Number(m[2]);
+  }
+
   // `COALESCE($3, batch_id)` — finalizeRemittanceKey links the batch it
   // produced without clobbering one already recorded.
-  let m;
   if ((m = value.match(/^COALESCE\((.+)\)$/i))) {
     const args = splitTopLevel(m[1]).map((s) => s.trim());
     const first = literalOrParam(args[0], params, row);
-    return first == null ? (row ? row[args[1]] : null) : first;
+    // The fallback arg may be a column the row has never carried (a fresh
+    // insert), so it is read directly rather than through the bare-column branch
+    // above — which deliberately throws on an unknown name.
+    return first == null
+      ? /^\$\d+$|^'|^now\(\)$/i.test(args[1])
+        ? literalOrParam(args[1], params, row)
+        : row
+          ? (row[args[1]] ?? null)
+          : null
+      : first;
   }
   // `array_append(needs_review_reasons, $3)` — a review reason discovered while
   // writing rather than while parsing.
@@ -669,10 +708,32 @@ function literalOrParam(value, params, row) {
  *     code review. `calls` records every method name, so a test can assert the
  *     positive form too — that ONLY apiGetRaw was ever used.
  */
+/*
+ *  3. Slice 6c: OPTIONALLY MODEL THE WRITES, and model them the way the live
+ *     database behaved in the Spike 0b transcript rather than the way a
+ *     convenient stub would.
+ *
+ *     `new FakeOd({ writable: true, ... })` turns `apiWriteRaw` from a throwing
+ *     recorder into a small simulator of Open Dental's posting surface, carrying
+ *     the four behaviours that make posting hard and that a permissive fake
+ *     would hide:
+ *
+ *       - `DateCP` accepts a write, returns 200, and CHANGES NOTHING       (G2)
+ *       - `CheckAmt` that does not equal the eligible total is a 400   (test 5)
+ *       - a PUT to a check-attached line is a 400                    (test 11)
+ *       - `POST /claimpayments` returns a `ClaimPaymentNum` and attaches the
+ *         eligible claimprocs to it                                (tests 4/10)
+ *
+ *     Every OTHER suite keeps the default (`writable` absent), where every write
+ *     verb still throws — so the guard that the rest of the module cannot write
+ *     is not weakened by the existence of a fake that can.
+ */
 class FakeOd {
   /**
    * @param {{ patients?: object[], claims?: object[], claimProcs?: object[],
-   *           procedures?: object[], fail?: Record<string, {status:number,error:string}> }} [rows]
+   *           procedures?: object[], definitions?: object[], preferences?: object[],
+   *           writable?: boolean, dieAfterWrites?: number|null,
+   *           fail?: Record<string, {status:number,error:string}> }} [rows]
    */
   constructor(rows = {}) {
     this.rows = {
@@ -680,23 +741,57 @@ class FakeOd {
       claims: rows.claims || [],
       claimProcs: rows.claimProcs || [],
       procedures: rows.procedures || [],
+      definitions: rows.definitions || [],
+      preferences: rows.preferences || [],
     };
     this.fail = rows.fail || {};
-    /** @type {Array<{ method: string, path?: string, params?: object }>} */
+    this.writable = rows.writable === true;
+    /**
+     * CRASH SIMULATION. After N successful writes, every further call throws a
+     * transport-shaped error — the thing a container being killed looks like
+     * from inside the drain. `postingDrain.test.js` uses it to kill a run after
+     * each step in turn and prove the resume completes without a duplicate write
+     * or a duplicate check.
+     */
+    this.dieAfterWrites = rows.dieAfterWrites == null ? null : Number(rows.dieAfterWrites);
+    /**
+     * THE HARDER CRASH: the write LANDS and the response is lost.
+     *
+     * `dieAfterWrites` models a process killed before its request reached Open
+     * Dental. `dieOnLandedWrite: n` models the genuinely dangerous case — request
+     * n is applied to the database and then the caller dies, so the chart has
+     * changed and our row has no idea. For `POST /claimpayments` that means a
+     * real check exists that the plan never recorded, and a resume that did not
+     * look for it would create a second one.
+     */
+    this.dieOnLandedWrite = rows.dieOnLandedWrite == null ? null : Number(rows.dieOnLandedWrite);
+    this.writeCount = 0;
+    /** Auto-increment for the checks this fake creates. */
+    this.nextClaimPaymentNum = 21300;
+    /** @type {Array<{ method: string, path?: string, params?: object, body?: object }>} */
     this.calls = [];
 
     const record = (method) => (...args) => {
       this.calls.push({ method, path: args[0] });
       throw new Error(
-        `FakeOd: Slice 6a must not call ${method} — the RCM workbench is READ-ONLY against Open Dental`
+        `FakeOd: this suite must not call ${method} — only services/rcm/odPostingWrites.js ` +
+          'may reach an Open Dental write verb, and only through apiWriteRaw'
       );
     };
 
     this.client = {
       apiGetRaw: (path, params = {}, opts = {}) => this.get(path, params, opts),
-      // Every write verb the real client and its callers expose. Present so a
-      // route that reaches for one gets a THROW naming the rule, rather than a
-      // TypeError that reads like a missing stub.
+      /*
+       * The transport's ONE write verb (Slice 6c). Throws exactly like the other
+       * write methods unless this fake was constructed `writable`, so the
+       * default remains "any write is a loud test failure".
+       */
+      apiWriteRaw: this.writable
+        ? (method, path, body = {}, opts = {}) => this.write(method, path, body, opts)
+        : record('apiWriteRaw'),
+      // Every other write verb the real client and its callers expose. Present
+      // so a route that reaches for one gets a THROW naming the rule, rather
+      // than a TypeError that reads like a missing stub.
       apiPost: record('apiPost'),
       apiPut: record('apiPut'),
       apiPatch: record('apiPatch'),
@@ -709,6 +804,132 @@ class FakeOd {
       put: record('put'),
       delete: record('delete'),
     };
+  }
+
+  /** The OD verb sequence this fake saw, as `"PUT /claimprocs/533930"` strings. */
+  writesIssued() {
+    return this.calls
+      .filter((c) => c.method === 'apiWriteRaw')
+      .map((c) => `${c.verb} ${c.path}`);
+  }
+
+  /**
+   * Open Dental's posting surface, as the transcript recorded it.
+   *
+   * @param {'POST'|'PUT'} method
+   * @param {string} path
+   * @param {Record<string, unknown>} body
+   */
+  async write(method, path, body = {}) {
+    const verb = String(method).toUpperCase();
+    // `landed` is stamped below once the write has actually taken effect, so a
+    // test can count writes that CHANGED something rather than calls attempted —
+    // the two differ by exactly one on every crash, which is the difference
+    // between "the resume re-wrote a line" and "the resume was fine".
+    const call = { method: 'apiWriteRaw', verb, path, body, landed: false };
+    this.calls.push(call);
+
+    if (this.dieAfterWrites !== null && this.writeCount >= this.dieAfterWrites) {
+      // Not a 4xx and not a 5xx — a socket dying mid-flight, which is what a
+      // killed container looks like to the caller.
+      const err = new Error('FakeOd: simulated process death');
+      err.code = 'ECONNRESET';
+      throw err;
+    }
+    this.writeCount += 1;
+
+    const result = this.applyWrite(verb, path, body);
+    // Only a 2xx changed anything; a modelled refusal (a CheckAmt mismatch, a
+    // check-attached line) left the chart exactly as it was.
+    call.landed = result.ok === true;
+
+    /*
+     * Apply the write, then LOSE THE ANSWER — see `dieOnLandedWrite`. The result
+     * is computed and discarded, so the chart carries the change and the caller
+     * sees a dead socket. This is the case a resume has to survive by reading
+     * Open Dental rather than by remembering.
+     */
+    if (this.dieOnLandedWrite !== null && this.writeCount === this.dieOnLandedWrite) {
+      const err = new Error('FakeOd: simulated process death AFTER the write landed');
+      err.code = 'ECONNRESET';
+      throw err;
+    }
+    return result;
+  }
+
+  /** The dispatch itself, so `write` can decide what to do with the answer. */
+  applyWrite(verb, path, body) {
+    let m;
+
+    // PUT /claimprocs/{n} — test 2, test 11, test 2b.
+    if ((m = path.match(/^\/claimprocs\/(\d+)$/)) && verb === 'PUT') {
+      const row = this.rows.claimProcs.find((r) => Number(r.ClaimProcNum) === Number(m[1]));
+      if (!row) return { ok: false, status: 404, data: null, error: 'ClaimProc not found.' };
+      if (Number(row.ClaimPaymentNum || 0) !== 0 && body.InsPayAmt !== undefined) {
+        // Test 11, verbatim.
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: 'Cannot change InsPayAmt when Status is Received and attached to a ClaimPayment.',
+        };
+      }
+      for (const field of ['Status', 'InsPayAmt', 'WriteOff', 'DedApplied']) {
+        if (body[field] !== undefined) row[field] = body[field];
+      }
+      /*
+       * G2, MODELLED. `DateCP` is accepted, answered 200, and IGNORED. A fake
+       * that applied it would let a read-back "verify" a write the real database
+       * silently drops — which is the exact defect the read-back exists to catch.
+       */
+      return { ok: true, status: 200, data: row };
+    }
+
+    // PUT /claims/{n} — test 3.
+    if ((m = path.match(/^\/claims\/(\d+)$/)) && verb === 'PUT') {
+      const row = this.rows.claims.find((r) => Number(r.ClaimNum) === Number(m[1]));
+      if (!row) return { ok: false, status: 404, data: null, error: 'Claim not found.' };
+      for (const field of ['ClaimStatus', 'DateReceived', 'ClaimNote']) {
+        if (body[field] !== undefined) row[field] = body[field];
+      }
+      return { ok: true, status: 200, data: row };
+    }
+
+    // POST /claimpayments[/Batch] — tests 4, 5, 10.
+    if ((path === '/claimpayments' || path === '/claimpayments/Batch') && verb === 'POST') {
+      const claimNums =
+        path === '/claimpayments/Batch'
+          ? (body.claimNums || []).map(Number)
+          : [Number(body.claimNum)];
+
+      // The eligible total, exactly as Open Dental computes it: the InsPayAmt of
+      // the claimprocs on these claims whose ClaimPaymentNum is 0.
+      const eligible = this.rows.claimProcs.filter(
+        (r) => claimNums.includes(Number(r.ClaimNum)) && Number(r.ClaimPaymentNum || 0) === 0
+      );
+      const total = eligible.reduce((a, r) => a + Math.round(Number(r.InsPayAmt || 0) * 100), 0);
+      const asked = Math.round(Number(body.CheckAmt || 0) * 100);
+      if (asked !== total) {
+        // Test 5, verbatim — the highest-value negative test in the plan.
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: 'CheckAmt does not match the total of eligible ClaimProcs.',
+        };
+      }
+
+      const claimPaymentNum = this.nextClaimPaymentNum++;
+      for (const row of eligible) row.ClaimPaymentNum = claimPaymentNum;
+      return {
+        ok: true,
+        status: 201,
+        // `IsPartial` comes back as the STRING "false" on the live API.
+        data: { ClaimPaymentNum: claimPaymentNum, CheckAmt: body.CheckAmt, IsPartial: 'false' },
+      };
+    }
+
+    return { ok: false, status: 400, data: null, error: `${path} ${verb} is not a valid method.` };
   }
 
   /** Method names this client saw, deduplicated. */
@@ -737,6 +958,41 @@ class FakeOd {
         ? { ok: true, status: 200, data: found }
         : { ok: false, status: 404, data: null, error: 'not found' };
     }
+    // Slice 6c — the single-item claim read the drain uses for resume and for
+    // the claim-receipt read-back.
+    if ((m = path.match(/^\/claims\/(\d+)$/))) {
+      const found = this.rows.claims.find((c) => Number(c.ClaimNum) === Number(m[1]));
+      return found
+        ? { ok: true, status: 200, data: found }
+        : { ok: false, status: 404, data: null, error: 'Claim not found.' };
+    }
+    /*
+     * Slice 6c — the per-office configuration reads.
+     *
+     * `Category` IS honoured here, and the numeric-only rule is modelled by
+     * honouring ONLY the numeric form: a `category=` string filter returns the
+     * unfiltered list, exactly as the live database does (§9). That is what
+     * makes `odOfficeConfig`'s client-side re-filter a tested behaviour rather
+     * than a comment.
+     */
+    if (path === '/definitions') {
+      if (params.Category !== undefined) {
+        return {
+          ok: true,
+          status: 200,
+          data: this.rows.definitions.filter(
+            (d) => Number(d.Category) === Number(params.Category)
+          ),
+        };
+      }
+      return { ok: true, status: 200, data: this.rows.definitions };
+    }
+    if (path === '/preferences') {
+      // `?PrefName=` is likewise unproven against the live API, so this fake
+      // ignores it — the caller re-matches by name, and that is the behaviour
+      // under test.
+      return { ok: true, status: 200, data: this.rows.preferences };
+    }
     if (path === '/patients') {
       // OD matches names by PREFIX — modelled, because it is the single most
       // consequential behaviour of this endpoint (LName=Spark returned 18 rows
@@ -753,6 +1009,15 @@ class FakeOd {
       return { ok: true, status: 200, data: this.filtered('claims', params, 'PatNum') };
     }
     if (path === '/claimprocs') {
+      // `?ClaimPaymentNum=` is the reconciliation read (§9, verified live) and
+      // takes precedence: the drain asks "what is on this check", never both.
+      if (params.ClaimPaymentNum !== undefined) {
+        return {
+          ok: true,
+          status: 200,
+          data: this.filtered('claimProcs', params, 'ClaimPaymentNum'),
+        };
+      }
       return { ok: true, status: 200, data: this.filtered('claimProcs', params, 'ClaimNum') };
     }
     if (path === '/procedurelogs') {
@@ -833,6 +1098,7 @@ async function bootRcmApp({
    */
   odPacer._resetForTests();
   odPacer._setIntervalForTests(1);
+  odOfficeConfig._resetForTests();
 
   // The office's OWN client, faked. `getOdOffice` is what the per-office
   // registry hands out, and `assertOfficeMatch` is left REAL — so a route that
@@ -921,6 +1187,7 @@ async function bootRcmApp({
             eraFileStore.putEraFile = originals.eraStore.putEraFile;
             odOffices.getOdOffice = originals.getOdOffice;
             odPacer._resetForTests();
+            odOfficeConfig._resetForTests();
             if (originals.token === undefined) delete process.env.DASHBOARD_API_TOKEN;
             else process.env.DASHBOARD_API_TOKEN = originals.token;
             server.close(r);
