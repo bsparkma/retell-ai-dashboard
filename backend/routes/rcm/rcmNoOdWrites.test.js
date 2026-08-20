@@ -821,3 +821,79 @@ test('the drain reaches Open Dental through the per-office registry; approve sti
     'the drain must write through config/odOffices. Found: ' + fromDrain.join(', ')
   );
 });
+
+test('the operational D-7 probes are the ONLY scripts that reach an OD write, and they are not module code', () => {
+  /*
+   * THE EVASION PATH THIS CLOSES.
+   *
+   * Every guard above scans `services/rcm` and `routes/rcm`. `backend/scripts/`
+   * is neither, so a file moved there could reach a chart without appearing in
+   * any of them — and "put it in scripts/" is exactly the shape a future
+   * shortcut takes.
+   *
+   * Two operational probes legitimately live there: D-7's write-verb entitlement
+   * check and the read sweep that proves it landed nothing. They are checked in
+   * rather than pasted from a scratchpad so the thing that gets run is the thing
+   * that got reviewed. Anything ELSE under scripts/ that names an Open Dental
+   * write is a module trying to escape the allow-list.
+   */
+  const scriptsDir = path.join(__dirname, '../../scripts');
+  const ALLOWED = new Set(['rcm-d7-write-probe.js', 'rcm-d7-read-sweep.js']);
+
+  const WRITE_SIGNALS = [
+    'apiWriteRaw',
+    'client.post(',
+    'client.put(',
+    'axios.post(',
+    'axios.put(',
+    "'/claimpayments'",
+    'claimprocs/Supplemental',
+    'documents/Upload',
+  ];
+
+  const offenders = [];
+  for (const name of fs.readdirSync(scriptsDir)) {
+    if (!name.endsWith('.js') && !name.endsWith('.cjs')) continue;
+    if (ALLOWED.has(name)) continue;
+    const code = fs
+      .readFileSync(path.join(scriptsDir, name), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    for (const signal of WRITE_SIGNALS) {
+      if (code.includes(signal)) offenders.push(`scripts/${name} → ${signal}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'a script that writes to Open Dental is module code in the wrong folder. Found: ' +
+      offenders.join(', ')
+  );
+
+  // And the two that ARE allowed really are there — an allow-list pointing at
+  // deleted files passes vacuously.
+  for (const name of ALLOWED) {
+    assert.ok(fs.existsSync(path.join(scriptsDir, name)), `scripts/${name} is missing`);
+  }
+});
+
+test('the D-7 write probe cannot run without GET-checking its targets first', () => {
+  /*
+   * The probe's whole claim to being zero-risk is that it writes only to ids it
+   * has just proven do not exist, and ABORTS if any of them does. That is a
+   * property of a script nothing else tests, against a live practice database.
+   */
+  const src = fs.readFileSync(
+    path.join(__dirname, '../../scripts/rcm-d7-write-probe.js'),
+    'utf8'
+  );
+  assert.match(src, /precheck GET/, 'the probe must GET-check its targets');
+  assert.match(src, /ABORTING — a probe target exists/, 'and abort if one exists');
+  // POST and PUT only. A DELETE against a live practice database is not a probe.
+  assert.ok(!/axios\.delete|\.delete\(/.test(src), 'the probe must never issue a DELETE');
+  // The precheck must come BEFORE the first write in the file, not after it.
+  assert.ok(
+    src.indexOf('ABORTING') < src.indexOf('async function probe'),
+    'the abort path must precede the write helper'
+  );
+});

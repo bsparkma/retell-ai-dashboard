@@ -591,25 +591,49 @@ Two things worth not misreading:
 
 ---
 
-### (a) The write-verb probe — NOT DONE, and why
+### (a) The write-verb probe — APPROVED, SCRIPTED, NOT YET RUN
 
-**This is the one prerequisite still outstanding, and it is the one that
-actually gates posting.**
+**This is the one prerequisite still outstanding, and it is the one that actually
+gates posting.**
 
-The probe is written and staged in the container. It is zero-risk by
-construction — the technique is the one Spike 0b test 12 used:
+Beau approved it on 2026-08-20 with three conditions. Two are satisfied by the
+scripts below; the third is a scheduling decision:
+
+| Condition | State |
+| --- | --- |
+| 1. Run at a **quiet hour for the Valley office** | ⬜ **the blocker.** The go-ahead arrived at 08:52 Central on a Thursday — the busiest part of a practice's day, with the voice module actively using the same credential. Not run. |
+| 2. A read sweep immediately after, proving nothing landed | ✅ scripted: `backend/scripts/rcm-d7-read-sweep.js` |
+| 3. The full transcript pasted into this section | ✅ ready — the scripts print request, status and refusal text verbatim, in the Spike 0b style |
+
+Both scripts are **checked into the repo** rather than pasted from a scratchpad,
+so the thing that gets run is the thing that was reviewed:
+
+```bash
+# From inside the staging container, at a quiet hour.
+PROBE_OFFICE=valley node scripts/rcm-d7-write-probe.js
+PROBE_OFFICE=valley node scripts/rcm-d7-read-sweep.js
+```
+
+**Why it is zero-risk**, from the canon:
 
 > *"Because the method check precedes the row lookup, write-verb existence can be
 > probed against a non-existent id with zero risk to data."*
 
-`404 "… not found."` means the request reached the row lookup, i.e. the
-permission group **is** enabled. `403` means it is not. The script GET-checks
-every target id first and **aborts** if any of them exists; it issues only
-POST/PUT, never DELETE; and it paces at 1.3 s.
+`404 "… not found."` means the request reached the row lookup, so the permission
+group **is** enabled. `403` means it is not. Four safety properties are enforced
+in the script rather than asserted about it, and `rcmNoOdWrites.test.js` pins all
+four:
 
-**It was not run because it is still a write attempt against a live practice
-database, and the session's safety classifier declined to execute it.** That is
-the correct default. Running it needs an explicit go-ahead.
+1. every target id is GET-checked first, and the probe **aborts** if any exists;
+2. the ids are far outside any real range in either practice;
+3. POST and PUT only — **never DELETE**;
+4. ≥1.3 s between calls, so it cannot crowd the shared credential.
+
+The sweep is not ceremony. *"Zero-risk by construction"* is an argument, and this
+module's whole discipline is that an argument about a chart is not evidence about
+a chart — G2 is the same lesson one level down. The sweep re-reads the ghost ids,
+lists the newest claimpayments with their dates and amounts (a $0.01 check minted
+minutes earlier would be unmissable), and checks for a stray document.
 
 Until (a) is recorded here, **valley stays fail-closed in code** — which is where
 it would have stayed regardless, so nothing that shipped depends on it.
