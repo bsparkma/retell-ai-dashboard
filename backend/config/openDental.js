@@ -1633,6 +1633,123 @@ class OpenDentalService extends EventEmitter {
     return res.data;
   }
 
+  // ============================================================================
+  // GENERIC OD CLOUD WRITE (RCM Slice 6c)
+  // ============================================================================
+  //
+  // The note above apiGetRaw said "there is no write counterpart", and until this
+  // slice that was the whole point: the RCM read seam could not reach a write
+  // verb because none existed to reach. RCM Slice 6c is the module's first
+  // legitimate writer, so the counterpart is added HERE — once, in the transport,
+  // where the throttle slot and the 429 backoff already live — rather than by
+  // letting a service reach `client.post` directly the way bookAppointment does.
+  //
+  // Adding it does NOT widen what the rest of the module can do. Exactly one file
+  // may name this method (services/rcm/odPostingWrites.js) and
+  // routes/rcm/rcmNoOdWrites.test.js fails the build if a second one does.
+  //
+  // METHODS: POST and PUT only.
+  //
+  // DELETE is deliberately absent. Nothing in the posting sequence deletes: the
+  // unwind documented in docs/RCM_POSTING.md is a human-run script against a test
+  // patient, not a code path, and `DELETE /claimprocs` does not exist on this
+  // build at all (Spike 0b test 12). A delete verb on the transport would be a
+  // capability the drain holds and never needs, so it is not built.
+
+  /**
+   * Raw OD cloud POST/PUT returning the outcome instead of throwing, so callers
+   * can tell a REFUSAL apart from an outage — the distinction the whole posting
+   * state machine turns on. Open Dental refuses cleanly and informatively
+   * (`"CheckAmt does not match the total of eligible ClaimProcs."`, `"Cannot
+   * change InsPayAmt when Status is Received and attached to a ClaimPayment."`),
+   * and those sentences are what a blocked queue row shows a biller. Throwing
+   * them away and reporting "OD write failed" would discard the most actionable
+   * thing in the response.
+   *
+   * A 200/201 IS NOT PROOF THE WRITE HAPPENED. `PUT /claimprocs {DateCP}` returns
+   * 200 OK and changes nothing (RCM_OD_WRITES G2, Spike 0b test 2b). Every caller
+   * must read back and compare. This method cannot enforce that —
+   * `odPostingWrites.js` does, and there is no path to a write in this module
+   * that does not go through it.
+   *
+   * @param {'POST'|'PUT'} method
+   * @param {string} path OD API path beginning with '/', e.g. '/claimpayments'
+   * @param {Record<string, unknown>} [body] JSON body (PascalCase, per OD)
+   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number, module?: string }} [opts]
+   *   Same semantics as apiGetRaw: `minIntervalMs` RAISES this request's share of
+   *   the shared per-key throttle slot and can never lower it; `module` is
+   *   attribution only.
+   * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
+   */
+  async apiWriteRaw(method, path, body = {}, opts = {}) {
+    const verb = String(method || '').toUpperCase();
+    if (verb !== 'POST' && verb !== 'PUT') {
+      // A programming error, not a runtime condition — surfaced as a refusal
+      // rather than a throw so it cannot crash a drain mid-row, and named clearly
+      // enough that the fix is obvious from the message alone.
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        error: `apiWriteRaw supports POST and PUT only; got '${method}'`,
+      };
+    }
+
+    /*
+     * THE ENVIRONMENT GUARD LIVES IN THE TRANSPORT, NOT AT THE CALL SITE.
+     *
+     * `OPENDENTAL_WRITE_DISABLED=true` is what a dev box sets so it cannot post a
+     * payment into the live practice database whose credentials it shares. A
+     * check inside the drain's loop would be one refactor away from being
+     * skipped; a check here cannot be routed around by anything writing through
+     * this class. Returned as a REFUSAL carrying the platform's own code, so the
+     * queue row blocks honestly instead of recording a transport failure.
+     */
+    if (require('../middleware/envGuards').isOdWriteDisabled()) {
+      return {
+        ok: false,
+        status: 403,
+        data: null,
+        error: 'OD_WRITE_DISABLED: Open Dental writes are disabled in this environment',
+      };
+    }
+
+    if (this.useDatabase) {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        error: 'OD client is in direct-DB mode; RCM posting requires api mode',
+      };
+    }
+    if (!this.enabled || !this.client) {
+      return { ok: false, status: 0, data: null, error: 'Open Dental cloud API is not configured' };
+    }
+
+    try {
+      const config = {
+        ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        ...(opts.quiet ? { __odQuiet: true } : {}),
+        ...(opts.minIntervalMs ? { __odMinIntervalMs: opts.minIntervalMs } : {}),
+        ...(opts.module ? { __odModule: String(opts.module) } : {}),
+      };
+      const response =
+        verb === 'POST'
+          ? await this.client.post(path, body, config)
+          : await this.client.put(path, body, config);
+      return { ok: true, status: response.status, data: response.data };
+    } catch (error) {
+      const status = error.response?.status || 0;
+      // OD's refusal text is the actionable half of a 400, and it is metadata
+      // rather than PHI — these messages are about amounts and statuses, never
+      // about people.
+      const payload = error.response?.data;
+      const detail =
+        typeof payload === 'string' ? payload : payload ? JSON.stringify(payload) : error.message;
+      return { ok: false, status, data: payload ?? null, error: String(detail).slice(0, 400) };
+    }
+  }
+
   formatTime(dateTime) {
     if (!dateTime) return '00:00';
     

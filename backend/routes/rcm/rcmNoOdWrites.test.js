@@ -1,7 +1,38 @@
 'use strict';
 
 /**
- * THE RCM MODULE NEVER WRITES TO OPEN DENTAL — enforced, not asserted in prose.
+ * EXACTLY ONE FILE IN THE RCM MODULE MAY WRITE TO OPEN DENTAL — enforced, not
+ * asserted in prose.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT SLICE 6c CHANGED — READ THIS FIRST
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Through 6b this file proved a flat invariant: **no RCM source can reach an
+ * Open Dental write verb.** 6c is the slice where posting arrives, so that
+ * invariant had to either be deleted or defeated with an allow-list — and
+ * deleting it is how a guard quietly stops guarding.
+ *
+ * It is REPLACED, by the same move 6b made for the posting queue and 6a made for
+ * the read seam: an enumerated allow-list of ONE file, plus the behavioural
+ * statements that make the list mean something.
+ *
+ *   `services/rcm/odPostingWrites.js` may name `apiWriteRaw` and the posting
+ *   endpoints. Nothing else may. A second writer is a second policy about when
+ *   money moves, and the second one is always the one nobody reviewed.
+ *
+ * The three statements that carry the weight:
+ *
+ *   1. **The old claim, unweakened.** Driving approve, match, review and every
+ *      read route STILL yields `od.methodsUsed()` with no write verb in it. The
+ *      surface that could never write still cannot.
+ *   2. **The new claim, bounded.** Driving the DRAIN yields exactly the verbs the
+ *      forced order uses — `PUT /claimprocs/{n}`, `PUT /claims/{n}`,
+ *      `POST /claimpayments*` — in that order, and nothing else. Not "some
+ *      writes happened": the exact sequence, so a fifth call added three files
+ *      deep fails here rather than in a chart.
+ *   3. **The graph, unchanged.** The extraction worker and the ERA parser still
+ *      reach no Open Dental module at all, and the approval gate still reaches
+ *      none either. Approving is still not posting.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT CHANGED IN SLICE 6a, AND WHAT DID NOT
@@ -368,9 +399,31 @@ test('the /api/rcm router graph reaches no Open Dental WRITE module', () => {
   );
 });
 
-test('only the match layer names an Open Dental module, and only the read seam', () => {
-  /** Files allowed to name the OD read seam. Everything else must not. */
-  const MATCH_LAYER = new Set(['rcm/matchService.js', 'rcm/claims.js']);
+/**
+ * THE ALLOW-LIST. One file, and this constant is the whole of it.
+ *
+ * `services/rcm/odPostingWrites.js` is the only RCM source that may name an Open
+ * Dental write verb or a posting endpoint. Adding a second name here is a
+ * deliberate act that shows up in a diff titled "another file can now write to a
+ * patient's chart", which is exactly how large a decision that is.
+ */
+const OD_WRITE_LAYER = new Set(['rcm/odPostingWrites.js']);
+
+test('only the match and posting layers name an Open Dental module, and only through the seam', () => {
+  /**
+   * Files allowed to name the per-office registry.
+   *
+   * `odPostingWrites.js` joins the match layer in 6c. It is the file that
+   * resolves the office's own client for a WRITE, so it must call
+   * `assertOfficeMatch(office, getOdOffice(office))` — and it can only do that by
+   * naming the registry. It is on this list and on OD_WRITE_LAYER above; those
+   * are two separate permissions and it needs both.
+   */
+  const MATCH_LAYER = new Set([
+    'rcm/matchService.js',
+    'rcm/claims.js',
+    'rcm/odPostingWrites.js',
+  ]);
   const offenders = [];
 
   for (const { label, raw, code } of rcmSources()) {
@@ -394,13 +447,14 @@ test('only the match layer names an Open Dental module, and only the read seam',
 
 // ─── 4. Static — no write verb named anywhere ────────────────────────────────
 
-test('no rcm source names an Open Dental write method', () => {
+test('only the one allow-listed file names an Open Dental write method', () => {
   /**
-   * Method names that only appear when someone is writing to a chart. Every one
-   * of these exists on the real client or its callers, so naming one is not a
-   * typo — it is an intent.
+   * Method names and endpoints that only appear when someone is writing to a
+   * chart. Every one of these exists on the real client or its callers, so
+   * naming one is not a typo — it is an intent.
    */
   const WRITE_SIGNALS = [
+    'apiWriteRaw',
     'apiPost(',
     'apiPut(',
     'apiPatch(',
@@ -416,6 +470,7 @@ test('no rcm source names an Open Dental write method', () => {
   const offenders = [];
 
   for (const { label, code } of rcmSources()) {
+    if (OD_WRITE_LAYER.has(label)) continue;
     for (const signal of WRITE_SIGNALS) {
       if (code.includes(signal)) offenders.push(`${label} → ${signal}`);
     }
@@ -424,23 +479,85 @@ test('no rcm source names an Open Dental write method', () => {
   assert.deepEqual(
     offenders,
     [],
-    'Slice 6a is READS ONLY. Chart writes are Slice 6c, behind an approval gate ' +
-      'and the posting queue. Found: ' + offenders.join(', ')
+    'Exactly ONE file may reach an Open Dental write verb: ' +
+      [...OD_WRITE_LAYER].join(', ') +
+      '. Found: ' + offenders.join(', ')
   );
 });
 
-test('only the approval gate may write the posting queue', () => {
-  /**
-   * The queue is the record that a human authorised money to move. Exactly one
-   * file may create one, for the same reason exactly two files may name an Open
-   * Dental module: a second writer is a second policy, and the second one is
-   * always the one nobody reviewed.
+test('the allow-listed file is REAL, and it does not reach for the verbs 6c excluded', () => {
+  /*
+   * The allow-list is only a guarantee if the file it names actually exists and
+   * actually holds the writes — a list pointing at a deleted file would pass the
+   * test above trivially while the writes moved somewhere unwatched.
+   *
+   * The second half is the more interesting one. Three write paths are
+   * DELIBERATELY out of scope for 6c and each is dangerous in its own way:
+   *
+   *   `claimprocs/Supplemental`  the recoupment path. A negative supplemental is
+   *                              the ONE irreversible Open Dental operation (G10)
+   *                              — it cannot be reverted, cannot be deleted, and
+   *                              permanently pins its claim and procedure. 6d.
+   *   `documents/Upload`         the EOB attach. 6d.
+   *   `/payments`, `/paysplits`  the patient-portion flow. PRD-deferred, and
+   *                              `ApiPayments` is not even enabled on this key
+   *                              (G11).
+   *
+   * Naming any of them here would be building an unproven-for-this-slice path
+   * behind a gate that was not designed for it.
    */
-  const APPROVAL_LAYER = new Set(['rcm/approvalGate.js']);
+  const sources = rcmSources();
+  const writer = sources.find((s) => OD_WRITE_LAYER.has(s.label));
+  assert.ok(writer, `the allow-listed write layer ${[...OD_WRITE_LAYER]} is missing`);
+  assert.ok(
+    writer.code.includes('apiWriteRaw'),
+    'the allow-listed file does not actually reach the transport — the writes moved somewhere else'
+  );
+
+  const outOfScope = [
+    'claimprocs/Supplemental',
+    'documents/Upload',
+    "'/payments'",
+    "'/paysplits'",
+  ].filter((signal) => writer.code.includes(signal));
+
+  assert.deepEqual(
+    outOfScope,
+    [],
+    'Slice 6c posts ordinary insurance adjudication only. Recoupments and the ' +
+      'document attach are 6d; patient money is PRD-deferred and not entitled. Found: ' +
+      outOfScope.join(', ')
+  );
+});
+
+test('only the approval gate may CREATE a posting plan, and only the drain may advance one', () => {
+  /**
+   * Two permissions, deliberately split — because they are two different powers
+   * and 6c needs only the second.
+   *
+   * CREATE (`INSERT INTO rcm_posting_queue`) is the approval decision: a row
+   * exists because a human authorised money to move. `rcm/approvalGate.js` and
+   * nothing else, unchanged from 6b.
+   *
+   * ADVANCE (`UPDATE rcm_posting_queue`) is the execution record: which step, what
+   * came back, how it ended. `services/rcm/postingDrain.js` and nothing else. The
+   * drain must never be able to mint a plan — that would let it post money nobody
+   * approved, which is the entire thing the gate exists to prevent — and the gate
+   * must never be able to move one past `approved`.
+   */
+  const CREATE_LAYER = new Set(['rcm/approvalGate.js']);
+  const ADVANCE_LAYER = new Set(['rcm/postingDrain.js']);
   const offenders = [];
   for (const { label, code } of rcmSources()) {
-    if (!/INSERT INTO rcm_posting_queue|UPDATE rcm_posting_queue/i.test(code)) continue;
-    if (!APPROVAL_LAYER.has(label)) offenders.push(label);
+    if (/INSERT INTO rcm_posting_queue/i.test(code) && !CREATE_LAYER.has(label)) {
+      offenders.push(`${label} CREATES a posting plan`);
+    }
+    if (/UPDATE rcm_posting_queue/i.test(code) && !ADVANCE_LAYER.has(label) && !CREATE_LAYER.has(label)) {
+      offenders.push(`${label} ADVANCES a posting plan`);
+    }
+    if (/INSERT INTO rcm_posting_queue/i.test(code) && ADVANCE_LAYER.has(label)) {
+      offenders.push(`${label} can MINT a plan — the drain must only ever execute one`);
+    }
   }
   assert.deepEqual(
     offenders,
@@ -502,4 +619,205 @@ test('APPROVING creates queue rows and calls NOTHING on Open Dental', async () =
   } finally {
     await app.close();
   }
+});
+
+// ─── 5. The behavioural INVERSE — what the drain does, exactly ───────────────
+
+/**
+ * An approved posting plan over the seeded proposal, in the shape 6b's gate
+ * writes it.
+ *
+ * Separate from `seedProposal({ approvable: true })` because that helper
+ * produces a plan that COULD be approved; this one has been.
+ */
+function seedApprovedPlan(db) {
+  seedProposal(db, { approvable: true });
+  db.seed('rcm_posting_queue', [
+    {
+      queue_id: '11111111-2222-4333-8444-555555555555',
+      office_id: 'roland',
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      remittance_key: 'roland:830200001',
+      status: 'approved',
+      is_recoupment: false,
+      carrier_eob_date: '2026-03-01',
+      intended_total_cents: 15000,
+      posted_total_cents: 0,
+      od_claim_payment_num: null,
+      approved_by: 'user-1',
+      approved_at: new Date('2026-03-02T11:10:00Z'),
+      started_at: null,
+      finished_at: null,
+      attempt_count: 0,
+      last_error: null,
+      blocked_reason: null,
+      drain_step: null,
+      drained_by: null,
+      drain_attempt_at: null,
+      reconciled_at: null,
+    },
+  ]);
+  db.seed('rcm_posting_queue_line', [
+    {
+      queue_line_id: '66666666-7777-4888-8999-000000000000',
+      queue_id: '11111111-2222-4333-8444-555555555555',
+      office_id: 'roland',
+      position: 1,
+      od_claim_proc_num: 99001,
+      od_claim_num: 53648,
+      claim_id: 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d',
+      batch_claim_payment_id: 'e9247d49-d687-56bc-ba36-ebbf4f05b56c',
+      intended_ins_pay_amt_cents: 15000,
+      intended_write_off_cents: 6000,
+      intended_ded_applied_cents: 0,
+      is_supplemental: false,
+      status: 'pending',
+      claimproc_written_at: null,
+      claim_received_at: null,
+      paid_at: null,
+      od_claim_payment_num: null,
+      last_error: null,
+      readback: null,
+      readback_at: null,
+      skip_reason: null,
+    },
+  ]);
+  const claim = db.table('rcm_claims')[0];
+  claim.posting_queue_id = '11111111-2222-4333-8444-555555555555';
+  claim.approved_at = new Date('2026-03-02T11:10:00Z');
+  claim.approved_by = 'user-1';
+  const batch = db.table('rcm_payment_batches')[0];
+  batch.payment_method = 'check';
+  batch.deposit_date = '2026-03-01';
+  batch.eft_number = null;
+  return db;
+}
+
+/**
+ * The same recorded-shape Open Dental as the read tests, made WRITABLE and given
+ * Roland's real Category-32 rows so the per-office registry can resolve.
+ */
+function writableOdFixture() {
+  const od = odFixture();
+  od.writable = true;
+  od.rows.definitions = [
+    { DefNum: 296, Category: 32, ItemName: 'Check', isHidden: 'false' },
+    { DefNum: 472, Category: 32, ItemName: 'Insurance Check', isHidden: 'false' },
+    { DefNum: 12, Category: 1, ItemName: 'Insurance Write-off', ItemValue: '-', isHidden: 'false' },
+    { DefNum: 131, Category: 18, ItemName: 'Insurance', isHidden: 'false' },
+  ];
+  od.rows.preferences = [
+    { PrefName: 'ClaimPaymentBatchOnly', ValueString: '0' },
+    { PrefName: 'ShowAutoDeposit', ValueString: '0' },
+  ];
+  od.rows.claims[0].ClaimNote = '';
+  od.rows.claims[0].DateReceived = '0001-01-01';
+  // `writable` is read in the constructor, so the method is re-bound here.
+  od.client.apiWriteRaw = (method, path, body, opts) => od.write(method, path, body, opts);
+  return od;
+}
+
+test('DRIVING THE DRAIN emits exactly the forced order, in order, and nothing else', async () => {
+  /*
+   * THE NEW CLAIM, BOUNDED.
+   *
+   * Not "some writes happened" — the exact sequence RCM_OD_WRITES section 8
+   * forces:
+   *
+   *     per line   PUT  /claimprocs/{n}
+   *     per claim  PUT  /claims/{n}
+   *     per check  POST /claimpayments
+   *
+   * A fifth call added three files deep fails HERE rather than in a patient's
+   * chart. `POST /claimprocs/Supplemental` and `POST /documents/Upload` are 6d's,
+   * and their absence from this list is the assertion that they are not built.
+   */
+  const db = seedApprovedPlan(new FakeRcmDb());
+  const od = writableOdFixture();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.outcomes[0].status, 'posted', JSON.stringify(res.body.outcomes[0]));
+
+    assert.deepEqual(od.writesIssued(), [
+      'PUT /claimprocs/99001',
+      'PUT /claims/53648',
+      'POST /claimpayments',
+    ]);
+
+    // And the only two client methods used at all are the read and the write —
+    // no legacy verb, no commlog writer, nothing from the voice module.
+    assert.deepEqual(od.methodsUsed().sort(), ['apiGetRaw', 'apiWriteRaw']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('the READ surface still reaches no write verb, with the drain mounted alongside it', async () => {
+  /*
+   * THE OLD CLAIM, UNWEAKENED.
+   *
+   * The whole point of an allow-list is that adding one writer does not widen
+   * anything else. This is the same drive as the first test in this file, run
+   * against a plan that IS drainable and a client that CAN write — so a route
+   * that started posting as a side effect of a read would show up here.
+   */
+  const db = seedApprovedPlan(new FakeRcmDb());
+  const od = writableOdFixture();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const q = '?office=roland';
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2/approval${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/posting/queue${q}`);
+    await api(app.baseUrl, 'GET', `/api/rcm/posting/queue/11111111-2222-4333-8444-555555555555${q}`);
+    await api(app.baseUrl, 'POST', `/api/rcm/claims/d1e2b359-a8d7-51a8-978c-7adf27bccc8d/review${q}`, {
+      body: JSON.stringify({ note: 'checked' }),
+      json: true,
+    });
+
+    assert.deepEqual(
+      od.methodsUsed().filter((m) => m !== 'apiGetRaw'),
+      [],
+      'reading the queue, the workbench and the checklist must reach no write verb'
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('the drain reaches Open Dental through the per-office registry; approve still reaches nothing', () => {
+  /*
+   * The GRAPH statement, updated for 6c.
+   *
+   * `routes/rcm/posting.js` is ALLOWED to reach the write layer — that is what it
+   * is for — but it must do so through `config/odOffices`, never through
+   * `services/openDentalSync` (the voice commlog writer) or `platform/odAccess`
+   * (the TENANT-level seam bound to one configured client, which would write
+   * Roland's database under a valley selector).
+   *
+   * And `routes/rcm/approvalGate.js` still reaches no Open Dental module at all,
+   * so "approving is not posting" survives 6c as a require-graph fact rather than
+   * as a sentence in a header.
+   */
+  const fromApprove = modulesReachableFrom('./approvalGate', [...OD_READ_SEAM, ...OD_WRITE_SURFACE]);
+  assert.deepEqual(
+    fromApprove,
+    [],
+    'the approval gate must not be able to touch Open Dental even to read it. Found: ' +
+      fromApprove.join(', ')
+  );
+
+  const fromDrain = modulesReachableFrom('./posting', OD_WRITE_SURFACE);
+  assert.deepEqual(
+    fromDrain,
+    [],
+    'the drain must write through config/odOffices. Found: ' + fromDrain.join(', ')
+  );
 });

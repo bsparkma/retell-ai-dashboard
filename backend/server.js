@@ -408,6 +408,24 @@ async function bootstrap() {
     .sweepInterruptedExtractions()
     .catch((err) => console.warn('[rcm/eob] startup sweep failed:', err && err.message));
 
+  // RCM Slice 6c — re-home posting plans a dead process left mid-flight.
+  //
+  // A row stuck at 'posting' claims a chart write is under way in a process that
+  // no longer exists. Unlike the extraction sweep above it does NOT fail those
+  // rows: it puts them back to 'approved' so a human can press Drain again, and
+  // draining re-reads Open Dental first and resumes from what the chart shows.
+  //
+  // IT DOES NOT DRAIN. A container restart must never post a payment nobody
+  // asked for.
+  //
+  // Same two load-bearing conditions as the extraction sweep: it MUST stay above
+  // server.listen(), so no request served by this process can have set a row to
+  // 'posting' yet, and it depends on maxReplicas=1 — see
+  // services/rcm/postingDrain.js. Never blocks startup.
+  await require('./services/rcm/postingDrain')
+    .sweepInterruptedPostings()
+    .catch((err) => console.warn('[rcm/drain] startup sweep failed:', err && err.message));
+
   // Initialize unified call store and start server
   await unifiedCallStore.initialize().then(async () => {
     server.listen(PORT, () => {

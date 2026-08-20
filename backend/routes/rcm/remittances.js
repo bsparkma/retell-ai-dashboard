@@ -244,16 +244,50 @@ function attentionFor(batch, claims, approval = {}) {
     }
   }
 
-  // ── The observations ──────────────────────────────────────────────────────
-
   /*
-   * QUEUED IS AN OBSERVATION, and the wording on the screen matters as much as
-   * the classification: until 6c ships, "queued for posting" means a person
+   * ── SLICE 6c: THE LINE 6b SAID WOULD HAVE TO CHANGE ───────────────────────
+   *
+   * 6b's note here read: *"until 6c ships, 'queued for posting' means a person
    * authorised it and NOTHING HAS BEEN WRITTEN TO OPEN DENTAL. That is exactly
    * true, and it stops being true the day the drain lands — at which point this
-   * is the line that has to change with it.
+   * is the line that has to change with it."* This is that change.
+   *
+   * One plan, three different things to say, and only one of them is work:
+   *
+   *   posting_failed  an OBLIGATION. A drain ran and the plan did not finish —
+   *                   `failed`, `partially_posted` or `blocked`. Somebody owes an
+   *                   action: fix what blocked it, or look at what half-posted.
+   *                   `partially_posted` in particular MUST reach this view:
+   *                   money moved and a check may not exist, which is the §8
+   *                   window and the single most expensive state in the module
+   *                   to leave sitting quietly on a list nobody opens.
+   *   claims_posted   an OBSERVATION. Finished. The money is on the chart and the
+   *                   read-back proved it.
+   *   claims_queued   an OBSERVATION, unchanged in meaning: approved, waiting,
+   *                   and nothing has been written to Open Dental.
+   *
+   * Read from the PLAN's status rather than from the claim's link, because the
+   * claim link only says "a plan took this claim" and every one of the three
+   * cases above satisfies that equally.
    */
-  if (claims.some((c) => c.postingQueueId)) observations.push('claims_queued');
+  const planStatuses = Array.isArray(approval.queueStatuses) ? approval.queueStatuses : [];
+  const anyClaimQueued = claims.some((c) => c.postingQueueId);
+
+  if (planStatuses.some((s) => s === 'failed' || s === 'partially_posted' || s === 'blocked')) {
+    reasons.push('posting_failed');
+  }
+  // ── The observations ──────────────────────────────────────────────────────
+
+  if (anyClaimQueued || planStatuses.length > 0) {
+    // `every`, not `some`: a remittance with one posted plan and one still
+    // waiting is not finished, and calling it posted would retire it from view
+    // with work outstanding.
+    if (planStatuses.length > 0 && planStatuses.every((s) => s === 'posted')) {
+      observations.push('claims_posted');
+    } else if (!planStatuses.some((s) => s === 'failed' || s === 'partially_posted' || s === 'blocked')) {
+      observations.push('claims_queued');
+    }
+  }
 
   // Slice 5's contract: a batch is held `open` when ANYTHING on it was flagged
   // — a reversal, a PLB, a downcode, an unreadable adjustment, a total that
@@ -367,12 +401,29 @@ function toBatchWire(batch, claims, source, actors, approval = {}) {
  * @returns {Promise<Set<string>>}
  */
 async function batchesWithQueue(pool, office, batchIds) {
-  if (batchIds.length === 0) return new Set();
+  if (batchIds.length === 0) return new Map();
+  /*
+   * Slice 6c: the STATUS comes back too, not merely the existence.
+   *
+   * A plan's CONTENTS are still never read here — a list has no use for a
+   * per-line record of money about to move. But "a plan exists" stopped being
+   * enough the day the drain shipped: a plan that POSTED is finished work, and a
+   * plan that FAILED is an action somebody owes. Both used to render as the same
+   * grey "Queued for posting" chip, which is the honest-states rule failing on
+   * the one screen a biller uses to decide what to do next.
+   */
   const rows = await pool.query(
-    `SELECT batch_id FROM rcm_posting_queue WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
+    `SELECT batch_id, status FROM rcm_posting_queue WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
     [office, batchIds]
   );
-  return new Set(rows.rows.map((r) => r.batch_id));
+  /** @type {Map<string, string[]>} batch_id → the statuses of its plans */
+  const byBatch = new Map();
+  for (const row of rows.rows) {
+    const key = String(row.batch_id);
+    if (!byBatch.has(key)) byBatch.set(key, []);
+    byBatch.get(key).push(String(row.status));
+  }
+  return byBatch;
 }
 
 /**
@@ -622,6 +673,10 @@ router.get(
           scan.get(row.batch_id) || [],
           {
             hasQueue: queued.has(row.batch_id),
+            // Slice 6c: the plan's own state, so a FAILED drain reaches this
+            // view as an obligation instead of resting under the same grey
+            // "queued" chip as one that has not started.
+            queueStatuses: queued.get(row.batch_id) || [],
             attempted: row.approval_attempted_at != null,
           }
         ).needsAttention,
@@ -686,6 +741,7 @@ router.get(
       const upload = loaded.uploads.get(batch.batch_id) || null;
       const wire = toBatchWire(batch, claims, upload ? upload.source : null, loaded.actors, {
         hasQueue: loaded.queued.has(batch.batch_id),
+        queueStatuses: loaded.queued.get(batch.batch_id) || [],
       });
       return {
         ...wire,
@@ -772,7 +828,15 @@ router.get(
 
       const queued = await batchesWithQueue(pool, office, [batchId]);
 
-      return { batch, claims, details, upload, actors, hasQueue: queued.has(batchId) };
+      return {
+        batch,
+        claims,
+        details,
+        upload,
+        actors,
+        hasQueue: queued.has(batchId),
+        queueStatuses: queued.get(batchId) || [],
+      };
     });
 
     if (!loaded) return notFound(req, res, office, batchId);
@@ -784,7 +848,7 @@ router.get(
       loaded.claims,
       loaded.upload ? loaded.upload.source : null,
       loaded.actors,
-      { hasQueue: loaded.hasQueue }
+      { hasQueue: loaded.hasQueue, queueStatuses: loaded.queueStatuses }
     );
 
     return res.json({

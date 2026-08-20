@@ -137,6 +137,30 @@ router.use('/era', require('./era'));
 // than a refusal somebody had to remember.
 router.use('/remittances', require('./remittances'));
 router.use('/uploads', require('./documents'));
+/*
+ * Slice 6c — THE DRAIN. The first Open Dental WRITE under this mount, and the
+ * only one anywhere in the module.
+ *
+ *   GET  /posting/queue[/:id]  the plans, their states, the read-back evidence
+ *   POST /posting/drain        write to a patient's chart
+ *
+ * `POST /posting/drain` is deliberately NOT in QUEUE_PATHS, so the mount's
+ * requireReadWrite demands `rcm.write` for it by construction — a `reviewer`
+ * never reaches the handler. The two GETs are GETs and therefore run on
+ * `rcm.read`, which `reviewer` holds: watching a plan post, and reading why one
+ * is blocked, is not a posting act.
+ *
+ * There is NO cron and no timer behind this. A human presses the button. The one
+ * automatic thing is the startup sweep wired in server.js, which re-homes rows a
+ * dead process left mid-flight back to `approved` — it does not drain.
+ *
+ * `rcmNoOdWrites.test.js` still guards the module, in a stronger form: exactly
+ * ONE file may reach an Open Dental write verb
+ * (`services/rcm/odPostingWrites.js`), driving every other surface still yields
+ * no write verb at all, and driving the drain yields exactly the forced order's
+ * verbs, in order, and nothing else.
+ */
+router.use('/posting', require('./posting'));
 
 module.exports = router;
 module.exports.QUEUE_PATHS = QUEUE_PATHS;

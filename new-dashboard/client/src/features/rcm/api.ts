@@ -1224,3 +1224,252 @@ export function matchRemittance(office: RcmOfficeId, batchId: string): Promise<B
     { timeoutMs: BATCH_TIMEOUT_MS },
   );
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 6c — the posting queue and the drain
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The stored state vocabulary of `rcm_posting_queue`, mirrored from the CHECK
+ * constraint in `migrations-tenant/1787120000000_rcm_posting_drain.js`.
+ *
+ * `approved` and `posting` are Slice 1's words for what the 6c brief calls
+ * `queued` and `running` — the stored words were not renamed (a data migration
+ * on a shipped table, bought for a synonym), so the server ships BOTH: the raw
+ * `status` and the screen's `statusLabel`. Nothing in this client reverses the
+ * mapping; it renders what the server said.
+ */
+export const POSTING_QUEUE_STATUSES = [
+  "approved",
+  "posting",
+  "posted",
+  "partially_posted",
+  "failed",
+  "blocked",
+] as const;
+export type PostingQueueStatus = (typeof POSTING_QUEUE_STATUSES)[number];
+
+/** What the screen calls each stored state. */
+export type PostingQueueLabel =
+  | "queued"
+  | "running"
+  | "posted"
+  | "partially_posted"
+  | "failed"
+  | "blocked";
+
+/**
+ * The per-line vocabulary. `skipped_already_posted` is resume's word: Open
+ * Dental already showed this line Received with our exact amounts, so there was
+ * nothing to write. It is deliberately NOT the same as `skipped` — "we chose not
+ * to" and "it was already done" are different facts about money, and only the
+ * second one proves a resume did not double-post.
+ */
+export const POSTING_LINE_STATUSES = [
+  "pending",
+  "claimproc_written",
+  "claim_received",
+  "paid",
+  "failed",
+  "skipped",
+  "skipped_already_posted",
+] as const;
+export type PostingLineStatus = (typeof POSTING_LINE_STATUSES)[number];
+
+/**
+ * The steps of the forced Open Dental call sequence, in order.
+ *
+ * `document_attach` is present and is NOT implemented — the EOB PDF is filed
+ * into the patient images in a later slice. It is listed so the UI can say "not
+ * yet" rather than end one step early, which would make a plan look complete
+ * while the EOB is still unfiled.
+ */
+export const POSTING_STEPS = [
+  "resolve_config",
+  "read_od_truth",
+  "claimproc_writes",
+  "claim_receipts",
+  "check",
+  "reconcile",
+  "document_attach",
+] as const;
+export type PostingStep = (typeof POSTING_STEPS)[number];
+
+/**
+ * What a read-back compared, kept rather than recomputed.
+ *
+ * Open Dental returns `200 OK` on writes it silently ignores, so a status code
+ * proves nothing and the comparison is the only evidence a write took. Money
+ * fields only — no patient identity ever lands in this column.
+ */
+export interface PostingReadback {
+  step: string;
+  agreed: boolean;
+  sent?: Record<string, unknown>;
+  read?: Record<string, unknown>;
+  mismatches?: { field: string; sent: unknown; read: unknown }[];
+}
+
+export interface PostingQueueRow {
+  queueId: string;
+  office: RcmOfficeId;
+  batchId: string;
+  status: PostingQueueStatus;
+  statusLabel: PostingQueueLabel;
+  /** The machine reason a plan is blocked. The client renders copy from it. */
+  blockedReason: string | null;
+  step: PostingStep | null;
+  isRecoupment: boolean;
+  carrierEobDate: string | null;
+  intendedTotalCents: number;
+  postedTotalCents: number;
+  /** THE PROOF THE MONEY LANDED. Null until a check exists in Open Dental. */
+  odClaimPaymentNum: number | null;
+  /**
+   * When `GET /claimprocs?ClaimPaymentNum=` returned exactly this plan's lines.
+   * A `posted` row cannot exist without it — the database refuses — so the
+   * screen may state "verified by read-back" as a fact rather than a hope.
+   */
+  reconciledAt: string | null;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  drainAttemptAt: string | null;
+  drainedBy: string | null;
+  attemptCount: number;
+  lastError: string | null;
+  checkNumber: string | null;
+  payer: string | null;
+}
+
+export interface PostingQueueLine {
+  queueLineId: string;
+  position: number;
+  odClaimNum: number | null;
+  odClaimProcNum: number;
+  status: PostingLineStatus;
+  skipReason: string | null;
+  intendedInsPayAmtCents: number;
+  intendedWriteOffCents: number;
+  intendedDedAppliedCents: number;
+  isSupplemental: boolean;
+  claimprocWrittenAt: string | null;
+  claimReceivedAt: string | null;
+  paidAt: string | null;
+  odClaimPaymentNum: number | null;
+  readback: PostingReadback | null;
+  readbackAt: string | null;
+  lastError: string | null;
+}
+
+export interface PostingQueuePage {
+  office: RcmOfficeId;
+  rows: PostingQueueRow[];
+  /** Zero-filled over the whole vocabulary — a missing state is a measured 0. */
+  byStatus: Record<PostingQueueStatus, number>;
+  total: number;
+  limit: number;
+  offset: number;
+  /** May THIS caller press Drain? The server's answer, not a role name. */
+  canDrain: boolean;
+  drainRequires: string;
+  /** D-7: whether this practice may be posted to at all yet. */
+  postingEnabled: boolean;
+}
+
+export interface PostingQueueDetail {
+  office: RcmOfficeId;
+  plan: PostingQueueRow;
+  lines: PostingQueueLine[];
+  claims: {
+    claimId: string;
+    claimNumber: string | null;
+    patientName: string | null;
+    odClaimNum: number | null;
+  }[];
+  canDrain: boolean;
+  drainRequires: string;
+  postingEnabled: boolean;
+  /** The 6d seam, stated rather than omitted. */
+  documentAttach: { implemented: boolean; note: string };
+}
+
+export interface DrainOutcome {
+  queueId: string;
+  status: PostingQueueStatus | "not_found";
+  reason?: string;
+  detail?: string;
+  odClaimPaymentNum?: number | null;
+}
+
+export interface DrainResult {
+  office: RcmOfficeId;
+  outcomes: DrainOutcome[];
+  ran: number;
+  /** The run hit its wall-clock budget and stopped BETWEEN plans. */
+  outOfTime: boolean;
+  remaining: number;
+  /**
+   * The per-office DefNums this run resolved from THIS practice's own Open
+   * Dental. Configuration, not patient data — and what makes "the numbers never
+   * cross" checkable by the person who owns both practices.
+   */
+  config: {
+    officeKey: string;
+    resolvedAt: string;
+    payTypes: { defNum: number; name: string }[];
+    adjTypeCount: number;
+    docCategoryCount: number;
+    prefs: { claimPaymentBatchOnly: boolean | null; showAutoDeposit: boolean | null };
+    filterHonored: { payTypes: boolean; adjTypes: boolean; docCategories: boolean };
+  } | null;
+  postingEnabled: boolean;
+}
+
+/** The plans for this office, with per-state counts over the whole office. */
+export function listPostingQueue(
+  office: RcmOfficeId,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<PostingQueuePage> {
+  const params: Record<string, string | number> = { office };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return get<PostingQueuePage>("/posting/queue", params);
+}
+
+/** One plan: every line, its progress, and the read-back that verified it. */
+export function getPostingPlan(
+  office: RcmOfficeId,
+  queueId: string,
+): Promise<PostingQueueDetail> {
+  return get<PostingQueueDetail>(`/posting/queue/${encodeURIComponent(queueId)}`, { office });
+}
+
+/**
+ * DRAIN — write approved plans to Open Dental. Needs `rcm.write`.
+ *
+ * The only call in this client that changes a patient's chart.
+ *
+ * The body carries nothing but an optional `queueId` NARROWING. There is no
+ * claim list, no amounts, no force flag and no office in the body: the office is
+ * the validated query param and everything else is read from the plan the gate
+ * wrote. Nothing a request can say changes which chart is written or what is
+ * written to it.
+ *
+ * A held request with a long timeout, like the batch matcher: at ≥1.2 s per Open
+ * Dental call a large plan is minutes. When the server's own budget runs out it
+ * returns `outOfTime` with how many plans are left, and the button is pressed
+ * again.
+ */
+export function drainPostingQueue(
+  office: RcmOfficeId,
+  opts: { queueId?: string } = {},
+): Promise<DrainResult> {
+  return post<DrainResult>(
+    "/posting/drain",
+    { office },
+    opts.queueId ? { queueId: opts.queueId } : {},
+    { timeoutMs: BATCH_TIMEOUT_MS },
+  );
+}
