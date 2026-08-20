@@ -474,42 +474,118 @@ diff, with the evidence in the same commit.
 ### The three prerequisites
 
 Valley may be added to `OFFICES_ENABLED_FOR_POSTING` only when all three are
-recorded **in this section**:
+recorded here.
 
 | # | Prerequisite | Status |
 | --- | --- | --- |
-| **(a)** | The Riley key's **write** permission groups (Insurance, Documents) proven by the zero-risk probe. TC #97 proved the **read** groups, which is a different entitlement — Open Dental licenses reads and writes separately, by permission group. | ⬜ **NOT YET RECORDED** |
-| **(b)** | Riley's own Category 32 / 1 / 18 DefNums read from Riley's own Open Dental and written into the table below. | ⬜ **NOT YET RECORDED** |
-| **(c)** | PatNum 7115 can carry a claim (an active plan), and a valley end-to-end passes. | ⬜ **NOT YET RECORDED** |
+| **(a)** | The Riley key's **write** permission groups (Insurance, Documents) proven by the zero-risk probe. TC #97 proved the **read** groups, which is a different entitlement — Open Dental licenses reads and writes separately, by permission group, and **no read can establish write entitlement**. | ❌ **NOT DONE** — see below |
+| **(b)** | Riley's own Category 32 / 1 / 18 DefNums read from Riley's own Open Dental. | ✅ **DONE 2026-08-19** — recorded below |
+| **(c)** | PatNum 7115 can carry a claim (an active plan). | ✅ **coverage confirmed 2026-08-19**; the e2e itself still to run |
 
-### Riley's DefNums
+---
 
-<!-- Fill from the probe. Configuration, not PHI. -->
+### (b) Riley's DefNums — read live from Riley's own database, 2026-08-19
 
-| Category | DefNum | ItemName | Sign |
-| --- | --- | --- | --- |
-| 32 (PayType) | — | — | — |
-| 1 (AdjType) | — | — | — |
-| 18 (DocCategory) | — | — | — |
+Read through the platform's own credential path from inside the staging
+container, so the Riley customer key was used in place and never printed.
+Configuration only — no patient data.
 
-**Roland's numbers are recorded in `RCM_OD_WRITES.md` §Probe C and must never be
-written to Riley's database.** DefNum 401 is alive in both practices and names a
-different thing in each; CommType 486 vs 451 is the same lesson with money
-attached.
+**`Category 32` — PayType. This is the one the drain writes.**
 
-### The probes, and why they are zero-risk
+| | roland | valley (Riley) |
+| --- | --- | --- |
+| Check | **296** | **258** |
+| EFT | **297** | **259** |
+| Credit Card | **404** | **334** |
+| Insurance Check | **472** | **428** |
 
-**(a) Write-verb entitlement.** *"A missing write verb returns `400`, not `404`
-— and this is safely probeable"*: the method check precedes the row lookup, so a
-write issued against a **non-existent id** can be answered without touching data.
-A `403`/permission error means the group is not enabled; a `404 "… not found."`
-means the request got past the permission check to the row lookup, i.e. the group
-**is** enabled. Verify the id does not exist with a GET first.
+**Not one number is shared.** `pickPayType` matches on NAME, exact and
+case-insensitive, insurance-specific first — so roland resolves 472 and valley
+resolves 428 for the same check, from the same code, with nothing hardcoded.
 
-**(b) DefNums** and **(c) 7115's coverage** are plain GETs.
+**`Category 1` — AdjType (39 rows in both). The RCM-relevant members:**
 
-Run them from inside the staging container, so the Riley customer key is resolved
-from Key Vault by the app's own loader and never printed:
+| Meaning | roland | valley |
+| --- | --- | --- |
+| Insurance write-off | 12 `Insurance Write-off` | **10** `Insurance Write off` |
+| Plain write-off | **10** `Write-off` | 408 `Write-off` |
+| Insurance adjustment (+) | 260 | 402 |
+| PPO adjustment (+) | 262 | 406 |
+| Insurance deductions from previous payments | 477 | 435 |
+| Medicaid write-offs | 460–463 | 409–412 |
+
+> ⚠️ **DefNum 10 is live in BOTH practices and means something different in each:
+> `Write-off` in Roland, `Insurance Write off` in Riley.** This is the 401
+> commlog-type collision repeated with money attached, and it is the single best
+> argument in this document for why the registry exists. A hardcoded 10 would
+> post a plain write-off in one practice and an insurance write-off in the other,
+> silently, forever. *(AdjTypes are read by 6c and written by nothing yet.)*
+
+**`Category 18` — DocCategory (6d's, for the EOB PDF):** roland 33 rows, valley
+31. `131 Insurance` and `134 Financial` happen to agree; `Consent Forms` is
+**473** in roland and **429** in valley — the same split the H0 spike recorded.
+Agreement on two numbers is a coincidence, not a rule.
+
+**Preferences, both practices:** `ClaimPaymentBatchOnly = 0`,
+`ShowAutoDeposit = 0`. **Build:** both on `ProgramVersion 25.4.48.0` /
+`DataBaseVersion 25.4.45.0`, so no version gate separates them.
+
+`filterHonored = true` on all six definition reads — the numeric `Category=`
+filter is honoured by both databases, and the client-side re-filter was a no-op.
+
+---
+
+### (c) PatNum 7115 — coverage confirmed
+
+```
+GET /patients/7115        -> 200   PatNum=7115  PatStatus=Patient
+GET /patplans?PatNum=7115 -> 200   1 row: PatPlanNum=12402 InsSubNum=9088 Ordinal=1
+GET /claims?PatNum=7115   -> 200   0 rows
+GET /procedurelogs?…      -> 200   1 row
+```
+
+**7115 already has an active plan**, so unlike 12827 — which blocked Spike 0b
+until Beau added `PatPlanNum 20469` — it should be able to carry a claim without
+setup. The e2e itself is still to run.
+
+Two things worth not misreading:
+
+- `GET /inssubs?PatNum=7115` returns **0 rows**. Inssubs are keyed by the
+  SUBSCRIBER, not the patient. That is not evidence of missing coverage.
+- The `patplans` rows carry no `DateEffective` / `DateTerm` under those names, so
+  the plan's date window was not read here.
+
+---
+
+### (a) The write-verb probe — NOT DONE, and why
+
+**This is the one prerequisite still outstanding, and it is the one that
+actually gates posting.**
+
+The probe is written and staged in the container. It is zero-risk by
+construction — the technique is the one Spike 0b test 12 used:
+
+> *"Because the method check precedes the row lookup, write-verb existence can be
+> probed against a non-existent id with zero risk to data."*
+
+`404 "… not found."` means the request reached the row lookup, i.e. the
+permission group **is** enabled. `403` means it is not. The script GET-checks
+every target id first and **aborts** if any of them exists; it issues only
+POST/PUT, never DELETE; and it paces at 1.3 s.
+
+**It was not run because it is still a write attempt against a live practice
+database, and the session's safety classifier declined to execute it.** That is
+the correct default. Running it needs an explicit go-ahead.
+
+Until (a) is recorded here, **valley stays fail-closed in code** — which is where
+it would have stayed regardless, so nothing that shipped depends on it.
+
+### How the probes are run
+
+From inside the staging container, so each practice's customer key is resolved
+from Key Vault by the app's own loader and is never printed. Running them locally
+is **not** an option: `kv-carein-staging` sits in a different Entra tenant from a
+workstation `az` token (`AKV10032: Invalid issuer`).
 
 ```bash
 # az containerapp exec splits --command on whitespace, so ${IFS} stands in for
