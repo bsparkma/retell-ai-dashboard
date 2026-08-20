@@ -1175,3 +1175,251 @@ test('reconciliation catches all three ways a check can be wrong', () => {
     true
   );
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. `blocked` has a way out — the recovery contract
+// ═══════════════════════════════════════════════════════════════════════════
+
+/*
+ * THE DEFECT THESE FOUR PIN.
+ *
+ * `blocked` used to be excluded from DRAINABLE_STATUSES on the argument that
+ * "retrying a refusal automatically is how it becomes a loop". But there is no
+ * automatic anything here — pressing Drain is a human act — and with `blocked`
+ * excluded nothing anywhere could ever run one again: not the drain's own scan,
+ * not the startup sweep (which only re-homes `posting`), and not the 6b gate
+ * (which refuses any plan past `approved`).
+ *
+ * Meanwhile every blocked row's own message says "…then drain again." That
+ * instruction was impossible to follow, which is the honest-states rule failing
+ * in the recovery path rather than in the reporting path.
+ */
+
+test('a blocked plan whose cause is FIXED drains to posted on the next press', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  // A foreign Received, unattached line makes OD's eligible total bigger than
+  // this plan's, so the first press blocks before writing anything.
+  const foreign = {
+    ClaimProcNum: 533931,
+    ClaimNum: 53648,
+    ProcNum: 405238,
+    Status: 'Received',
+    InsPayAmt: 25.0,
+    WriteOff: 0,
+    DedApplied: 0,
+    IsTransfer: false,
+    ClaimPaymentNum: 0,
+  };
+  od.rows.claimProcs.push(foreign);
+
+  const first = await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(first.outcomes[0].status, 'blocked');
+  assert.equal(first.outcomes[0].reason, postingDrain.BLOCK_REASONS.ELIGIBLE_TOTAL_MISMATCH);
+  assert.deepEqual(od.writesIssued(), [], 'nothing was written');
+
+  // The biller does what the message told them to: resolves the extra line in
+  // the chart. Here that is the line being attached to its own check.
+  foreign.ClaimPaymentNum = 20999;
+
+  const second = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(second.ran, 1, 'a blocked plan must be picked up again');
+  assert.equal(second.outcomes[0].status, 'posted', JSON.stringify(second.outcomes[0]));
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'posted');
+  assert.equal(row.blocked_reason, null, 'the reason clears with the state');
+  assert.ok(row.od_claim_payment_num);
+  assert.ok(row.reconciled_at);
+  assert.equal(row.attempt_count, 2, 'both presses are counted');
+});
+
+test('a blocked plan whose cause PERSISTS re-blocks with the same reason and no OD call', async () => {
+  /*
+   * The other half. Re-drainable must not mean "eventually posts anyway": a plan
+   * whose cause is still there says the same thing again, and for a POLICY block
+   * it says it without touching Open Dental at all — `checkPreconditions` runs
+   * before any transport is resolved.
+   */
+  const db = seedPlan(new FakeRcmDb(), { queue: { is_recoupment: true } });
+  const od = odFixture();
+
+  const first = await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(first.outcomes[0].reason, postingDrain.BLOCK_REASONS.RECOUPMENT_NOT_IN_SCOPE);
+  assert.equal(db.table('rcm_posting_queue')[0].attempt_count, 1);
+
+  const second = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(second.ran, 1, 'it was picked up again');
+  assert.equal(second.outcomes[0].status, 'blocked');
+  assert.equal(
+    second.outcomes[0].reason,
+    postingDrain.BLOCK_REASONS.RECOUPMENT_NOT_IN_SCOPE,
+    'the same reason, not a different one'
+  );
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.blocked_reason, 'recoupment_not_in_scope');
+  assert.equal(row.attempt_count, 2, 'the retry is counted');
+  assert.deepEqual(
+    od.calls,
+    [],
+    'a policy block costs ZERO Open Dental calls, however many times it is pressed'
+  );
+});
+
+test('a valley plan blocked on D-7 is still SELECTED by a later press', async () => {
+  /*
+   * The case that made this defect expensive: on the day valley is enabled, every
+   * valley plan blocked in the meantime has to be reachable. Asserted against the
+   * drainable-selection query rather than by enabling valley — D-7 stays closed,
+   * and what is under test is whether the row can be picked up at all.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  for (const table of ['rcm_posting_queue', 'rcm_posting_queue_line', 'rcm_claims', 'rcm_payment_batches']) {
+    for (const row of db.table(table)) row.office_id = 'valley';
+  }
+  const od = odFixture();
+
+  const first = await postingDrain.drainOffice({ ...ctxFor(db, od), office: 'valley' });
+  assert.equal(first.outcomes[0].reason, postingDrain.BLOCK_REASONS.VALLEY_NOT_ENABLED);
+  assert.equal(db.table('rcm_posting_queue')[0].status, 'blocked');
+
+  // The selection the next press makes — the exact query drainOffice issues.
+  const waiting = await db.query(
+    `SELECT queue_id FROM rcm_posting_queue ` +
+      `WHERE office_id = $1 AND status = ANY($2) ` +
+      `ORDER BY approved_at ASC`,
+    ['valley', [...postingDrain.DRAINABLE_STATUSES]]
+  );
+  assert.equal(waiting.rows.length, 1, 'a blocked valley plan is still reachable');
+
+  // And it really is picked up — still refused, still without an OD call.
+  const second = await postingDrain.drainOffice({ ...ctxFor(db, od), office: 'valley' });
+  assert.equal(second.ran, 1);
+  assert.equal(second.outcomes[0].reason, postingDrain.BLOCK_REASONS.VALLEY_NOT_ENABLED);
+  assert.deepEqual(od.calls, [], 'valley must not even READ Riley\'s definitions yet');
+});
+
+test('`posted` stays terminal — the ONE state a press must never pick up', async () => {
+  /*
+   * Widening DRAINABLE_STATUSES is only safe if it did not widen too far. A
+   * posted plan re-entering the drain would re-read a chart it has finished with,
+   * and — if anything went wrong in the reading — could put a completed plan back
+   * into a non-terminal state.
+   */
+  assert.ok(
+    !postingDrain.DRAINABLE_STATUSES.includes('posted'),
+    'posted must never be drainable'
+  );
+  assert.ok(
+    !postingDrain.DRAINABLE_STATUSES.includes('posting'),
+    'a live run belongs to the startup sweep, not to a second press'
+  );
+
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(db.table('rcm_posting_queue')[0].status, 'posted');
+
+  const before = od.calls.length;
+  const again = await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(again.ran, 0);
+  assert.equal(od.calls.length, before, 'not one further Open Dental call');
+});
+
+test('a policy-blocked plan never reads this practice\'s definitions at all', async () => {
+  /*
+   * The lazy-config property, stated directly rather than inferred from the
+   * recoupment test above. Configuration is resolved on the FIRST plan that gets
+   * past its preconditions — so a run made entirely of policy refusals is a run
+   * that touched Open Dental zero times, in any office.
+   */
+  const db = seedPlan(new FakeRcmDb(), { queue: { is_recoupment: true } });
+  const od = odFixture();
+  await postingDrain.drainOffice(ctxFor(db, od));
+  assert.deepEqual(
+    od.pathsRead(),
+    [],
+    'no /definitions and no /preferences read for a plan that was never going to post'
+  );
+});
+
+test('a plan whose office config cannot be READ blocks, and does not fail', async () => {
+  /*
+   * `blocked`, not `failed`: nothing was attempted. Marking a plan `failed`
+   * because a definitions read timed out would put it in a state that means
+   * "something went wrong mid-posting" — and would send a biller looking in a
+   * chart for money that never moved.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  od.fail = { '/definitions': { status: 503, error: 'Open Dental is unreachable' } };
+
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'blocked');
+  assert.equal(result.outcomes[0].reason, postingDrain.BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED);
+  assert.deepEqual(od.writesIssued(), [], 'nothing was written');
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.blocked_reason, 'office_config_unresolved');
+
+  // …and because `blocked` is drainable, the biller can simply press it again
+  // once Open Dental is back. This is the transient case the defect stranded.
+  od.fail = {};
+  const second = await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(second.outcomes[0].status, 'posted', JSON.stringify(second.outcomes[0]));
+});
+
+test('a config failure is not re-attempted once per plan in the same run', async () => {
+  // Five paced reads per plan, for a condition that is the same for all of them.
+  // Memoised on the run; `odOfficeConfig`'s own hour-long cache is a separate
+  // thing and does not help on the first call.
+  const db = seedPlan(new FakeRcmDb());
+  /*
+   * A SECOND, COMPLETE plan — its own line and its own claim. A queue row with no
+   * lines would be refused `plan_empty` before it ever reached the config step,
+   * and this test would then pass for entirely the wrong reason.
+   */
+  const SECOND_QUEUE = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+  const SECOND_CLAIM = '7f6e5d4c-3b2a-4190-8877-665544332211';
+  db.seed('rcm_posting_queue', [
+    {
+      ...db.table('rcm_posting_queue')[0],
+      queue_id: SECOND_QUEUE,
+      remittance_key: 'roland:830200002',
+    },
+  ]);
+  db.seed('rcm_posting_queue_line', [
+    {
+      ...db.table('rcm_posting_queue_line')[0],
+      queue_line_id: '1a2b3c4d-5e6f-4708-8990-aabbccddeeff',
+      queue_id: SECOND_QUEUE,
+      od_claim_proc_num: 533940,
+      claim_id: SECOND_CLAIM,
+    },
+  ]);
+  db.seed('rcm_claims', [
+    {
+      ...db.table('rcm_claims')[0],
+      claim_id: SECOND_CLAIM,
+      posting_queue_id: SECOND_QUEUE,
+    },
+  ]);
+  const od = odFixture();
+  od.fail = { '/definitions': { status: 503, error: 'Open Dental is unreachable' } };
+
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes.length, 2, 'both plans got an outcome');
+  assert.ok(result.outcomes.every((o) => o.reason === postingDrain.BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED));
+  assert.equal(
+    od.pathsRead().filter((p) => p === '/definitions').length,
+    1,
+    'one attempt for the run, not one per plan'
+  );
+});

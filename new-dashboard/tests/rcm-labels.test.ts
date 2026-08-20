@@ -31,6 +31,7 @@ import {
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
 } from "../client/src/features/rcm/posting";
+import { QUEUE_COLLISION_COPY } from "../client/src/features/rcm/api";
 
 const VOCAB = fs.readFileSync(
   path.join(__dirname, "..", "..", "backend", "services", "rcm", "rcmVocabulary.js"),
@@ -300,5 +301,45 @@ describe("the drain's vocabularies", () => {
     expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
     expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);
     expect(stored.length).toBe(serverLabels.size);
+  });
+});
+
+/**
+ * Slice 6c — the two queue-collision refusal codes.
+ *
+ * The approval panel renders the SERVER's sentence, which varies by plan status
+ * and is always the better one. What this pins is that the client knows both
+ * codes exist: a code the backend can throw and the client has never heard of
+ * reaches a biller as a blank toast, which is the same failure shape as an
+ * unlabelled reason slug one level up.
+ */
+describe("the queue-collision refusals", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "routes", "rcm", "approvalGate.js"),
+    "utf8",
+  );
+
+  it("knows every queue-collision code the gate can throw", () => {
+    const thrown = [...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]);
+    expect(new Set(thrown)).toEqual(new Set(["QUEUE_ALREADY_RUNNING", "QUEUE_ALREADY_RAN"]));
+
+    const unknown = thrown.filter((c) => !QUEUE_COLLISION_COPY[c]);
+    expect(unknown, `codes with no client copy: ${unknown.join(", ")}`).toEqual([]);
+  });
+
+  it("does not say the same thing twice — the two codes mean opposite advice", () => {
+    // RUNNING: waiting is the answer. RAN: waiting will never help.
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RUNNING).not.toBe(
+      QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN,
+    );
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RUNNING).toMatch(/wait/i);
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN).toMatch(/by hand in Open Dental/i);
+    expect(QUEUE_COLLISION_COPY.QUEUE_ALREADY_RAN).not.toMatch(/under way/i);
+  });
+
+  it("names nothing the backend cannot throw", () => {
+    const thrown = new Set([...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]));
+    const orphans = Object.keys(QUEUE_COLLISION_COPY).filter((c) => !thrown.has(c));
+    expect(orphans, `client copy for codes the gate never sends: ${orphans.join(", ")}`).toEqual([]);
   });
 });

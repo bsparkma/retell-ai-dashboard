@@ -100,7 +100,58 @@ export class RcmApiError extends Error {
     const raw = this.details.claims;
     return Array.isArray(raw) ? (raw as ApprovalClaim[]) : [];
   }
+
+  /**
+   * A remittance gets exactly ONE posting plan (Slice 6c), and this one has
+   * already been through the drain.
+   *
+   * TWO codes, and the difference is real rather than cosmetic:
+   * `QUEUE_ALREADY_RUNNING` means a drain holds the plan RIGHT NOW — waiting is
+   * genuinely the answer. `QUEUE_ALREADY_RAN` means it has been and gone, and
+   * waiting will never help: this claim posts by hand in Open Dental until a
+   * later slice adds a follow-on plan.
+   *
+   * Until 6c both said "already under way", which read as "try again in a
+   * minute" about a plan that had finished hours earlier.
+   */
+  get queueAlreadyRan(): boolean {
+    return this.code === "QUEUE_ALREADY_RAN";
+  }
+
+  /** A drain owns this remittance's plan at this moment. Waiting IS the answer. */
+  get queueRunningNow(): boolean {
+    return this.code === "QUEUE_ALREADY_RUNNING";
+  }
+
+  /**
+   * Which state the existing plan is in, for the two codes above.
+   *
+   * The server's sentence already differs per status; this is what lets a screen
+   * link somewhere useful — the Posting queue for a plan that can still be
+   * drained, nowhere for one that has finished — without parsing prose.
+   */
+  get queuePlanStatus(): string | null {
+    const raw = this.details.queueStatus;
+    return typeof raw === "string" ? raw : null;
+  }
 }
+
+/**
+ * Fallback copy for the two queue-collision refusals.
+ *
+ * The panel renders the SERVER's sentence, which varies by plan status and is
+ * therefore always the better one. These exist so a refusal that somehow arrives
+ * without a message still says something true — and so `rcm-labels.test.ts` has
+ * something to check the backend's codes against. A code the backend can throw
+ * and the client has never heard of would otherwise reach a biller as a blank
+ * toast.
+ */
+export const QUEUE_COLLISION_COPY: Record<string, string> = {
+  QUEUE_ALREADY_RUNNING:
+    "A posting run for this remittance is under way. Wait for it to finish, then look at what it left.",
+  QUEUE_ALREADY_RAN:
+    "This remittance's posting plan has already been through the drain, so this claim cannot join it. Post this one by hand in Open Dental — CareIN cannot start a second run for the same check yet.",
+};
 
 /** Counts keyed by the status vocabulary of one rcm_* table. */
 export type StatusCounts = Record<string, number>;

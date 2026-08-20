@@ -72,6 +72,33 @@ attempted. Collapsing them would leave the queue unable to say which of two very
 different things happened — and the two need different actions from different
 people.
 
+### 2.2.1 The recovery contract — `blocked` has a way out
+
+**`blocked` → fix the named cause → press Drain again.** That is the whole
+contract, and it is what every blocked row's own message asks for
+(*"Resolve the extra line in the chart, then drain again."*).
+
+An earlier version of this slice made that instruction impossible: `blocked` was
+excluded from `DRAINABLE_STATUSES` on the argument that "retrying a refusal
+automatically is how it becomes a loop". But **there is no automatic anything in
+this module** — pressing Drain is a human decision — and with `blocked` excluded
+nothing anywhere could ever run one again. Not the drain's own scan, not the
+startup sweep (which only re-homes `posting`), and not the 6b gate (which refuses
+any plan past `approved`). A transient `office_config_unresolved`, an
+`eligible_total_mismatch` the biller then fixed, and every valley row on the day
+valley is enabled were all permanently stuck, with the screen telling them to do
+something that could not be done.
+
+So `approved`, `failed`, `partially_posted` and `blocked` are all drainable.
+**`posted` is the only terminal state.**
+
+Re-pressing a plan whose cause persists is cheap and honest: it blocks again with
+the same reason and an incremented `attempt_count`. For a POLICY block — valley,
+a recoupment, the environment guard, an office disagreement, arithmetic that does
+not add up — `checkPreconditions` runs before the office's configuration is
+resolved, so a re-press costs **zero Open Dental calls** however many times it is
+made.
+
 **`posted` requires BOTH proofs, enforced by the database**, not only by the code
 that sets it:
 
@@ -456,6 +483,13 @@ about being exactly that.
 nowhere else** — stopping mid-claim would deliberately open the §8 window this
 whole design exists to survive. Out of time returns `outOfTime: true` with
 `remaining`, and the button is pressed again.
+
+Four minutes sits near a typical ingress idle timeout, and that is safe rather
+than lucky: **a cut response is cosmetic.** Every transition is committed before
+the Open Dental call it precedes, so a run whose HTTP response never arrives has
+still recorded exactly where it got to — refresh the Posting screen and the truth
+is there, press Drain again and it resumes from the chart. The budget bounds how
+long a request is HELD; it is not what makes the run recoverable.
 
 ---
 
@@ -857,12 +891,44 @@ The same queue. A disabled button, naming the permission an approver holds.
 | | Limit | Why it waits |
 | --- | --- | --- |
 | **A partially-approved remittance posts as more than one check** | The plan's `CheckAmt` is the sum of the claims that were approved, so a check with nine clean claims and one reversal posts a check for nine. The practice's deposit then sees two OD checks summing to the carrier's one. **PM ruling wanted.** | Inherent to 6b's partial approve, which is a deliberate feature. Changing it means either refusing partial approves or teaching the drain to wait for the whole remittance. |
-| **A re-approve cannot join a plan that has already run** | 6b appends to the same queue row and refuses with `QUEUE_ALREADY_RUNNING` once the plan is past `approved`. So the tenth claim, fixed after the other nine posted, has nowhere to go. | Needs a decision about whether a remittance may carry a second plan — which the `(office_id, remittance_key)` unique constraint currently forbids. |
+| **A claim fixed after its remittance's plan has run cannot post through CareIN at all** | See §15.1 below — it now has its own refusal and its own sentence rather than hiding behind "already under way". | Needs a decision about whether a remittance may carry a second plan, which the `(office_id, remittance_key)` unique index currently forbids. |
 | **The drain is a held HTTP request** | Like the batch matcher. Bounded by a wall-clock budget and honest about running out. | A polled job needs run state; the queue row is close but the request/response shape is a separate change. |
 | **maxReplicas = 1 is a standing requirement, not a constraint the code enforces** | §8. | A lease + heartbeat on the queue row. Do it **before** raising maxReplicas. |
 | **A 429 replays the request, writes included** | The transport's backoff retries on 429 only. A 429 is a rate-limit rejection *before* processing, so a replay is safe in practice — and §5.1's adopt-before-create covers the residual case. | Noted rather than fixed; making writes non-retryable would trade a real safety margin for a theoretical one. |
 | **`audit.source_ref` is unused** | Same gap the voice→TC handoff has. | A column, not a design. |
 | **Recoupments, the EOB attach, patient portion** | 6d and the PRD's deferred flow. `ApiPayments` is not enabled on the key at all (G11). | By design. |
+
+### 15.1 A withheld claim fixed after the plan has drained
+
+**This is the one limitation a biller will actually hit, and it has no
+workaround inside CareIN.**
+
+`rcm_posting_queue` is unique on `(office_id, remittance_key)`: **a remittance
+gets exactly ONE posting plan, ever.** 6b's partial approve is a deliberate
+feature — nine clean claims enqueue and the tenth is withheld and named — but the
+tenth can only join that plan while it is still `approved`. Once a drain has had
+it, approving again is refused.
+
+The money still has to go in. **It goes in by hand, in Open Dental**, until a
+later slice adds a follow-on plan.
+
+Two refusals, because they are two different facts:
+
+| Plan status | Code | What it says |
+| --- | --- | --- |
+| `posting` | `QUEUE_ALREADY_RUNNING` | A drain holds it **right now**. Waiting genuinely is the answer. |
+| `posted` | `QUEUE_ALREADY_RAN` | Already finished, its payment is in Open Dental. Post this claim by hand. |
+| `partially_posted` | `QUEUE_ALREADY_RAN` | Put money in the chart and stopped part-way. Resolve that run on the Posting screen first. |
+| `failed`, `blocked` | `QUEUE_ALREADY_RAN` | A drain has had it and it is not accepting more claims. It can still be drained again — but not with this claim on it. |
+
+Both are 409s and both carry `queueStatus`, so a screen can link to the Posting
+queue for a plan that can still be drained and nowhere for one that has finished,
+without parsing prose.
+
+Until 6c there was one sentence for all of them — *"a posting run for this
+remittance is already under way"* — which was **false** for every status but
+`posting`, and which read as "wait a minute and try again" about a plan that had
+finished hours earlier. The limitation was real either way; the sentence hid it.
 
 ---
 

@@ -1062,3 +1062,120 @@ test('the approve reads the claims FOR UPDATE, inside one transaction', async ()
     }
   });
 });
+
+// ─── Slice 6c: the refusal when the plan has already been drained ────────────
+
+/**
+ * Approve once, then put the plan into `status`, then approve again with a
+ * second claim that is now postable.
+ *
+ * The plan has to be created by a real approve rather than seeded, because the
+ * second press has to find it through `resolveRemittanceKey` — the same key the
+ * first press derived. Seeding a row with a guessed key would test nothing.
+ */
+async function approveThenSetStatus(app, db, status) {
+  const first = await approve(app);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.queued.length, 1, 'only the reviewed claim was queued');
+  assert.equal(first.body.withheld.length, 1, 'and the second was withheld');
+
+  const plan = db.table('rcm_posting_queue')[0];
+  plan.status = status;
+  if (status === 'posted') {
+    plan.od_claim_payment_num = 21253;
+    plan.reconciled_at = new Date();
+  }
+
+  // The biller now does the thing that was withholding the second claim. This is
+  // exactly the sequence the limitation bites on: fix a withheld claim AFTER its
+  // remittance's plan has run.
+  const second = db.table('rcm_claims').find((c) => c.claim_id === CLAIM2);
+  second.reviewed_at = new Date();
+  second.reviewed_by = 'user-1';
+  return plan;
+}
+
+/** The second claim, present and postable EXCEPT that nobody has reviewed it. */
+function withUnreviewedSecondClaim(db) {
+  addSecondClaim(db);
+  const second = db.table('rcm_claims').find((c) => c.claim_id === CLAIM2);
+  second.reviewed_at = null;
+  second.reviewed_by = null;
+  return db;
+}
+
+test('6c: a claim cannot join a plan that has already POSTED, and the refusal says so', async () => {
+  /*
+   * THE LIMITATION THIS MAKES VISIBLE.
+   *
+   * `rcm_posting_queue` is unique on `(office_id, remittance_key)`, so a
+   * remittance gets exactly one plan, ever. A claim withheld at approval and
+   * fixed after that plan has drained cannot post through CareIN at all.
+   *
+   * Before 6c the refusal said "a posting run for this remittance is already
+   * under way" — false for a plan that finished hours ago, and it read as "wait
+   * a minute and try again", which would never come good.
+   */
+  const db = withUnreviewedSecondClaim(seed(new FakeRcmDb()));
+  await withApp({ db }, async (app) => {
+    await approveThenSetStatus(app, db, 'posted');
+
+    const res = await approve(app);
+
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'QUEUE_ALREADY_RAN', 'not QUEUE_ALREADY_RUNNING');
+    assert.equal(res.body.queueStatus, 'posted', 'the screen can link somewhere useful');
+
+    // The sentence is TRUE, and it names the way out.
+    assert.doesNotMatch(res.body.error, /under way/i);
+    assert.match(res.body.error, /already finished/i);
+    assert.match(res.body.error, /by hand in Open Dental/i);
+
+    // Nothing was appended to the finished plan.
+    assert.equal(db.table('rcm_posting_queue').length, 1);
+    assert.equal(db.table('rcm_posting_queue_line').length, 1);
+  });
+});
+
+test('6c: a plan a drain holds RIGHT NOW still says "under way" — waiting is the answer', async () => {
+  // The one status the original single sentence was ever true for, kept.
+  const db = withUnreviewedSecondClaim(seed(new FakeRcmDb()));
+  await withApp({ db }, async (app) => {
+    await approveThenSetStatus(app, db, 'posting');
+
+    const res = await approve(app);
+
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'QUEUE_ALREADY_RUNNING');
+    assert.equal(res.body.queueStatus, 'posting');
+    assert.match(res.body.error, /already under way/i);
+  });
+});
+
+test('6c: every already-ran status gets a sentence that is true of it', async () => {
+  /*
+   * `partially_posted` is the one that would be most damaging to get wrong: money
+   * IS in the chart, and a sentence saying the run "finished" would send a biller
+   * looking for a completed payment that is not there.
+   */
+  const posted = approvalGate.alreadyRanMessage('posted');
+  const partial = approvalGate.alreadyRanMessage('partially_posted');
+  const failed = approvalGate.alreadyRanMessage('failed');
+  const blocked = approvalGate.alreadyRanMessage('blocked');
+
+  assert.match(posted, /already finished/i);
+  assert.match(partial, /stopped\s+part-way/i);
+  assert.doesNotMatch(partial, /already finished/i);
+  assert.equal(failed, blocked, 'both mean "a drain has had it and it is not accepting more"');
+  assert.doesNotMatch(failed, /already finished/i);
+
+  // None of them claims a run is in progress.
+  for (const [label, msg] of [['posted', posted], ['partial', partial], ['failed', failed]]) {
+    assert.doesNotMatch(msg, /under way/i, label);
+    assert.match(msg, /by hand in Open Dental/i, label);
+  }
+
+  // And `posting` is deliberately NOT one of them.
+  assert.ok(!approvalGate.TERMINAL_QUEUE_STATUSES.includes('posting'));
+  assert.ok(!approvalGate.TERMINAL_QUEUE_STATUSES.includes('approved'));
+});

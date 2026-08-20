@@ -990,6 +990,14 @@ function respondToApprovalError(req, res, office, err, batchId) {
   };
   if (Array.isArray(err.claims)) body.claims = err.claims;
   if (typeof err.differenceCents === 'number') body.differenceCents = err.differenceCents;
+  /*
+   * Slice 6c. WHICH state the existing plan is in, for the two queue-collision
+   * refusals. The sentence already differs per status (approvalGate
+   * .alreadyRanMessage); this lets a screen link somewhere useful — the Posting
+   * queue for a plan that can still be drained, nowhere for one that has
+   * finished — without parsing prose.
+   */
+  if (typeof err.queueStatus === 'string') body.queueStatus = err.queueStatus;
   res.status(err.httpStatus).json(body);
   return true;
 }

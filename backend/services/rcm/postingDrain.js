@@ -184,11 +184,33 @@ const QUEUE_STATUS_LABEL = Object.freeze({
  * Picking up a `posting` row here would be this file guessing that some other
  * runner is dead.
  *
- * `blocked` is not here either: a blocked row is waiting on a human, and
- * retrying it automatically is how a refusal becomes a loop. Re-approving or
- * fixing the cause is what moves it.
+ * `blocked` IS here, and an earlier version of this file was wrong to leave it
+ * out.
+ *
+ * The argument for excluding it was "retrying a refusal automatically is how it
+ * becomes a loop" — and there is no automatic anything in this module. Pressing
+ * Drain is a human decision, and it is precisely the act every blocked row's own
+ * message asks for: *"Resolve the extra line in the chart, then drain again."*
+ * With `blocked` excluded that instruction was impossible to follow. Nothing
+ * anywhere re-ran a blocked plan: not this list, not the startup sweep (which
+ * only re-homes `posting`), and not the 6b gate (which refuses any plan past
+ * `approved`). A transient `office_config_unresolved`, an
+ * `eligible_total_mismatch` the biller then fixed, and every valley row on the
+ * day valley is enabled were all permanently stuck.
+ *
+ * Re-blocking is cheap and honest: a plan whose cause persists blocks again with
+ * the same reason and an incremented `attempt_count`, and for a POLICY block —
+ * valley, recoupment, the env guard, the arithmetic — `checkPreconditions` runs
+ * before any transport is resolved, so it costs ZERO Open Dental calls.
+ *
+ * `posted` is the only genuinely terminal state, and it stays out.
  */
-const DRAINABLE_STATUSES = Object.freeze(['approved', 'failed', 'partially_posted']);
+const DRAINABLE_STATUSES = Object.freeze([
+  'approved',
+  'failed',
+  'partially_posted',
+  'blocked',
+]);
 
 /**
  * D-7's gate, as data.
@@ -220,6 +242,14 @@ const OFFICES_ENABLED_FOR_POSTING = Object.freeze(['roland']);
  * THE BUDGET IS CHECKED BETWEEN ROWS ONLY. Stopping mid-claim would leave the
  * §8 window open on purpose, which is the one thing this whole design exists to
  * avoid. A row that starts finishes, or fails and says where.
+ *
+ * FOUR MINUTES SITS NEAR A TYPICAL INGRESS IDLE TIMEOUT, and that is safe rather
+ * than lucky: a cut response is COSMETIC here. Every transition is committed
+ * before the Open Dental call it precedes, so a drain whose HTTP response never
+ * arrives has still recorded exactly where it got to — the biller refreshes the
+ * Posting screen and sees the truth, and pressing Drain again resumes from the
+ * chart. The budget bounds how long a request is HELD; it is not what makes the
+ * run recoverable.
  */
 const DEFAULT_BUDGET_MS = 4 * 60 * 1000;
 
@@ -792,6 +822,12 @@ async function loadPlan(pool, office, queueId) {
  * `attempt_count` increments here so a row that fails repeatedly says how many
  * times it has been tried without anything else having to count.
  *
+ * CLEARING `blocked_reason` IN THIS SAME STATEMENT is what makes a blocked plan
+ * re-drainable at all. `rcm_posting_queue_blocked_reason_check` pairs the state
+ * with the reason in both directions, so moving to `posting` while leaving a
+ * reason behind would be refused by the database. One statement, both columns,
+ * no window where the pairing is broken.
+ *
  * @returns {Promise<boolean>} true when this process now owns the row
  */
 async function claimRow(pool, office, queueId, drainedBy) {
@@ -1000,6 +1036,34 @@ async function drainRow(ctx, queueId) {
   if (blocked) {
     await blockRow(pool, queueId, blocked.reason, blocked.detail, step);
     return { queueId, status: 'blocked', reason: blocked.reason, detail: blocked.detail };
+  }
+
+  /*
+   * ONLY NOW does this practice's Open Dental get read at all.
+   *
+   * Every refusal above is a POLICY refusal — valley, a recoupment, the
+   * environment guard, an office disagreement, arithmetic that does not add up —
+   * and not one of them needs to know a single DefNum. Resolving the
+   * configuration before them would make "a blocked plan costs zero Open Dental
+   * calls" false for every office but valley, which matters now that a blocked
+   * plan can be pressed again as many times as a biller likes.
+   *
+   * A failure here is `blocked`, not `failed`: nothing was attempted, and marking
+   * a plan `failed` because a definitions read timed out would put it in a state
+   * that means "something went wrong mid-posting".
+   */
+  let config;
+  try {
+    config = await ctx.ensureConfig();
+  } catch (err) {
+    const detail = err && err.message ? err.message : String(err);
+    await blockRow(pool, queueId, BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED, detail, step);
+    return {
+      queueId,
+      status: 'blocked',
+      reason: BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED,
+      detail,
+    };
   }
 
   const grouped = groupByClaim(plan.lines);
@@ -1390,7 +1454,7 @@ async function drainRow(ctx, queueId) {
       }
 
       const method = plan.batch && plan.batch.paymentMethod === 'eft' ? 'eft' : 'check';
-      const payType = odOfficeConfig.pickPayType(ctx.config, method);
+      const payType = odOfficeConfig.pickPayType(config, method);
       if (!payType) {
         await blockRow(
           pool,
@@ -1403,7 +1467,7 @@ async function drainRow(ctx, queueId) {
         return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_PAY_TYPE };
       }
 
-      const endpoint = odOfficeConfig.resolveCheckEndpoint(ctx.config, grouped.length);
+      const endpoint = odOfficeConfig.resolveCheckEndpoint(config, grouped.length);
       const created = await odPostingWrites.writeClaimPayment(od, {
         endpoint,
         claimNums: grouped.map((g) => g.odClaimNum),
@@ -1646,35 +1710,35 @@ async function drainOffice(ctx) {
     const od = ctx.transport || odPostingWrites.postingTransportFor(ctx.office);
 
     /*
-     * Configuration first, and a failure here blocks every row rather than
-     * failing them. Nothing was attempted, so nothing failed — and marking twenty
-     * plans `failed` because a definitions read timed out would put twenty rows
-     * into a state that means "something went wrong mid-posting".
+     * CONFIGURATION IS RESOLVED LAZILY, ONCE, AND ONLY IF A PLAN GETS PAST ITS
+     * PRECONDITIONS.
+     *
+     * Resolving it up front cost five paced reads before the first plan was even
+     * looked at — which made "a policy block costs zero Open Dental calls" false
+     * for every office but valley. A run consisting entirely of recoupments, or
+     * of plans whose arithmetic does not agree, has no business reading a
+     * practice's definitions at all.
+     *
+     * Memoised on the run, so twenty plans still resolve it once. `odOfficeConfig`
+     * caches for an hour on top of that; this is about the FIRST call, not the
+     * twentieth.
      */
-    let config;
-    try {
-      const resolved = await odOfficeConfig.resolvePostingConfig(od.get, ctx.office);
-      config = resolved.config;
-    } catch (err) {
-      const detail = err && err.message ? err.message : String(err);
-      for (const queueId of queueIds) {
-        const taken = await claimRow(ctx.pool, ctx.office, queueId, ctx.drainedBy);
-        if (!taken) continue;
-        await blockRow(
-          ctx.pool,
-          queueId,
-          BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED,
-          detail,
-          STEPS[0]
-        );
-        outcomes.push({
-          queueId,
-          status: 'blocked',
-          reason: BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED,
-        });
+    let config = null;
+    let configError = null;
+    const ensureConfig = async () => {
+      if (config) return config;
+      if (configError) throw configError;
+      try {
+        const resolved = await odOfficeConfig.resolvePostingConfig(od.get, ctx.office);
+        config = resolved.config;
+        return config;
+      } catch (err) {
+        // Remembered so a second plan in the same run does not re-attempt five
+        // reads that just failed.
+        configError = err;
+        throw err;
       }
-      return { ran: outcomes.length, outcomes, outOfTime: false, remaining: 0 };
-    }
+    };
 
     for (let i = 0; i < queueIds.length; i++) {
       /*
@@ -1703,7 +1767,7 @@ async function drainOffice(ctx) {
         continue;
       }
 
-      outcomes.push(await drainRow({ ...ctx, od, config }, queueId));
+      outcomes.push(await drainRow({ ...ctx, od, ensureConfig }, queueId));
     }
 
     return {
