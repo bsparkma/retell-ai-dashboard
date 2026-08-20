@@ -5,6 +5,11 @@
  * menu so the server stamps submittedDate/decisionDate. Confirmed-save:
  * toast.success only after the API resolves; failures keep the dialog open
  * with values intact and toast tcErrorMessage(e).
+ *
+ * An optional Open Dental patient link sits at the top, the same picker the
+ * New Case dialog uses. It PREFILLS name/phone/email and then gets out of the
+ * way — every field stays editable, because the link is a convenience, not a
+ * lock, and a pre-auth for someone not yet in Open Dental is a normal pre-auth.
  */
 import { useEffect, useState } from "react";
 import type { z } from "zod";
@@ -14,9 +19,12 @@ import {
   createPreauth,
   patchPreauth,
   tcErrorMessage,
+  type OdPatient,
   type TcPreauthCreate,
   type TcPreauthPatch,
 } from "../api";
+import { OdPatientSearch } from "../od/OdShell";
+import { fieldsFromOdPatient } from "../od/odPatient";
 import {
   Dialog,
   DialogContent,
@@ -25,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,7 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { PREAUTH_TYPE_LABELS } from "./PreauthBoard";
 
 type PreauthTypeId = z.infer<typeof PreauthType>;
@@ -65,6 +74,19 @@ const EMPTY: FormState = {
   notes: "",
   caseId: "",
 };
+
+/**
+ * The Open Dental link, if any.
+ *
+ * `patient` is the full record ONLY when it was picked in this dialog. A link
+ * loaded from an existing case carries the PatNum alone: we do not fetch Open
+ * Dental just to print a name, so that case renders an honest PatNum badge
+ * rather than a name we have not actually read back.
+ */
+interface OdLink {
+  patNum: number;
+  patient: OdPatient | null;
+}
 
 function fromCase(c: TcPreauthCase): FormState {
   return {
@@ -96,15 +118,35 @@ export function PreauthDialog({
   onSaved: (saved: TcPreauthCase, mode: "created" | "updated") => void;
 }) {
   const [form, setForm] = useState<FormState>(EMPTY);
+  const [odLink, setOdLink] = useState<OdLink | null>(null);
   const [saving, setSaving] = useState(false);
 
   // Reset the form each time the dialog opens (create) or the target changes.
   useEffect(() => {
-    if (open) setForm(editing ? fromCase(editing) : EMPTY);
+    if (!open) return;
+    setForm(editing ? fromCase(editing) : EMPTY);
+    setOdLink(editing?.odPatientId ? { patNum: editing.odPatientId, patient: null } : null);
   }, [open, editing]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  /**
+   * Prefill from a linked OD patient. Name is overwritten; phone and email are
+   * only filled when Open Dental actually has them, so a number typed here does
+   * not get blanked by a field the server does not serve. Age is ignored — a
+   * pre-auth has no age field. All of it stays editable afterwards.
+   */
+  const linkOdPatient = (p: OdPatient) => {
+    const fields = fieldsFromOdPatient(p);
+    setOdLink({ patNum: p.patNum, patient: p });
+    setForm((f) => ({
+      ...f,
+      patientName: fields.patientName,
+      ...(fields.phone ? { phone: fields.phone } : {}),
+      ...(fields.email ? { email: fields.email } : {}),
+    }));
+  };
 
   const requiredMissing =
     !form.patientName.trim() || !form.insuranceCarrier.trim() || !form.doctorName.trim();
@@ -117,6 +159,10 @@ export function PreauthDialog({
     setSaving(true);
     try {
       if (editing) {
+        // Only send odPatientId when the link actually changed — a patch that
+        // restates it would rewrite the column on every save for no reason.
+        const originalOdPatientId = editing.odPatientId ?? null;
+        const nextOdPatientId = odLink?.patNum ?? null;
         const patch: TcPreauthPatch = {
           patientName: form.patientName.trim(),
           preauthType: form.preauthType,
@@ -128,6 +174,9 @@ export function PreauthDialog({
           referenceNumber: form.referenceNumber.trim(),
           notes: form.notes,
           caseId: form.caseId.trim() || null,
+          ...(nextOdPatientId !== originalOdPatientId
+            ? { odPatientId: nextOdPatientId }
+            : {}),
         };
         const saved = await patchPreauth(office, editing.preauthId, patch);
         toast.success(`${saved.patientName} updated`);
@@ -144,6 +193,7 @@ export function PreauthDialog({
           ...(form.referenceNumber.trim() ? { referenceNumber: form.referenceNumber.trim() } : {}),
           ...(form.notes ? { notes: form.notes } : {}),
           ...(form.caseId.trim() ? { caseId: form.caseId.trim() } : {}),
+          ...(odLink ? { odPatientId: odLink.patNum } : {}),
         };
         const saved = await createPreauth(office, input);
         toast.success(`Pre-auth created for ${saved.patientName}`);
@@ -169,6 +219,39 @@ export function PreauthDialog({
               : "Track a new insurance pre-authorization on the board."}
           </DialogDescription>
         </DialogHeader>
+
+        <div className="space-y-2">
+          {odLink && !odLink.patient && (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  Linked to Open Dental
+                  <Badge variant="outline" className="text-[10px]">
+                    PatNum {odLink.patNum}
+                  </Badge>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Search below to link a different patient.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setOdLink(null)}
+                aria-label="Unlink this patient"
+              >
+                <X size={14} />
+              </Button>
+            </div>
+          )}
+          <OdPatientSearch
+            office={office}
+            selected={odLink?.patient ?? null}
+            onSelect={linkOdPatient}
+            onClear={() => setOdLink(null)}
+            label="Link an Open Dental patient (optional)"
+          />
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground">
