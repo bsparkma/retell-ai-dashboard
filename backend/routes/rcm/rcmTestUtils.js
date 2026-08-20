@@ -38,6 +38,13 @@ const eraFileStore = require('../../services/rcm/eraFileStore');
 // the real registry ever resolving a customer key.
 const odOffices = require('../../config/odOffices');
 const odPacer = require('../../services/rcm/odPacer');
+/*
+ * Slice 6c. The posting config cache is PROCESS-WIDE and keyed by office, so a
+ * suite that resolved roland's DefNums would otherwise hand them to the next
+ * suite's valley — the one cross-office leak this whole module exists to make
+ * impossible. Reset with the pacer, at both ends of a boot.
+ */
+const odOfficeConfig = require('../../services/rcm/odOfficeConfig');
 
 /**
  * Primary key per rcm_* table, from the Slice 1 migration. The fake mints a
@@ -1091,6 +1098,7 @@ async function bootRcmApp({
    */
   odPacer._resetForTests();
   odPacer._setIntervalForTests(1);
+  odOfficeConfig._resetForTests();
 
   // The office's OWN client, faked. `getOdOffice` is what the per-office
   // registry hands out, and `assertOfficeMatch` is left REAL — so a route that
@@ -1179,6 +1187,7 @@ async function bootRcmApp({
             eraFileStore.putEraFile = originals.eraStore.putEraFile;
             odOffices.getOdOffice = originals.getOdOffice;
             odPacer._resetForTests();
+            odOfficeConfig._resetForTests();
             if (originals.token === undefined) delete process.env.DASHBOARD_API_TOKEN;
             else process.env.DASHBOARD_API_TOKEN = originals.token;
             server.close(r);
