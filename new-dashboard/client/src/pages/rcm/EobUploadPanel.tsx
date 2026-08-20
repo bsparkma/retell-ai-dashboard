@@ -26,6 +26,7 @@
  * true is the same failure as a server that reports a send it did not make.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { AlertCircle, FileUp, Loader2, PauseCircle, RefreshCw, UploadCloud } from "lucide-react";
 import {
   listEobUploads,
@@ -37,10 +38,17 @@ import {
   type EobUploadStatus,
   type RcmOfficeId,
 } from "@/features/rcm/api";
+import { provenanceLabel } from "@/features/rcm/labels";
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "loaded"; uploads: EobUpload[]; extraction: EobExtractionState }
+  | {
+      kind: "loaded";
+      uploads: EobUpload[];
+      extraction: EobExtractionState;
+      /** Optional: a server that predates the OCR slice does not send it. */
+      ocr: EobExtractionState | null;
+    }
   | { kind: "failed"; message: string };
 
 /** Chip styling per status. Keyed by the closed union, so a new state won't compile. */
@@ -80,6 +88,25 @@ const POLL_SLOW_MS = 10_000;
 const POLL_FAST_WINDOW_MS = 30_000;
 /** Hard ceiling on one polling run. Past this we stop and SAY we stopped. */
 const POLL_MAX_MS = 5 * 60_000;
+
+/**
+ * How long the panel will sit on an unverified "awaiting" row before it offers
+ * the manual re-check — REGARDLESS of what the browser claims about visibility.
+ *
+ * The ceiling above answers "we have been asking for five minutes and it is
+ * still not done". This answers a different and more dangerous question: "we
+ * have not managed to ASK for two minutes, so what you are reading may already
+ * be false." A tab that reports itself hidden produces exactly that state, and
+ * before this the user was given no way out of it at all.
+ */
+const STALE_AFTER_MS = 2 * 60_000;
+
+/**
+ * `visibilitychange` and `focus` routinely arrive together when a window comes
+ * forward. One wake, one request — the limiter budget is shared across both
+ * office panels (see the polling budget note above).
+ */
+const WAKE_DEBOUNCE_MS = 1_000;
 
 /**
  * Is this row one the server is still going to act on by itself?
@@ -123,19 +150,39 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [gaveUpPolling, setGaveUpPolling] = useState(false);
+  /** True once no successful list response has landed for STALE_AFTER_MS. */
+  const [stale, setStale] = useState(false);
   const [tabVisible, setTabVisible] = useState(
     () => typeof document === "undefined" || document.visibilityState !== "hidden",
   );
   const inputRef = useRef<HTMLInputElement | null>(null);
-  /** When the current polling run started. null = no run in progress. */
+  /**
+   * When the current polling run started. null = no run in progress.
+   *
+   * WALL CLOCK, and deliberately NOT paused while the tab is hidden. It used to
+   * be: time spent hidden was added back so a backgrounded tab did not burn its
+   * five minutes. That is why the panel could never admit it had stopped —
+   * see the polling effect below. What the user needs to know is how long the
+   * document has been waiting, not how long they have been watching it.
+   */
   const pollStartedAt = useRef<number | null>(null);
-  /** When the tab went to the background, so that time can be given back. */
-  const hiddenSince = useRef<number | null>(null);
+  /** When the last SUCCESSFUL list response landed. Drives `stale`. */
+  const lastPollAt = useRef<number | null>(null);
+  /** Last wake, so visibilitychange + focus together make one request. */
+  const lastWakeAt = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
       const page = await listEobUploads(office, { limit: 25 });
-      setState({ kind: "loaded", uploads: page.uploads, extraction: page.extraction });
+      // An answer landed. Whatever it says, the screen is no longer stale.
+      lastPollAt.current = Date.now();
+      setStale(false);
+      setState({
+        kind: "loaded",
+        uploads: page.uploads,
+        extraction: page.extraction,
+        ocr: page.ocr ?? null,
+      });
     } catch (err: unknown) {
       // The server's own words, the same way the summary card does it.
       const message =
@@ -153,33 +200,61 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
     setNotice(null);
     // A different office is a different run. Never inherit the old one's clock.
     pollStartedAt.current = null;
+    lastPollAt.current = null;
     setGaveUpPolling(false);
+    setStale(false);
     void refresh();
   }, [refresh]);
 
-  // A hidden tab is nobody looking. Stop asking, and pick it back up on return —
-  // at the same tempo it left off, because time nobody spent watching is not
-  // time spent waiting. Otherwise a tab backgrounded for a minute comes back
-  // already backed off to the slow interval, or already timed out.
+  const awaiting = state.kind === "loaded" && state.uploads.some(isAwaitingExtraction);
+
+  /**
+   * Someone is looking again — ask NOW, not at the next tick.
+   *
+   * Waiting for the next 3s/10s tick was what made the incident survive the
+   * user coming back to the tab: the answer was already sitting on the server
+   * and the page would not ask for it. An immediate request on return is the
+   * cheapest possible self-heal, and it is why this is a wake rather than a
+   * resume — it does not restart the run's clock or clear a give-up.
+   *
+   * Only when something is actually awaiting: focus fires constantly, and a
+   * panel with nothing in flight has no reason to spend a request on it.
+   */
+  const wake = useCallback(() => {
+    if (!awaiting) return;
+    const now = Date.now();
+    if (now - lastWakeAt.current < WAKE_DEBOUNCE_MS) return;
+    lastWakeAt.current = now;
+    void refresh();
+  }, [awaiting, refresh]);
+
+  /**
+   * A hidden tab is nobody looking, so it does not poll. But `visibilityState`
+   * is NOT a reliable signal everywhere: in an embedded browser (Cursor's, and
+   * editor webviews generally) it can report `hidden` while the pane is on
+   * screen, and `visibilitychange` may never fire when the pane is focused
+   * again. That is what produced the 2026-08-19 staging incident.
+   *
+   * So `focus` is a second, independent wake signal. It deliberately does NOT
+   * assert visibility — we do not overrule the browser — it just asks once.
+   * Between that, the ceiling below and `stale`, the user always ends up with
+   * either the truth or a button, whatever the visibility API claims.
+   */
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const onChange = () => {
+    const syncVisibility = () => {
       const visible = document.visibilityState !== "hidden";
-      if (!visible) {
-        hiddenSince.current = Date.now();
-      } else if (hiddenSince.current !== null) {
-        if (pollStartedAt.current !== null) {
-          pollStartedAt.current += Date.now() - hiddenSince.current;
-        }
-        hiddenSince.current = null;
-      }
       setTabVisible(visible);
+      if (visible) wake();
     };
-    document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
-  }, []);
-
-  const awaiting = state.kind === "loaded" && state.uploads.some(isAwaitingExtraction);
+    const onFocus = () => wake();
+    document.addEventListener("visibilitychange", syncVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", syncVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [wake]);
 
   /**
    * One timeout at a time, re-armed by each completed refresh — not a standing
@@ -195,13 +270,30 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
       if (gaveUpPolling) setGaveUpPolling(false);
       return;
     }
-    if (gaveUpPolling || !tabVisible) return;
+    if (gaveUpPolling) return;
 
+    // The clock runs from the moment there is something to wait for, whether or
+    // not anyone is watching it.
     if (pollStartedAt.current === null) pollStartedAt.current = Date.now();
     const elapsed = Date.now() - pollStartedAt.current;
+
+    // THE CEILING IS CHECKED BEFORE THE VISIBILITY GATE, AND THAT ORDER IS THE
+    // WHOLE FIX. `if (gaveUpPolling || !tabVisible) return;` used to sit above
+    // it, so a hidden tab stopped polling (intended) and could never reach the
+    // give-up state (not intended) — leaving the panel asserting "Extracting"
+    // forever, with no escape hatch, about a document the backend had finished
+    // in 6.6 seconds. Hidden and given-up must compose.
     if (elapsed >= POLL_MAX_MS) {
       setGaveUpPolling(true);
       return;
+    }
+
+    if (!tabVisible) {
+      // Not polling — but still on a clock, so it can stop ON TIME and say so.
+      // Returning with no timer at all is exactly how the panel used to lose the
+      // ability to admit anything.
+      const timer = window.setTimeout(() => setGaveUpPolling(true), POLL_MAX_MS - elapsed);
+      return () => window.clearTimeout(timer);
     }
 
     const delay = elapsed < POLL_FAST_WINDOW_MS ? POLL_FAST_MS : POLL_SLOW_MS;
@@ -209,10 +301,36 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
     return () => window.clearTimeout(timer);
   }, [awaiting, gaveUpPolling, tabVisible, refresh, state]);
 
+  /**
+   * The staleness watchdog — the escape hatch that does not depend on the
+   * visibility API being truthful.
+   *
+   * The ceiling above says "we asked for five minutes and it is still not
+   * done". This says "we have not been able to ask for two minutes", which is
+   * the state a mis-reporting embedded browser puts the panel in from the very
+   * first tick. It offers the same manual re-check, and it clears itself the
+   * moment any answer lands.
+   */
+  useEffect(() => {
+    if (!awaiting) {
+      if (stale) setStale(false);
+      return;
+    }
+    const since = lastPollAt.current ?? Date.now();
+    const elapsed = Date.now() - since;
+    if (elapsed >= STALE_AFTER_MS) {
+      if (!stale) setStale(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setStale(true), STALE_AFTER_MS - elapsed);
+    return () => window.clearTimeout(timer);
+  }, [awaiting, stale, state]);
+
   /** The manual escape hatch once we have stopped checking on our own. */
   const checkAgain = useCallback(() => {
     pollStartedAt.current = null;
     setGaveUpPolling(false);
+    setStale(false);
     void refresh();
   }, [refresh]);
 
@@ -223,6 +341,7 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
       // A new document is a new run, even if an earlier one timed out waiting.
       pollStartedAt.current = null;
       setGaveUpPolling(false);
+      setStale(false);
       try {
         const result = await uploadEob(office, file);
         // Say which of the three things happened. "Uploaded" on a re-submission
@@ -248,6 +367,7 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
   );
 
   const extraction = state.kind === "loaded" ? state.extraction : null;
+  const ocr = state.kind === "loaded" ? state.ocr : null;
 
   return (
     <div
@@ -263,8 +383,14 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
         )}
       </div>
 
-      {/* The breaker, stated plainly. A paused cap is not an error — the
-          document is safe and the work is waiting on a clock. */}
+      {/* The breakers, stated plainly. A paused cap is not an error — the
+          document is safe and the work is waiting on a clock.
+
+          TWO BANNERS, NEVER ONE. The two caps guard different resources on
+          different meters, and either can be spent while the other is untouched.
+          A single "cost cap reached" line would leave "why did my scan not read
+          when there is $3 of extraction budget left?" unanswerable from the
+          screen — which is the question the split exists to answer. */}
       {extraction?.paused && (
         <div
           className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
@@ -274,6 +400,20 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
           <span>
             Extraction paused — the daily cap of {formatCents(extraction.capCents)} is used up.
             Uploads are still accepted and will extract after {formatWhen(extraction.resetsAt)}.
+          </span>
+        </div>
+      )}
+
+      {ocr?.paused && (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+          data-testid={`rcm-eob-ocr-paused-${office}`}
+        >
+          <PauseCircle size={16} className="mt-0.5 flex-shrink-0" />
+          <span>
+            Scanned documents paused — the separate daily cap for reading scans (
+            {formatCents(ocr.capCents)}) is used up. PDFs with a text layer still extract
+            normally; scans are kept and will be read after {formatWhen(ocr.resetsAt)}.
           </span>
         </div>
       )}
@@ -350,6 +490,15 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
                     <div className="mt-0.5 text-xs text-muted-foreground">
                       {formatWhen(u.uploadedAt)}
                       {u.fileSizeBytes !== null && ` · ${formatBytes(u.fileSizeBytes)}`}
+                      {/* HOW it was read, once there is an answer. Nothing is
+                          shown before extraction: "not read yet" is the truth
+                          there, and a guess would be worse than a blank. */}
+                      {provenanceLabel(u) && (
+                        <span data-testid={`rcm-eob-provenance-${u.uploadId}`}>
+                          {" · "}
+                          {provenanceLabel(u)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <span
@@ -367,20 +516,40 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
                     {u.message}
                   </p>
                 )}
+                {/* Slice 6a: an extracted document is no longer a dead end. The
+                    batch it produced is where a biller can actually work it.
+                    Only shown when there IS one — an upload still waiting on the
+                    cost cap has nothing to open, and a link that led nowhere
+                    would be the same lie as a chip reading "Extracting" after
+                    the page stopped asking. */}
+                {u.resultBatchId && (
+                  <Link
+                    href={`/rcm/remittances/${u.resultBatchId}`}
+                    className="mt-1.5 inline-block text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                    data-testid={`rcm-eob-open-${u.uploadId}`}
+                  >
+                    Open the remittance →
+                  </Link>
+                )}
               </li>
             ))}
           </ul>
         ))}
 
-      {/* We stopped checking. Say so, rather than leaving a chip that reads
-          "Extracting" long after the page stopped knowing that to be true. */}
-      {awaiting && gaveUpPolling && (
+      {/* We stopped checking, or we have not managed to check. Either way SAY
+          so, rather than leaving a chip that reads "Extracting" long after the
+          page stopped knowing that to be true. Two different reasons, two
+          different sentences — "we gave up waiting" and "we cannot see" are not
+          the same thing to the person reading them. */}
+      {awaiting && (gaveUpPolling || stale) && (
         <div
           className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3"
           data-testid={`rcm-eob-stalled-${office}`}
         >
           <span className="text-xs text-muted-foreground">
-            Still not finished after 5 minutes — this page stopped checking on its own.
+            {gaveUpPolling
+              ? "Still not finished after 5 minutes — this page stopped checking on its own."
+              : "This page has not been able to check for a couple of minutes — what you see may be out of date."}
           </span>
           <button
             type="button"
@@ -394,13 +563,28 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
         </div>
       )}
 
-      {/* Spend, shown even when the cap is not reached. A cost rail nobody can
-          see is a cost rail nobody trusts. */}
-      {extraction && !extraction.paused && (
-        <p className="mt-4 text-xs text-muted-foreground" data-testid={`rcm-eob-spend-${office}`}>
-          Extraction spend today: {formatCents(extraction.usedCents)} of{" "}
-          {formatCents(extraction.capCents)}.
-        </p>
+      {/* Spend, shown even when neither cap is reached. A cost rail nobody can
+          see is a cost rail nobody trusts — and TWO lines rather than a sum,
+          because a single total would hide which one is about to stop the work.
+          They are printed adjacently so the difference is obvious without
+          anybody having to know there are two Azure resources behind them. */}
+      {(extraction || ocr) && (
+        <div className="mt-4 space-y-0.5">
+          {extraction && !extraction.paused && (
+            <p className="text-xs text-muted-foreground" data-testid={`rcm-eob-spend-${office}`}>
+              Extraction spend today: {formatCents(extraction.usedCents)} of{" "}
+              {formatCents(extraction.capCents)}.
+            </p>
+          )}
+          {ocr && !ocr.paused && (
+            <p className="text-xs text-muted-foreground" data-testid={`rcm-eob-ocr-spend-${office}`}>
+              Scan-reading (OCR) spend today: {formatCents(ocr.usedCents)} of{" "}
+              {formatCents(ocr.capCents)}
+              {typeof ocr.pagesRead === "number" && ` · ${ocr.pagesRead} page${ocr.pagesRead === 1 ? "" : "s"} read`}. A
+              separate cap from the extraction one.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

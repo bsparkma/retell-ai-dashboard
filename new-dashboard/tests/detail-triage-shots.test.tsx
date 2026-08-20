@@ -44,7 +44,7 @@ vi.mock("wouter", () => ({
 
 const authState = vi.hoisted(() => ({
   role: "office" as string,
-  permissions: ["voice.read", "voice.write"] as string[],
+  permissions: ["voice.read", "voice.write", "voice.chart_write"] as string[],
 }));
 vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => ({
@@ -139,7 +139,7 @@ async function renderDetail(c: UnifiedCall) {
 
 beforeEach(() => {
   authState.role = "office";
-  authState.permissions = ["voice.read", "voice.write"];
+  authState.permissions = ["voice.read", "voice.write", "voice.chart_write"];
   for (const fn of Object.values(apiMock)) fn.mockReset();
 });
 afterEach(cleanup);

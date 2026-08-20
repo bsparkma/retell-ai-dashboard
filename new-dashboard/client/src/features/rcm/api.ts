@@ -80,7 +80,78 @@ export class RcmApiError extends Error {
   get forbidden(): boolean {
     return this.status === 403 && this.code === "FORBIDDEN";
   }
+
+  /**
+   * This user may read the workbench but not approve a posting.
+   *
+   * TWO codes, one meaning. `POST /remittances/:id/approve` is deliberately NOT
+   * exempt from the mount's rcm.read/rcm.write pair, so the platform gate
+   * refuses a `reviewer` first with the generic FORBIDDEN — carrying the action
+   * that failed. The route's own APPROVE_REQUIRES_WRITE check sits behind it as
+   * defence in depth. The screen says the same sentence either way.
+   */
+  get approveForbidden(): boolean {
+    if (this.status !== 403) return false;
+    return this.code === "APPROVE_REQUIRES_WRITE" || this.details.action === "rcm.write";
+  }
+
+  /** The per-claim checklist a gate refusal carries, if it carries one. */
+  get refusedClaims(): ApprovalClaim[] {
+    const raw = this.details.claims;
+    return Array.isArray(raw) ? (raw as ApprovalClaim[]) : [];
+  }
+
+  /**
+   * A remittance gets exactly ONE posting plan (Slice 6c), and this one has
+   * already been through the drain.
+   *
+   * TWO codes, and the difference is real rather than cosmetic:
+   * `QUEUE_ALREADY_RUNNING` means a drain holds the plan RIGHT NOW — waiting is
+   * genuinely the answer. `QUEUE_ALREADY_RAN` means it has been and gone, and
+   * waiting will never help: this claim posts by hand in Open Dental until a
+   * later slice adds a follow-on plan.
+   *
+   * Until 6c both said "already under way", which read as "try again in a
+   * minute" about a plan that had finished hours earlier.
+   */
+  get queueAlreadyRan(): boolean {
+    return this.code === "QUEUE_ALREADY_RAN";
+  }
+
+  /** A drain owns this remittance's plan at this moment. Waiting IS the answer. */
+  get queueRunningNow(): boolean {
+    return this.code === "QUEUE_ALREADY_RUNNING";
+  }
+
+  /**
+   * Which state the existing plan is in, for the two codes above.
+   *
+   * The server's sentence already differs per status; this is what lets a screen
+   * link somewhere useful — the Posting queue for a plan that can still be
+   * drained, nowhere for one that has finished — without parsing prose.
+   */
+  get queuePlanStatus(): string | null {
+    const raw = this.details.queueStatus;
+    return typeof raw === "string" ? raw : null;
+  }
 }
+
+/**
+ * Fallback copy for the two queue-collision refusals.
+ *
+ * The panel renders the SERVER's sentence, which varies by plan status and is
+ * therefore always the better one. These exist so a refusal that somehow arrives
+ * without a message still says something true — and so `rcm-labels.test.ts` has
+ * something to check the backend's codes against. A code the backend can throw
+ * and the client has never heard of would otherwise reach a biller as a blank
+ * toast.
+ */
+export const QUEUE_COLLISION_COPY: Record<string, string> = {
+  QUEUE_ALREADY_RUNNING:
+    "A posting run for this remittance is under way. Wait for it to finish, then look at what it left.",
+  QUEUE_ALREADY_RAN:
+    "This remittance's posting plan has already been through the drain, so this claim cannot join it. Post this one by hand in Open Dental — CareIN cannot start a second run for the same check yet.",
+};
 
 /** Counts keyed by the status vocabulary of one rcm_* table. */
 export type StatusCounts = Record<string, number>;
@@ -162,12 +233,114 @@ async function toError(res: Response): Promise<RcmApiError> {
   );
 }
 
-async function get<T>(path: string, params: Record<string, string | number>): Promise<T> {
+/**
+ * POST a JSON body to /api/rcm and read a JSON response.
+ *
+ * Separate from `get` rather than a mode of it, because these are the calls
+ * that CHANGE something and the difference should be visible at the call site.
+ * Every one of them needs `rcm.write`, which the server enforces at the mount
+ * by HTTP method — no page has to know that to render.
+ */
+/**
+ * How long the client waits before it stops waiting.
+ *
+ * A batch match is a paced, sequential run against Open Dental — 25 claims at
+ * ≥1.2s per CALL is minutes, not seconds — and it is held open on one HTTP
+ * request. Without a timeout a hung connection leaves the button spinning
+ * "Matching…" forever with no way back; with one, the page can say what it
+ * knows ("this may still be running") instead of pretending to still be
+ * connected. The server keeps going either way, which is why the copy tells the
+ * operator to refresh rather than retry.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * The batch match's own budget, above the server's.
+ *
+ * The server bounds one batch run to `RCM_OD_BATCH_MATCH_BUDGET_MS` (90s by
+ * default) and reports what it did not reach, rather than holding the request
+ * open for the minutes a 25-claim remittance would otherwise take at >=1.2s per
+ * Open Dental CALL. This sits above that so the amber "it may still be running"
+ * notice is the EXCEPTION rather than the normal outcome — which is what it was
+ * at 120s against an unbounded run.
+ *
+ * The right long-term shape is a job the page polls (PR #87's bounded-poll
+ * rules); that needs run state this slice has no table for, so it is 6b's.
+ */
+const BATCH_TIMEOUT_MS = 150_000;
+
+async function post<T>(
+  path: string,
+  params: Record<string, string | number>,
+  body: unknown = {},
+  { timeoutMs = REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<T> {
   const qs = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString();
 
-  const res = await fetch(`${BASE}/rcm${path}?${qs}`, { credentials: "include" });
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/rcm${path}?${qs}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+  } catch (err) {
+    // A timeout is NOT a failure of the operation — the server may well still
+    // be working. It gets its own code so the UI can say that rather than
+    // inviting a second run on top of the first.
+    if (abort.signal.aborted) {
+      throw new RcmApiError("The request took too long and the page stopped waiting", 0, "TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new RcmApiError("Not signed in", 401, null);
+  }
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as T;
+}
+
+async function get<T>(
+  path: string,
+  params: Record<string, string | number>,
+  { timeoutMs = REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<T> {
+  const qs = new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)]),
+  ).toString();
+
+  // Reads got no timeout at all until this review round, so the initial
+  // remittance load could hang forever on a stalled connection and leave the
+  // page in a spinner with no way back — the same failure the POST timeout was
+  // added to prevent, on the path a user hits first.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/rcm${path}?${qs}`, {
+      credentials: "include",
+      signal: abort.signal,
+    });
+  } catch (err) {
+    if (abort.signal.aborted) {
+      throw new RcmApiError("The request took too long and the page stopped waiting", 0, "TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 401) {
     // Session expired — the shared handler bounces to sign-in rather than
@@ -209,7 +382,41 @@ export function listRcmClaims(
 export const EOB_UPLOAD_STATUSES = ["uploaded", "processing", "extracted", "failed"] as const;
 export type EobUploadStatus = (typeof EOB_UPLOAD_STATUSES)[number];
 
-export interface EobUpload {
+/**
+ * How a document became text — `rcm_eob_uploads.text_source`.
+ *
+ * A closed union, like `EobUploadStatus` and `TranscribeStatus`: a third source
+ * added server-side becomes a compile error here rather than a chip that
+ * silently renders as nothing.
+ */
+export const TEXT_SOURCES = ["text_layer", "ocr"] as const;
+export type TextSource = (typeof TEXT_SOURCES)[number];
+
+/**
+ * WHERE THE NUMBERS ON A PROPOSAL CAME FROM.
+ *
+ * Not the same question as `confidence` on a claim, which is the extraction
+ * model's confidence in its reading of a STRING. This is about how that string
+ * was obtained: parsed out of a PDF's own text layer, or read by OCR off a
+ * picture of a fax. A biller checking a $4,000 check decides how hard to look
+ * from this, so it is carried all the way to the screen rather than inferred.
+ *
+ * `textSource: null` genuinely means WE DO NOT KNOW — an 835 (parsed, never
+ * read), or an EOB extracted before the OCR slice. The screen shows nothing at
+ * all in that case; it never guesses "text layer".
+ */
+export interface DocumentProvenance {
+  textSource: TextSource | null;
+  /** Pages Azure Document Intelligence read and billed. null off the OCR path. */
+  ocrPageCount: number | null;
+  /**
+   * 0–1, word-count weighted. null = the reader did not report one, which is a
+   * different fact from "the reader was certain" and renders differently.
+   */
+  ocrMeanConfidence: number | null;
+}
+
+export interface EobUpload extends DocumentProvenance {
   uploadId: string;
   officeId: RcmOfficeId;
   /** The name as uploaded. PHI — EOB filenames routinely carry patient names. */
@@ -229,7 +436,15 @@ export interface EobUpload {
   processedAt: string | null;
 }
 
-/** The daily extraction cost breaker, as the server reports it. */
+/**
+ * A daily cost breaker, as the server reports it.
+ *
+ * There are TWO, on separate resources with separate meters: Azure OpenAI tokens
+ * (`extraction`) and Azure Document Intelligence pages (`ocr`). They share this
+ * shape because a screen should render them the same way, and they are never
+ * merged because a biller who is stopped has to be told WHICH cap stopped her
+ * and when THAT one resets.
+ */
 export interface EobExtractionState {
   /** True = the daily cap is spent. Uploads still succeed; extraction waits. */
   paused: boolean;
@@ -243,6 +458,15 @@ export interface EobExtractionState {
   /** False = the counter is memory-only, so a restart would forget the spend. */
   persisted: boolean;
   queue?: { pending: number; deferred: number; running: boolean };
+  /**
+   * Which rail this is. Present on the OCR breaker and absent on the extraction
+   * one, so a component handed a breaker can always say which cap it is showing
+   * rather than depending on which key it was read from.
+   */
+  rail?: "ocr";
+  /** OCR only: pages read today, and the price the cap is denominated in. */
+  pagesRead?: number;
+  centsPerKPage?: number;
 }
 
 export interface EobUploadPage {
@@ -252,6 +476,8 @@ export interface EobUploadPage {
   limit: number;
   offset: number;
   extraction: EobExtractionState;
+  /** The OCR rail. Optional so a client can talk to a server that predates it. */
+  ocr?: EobExtractionState;
 }
 
 export interface EobUploadResult {
@@ -262,6 +488,7 @@ export interface EobUploadResult {
   requeued?: boolean;
   upload: EobUpload;
   extraction?: EobExtractionState;
+  ocr?: EobExtractionState;
 }
 
 /** This office's EOB uploads, newest first, plus the cost-breaker state. */
@@ -434,4 +661,866 @@ export async function uploadEra(office: RcmOfficeId, file: File): Promise<EraUpl
   if (!res.ok) throw await toError(res);
 
   return (await res.json()) as EraUploadResult;
+}
+
+// ─── The review workbench — Slice 6a ─────────────────────────────────────────
+
+/**
+ * The four honest states of a claim's Open Dental linkage, straight from the
+ * CHECK constraint. A closed union on purpose, the same way `TranscribeStatus`
+ * is on the voice side: a fifth state added server-side becomes a compile error
+ * here, not a chip that silently renders as nothing.
+ *
+ * `not_run` and `no_candidate` are DIFFERENT facts. "Nobody has checked" and
+ * "we checked and Open Dental has nothing" lead a biller to different actions,
+ * and a nullable claim number cannot tell them apart.
+ */
+export const OD_MATCH_STATUSES = ["not_run", "candidates", "no_candidate", "confirmed"] as const;
+export type OdMatchStatus = (typeof OD_MATCH_STATUSES)[number];
+
+/** The scorer's bands. HIGH is an argument, never a decision. */
+export type MatchConfidence = "HIGH" | "MEDIUM" | "LOW";
+
+/** One reason a candidate scored the way it did. Weights can be negative. */
+export interface MatchEvidence {
+  tag: string;
+  weight: number;
+  label: string;
+  detail: string;
+  /** The specific number or name behind the tag, when there is one. */
+  note?: string;
+}
+
+/** A pre-flight fact about the Open Dental claim that Slice 6c will act on. */
+export interface MatchBlocker {
+  code: string;
+  /** True = 6c cannot post this at all. False = read it, but it is not a wall. */
+  blocking: boolean;
+  label: string;
+  detail: string;
+  count?: number;
+}
+
+/** One Open Dental claimproc as it read at match time. */
+export interface OdLineFacts {
+  claimProcNum: number;
+  procNum: number | null;
+  code: string;
+  status: string;
+  feeBilledCents: number;
+  insPayAmtCents: number;
+  writeOffCents: number;
+  dedAppliedCents: number;
+  isTransfer: boolean;
+  /** Non-null ⇒ a check is attached and InsPayAmt is locked. */
+  claimPaymentNum: number | null;
+  /**
+   * TRI-STATE, and the third state is the one that matters.
+   *
+   * `true` = ProcStatus "D". `false` = the procedure row says it is live.
+   * `'unknown'` = the procedure row could not be READ, and because OD's DELETE
+   * is a SOFT delete a deleted procedure is indistinguishable from a live one
+   * without it. Unknown lines are out of every total and cannot be paired.
+   */
+  deleted: boolean | "unknown";
+  blockedStatus: boolean;
+}
+
+/** Which chart line each of our lines would adjudicate, if this candidate wins. */
+export interface LinePair {
+  lineId: string | null;
+  position: number | null;
+  code: string;
+  odClaimProcNum: number | null;
+  odCode: string | null;
+  billedDeltaCents: number | null;
+  /** Why nothing was paired. Null when it was. */
+  reason: string | null;
+}
+
+export interface MatchCandidate {
+  odClaimNum: number;
+  odPatNum: number | null;
+  score: number;
+  confidence: MatchConfidence;
+  evidence: MatchEvidence[];
+  blockers: MatchBlocker[];
+  od: {
+    claimStatus: string;
+    dateService: string | null;
+    /**
+     * The claim HEADER's total, verbatim and CONTAMINATED: `ClaimFee` still
+     * counts soft-deleted procedures. Kept because it is what the chart shows;
+     * never the figure to compare against.
+     */
+    claimHeaderFeeCents: number;
+    /** The LIVE lines' FeeBilled — the figure the billed evidence used. */
+    billedCents: number;
+    insPaidCents: number;
+    writeOffCents: number;
+    patientName: string | null;
+    lines: OdLineFacts[];
+    deletedLineCount: number;
+    /** Lines whose procedure could not be read. Excluded from every total. */
+    unknownDeletedLineCount: number;
+  };
+  linePairs: LinePair[];
+}
+
+/**
+ * What a match run observed. A record of a past observation, never a cache to
+ * serve current dollar figures from — Slice 6c re-verifies against it at drain
+ * time, which is the whole reason `fetchedAt` is on it.
+ */
+export interface MatchSnapshot {
+  version: number;
+  fetchedAt: string;
+  office: RcmOfficeId;
+  officeName: string;
+  odCalls: number;
+  /** A cap was hit. Some candidates were NOT examined. */
+  truncated: boolean;
+  /** Limits and oddities worth saying out loud, in the server's words. */
+  notes: string[];
+  patientsConsidered: { patNum: number; name: string }[];
+  /** The top two are too close to read as an ordering. Displayed, not resolved. */
+  ambiguous: boolean;
+  margin: number | null;
+  /**
+   * Examined and NOT offered.
+   *
+   * Without these, an empty `candidates` list is ambiguous in the worst way: a
+   * search that found three claims and disqualified all three looks exactly
+   * like one that found none, and `no_candidate` then tells a biller the chart
+   * has no such claim. The panel renders the two differently.
+   */
+  rejectedCandidates: number;
+  rejectedReasons: { nameMismatch: number; belowScore: number };
+  /** The score below which a candidate is not offered at all. */
+  minScore: number;
+  /** False ⇒ the patient was already linked, so the name rule was off. */
+  nameRuleApplied: boolean;
+  candidates: MatchCandidate[];
+  confirmed: MatchConfirmation | null;
+  /** The confirmation a FORCED re-run replaced. Null on an ordinary run. */
+  supersededConfirmation: MatchConfirmation | null;
+}
+
+/** What a human committed, and what Slice 6c re-verifies against at drain time. */
+export interface MatchConfirmation {
+  odClaimNum: number;
+  odPatNum: number | null;
+  confirmedAt: string;
+  confirmedBy: string;
+  linePairs: LinePair[];
+  odAmountsAsRead: {
+    /** Line-derived, deleted and unknown lines excluded. The one to compare. */
+    billedCents: number;
+    /** The raw claim header, which still counts soft-deleted procedures. */
+    claimHeaderFeeCents: number;
+    insPaidCents: number;
+    writeOffCents: number;
+    claimStatus: string;
+  };
+}
+
+/** One CARC/RARC adjustment, resolved into plain English by the server. */
+export interface ClaimAdjustment {
+  adjustmentId: string;
+  amountCents: number;
+  quantity: number;
+  groupCode: string;
+  groupLabel: string;
+  groupDescription: string | null;
+  reasonCode: string;
+  /** Null when the code is not in the published list — rendered bare, not guessed. */
+  reasonDescription: string | null;
+  remarkCode: string | null;
+  remarkDescription: string | null;
+}
+
+export interface ClaimLine {
+  lineId: string;
+  position: number;
+  billedCode: string;
+  /** Set only when the carrier downcoded; both codes are kept. */
+  paidCode: string | null;
+  code: string;
+  description: string;
+  billedCents: number;
+  allowedCents: number;
+  deductibleCents: number;
+  copayCents: number;
+  paidCents: number;
+  adjustmentCents: number;
+  patientRespCents: number;
+  writeOffCents: number;
+  adjustmentReason: string | null;
+  isDowncoded: boolean;
+  isBundled: boolean;
+  isDenied: boolean;
+  flags: string[];
+  odClaimProcNum: number | null;
+  adjustments: ClaimAdjustment[];
+}
+
+export interface WorkbenchClaim {
+  claimId: string;
+  officeId: RcmOfficeId;
+  claimNumber: string;
+  checkNumber: string | null;
+  patientName: string;
+  odPatientId: number | null;
+  /** Meaningful ONLY when odMatchStatus is 'confirmed' — a DB CHECK enforces it. */
+  odClaimNum: number | null;
+  payer: string;
+  serviceDate: string | null;
+  receivedDate: string | null;
+  status: string;
+  paymentStatus: string;
+  insuranceType: string;
+  totalBilledCents: number;
+  totalAllowedCents: number;
+  totalPaidCents: number;
+  totalDeductibleCents: number;
+  patientBalanceCents: number;
+  needsReviewReasons: string[];
+  /** The EXTRACTOR's 0-100 confidence. Not the Open Dental match confidence. */
+  extractionConfidence: number;
+  odMatchStatus: OdMatchStatus;
+  /**
+   * Examined by the last match and NOT offered — 0 when none were, or when no
+   * match has run.
+   *
+   * A PROJECTION of the snapshot, present on list rows that carry no snapshot
+   * at all, because the remittance's claim list has to be able to tell "Open
+   * Dental had nothing" from "Open Dental had things and none could be
+   * offered". `matchStatusLabel()` is what turns it into words.
+   */
+  rejectedCandidates: number;
+  odMatchAt: string | null;
+  odMatchConfirmedAt: string | null;
+  odMatchedBy: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reviewNote: string | null;
+  /**
+   * Non-null ⇒ a human approved this claim into a posting plan (Slice 6b).
+   *
+   * A cheap scalar, deliberately: the screen needs to know THAT the claim was
+   * approved, never what the plan contains. It is also the claim-level
+   * idempotency guard — single-valued, so a claim can belong to one plan.
+   */
+  postingQueueId: string | null;
+  approvedAt: string | null;
+  createdAt: string | null;
+  lines: ClaimLine[];
+  matchSnapshot?: MatchSnapshot | null;
+  /**
+   * A match HAS run, but under an older snapshot shape — so its contents are
+   * not readable by this build and `matchSnapshot` is null.
+   *
+   * Kept as a separate flag rather than a nullable union so the panel can say
+   * "there is a record here and it is from an earlier version" instead of
+   * "nobody has looked", which are different facts.
+   */
+  matchSnapshotStale?: boolean;
+}
+
+/** A claim as the remittance detail lists it (no snapshot — the panel loads that). */
+export type RemittanceClaim = Omit<WorkbenchClaim, "matchSnapshot">;
+
+// ─── The approval gate (Slice 6b) ────────────────────────────────────────────
+
+/**
+ * One pre-flight condition, as the server evaluated it.
+ *
+ * `fix` is the server's own copy about what to DO — held there rather than in
+ * the client so a screen cannot invent an instruction the gate does not agree
+ * with. `detail` is the specific number or reason behind a failure.
+ */
+export interface ApprovalCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string | null;
+  fix: string;
+}
+
+export interface ApprovalClaim {
+  claimId: string;
+  claimNumber: string;
+  /** PHI — the checklist names patients, which is why reading it is audited. */
+  patientName: string;
+  postable: boolean;
+  /** An earlier approval already took this claim. */
+  alreadyQueued: boolean;
+  checks: ApprovalCheck[];
+  /** The codes that failed, in the order they were evaluated. */
+  failed: string[];
+}
+
+/** What WOULD happen, computed by the same function the button runs. */
+export interface ApprovalPreview {
+  office: RcmOfficeId;
+  batchId: string;
+  /** May THIS user press it? The server's answer, not a role name. */
+  canApprove: boolean;
+  /** The permission a colleague would need. */
+  approveRequires: string;
+  claims: ApprovalClaim[];
+  postableCount: number;
+  withheldCount: number;
+  queuedCount: number;
+  /** The batch's own arithmetic. False holds the WHOLE approve. */
+  balanced: boolean;
+  differenceCents: number;
+}
+
+export interface QueuedClaim {
+  claimId: string;
+  claimNumber: string;
+  patientName: string;
+  odClaimNum: number;
+  lines: number;
+  totalCents: number;
+}
+
+export interface WithheldClaim {
+  claimId: string;
+  claimNumber: string;
+  patientName: string;
+  reasons: string[];
+  checks: ApprovalCheck[];
+}
+
+export interface ApprovalResult {
+  office: RcmOfficeId;
+  batchId: string;
+  queueId: string;
+  approvedBy: string;
+  /** What this press enqueued. Partial success is real success. */
+  queued: QueuedClaim[];
+  /** What it did not, per claim, with every failing condition. */
+  withheld: WithheldClaim[];
+  /** What an earlier press had already taken. */
+  alreadyQueued: { claimId: string; claimNumber: string; patientName: string }[];
+  intendedTotalCents: number;
+  /**
+   * The server's own sentence, and the literal current truth. It stops being
+   * true the day Slice 6c ships — which is why the screen prints the server's
+   * words rather than its own.
+   */
+  note: string;
+}
+
+export interface RemittanceUpload extends DocumentProvenance {
+  uploadId: string;
+  /** PHI — remittance filenames routinely carry a patient and a payer. */
+  filename: string;
+  uploadedAt: string | null;
+  /** Null means NOT RECORDED (uploaded before D-5), never "the system did it". */
+  uploadedBy: string | null;
+  documentUrl?: string;
+}
+
+export interface Remittance {
+  batchId: string;
+  officeId: RcmOfficeId;
+  payer: string;
+  checkNumber: string | null;
+  eftNumber: string | null;
+  traceNumber: string | null;
+  paymentMethod: "check" | "eft" | null;
+  depositDate: string | null;
+  totalAmountCents: number;
+  postedAmountCents: number;
+  plbTotalCents: number;
+  claimCount: number;
+  status: string;
+  /** '835' = parsed, and can only be malformed. 'eob' = READ by a model, and can be WRONG. */
+  source: "835" | "eob" | null;
+  /**
+   * Slice 5.5's remittance-level facts, as a vocabulary rather than as prose.
+   * Coloured by the D-11 split: a BLOCKING flag withholds every claim on this
+   * check, an annotating one does not. Both are always shown.
+   */
+  flags: string[];
+  notes: string;
+  createdAt: string | null;
+  createdBy: string | null;
+  /** Computed server-side so the list and the detail cannot disagree. */
+  balance: {
+    batchTotalCents: number;
+    claimTotalCents: number;
+    differenceCents: number;
+    plbTotalCents: number;
+    balanced: boolean;
+  };
+  /**
+   * Does a human still owe an ACTION on this remittance?
+   *
+   * Computed from `attentionReasons` alone. Facts about the file — a downcode
+   * that held the batch `open`, a claim Open Dental has no match for — are
+   * `attentionObservations` and never put a row in the queue: a biller who has
+   * done everything the screen lets her do must not be told she still owes
+   * something, or the true alarms stop being read.
+   */
+  needsAttention: boolean;
+  /** Outstanding ACTIONS. Today there is one: `claims_unreviewed`. */
+  attentionReasons: string[];
+  /** FACTS worth reading, shown beside the reasons and never driving them. */
+  attentionObservations: string[];
+  reviewReasonCount: number;
+  unmatchedClaimCount: number;
+  /** How many claims a human has already approved into a posting plan. */
+  queuedClaimCount: number;
+  /**
+   * When somebody last pressed Approve, whatever came of it.
+   *
+   * Null means nobody has — which is the difference between a claim that is
+   * "not ready" and one that was WITHHELD. A wholly-refused approve rolls back
+   * and leaves no plan, so this stamp is the only thing that survives it, and it
+   * is what keeps the remittance in the needs-attention view afterwards.
+   */
+  approvalAttemptedAt: string | null;
+  approvalAttemptedBy: string | null;
+  upload: RemittanceUpload | null;
+}
+
+export interface RemittanceListPage {
+  office: RcmOfficeId;
+  /** Which population `remittances` was paged out of. */
+  view: RemittanceView;
+  remittances: Remittance[];
+  /** Every remittance this office holds — NOT the page, and NOT the filter. */
+  total: number;
+  /**
+   * How many of that same population need attention, computed server-side over
+   * the whole set. "12 needing attention · 640 total" is now one statement about
+   * one population; in Slice 6a it was two statements about two.
+   */
+  needsAttentionCount: number;
+  /** How many rows the current view holds — what limit/offset page. */
+  matchingCount: number;
+  limit: number;
+  offset: number;
+}
+
+/** Which population the list endpoint pages. */
+export type RemittanceView = "attention" | "all";
+
+export interface RemittanceDetail {
+  office: RcmOfficeId;
+  remittance: Remittance & {
+    /** Provider-level money, belonging to no single claim. Detect-and-flag only. */
+    plbAdjustments: unknown[];
+  };
+  claims: RemittanceClaim[];
+}
+
+/** The tolerances the scores were actually produced with. */
+export interface MatchRules {
+  amountNearCents: number;
+  dateNearDays: number;
+  ambiguityMargin: number;
+  bands: { band: MatchConfidence; min: number }[];
+}
+
+export interface ClaimDetailResponse {
+  office: RcmOfficeId;
+  /**
+   * `provenance` lives HERE rather than on `WorkbenchClaim` because the claim
+   * shape is also what the remittance list and detail return, and there it comes
+   * from the batch's own upload row. One fact, resolved once per screen, rather
+   * than the same join repeated per claim in a table.
+   */
+  claim: WorkbenchClaim & { provenance: DocumentProvenance | null };
+  matchRules: MatchRules;
+}
+
+export interface MatchRunResponse {
+  office: RcmOfficeId;
+  claimId: string;
+  status: OdMatchStatus;
+  snapshot: MatchSnapshot;
+}
+
+export interface BatchMatchResponse {
+  office: RcmOfficeId;
+  batchId: string;
+  matched: {
+    claimId: string;
+    status: OdMatchStatus | "already_confirmed" | "failed";
+    candidateCount?: number;
+    ambiguous?: boolean;
+    error?: string;
+  }[];
+  odCalls: number;
+  pacingMs: number;
+  /** The wall-clock budget one run may spend before it stops and reports. */
+  budgetMs: number;
+  /** True when the CLOCK stopped the run rather than the claim cap. */
+  outOfTime: boolean;
+  /** Claims a cap or the budget left unmatched. Stated, never silent. */
+  skipped: number;
+  note?: string;
+}
+
+/**
+ * Every payment batch for this office, with BOTH counts.
+ *
+ * `view` is applied server-side, over the whole office rather than over a page.
+ * Slice 6a filtered a 100-row page in the browser while the header counted
+ * everything, so the two numbers described two different populations and a
+ * remittance older than the hundredth newest was invisible AND uncounted.
+ */
+export function listRemittances(
+  office: RcmOfficeId,
+  opts: { limit?: number; offset?: number; view?: RemittanceView } = {},
+): Promise<RemittanceListPage> {
+  const params: Record<string, string | number> = { office };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  if (opts.view !== undefined) params.view = opts.view;
+  return get<RemittanceListPage>("/remittances", params);
+}
+
+/**
+ * The pre-flight checklist: per claim, every condition, with pass/fail.
+ *
+ * A READ, on `rcm.read`, so the person who did the reviewing can see the
+ * consequences of her own work even though she cannot approve it. It is
+ * computed by the same function the button runs, so the screen cannot predict
+ * an outcome the button then contradicts.
+ */
+export function getApprovalPreview(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<ApprovalPreview> {
+  return get<ApprovalPreview>(`/remittances/${encodeURIComponent(batchId)}/approval`, { office });
+}
+
+/**
+ * Approve a remittance for posting. Needs `rcm.write`.
+ *
+ * The body is EMPTY, and that is the design: the gate re-reads every condition
+ * from the database and trusts nothing the client sent. There is no force flag,
+ * no override and no claim selection to pass — the only way a withheld claim
+ * becomes postable is for a human to fix what withheld it.
+ *
+ * Nothing is written to Open Dental. This creates rows describing an INTENT;
+ * Slice 6c is what acts on them.
+ */
+export function approveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<ApprovalResult> {
+  return post<ApprovalResult>(`/remittances/${encodeURIComponent(batchId)}/approve`, { office }, {});
+}
+
+/** One remittance: header, balance check, and every claim with its lines. */
+export function getRemittance(office: RcmOfficeId, batchId: string): Promise<RemittanceDetail> {
+  return get<RemittanceDetail>(`/remittances/${encodeURIComponent(batchId)}`, { office });
+}
+
+/** One claim: lines, adjustments, and the last match snapshot if there is one. */
+export function getClaim(office: RcmOfficeId, claimId: string): Promise<ClaimDetailResponse> {
+  return get<ClaimDetailResponse>(`/claims/${encodeURIComponent(claimId)}`, { office });
+}
+
+/**
+ * Read Open Dental and rank candidates for one claim.
+ *
+ * A POST because it WRITES TO OUR ROWS — the snapshot, the status, the instant
+ * we looked. Nothing is written to a chart. `force` re-runs over a confirmed
+ * match, which the server otherwise refuses so a stray double-click cannot
+ * discard somebody's decision.
+ */
+export function matchClaim(
+  office: RcmOfficeId,
+  claimId: string,
+  opts: { force?: boolean } = {},
+): Promise<MatchRunResponse> {
+  return post<MatchRunResponse>(`/claims/${encodeURIComponent(claimId)}/match`, { office }, opts);
+}
+
+/**
+ * Confirm one candidate as THE Open Dental claim. Attributed to the signed-in
+ * user, and the only thing that sets `odClaimNum`.
+ */
+export function confirmClaimMatch(
+  office: RcmOfficeId,
+  claimId: string,
+  odClaimNum: number,
+): Promise<{ claimId: string; odClaimNum: number; confirmedAt: string }> {
+  return post(`/claims/${encodeURIComponent(claimId)}/confirm-match`, { office }, { odClaimNum });
+}
+
+/** Mark a claim reviewed, with an optional note. No Open Dental effect at all. */
+export function reviewClaim(
+  office: RcmOfficeId,
+  claimId: string,
+  note: string,
+): Promise<{ claimId: string }> {
+  return post(`/claims/${encodeURIComponent(claimId)}/review`, { office }, { note });
+}
+
+/** Match every claim on a remittance. Sequential and paced, server-side. */
+export function matchRemittance(office: RcmOfficeId, batchId: string): Promise<BatchMatchResponse> {
+  return post<BatchMatchResponse>(
+    `/remittances/${encodeURIComponent(batchId)}/match`,
+    { office },
+    {},
+    { timeoutMs: BATCH_TIMEOUT_MS },
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 6c — the posting queue and the drain
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The stored state vocabulary of `rcm_posting_queue`, mirrored from the CHECK
+ * constraint in `migrations-tenant/1787120000000_rcm_posting_drain.js`.
+ *
+ * `approved` and `posting` are Slice 1's words for what the 6c brief calls
+ * `queued` and `running` — the stored words were not renamed (a data migration
+ * on a shipped table, bought for a synonym), so the server ships BOTH: the raw
+ * `status` and the screen's `statusLabel`. Nothing in this client reverses the
+ * mapping; it renders what the server said.
+ */
+export const POSTING_QUEUE_STATUSES = [
+  "approved",
+  "posting",
+  "posted",
+  "partially_posted",
+  "failed",
+  "blocked",
+] as const;
+export type PostingQueueStatus = (typeof POSTING_QUEUE_STATUSES)[number];
+
+/** What the screen calls each stored state. */
+export type PostingQueueLabel =
+  | "queued"
+  | "running"
+  | "posted"
+  | "partially_posted"
+  | "failed"
+  | "blocked";
+
+/**
+ * The per-line vocabulary. `skipped_already_posted` is resume's word: Open
+ * Dental already showed this line Received with our exact amounts, so there was
+ * nothing to write. It is deliberately NOT the same as `skipped` — "we chose not
+ * to" and "it was already done" are different facts about money, and only the
+ * second one proves a resume did not double-post.
+ */
+export const POSTING_LINE_STATUSES = [
+  "pending",
+  "claimproc_written",
+  "claim_received",
+  "paid",
+  "failed",
+  "skipped",
+  "skipped_already_posted",
+] as const;
+export type PostingLineStatus = (typeof POSTING_LINE_STATUSES)[number];
+
+/**
+ * The steps of the forced Open Dental call sequence, in order.
+ *
+ * `document_attach` is present and is NOT implemented — the EOB PDF is filed
+ * into the patient images in a later slice. It is listed so the UI can say "not
+ * yet" rather than end one step early, which would make a plan look complete
+ * while the EOB is still unfiled.
+ */
+export const POSTING_STEPS = [
+  "resolve_config",
+  "read_od_truth",
+  "claimproc_writes",
+  "claim_receipts",
+  "check",
+  "reconcile",
+  "document_attach",
+] as const;
+export type PostingStep = (typeof POSTING_STEPS)[number];
+
+/**
+ * What a read-back compared, kept rather than recomputed.
+ *
+ * Open Dental returns `200 OK` on writes it silently ignores, so a status code
+ * proves nothing and the comparison is the only evidence a write took. Money
+ * fields only — no patient identity ever lands in this column.
+ */
+export interface PostingReadback {
+  step: string;
+  agreed: boolean;
+  sent?: Record<string, unknown>;
+  read?: Record<string, unknown>;
+  mismatches?: { field: string; sent: unknown; read: unknown }[];
+}
+
+export interface PostingQueueRow {
+  queueId: string;
+  office: RcmOfficeId;
+  batchId: string;
+  status: PostingQueueStatus;
+  statusLabel: PostingQueueLabel;
+  /** The machine reason a plan is blocked. The client renders copy from it. */
+  blockedReason: string | null;
+  step: PostingStep | null;
+  isRecoupment: boolean;
+  carrierEobDate: string | null;
+  intendedTotalCents: number;
+  postedTotalCents: number;
+  /** THE PROOF THE MONEY LANDED. Null until a check exists in Open Dental. */
+  odClaimPaymentNum: number | null;
+  /**
+   * When `GET /claimprocs?ClaimPaymentNum=` returned exactly this plan's lines.
+   * A `posted` row cannot exist without it — the database refuses — so the
+   * screen may state "verified by read-back" as a fact rather than a hope.
+   */
+  reconciledAt: string | null;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  drainAttemptAt: string | null;
+  drainedBy: string | null;
+  attemptCount: number;
+  lastError: string | null;
+  checkNumber: string | null;
+  payer: string | null;
+}
+
+export interface PostingQueueLine {
+  queueLineId: string;
+  position: number;
+  odClaimNum: number | null;
+  odClaimProcNum: number;
+  status: PostingLineStatus;
+  skipReason: string | null;
+  intendedInsPayAmtCents: number;
+  intendedWriteOffCents: number;
+  intendedDedAppliedCents: number;
+  isSupplemental: boolean;
+  claimprocWrittenAt: string | null;
+  claimReceivedAt: string | null;
+  paidAt: string | null;
+  odClaimPaymentNum: number | null;
+  readback: PostingReadback | null;
+  readbackAt: string | null;
+  lastError: string | null;
+}
+
+export interface PostingQueuePage {
+  office: RcmOfficeId;
+  rows: PostingQueueRow[];
+  /** Zero-filled over the whole vocabulary — a missing state is a measured 0. */
+  byStatus: Record<PostingQueueStatus, number>;
+  total: number;
+  limit: number;
+  offset: number;
+  /** May THIS caller press Drain? The server's answer, not a role name. */
+  canDrain: boolean;
+  drainRequires: string;
+  /** D-7: whether this practice may be posted to at all yet. */
+  postingEnabled: boolean;
+}
+
+export interface PostingQueueDetail {
+  office: RcmOfficeId;
+  plan: PostingQueueRow;
+  lines: PostingQueueLine[];
+  claims: {
+    claimId: string;
+    claimNumber: string | null;
+    patientName: string | null;
+    odClaimNum: number | null;
+  }[];
+  canDrain: boolean;
+  drainRequires: string;
+  postingEnabled: boolean;
+  /** The 6d seam, stated rather than omitted. */
+  documentAttach: { implemented: boolean; note: string };
+}
+
+export interface DrainOutcome {
+  queueId: string;
+  status: PostingQueueStatus | "not_found";
+  reason?: string;
+  detail?: string;
+  odClaimPaymentNum?: number | null;
+}
+
+export interface DrainResult {
+  office: RcmOfficeId;
+  outcomes: DrainOutcome[];
+  ran: number;
+  /** The run hit its wall-clock budget and stopped BETWEEN plans. */
+  outOfTime: boolean;
+  remaining: number;
+  /**
+   * The per-office DefNums this run resolved from THIS practice's own Open
+   * Dental. Configuration, not patient data — and what makes "the numbers never
+   * cross" checkable by the person who owns both practices.
+   */
+  config: {
+    officeKey: string;
+    resolvedAt: string;
+    payTypes: { defNum: number; name: string }[];
+    adjTypeCount: number;
+    docCategoryCount: number;
+    prefs: { claimPaymentBatchOnly: boolean | null; showAutoDeposit: boolean | null };
+    filterHonored: { payTypes: boolean; adjTypes: boolean; docCategories: boolean };
+  } | null;
+  postingEnabled: boolean;
+}
+
+/** The plans for this office, with per-state counts over the whole office. */
+export function listPostingQueue(
+  office: RcmOfficeId,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<PostingQueuePage> {
+  const params: Record<string, string | number> = { office };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return get<PostingQueuePage>("/posting/queue", params);
+}
+
+/** One plan: every line, its progress, and the read-back that verified it. */
+export function getPostingPlan(
+  office: RcmOfficeId,
+  queueId: string,
+): Promise<PostingQueueDetail> {
+  return get<PostingQueueDetail>(`/posting/queue/${encodeURIComponent(queueId)}`, { office });
+}
+
+/**
+ * DRAIN — write approved plans to Open Dental. Needs `rcm.write`.
+ *
+ * The only call in this client that changes a patient's chart.
+ *
+ * The body carries nothing but an optional `queueId` NARROWING. There is no
+ * claim list, no amounts, no force flag and no office in the body: the office is
+ * the validated query param and everything else is read from the plan the gate
+ * wrote. Nothing a request can say changes which chart is written or what is
+ * written to it.
+ *
+ * A held request with a long timeout, like the batch matcher: at ≥1.2 s per Open
+ * Dental call a large plan is minutes. When the server's own budget runs out it
+ * returns `outOfTime` with how many plans are left, and the button is pressed
+ * again.
+ */
+export function drainPostingQueue(
+  office: RcmOfficeId,
+  opts: { queueId?: string } = {},
+): Promise<DrainResult> {
+  return post<DrainResult>(
+    "/posting/drain",
+    { office },
+    opts.queueId ? { queueId: opts.queueId } : {},
+    { timeoutMs: BATCH_TIMEOUT_MS },
+  );
 }

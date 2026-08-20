@@ -27,6 +27,11 @@ import AdminUsers from "./pages/AdminUsers";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmOverview from "./pages/rcm/RcmOverview";
+import RemittanceList from "./pages/rcm/RemittanceList";
+import RemittanceDetail from "./pages/rcm/RemittanceDetail";
+import ClaimMatch from "./pages/rcm/ClaimMatch";
+import PostingQueue from "./pages/rcm/PostingQueue";
+import TakebackSop from "./pages/rcm/TakebackSop";
 import { SlotMarkersProvider } from "./features/slotMarkers";
 import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
@@ -113,8 +118,26 @@ export function Router() {
             endpoint behind it is requireSuperAdmin()-gated regardless. */}
         <Route path="/platform" component={Platform} />
         {/* RCM module — entitlement-gated server-side (requireModule('rcm')).
-            One page in Slice 3; the module's routes grow under /rcm/*. */}
+            Slice 6a added the review workbench: the list a biller opens a check
+            from, the remittance itself, and the per-claim Open Dental match
+            panel. All three inherit rcm.read from the /rcm prefix in
+            ROUTE_PERMISSIONS; the mutations behind them demand rcm.write
+            server-side, which no page needs to know to render. */}
         <Route path="/rcm" component={RcmOverview} />
+        <Route path="/rcm/remittances" component={RemittanceList} />
+        <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
+        <Route path="/rcm/claims/:id" component={ClaimMatch} />
+        {/* Slice 6c — the posting queue and the one button in this product that
+            writes to a patient's chart. It inherits rcm.read from the /rcm
+            prefix in ROUTE_PERMISSIONS like every other page here, so a
+            `reviewer` can WATCH plans post; the Drain button itself demands
+            rcm.write server-side and the page renders the server's own
+            `canDrain` answer rather than inspecting a role name. */}
+        <Route path="/rcm/posting" component={PostingQueue} />
+        {/* The manual route out of the one thing CareIN will not do. It is a
+            real page rather than prose because Slice 6a promised "the practice's
+            takeback procedure" and pointed nowhere. */}
+        <Route path="/rcm/sop/takeback" component={TakebackSop} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />

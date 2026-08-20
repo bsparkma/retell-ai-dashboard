@@ -58,6 +58,7 @@ const { audit } = require('../../platform/audit');
 const { h, actorEmail, num, iso, isoDate } = require('./helpers');
 const { parse835, X12FormatError } = require('../../services/rcm/eraParser');
 const { RemittanceIdentityError, buildRemittanceKey } = require('../../services/rcm/remittanceKey');
+const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const { ingestParsedEra, findAlreadyProcessed } = require('../../services/rcm/eraIngest');
 const eraFileStore = require('../../services/rcm/eraFileStore');
 
@@ -109,6 +110,9 @@ const BATCH_COLUMNS = [
   'status',
   'plb_total_cents',
   'notes',
+  // Slice 5.5: the structured remittance flags. 'notes' used to carry them as
+  // the prose string 'Flagged: a, b' and the UI parsed it.
+  'flags',
 ].join(', ');
 
 const KEY_COLUMNS = ['batch_id', 'remittance_key', 'status', 'posted_at'].join(', ');
@@ -287,7 +291,15 @@ router.post(
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const result = await ingestParsedEra(client, { officeId: office, parsed, file });
+        // D-5: resolve (and, on a first RCM action, create) the acting user
+        // INSIDE this transaction — every actor column in the schema is a FK to
+        // rcm_user_map, and a row committed on another connection would not be
+        // visible to a transaction already in flight.
+        const actorKey = await resolveRcmActor(client, {
+          email: actorEmail(req),
+          displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+        });
+        const result = await ingestParsedEra(client, { officeId: office, parsed, file, actorKey });
         if (result.conflict) {
           await client.query('ROLLBACK');
           return result;
@@ -483,6 +495,9 @@ router.get(
             claimCount: num(b.claim_count),
             status: b.status,
             notes: b.notes || '',
+            // Slice 5.5: the structures we parsed and will NOT act on, as a
+            // vocabulary the UI can switch on rather than prose it must parse.
+            flags: Array.isArray(b.flags) ? b.flags : [],
             // The dedupe status. A row here is what makes a re-upload refuse.
             remittanceKey: key ? key.remittance_key : null,
             dedupeStatus: key ? key.status : null,

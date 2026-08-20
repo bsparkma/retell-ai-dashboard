@@ -135,12 +135,16 @@ async function findAlreadyProcessed(client, officeId, remittances) {
  *   officeId: string,
  *   parsed: ReturnType<typeof import('./eraParser').parse835>,
  *   file: { filename: string, key: string, hash: string, sizeBytes: number, contentType: string },
- * }} params
+ *   actorKey?: string|null,
+ * }} params `actorKey` is the rcm_user_map key of the person who uploaded the
+ *   file, resolved by the route through decision D-5. NULL means system — and
+ *   is what every row written before Slice 6a carries, which the workbench
+ *   renders as "not recorded" rather than as an automated upload.
  * @returns {Promise<{ uploadId: string, batches: object[], counts: object } | { conflict: object[] }>}
  *   `conflict` is returned — not thrown — when a reservation is refused, so the
  *   caller can roll back and answer with a specific 409 rather than a 500.
  */
-async function ingestParsedEra(client, { officeId, parsed, file }) {
+async function ingestParsedEra(client, { officeId, parsed, file, actorKey = null }) {
   /** @type {object[]} */
   const conflicts = [];
 
@@ -181,7 +185,7 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
   const batches = [];
 
   for (const { remittance, remittanceKey } of reserved) {
-    const written = await writeRemittance(client, { officeId, remittance, file, counts });
+    const written = await writeRemittance(client, { officeId, remittance, file, counts, actorKey });
     await finalizeRemittanceKey(client, { officeId, remittanceKey, batchId: written.batchId });
     // `index` is the transaction's ordinal in the FILE, carried explicitly so
     // the caller pairs a batch with its parsed remittance by identity rather
@@ -194,8 +198,8 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
   const uploadRes = await client.query(
     `INSERT INTO rcm_eob_uploads
        (office_id, filename, file_key, file_url, file_hash, file_size_bytes,
-        content_type, result_batch_id, status, processed_at)
-     VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'extracted', now())
+        content_type, result_batch_id, status, processed_at, uploaded_by)
+     VALUES ($1, $2, $3, '', $4, $5, $6, $7, 'extracted', now(), $8)
      RETURNING upload_id`,
     [
       officeId,
@@ -204,7 +208,14 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
       file.hash,
       file.sizeBytes,
       file.contentType,
-      batches.length > 0 ? batches[0].batchId : null,
+      // B4. `result_batch_id` is a SINGLE column and a file can carry N checks.
+      // It used to be set to batches[0] unconditionally, so a four-check file
+      // pointed its upload at check #1 and the other three looked orphaned.
+      // The real link is `rcm_payment_batches.era_file_key` — every batch
+      // carries it, and the list endpoint already joins on it — so this column
+      // is populated only when it can be TRUE, and left null when it cannot.
+      batches.length === 1 ? batches[0].batchId : null,
+      actorKey,
     ]
   );
 
@@ -215,7 +226,7 @@ async function ingestParsedEra(client, { officeId, parsed, file }) {
  * One check: its batch, its claims, their lines and adjustments.
  * @returns {Promise<{ batchId: string, status: string, claims: object[] }>}
  */
-async function writeRemittance(client, { officeId, remittance, file, counts }) {
+async function writeRemittance(client, { officeId, remittance, file, counts, actorKey = null }) {
   const status = batchStatusFor(remittance, remittance.claims);
   const isEft = remittance.paymentMethod === 'eft';
 
@@ -223,8 +234,10 @@ async function writeRemittance(client, { officeId, remittance, file, counts }) {
     `INSERT INTO rcm_payment_batches
        (office_id, check_number, eft_number, payment_method, payer, deposit_date,
         total_amount_cents, claim_count, status, era_file_key, trace_number,
-        trace_originator_id, plb_adjustments, plb_total_cents, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        trace_originator_id, plb_adjustments, plb_total_cents, notes, flags,
+        created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+             $16, $17)
      RETURNING batch_id`,
     [
       officeId,
@@ -247,7 +260,16 @@ async function writeRemittance(client, { officeId, remittance, file, counts }) {
       // batch — Slice 5 records it and acts on none of it.
       JSON.stringify(remittance.plbAdjustments),
       remittance.plbTotalCents,
-      remittance.flags.length > 0 ? `Flagged: ${remittance.flags.join(', ')}` : '',
+      // `notes` is for a HUMAN to type in. Slice 5 wrote "Flagged: a, b" here
+      // and the UI parsed prose out of it; the flags are structured data now
+      // (rcm_payment_batches.flags, CHECKed against the frozen vocabulary), so
+      // this column goes back to meaning what its name says.
+      '',
+      remittance.flags,
+      // D-5: the batch is created BY the person who uploaded the file. Slice 5
+      // wrote NULL here and said so ("the staff crosswalk is deferred to Slice
+      // 6"); this is that deferral being discharged.
+      actorKey,
     ]
   );
   const batchId = batchRes.rows[0].batch_id;
@@ -282,10 +304,10 @@ async function writeClaim(client, { officeId, batchId, position, claim, remittan
         total_billed_cents, total_allowed_cents, total_deductible_cents, total_copay_cents,
         total_paid_cents, total_received_cents, patient_balance_cents, provider_npi,
         rendering_provider, payment_status, insurance_type, cob_sequence, confidence,
-        raw_extracted_json, eob_file_key, needs_review_reasons)
+        raw_extracted_json, eob_file_key, needs_review_reasons, remark_codes)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, 'pending_review', 'manual_upload',
              $10, $11, $12, $13, $14, 0, $15, $16, $17, 'unpaid', $18, $19, 100,
-             $20, $21, $22)
+             $20, $21, $22, $23)
      RETURNING claim_id`,
     [
       officeId,
@@ -313,10 +335,44 @@ async function writeClaim(client, { officeId, batchId, position, claim, remittan
       JSON.stringify(claim),
       file.key,
       claim.needsReviewReasons,
+      // B2. MOA/MIA claim-level remark codes, which were not read at all.
+      claim.remarkCodes || [],
     ]
   );
   const claimId = claimRes.rows[0].claim_id;
   counts.claims += 1;
+
+  // A1. Adjustments the payer reported at CLAIM level (loop 2100) — no service
+  // line to hang them on, which is why `procedure_line_id` is nullable and
+  // `scope` says which kind this is. These used to be dropped entirely.
+  // B2 (review). A group code the schema cannot hold used to `continue` here
+  // with NO flag and NO counter — a silent drop introduced by the very slice
+  // that exists to end silent drops. The line-level path raises
+  // `unstorable_adjustment_group` for exactly this case; mirror it, because a
+  // claim-level `CAS*XX*1*5000` is $50 of a patient's money disappearing.
+  let claimAdjSkipped = false;
+  for (const adj of claim.claimLevelAdjustments || []) {
+    if (!ADJUSTMENT_GROUP_CODES.includes(adj.groupCode)) {
+      claimAdjSkipped = true;
+      continue;
+    }
+    await client.query(
+      `INSERT INTO rcm_procedure_adjustments
+         (procedure_line_id, claim_id, office_id, scope, group_code, reason_code,
+          reason_description, amount_cents, quantity)
+       VALUES (NULL, $1, $2, 'claim', $3, $4, $5, $6, $7)`,
+      [
+        claimId,
+        officeId,
+        adj.groupCode,
+        adj.reasonCode,
+        adj.description,
+        adj.amountCents,
+        adj.quantity,
+      ]
+    );
+    counts.adjustments += 1;
+  }
 
   // `total_received_cents` stays 0 and `payment_status` stays 'unpaid': the
   // carrier says it paid, and nothing has been received into Open Dental. Those
@@ -343,6 +399,7 @@ async function writeClaim(client, { officeId, batchId, position, claim, remittan
   );
 
   const extraReasons = [];
+  if (claimAdjSkipped) extraReasons.push(UNSTORABLE_ADJUSTMENT);
   for (let i = 0; i < claim.procedures.length; i += 1) {
     const skipped = await writeLine(client, {
       officeId,
@@ -394,9 +451,11 @@ async function writeLine(client, { officeId, claimId, position, proc, counts }) 
        (claim_id, office_id, position, billed_code, paid_code, code, description,
         billed_cents, allowed_cents, deductible_cents, copay_cents, paid_cents,
         adjustment_cents, patient_resp_cents, write_off_cents, adjustment_reason,
-        is_downcoded, is_bundled, is_denied, flags)
+        is_downcoded, is_bundled, is_denied, flags,
+        allowed_source, reported_allowed_cents, line_item_control_number, units_paid,
+        remark_codes)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-             $17, $18, $19, $20)
+             $17, $18, $19, $20, $21, $22, $23, $24, $25)
      RETURNING line_id`,
     [
       claimId,
@@ -419,6 +478,16 @@ async function writeLine(client, { officeId, claimId, position, proc, counts }) 
       proc.isBundled,
       proc.isDenied,
       flags,
+      // A3. Whether the allowed amount was READ from AMT*B6 or derived from the
+      // adjustments — `write_off_cents` above is computed from it, and Slice 6c
+      // writes that number into Open Dental.
+      proc.allowedSource,
+      proc.reportedAllowedCents,
+      // B1. The keys Slice 6's matcher needs so it does not have to be positional.
+      proc.lineItemControlNumber,
+      proc.unitsPaid,
+      // B2. The FULL RARC set, on the line where X12 actually reports it.
+      proc.remarkCodes || [],
     ]
   );
   const lineId = lineRes.rows[0].line_id;
@@ -427,9 +496,9 @@ async function writeLine(client, { officeId, claimId, position, proc, counts }) 
   for (const adj of storable) {
     await client.query(
       `INSERT INTO rcm_procedure_adjustments
-         (procedure_line_id, claim_id, office_id, group_code, reason_code,
-          reason_description, amount_cents, quantity, remark_code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (procedure_line_id, claim_id, office_id, scope, group_code, reason_code,
+          reason_description, amount_cents, quantity)
+       VALUES ($1, $2, $3, 'line', $4, $5, $6, $7, $8)`,
       [
         lineId,
         claimId,
@@ -439,7 +508,11 @@ async function writeLine(client, { officeId, claimId, position, proc, counts }) 
         adj.description,
         adj.amountCents,
         adj.quantity,
-        adj.remarkCode,
+        // B2: `remark_code` is DELIBERATELY not set here any more. RARCs are
+        // reported per SERVICE LINE (LQ*HE) and X12 gives no CAS↔LQ
+        // association, so stamping remarkCodes[0] onto every adjustment stored
+        // the first RARC three times on a three-CARC line — plausible, and
+        // wrong. The full set lives on rcm_procedure_lines.remark_codes.
       ]
     );
     counts.adjustments += 1;

@@ -36,6 +36,9 @@ browser  ── multipart PDF ──►  POST /api/rcm/eob?office=roland|valley
                                       ├─ daily $ cap left?    no → PAUSE (stays 'uploaded')
                                       ├─ status → 'processing'
                                       ├─ Blob GET → pdf-parse text layer
+                                      │    └─ no text layer? → OCR pre-step (§10)
+                                      │         ├─ OCR cap left?  no → PAUSE (stays 'uploaded')
+                                      │         └─ Azure Document Intelligence → text
                                       ├─ budget.assertAllowed()      ← hard backstop
                                       ├─ Azure OpenAI, strict json_schema
                                       ├─ budget.charge(usage)        ← charged on return
@@ -180,6 +183,11 @@ happened, and this must not be a second cause of it.
 `backend/services/rcm/extractionBudget.js`. Same shape as the voice transcription rail,
 for the same reasons — that rail exists because of a real cost incident.
 
+> **There is a SECOND, separate rail** for OCR pages (`ocrBudget.js`, $2.00/day). Same
+> shape, different resource, different meter, different reset clock — and neither can
+> consume the other. See [§10](#10-ocr-for-scanned-eobs) for why they are split and how a
+> user is told which one stopped them.
+
 - **Integer cents**, estimated from the response's token usage, rounded **up** to the cent.
 - **$10.00/day** by default (`RCM_EXTRACTION_MAX_CENTS_PER_DAY=1000`). `0` = unlimited.
 - **Local day**, `America/Chicago` by default. UTC midnight is early evening in Central, so
@@ -236,6 +244,16 @@ list carries filenames, which makes it a PHI read. `resource_id` is the upload i
 Extracted document text is PHI. It exists in memory for one extraction, is never written to
 disk, and is never logged — only its character count is.
 
+**OCR sends the document ITSELF, not just its text.** When a scan escalates (§10), the PDF
+bytes go to **Azure AI Document Intelligence** in a request body — a page image full of a
+patient's name and date of birth. That is covered by Microsoft's BAA in the Azure Product
+Terms, the same instrument that covers Azure OpenAI and Azure Speech, and it is reached with
+the same managed identity and the same token audience. **No image leaves that boundary**:
+there is no third-party OCR here and no fallback to one, and unconfigured means the document
+fails honestly rather than being routed anywhere else. Nothing in `documentOcr.js` logs the
+document, the extracted text, or any fragment of either — only page counts, confidences and
+elapsed milliseconds. The bytes are never written to disk on either side of the call.
+
 ---
 
 ## 5. Configuration
@@ -251,8 +269,25 @@ disk, and is never logged — only its character count is.
 | `RCM_AZURE_OPENAI_DEPLOYMENT` | — | RCM-only override for `AZURE_OPENAI_DEPLOYMENT`. |
 | `RCM_LLM_MAX_COMPLETION_TOKENS` | `16384` | Azure 400s a value above the deployment's window. |
 | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_AUTH_MODE`, `AZURE_OPENAI_API_KEY` 🔒 | see CLAUDE.md | The platform's existing path, unchanged. Managed identity is the default; `api_key` is an explicit opt-in. |
-| `CALLSTORE_DIR` | `<repo>/data` | Where the persisted breaker counter lives. **Prod sets `/data`.** Unset in a container = the counter resets on every deploy. |
+| `CALLSTORE_DIR` | `<repo>/data` | Where **both** persisted breaker counters live. **Prod sets `/data`.** Unset in a container = they reset on every deploy. |
 | `OFFICE_TIMEZONE` | `America/Chicago` | Day used for `received_date` on extracted claims. |
+
+### OCR (scanned documents)
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `RCM_OCR_ENDPOINT` | — | `https://<name>.cognitiveservices.azure.com`. **Absent ⇒ OCR is off**, and an image-only PDF fails with `no_extractable_text` exactly as it did before the OCR slice. That is a legal, documented state, not a degraded one. |
+| `RCM_OCR_MODEL` | `prebuilt-read` | **Leave it.** `prebuilt-layout` costs 6.7× and returns structure the extraction prompt does not consume. Changing it *requires* changing `RCM_OCR_CENTS_PER_KPAGE` to match, or the breaker under-counts by that factor. |
+| `RCM_OCR_API_VERSION` | `2024-11-30` | Document Intelligence v4.0 GA. |
+| `RCM_OCR_AUTH_MODE` | `managed_identity` | `azure_cli` for local dev (`az login`), `api_key` as a last resort. Exactly one credential is used — never a silent fallback. |
+| `RCM_OCR_API_KEY` 🔒 | — | Only read when `RCM_OCR_AUTH_MODE=api_key`. |
+| `RCM_OCR_MAX_CENTS_PER_DAY` | `200` ($2.00) | **The second breaker.** `0` = unlimited. Non-numeric falls back to 200. |
+| `RCM_OCR_BUDGET_TZ` | `America/Chicago` | Day boundary for the OCR breaker. |
+| `RCM_OCR_CENTS_PER_KPAGE` | `150` | $1.50 per **1,000** pages — the S0 `prebuilt-read` list price, verified against the Azure retail price API on 2026-08-19. |
+| `RCM_OCR_MIN_CONFIDENCE` | `0.85` | Below this mean word confidence, every claim from the document gets `ocr_low_confidence`. |
+| `RCM_OCR_UNUSABLE_CONFIDENCE` | `0.55` | Below this, the document is REFUSED with rescan advice instead of annotated. **Must be ≤ `RCM_OCR_MIN_CONFIDENCE`** — the container refuses to start otherwise. |
+| `RCM_OCR_TIMEOUT_MS` | `120000` | The whole submit-and-poll cycle. |
+| `RCM_OCR_POLL_INTERVAL_MS` | `2000` | How often the long-running operation is polled. |
 
 Auth is Azure AD only — for blob and for the LLM. The platform's storage accounts have
 shared-key auth disabled, so there is no connection-string path and none may be added.
@@ -274,6 +309,16 @@ Contributor` is granted at **container** scope, matching `tc-media`.
 | containers | `rcm-eob`, `rcm-era` ✅ | `rcm-eob`, `rcm-era` ✅ |
 | RBAC (MI + `admin@carein.ai`) | ✅ | ✅ |
 | `RCM_BLOB_ACCOUNT_URL` | ✅ set | ❌ **deferred — see below** |
+
+Document Intelligence is a separate Azure resource, in the same resource group, reached with
+the same managed identity and the same `https://cognitiveservices.azure.com/.default` token
+audience as Azure OpenAI and Azure Speech:
+
+| | staging | prod |
+| --- | --- | --- |
+| resource | `docint-carein-staging` (S0, southcentralus) ✅ | ❌ **not provisioned — see below** |
+| RBAC (`Cognitive Services User` → `id-carein-staging`) | ✅ | ❌ |
+| `RCM_OCR_ENDPOINT` | ✅ set on `ca-carein-backend` | ❌ **deferred** |
 
 Containers are **not** on `stcareinstgcallstore`. That account has shared-key auth *enabled*
 because Container Apps AzureFile mounts authenticate with the account key; keeping PHI blobs
@@ -302,6 +347,47 @@ Deferring it is only safe if it is not forgotten — so it is a line item here:
 
 - [ ] Verify the containers and RBAC are still in place (they were created 2026-08-17):
       `az storage container-rm list --subscription "Azure subscription 1" --storage-account stcareinprod -o table`
+
+- [ ] **Provision Document Intelligence in prod, and set `RCM_OCR_ENDPOINT`** — the same
+      shape as the blob var above, and deferred for the same reason (setting an env var
+      restarts the backend). Prod is deliberately left with **no** OCR resource at all, so
+      until this is done a scanned EOB in prod fails honestly with `no_extractable_text`.
+
+  ```bash
+  SUB="Azure subscription 1"
+
+  # 1. the resource
+  az cognitiveservices account create --subscription "$SUB" \
+    -n docint-carein-prod -g rg-carein-prod \
+    --kind FormRecognizer --sku S0 --location southcentralus \
+    --custom-domain docint-carein-prod --yes
+
+  # 2. RBAC for the prod backend's managed identity.
+  #    ⚠ Use the identity's principalId, NOT its clientId. `az identity list -o table`
+  #    shows the CLIENT id in the column people reach for; read principalId explicitly.
+  PID=$(az identity show --subscription "$SUB" -n <prod-identity> -g rg-carein-prod \
+          --query principalId -o tsv)
+  SUBID=$(az account list --query "[?name=='$SUB'].id" -o tsv)
+  az role assignment create --subscription "$SUB" \
+    --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
+    --role "Cognitive Services User" \
+    --scope "/subscriptions/$SUBID/resourceGroups/rg-carein-prod/providers/Microsoft.CognitiveServices/accounts/docint-carein-prod"
+
+  # 3. the env var
+  az containerapp update --subscription "$SUB" \
+    -n ca-carein-prod-backend -g rg-carein-prod \
+    --set-env-vars RCM_OCR_ENDPOINT=https://docint-carein-prod.cognitiveservices.azure.com
+  ```
+
+  Do **not** set `RCM_OCR_MODEL`, `RCM_OCR_AUTH_MODE` or any threshold var: every default
+  is the intended production value. Afterwards, count the env vars on the new revision and
+  confirm nothing else moved — `--set-env-vars` is additive, but a mistyped flag is not.
+
+  > ⚠ **Git Bash mangles `--scope`.** MSYS rewrites a leading `/subscriptions/...` into a
+  > Windows path and `az` then fails with `MissingSubscription`, which reads like a login
+  > problem and is not. Prefix with `MSYS_NO_PATHCONV=1`, or run the role assignment from
+  > PowerShell.
+
 - [ ] Only then flip the `rcm` module entitlement for the tenant.
 
 ---
@@ -336,31 +422,17 @@ Batches are created `'open'`, never `'ready'` — `ready` means a human has look
 
 ## 7. Known gaps
 
-1. **Image-only PDFs do not extract.** The prompt is fed the PDF's **text layer**
-   (`pdf-parse`), not the page image. A photographed or faxed EOB with no text layer fails
-   honestly with `NO_EXTRACTABLE_TEXT` and a message telling the poster what to do instead.
-   It is never silently routed to a vision model. See `eobDocumentText.js` for why: the
-   platform's Azure OpenAI deployment is a text/JSON deployment, and the source repo's
-   base64-PDF-as-`image_url` trick is not a documented Azure capability.
-
-   **FOLLOW-UP SLICE — an OCR pre-step.** Faxed and photographed EOBs are common in dental
-   offices, so this gap is real rather than theoretical. The intended shape is **Azure
-   Document Intelligence** (BAA-covered under the same Azure Product Terms as Speech and
-   OpenAI, and purpose-built for exactly this) as a **pre-step** that turns page images into
-   text, feeding the *same* extraction engine — not a second extraction path and not a
-   vision model. The seam already exists: `eobDocumentText.extractPdfText()` is the only
-   place a PDF becomes a string, so OCR is a fallback inside that one function.
-
-   **Not built now, deliberately.** It should be sized once real usage shows what fraction
-   of uploads are image-only, and it carries its own cost rail question (Document
-   Intelligence is priced per page, so it needs to be accounted against the same daily cap
-   rather than beside it). Until then, `NO_EXTRACTABLE_TEXT` with guidance is the honest
-   answer, and the *count* of that failure reason is the measurement that sizes the slice.
-2. **PDF only.** The source also accepted PNG and JPEG. Those need (1), so they are out
-   until it lands — at which point they become nearly free, since OCR takes an image either
-   way.
+1. **~~Image-only PDFs do not extract.~~ BUILT — see §10.** An OCR pre-step now reads them.
+   The residual limits are listed there (handwriting, stapled multi-EOB scans, tables).
+2. **PDF only.** The upload route takes `%PDF-` magic bytes and nothing else, so a phone
+   photo saved as JPEG still bounces even though OCR would read it happily. Accepting
+   images is now *nearly* free — the reader takes them either way, and `prebuilt-read`
+   supports JPEG/PNG/BMP/TIFF/HEIF — but the content-hash dedupe, the blob content type and
+   the `looksLikePdf` gate all assume PDF, so it is a small deliberate slice rather than a
+   flag flip.
 3. **The queue does not survive a restart.** See §2 "Retrying" and "The startup sweep".
-4. **Charging is post-hoc.** See §3.
+4. **Charging is post-hoc.** See §3 — and see §10 for the one rail where it is *not*,
+   because pages are knowable in advance and tokens are not.
 5. **Single replica.** The startup sweep assumes `maxReplicas = 1`; raising it needs a
    lease on `processing` rows first. See §2 "The startup sweep".
 
@@ -477,14 +549,304 @@ Container logs show one line per extraction with the token count and the running
 | Extraction worker (blob → LLM → rows, one transaction) | `backend/services/rcm/eobExtractionWorker.js` |
 | Queue seam | `backend/services/rcm/eobExtractionQueue.js` |
 | Startup sweep (interrupted → failed) | `backend/services/rcm/eobStartupSweep.js` |
-| Cost breaker | `backend/services/rcm/extractionBudget.js` |
+| Local-day clock, shared by the rails | `backend/services/localDayClock.js` |
+| Cost breaker (Azure OpenAI tokens) | `backend/services/rcm/extractionBudget.js` |
+| Cost breaker (Document Intelligence pages) | `backend/services/rcm/ocrBudget.js` |
+| OCR transport (Document Intelligence) | `backend/services/rcm/documentOcr.js` |
 | Blob store (opaque keys) | `backend/services/rcm/eobBlobStore.js` |
-| PDF text | `backend/services/rcm/eobDocumentText.js` |
+| PDF text **and the OCR escalation** | `backend/services/rcm/eobDocumentText.js` |
 | Azure OpenAI seam | `backend/services/rcm/rcmLlm.js` |
 | UI | `new-dashboard/client/src/pages/rcm/EobUploadPanel.tsx` |
 | API client | `new-dashboard/client/src/features/rcm/api.ts` |
+| EOB PDF fixtures | `backend/test/fixtures/rcm/eob/` |
+| ...and their generator (outside `test/` on purpose) | `backend/scripts/make-eob-fixtures.js` |
 | Screenshots | `docs/screenshots/rcm-eob/` |
 
 Related: [RCM_SCHEMA.md](RCM_SCHEMA.md) (the `rcm_*` tables),
 [RCM_OD_WRITES.md](RCM_OD_WRITES.md) (what Slice 6 will be allowed to do),
 [MODULES.md](MODULES.md) (entitlement).
+
+---
+
+## 10. OCR for scanned EOBs
+
+About half of what a dental office receives is a scan: a fax, a photocopy, a phone photo of
+a page. Those PDFs carry page IMAGES and no text at all, and until this slice they bounced.
+
+### The flow
+
+```
+upload ──► pdf-parse text layer
+             │
+             ├─ >= 40 chars ──────────────────────────────► the extraction prompt
+             │                                              (source: text_layer)
+             └─ < 40 chars  ──► OCR configured?
+                                  │
+                                  ├─ no  ──► FAIL `no_extractable_text`  (unchanged)
+                                  │
+                                  └─ yes ──► OCR cost gate (priced from the page count)
+                                               │
+                                               ├─ spent ──► PAUSE at 'uploaded'
+                                               │
+                                               └─ ok ──► Azure Document Intelligence
+                                                           │
+                                                           ├─ unreadable ──► FAIL `ocr_unreadable`
+                                                           ├─ too long   ──► FAIL `document_too_large`
+                                                           └─ ok ────────► the extraction prompt
+                                                                           (source: ocr)
+```
+
+**The trigger is the honest failure we already detected**, not a file sniff: a document
+escalates when its text layer yields fewer than `MIN_DOCUMENT_CHARS` (40) — the exact
+condition that used to raise `NO_EXTRACTABLE_TEXT`. **A text-layer PDF therefore never pays
+for OCR**, and it structurally cannot: the escalation lives on the far side of a read that
+already failed.
+
+> ⚠ **The floor counts REAL text, not page furniture.** `pdf-parse` stamps a `-- 3 of 12 --`
+> marker into the text of every page — about 16 characters — whether or not the page has any
+> text at all. Measured against the raw string, an image-only scan crosses the 40-character
+> floor on page count alone: 1 page → 12 chars (escalates), 3 pages → 44 chars (**did not**),
+> 4 pages → 60 chars (**did not**). A three-page faxed EOB was therefore treated as a text
+> PDF and had its own page markers sent to the extraction model as the document. The floor is
+> measured through `meaningfulTextLength()`, which strips the markers and whitespace for the
+> MEASUREMENT only — the prompt still receives the untouched text, because on a genuine text
+> PDF those markers are useful page delimiters. The pattern is pdf-parse's rendering rather
+> than a PDF standard, so a test pins it against the real fixture and fails loudly if an
+> upgrade changes the format.
+
+**OCR is a pre-step, not a second engine.** Both paths produce a string that goes to the
+same prompt, against the same schema, producing the same rows. Nothing downstream of
+`eobDocumentText.extractPdfText()` branches on scanned-vs-digital except the provenance
+marker and the confidence review reason.
+
+### The model: `prebuilt-read`, and why not `prebuilt-layout`
+
+Verified against the Azure retail price API on 2026-08-19 (S0, southcentralus,
+0–1M pages/month):
+
+| model | price | per page |
+| --- | --- | --- |
+| `prebuilt-read` | **$1.50 / 1,000 pages** | $0.0015 |
+| `prebuilt-layout` | $10.00 / 1,000 pages | $0.0100 — **6.7×** |
+
+Read returns exactly what a pre-step needs: `content` (the whole document as text in reading
+order), a `pages[]` array to count, and per-word `confidence`. Layout adds tables, selection
+marks and paragraph roles — structure the extraction prompt does not consume, because it
+takes a plain string. Paying 6.7× for structure nothing reads is not a trade, and a
+table-aware prompt would be the forked engine this slice exists not to build.
+
+Measured on the synthetic fixtures against `docint-carein-staging`, 2026-08-19: a clean
+one-page scan reads in ~2.3s at **0.991** mean word confidence.
+
+### Two cost rails, and how they differ
+
+| | extraction | OCR |
+| --- | --- | --- |
+| resource | Azure OpenAI | Azure Document Intelligence |
+| unit | tokens | pages |
+| cap | `RCM_EXTRACTION_MAX_CENTS_PER_DAY`, **$10.00/day** | `RCM_OCR_MAX_CENTS_PER_DAY`, **$2.00/day** |
+| persisted as | `rcm_extraction_budget.json` | `rcm_ocr_budget.json` |
+| gate | starting only | **the whole document**, priced up front |
+| error code | `RCM_EXTRACTION_BUDGET_EXCEEDED` | `RCM_OCR_BUDGET_EXCEEDED` |
+
+**They are separate on purpose and never consume each other.** One counter would let a
+morning of scanned faxes silently eat the money that reads the afternoon's digital EOBs —
+and the biller who got stopped would be told "the daily cost cap is used up" without being
+able to tell which cost or what to do about it. Every message, banner and spend line names
+its rail.
+
+**The OCR rail can refuse before spending, and the token rail cannot.** A PDF's page count
+is known from the file; a token count is only known from the response. So OCR refuses a
+document it cannot afford *in full* rather than starting one and overrunning — while the
+extraction cap still gates only *starting*, and one large document can still overshoot it
+by its own cost.
+
+The charge is Document Intelligence's **own** reported page count, not the estimate: a page
+tree that lies, or an embedded multi-page TIFF, must be billed for what actually ran.
+Pricing rounds **up** to the cent, so a one-page read costs 1¢ against a real 0.15¢. The cap
+is a rail, not an invoice; over-counting small documents is the safe direction.
+
+**$2.00/day is ~1,333 pages.** Two offices posting every scanned EOB they receive are
+nowhere near that — a heavy day is tens of pages. The cap is sized to stop a runaway (a
+retry loop, a 400-page PDF uploaded ten times), not to ration normal work. **No code path
+raises either cap.**
+
+A tripped OCR rail is a **pause**, not a failure: the upload stays at `uploaded` with a
+reason naming the OCR cap and its own reset time. Nothing is dropped.
+
+**Unless waiting cannot help.** A document whose own page count costs more than the *entire*
+cap fails `used + estimate <= cap` even at zero spend, so a reset refuses it again — and
+again, every midnight. Parking it would be a nightly false promise, so the rail reports that
+case separately (`exceedsCapEntirely`) and it becomes a **terminal failure**
+(`ocr_document_exceeds_cap`) whose message says the thing that actually works: split the
+document, or have the cap raised. Unreachable at the $2.00 default, which buys ~1,333 pages;
+directly reachable the day an operator lowers `RCM_OCR_MAX_CENTS_PER_DAY`.
+
+> A cap must be a positive **whole number of cents**. Both rails `Math.trunc` it, so
+> `RCM_OCR_MAX_CENTS_PER_DAY=0.5` becomes `0`, which means **unlimited**. Inherited from
+> `extractionBudget` and identical in both; flagged for a main-line fix to the pair rather
+> than changed in one of them here.
+
+### Provenance: what the biller sees
+
+`rcm_eob_uploads` records how each document was read, written **inside the same transaction
+as the proposal** — a row that says "read by OCR" is a row whose claims exist.
+
+| column | meaning |
+| --- | --- |
+| `text_source` | `text_layer` \| `ocr` \| **NULL = not read yet** |
+| `ocr_page_count` | pages Azure read and billed. NULL off the OCR path |
+| `ocr_mean_confidence` | 0.000–1.000, word-count weighted. **NULL = not reported**, which is not the same as "certain" |
+
+A database CHECK keeps the three telling one story: `ocr` requires a page count, and
+anything else must carry neither number. Provenance that contradicts itself is worse than
+none, because it looks authoritative.
+
+It surfaces on three screens, in one wording (`provenanceLabel` in `features/rcm/labels.ts`):
+
+- **remittance detail** — beside the source-document link: *"Read by OCR (3 pages, 94%
+  confidence)"*
+
+  ![a remittance read by OCR](screenshots/rcm-workbench/06-ocr-provenance.png)
+
+  The grey chip beside the amber one on the claim is the picture worth having: `An
+  adjustment could not be read` is BLOCKING and will withhold this proposal; `This document
+  was scanned` is ANNOTATING and will not. Both stay visible — the D-11 split decides the
+  weight, never the visibility.
+
+- **claim detail** — at the top of "what the carrier said", because it qualifies every
+  figure below it
+- **upload panel** — on each row, once there is an answer
+
+NULL renders as **nothing at all**. An 835 was parsed, never read; an EOB from before this
+slice has no record. Filling that gap with "text layer" would be the screen asserting
+something nobody wrote down.
+
+> `confidence` on `rcm_claims` is a different number: the extraction model's confidence in
+> its reading of a *string*. Provenance is about where that string came from.
+
+### The confidence floors
+
+| floor | default | what happens below it |
+| --- | --- | --- |
+| `RCM_OCR_MIN_CONFIDENCE` | **0.85** | every claim from the document gets `ocr_low_confidence` |
+| `RCM_OCR_UNUSABLE_CONFIDENCE` | **0.55** | the document is **refused** with rescan advice |
+
+0.85 means roughly one word in seven was a guess — perfectly readable to a human and
+perfectly plausible to the extraction model, which is exactly the danger: a plausible
+misreading of a dollar column still looks like a number. So it **widens review and resolves
+nothing**.
+
+0.55 means nearly half the words are guesses. There is no review a human can perform on a
+claim built out of that, because the amounts she would check against are themselves the
+misread ones. So it is a refusal, and the message says what to do: *"rescan at 300 dpi in
+black and white, ask the payer for a text PDF, or enter this EOB manually."*
+
+The refusal is `confidence < unusable`, so a document sitting **exactly on** the refusal floor
+is annotated rather than thrown away.
+
+**The two floors are validated against each other at startup.** With the refusal floor set
+*above* the review floor, the refusal branch swallows the whole annotate band and every
+document between them is rejected where the operator expected it flagged — with nothing
+anywhere saying so; the documents would simply stop arriving. A container configured that way
+refuses to boot, naming both values and which way to fix them.
+
+`ocr_low_confidence` is **annotating** under D-11 — a grey chip, not amber. It is a fact
+about how confidently the document was read, not a claim that any stored amount is wrong,
+and every arithmetic check the EOB path already runs (`paid_total_mismatch`,
+`billed_total_mismatch`, `batch_paid_total_mismatch`) is blocking and still runs on OCR
+output. Blocking here as well would withhold every scanned claim on a signal that cannot
+tell a faint fax from a wrong figure.
+
+### Truncation (A6) covers the OCR path
+
+The 120,000-character refusal applies to OCR output too, and matters **more** there: OCR is
+longer and noisier than a text layer for the same pages, so a document that would have fitted
+as a digital PDF can overrun as a scan. A scanned bulk EOB that silently lost its tail claims
+is the same defect as a digital one that did, so it is the same refusal — same
+`document_too_large` code, wording that says the reading was by OCR, and no partial stored.
+
+### New failure codes
+
+| code | meaning | what the poster should do |
+| --- | --- | --- |
+| `ocr_unreadable` | the reader worked; the SCAN was bad | rescan at 300 dpi, or enter it manually |
+| `ocr_failed` | the reader never got that far — refused the file, timed out, or was unreachable | try again; if it is a scan, rescan as PDF |
+| `ocr_budget_exhausted` | the OCR cap was consumed between the gate and the spend by a concurrent job | wait for the OCR reset (the normal tripped path pauses instead and sets no code) |
+| `ocr_document_exceeds_cap` | this one document needs more OCR than the whole daily cap, so no reset can ever admit it | split the document, or have the cap raised — **not** "come back tomorrow" |
+
+### Known limits
+
+- **Handwriting.** `prebuilt-read` does return handwritten text, but a hand-written
+  correction on a printed EOB (a crossed-out amount, a margin note) is read as ordinary
+  text with no signal that it was written by hand. The extraction model then treats it as
+  printed. Confidence usually drops enough to raise `ocr_low_confidence`, but that is a side
+  effect, not a guarantee.
+- **Stapled multi-EOB scans.** A single scan holding several checks becomes ONE document
+  with one payment header. The extraction schema expects one remittance per document, so a
+  stack scanned in one pass will produce a proposal that reconciles against the first check
+  and flags the rest as mismatches. Scan one EOB per file.
+- **Tables.** Read produces text in reading order, not cells. Column alignment survives in
+  practice for the fixtures and the payer layouts seen so far, but a wide multi-column table
+  can interleave. This is the case `prebuilt-layout` would help with, and the point at which
+  its 6.7× price would be worth re-arguing — with measurements, not a hunch.
+- **PDF only.** Images (JPEG/PNG/TIFF/HEIF) would read fine but the upload route still
+  requires `%PDF-` magic bytes. See §7.
+- **One page count.** Azure's count and the PDF's own can disagree. Both are stored:
+  `ocr_page_count` is what ran and what was billed.
+- **Zero pages is refused, even with content.** Document Intelligence can return `content`
+  alongside an empty `pages[]`. That answer is unbillable (it would charge 0¢ for work that
+  really ran) and unattributable (the provenance CHECK requires `ocr_page_count > 0`), and
+  stamping a fabricated `1` would invent the number the screen prints as fact. So `analyze()`
+  refuses it — `pages >= 1` is an invariant the rest of the slice relies on — and the poster
+  sees `ocr_failed` with the character count, rather than a generic failure after a
+  transaction rolled back at its last statement.
+
+### The fixtures
+
+`backend/test/fixtures/rcm/eob/` — three committed PDFs and the script that made them
+(`backend/scripts/make-eob-fixtures.js`, run only to regenerate — it lives outside `test/` deliberately, because Node runs every `.js` under `test/` as a test). **No real scan is used anywhere**: there is
+no redaction that survives OCR, since the whole point is that a machine reads the pixels.
+
+| fixture | how it was made | what it proves |
+| --- | --- | --- |
+| `Test_EOB_TextLayer.pdf` | hand-assembled PDF text operators | a text layer never calls OCR |
+| `Test_EOB_Scanned.pdf` | the same content laid out as HTML, rasterised to JPEG by Chromium at ~150 dpi, wrapped as a `/DCTDecode` image XObject | the escalation, and a clean read (measured: 1 page, 560 chars, **0.991**) |
+| `Test_EOB_Scanned_Degraded.pdf` | same, pale grey on white at ~50 dpi, skewed, JPEG quality 25 | the can't-read path (measured: 4 chars, **0.157** — it trips both refusal conditions) |
+
+The live probe (`documentOcrLive.test.js`) runs against staging on `RCM_OCR_LIVE=1` and is
+skipped otherwise; it is what keeps the thresholds tied to what the service actually does:
+
+```bash
+cd backend
+RCM_OCR_LIVE=1 \
+RCM_OCR_ENDPOINT=https://docint-carein-staging.cognitiveservices.azure.com \
+RCM_OCR_AUTH_MODE=azure_cli \
+node --test --test-concurrency=1 services/rcm/documentOcrLive.test.js
+```
+
+### The staging walk
+
+> **Walk it in a real browser tab, kept in the foreground.** This panel polls, and an
+> editor's embedded browser (Cursor's, and webviews generally) can report
+> `document.visibilityState === 'hidden'` while the pane is plainly on screen — which
+> stops the polling. The panel now always offers a manual "Check again" when that happens,
+> but the walk is about watching the chips advance on their own, so give it a window that
+> the browser agrees is visible.
+
+Each step names its office, because the panel is per-office and a row uploaded to one is
+invisible from the other.
+
+1. **Select the Roland office.** Upload `Test_EOB_Scanned.pdf` **to Roland**. The chip goes
+   **Waiting → Extracting → Proposal ready**.
+2. Open the remittance — still **Roland**. The source-document row reads **"Read by OCR
+   (1 page, 99% confidence)"**.
+3. Back on **Roland's** upload panel, **two** spend lines have moved — "Extraction spend
+   today" and "Scan-reading (OCR) spend today" — and they are separate numbers.
+4. Upload `Test_EOB_Scanned_Degraded.pdf` **to Roland**. It **fails** with the rescan
+   message, and the OCR spend moves while the extraction spend does not: nothing was sent to
+   the model.
+
+Re-uploading the same file to the **same** office returns the existing row
+(`duplicate: true`) and re-runs nothing — that is the content-hash dedupe, not a fault. To
+walk it again from scratch, use the other office.

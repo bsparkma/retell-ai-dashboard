@@ -20,6 +20,7 @@
  * there is no override to retry with.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, FileUp, Info, Loader2 } from "lucide-react";
 import {
   listEraUploads,
@@ -31,42 +32,13 @@ import {
   type EraUploadResult,
   type RcmOfficeId,
 } from "@/features/rcm/api";
+import { REVIEW_LABELS, FLAG_LABELS, isBlockingReason, label, reviewLabel } from "@/features/rcm/labels";
 
 /** Integer cents → "$1,234.56". Formatting is the component's job, not the API's. */
 function money(cents: number): string {
   return (cents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-/**
- * A machine-readable reason turned into something a biller reads.
- *
- * The map is exhaustive over what the parser emits today; an unmapped reason
- * falls back to its own slug rather than being hidden, so a new backend reason
- * shows up as an ugly string instead of silently disappearing.
- */
-const REVIEW_LABELS: Record<string, string> = {
-  reversal_not_postable: "Reversal / takeback — cannot be posted",
-  claim_denied: "Denied by the carrier",
-  secondary_payer_adjudication: "Secondary payer (coordination of benefits)",
-  prior_payer_payment_on_primary_claim: "Prior payer's payment on a claim marked primary",
-  unparseable_cas: "An adjustment could not be read",
-  unstorable_adjustment_group: "An adjustment used an unknown group code",
-  procedure_downcoded: "The carrier changed a procedure code",
-  no_service_lines: "No service lines",
-  line_total_mismatch: "Line payments do not sum to the claim total",
-};
-
-const FLAG_LABELS: Record<string, string> = {
-  plb_adjustments_present: "Provider-level adjustments (PLB) — not attached to any claim",
-  negative_total_payment: "Negative total — this remittance is a takeback",
-  no_payment_made: "The payer reports no payment made",
-  no_claims_in_remittance: "No claims in this remittance",
-  claim_total_mismatch: "Claim payments do not sum to the check total",
-};
-
-function label(map: Record<string, string>, key: string): string {
-  return map[key] ?? key;
-}
 
 type UploadState =
   | { kind: "idle" }
@@ -215,8 +187,18 @@ function UploadResult({ result, office }: { result: EraUploadResult; office: Rcm
 
       <ul className="mt-3 space-y-1.5">
         {result.remittances.map((r) => (
+          // Slice 6a: an upload is no longer a dead end. Every remittance this
+          // file produced links to the screen where a biller can actually work
+          // it — which is the whole reason the workbench was built first.
           <li key={r.batchId} className="text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{r.payer}</span> · {r.checkNumber} ·{" "}
+            <Link
+              href={`/rcm/remittances/${r.batchId}`}
+              className="font-medium text-foreground underline-offset-2 hover:underline"
+              data-testid={`rcm-era-open-${r.batchId}`}
+            >
+              {r.payer}
+            </Link>{" "}
+            · {r.checkNumber} ·{" "}
             {r.paymentDate} · <span className="tabular-nums">{money(r.totalAmountCents)}</span> ·{" "}
             {r.claims.length} claim{r.claims.length === 1 ? "" : "s"} ·{" "}
             <StatusChip status={r.status} />
@@ -227,15 +209,38 @@ function UploadResult({ result, office }: { result: EraUploadResult; office: Rcm
       {(flagged.length > 0 || review.length > 0) && (
         <div className="mt-3 border-t border-border/60 pt-2" data-testid={`rcm-era-flags-${office}`}>
           <div className="text-xs font-medium text-foreground">Held for review</div>
+          {/*
+            D-11's split, applied here too. Amber will WITHHOLD the claim at the
+            approval gate; grey is true and changes nothing about what to post.
+            Colouring every flag amber — as this panel did — meant a downcode
+            and a truncated envelope looked equally alarming, which is how a
+            biller learns to read past both.
+          */}
           <ul className="mt-1 space-y-0.5">
             {flagged.map((f) => (
-              <li key={f} className="text-xs text-amber-700 dark:text-amber-500">
+              <li
+                key={f}
+                data-testid={`era-flag-${f}`}
+                className={`text-xs ${
+                  isBlockingReason(f)
+                    ? "text-amber-700 dark:text-amber-500"
+                    : "text-muted-foreground"
+                }`}
+              >
                 • {label(FLAG_LABELS, f)}
               </li>
             ))}
             {review.map((r) => (
-              <li key={r} className="text-xs text-amber-700 dark:text-amber-500">
-                • {label(REVIEW_LABELS, r)}
+              <li
+                key={r}
+                data-testid={`era-reason-${r}`}
+                className={`text-xs ${
+                  isBlockingReason(r)
+                    ? "text-amber-700 dark:text-amber-500"
+                    : "text-muted-foreground"
+                }`}
+              >
+                • {reviewLabel(r)}
               </li>
             ))}
           </ul>
@@ -280,6 +285,17 @@ function DuplicateNotice({
                   ? `processed ${r.processedAt.slice(0, 10)}`
                   : "already processed"}
             </span>
+            {/* The useful next move after a duplicate is to go and LOOK at the
+                batch it already became, which was impossible before 6a. */}
+            {r.batchId && (
+              <Link
+                href={`/rcm/remittances/${r.batchId}`}
+                className="ml-1.5 font-medium text-foreground underline-offset-2 hover:underline"
+                data-testid={`rcm-era-duplicate-open-${r.batchId}`}
+              >
+                open it
+              </Link>
+            )}
           </li>
         ))}
       </ul>
@@ -331,7 +347,14 @@ function RecentUploads({
           </div>
           {u.remittances.map((r) => (
             <div key={r.batchId} className="mt-1 text-[11px] text-muted-foreground">
-              {r.payer} · {r.checkNumber ?? r.eftNumber ?? r.traceNumber} ·{" "}
+              <Link
+                href={`/rcm/remittances/${r.batchId}`}
+                className="font-medium text-foreground underline-offset-2 hover:underline"
+                data-testid={`rcm-era-history-open-${r.batchId}`}
+              >
+                {r.payer}
+              </Link>{" "}
+              · {r.checkNumber ?? r.eftNumber ?? r.traceNumber} ·{" "}
               <span className="tabular-nums">{money(r.totalAmountCents)}</span> · {r.claimCount}{" "}
               claim{r.claimCount === 1 ? "" : "s"} · <StatusChip status={r.status} />
               {r.dedupeStatus === "posted" && (

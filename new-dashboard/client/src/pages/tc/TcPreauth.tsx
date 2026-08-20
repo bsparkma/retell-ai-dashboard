@@ -4,6 +4,8 @@
  * 7-column board (PREAUTH_BOARD_STATUSES); transitions go through
  * transitionPreauth so the server stamps submittedDate/decisionDate — the
  * board re-renders from the returned row, never from optimistic guesses.
+ * That holds for drag-and-drop too: handleTransition is awaited by the board,
+ * which keeps the dragged card in its original column until this resolves.
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -128,7 +130,7 @@ export default function TcPreauth() {
       ) : (
         <PreauthBoard
           cases={cases}
-          onTransition={(p, s) => void handleTransition(p, s)}
+          onTransition={handleTransition}
           onEdit={(p) => {
             setEditing(p);
             setDialogOpen(true);

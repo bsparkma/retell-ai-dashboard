@@ -154,6 +154,9 @@ const REMITTANCE_KEY = `fixture:remit:${TRACE_NUMBER}:${PAYER_ID}:${PAYMENT_DATE
 
 /** Fixed literal dates/timestamps — nothing here reads the clock. */
 const CARRIER_EOB_DATE = '2026-08-08';
+const MATCHED_AT = '2026-08-10T14:20:00.000Z';
+const CONFIRMED_AT = '2026-08-10T14:30:00.000Z';
+const REVIEWED_AT = '2026-08-10T14:45:00.000Z';
 const APPROVED_AT = '2026-08-10T15:00:00.000Z';
 const ACTIVITY_TS = ['2026-08-10T14:00:00.000Z', '2026-08-10T14:05:00.000Z', '2026-08-10T14:10:00.000Z'];
 
@@ -402,16 +405,37 @@ const CLAIM_FIXTURES = [
  * Money arriving is positive; `recoupCents` makes the whole claim's movement a
  * single negative takeback instead. Every batch and queue total is DERIVED from
  * this — no cent total is typed twice anywhere in this file.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `approved` — WHICH CLAIMS A HUMAN HAS ALREADY PUT ON THE POSTING PLAN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Slice 6b's gate decides this in production, so the fixture must only contain
+ * states the gate can actually produce. That is a change from Slice 2, where
+ * every claim was queued unconditionally:
+ *
+ *   roland  — a PARTIAL approval. Two claims queued; the third is confirmed,
+ *             reviewed and postable and nobody has pressed Approve on it yet.
+ *             That is the `claims_awaiting_approval` obligation, with a live
+ *             button behind it.
+ *   valley  — a WITHHELD claim. VAL-0001 is queued; VAL-0002 is the recoupment,
+ *             which the gate refuses on `NOT_RECOUPMENT` and always will —
+ *             a negative supplemental is the one irreversible Open Dental
+ *             operation, and the typed-confirmation path for it is Slice 6d.
+ *
+ * Between them the approval checklist has both states on real seeded data,
+ * which is what the screenshots are taken from.
  */
 const BATCH_MOVEMENTS = {
   roland: [
-    { claimKey: 'claim:roland:0001', linePositions: [1, 2] },
-    { claimKey: 'claim:roland:0002', linePositions: [1, 2] },
-    { claimKey: 'claim:roland:0003', linePositions: [1] },
+    { claimKey: 'claim:roland:0001', linePositions: [1, 2], approved: true },
+    { claimKey: 'claim:roland:0002', linePositions: [1, 2], approved: true },
+    // Postable, and awaiting an approver.
+    { claimKey: 'claim:roland:0003', linePositions: [1], approved: false },
   ],
   valley: [
-    { claimKey: 'claim:valley:0001', linePositions: [1, 2] },
-    { claimKey: 'claim:valley:0002', linePositions: [1], recoupCents: -4000 },
+    { claimKey: 'claim:valley:0001', linePositions: [1, 2], approved: true },
+    // A takeback. The gate withholds it; 6d is what will ever queue one.
+    { claimKey: 'claim:valley:0002', linePositions: [1], recoupCents: -4000, approved: false },
   ],
 };
 
@@ -740,6 +764,80 @@ function buildFixturePlan(options = {}) {
       });
     });
 
+    /*
+     * THE MATCH SNAPSHOT, in the shape `confirmMatch` writes.
+     *
+     * Slice 6a added a CHECK in BOTH directions: a claim carrying
+     * `od_claim_num` MUST be `od_match_status = 'confirmed'`, and a confirmed
+     * one must carry an attributed confirmation. The Slice 2 seeder set
+     * `od_claim_num` and left the status at its `not_run` default, so every
+     * execute against a migrated database would have failed on that constraint.
+     * Fixed here, with the whole confirmation rather than just the status —
+     * Slice 6b's gate reads `confirmed.linePairs` and `odAmountsAsRead` out of
+     * this structure and refuses a claim whose record is absent or stale.
+     */
+    const matchSnapshot = {
+      version: 2,
+      office: claim.office,
+      officeName: claim.office,
+      fetchedAt: MATCHED_AT,
+      odCalls: 0,
+      truncated: false,
+      notes: ['Fixture row — RCM seeder. No Open Dental call was ever made.'],
+      patientsConsidered: [{ patNum: claim.odPatientId, name: patientName }],
+      ambiguous: false,
+      margin: null,
+      rejectedCandidates: 0,
+      rejectedReasons: { nameMismatch: 0, belowScore: 0 },
+      minScore: 0,
+      nameRuleApplied: true,
+      candidates: [
+        {
+          odClaimNum: claim.odClaimNum,
+          odPatNum: claim.odPatientId,
+          score: 100,
+          confidence: 'HIGH',
+          evidence: [],
+          // No BLOCKING pre-flight fact — these claims are meant to be
+          // approvable, and a fabricated blocker would make the fixture lie
+          // about what Open Dental said.
+          blockers: [],
+          linePairs: [...lineIndex.values()].map((l, i) => ({
+            lineId: l.lineId,
+            position: i + 1,
+            code: '',
+            odClaimProcNum: l.odClaimProcNum,
+            odCode: null,
+            billedDeltaCents: 0,
+            reason: null,
+          })),
+        },
+      ],
+      confirmed: {
+        odClaimNum: claim.odClaimNum,
+        odPatNum: claim.odPatientId,
+        confirmedAt: CONFIRMED_AT,
+        confirmedBy: 'fixture-lead',
+        linePairs: [...lineIndex.values()].map((l, i) => ({
+          lineId: l.lineId,
+          position: i + 1,
+          code: '',
+          odClaimProcNum: l.odClaimProcNum,
+          odCode: null,
+          billedDeltaCents: 0,
+          reason: null,
+        })),
+        odAmountsAsRead: {
+          billedCents: totals.billed,
+          claimHeaderFeeCents: totals.billed,
+          insPaidCents: 0,
+          writeOffCents: 0,
+          claimStatus: 'S',
+        },
+      },
+      supersededConfirmation: null,
+    };
+
     // The claim row is planned AFTER its lines are costed but inserted BEFORE
     // them — see ROW_ORDER.
     add('rcm_claims', 'claim_id', claim.key, claim.office, {
@@ -776,6 +874,27 @@ function buildFixturePlan(options = {}) {
       confidence: 95,
       processing_time_sec: 0,
       needs_review_reasons: [],
+
+      // ── Slice 6a: the confirmed match ──
+      od_match_status: 'confirmed',
+      od_match_snapshot: matchSnapshot,
+      od_match_at: MATCHED_AT,
+      od_match_confirmed_at: CONFIRMED_AT,
+      od_matched_by: 'fixture-lead',
+
+      // ── Slice 6a: the local review marker ──
+      // Every fixture claim is DISPOSITIONED. A biller marking "looked, nothing
+      // to do" is real work, and the gate refuses an unreviewed claim — so a
+      // fixture without this could never demonstrate an approval at all.
+      reviewed_at: REVIEWED_AT,
+      reviewed_by: 'fixture-lead',
+      review_note: 'Fixture row — reviewed by the RCM seeder.',
+
+      // ── Slice 6b: the approval linkage ──
+      // Filled in below, for the claims the office's plan actually covers.
+      posting_queue_id: null,
+      approved_at: null,
+      approved_by: null,
     });
 
     claimIndex.set(claim.key, { fixture: claim, claimId, patientName, office: claim.office, lines: lineIndex, totals });
@@ -809,7 +928,12 @@ function buildFixturePlan(options = {}) {
         throw new Error(`${m.claimKey}: a recoupment must name exactly one line`);
       }
       const paid = lineIntents.reduce((n, l) => n + l.intended, 0);
-      return { movement: m, claim, lineIntents, paid };
+      // A recoupment can never be approved through the 6b gate, whatever a
+      // fixture says. Asserting it here keeps the two from drifting apart.
+      if (m.approved && m.recoupCents != null) {
+        throw new Error(`${m.claimKey}: a recoupment cannot be an approved fixture — see BATCH_MOVEMENTS`);
+      }
+      return { movement: m, claim, lineIntents, paid, approved: m.approved === true };
     });
 
     const batchTotal = perClaim.reduce((n, c) => n + c.paid, 0);
@@ -954,10 +1078,21 @@ function buildFixturePlan(options = {}) {
       });
     });
 
-    // rcm_posting_queue — approved and NOT posted. There is no state here that
-    // means "probably fine", and none of these rows may look like they reached
-    // Open Dental: status stays 'approved', posted_total_cents is 0, and
-    // od_claim_payment_num is null.
+    /*
+     * rcm_posting_queue — the plan a human approved, and NOTHING MORE.
+     *
+     * Approved and NOT posted: there is no state here that means "probably
+     * fine", and none of these rows may look like they reached Open Dental —
+     * status stays 'approved', posted_total_cents is 0, od_claim_payment_num is
+     * null.
+     *
+     * It covers only the claims BATCH_MOVEMENTS marks `approved`. Slice 6b's
+     * gate is what decides that in production, and a fixture holding a row the
+     * gate could not have produced would be a fixture that lies about the
+     * system — most obviously for the recoupment, which the gate refuses and
+     * which therefore has no queue line here at all until 6d.
+     */
+    const approvedClaims = perClaim.filter((c) => c.approved);
     const queueKey = `queue:${office}:0001`;
     const queueId = fixtureUuid(queueKey);
     add('rcm_posting_queue', 'queue_id', queueKey, office, {
@@ -967,9 +1102,11 @@ function buildFixturePlan(options = {}) {
       bank_transaction_id: bankId,
       remittance_key: REMITTANCE_KEY,
       status: 'approved',
-      is_recoupment: cfg.isRecoupment,
+      // FALSE in both offices now. `is_recoupment` is the column 6d will gate
+      // on; 6b never sets it true because a recoupment cannot reach the queue.
+      is_recoupment: false,
       carrier_eob_date: CARRIER_EOB_DATE,
-      intended_total_cents: batchTotal,
+      intended_total_cents: 0, // reconciled from the lines below
       posted_total_cents: 0,
       approved_by: 'fixture-lead',
       approved_at: APPROVED_AT,
@@ -979,6 +1116,16 @@ function buildFixturePlan(options = {}) {
     let position = 0;
     perClaim.forEach((c, ci) => {
       const bcpKey = `${batchKey}:claim:${ci + 1}`;
+      if (!c.approved) return;
+
+      // The claim's own linkage — single-valued, which is what makes a second
+      // enqueue for one claim impossible (Slice 6b migration, point 1).
+      const claimRow = rows.find((r) => r.table === 'rcm_claims' && r.key === c.movement.claimKey);
+      if (!claimRow) throw new Error(`no planned claim row for ${c.movement.claimKey}`);
+      claimRow.row.posting_queue_id = queueId;
+      claimRow.row.approved_at = APPROVED_AT;
+      claimRow.row.approved_by = 'fixture-lead';
+
       c.lineIntents.forEach((line) => {
         position += 1;
         const key = `${queueKey}:line:${position}`;
@@ -1007,12 +1154,34 @@ function buildFixturePlan(options = {}) {
       rows.filter((r) => r.table === table && r.office === office).reduce((n, r) => n + r.row[column], 0);
     const claimPayments = sum('rcm_batch_claim_payments', 'paid_cents');
     const intendedLines = sum('rcm_posting_queue_line', 'intended_ins_pay_amt_cents');
-    if (batchTotal !== claimPayments || claimPayments !== intendedLines) {
+    const approvedPayments = approvedClaims.reduce((n, c) => n + c.paid, 0);
+
+    /*
+     * TWO EQUATIONS NOW, NOT ONE.
+     *
+     * The BATCH must still account for every cent the carrier moved, including
+     * the claims nobody approved — the check is the check. The PLAN must equal
+     * what was approved, and no more. Slice 2 could assert one equation because
+     * everything was queued; a fixture with a withheld claim has to say which
+     * total it is talking about, which is the same distinction the gate itself
+     * draws between "this remittance balances" and "this claim is postable".
+     */
+    if (batchTotal !== claimPayments) {
       throw new Error(
-        `${office}: unbalanced fixture — batch_total=${batchTotal} claim_payments=${claimPayments} intended_lines=${intendedLines}`
+        `${office}: unbalanced fixture — batch_total=${batchTotal} claim_payments=${claimPayments}`
       );
     }
-    money[office] = { batchTotal, claimPayments, intendedLines };
+    if (intendedLines !== approvedPayments) {
+      throw new Error(
+        `${office}: plan does not match what was approved — intended_lines=${intendedLines} approved_payments=${approvedPayments}`
+      );
+    }
+
+    // The plan's own header, reconciled from the lines actually planned.
+    const queueRow = rows.find((r) => r.table === 'rcm_posting_queue' && r.key === queueKey);
+    queueRow.row.intended_total_cents = intendedLines;
+
+    money[office] = { batchTotal, claimPayments, intendedLines, approvedPayments };
   }
 
   // Insert order: parents before children, matching the schema's FK graph.
@@ -1067,15 +1236,26 @@ function formatPlan(plan, mode, result) {
   push(pad('TOTAL', 30) + pad(plan.rows.length, 6));
   push();
 
+  /*
+   * TWO EQUATIONS, reported separately — see buildFixturePlan's reconciliation.
+   *
+   * The CHECK must account for every cent the carrier moved, withheld claims
+   * included. The PLAN must equal what was APPROVED. Printing one verdict over
+   * all three numbers said UNBALANCED about a fixture that is exactly right,
+   * which is the kind of false alarm that teaches people to ignore the line.
+   */
   push('money reconciliation (cents):');
   for (const office of OFFICES) {
     const m = plan.money[office];
-    const balanced = m.batchTotal === m.claimPayments && m.claimPayments === m.intendedLines;
+    const checkOk = m.batchTotal === m.claimPayments;
+    const planOk = m.intendedLines === m.approvedPayments;
     push(
       `  ${pad(office, 8)}batch_total=${pad(m.batchTotal, 10)}claim_payments=${pad(m.claimPayments, 10)}` +
-        `intended_lines=${pad(m.intendedLines, 10)}${balanced ? 'BALANCED' : 'UNBALANCED'}`
+        `intended_lines=${pad(m.intendedLines, 10)}` +
+        `check=${checkOk ? 'BALANCED' : 'UNBALANCED'} plan=${planOk ? 'MATCHES APPROVED' : 'MISMATCH'}`
     );
   }
+  push('  (the plan covers only the claims a human approved; the rest stay on the check)');
   push();
 
   push(`remittance key (identical in both offices — exercises UNIQUE(office_id, remittance_key)):`);

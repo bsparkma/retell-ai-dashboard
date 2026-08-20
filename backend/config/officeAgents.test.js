@@ -41,9 +41,13 @@ test('filterCallsForOffice: all/default/empty is a passthrough', () => {
   assert.equal(oa.filterCallsForOffice(calls, undefined).length, 2);
 });
 
-test('getOfficeConfig reflects OD-connection state per office', () => {
-  assert.equal(oa.getOfficeConfig('roland').odConnected, true);
-  assert.equal(oa.getOfficeConfig('valley').odConnected, false);
+test('getOfficeConfig resolves the real offices and nothing else', () => {
+  assert.equal(oa.getOfficeConfig('roland').officeName, 'Roland');
+  assert.equal(oa.getOfficeConfig('valley').officeName, 'Valley Fort Smith');
+  // OD connectivity is NOT asked here. It moved to config/odOffices, which
+  // answers it per office from intent AND credentials; a second boolean on this
+  // config would only be able to disagree with it.
+  assert.ok(!('odConnected' in oa.getOfficeConfig('roland')));
   // "all"/"default"/unknown → null (no office scoping)
   assert.equal(oa.getOfficeConfig('all'), null);
   assert.equal(oa.getOfficeConfig('default'), null);
@@ -94,8 +98,8 @@ test('Mango call: unmapped line attributes to "unknown" (NEVER Roland)', () => {
 });
 
 test('unknown bucket: is a valid office config but NOT in the selector', () => {
-  // getOfficeConfig resolves it (for odConnected checks etc.)...
-  assert.equal(oa.getOfficeConfig('unknown').odConnected, false);
+  // getOfficeConfig resolves it, so an unmapped call still has a display name...
+  assert.equal(oa.getOfficeConfig('unknown').officeName, 'Unmapped');
   // ...but it must not appear as a selectable office tab.
   assert.ok(!oa.getAllOfficeConfigs().some((o) => o.officeId === 'unknown'));
 });
@@ -115,10 +119,10 @@ test('Mango call: real office DIDs attribute correctly (Roland + Valley), any fo
   // Roland Family Dental main line.
   assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+19185036262' }), 'roland');
   assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '(918) 503-6262' }), 'roland');
-  // Valley Family Dental — attribution only (OFFICES.valley is odConnected:false).
+  // Valley Family Dental — attributed here, and OD-connected in its own right
+  // (odOffices.OFFICE_OD_SETTINGS.valley), so these calls have a chart path.
   assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '+14792263500' }), 'valley');
   assert.equal(oa.getOfficeForCall({ source: 'mango', called_number: '479-226-3500' }), 'valley');
-  assert.equal(oa.getOfficeConfig('valley').odConnected, false);
 });
 
 test('Mango call: a mapped DID routes to its office, regardless of number formatting', () => {

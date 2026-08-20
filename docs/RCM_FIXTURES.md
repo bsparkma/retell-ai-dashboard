@@ -112,19 +112,44 @@ typed twice anywhere in the fixture — the batch and queue totals are derived f
 adjudications, and `buildFixturePlan()` **throws** rather than emit an unbalanced graph. Every
 procedure line also satisfies `billed = paid + write_off + patient_resp`.
 
+> **Slice 6b changed this to TWO equations.** With an approval gate, the fixture can — and
+> must — contain a claim nobody approved, so "the check" and "the plan" are different totals:
+>
+> - the **CHECK** still accounts for every cent the carrier moved, withheld claims included;
+> - the **PLAN** equals what was APPROVED, and no more.
+>
+> Which is the same distinction the gate itself draws between "this remittance balances" and
+> "this claim is postable". `buildFixturePlan()` throws on either equation failing.
+
 ```
-roland  batch_total=79200   claim_payments=79200   intended_lines=79200   BALANCED
-valley  batch_total=6500    claim_payments=6500    intended_lines=6500    BALANCED
+roland  batch_total=79200   claim_payments=79200   intended_lines=19200   (2 of 3 claims approved)
+valley  batch_total=6500    claim_payments=6500    intended_lines=10500   (the takeback is withheld)
 ```
+
+Roland's plan is SMALLER than its check (a postable claim nobody has approved yet); valley's is
+LARGER (the check is netted down by a takeback the plan refuses to carry). The two directions
+are deliberate — a fixture where they always pointed the same way would let a sign error hide.
 
 ### Three cases worth knowing about
 
-**The recoupment (valley).** `rcm_posting_queue.is_recoupment = true`, with one queue line at
-`intended_ins_pay_amt_cents = -4000` and `is_supplemental = true`. A negative supplemental is
-the single irreversible Open Dental operation — it cannot be reverted and cannot be deleted —
-so Slice 6/7 has the one-way-door case to gate on and to render from day one. The claim's own
-line shows the corrected end state (paid 18000); the takeback lives on the batch claim payment
-and the queue line, which is where it operationally belongs.
+**The recoupment (valley) — now WITHHELD, not queued.** Slice 2 seeded it as a queued negative
+supplemental so later slices had a one-way-door case to render. Slice 6b's approval gate refuses
+a recoupment outright (`NOT_RECOUPMENT`), so a queue row containing one is a state the system
+can no longer produce — and a fixture holding an unreachable state is a fixture that lies.
+
+The takeback therefore stays exactly where it operationally belongs: on the batch claim payment,
+as a `-4000` movement a biller can see and cannot post. `is_recoupment` is `false` on **both**
+offices' queue rows, because 6b never sets it true; it is the column Slice 6d will gate on when
+the typed-confirmation path arrives. The claim's own line still shows the corrected end state
+(paid 18000).
+
+**Every claim is confirmed AND reviewed.** `od_match_status = 'confirmed'` with an attributed
+`od_match_confirmed_at` / `od_matched_by`, a version-2 `od_match_snapshot`, and a review stamp.
+This is not decoration: Slice 6a added a CHECK in both directions (a claim carrying
+`od_claim_num` MUST be confirmed), and the Slice 2 seeder set the ClaimNum while leaving the
+status at its `not_run` default — so every `--execute` against a migrated database would have
+failed on that constraint. The gate also refuses an unreviewed claim, so a fixture without the
+review stamp could never demonstrate an approval at all.
 
 **The colliding remittance key.** Both offices carry the **same** `remittance_key`:
 

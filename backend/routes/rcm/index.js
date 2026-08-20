@@ -26,10 +26,41 @@
  * be READ by a model and can be wrong, an 835 is PARSED and can only be
  * malformed. They produce the same rcm_* proposal rows and share nothing else.
  *
- * NOT here, and not yet: posting (Slice 6), the review/approval UI (Slice 7),
- * and any Open Dental client usage in ANY slice of this module before 6. The
- * only tables anything under this mount touches are rcm_* and the platform
- * audit_log.
+ * Slice 6a turned the module from an intake pipe into something a biller can
+ * open. It added the review workbench and the Open Dental matching underneath
+ * it — and the module's FIRST Open Dental traffic, which is GET-only:
+ *   GET  /remittances[/:id]        the list and the detail
+ *   POST /remittances/:id/match    sequential, paced batch match
+ *   GET  /claims/:id               one claim: lines, adjustments, snapshot
+ *   POST /claims/:id/match         read OD, rank candidates, store a snapshot
+ *   POST /claims/:id/confirm-match a human picks one       (attributed, D-5)
+ *   POST /claims/:id/review        worklist hygiene         (attributed, D-5)
+ *   GET  /uploads/:id/document     the authorised source-document proxy
+ *
+ * Slice 6b made the workbench's Approve button real — and it is the first thing
+ * under this mount that AUTHORISES money to move, without moving any:
+ *   GET  /remittances/:id/approval  the pre-flight checklist, per claim
+ *   POST /remittances/:id/approve   write the posting plan   (attributed, D-5)
+ *
+ * ZERO OPEN DENTAL WRITES, AND ZERO OPEN DENTAL CALLS ON THE APPROVE PATH.
+ *
+ * The only transport reachable from the match layer is `apiGetRaw` on the
+ * office's own client, which has no write counterpart. The approval gate reaches
+ * no Open Dental module at all: it re-reads what a match already recorded and
+ * writes an intent. `rcmNoOdWrites.test.js` drives approve to SUCCESS against a
+ * client whose every verb throws and asserts not one was called — approving is
+ * not posting, and that is a test rather than a sentence. It also names the one
+ * file allowed to write `rcm_posting_queue` (./approvalGate.js).
+ *
+ * `POST /remittances/:id/approve` is deliberately NOT in QUEUE_PATHS below, so
+ * the mount's requireReadWrite demands `rcm.write` for it by construction. The
+ * CHECKLIST beside it is a GET and therefore runs on `rcm.read`, which the
+ * `reviewer` tier holds: seeing why a claim is withheld is not a posting act.
+ *
+ * NOT here, and not yet: the drain and any Open Dental write (6c), the
+ * recoupment typed-confirmation gate (6d), reconciliation, VCC and metrics
+ * (8/9), Stedi. The only tables anything under this mount touches are rcm_* and
+ * the platform audit_log.
  */
 
 const express = require('express');
@@ -61,6 +92,31 @@ const router = express.Router();
  */
 router.use(requireOffice);
 
+/**
+ * THE QUEUE ROUTES — the enumerated exceptions to the mount's write gate (D-9).
+ *
+ * The mount is `requireReadWrite('rcm.read', 'rcm.write')`, applied by HTTP
+ * METHOD, so every POST under /api/rcm demands `rcm.write` by default. These
+ * three are POSTs that a read-tier reviewer must be able to press: running a
+ * match reads Open Dental and changes no chart, and marking a claim reviewed
+ * has no Open Dental effect at all. They are exempted from the pair at the
+ * mount and each carries its own `requirePermission('rcm.queue')` instead — the
+ * "a specific gate narrows the general one" idiom config/permissions.js
+ * documents, used here to WIDEN by one tier rather than to narrow.
+ *
+ * Mount-relative and anchored: `/claims/:id/confirm-match` must not match, and
+ * a new POST added under either router must not accidentally land inside one.
+ * `rcmGuard.test.js` walks every route in this module and fails if a path is
+ * exempted here without its own gate.
+ *
+ * @type {ReadonlyArray<RegExp>}
+ */
+const QUEUE_PATHS = Object.freeze([
+  /^\/claims\/[^/]+\/match$/,
+  /^\/claims\/[^/]+\/review$/,
+  /^\/remittances\/[^/]+\/match$/,
+]);
+
 router.use('/summary', require('./summary'));
 router.use('/claims', require('./claims'));
 // Slice 4. The module's first WRITE surface — POST /eob is what the unused
@@ -74,5 +130,37 @@ router.use('/eob', require('./eob'));
 // mount's requireReadWrite for every non-GET method, and the same
 // requireOffice above. Still no Open Dental (eraNoOdImports covers this one).
 router.use('/era', require('./era'));
+// Slice 6a — the review workbench, and Slice 6b's approval gate on top of it.
+// `/remittances` is the screen a biller opens a check on; `/uploads/:id/document`
+// is the authorised proxy back to the bytes it was parsed from. Both sit BELOW
+// requireOffice like everything else, so a cross-office read is a miss rather
+// than a refusal somebody had to remember.
+router.use('/remittances', require('./remittances'));
+router.use('/uploads', require('./documents'));
+/*
+ * Slice 6c — THE DRAIN. The first Open Dental WRITE under this mount, and the
+ * only one anywhere in the module.
+ *
+ *   GET  /posting/queue[/:id]  the plans, their states, the read-back evidence
+ *   POST /posting/drain        write to a patient's chart
+ *
+ * `POST /posting/drain` is deliberately NOT in QUEUE_PATHS, so the mount's
+ * requireReadWrite demands `rcm.write` for it by construction — a `reviewer`
+ * never reaches the handler. The two GETs are GETs and therefore run on
+ * `rcm.read`, which `reviewer` holds: watching a plan post, and reading why one
+ * is blocked, is not a posting act.
+ *
+ * There is NO cron and no timer behind this. A human presses the button. The one
+ * automatic thing is the startup sweep wired in server.js, which re-homes rows a
+ * dead process left mid-flight back to `approved` — it does not drain.
+ *
+ * `rcmNoOdWrites.test.js` still guards the module, in a stronger form: exactly
+ * ONE file may reach an Open Dental write verb
+ * (`services/rcm/odPostingWrites.js`), driving every other surface still yields
+ * no write verb at all, and driving the drain yields exactly the forced order's
+ * verbs, in order, and nothing else.
+ */
+router.use('/posting', require('./posting'));
 
 module.exports = router;
+module.exports.QUEUE_PATHS = QUEUE_PATHS;

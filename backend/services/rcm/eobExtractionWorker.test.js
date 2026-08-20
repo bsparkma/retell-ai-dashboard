@@ -32,6 +32,8 @@ const tenantDb = require('../../platform/tenantDb');
 const blobStore = require('./eobBlobStore');
 const llm = require('./rcmLlm');
 const budget = require('./extractionBudget');
+const ocrBudget = require('./ocrBudget');
+const documentOcr = require('./documentOcr');
 const { runExtraction } = require('./eobExtractionWorker');
 
 const JOB = Object.freeze({
@@ -126,8 +128,16 @@ function answer(overrides = {}) {
 
 /**
  * Stub the world around the worker.
+ * `ocr` patches the Document Intelligence module in place. `eobDocumentText`
+ * requires it LAZILY from inside the escalation branch, so the same require
+ * cache the worker's own graph uses is the one patched here — no network, and no
+ * injection seam threaded through the worker that production would not use.
+ *
  * @param {{ db?: FakeRcmDb, json?: unknown, llmError?: Error, pdf?: Buffer,
- *           blobError?: Error, llmConfigured?: boolean, capCents?: string }} [opts]
+ *           blobError?: Error, llmConfigured?: boolean, capCents?: string,
+ *           ocr?: { configured?: boolean, text?: string, pages?: number,
+ *                   meanConfidence?: number|null, error?: Error },
+ *           ocrCapCents?: string }} [opts]
  */
 function harness(opts = {}) {
   const db =
@@ -151,21 +161,49 @@ function harness(opts = {}) {
   process.env.AZURE_OPENAI_ENDPOINT = 'https://example.openai.azure.com';
   process.env.AZURE_OPENAI_DEPLOYMENT = 'test-deployment';
   if (opts.capCents !== undefined) process.env.RCM_EXTRACTION_MAX_CENTS_PER_DAY = opts.capCents;
+  if (opts.ocrCapCents !== undefined) process.env.RCM_OCR_MAX_CENTS_PER_DAY = opts.ocrCapCents;
   budget._resetForTests();
+  ocrBudget._resetForTests();
 
   const originals = {
     getTenantPool: tenantDb.getTenantPool,
     getEob: blobStore.getEob,
     isConfigured: llm.isConfigured,
     completeJson: llm.completeJson,
+    ocrIsConfigured: documentOcr.isConfigured,
+    ocrAnalyze: documentOcr.analyze,
   };
 
-  const calls = { llm: 0 };
+  const calls = { llm: 0, ocr: 0 };
 
   tenantDb.getTenantPool = async () => db;
   blobStore.getEob = async () => {
     if (opts.blobError) throw opts.blobError;
-    return opts.pdf || pdfWithText('PLAN PAID 163.00 CHECK CHK-100200');
+    // Long enough to BE a document by the escalation floor's own measure.
+    // The shorter version this used to carry cleared the floor only because
+    // pdf-parse's per-page marker was being counted as text — the very defect
+    // meaningfulTextLength() closes — so with that fixed it would escalate to
+    // OCR and every text-layer assertion below would be testing the wrong path.
+    return (
+      opts.pdf ||
+      pdfWithText('EXAMPLE DENTAL PLAN EOB - CHECK CHK-100200 - PLAN PAID 163.00 OF 167.00 BILLED')
+    );
+  };
+  const ocrOpts = opts.ocr || {};
+  documentOcr.isConfigured = () => ocrOpts.configured === true;
+  documentOcr.analyze = async () => {
+    calls.ocr++;
+    if (ocrOpts.error) throw ocrOpts.error;
+    return {
+      // The default is what the REAL staging resource returned for
+      // Test_EOB_Scanned.pdf on 2026-08-19.
+      text: ocrOpts.text ?? 'PLAN PAID 163.00 CHECK CHK-100200 D0120 PERIODIC ORAL EVALUATION',
+      pages: ocrOpts.pages ?? 1,
+      meanConfidence: 'meanConfidence' in ocrOpts ? ocrOpts.meanConfidence : 0.9909,
+      words: 77,
+      model: 'prebuilt-read',
+      elapsedMs: 2333,
+    };
   };
   llm.isConfigured = () => opts.llmConfigured !== false;
   llm.completeJson = async () => {
@@ -186,9 +224,12 @@ function harness(opts = {}) {
       blobStore.getEob = originals.getEob;
       llm.isConfigured = originals.isConfigured;
       llm.completeJson = originals.completeJson;
+      documentOcr.isConfigured = originals.ocrIsConfigured;
+      documentOcr.analyze = originals.ocrAnalyze;
       for (const k of Object.keys(process.env)) if (!(k in priorEnv)) delete process.env[k];
       Object.assign(process.env, priorEnv);
       budget._resetForTests();
+      ocrBudget._resetForTests();
       fs.rmSync(stateDir, { recursive: true, force: true });
     },
   };
@@ -499,7 +540,12 @@ test('an unbalanced bulk check is flagged on every claim in the batch', async ()
         'a reviewer works one claim at a time — a batch-only flag is a flag nobody sees'
       );
     }
-    assert.match(h.db.table('rcm_payment_batches')[0].notes, /UNBALANCED/);
+    // Slice 5.5 (B6): the SIGNAL is in the CHECKed `flags` column the UI switches
+    // on — the same one the ERA path writes — not a machine token appended to
+    // prose. `notes` stays a human summary and nothing parses it.
+    const batch = h.db.table('rcm_payment_batches')[0];
+    assert.deepEqual(batch.flags, ['claim_total_mismatch']);
+    assert.doesNotMatch(batch.notes, /UNBALANCED/);
   } finally {
     h.restore();
   }
@@ -521,10 +567,282 @@ test('the raw extraction payload is stored, so per-line confidence survives', as
   const h = harness();
   try {
     await runExtraction(JOB);
-    const raw = JSON.parse(h.db.table('rcm_claims')[0].raw_extracted_json);
+    // Read as an OBJECT: jsonb comes back parsed from pg, and FakeRcmDb models
+    // that (JSONB_COLUMNS in rcmTestUtils) so the route is tested against what
+    // it will actually receive.
+    const raw = h.db.table('rcm_claims')[0].raw_extracted_json;
     assert.equal(raw.confidence, 96);
     assert.equal(raw.claim.procedures[0].confidence, 97);
     assert.equal(raw.payment.checkNumber, 'CHK-100200');
+  } finally {
+    h.restore();
+  }
+});
+
+// ─── OCR: provenance, the confidence reason, and the second cost rail ────────
+
+/**
+ * A one-page PDF with NO text layer — a picture of a page, in miniature.
+ *
+ * The committed fixtures in test/fixtures/rcm/eob are the real thing and are
+ * what `eobDocumentText.test.js` drives. Here the document is incidental: what
+ * is under test is what the WORKER does with the escalation's result, so a
+ * minimal image-only PDF keeps the test about that.
+ */
+function pdfWithNoTextLayer() {
+  return Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+      '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+      '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n' +
+      'trailer<</Root 1 0 R>>\n',
+    'latin1'
+  );
+}
+
+/**
+ * The same thing with N pages, for the cost arithmetic.
+ *
+ * The cap has to be a positive whole number of cents to mean anything —
+ * `Math.trunc` sends a fractional one to 0, which BOTH rails read as UNLIMITED
+ * — so "unaffordable in full" is produced with a bigger document rather than
+ * with a smaller cap. At 150¢/1,000 pages, seven pages round up to 2¢, which is
+ * the smallest document that cannot fit a 1¢ cap.
+ */
+function pagesWithNoTextLayer(pageCount) {
+  const kids = Array.from({ length: pageCount }, (_, i) => `${i + 3} 0 R`).join(' ');
+  const pages = Array.from(
+    { length: pageCount },
+    (_, i) => `${i + 3} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n`
+  ).join('');
+  return Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+      `2 0 obj<</Type/Pages/Kids[${kids}]/Count ${pageCount}>>endobj\n` +
+      pages +
+      'trailer<</Root 1 0 R>>\n',
+    'latin1'
+  );
+}
+
+test('a scanned document records HOW it was read, in the same transaction as its claims', async () => {
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, pages: 3 } });
+  try {
+    const result = await runExtraction(JOB);
+    assert.equal(result.status, 'extracted');
+    assert.equal(h.calls.ocr, 1);
+
+    const row = upload(h.db);
+    assert.equal(row.status, 'extracted');
+    assert.equal(row.text_source, 'ocr');
+    assert.equal(row.ocr_page_count, 3);
+    assert.equal(row.ocr_mean_confidence, 0.991, 'rounded to the column, not to a lie');
+
+    // The provenance and the rows it describes are committed together. A screen
+    // that told a biller how a proposal was read, about a proposal that does not
+    // exist, is the honest-states rule failing where it costs most.
+    assert.ok(row.result_batch_id, 'the batch exists');
+    assert.equal(h.db.table('rcm_claims').length, 1);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a text-layer document says so, and carries no OCR numbers at all', async () => {
+  const h = harness();
+  try {
+    await runExtraction(JOB);
+    const row = upload(h.db);
+    assert.equal(row.text_source, 'text_layer');
+    // NULL, not 0. "OCR read no pages" would be a different and untrue claim,
+    // and the database CHECK forbids it on this path.
+    assert.equal(row.ocr_page_count, null);
+    assert.equal(row.ocr_mean_confidence, null);
+    assert.equal(h.calls.ocr, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('low OCR confidence lands on EVERY claim from the document', async () => {
+  const twoClaims = answer();
+  twoClaims.claims.push({ ...answer().claims[0], claimNumber: 'CLM-2026-1002' });
+  twoClaims.payment.totalPaidCents = 32600;
+
+  const h = harness({
+    pdf: pdfWithNoTextLayer(),
+    json: twoClaims,
+    ocr: { configured: true, meanConfidence: 0.72 },
+  });
+  try {
+    await runExtraction(JOB);
+    const claims = h.db.table('rcm_claims');
+    assert.equal(claims.length, 2);
+    for (const claim of claims) {
+      // Confidence is a property of the READING, and the reading produced all of
+      // them. A reason living only on the document is a reason the reviewer —
+      // who works one claim at a time — never sees.
+      assert.ok(
+        claim.needs_review_reasons.includes('ocr_low_confidence'),
+        `every claim carries it; saw ${claim.needs_review_reasons}`
+      );
+    }
+    assert.equal(upload(h.db).ocr_mean_confidence, 0.72);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a confidently-read scan adds no reason — the flag is not a scan tax', async () => {
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, meanConfidence: 0.99 } });
+  try {
+    await runExtraction(JOB);
+    assert.ok(
+      !h.db.table('rcm_claims')[0].needs_review_reasons.includes('ocr_low_confidence'),
+      'a clean scan is a clean proposal'
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('a spent OCR budget PAUSES the document — it does not fail or drop it', async () => {
+  // A 1¢ cap. One page costs 1¢ (rounded up from 0.15¢), so spending one page
+  // leaves nothing a second document can fit into. `0` would mean UNLIMITED on
+  // this rail, the same convention the extraction rail uses.
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true }, ocrCapCents: '1' });
+  try {
+    ocrBudget.charge(1);
+    assert.equal(ocrBudget.check(1).allowed, false, 'the rail really is spent');
+
+    const result = await runExtraction(JOB);
+
+    assert.equal(result.status, 'deferred');
+    assert.ok(result.resetsAt, 'and says when it will be read');
+    assert.equal(h.calls.ocr, 0, 'a spent budget costs zero round trips');
+    assert.equal(h.calls.llm, 0);
+
+    const row = upload(h.db);
+    // 'uploaded', never 'failed': nothing about this document is wrong.
+    assert.equal(row.status, 'uploaded');
+    assert.equal(row.failure_code ?? null, null, 'a pause is not a failure code');
+    assert.match(row.error_message, /OCR/i, 'and names WHICH cap stopped it');
+    assert.match(row.error_message, /separate cap/i);
+    assert.equal(row.text_source ?? null, null, 'nothing was read, so nothing is claimed');
+
+    // And the EXTRACTION rail is untouched: the document never got that far, so
+    // there is nothing to charge it for.
+    assert.equal(budget.check().usedCents, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a document bigger than the whole OCR cap FAILS — it is not parked forever', async () => {
+  /*
+   * The nightly false promise this closes: a document whose own page count costs
+   * more than the entire daily cap fails `used + estimate <= cap` even at zero
+   * spend, so parking it as "will be read after the cap resets" is a promise
+   * re-broken every midnight. It is refused permanently instead, with the only
+   * advice that actually works.
+   *
+   * Seven pages cost 2¢ against a 1¢ cap: unaffordable in full, at zero spend.
+   */
+  const h = harness({
+    pdf: pagesWithNoTextLayer(7),
+    ocr: { configured: true },
+    ocrCapCents: '1',
+  });
+  try {
+    const result = await runExtraction(JOB);
+
+    // FAILED, not deferred — the whole point.
+    assert.equal(result.status, 'failed');
+    assert.notEqual(result.status, 'deferred');
+    assert.equal(h.calls.ocr, 0, 'and nothing was sent to Azure');
+    assert.equal(h.calls.llm, 0);
+
+    const row = upload(h.db);
+    assert.equal(row.status, 'failed');
+    assert.equal(row.failure_code, 'ocr_document_exceeds_cap');
+    assert.match(row.error_message, /Split it/i, 'the advice that works');
+    assert.ok(
+      !/after the cap resets|come back/i.test(row.error_message),
+      'and NOT the advice that never will'
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('a zero-page read is a failure, not a free success', async () => {
+  // Azure returning `content` with an empty `pages[]`: unbillable and
+  // unattributable. Before this it charged 0¢, passed both confidence gates,
+  // and died on the provenance CHECK at the last statement of the transaction —
+  // surfacing to the poster as a generic extraction failure.
+  const noPages = new Error('Document Intelligence reported no pages for this document');
+  noPages.code = 'OCR_NO_PAGES';
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, error: noPages } });
+  try {
+    const result = await runExtraction(JOB);
+    assert.equal(result.status, 'failed');
+    const row = upload(h.db);
+    assert.equal(row.failure_code, 'ocr_failed');
+    assert.match(row.error_message, /no pages/i);
+    assert.equal(row.text_source ?? null, null, 'and no provenance is claimed');
+  } finally {
+    h.restore();
+  }
+});
+
+test('an unreadable scan fails with the rescan advice, not a generic error', async () => {
+  const tooFaint = new Error(
+    'Almost nothing could be read from this document (1 page(s), 4 characters). ' +
+      'This scan is too faint or too low-resolution to read. Rescan it at 300 dpi in ' +
+      'black and white, ask the payer for a text PDF, or enter this EOB manually.'
+  );
+  tooFaint.code = 'OCR_UNREADABLE';
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, error: tooFaint } });
+  try {
+    const result = await runExtraction(JOB);
+    assert.equal(result.status, 'failed');
+
+    const row = upload(h.db);
+    assert.equal(row.failure_code, 'ocr_unreadable');
+    assert.match(row.error_message, /300 dpi/, 'the advice survives to the user verbatim');
+    assert.match(row.error_message, /manually/);
+    assert.equal(h.calls.llm, 0, 'nothing is sent to the extraction model');
+  } finally {
+    h.restore();
+  }
+});
+
+test('a reader that could not open the file is ocr_failed, a different conversation', async () => {
+  const refused = new Error('Document Intelligence could not read this document: InvalidContent');
+  refused.code = 'OCR_ANALYZE_FAILED';
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: true, error: refused } });
+  try {
+    await runExtraction(JOB);
+    const row = upload(h.db);
+    // `ocr_unreadable` means the SCAN was bad; `ocr_failed` means the reader
+    // never got that far. The panel says different things about them, which is
+    // the whole reason failure_code exists (A6).
+    assert.equal(row.failure_code, 'ocr_failed');
+    assert.match(row.error_message, /rescan|text PDF|manually/i);
+    assert.ok(!/InvalidContent/.test(row.error_message), 'no service internals in a user field');
+  } finally {
+    h.restore();
+  }
+});
+
+test('an unconfigured reader leaves the pre-slice behaviour exactly as it was', async () => {
+  const h = harness({ pdf: pdfWithNoTextLayer(), ocr: { configured: false } });
+  try {
+    const result = await runExtraction(JOB);
+    assert.equal(result.status, 'failed');
+    const row = upload(h.db);
+    assert.equal(row.failure_code, 'no_extractable_text');
+    assert.match(row.error_message, /scanned image/i);
+    assert.equal(h.calls.ocr, 0);
+    assert.equal(h.calls.llm, 0);
   } finally {
     h.restore();
   }

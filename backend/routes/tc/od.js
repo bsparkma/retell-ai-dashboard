@@ -1,66 +1,116 @@
 'use strict';
 
 /**
- * /api/tc/od — Treatment Coordinator's Open Dental READS (Slice 5).
+ * /api/tc/od - Treatment Coordinator's Open Dental READS (Slice 5).
  *
  * READ-ONLY BY CONSTRUCTION. Every handler is a GET, the only transport is
- * odAccess.odApiGet (which has no write counterpart), and no route in this file
- * touches a write path. The commlog write stays FEATURE_DISABLED until Slice 6.
+ * `apiGetRaw` (which has no write counterpart on the client), and no route in
+ * this file touches a write path. The commlog write stays FEATURE_DISABLED
+ * until Slice 6.
  *
  * OFFICE LAW
  * ----------
- * Office comes from the validated `?office=` param (helpers.requireOffice), never
- * the body. `requireOdOffice` then REFUSES any office without an Open Dental
- * connection with a structured 503 OFFICE_NOT_CONNECTED — today that is `valley`.
- * The UI's honest "OD not connected for this office yet" state depends on that
- * exact code, so it is asserted in tests. Roland only until the per-location
- * credential slice lands (another workstream owns it): the OD customer key scopes
- * to exactly ONE practice database, so a Valley read through this key would
- * return ROLAND's patients — the refusal is a correctness guard, not a nicety.
+ * Office comes from the validated `?office=` param (helpers.requireOffice),
+ * never the body. `requireOdOffice` then resolves THAT OFFICE'S OWN Open Dental
+ * connection through config/odOffices - the same registry the voice chart-write
+ * path and the hygiene attach-search use - and refuses, with a structured 503
+ * OFFICE_NOT_CONNECTED, any office that is unknown, switched off, or unkeyed.
+ *
+ * Until this slice these routes read through platform/odAccess, the TENANT-level
+ * seam, which is bound to the single process-wide client built from ROLAND's
+ * customer key. That was correct only while Roland was the only OD-connected
+ * office; it is why `valley` was refused outright rather than served. The refusal
+ * was a correctness guard, not a nicety: **PatNum numbering restarts in every OD
+ * database** - PatNum 7115 is "Stedi TestValley" in Riley/valley and a different,
+ * REAL patient in Roland - so a Valley read through Roland's key would have shown
+ * one practice's chart under the other practice's selector.
+ *
+ * With the client resolved per office, the refusal is no longer needed to keep
+ * offices apart; the registry does that structurally. Every OD call additionally
+ * re-runs `assertOfficeMatch` at the transport boundary, so a handle bound to
+ * another practice cannot be used even if one were somehow substituted.
+ *
+ * PACING
+ * ------
+ * Open Dental's throttle is a property of the CREDENTIAL, and the transport
+ * reserves a shared per-key slot for it (config/openDental.js). Resolving the
+ * office client is therefore all it takes for TC's reads to queue with the voice
+ * module's on the same key. TC does NOT enter services/rcm/odPacer's serialized
+ * 1200ms queue: that queue exists so a biller's BATCH cannot degrade interactive
+ * paths, and TC is an interactive path - a treatment plan fans out to as many as
+ * 25 GETs, which at 1200ms each is a 30-second screen, and a TC read issued
+ * during a batch match would queue behind the whole batch. What TC does do is
+ * pass `module: 'tc'` so the transport's counters attribute its 429s and its
+ * waits, which is what makes revisiting this a measurement rather than an
+ * argument (see the D-8 note in services/rcm/odPacer.js).
  *
  * PHI
  * ---
  * No route logs a patient name, a search string, or any row content. Errors log
- * method + path + OD status only. The one audit row per request records an ID or
- * null — never a query string (a search term is PHI).
+ * method + path + office + OD status only. The one audit row per request records
+ * an ID or null - never a query string (a search term is PHI).
  *
  * AUDIT
  * -----
- * Each PHI read emits exactly ONE audit row via helpers.auditTc(req,'READ',…).
- * That matches the granularity the voice module gets from odAccess's audited
- * named methods (docs/AUDIT.md) — one row per logical OD read — without the
- * 25-row spam a per-call audit of a fanned-out treatment-plan fetch would create.
- * odAccess.odApiGet is deliberately unaudited for that reason.
+ * Each PHI read emits exactly ONE audit row via helpers.auditTc(req,'READ',...),
+ * stamped with the office it touched. That matches the granularity the voice
+ * module gets from odAccess's audited named methods (docs/AUDIT.md) - one row
+ * per logical OD read - without the 25-row spam a per-call audit of a fanned-out
+ * treatment-plan fetch would create.
  */
 
 const express = require('express');
 
 const { requireOffice, h, auditTc } = require('./helpers');
-const odAccess = require('../../platform/odAccess');
+const odOffices = require('../../config/odOffices');
 const odReads = require('./odReads');
-const { getOfficeConfig } = require('../../config/officeAgents');
 
 const router = express.Router();
 router.use(requireOffice);
 
-// ── Office gate ─────────────────────────────────────────────────────────────
+// ── Office gate ─────────────────────────────────────────────────────
 
 /**
- * Refuse offices with no Open Dental connection. 503 (not 403): the office is
- * legitimate and entitled, the upstream connection simply does not exist yet.
+ * Resolve THIS office's Open Dental connection, or refuse.
+ *
+ * Gates on `odOffices` - intent AND credentials, per office - rather than on a
+ * separate boolean. There used to be two switches: `OFFICE_OD_SETTINGS.odEnabled`
+ * for voice and `officeAgents.OFFICES[].odConnected` for TC, kept apart because
+ * flipping the shared one would have opened these routes for valley while they
+ * still read through Roland's client. Now that the client is resolved per office
+ * there is nothing left for the second switch to protect, and a second boolean
+ * that no longer gates anything is a lie waiting to be believed - so it is gone,
+ * and both modules ask one question: `odOffices.isOdReady(office)`.
+ *
+ * 503 (not 403): the office is legitimate and entitled, the upstream connection
+ * simply is not available. `code` stays OFFICE_NOT_CONNECTED because that is what
+ * the shared OD UI renders as the honest "OD not connected for this office yet"
+ * state (features/tc/api.ts isOdNotConnected); `reason` carries the precise
+ * odOffices code - OFFICE_UNKNOWN / OFFICE_NOT_OD_CONNECTED /
+ * OFFICE_OD_KEY_MISSING - so a log says which of the three it was without anyone
+ * having to guess. Same shape the hygiene attach-search already returns.
+ *
+ * On success the resolved handle rides on `req.tcOd`, so the gate and the
+ * transport can never disagree about which practice this request is for.
  * @type {import('express').RequestHandler}
  */
 function requireOdOffice(req, res, next) {
-  const config = getOfficeConfig(req.tcOffice);
-  if (!config || !config.odConnected) {
+  const office = req.tcOffice;
+  let handle;
+  try {
+    handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
+  } catch (err) {
+    if (!(err instanceof odOffices.OdOfficeError)) throw err;
     return res.status(503).json({
       success: false,
-      error: 'Open Dental is not connected for this office yet',
+      error: err.publicMessage || 'Open Dental is not connected for this office yet',
       code: 'OFFICE_NOT_CONNECTED',
-      office: req.tcOffice,
-      officeName: config ? config.officeName : req.tcOffice,
+      reason: err.code,
+      office,
+      officeName: odOffices.describeOffice(office).officeName,
     });
   }
+  req.tcOd = handle;
   return next();
 }
 
@@ -96,35 +146,53 @@ function intParam(value, def, min, max) {
   return Math.min(Math.max(Math.trunc(n), min), max);
 }
 
-// ── OD transport for this request ───────────────────────────────────────────
+// ── OD transport for this request ──────────────────────────────────
 
 /**
- * Bind odAccess.odApiGet to the request. Everything in odReads.js goes through
- * this closure, so tenant resolution, od_primary_mode routing and the
- * od_api_base guard apply to every OD call TC makes.
+ * The GET-only closure everything in odReads.js runs through.
+ *
+ * `assertOfficeMatch` runs again HERE, per call, not only in the gate. The gate
+ * proves the handle was right when the request arrived; re-asserting at the
+ * transport boundary is what makes it impossible for any code between the two -
+ * present or future - to substitute another practice's client. It costs a string
+ * comparison and it is the safety property this file rests on.
+ *
+ * `module: 'tc'` is ATTRIBUTION ONLY and buys no priority: it is what lets
+ * config/openDental.js count TC's 429s and TC's waits behind an RCM reservation
+ * separately from everything else sharing the credential.
+ *
+ * No client object leaves this closure, so nothing downstream can find a write
+ * verb on one.
  * @param {import('express').Request} req
  */
 function odGetFor(req) {
-  return (path, params, opts) => odAccess.odApiGet(req, path, params, opts);
+  return (path, params, opts) =>
+    odOffices
+      .assertOfficeMatch(req.tcOffice, req.tcOd)
+      .client.apiGetRaw(path, params, { ...(opts || {}), module: 'tc' });
 }
 
 /**
  * Turn a failure into the structured error the SPA can render honestly.
- * Distinguishes: tenant/connection problems (odAccess codes), OD capability
+ * Distinguishes: office/connection refusals (odOffices codes), OD capability
  * gaps, and everything else. Never leaks OD internals or PHI.
  */
 function sendOdError(req, res, err, what) {
-  if (err && err.name === 'OdAccessError') {
-    const status = odAccess.httpStatusFor(err);
-    console.error(`[tc/od] ${req.method} ${req.path} — odAccess ${err.code}`);
-    return res.status(status).json({
+  if (err && err.name === 'OdOfficeError') {
+    // A cross-office refusal, or a connection that went away mid-request. It is
+    // always a statement about the OFFICE, never a fact about Open Dental.
+    console.error(`[tc/od] ${req.method} ${req.path} office=${req.tcOffice} - ${err.code}`);
+    return res.status(odOffices.httpStatusFor(err)).json({
       success: false,
-      error: err.publicMessage || 'Open Dental request failed',
+      error: err.publicMessage || 'Open Dental is not available for this office',
       code: err.code,
+      office: req.tcOffice,
     });
   }
   const odStatus = err && err.odStatus;
-  console.error(`[tc/od] ${req.method} ${req.path} — ${what} failed (OD status ${odStatus || 'n/a'})`);
+  console.error(
+    `[tc/od] ${req.method} ${req.path} office=${req.tcOffice} - ${what} failed (OD status ${odStatus || 'n/a'})`
+  );
   if (err && err.capability) {
     return res.status(502).json({
       success: false,
@@ -154,24 +222,25 @@ function sendOdError(req, res, err, what) {
 router.get(
   '/status',
   h(async (req, res) => {
-    const config = getOfficeConfig(req.tcOffice);
     let reachable = false;
     let detail = '';
     try {
-      const probe = await odAccess.odApiGet(req, '/providers', {}, { timeoutMs: 15000 });
+      const probe = await odGetFor(req)('/providers', {}, { timeoutMs: 15000 });
       reachable = probe.ok;
       if (!probe.ok) detail = `Open Dental returned ${probe.status}`;
     } catch (err) {
-      detail = err && err.name === 'OdAccessError' ? err.publicMessage : 'Open Dental is unreachable';
+      detail =
+        err && err.name === 'OdOfficeError' ? err.publicMessage : 'Open Dental is unreachable';
     }
     res.json({
       success: true,
       office: req.tcOffice,
-      officeName: config.officeName,
+      officeName: req.tcOd.officeName,
+      // The gate passed, so this office IS connected - to its OWN database.
       odConnected: true,
       reachable,
       detail,
-      /** Reads only in this slice — the commlog write arrives in Slice 6. */
+      /** Reads only in this slice - the commlog write arrives in Slice 6. */
       writeEnabled: false,
     });
   })
@@ -201,8 +270,9 @@ router.get(
     }
 
     // resourceId is null on purpose: the search term is PHI and must not be
-    // written to the audit trail (odAccess applies the same rule).
-    await auditTc(req, 'READ', 'od_patient_search', null);
+    // written to the audit trail. The OFFICE is recorded, so the trail still
+    // shows which practice's records were searched.
+    await auditTc(req, 'READ', 'od_patient_search', null, { office: req.tcOffice });
     res.json({ success: true, ...result });
   })
 );
@@ -225,7 +295,7 @@ router.get(
       return res.status(404).json({ success: false, error: 'Patient not found in Open Dental', code: 'NOT_FOUND' });
     }
 
-    await auditTc(req, 'READ', 'od_patient', patNum);
+    await auditTc(req, 'READ', 'od_patient', patNum, { office: req.tcOffice });
     res.json({ success: true, patient: result.patient });
   })
 );
@@ -245,7 +315,7 @@ router.get(
       return sendOdError(req, res, err, 'the treatment plan');
     }
 
-    await auditTc(req, 'READ', 'od_treatment_plan', patNum);
+    await auditTc(req, 'READ', 'od_treatment_plan', patNum, { office: req.tcOffice });
     res.json({ success: true, patNum, ...result });
   })
 );
@@ -266,7 +336,7 @@ router.get(
       return sendOdError(req, res, err, 'unaccepted treatment');
     }
 
-    await auditTc(req, 'READ', 'od_unaccepted_treatment', null);
+    await auditTc(req, 'READ', 'od_unaccepted_treatment', null, { office: req.tcOffice });
     res.json({ success: true, ...result });
   })
 );
@@ -286,7 +356,7 @@ router.get(
       return sendOdError(req, res, err, 'the treatment-planned procedures');
     }
 
-    await auditTc(req, 'READ', 'od_cob_procedures', patNum);
+    await auditTc(req, 'READ', 'od_cob_procedures', patNum, { office: req.tcOffice });
     res.json({ success: true, patNum, ...result });
   })
 );
@@ -306,7 +376,7 @@ router.get(
       return sendOdError(req, res, err, 'the insurance snapshot');
     }
 
-    await auditTc(req, 'READ', 'od_insurance', patNum);
+    await auditTc(req, 'READ', 'od_insurance', patNum, { office: req.tcOffice });
     res.json({ success: true, patNum, ...result });
   })
 );
@@ -326,7 +396,7 @@ router.get(
       return sendOdError(req, res, err, 'the next appointment');
     }
 
-    await auditTc(req, 'READ', 'od_appointment', patNum);
+    await auditTc(req, 'READ', 'od_appointment', patNum, { office: req.tcOffice });
     res.json({ success: true, patNum, ...result });
   })
 );

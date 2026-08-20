@@ -43,6 +43,7 @@
  */
 
 const { DurableState } = require('../durableState');
+const { localDayKey, nextLocalMidnightIso } = require('../localDayClock');
 
 /** $10.00, in integer cents. Money in this module is ALWAYS integer cents. */
 const DEFAULT_CAP_CENTS = 1000;
@@ -91,17 +92,16 @@ class ExtractionBudget {
   }
 
   /**
-   * Day key 'YYYY-MM-DD' in the budget timezone. DST-correct via Intl zone data
-   * (en-CA formats as YYYY-MM-DD); a fixed -5/-6 offset is wrong half the year.
+   * Day key 'YYYY-MM-DD' in the budget timezone.
+   *
+   * The clock itself lives in `services/localDayClock.js` — three rails were
+   * carrying three copies of it, so a DST fix had three places to land. This
+   * rail keeps its own counters and cap; only the calendar is shared.
+   *
    * @param {Date} [now] injectable for tests
    */
   _todayKey(now = new Date()) {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: this.timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(now);
+    return localDayKey(this.timezone, now);
   }
 
   /** Load persisted accounting once per process (best-effort; never throws). */
@@ -135,32 +135,12 @@ class ExtractionBudget {
 
   /**
    * The instant the budget next rolls — the NEXT midnight in the budget zone.
-   * Ported from transcriptionService.nextBudgetResetIso: jump by the remaining
-   * wall-clock seconds of the local day, then re-read and correct, so a
-   * spring-forward / fall-back day lands on midnight rather than 01:00 / 23:00.
+   * DST-correct; see `services/localDayClock.js` for why it iterates.
    * @param {Date} [now] injectable for tests
    * @returns {string} ISO-8601
    */
   nextResetIso(now = new Date()) {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-      timeZone: this.timezone,
-      hourCycle: 'h23',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    const localSeconds = (d) => {
-      const [h, m, s] = fmt.format(d).split(':').map(Number);
-      return h * 3600 + m * 60 + s;
-    };
-    const DAY = 24 * 3600;
-    let ms = now.getTime() + (DAY - localSeconds(now)) * 1000;
-    for (let i = 0; i < 3; i++) {
-      const off = localSeconds(new Date(ms));
-      if (off === 0) break;
-      ms += (off > DAY / 2 ? DAY - off : -off) * 1000;
-    }
-    return new Date(ms).toISOString();
+    return nextLocalMidnightIso(this.timezone, now);
   }
 
   /**

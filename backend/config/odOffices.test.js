@@ -217,23 +217,36 @@ test('describeOffice and secretNames expose names and state, never a credential'
   assert.ok(odOffices.secretNames.includes('opendental-customer-key-valley'));
 });
 
-// ── The voice switch is NOT the TC switch ───────────────────────────────────
+// ── One switch, both modules ────────────────────────────────────────────────
 
-test('turning an office on for VOICE does not open the TC module for it', () => {
-  // backend/routes/tc/od.js gates /api/tc/od/* on officeAgents.odConnected, and TC
-  // still reaches Open Dental through the single process-wide client. If these two
-  // switches were the same flag, connecting Riley for the voice worklist would have
-  // served ROLAND's patients, treatment plans and claims under a Riley selector.
-  // They are deliberately separate until TC gets its own office-aware slice.
+test('this registry is the ONLY OD switch — officeAgents carries none', () => {
+  // There were briefly two. backend/routes/tc/od.js gated /api/tc/od/* on
+  // officeAgents.OFFICES[].odConnected while TC still reached Open Dental through
+  // the single process-wide client built from ROLAND's key, so connecting Riley
+  // for the voice worklist had to leave TC shut — or TC would have served
+  // Roland's patients, treatment plans and claims under a Riley selector. TC now
+  // resolves its client per office through THIS module, so the second flag gated
+  // nothing and was retired: a boolean that no longer decides anything can only
+  // drift out of agreement with the one that does.
   const { OFFICES: OFFICE_CONFIG } = require('./officeAgents');
+
+  for (const key of Object.keys(OFFICE_CONFIG)) {
+    assert.ok(
+      !('odConnected' in OFFICE_CONFIG[key]),
+      `officeAgents.OFFICES.${key} must not carry a second OD switch`
+    );
+  }
 
   odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
   odOffices.resetOdOfficeCache();
+  assert.equal(odOffices.isOdReady('valley'), true, 'valley is connected for both modules');
 
-  assert.equal(odOffices.isOdReady('valley'), true, 'voice path is connected');
-  assert.equal(
-    OFFICE_CONFIG.valley.odConnected,
-    false,
-    'TC gate must stay closed for valley — flipping it would point TC at Roland'
-  );
+  // And it is still REVERSIBLE from one place — for both modules at once.
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = false;
+  odOffices.resetOdOfficeCache();
+  assert.equal(odOffices.isOdReady('valley'), false);
+  assert.equal(odOffices.odBlockReason('valley').code, 'OFFICE_NOT_OD_CONNECTED');
+
+  odOffices.OFFICE_OD_SETTINGS.valley.odEnabled = true;
+  odOffices.resetOdOfficeCache();
 });

@@ -89,11 +89,17 @@ confident, unambiguous match parks in `'matched'`; a person sends it.
 
 An "office" is a **separate Open Dental database**, not a filter or a display label.
 
-| Key | Practice | Voice (`odEnabled`) | TC (`odConnected`) | CommLog DefNum |
-| --- | --- | --- | --- | --- |
-| `roland` | Roland, OK | true | true | **486** |
-| `valley` | Fort Smith — branded "Riley"; the key stays frozen | true | **false** | **451** |
-| `unknown` | System bucket for unmapped Mango DIDs | never | never | — |
+| Key | Practice | Open Dental (`odEnabled`) | CommLog DefNum |
+| --- | --- | --- | --- |
+| `roland` | Roland, OK | true | **486** |
+| `valley` | Fort Smith — branded "Riley"; the key stays frozen | true | **451** |
+| `unknown` | System bucket for unmapped Mango DIDs | never (no registry entry) | — |
+
+There is **one** switch, and both modules read it. TC briefly had a second
+(`officeAgents.OFFICES[].odConnected`) because it reached Open Dental through the
+single Roland-bound client and had to stay shut while voice went live for Riley;
+TC now resolves its client per office through the same registry, so that flag was
+retired rather than left to drift.
 
 Consequences that shape most of the backend:
 
