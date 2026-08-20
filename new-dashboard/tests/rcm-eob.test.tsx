@@ -394,6 +394,113 @@ describe("EOB upload panel — waiting for extraction", () => {
     expect(eobState.listCalls).toBe(2);
   });
 
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * THE HIDDEN-TAB HONESTY TESTS (staging incident, 2026-08-19)
+   * ───────────────────────────────────────────────────────────────────────────
+   * A document finished in 6.6 seconds and the panel said "Extracting" for
+   * fourteen minutes. The give-up ceiling sat BEHIND `if (... || !tabVisible)
+   * return;`, so a tab reporting itself hidden stopped polling (intended) and
+   * could never reach the state that admits it stopped (not intended) — no
+   * message, no button, nothing but a chip asserting something it had no basis
+   * for. The trigger was an embedded browser whose `visibilityState` reads
+   * `hidden` while the pane is on screen.
+   *
+   * These four pin the ways out of that: the ceiling still fires, coming back
+   * asks at once, focus is a second wake signal, and two minutes without an
+   * answer always produces a button.
+   */
+
+  it("reaches the give-up state even while the tab reports hidden", async () => {
+    // THE EXACT PATH THAT WAS UNREACHABLE.
+    eobState.uploads = [upload({ status: "processing" })];
+    render(<EobUploadPanel office="roland" />);
+    await settle();
+    expect(eobState.listCalls).toBe(1);
+
+    setVisibility("hidden");
+    await settle(5 * 60_000 + 1_000); // past POLL_MAX_MS
+
+    const stalled = screen.getByTestId("rcm-eob-stalled-roland");
+    expect(stalled.textContent).toContain("stopped checking");
+    expect(screen.getByTestId("rcm-eob-recheck-roland")).toBeTruthy();
+    // Hidden still means "do not poll" — it just no longer means "never admit".
+    expect(eobState.listCalls).toBe(1);
+  });
+
+  it("asks immediately when the tab comes back, instead of waiting for the next tick", async () => {
+    eobState.uploads = [upload({ status: "processing" })];
+    render(<EobUploadPanel office="roland" />);
+    await settle();
+    expect(eobState.listCalls).toBe(1);
+
+    setVisibility("hidden");
+    await settle(30_000);
+    expect(eobState.listCalls).toBe(1);
+
+    // No timer advance after this line: the request must already have gone out.
+    // Waiting for the next 3s/10s tick is what let the incident survive the
+    // user looking back at the tab.
+    setVisibility("visible");
+    expect(eobState.listCalls).toBe(2);
+  });
+
+  it("treats window focus as a second wake signal, and the pair makes ONE request", async () => {
+    eobState.uploads = [upload({ status: "processing" })];
+    render(<EobUploadPanel office="roland" />);
+    await settle();
+    expect(eobState.listCalls).toBe(1);
+
+    setVisibility("hidden");
+    await settle(30_000);
+    expect(eobState.listCalls).toBe(1);
+
+    // Focus alone, with visibilityState STILL claiming hidden — the embedded
+    // browser case, where visibilitychange never fires on refocus.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(eobState.listCalls).toBe(2);
+
+    // And when both signals arrive together, that is one wake, not two
+    // requests: the limiter budget is shared across both office panels.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    setVisibility("visible");
+    expect(eobState.listCalls).toBe(2);
+  });
+
+  it("offers the manual re-check when it has not managed to look for two minutes", async () => {
+    // The escape hatch that does not depend on the visibility API telling the
+    // truth. The ceiling above needs five minutes; this needs two, and it fires
+    // on "we could not ask" rather than on "it is not done yet".
+    eobState.uploads = [upload({ status: "processing" })];
+    render(<EobUploadPanel office="roland" />);
+    await settle();
+    expect(screen.queryByTestId("rcm-eob-stalled-roland")).toBeNull();
+
+    setVisibility("hidden");
+    await settle(119_000);
+    expect(screen.queryByTestId("rcm-eob-stalled-roland")).toBeNull();
+
+    await settle(2_000); // past STALE_AFTER_MS
+    const stalled = screen.getByTestId("rcm-eob-stalled-roland");
+    // A different sentence from the five-minute one, because "we gave up
+    // waiting" and "we cannot see" are not the same thing to the reader.
+    expect(stalled.textContent).toContain("out of date");
+    expect(stalled.textContent).not.toContain("stopped checking");
+    expect(eobState.listCalls).toBe(1);
+
+    // And the button is live from there, while still hidden.
+    eobState.uploads = [upload({ status: "extracted", resultClaimId: "claim-1" })];
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("rcm-eob-recheck-roland"));
+    });
+    expect(screen.getByTestId("rcm-eob-status-u1").textContent).toBe("Proposal ready");
+    expect(screen.queryByTestId("rcm-eob-stalled-roland")).toBeNull();
+  });
+
   it("stops polling when the panel goes away", async () => {
     eobState.uploads = [upload({ status: "processing" })];
     const view = render(<EobUploadPanel office="roland" />);

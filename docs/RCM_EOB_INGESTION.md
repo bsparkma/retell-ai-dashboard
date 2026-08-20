@@ -827,11 +827,26 @@ node --test --test-concurrency=1 services/rcm/documentOcrLive.test.js
 
 ### The staging walk
 
-1. Upload `Test_EOB_Scanned.pdf` to Roland. The chip goes **Waiting → Extracting →
-   Proposal ready**.
-2. Open the remittance. The source-document row reads **"Read by OCR (1 page, 99%
-   confidence)"**.
-3. Back on the upload panel, **two** spend lines have moved — "Extraction spend today" and
-   "Scan-reading (OCR) spend today" — and they are separate numbers.
-4. Upload `Test_EOB_Scanned_Degraded.pdf`. It **fails** with the rescan message, and the OCR
-   spend moves while the extraction spend does not: nothing was sent to the model.
+> **Walk it in a real browser tab, kept in the foreground.** This panel polls, and an
+> editor's embedded browser (Cursor's, and webviews generally) can report
+> `document.visibilityState === 'hidden'` while the pane is plainly on screen — which
+> stops the polling. The panel now always offers a manual "Check again" when that happens,
+> but the walk is about watching the chips advance on their own, so give it a window that
+> the browser agrees is visible.
+
+Each step names its office, because the panel is per-office and a row uploaded to one is
+invisible from the other.
+
+1. **Select the Roland office.** Upload `Test_EOB_Scanned.pdf` **to Roland**. The chip goes
+   **Waiting → Extracting → Proposal ready**.
+2. Open the remittance — still **Roland**. The source-document row reads **"Read by OCR
+   (1 page, 99% confidence)"**.
+3. Back on **Roland's** upload panel, **two** spend lines have moved — "Extraction spend
+   today" and "Scan-reading (OCR) spend today" — and they are separate numbers.
+4. Upload `Test_EOB_Scanned_Degraded.pdf` **to Roland**. It **fails** with the rescan
+   message, and the OCR spend moves while the extraction spend does not: nothing was sent to
+   the model.
+
+Re-uploading the same file to the **same** office returns the existing row
+(`duplicate: true`) and re-runs nothing — that is the content-hash dedupe, not a fault. To
+walk it again from scratch, use the other office.
