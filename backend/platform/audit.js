@@ -33,12 +33,19 @@ class AuditError extends Error {
  * @param {import('express').Request & { user?: any, tenant?: { id?: string } }} req
  * @param {{ action: AuditAction, resourceType: string, resourceId?: string|number|null,
  *           result: AuditResult, endpoint?: string, office?: string|null,
- *           sourceRef?: string|null }} entry
+ *           originOffice?: string|null, sourceRef?: string|null }} entry
  *   `office` is the frozen internal office key ('roland' | 'valley' | 'unknown')
  *   the action touched. Required in spirit on any Open Dental path once a tenant
  *   has more than one connected practice: PatNum numbering restarts per database,
  *   so resource_id alone does not identify a patient. Never a display name, never
  *   PHI. Omitted → NULL, meaning "not an office-scoped action".
+ *
+ *   `originOffice` is the office the ACTION CAME FROM, when that can differ from
+ *   the office it touched — today, a chart write aimed at one practice from a
+ *   call that rang at the other. `office` stays "whose chart", `originOffice` is
+ *   "whose call", and a cross-office action is the two disagreeing. Same class of
+ *   value as `office`: a frozen key, never a display name, never PHI. Omitted →
+ *   NULL, meaning "the action had no origin distinct from what it touched".
  *
  *   `sourceRef` is the external identifier that CAUSED the action, when the cause
  *   lives outside the audited resource — today, the voice call id behind a TC
@@ -117,15 +124,19 @@ async function writeRow(req, tenantId, entry, run) {
   // Office key ('roland' | 'valley' | 'unknown') — an identifier, not PHI.
   const office = entry.office != null ? String(entry.office) : null;
 
+  // Where the action came from, when that differs from what it touched (a
+  // cross-office chart write). An identifier, not PHI.
+  const originOffice = entry.originOffice != null ? String(entry.originOffice) : null;
+
   // External cause (e.g. a voice call id) — an identifier, not PHI.
   const sourceRef = entry.sourceRef != null ? String(entry.sourceRef) : null;
 
   try {
     await run(
       `INSERT INTO audit_log
-          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, source_ref)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, sourceRef]
+          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, origin_office, source_ref)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, originOffice, sourceRef]
     );
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);

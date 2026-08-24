@@ -618,6 +618,15 @@ class UnifiedCallStore {
       // docs/SLICE_WEBHOOK_COMMLOG_HARDENING_PRD.md.
       od_sync_status: call.od_sync_status ?? null,
       od_patient_id: call.od_patient_id ?? null,
+      // WHICH practice's database that PatNum lives in. Load-bearing, not
+      // bookkeeping: PatNum numbering restarts per Open Dental database, so a
+      // PatNum that loses its office is not a weaker match — it is a different
+      // person. openDentalSync.patientOfficeOf() reads an absent value as
+      // 'roland' (the office every pre-per-location match came from), so dropping
+      // this on a call linked at Riley would silently re-point a stored PatNum at
+      // Roland's database and file a note on whoever holds that number there.
+      // Reachable the moment a link can be made cross-office, which is now.
+      od_patient_office: call.od_patient_office ?? null,
       // od_patient_name backs the "Matched: <name>" / "Sent" worklist label (Slice B.1);
       // preserve it like the other od_* fields so a re-add doesn't drop the matched name.
       od_patient_name: call.od_patient_name ?? null,
@@ -739,6 +748,9 @@ class UnifiedCallStore {
       // commlog dedup guard honest across Retell retries.
       od_sync_status: call.od_sync_status ?? existing?.od_sync_status ?? null,
       od_patient_id: call.od_patient_id ?? existing?.od_patient_id ?? null,
+      // Inherited for the same reason it is preserved in normalizeCall: a PatNum
+      // without its office is a different person, not a vaguer one.
+      od_patient_office: call.od_patient_office ?? existing?.od_patient_office ?? null,
       od_patient_name: call.od_patient_name ?? existing?.od_patient_name ?? null,
       od_commlog_num: call.od_commlog_num ?? existing?.od_commlog_num ?? null,
       od_synced_at: call.od_synced_at ?? existing?.od_synced_at ?? null,

@@ -20,15 +20,28 @@ database. Stores **resource IDs and actor/source only — never a PHI value**.
 | `ip` | source IP |
 | `result` | `SUCCESS` \| `UNAUTHORIZED` \| `ERROR` (CHECK) |
 | `endpoint` | optional, **scrubbed** request path |
-| `office` | frozen office key (`roland` \| `valley` \| `unknown`) the action touched — PatNum numbering restarts per OD database, so `resource_id` alone is ambiguous once a tenant has two connected practices. `NULL` = "not an office-scoped action" |
+| `office` | frozen office key (`roland` \| `valley` \| `unknown`) the action touched — **whose chart**. PatNum numbering restarts per OD database, so `resource_id` alone is ambiguous once a tenant has two connected practices. `NULL` = "not an office-scoped action" |
+| `origin_office` | the office the action **came from**, when that can differ from the one it touched — **whose call**. A chart note may now be deliberately aimed at the other practice (see CLAUDE.md §2.6), and `office` alone would not say why a Roland note exists for a call that rang at Riley. Same class of value as `office`. `NULL` = "no origin distinct from the target" |
 | `source_ref` | the **external identifier that caused** the action, when the cause lives outside the audited resource (today: the voice call id behind a TC handoff). An identifier, never a PHI value. `NULL` = "no recorded external cause" |
 
-Indexes: `(ts)`, `(resource_type, resource_id)` and `(office, ts)`.
+Indexes: `(ts)`, `(resource_type, resource_id)`, `(office, ts)`, and a partial
+`(origin_office, office, ts)` over the cross-office rows only — same-office actions
+are the overwhelming majority and are already served by `(office, ts)`.
 
-`office` and `source_ref` are nullable **with no backfill**. Rows written before
-each column existed genuinely lack the information, and writing an assumption
-into an audit trail as though it were observed is exactly what an audit trail
-must not do.
+A cross-office chart action is exactly `origin_office IS DISTINCT FROM office`,
+answerable without joining anything:
+
+```sql
+SELECT ts, user_id, origin_office, office, resource_type, resource_id, result
+  FROM audit_log
+ WHERE origin_office IS NOT NULL AND origin_office IS DISTINCT FROM office
+ ORDER BY ts DESC;
+```
+
+`office`, `origin_office` and `source_ref` are nullable **with no backfill**. Rows
+written before each column existed genuinely lack the information, and writing an
+assumption into an audit trail as though it were observed is exactly what an audit
+trail must not do.
 
 ### Append-only (two-role model — REQUIRED in any env holding PHI)
 

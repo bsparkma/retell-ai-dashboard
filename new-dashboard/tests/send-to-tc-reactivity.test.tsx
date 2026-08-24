@@ -159,8 +159,8 @@ describe("Send to TC reactivity after resolving a patient", () => {
     // Before: unmatched, so no TC affordance at all.
     expect(screen.queryByRole("button", { name: /send to tc/i })).toBeNull();
 
-    await screen.findByRole("button", { name: /send to chart/i });
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    await screen.findByRole("button", { name: /send to .*chart/i });
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
 
     // After: the button is there AND usable, from the same render pass.
     const tcButton = await screen.findByRole("button", { name: /send to tc/i });
@@ -179,8 +179,8 @@ describe("Send to TC reactivity after resolving a patient", () => {
     });
 
     render(<Harness />);
-    await screen.findByRole("button", { name: /send to chart/i });
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    await screen.findByRole("button", { name: /send to .*chart/i });
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
 
     const tcButton = await screen.findByRole("button", { name: /send to tc/i });
     fireEvent.click(tcButton);
@@ -201,8 +201,8 @@ describe("Send to TC reactivity after resolving a patient", () => {
     apiMock.resolvePatient.mockResolvedValue({ success: true, commLogNum: 9001 });
 
     render(<Harness />);
-    await screen.findByRole("button", { name: /send to chart/i });
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    await screen.findByRole("button", { name: /send to .*chart/i });
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
 
     await waitFor(() => expect(toasts.calls.length).toBeGreaterThan(0));
     expect(toasts.calls[0].kind).toBe("success");
@@ -212,8 +212,8 @@ describe("Send to TC reactivity after resolving a patient", () => {
     apiMock.resolvePatient.mockRejectedValue(new Error("OD unavailable"));
 
     render(<Harness />);
-    await screen.findByRole("button", { name: /send to chart/i });
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    await screen.findByRole("button", { name: /send to .*chart/i });
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
 
     await waitFor(() => expect(toasts.calls.length).toBeGreaterThan(0));
     expect(toasts.calls[0].kind).toBe("error");

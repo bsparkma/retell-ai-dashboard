@@ -24,13 +24,24 @@ function formatClock(seconds) {
 
 // ── Office-keyed Open Dental access (per-location slice) ─────────────────────
 // This service used to talk to ONE process-wide OD client (config/openDental).
-// It now resolves the client BY OFFICE, and the office always comes from the
-// CALL — never from a caller-supplied parameter. That is what makes a valley
-// call structurally unable to reach Roland's database: there is no argument a
-// route (or a request) can pass that changes which chart gets written.
+// It now resolves the client BY OFFICE, and the office comes from the CALL by
+// default. That is what makes a valley call structurally unable to DRIFT into
+// Roland's database: nothing about a request — its route, its body, a stale
+// screen — quietly changes which chart gets written.
 //
-// Every OD-touching method takes an `od` handle from odOffices.getOdOffice()
-// and runs it through odOffices.assertOfficeMatch() before use.
+// There is exactly ONE way to write to a different practice's chart than the one
+// the call rang at, and it is not quiet: `options.targetOfficeKey`, set only when
+// a human deliberately picked that office at the send step (the front desk at one
+// practice taking a call for a patient of the other). The route validates the key
+// against the office registry before it ever reaches here and refuses an unknown
+// one — it never falls back to some other office. Absent, the target IS the call's
+// office, byte-for-byte the behaviour that existed before this option.
+//
+// The distinction that matters: `targetOfficeKey` SELECTS (a human said so),
+// `expectOfficeKey` only ASSERTS — it can cause a refusal and can never redirect
+// a write. Both are checked; neither can be skipped by a future caller, because
+// every OD-touching method takes an `od` handle from odOffices.getOdOffice() and
+// runs it through odOffices.assertOfficeMatch() before use.
 
 /**
  * The office-bound OD connection for a stored call.
@@ -41,6 +52,27 @@ function formatClock(seconds) {
 function odForCall(call) {
   const officeKey = getOfficeForCall(call);
   return odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+}
+
+/**
+ * The office-bound OD connection this operation is FOR: the deliberately chosen
+ * target office when there is one, otherwise the call's own.
+ *
+ * `targetOfficeKey` is a chosen office, so it is trusted to select — but only
+ * after the caller validated it. Passing an unregistered/unconnected key still
+ * refuses here (getOdOffice throws), so a bad value fails closed rather than
+ * landing anywhere.
+ *
+ * @param {{source?: string, called_number?: string, handler_id?: string}} call
+ * @param {string} [targetOfficeKey] the office a human chose to write to
+ * @returns {import('../config/odOffices').OdOfficeHandle}
+ * @throws {import('../config/odOffices').OdOfficeError} unknown / unconnected / unkeyed office
+ */
+function odForTarget(call, targetOfficeKey) {
+  if (typeof targetOfficeKey === 'string' && targetOfficeKey) {
+    return odOffices.assertOfficeMatch(targetOfficeKey, odOffices.getOdOffice(targetOfficeKey));
+  }
+  return odForCall(call);
 }
 
 // ── Shared match → status logic (source-agnostic) ────────────────────────────
@@ -269,10 +301,16 @@ class OpenDentalSyncService {
   /**
    * Sync a call's transcript and summary to Open Dental CommLog.
    *
-   * The target office is the CALL's office, always. `options.expectOfficeKey` is an
-   * optional assertion from the caller ("I believe this is a valley call") — it can
-   * only ever cause a refusal, never redirect the write, so a request that names the
-   * wrong office is rejected rather than obeyed.
+   * The target office is the CALL's office unless `options.targetOfficeKey` names
+   * another one — the cross-office chart target, chosen by a human at the send step
+   * and validated by the route against the office registry before it gets here.
+   * Absent, this is byte-for-byte the pre-override behaviour.
+   *
+   * `options.expectOfficeKey` is a separate thing and stays a pure assertion from
+   * the caller ("I believe I am writing to valley") — it can only ever cause a
+   * refusal, never redirect the write, so a request that names the wrong office is
+   * rejected rather than obeyed. It is asserted against the RESOLVED target, which
+   * is what keeps a stale screen from sending a note to a practice nobody chose.
    *
    * `options.commTypeDefNum` is the chart-note TYPE the user picked at the send
    * step. Omitted, the office's configured default is written — byte-for-byte
@@ -282,7 +320,8 @@ class OpenDentalSyncService {
    * @param {string} callId
    * @param {{ force?: boolean, allowUnmatched?: boolean, noteOverride?: string,
    *           contentType?: string, includeTranscript?: boolean,
-   *           expectOfficeKey?: string, commTypeDefNum?: number }} [options]
+   *           targetOfficeKey?: string, expectOfficeKey?: string,
+   *           commTypeDefNum?: number }} [options]
    */
   async syncCallToCommLog(callId, options = {}) {
     const call = unifiedCallStore.getCall(callId);
@@ -296,11 +335,12 @@ class OpenDentalSyncService {
       return { success: true, message: 'Already synced', skipped: true };
     }
 
-    // Resolve THIS call's office connection. An unknown / not-yet-connected /
-    // unkeyed office refuses here, before anything touches a chart.
+    // Resolve the office connection this write is FOR — the chosen target office,
+    // or this call's own. An unknown / not-yet-connected / unkeyed office refuses
+    // here, before anything touches a chart.
     let od;
     try {
-      od = odForCall(call);
+      od = odForTarget(call, options.targetOfficeKey);
       if (options.expectOfficeKey) {
         odOffices.assertOfficeMatch(options.expectOfficeKey, od);
       }
@@ -775,15 +815,22 @@ class OpenDentalSyncService {
   // ============================================================================
 
   /**
-   * Manually link a call to a patient — in that call's office, and nowhere else.
+   * Manually link a call to a patient — in ONE named office, and nowhere else.
    *
-   * The PatNum is verified to exist in THAT office's database before it is stored,
-   * so a Roland PatNum pasted at a valley call fails here rather than silently
-   * linking to whichever Riley patient happens to hold the same number.
+   * That office is the call's own unless `options.targetOfficeKey` names another
+   * (the cross-office chart target a human picked at the search step). Either way
+   * the PatNum is verified to exist in THAT office's database before it is stored,
+   * so a Roland PatNum pasted against Riley's database fails here rather than
+   * silently linking to whichever Riley patient happens to hold the same number.
+   *
+   * `od_patient_office` is stamped from the office actually used, so the stored
+   * PatNum never travels without the database it came from — which is the whole
+   * reason a cross-office link is safe to persist at all.
    *
    * @param {string} callId
    * @param {string|number} patientId
-   * @param {{ syncNow?: boolean, userId?: string, expectOfficeKey?: string }} [options]
+   * @param {{ syncNow?: boolean, userId?: string, targetOfficeKey?: string,
+   *           expectOfficeKey?: string }} [options]
    */
   async linkCallToPatient(callId, patientId, options = {}) {
     const call = unifiedCallStore.getCall(callId);
@@ -794,7 +841,7 @@ class OpenDentalSyncService {
 
     let od;
     try {
-      od = odForCall(call);
+      od = odForTarget(call, options.targetOfficeKey);
       if (options.expectOfficeKey) {
         odOffices.assertOfficeMatch(options.expectOfficeKey, od);
       }
