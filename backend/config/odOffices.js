@@ -120,6 +120,11 @@ const STATUS_BY_CODE = Object.freeze({
   OFFICE_NOT_OD_CONNECTED: 409,
   OFFICE_OD_KEY_MISSING: 503,
   OFFICE_MISMATCH: 409,
+  // A stored patient link that disagrees with the office an operation resolved to.
+  // 409 for the same reason OFFICE_MISMATCH is: the request is well-formed and the
+  // caller is allowed, but the state on the call contradicts it and only a human
+  // can say which one is wrong.
+  PATIENT_OFFICE_MISMATCH: 409,
 });
 
 /**
@@ -231,6 +236,33 @@ function odBlockReason(officeKey) {
  */
 function isOdReady(officeKey) {
   return odBlockReason(officeKey) === null;
+}
+
+/**
+ * Whether `officeKey` names a real office of this practice group.
+ *
+ * THE definition of "an office you may aim a chart action at", used by both the
+ * route that validates a client-supplied `target_office` and the service that
+ * resolves a stored `od_patient_office`. One definition on purpose: two would
+ * eventually disagree, and the direction that disagreement fails in is a chart
+ * write landing somewhere nobody named.
+ *
+ * `unknown` is excluded. It is the bucket for calls whose line we cannot
+ * attribute; it has no Open Dental database, so it is not somewhere a note can
+ * go. Note this is a REGISTRY question, not a readiness one — an office that is
+ * switched off or unkeyed is still one of ours, and refusing it is odBlockReason's
+ * job (with its own, more specific code) rather than this function's.
+ *
+ * @param {unknown} officeKey
+ * @returns {boolean}
+ */
+function isChartTargetOffice(officeKey) {
+  return (
+    typeof officeKey === 'string' &&
+    officeKey.length > 0 &&
+    officeKey !== UNMAPPED_OFFICE &&
+    Object.prototype.hasOwnProperty.call(OFFICES, officeKey)
+  );
 }
 
 /**
@@ -355,6 +387,7 @@ module.exports = {
   httpStatusFor,
   odBlockReason,
   isOdReady,
+  isChartTargetOffice,
   describeOffice,
   getOdOffice,
   assertOfficeMatch,

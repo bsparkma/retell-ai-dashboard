@@ -34,14 +34,23 @@ function formatClock(seconds) {
 // a human deliberately picked that office at the send step (the front desk at one
 // practice taking a call for a patient of the other). The route validates the key
 // against the office registry before it ever reaches here and refuses an unknown
-// one — it never falls back to some other office. Absent, the target IS the call's
-// office, byte-for-byte the behaviour that existed before this option.
+// one — it never falls back to some other office.
 //
 // The distinction that matters: `targetOfficeKey` SELECTS (a human said so),
 // `expectOfficeKey` only ASSERTS — it can cause a refusal and can never redirect
 // a write. Both are checked; neither can be skipped by a future caller, because
 // every OD-touching method takes an `od` handle from odOffices.getOdOffice() and
 // runs it through odOffices.assertOfficeMatch() before use.
+//
+// When NO target is named, the office is defaultTargetOfficeFor(call) — the call's
+// own, UNLESS the call already carries a patient link, in which case it is that
+// link's office. That rule lives HERE, in the service, and not in the route that
+// happens to have the nicest UI. It was a route convenience once, and being a route
+// convenience is precisely what made it wrong: `syncCallToCommLog` is reachable from
+// POST /api/opendental-sync/calls/:id/sync and from the batch syncPendingCalls loop,
+// neither of which knew the rule, so a deliberately cross-office link resolved back
+// to the call's own office and hit the stale-match branch below — which used to
+// discard the human's link and re-match by phone in the wrong database.
 
 /**
  * The office-bound OD connection for a stored call.
@@ -55,24 +64,56 @@ function odForCall(call) {
 }
 
 /**
+ * Where a chart action on this call goes when nobody named a target.
+ *
+ * The call's own office — unless the call is already LINKED to a patient, in which
+ * case it is that patient's office. A stored PatNum is only meaningful in the
+ * database it came from: 7115 is the valley test patient and a different real
+ * person in Roland. So once a human has said "this caller is that Roland patient",
+ * Roland is the only chart that PatNum can honestly be written to, and resolving
+ * back to the call's own office would aim a Roland PatNum at Riley's database.
+ *
+ * THE single definition — the route's `target_office` validation and every
+ * service-level caller both come through here, so there is one answer to "where
+ * does this go by default" rather than one per entry point.
+ *
+ * A stored office we do not recognise is ignored rather than trusted: it falls
+ * through to the call's office, where the guard in syncCallToCommLog then refuses
+ * the mismatch rather than writing anywhere.
+ *
+ * @param {{source?: string, called_number?: string, handler_id?: string,
+ *          od_patient_id?: any, od_patient_office?: string|null}} call
+ * @returns {string} a frozen office key
+ */
+function defaultTargetOfficeFor(call) {
+  const hasPatient =
+    call && call.od_patient_id !== undefined && call.od_patient_id !== null && call.od_patient_id !== '';
+  const linkedOffice = call && call.od_patient_office;
+  if (hasPatient && odOffices.isChartTargetOffice(linkedOffice)) return linkedOffice;
+  return getOfficeForCall(call);
+}
+
+/**
  * The office-bound OD connection this operation is FOR: the deliberately chosen
- * target office when there is one, otherwise the call's own.
+ * target office when there is one, otherwise defaultTargetOfficeFor(call).
  *
  * `targetOfficeKey` is a chosen office, so it is trusted to select — but only
  * after the caller validated it. Passing an unregistered/unconnected key still
  * refuses here (getOdOffice throws), so a bad value fails closed rather than
  * landing anywhere.
  *
- * @param {{source?: string, called_number?: string, handler_id?: string}} call
+ * @param {{source?: string, called_number?: string, handler_id?: string,
+ *          od_patient_id?: any, od_patient_office?: string|null}} call
  * @param {string} [targetOfficeKey] the office a human chose to write to
  * @returns {import('../config/odOffices').OdOfficeHandle}
  * @throws {import('../config/odOffices').OdOfficeError} unknown / unconnected / unkeyed office
  */
 function odForTarget(call, targetOfficeKey) {
-  if (typeof targetOfficeKey === 'string' && targetOfficeKey) {
-    return odOffices.assertOfficeMatch(targetOfficeKey, odOffices.getOdOffice(targetOfficeKey));
-  }
-  return odForCall(call);
+  const officeKey =
+    typeof targetOfficeKey === 'string' && targetOfficeKey
+      ? targetOfficeKey
+      : defaultTargetOfficeFor(call);
+  return odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
 }
 
 // ── Shared match → status logic (source-agnostic) ────────────────────────────
@@ -377,16 +418,34 @@ class OpenDentalSyncService {
 
     // A stored PatNum is only meaningful together with the office it came from —
     // PatNum 7115 is "Stedi TestValley" in Riley and a different real patient in
-    // Roland. A match banked against a DIFFERENT office than the call now resolves
-    // to is not a match at all; discard it and re-match in the right database
-    // rather than writing a chart note to whoever happens to hold that number.
+    // Roland. A link that disagrees with the office this write resolved to is
+    // therefore a contradiction, and the only honest response is to REFUSE it.
+    //
+    // This branch used to discard the link and re-match by phone in the resolved
+    // office. That was right while a cross-office link could only be corruption —
+    // the leftover of an auto-match made against Roland's database back when valley
+    // had no OD connection of its own. It is not right now that a human can
+    // deliberately link a call to the other practice's patient: re-matching would
+    // throw away what they said and, if some patient in the resolved office happens
+    // to share the caller's phone number, file the note on that stranger's chart.
+    //
+    // Nothing is written and nothing is re-matched. Which of the two facts is wrong
+    // — the link or the office this resolved to — is a question only a person can
+    // answer, and the note is not urgent enough to guess.
     if (patientId && !this.patientOfficeMatches(call, od.officeKey)) {
       console.warn(
-        `[OD Sync] ${callId}: stored patient match belongs to office ` +
-        `'${this.patientOfficeOf(call)}' but the call resolves to '${od.officeKey}' — ` +
-        `discarding the stale match and re-matching`
+        `[OD Sync] ${callId}: REFUSING to write — stored patient link belongs to office ` +
+        `'${this.patientOfficeOf(call)}' but this write resolved to '${od.officeKey}'. ` +
+        `No note written, no re-match attempted.`
       );
-      patientId = null;
+      return {
+        success: false,
+        code: 'PATIENT_OFFICE_MISMATCH',
+        error:
+          'This call is linked to a patient at a different practice than the chart this note is headed for — ' +
+          'refusing to write it to either one until someone confirms which is right',
+        officeBlocked: true,
+      };
     }
 
     if (!patientId) {
@@ -1238,14 +1297,33 @@ class OpenDentalSyncService {
    * honest reason instead of being quietly matched against some other practice's
    * patients, which is what happened before this slice.
    *
+   * ALREADY LINKED: a call that already carries an od_patient_id is left alone and
+   * returns 'already_linked'. This is a MATCHER — it answers "who is this?" for a
+   * call nobody has answered it for. Once there IS an answer, re-running it can only
+   * overwrite one, and it re-matches in the CALL's office, so a caller deliberately
+   * linked to the other practice's patient would be silently re-pointed at whoever
+   * holds the caller's phone number over here — within the hour, by the Mango sync,
+   * with nothing on screen to show it happened. The check lives here rather than in
+   * the four call sites because three of them only skipped 'synced', and the failure
+   * mode of forgetting it is invisible.
+   *
    * @param {string} callId  unified-store id
    * @param {{caller_number?: string, caller_name?: string}} matchInput
-   * @returns {Promise<{status:'matched'|'needs_review'|'office_not_connected', patient?:object, matchResult?:object, candidates?:Array}>}
+   * @returns {Promise<{status:'matched'|'needs_review'|'office_not_connected'|'already_linked', patient?:object, matchResult?:object, candidates?:Array}>}
    */
   async matchAndSetStatus(callId, matchInput = {}) {
     const call = unifiedCallStore.getCall(callId);
     if (!call) {
       return { status: 'needs_review', needsReview: true, candidates: [], matchResult: null };
+    }
+
+    if (call.od_patient_id !== undefined && call.od_patient_id !== null && call.od_patient_id !== '') {
+      return {
+        status: 'already_linked',
+        skipped: true,
+        patientId: call.od_patient_id,
+        officeKey: this.patientOfficeOf(call),
+      };
     }
 
     let od;
@@ -1314,6 +1392,12 @@ openDentalSyncService.CONFIDENT_WRITE_MIN = CONFIDENT_WRITE_MIN;
 // service) resolve it exactly the same way this service does, instead of
 // re-deriving it and risking a second, divergent answer.
 openDentalSyncService.odForCall = odForCall;
+// Where a chart action goes when nobody named a target. Exposed for the same reason
+// odForCall is: the route needs the answer BEFORE it calls the service (to name the
+// office in the response and on the audit row), and a route that computed its own
+// would be a second definition of the default — which is exactly the bug this
+// function was extracted to close.
+openDentalSyncService.defaultTargetOfficeFor = defaultTargetOfficeFor;
 
 module.exports = openDentalSyncService;
 

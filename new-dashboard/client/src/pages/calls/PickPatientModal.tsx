@@ -64,9 +64,17 @@ interface PickPatientModalProps {
   onLinked: (updated: UnifiedCall) => void;
   /** Closed out as not-a-patient (already persisted; no OD write). */
   onNotPatient: (reason: NotAPatientReason) => void;
+  /**
+   * May this person search the OTHER practice's patient list? The server gates a
+   * cross-office search on `voice.chart_write` — browsing another practice's
+   * records is the first half of writing a note there — so without it the office
+   * picker is not offered and the search stays where it always was: this call's
+   * own office. A `tc` user identifying a caller is unaffected.
+   */
+  canCrossOffice: boolean;
 }
 
-export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPatient }: PickPatientModalProps) {
+export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPatient, canCrossOffice }: PickPatientModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
   const [searching, setSearching] = useState(false);
@@ -270,6 +278,7 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
                 onChange={changeSearchOffice}
                 callOfficeId={callOfficeId}
                 disabled={submittingId !== null}
+                canCrossOffice={canCrossOffice}
                 purpose="patients"
                 testId="search-office-select"
               />

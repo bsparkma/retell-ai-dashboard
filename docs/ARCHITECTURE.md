@@ -105,8 +105,12 @@ Consequences that shape most of the backend:
 
 - **PatNum numbering restarts per database.** PatNum `7115` is a synthetic test patient in
   valley and a **different, real person** in roland. Every stored `od_patient_id` is
-  written alongside `od_patient_office`; a stored match belonging to another office is
-  discarded and re-matched rather than used.
+  written alongside `od_patient_office`, and both survive re-normalization. A stored
+  match whose office disagrees with the one an operation resolved to is **refused** —
+  nothing written, nothing re-matched. (It used to be discarded and re-matched, which was
+  right while a cross-office link could only be corruption and became wrong the moment a
+  human could deliberately make one: re-matching lands the note on whoever happens to
+  share the caller's phone number in the resolved office.)
 - **DefNums are practice-specific.** 486 is not a CommLogType in Riley's database at all.
   Writing the wrong one is a data-integrity bug, not a cosmetic one.
 - **Only the customer key is per-office.** Developer key and API base URL are process-wide.
@@ -116,14 +120,28 @@ Consequences that shape most of the backend:
   can never silently fall back to Roland's key.
 - **Voice and TC have separate switches** and are pinned apart by a test.
 
-Office is derived server-side from the call — `called_number` → DID map for Mango,
-`handler_id ?? agent_id` for Retell. An unmapped Mango DID resolves to `unknown` with a
-warn-once, deliberately **not** to Roland. A client-supplied `office_id` is an assertion
-that can only cause a 409, never a redirect.
+A call's office is derived server-side from the call — `called_number` → DID map for
+Mango, `handler_id ?? agent_id` for Retell. An unmapped Mango DID resolves to `unknown`
+with a warn-once, deliberately **not** to Roland. A client-supplied `office_id` is an
+assertion that can only cause a 409, never a redirect. Nothing re-attributes a call.
 
-The cross-office guard is `assertOfficeMatch` in `backend/config/odOffices.js:321` — the
+**Which chart a note is filed in is a separate fact from which office the call rang at.**
+The front desk at one practice takes calls about the other's patients, so a chart action
+may name a `target_office`. Two things make that safe:
+
+- The default is `openDentalSync.defaultTargetOfficeFor(call)` — the call's own office
+  unless the call is already linked to a patient, in which case it is *that link's*
+  office. This is a **service invariant, not a route convenience**: `syncCallToCommLog` is
+  reachable from the legacy `POST /api/opendental-sync/calls/:id/sync` and from the batch
+  drain, neither of which knows anything about targets, so a default defined in the nice
+  UI's route would be a rule only that route obeyed.
+- A named target is validated against the office registry (`odOffices.isChartTargetOffice`,
+  the single definition of "one of ours"). Unrecognised → 400, never a fallback.
+
+The cross-office guard is `assertOfficeMatch` in `backend/config/odOffices.js` — the
 safety heart of the layer. Cross-contamination is covered end to end by
-`backend/services/odOfficeRouting.test.js`.
+`backend/services/odOfficeRouting.test.js` and
+`backend/test/crossOfficeChartTarget.test.js`.
 
 ---
 
@@ -255,6 +273,10 @@ Three HTTP clients with three different error contracts — `api` / `ApiError` f
 backend, `careInApi` for the local CareIN log sub-server, and the TC feature client with
 `TcApiError`. Details in [new-dashboard/NOTES.md](../new-dashboard/NOTES.md).
 
-The office picker in the sidebar scopes **reads**. Writes take their office from the call
-and send `office_id` only as an assertion the server can refuse. That distinction is the
-whole reason a stale screen cannot file a note into the wrong practice.
+The office picker in the sidebar scopes **reads**. Writes resolve their office
+server-side and send `office_id` only as an assertion the server can refuse — that
+distinction is the whole reason a stale screen cannot file a note into the wrong practice.
+The Send-to-chart and Pick-Patient dialogs additionally offer a `target_office`, which
+*selects*; `office_id` still only *refuses*. The picker is shown only to a caller holding
+`voice.chart_write`, matching the server, which 403s a cross-office patient search
+without it.

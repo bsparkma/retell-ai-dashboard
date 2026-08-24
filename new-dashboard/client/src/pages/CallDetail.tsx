@@ -808,6 +808,7 @@ export default function CallDetail() {
         call={displayCall}
         onLinked={handleLinked}
         onNotPatient={handleNotPatient}
+        canCrossOffice={canChartWrite}
       />
 
       {/* (M4) Re-billing a call that already came back silent, or (M7) transcribing the
@@ -829,6 +830,7 @@ export default function CallDetail() {
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
           contentType={contentType}
+          canCrossOffice={canChartWrite}
           onSent={(updated) => handleSent(sendTarget.patientId, updated)}
         />
       )}

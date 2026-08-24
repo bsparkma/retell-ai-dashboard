@@ -19,6 +19,14 @@
  *
  * Offices that cannot reach Open Dental are not offered: picking one would only
  * produce a refusal at the moment of sending, which is the worst possible time.
+ *
+ * Neither is the picker offered at all to someone who may not write a chart note.
+ * Reading your OWN practice's patient list is triage and stays open to every voice
+ * role; paging through the OTHER practice's is only ever the first half of writing
+ * there, so the server gates a cross-office search on `voice.chart_write` and 403s
+ * without it. This hides the control that would earn that 403 — UX only, exactly
+ * like the chart buttons: the server is the boundary, and hiding is what keeps a
+ * read-only role from being offered work it will be refused.
  */
 import { Building2, ArrowRightLeft } from "lucide-react";
 import {
@@ -35,6 +43,13 @@ interface ChartOfficeSelectProps {
   /** The office the CALL rang at — the origin. Null when the call is unattributed. */
   callOfficeId: string | null;
   disabled?: boolean;
+  /**
+   * May this person aim at another practice at all? False renders NOTHING — the
+   * target stays whatever the server resolved, which for a read-only role is the
+   * call's own office. See the note above: this mirrors a real 403, it does not
+   * create one.
+   */
+  canCrossOffice: boolean;
   /** "chart" (writing) or "patients" (searching) — only changes the label wording. */
   purpose?: "chart" | "patients";
   /** Test hook for the trigger. */
@@ -53,8 +68,12 @@ export function officeNameOf(offices: OfficeConfig[], officeId: string | null): 
 }
 
 export function ChartOfficeSelect({
-  offices, value, onChange, callOfficeId, disabled, purpose = "chart", testId,
+  offices, value, onChange, callOfficeId, disabled, canCrossOffice, purpose = "chart", testId,
 }: ChartOfficeSelectProps) {
+  // Hidden rather than disabled. A disabled control says "you could do this, just
+  // not now"; the honest statement here is that choosing an office is not part of
+  // this person's job, and a greyed-out box only invites the question.
+  if (!canCrossOffice) return null;
   const options = selectableOffices(offices);
   // Nothing to choose between is not a choice. Disabled, never hidden — the office
   // still has to be named, because the patient's name alone does not say which

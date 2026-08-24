@@ -22,7 +22,7 @@ const odHealth = require('../services/odHealthCheck');
 const commlogTypeCatalogue = require('../services/commlogTypes');
 const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
-const { requirePermission, roleHasPermission, isMachineCaller } = require('../config/permissions');
+const { requirePermission, roleHasPermission, isMachineCaller, holdsPermission } = require('../config/permissions');
 const tcCaseClient = require('../services/tcCaseClient');
 const {
   DISPOSITIONS, NOTE_MAX_LENGTH, isDisposition, canDeleteNote,
@@ -123,7 +123,8 @@ const officeRoster = () =>
 // The rules that keep this from becoming the cross-office bug it looks like:
 //
 //   * A target is only ever what someone EXPLICITLY named. Absent, the target is
-//     the default below and the behaviour is byte-for-byte what it was.
+//     openDentalSync.defaultTargetOfficeFor(call) — the call's own office unless the
+//     call is already linked to a patient, in which case it is that link's office.
 //   * A named target is validated against the office registry. Unknown → 400. It
 //     never falls back to the call's office, to a default office, or to anything
 //     else — an unrecognised office is a refusal, not a redirect.
@@ -133,33 +134,14 @@ const officeRoster = () =>
 //     fail-closed check every other path uses (odBlockReason → 409/503).
 //   * Both offices are recorded on the audit row: `office` is the chart that was
 //     touched, `originOffice` is the call it came from.
-
-/** Every office a chart action may be aimed at — the tenant's real offices, never 'unknown'. */
-const chartTargetOffices = () => new Set(getAllOfficeConfigs().map((o) => o.officeId));
-
-/**
- * Where a chart action goes when nobody named a target.
- *
- * Usually the call's own office. But once a call is LINKED to a patient, the
- * stored PatNum belongs to exactly one Open Dental database and is meaningless in
- * any other — PatNum 7115 is the valley test patient and a different real person
- * in Roland. So a call linked cross-office defaults to the office its patient is
- * in, because that is the only chart that PatNum can honestly be written to.
- * Defaulting to the call's office there would aim a Riley PatNum at Roland's
- * database, which is the exact hazard this whole seam exists to prevent.
- *
- * @param {{od_patient_id?: any, od_patient_office?: string|null}} call
- * @param {string} callOfficeKey
- * @returns {string}
- */
-function defaultChartTargetFor(call, callOfficeKey) {
-  const hasPatient = call && call.od_patient_id !== undefined && call.od_patient_id !== null && call.od_patient_id !== '';
-  const linkedOffice = call && call.od_patient_office;
-  if (hasPatient && typeof linkedOffice === 'string' && chartTargetOffices().has(linkedOffice)) {
-    return linkedOffice;
-  }
-  return callOfficeKey;
-}
+//
+// Neither the registry test nor the default lives in this file. `isChartTargetOffice`
+// is odOffices'; `defaultTargetOfficeFor` is openDentalSync's. That is deliberate:
+// syncCallToCommLog is reachable from routes that know nothing about any of this
+// (the legacy /api/opendental-sync/calls/:id/sync, the batch drain), so a default
+// defined HERE would be a rule only the nice UI obeyed — which is exactly how a
+// deliberate cross-office link came to be discarded and re-matched in the wrong
+// database. One definition, in the service, used by everyone including this file.
 
 /**
  * Resolve the office whose chart this request is aimed at.
@@ -176,13 +158,14 @@ function resolveChartTarget(call, callOfficeKey, rawTarget) {
     : rawTarget;
 
   if (named === null) {
-    const targetKey = defaultChartTargetFor(call, callOfficeKey);
+    // The service's default, not a copy of it — see the note above.
+    const targetKey = openDentalSync.defaultTargetOfficeFor(call);
     return { ok: true, targetKey, crossOffice: targetKey !== callOfficeKey };
   }
 
   // Fail closed on anything we do not recognise. No fallback — a request naming
   // an office we cannot identify is refused, never quietly re-aimed somewhere else.
-  if (typeof named !== 'string' || !chartTargetOffices().has(named)) {
+  if (!odOffices.isChartTargetOffice(named)) {
     return {
       ok: false,
       error: 'That office is not one of this practice group’s offices',
@@ -677,6 +660,13 @@ router.get('/offices', (req, res) => {
  * the other's patients, and searching only the call's office made those calls
  * impossible to chart anywhere at all.
  *
+ * A CROSS-office search additionally requires `voice.chart_write`. Reading your own
+ * practice's patient list to answer "who called?" is part of triage and stays open
+ * to every voice role; paging through the OTHER practice's list is only ever the
+ * first half of writing a note there, so it takes the permission that writing takes.
+ * No new action — the same `voice.chart_write` the send routes are gated on, checked
+ * here in the handler because the answer depends on a target only resolved mid-request.
+ *
  * The response names BOTH offices so the modal can show which patient list is on
  * screen and say plainly when it is not the one the call rang at.
  *
@@ -708,6 +698,29 @@ router.get('/:id/patient-search', async (req, res) => {
     }
     const { targetKey, crossOffice } = target;
     const office = odOffices.describeOffice(targetKey);
+
+    // Reading the OTHER practice's patient list is the first half of writing there.
+    // Same permission, checked before any PHI is read — and recorded, because a
+    // refused attempt to page through another practice's records is exactly the kind
+    // of thing the trail exists to hold.
+    if (crossOffice && !holdsPermission(req, 'voice.chart_write')) {
+      await audit.audit(req, {
+        action: 'READ',
+        resourceType: 'patient',
+        resourceId: null,
+        office: targetKey,
+        originOffice: callOfficeKey,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        error: 'You do not have permission to look up patients at another office',
+        code: 'CROSS_OFFICE_SEARCH_FORBIDDEN',
+        office,
+        callOffice,
+        crossOffice,
+        patients: [],
+      });
+    }
 
     // Unknown / not-connected / unkeyed office: no search, no guessing.
     let od;
@@ -1358,8 +1371,16 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       // against. Silently re-pointing the linkage would make the stored record
       // disagree with the chart, so a DIFFERENT patient is refused outright. The
       // same patient is a harmless no-op.
+      //
+      // "Same patient" is (PatNum, office) — never PatNum alone. PatNum numbering
+      // restarts in every Open Dental database, so 7115-in-Roland and 7115-in-Riley
+      // are two different people, and comparing the number by itself would read a
+      // re-point at the OTHER practice as a no-op and quietly accept it.
       if (call.od_sync_status === 'synced') {
-        if (String(call.od_patient_id) === String(patientId)) {
+        const samePatient =
+          String(call.od_patient_id) === String(patientId) &&
+          openDentalSync.patientOfficeOf(call) === targetKey;
+        if (samePatient) {
           return res.json({
             success: true,
             linked: true,

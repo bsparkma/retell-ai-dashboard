@@ -79,6 +79,7 @@ describe("Pick Patient modal — office visibility", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -111,6 +112,7 @@ describe("Pick Patient modal — office visibility", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -137,6 +139,7 @@ describe("Pick Patient modal — office visibility", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -164,6 +167,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -189,6 +193,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -220,6 +225,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}

@@ -157,6 +157,7 @@ describe("Pick Patient — searching the other practice", () => {
   it("defaults to the call's own office", async () => {
     render(
       <PickPatientModal
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         onLinked={() => {}} onNotPatient={() => {}}
       />,
@@ -180,6 +181,7 @@ describe("Pick Patient — searching the other practice", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         onLinked={() => {}} onNotPatient={() => {}}
       />,
@@ -212,6 +214,7 @@ describe("Pick Patient — searching the other practice", () => {
   it("warns, in words, once the office being searched is not the call's", async () => {
     render(
       <PickPatientModal
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         onLinked={() => {}} onNotPatient={() => {}}
       />,
@@ -231,7 +234,7 @@ describe("Pick Patient — searching the other practice", () => {
     // else in the other one, so offering them under a new office name is a trap.
     const call = valleyCall({ odMatchCandidates: [{ id: 7115, name: "Stedi TestValley" }] } as Partial<UnifiedCall>);
     render(
-      <PickPatientModal open onOpenChange={() => {}} call={call} onLinked={() => {}} onNotPatient={() => {}} />,
+      <PickPatientModal canCrossOffice open onOpenChange={() => {}} call={call} onLinked={() => {}} onNotPatient={() => {}} />,
     );
     expect(screen.getByText("Stedi TestValley")).toBeTruthy();
 
@@ -249,6 +252,7 @@ describe("Pick Patient — searching the other practice", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         onLinked={() => {}} onNotPatient={() => {}}
       />,
@@ -278,6 +282,7 @@ describe("Send to chart — which practice's chart", () => {
     previewPerOffice(VALLEY);
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -296,6 +301,7 @@ describe("Send to chart — which practice's chart", () => {
     previewPerOffice(VALLEY);
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -315,6 +321,7 @@ describe("Send to chart — which practice's chart", () => {
     previewPerOffice(VALLEY);
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -342,6 +349,7 @@ describe("Send to chart — which practice's chart", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -377,6 +385,7 @@ describe("Send to chart — which practice's chart", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -410,6 +419,7 @@ describe("Send to chart — which practice's chart", () => {
     previewPerOffice(VALLEY);
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={valleyCall()}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -424,5 +434,56 @@ describe("Send to chart — which practice's chart", () => {
     await waitFor(() => expect(screen.queryByTestId("cross-office-patient-search")).toBeNull());
     expect((screen.getByTestId("send-to-chart-confirm") as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByTestId("send-to-chart-confirm").textContent).toMatch(/Send to Valley Fort Smith chart/);
+  });
+});
+
+// ── Read-only roles are not offered the other practice at all ──────────────
+
+describe("without voice.chart_write", () => {
+  it("Pick Patient offers no office picker, and searches only the call's own office", async () => {
+    render(
+      <PickPatientModal
+        canCrossOffice={false}
+        open onOpenChange={() => {}} call={valleyCall()}
+        onLinked={() => {}} onNotPatient={() => {}}
+      />,
+    );
+
+    // The server 403s a cross-office search for this role. A control that earns a
+    // 403 is worse than no control, so there is none — and identifying the caller,
+    // which is what a `tc` user actually came here to do, still works.
+    expect(screen.queryByTestId("search-office-select")).toBeNull();
+    expect(screen.queryByTestId("cross-office-warning")).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText(/Last name, first name, or phone/i), {
+      target: { value: "Stedi" },
+    });
+    await waitFor(() => expect(apiMock.searchPatientsForCall).toHaveBeenCalled());
+    expect(apiMock.searchPatientsForCall).toHaveBeenCalledWith("call-valley-1", "Stedi", "valley");
+  });
+
+  it("Send to chart offers no office picker, and still sends to the resolved office", async () => {
+    previewPerOffice(VALLEY);
+    apiMock.resolvePatient.mockResolvedValue({ success: true, commLogNum: 451451, office: VALLEY });
+
+    render(
+      <SendToChartDialog
+        canCrossOffice={false}
+        open onOpenChange={() => {}} call={valleyCall()}
+        patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/Writing to/)).toBeTruthy());
+
+    expect(screen.queryByTestId("chart-office-select")).toBeNull();
+    // Everything else about the dialog is untouched: the office is still named, and
+    // the send still carries it. Hiding the CHOICE is not hiding the FACT.
+    expect(screen.getByTestId("send-to-chart-confirm").textContent).toMatch(/Send to Valley Fort Smith chart/);
+
+    fireEvent.click(screen.getByTestId("send-to-chart-confirm"));
+    await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalled());
+    const [, body] = apiMock.resolvePatient.mock.calls[0];
+    expect(body.target_office).toBe("valley");
+    expect(body.patientId).toBe(7115);
   });
 });

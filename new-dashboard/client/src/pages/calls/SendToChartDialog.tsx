@@ -66,12 +66,19 @@ interface SendToChartDialogProps {
    * buttons on the call-detail page set this; the worklist-row Send omits it (summary).
    */
   contentType?: "summary" | "transcript";
+  /**
+   * May this person aim the note at the OTHER practice's chart? Passed down rather
+   * than read from context so the dialog has one source of truth with the buttons
+   * that opened it — the caller already computed `voice.chart_write` to decide
+   * whether to offer a send at all.
+   */
+  canCrossOffice: boolean;
 }
 
 /** A patient chosen inside this dialog, tagged with the office they were found in. */
 type PickedPatient = { id: number; name: string; office: string };
 
-export function SendToChartDialog({ open, onOpenChange, call, patientId, patientName, onSent, contentType = "summary" }: SendToChartDialogProps) {
+export function SendToChartDialog({ open, onOpenChange, call, patientId, patientName, onSent, contentType = "summary", canCrossOffice }: SendToChartDialogProps) {
   const [generated, setGenerated] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -301,6 +308,7 @@ export function SendToChartDialog({ open, onOpenChange, call, patientId, patient
           onChange={changeTarget}
           callOfficeId={callOfficeId}
           disabled={sending}
+          canCrossOffice={canCrossOffice}
         />
 
         {crossOffice ? (

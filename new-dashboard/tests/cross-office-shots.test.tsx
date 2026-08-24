@@ -118,6 +118,7 @@ describe.skipIf(!enabled)("cross-office chart target — screenshot dumps", () =
     apiMock.getCommlogPreview.mockResolvedValue(preview(VALLEY));
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={CALL}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -132,6 +133,7 @@ describe.skipIf(!enabled)("cross-office chart target — screenshot dumps", () =
     );
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={CALL}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
@@ -163,6 +165,7 @@ describe.skipIf(!enabled)("cross-office chart target — screenshot dumps", () =
     apiMock.searchPatientsForCall.mockResolvedValue({ patients: [], office: ROLAND });
     render(
       <SendToChartDialog
+        canCrossOffice
         open onOpenChange={() => {}} call={CALL}
         patientId={7115} patientName="Stedi TestValley" onSent={() => {}}
       />,
