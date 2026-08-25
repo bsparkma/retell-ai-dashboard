@@ -103,3 +103,8 @@ secrets/
 
 # Container-parity working env (DEV throwaway values; commit the .example only)
 deploy/container/.env.container
+
+# RCM section 10/11 staging-walk artifacts. The manifest names live Open Dental
+# rows and the two synthetic 835s carry the test patient chart name, so neither
+# belongs in git; the scripts that produce them do.
+backend/scripts/out/

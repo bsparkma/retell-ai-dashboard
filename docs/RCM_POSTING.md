@@ -822,6 +822,157 @@ avoid.
 > `19109`–`19112`. That supplemental permanently pins claim 53648 and its
 > procedure. **Author a synthetic 835 that pays a NEW disposable claim.**
 
+### 10.0 Prep — everything that is not a human decision, done in advance
+
+Four checked-in scripts under `backend/scripts/`, plus a manifest. They exist so
+the night of the walk is: review → approve → drain → verify on the ledger →
+kill-mid-drain → replay → unwind, and nothing else. Authoring X12 or creating
+claims at 10pm beside a live chart database is how a walk turns into a debugging
+session.
+
+They are checked in rather than pasted from a scratchpad for the same reason the
+D-7 probes are: **the thing that gets run is the thing that got reviewed.** That
+run (§9) exposed two defects in a script that had been written, reviewed and
+approved but never executed — it could not load its own secrets, and importing
+it ran it. Both are now pinned, for these scripts too, by
+`backend/test/rcmS10Scripts.test.js`.
+
+| Script | Writes? | What it does |
+| --- | --- | --- |
+| `rcm-s10-inventory.js` | **no** | Every claim, claimproc, procedurelog, claimpayment and adjustment on 12827, plus the computed balance with `ProcStatus:"D"` rows excluded. The baseline §11 is measured against. Run it first. |
+| `rcm-s10-prep.js` | POST only | Runs the §10.1 recipe **twice** and writes the manifest. |
+| `rcm-s10-835.js` | no OD access at all | Reads the manifest, emits the two synthetic 835s, prints both to stdout. |
+| `rcm-s11-unwind.js` | **DELETE + PUT** | §11. Dry-run by default. **Run after the walk, not during prep.** |
+
+A fifth file, `rcm-s10-targets.js`, holds the constants the other four must agree
+on — office, patient, fee, manifest path, deny-list — and imports nothing but
+`node:path`. Same shape and same reason as `rcm-d7-ghost.js`: if the scripts got
+that agreement by importing each other, requiring one would be enough to run
+another, which is exactly what happened on 2026-08-24.
+
+Run them in order, from inside the staging container at `/app`:
+
+```bash
+PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js
+PROBE_OFFICE=roland S10_EXPECTED_CLAIMS=<n> node scripts/rcm-s10-prep.js
+node scripts/rcm-s10-835.js
+```
+
+`<n>` is the claim count the inventory printed. The prep refuses without it:
+without a baseline, "nothing else appeared on this patient" is an assumption
+rather than a check. It re-runs that check before **each** of the two creates —
+the two are ~10 s apart, and a claim appearing in between is precisely the
+condition being watched for.
+
+Locally they are a no-op. `kv-carein-staging` is in a different Entra tenant from
+a workstation `az` token (`AKV10032: Invalid issuer`), so the customer key cannot
+resolve. Same constraint as the D-7 probes; see §9 "How the probes are run".
+
+#### The manifest
+
+`backend/scripts/out/rcm-s10-manifest.json`, gitignored (it names live chart
+rows):
+
+```json
+{ "office": "roland", "patNum": 12827, "patLast": "…", "patFirst": "…",
+  "procCode": "D0140", "feeCents": 100, "baselineClaimCount": 3,
+  "complete": true,
+  "targets": [ { "procNum": 0, "claimNum": 0, "claimProcNum": 0,
+                 "serviceDate": "…", "createdAt": "…" } ] }
+```
+
+**It is the only authority `rcm-s11-unwind.js` accepts.** Not argv, not an env
+var, not a fresh read of the patient's claims. An unwind that takes ids from an
+argument is one typo away from deleting a real patient's claim, and an unwind
+that *finds* its targets by reading the chart would delete whatever happens to
+look like a target that day. No manifest means this walk created nothing, so
+there is nothing to unwind — and the script refuses before it even opens a
+client.
+
+It is written on a **partial** run too, and especially then. The worst outcome
+available here is a row created and unrecorded: the unwind removes only what the
+manifest names, so a create the manifest does not name can never be removed by
+the tooling that made it. `complete: false` says so out loud.
+
+The prep also **refuses to run if a manifest already exists**, so a second run
+cannot mint a third target onto a patient whose first two are still un-unwound.
+
+#### What keeps this narrow
+
+`routes/rcm/rcmNoOdWrites.test.js`'s `scripts/` scan carried an allow-list of
+two — the D-7 probes. It is now four: `rcm-s10-prep.js` and `rcm-s11-unwind.js`
+join them, each named, with its reason beside it. `rcm-s10-inventory.js` and
+`rcm-s10-835.js` are deliberately **not** on it — they name no write verb, so
+they are scanned like any other script. An allow-list that covered a whole
+feature rather than the files that actually need it would be the escape hatch
+that test exists to close.
+
+The scan also learned two new signals, `axios.delete(` and `client.delete(`.
+`OpenDentalService.apiWriteRaw` is POST/PUT only — the transport has no delete
+verb at all, deliberately (§13) — so before §11 there was nothing under
+`scripts/` that could name one and the scan did not look. `rcm-s11-unwind.js`
+reaches the raw axios instance to issue DELETE, which is exactly the shape a
+second, unreviewed deleter would take. (Bare `.delete(` is not a signal — `Map`
+and `Set` use it.)
+
+Going around `apiWriteRaw` means the transport's `OPENDENTAL_WRITE_DISABLED`
+guard does not apply, so the unwind **re-checks it itself** before issuing
+anything. A dev box that sets that flag so it cannot post into the shared live
+practice database must not be able to delete from it either.
+
+Pinned by `backend/test/rcmS10Scripts.test.js`, beyond the two above:
+
+- ids come from the manifest and nowhere else; `argv` is read exactly once, for
+  `--execute`;
+- exactly three DELETE targets, all interpolated from manifest-derived ids;
+- a **hard deny-list** on the Spike 0b residue — claim `53648`, procedure
+  `405237`, supplemental `533931`, adjustments `19109`–`19112`, `PatPlanNum
+  20469` — refused even if a manifest names one, and refused by issuing
+  *nothing* rather than by skipping the denied rows. A list of things to delete
+  that contains something it should not is not a trustworthy list;
+- dry run is the default;
+- the four §11 steps appear in the mandatory order;
+- the prep is POST-only, hard-codes PatNum / fee / count, reads back every id it
+  creates (G2), takes no positional arguments, and never names `/patplans`;
+- every script loads its own secrets before touching the office registry, guards
+  `main()` behind `require.main === module`, paces at ≥1.3 s, and refuses any
+  `PROBE_OFFICE` but `roland`.
+
+#### The two synthetic 835s
+
+`rcm-s10-835.js` emits `scripts/out/rcm-s10-835-A.txt` and `-B.txt` (gitignored),
+one per target, each paying **$1.00**:
+
+- `CLP01` = the real `ClaimNum` → `CLAIM_NUMBER_MATCH`, 35 of 100. *"The carrier
+  echoes the payer's own claim id in CLP01, which for a claim Open Dental
+  submitted IS the ClaimNum."*
+- `NM1*QC` = the chart's own name, **read from Open Dental by the prep script**
+  and carried in the manifest rather than guessed. On the name-search lane a
+  name disagreement is disqualifying, not merely costly.
+- `DTM*472` = the **claim's** service date, from the manifest. These files are
+  written at prep time and uploaded days later; a date derived at generation
+  would stop being evidence within a week, and one derived at upload would be
+  worse.
+- One `SVC` line, `D0140`, billed 1.00 / paid 1.00, **no CAS at all** — nothing
+  is disallowed, so the write-off is zero and the night's arithmetic is one
+  number. A walk that has to reason about a contractual adjustment is measuring
+  two things at once.
+- Payer `CAREIN SYNTHETIC PAYER`; checks `S10A-<claim>` and `S10B-<claim>`. No
+  `DMG` (so no DOB), no subscriber id, no group number, no `NM1*82`, no NPI —
+  omitted rather than fabricated, because an invented 10-digit NPI is a number
+  that belongs to somebody. Pinned by test.
+
+The two check numbers differ, so the office-scoped remittance key cannot dedupe
+one away and leave §10.3 without a target.
+
+**Uploading them cannot be scripted.** `POST /api/rcm/era` needs the SSO session:
+the shared `DASHBOARD_API_TOKEN` carries no user identity, so `tenantContext`
+fails it closed with `403 TENANT_UNRESOLVED` before the handler is ever reached.
+Copy each body out of the generator's stdout, save it locally, and upload both
+from **/rcm → Remittances**, signed in as `admin` or `office`.
+
+---
+
 ### 10.1 Create a disposable target on PatNum 12827
 
 The Spike 0b recipe, ≥1.3 s between calls:
@@ -838,11 +989,53 @@ GET  /claimprocs?ClaimNum=<C>                             -> 200  1 row, auto-cr
 12827 has an active plan (`PatPlanNum 20469`, effective 2026-01-01 → 2026-12-31)
 which Beau added for Spike 0b; without it `POST /claims` fails.
 
+**Do not run this by hand.** `backend/scripts/rcm-s10-prep.js` (§10.0) runs it
+twice, paced, with the pre-checks and the read-backs, and records what it made in
+the manifest the §11 unwind reads. Two targets, because §10.3 needs a second
+claim: by then the first plan is `posted`, and §10.4 proves a replay of a posted
+plan makes no Open Dental call at all. Creating B on the night would mean writing
+to a chart while measuring a drain.
+
+#### The baseline, and the ids this walk actually uses
+
+`rcm-s10-inventory.js` first. Its output is what §11 is measured against —
+"returned to where it started" is meaningless without a picture of where that
+was, and 12827 already carries Spike 0b's permanent residue.
+
+> **RUN NOT YET PERFORMED.** These scripts are checked in on
+> `chore/rcm-s10-prep` and have not been run against staging: the worktree cannot
+> resolve Roland's customer key (§9, "How the probes are run"), so they run only
+> from inside the deployed container. Fill this table in from the inventory and
+> prep transcripts, and paste both transcripts here, once the branch is on
+> staging.
+
+```
+BASELINE (rcm-s10-inventory.js, PROBE_OFFICE=roland, PatNum 12827)
+  claims          : <ClaimNum list — expect 53648, the Spike 0b residue>
+  procedurelogs   : <ProcNum list, with any ProcStatus "D" flagged>
+  claimprocs      : <ClaimProcNum list — expect 533931, unremovable>
+  adjustments     : <AdjNum list — expect 19109–19112>
+  computed balance: <expect $0.00; the residue nets out>
+  claim count for S10_EXPECTED_CLAIMS: <n>
+
+TARGETS (rcm-s10-prep.js)
+  A  ProcNum=<P1>  ClaimNum=<C1>  ClaimProcNum=<CP1>   — §10.2, the drain
+  B  ProcNum=<P2>  ClaimNum=<C2>  ClaimProcNum=<CP2>   — §10.3, kill-mid-drain
+```
+
+Ids only. No names, and no amounts beyond the $1.00 the targets carry.
+
 ### 10.2 The walk
 
-1. Author a synthetic 835 paying **$1.00** on claim `<C>` for PatNum 12827.
-   Nothing in it is a real person.
+1. **The 835s are prep artifacts, not authored on the night.**
+   `rcm-s10-835.js` (§10.0) already emitted one per target — $1.00, `CLP01`
+   carrying the real `ClaimNum`, the chart's own name, no CAS, an obviously
+   synthetic payer and check number, and nothing in either that resembles a real
+   person, DOB, NPI or TIN. Have both file bodies to hand.
 2. Sign in as `admin` or `office`. **/rcm → Remittances** → upload the 835.
+   (This step needs the SSO session: the shared bearer token carries no user
+   identity, so `tenantContext` 403s it as `TENANT_UNRESOLVED` before the upload
+   handler is reached. It cannot be scripted.)
 3. Match the claim, confirm it against `<C>`, mark it reviewed.
 4. **Approve.** The checklist passes; the plan is written. The panel still says
    *"Queued for posting — nothing has been written to Open Dental yet."*
@@ -896,6 +1089,19 @@ The screen says why. After §9 is discharged, the same walk on **PatNum 7115**.
 
 Measured end to end in the Spike 0b teardown. **Order is mandatory** and the
 first pass fails if you try it any other way.
+
+`backend/scripts/rcm-s11-unwind.js` implements exactly this, against the ids in
+the §10.0 manifest and no others. Dry run first, then `--execute`:
+
+```bash
+PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js             # prints the plan
+PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute   # writes
+```
+
+It prints the balance before and after with `ProcStatus:"D"` rows filtered — the
+G12 trap that over-applied Spike 0b's own teardown by $2.00 — and reads every
+deletion back, because a 200 from Open Dental is a claim about a row rather than
+the row. Paste its transcript below when the walk is done.
 
 ```
 1.  DELETE /claimpayments/{ClaimPaymentNum}        -> 200

@@ -822,7 +822,7 @@ test('the drain reaches Open Dental through the per-office registry; approve sti
   );
 });
 
-test('the operational D-7 probes are the ONLY scripts that reach an OD write, and they are not module code', () => {
+test('a NAMED allow-list of operational scripts may reach an OD write, and they are not module code', () => {
   /*
    * THE EVASION PATH THIS CLOSES.
    *
@@ -831,14 +831,35 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
    * any of them — and "put it in scripts/" is exactly the shape a future
    * shortcut takes.
    *
-   * Two operational probes legitimately live there: D-7's write-verb entitlement
-   * check and the read sweep that proves it landed nothing. They are checked in
-   * rather than pasted from a scratchpad so the thing that gets run is the thing
-   * that got reviewed. Anything ELSE under scripts/ that names an Open Dental
-   * write is a module trying to escape the allow-list.
+   * A small, NAMED set of operational scripts legitimately lives there. They are
+   * checked in rather than pasted from a scratchpad so the thing that gets run is
+   * the thing that got reviewed. Anything ELSE under scripts/ that names an Open
+   * Dental write is a module trying to escape the allow-list.
    */
   const scriptsDir = path.join(__dirname, '../../scripts');
-  const ALLOWED = new Set(['rcm-d7-write-probe.js', 'rcm-d7-read-sweep.js']);
+  /*
+   * FOUR FILES, EACH FOR A NAMED REASON. Adding a fifth is a review decision.
+   *
+   *   rcm-d7-write-probe.js  D-7's write-verb entitlement check (RCM_POSTING §9a).
+   *   rcm-d7-read-sweep.js   the read sweep that proves it landed nothing.
+   *   rcm-s10-prep.js        §10.1 — creates the two disposable $1.00 targets on
+   *                          the designated test patient. POST only.
+   *   rcm-s11-unwind.js      §11 — the ONLY file anywhere in this repo that may
+   *                          name DELETE against Open Dental. The block below
+   *                          pins the properties that keep it narrow.
+   *
+   * Deliberately NOT here: `rcm-s10-inventory.js` and `rcm-s10-835.js`. They are
+   * part of the same walk and they name no write verb, so they are scanned like
+   * any other script. An allow-list that covered a whole feature rather than the
+   * files that actually need it would be the escape hatch this test exists to
+   * close.
+   */
+  const ALLOWED = new Set([
+    'rcm-d7-write-probe.js',
+    'rcm-d7-read-sweep.js',
+    'rcm-s10-prep.js',
+    'rcm-s11-unwind.js',
+  ]);
 
   const WRITE_SIGNALS = [
     'apiWriteRaw',
@@ -849,6 +870,18 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
     "'/claimpayments'",
     'claimprocs/Supplemental',
     'documents/Upload',
+    /*
+     * DELETE, added with the §11 unwind.
+     *
+     * The transport has no delete verb at all — `apiWriteRaw` is POST/PUT only,
+     * deliberately — so until §11 nothing under scripts/ could name one and the
+     * scan did not look. It looks now: `rcm-s11-unwind.js` reaches the raw axios
+     * instance to issue DELETE, which is exactly the shape a second, unreviewed
+     * deleter would take. Bare `.delete(` is NOT a signal — `Map` and `Set` use
+     * it — so the two client-shaped spellings are named instead.
+     */
+    'axios.delete(',
+    'client.delete(',
   ];
 
   const offenders = [];
@@ -900,7 +933,7 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
       unguarded.join(', ')
   );
 
-  // And the two that ARE allowed really are there — an allow-list pointing at
+  // And every file that IS allowed really is there — an allow-list pointing at
   // deleted files passes vacuously.
   for (const name of ALLOWED) {
     assert.ok(fs.existsSync(path.join(scriptsDir, name)), `scripts/${name} is missing`);
