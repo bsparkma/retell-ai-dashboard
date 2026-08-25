@@ -889,8 +889,26 @@ resolve. Same constraint as the D-7 probes; see §9 "How the probes are run".
 
 #### The manifest
 
-`backend/scripts/out/rcm-s10-manifest.json`, gitignored (it names live chart
-rows):
+`/data/rcm-s10/rcm-s10-manifest.json` — the **AzureFile volume**, the same mount
+`CALLSTORE_DIR` uses. `S10_OUT_DIR` overrides it for local runs.
+
+It was `backend/scripts/out/` until 2026-08-25, when the first prep run died on
+`EACCES: permission denied, mkdir '/app/scripts/out'`. **`/app` is read-only to
+the non-root user the container runs as.** The durable volume is not merely a
+workaround for that: §10.3 deliberately kills and restarts the container
+mid-drain, and days pass before the §11 unwind, so a manifest on the ephemeral
+container layer would be gone by the time the rows it describes needed removing —
+live $1.00 claims on a chart with no record of which rows this walk created.
+
+The scripts check the directory is writable **before the first Open Dental call**
+and refuse with a plain sentence if it is not. That ordering is itself a fix: on
+the 2026-08-25 run the check did not exist, the manifest write sat in the abort
+path, and an `EACCES` there printed *over the top of* the 400 that had actually
+stopped the run. The last line the operator saw was `PREP FAILED: EACCES`, which
+described neither. A failure in the reporting path must never mask the failure
+being reported.
+
+Shape:
 
 ```json
 { "office": "roland", "patNum": 12827, "patLast": "…", "patFirst": "…",
@@ -959,8 +977,8 @@ Pinned by `backend/test/rcmS10Scripts.test.js`, beyond the two above:
 
 #### The two synthetic 835s
 
-`rcm-s10-835.js` emits `scripts/out/rcm-s10-835-A.txt` and `-B.txt` (gitignored),
-one per target, each paying **$1.00**:
+`rcm-s10-835.js` emits `/data/rcm-s10/rcm-s10-835-A.txt` and `-B.txt`, one per
+target, each paying **$1.00**:
 
 - `CLP01` = the real `ClaimNum` → `CLAIM_NUMBER_MATCH`, 35 of 100. *"The carrier
   echoes the payer's own claim id in CLP01, which for a claim Open Dental
@@ -997,13 +1015,38 @@ from **/rcm → Remittances**, signed in as `admin` or `office`.
 The Spike 0b recipe, ≥1.3 s between calls:
 
 ```
-POST /procedurelogs {PatNum: 12827, procCode: "D0140", ProcStatus: "C",
-                     ProcFee: 1.00, ProvNum: 1}          -> 201  ProcNum=<P>
+POST /procedurelogs {PatNum: 12827, ProcDate: "<today>", procCode: "D0140",
+                     ProcStatus: "C", ProcFee: 1.00, ProvNum: 1}
+                                                          -> 201  ProcNum=<P>
 POST /claims        {PatNum: 12827, procNums: [<P>], ClaimType: "P"}
                                                           -> 201  ClaimNum=<C>, ClaimStatus="W"
 GET  /claimprocs?ClaimNum=<C>                             -> 200  1 row, auto-created
                                                                   ClaimProcNum=<CP>, Status="NotReceived"
 ```
+
+> **`ProcDate` was missing from this recipe until 2026-08-25**, and the first prep
+> run got `400 "ProcDate is required."` because of it. The Open Dental API
+> reference for procedurelogs lists **PatNum, ProcDate, ProcStatus** and
+> **procCode-or-CodeNum** as required; this block had been transcribed from an
+> abridged Spike 0b note that showed only the fields the author found
+> interesting. `docs/RCM_OD_WRITES.md` "Tests 1–4" carried the same omission and
+> is corrected too — that is where this recipe was copied from, and a wrong
+> recipe in a doc is what the next person copies.
+>
+> `ProcFee` and `ProvNum` are documented **optional**. Both are sent anyway:
+> `ProcFee` because the walk's whole arithmetic is that this procedure costs
+> exactly $1.00 and the default is the code's fee *"with consideration of the
+> patient's insurance"*, a number this walk does not control; `ProvNum` because
+> its default chain ends at the office default provider, which would make the row
+> depend on practice configuration rather than on the script.
+>
+> `DateEntryC` is **not** sent — it appears in responses but the reference does
+> not list it as a create parameter.
+>
+> `<today>` is derived in `OFFICE_TIMEZONE` (America/Chicago), not UTC: UTC
+> midnight lands mid-evening in Central, so a prep run at 7pm the night before
+> would stamp tomorrow on the procedure. The prep sends it, reads it back, and
+> aborts if Open Dental stored something else.
 
 12827 has an active plan (`PatPlanNum 20469`, effective 2026-01-01 → 2026-12-31)
 which Beau added for Spike 0b; without it `POST /claims` fails.

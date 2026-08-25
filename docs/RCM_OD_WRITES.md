@@ -598,8 +598,8 @@ revised *down*** (posting turns out to be mostly reversible); G11 and G12 opened
 ### Tests 1–4 — the happy path, end to end
 
 ```
-POST /procedurelogs {PatNum 12827, D0140, ProcStatus "C", ProcFee 1.00, ProvNum 1}
-                                                  -> 201  ProcNum=405237
+POST /procedurelogs {PatNum 12827, ProcDate <today>, D0140, ProcStatus "C",
+                     ProcFee 1.00, ProvNum 1}     -> 201  ProcNum=405237
 POST /claims        {PatNum 12827, procNums:[405237], ClaimType "P"}
                                                   -> 201  ClaimNum=53648  ClaimStatus="W"  ClaimFee=1
 GET  /claimprocs?ClaimNum=53648                   -> 200  1 row, auto-created by the claim
@@ -614,6 +614,14 @@ POST /claimpayments {claimNum:53648, CheckAmt:0.60, PayType:296, CheckNum:"SPIKE
                                                   -> 201  ClaimPaymentNum=21253  IsPartial="false"
 GET  /claimprocs?ClaimPaymentNum=21253            -> 200  1 row, InsPayAmt sum = 0.60
 ```
+
+> **`ProcDate` was omitted from the line above until 2026-08-25.** This transcript
+> was abridged when it was written, and §10.1 of `RCM_POSTING.md` was copied from
+> it — so the §10 prep script inherited the omission and got
+> `400 "ProcDate is required."` on its first run. The API reference lists
+> **PatNum, ProcDate, ProcStatus** and **procCode-or-CodeNum** as required for
+> `POST /procedurelogs`; `ProcFee` and `ProvNum` are optional (they are sent
+> anyway — see §10.1 for why), and `DateEntryC` is not a create parameter at all.
 
 Three incidental confirmations: a new claim defaults to **`ClaimStatus "W"`** (Waiting in
 queue), not `"U"`; **the claim's own `InsPayAmt`/`WriteOff` roll up automatically** from its

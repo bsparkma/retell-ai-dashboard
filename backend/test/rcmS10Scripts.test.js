@@ -31,6 +31,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 
@@ -64,7 +65,7 @@ test('all five walk scripts are checked in', () => {
 
 // ─── 1. The shared-constants module has no reach ────────────────────────────
 
-test('rcm-s10-targets requires nothing but node:path, so importing it can run nothing', () => {
+test('rcm-s10-targets imports only inert stdlib and runs nothing on import', () => {
   /*
    * The same rule `rcm-d7-ghost.js` follows, for the same reason. Four scripts
    * must agree on one patient, one office and one manifest path; two of them
@@ -72,11 +73,108 @@ test('rcm-s10-targets requires nothing but node:path, so importing it can run no
    * requiring one would be enough to run another — which is precisely what
    * happened on 2026-08-24, when a script named "read sweep" re-issued every
    * write verb because the file it imported called main() at load.
+   *
+   * This asserted `['node:path']` exactly until `checkOutDirWritable` moved here.
+   * That helper belongs in this file — all four scripts share the output
+   * directory, so a per-script copy would be four chances to disagree about where
+   * the manifest lives — and it needs `node:fs`.
+   *
+   * The list is widened deliberately, and the PROPERTY tightens: inert stdlib
+   * only, nothing from this repo, and no top-level call of any kind. The rule was
+   * never about the name `node:path`; it was about import being unable to *act*,
+   * and that is now asserted directly rather than by proxy.
    */
   const src = code(FILES.targets);
-  const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
-  assert.deepEqual(requires, ['node:path'], 'rcm-s10-targets must import nothing else');
-  assert.ok(!/\bmain\s*\(/.test(src), 'and it must not call anything');
+  const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).sort();
+  assert.deepEqual(requires, ['node:fs', 'node:path'], 'only inert stdlib');
+
+  /*
+   * And nothing this file DEFINES is invoked at module scope. `path.join` at the
+   * top level is fine and necessary — it derives the manifest path and is pure.
+   * What must never happen is `checkOutDirWritable()` (or any future helper)
+   * running on import: that would touch a filesystem the moment any of the four
+   * scripts required this one, which is the 2026-08-24 shape exactly.
+   */
+  const topLevel = src.replace(/function[\s\S]*?\n}/g, '');
+  const defined = [...src.matchAll(/^function\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  assert.ok(defined.includes('checkOutDirWritable'), 'sanity: the helper is defined here');
+  for (const name of defined) {
+    assert.ok(
+      !new RegExp(`\\b${name}\\s*\\(`).test(topLevel),
+      `${name}() must not be called at module scope`
+    );
+  }
+  // No filesystem work on import either, whatever it is spelled.
+  assert.ok(!/\bfs\.\w+\(/.test(topLevel), 'no fs call at module scope');
+});
+
+test('the output directory is on /data, not inside the read-only image', () => {
+  /*
+   * MEASURED 2026-08-25: the first prep run died on
+   *
+   *     EACCES: permission denied, mkdir '/app/scripts/out'
+   *
+   * `/app` is read-only to the non-root user the container runs as. `/data` is
+   * the AzureFile volume, and it has to be that one specifically: §10.3 kills and
+   * restarts the container mid-drain, and days pass before the §11 unwind. A
+   * manifest on the ephemeral container layer would be gone by the time the rows
+   * it describes needed removing — live $1.00 claims on a chart with no record of
+   * which rows this walk created, and so no way for the unwind to remove them.
+   */
+  const priorEnv = process.env.S10_OUT_DIR;
+  const targetsPath = require.resolve(path.join(SCRIPTS, FILES.targets));
+  delete process.env.S10_OUT_DIR;
+  delete require.cache[targetsPath];
+  try {
+    const fresh = require(targetsPath);
+    assert.equal(fresh.OUT_DIR, '/data/rcm-s10', 'the default must be the durable volume');
+    assert.ok(!fresh.OUT_DIR.includes('app'), 'never inside the image');
+    // `path.dirname`, not `startsWith`: this suite runs on Windows too, where
+    // `path.join('/data/rcm-s10', x)` comes back with backslashes and a prefix
+    // comparison against the forward-slash constant fails for a reason that has
+    // nothing to do with the property being tested.
+    const normalised = path.normalize(fresh.OUT_DIR);
+    assert.equal(path.dirname(fresh.MANIFEST_PATH), normalised, 'the manifest lives there');
+    assert.equal(path.dirname(fresh.ERA_A_PATH), normalised, 'and so do the 835s');
+    assert.equal(path.dirname(fresh.ERA_B_PATH), normalised);
+  } finally {
+    if (priorEnv === undefined) delete process.env.S10_OUT_DIR;
+    else process.env.S10_OUT_DIR = priorEnv;
+    delete require.cache[targetsPath];
+  }
+
+  // And `S10_OUT_DIR` overrides it, which is the only reason this suite and a
+  // local run are possible at all.
+  assert.match(code(FILES.targets), /process\.env\.S10_OUT_DIR \|\| '\/data\/rcm-s10'/);
+});
+
+test('checkOutDirWritable proves a write lands, and reports rather than throws', () => {
+  /*
+   * It writes and removes a probe file rather than trusting `accessSync(W_OK)`:
+   * on an AzureFile mount, and under an overlay filesystem, access bits are not a
+   * reliable predictor of whether a write succeeds. And it RETURNS a message
+   * instead of throwing, so the caller controls what an operator sees — the whole
+   * point being that this failure must not arrive as a stack trace.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'rcm-s10-'));
+  try {
+    const good = path.join(base, 'nested', 'out');
+    assert.equal(T.checkOutDirWritable(good), null, 'a creatable directory is fine');
+    assert.ok(fs.existsSync(good), 'and it is created, recursively');
+    assert.ok(!fs.existsSync(path.join(good, '.write-probe')), 'the probe file is cleaned up');
+
+    // A FILE where the directory should be: mkdir fails, and the caller gets a
+    // sentence naming the path and pointing at /data.
+    const blocker = path.join(base, 'blocker');
+    fs.writeFileSync(blocker, 'not a directory', 'utf8');
+    const msg = T.checkOutDirWritable(path.join(blocker, 'out'));
+    assert.ok(typeof msg === 'string' && msg.length > 0, 'it must report a problem');
+    assert.match(msg, /cannot create the output directory/);
+    assert.match(msg, /\/app is READ-ONLY/, 'and name the actual cause in the container');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('the targets module pins the office, the patient and the fee as constants', () => {
@@ -185,10 +283,151 @@ test('the prep script hard-codes the patient, the fee and the target count', () 
     !/process\.argv/.test(src),
     'the prep must take no positional arguments — there is nothing about it to vary'
   );
-  // The only env vars it reads are the office assertion and the inventory's
-  // baseline. Neither can change WHAT it writes, only whether it runs at all.
+  /*
+   * Three env vars, and none of them can redirect the write.
+   *
+   *   PROBE_OFFICE        an assertion that can only refuse (never redirect).
+   *   S10_EXPECTED_CLAIMS the inventory's baseline; gates whether it runs.
+   *   OFFICE_TIMEZONE     the zone ProcDate is derived in. It DOES affect what is
+   *                       written — by at most one day — which is why the value is
+   *                       read back from the chart and a disagreement aborts. It
+   *                       is platform-wide config, set once, not a per-run knob;
+   *                       the same var the drain and the OD sync already use.
+   *
+   * Note what is absent: no PatNum, no fee, no count, no id of any kind.
+   */
   const envs = [...src.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]).sort();
-  assert.deepEqual([...new Set(envs)], ['PROBE_OFFICE', 'S10_EXPECTED_CLAIMS']);
+  assert.deepEqual(
+    [...new Set(envs)],
+    ['OFFICE_TIMEZONE', 'PROBE_OFFICE', 'S10_EXPECTED_CLAIMS'],
+    'no env var may name a patient, an amount, a count or an id'
+  );
+});
+
+test('the prep script sends ProcDate, which POST /procedurelogs requires', () => {
+  /*
+   * MEASURED 2026-08-25: the first prep run got
+   *
+   *     400 "ProcDate is required."
+   *
+   * The Open Dental API reference for procedurelogs lists PatNum, ProcDate,
+   * ProcStatus and procCode-or-CodeNum as required. The recipe transcribed into
+   * `RCM_OD_WRITES.md` and `RCM_POSTING.md` §10.1 omitted ProcDate — both are
+   * corrected alongside this test, because a recipe in a doc is what the next
+   * person copies.
+   *
+   * ProcFee and ProvNum are documented OPTIONAL and are sent anyway. ProcFee
+   * because the walk's whole arithmetic is that this procedure costs exactly
+   * $1.00 and the default is the code's fee "with consideration of the patient's
+   * insurance" — a number this walk does not control. ProvNum because its default
+   * chain ends at the office default provider, which would make the row depend on
+   * practice configuration.
+   *
+   * DateEntryC is NOT sent: it appears in responses, but the reference does not
+   * list it as a create parameter.
+   */
+  const src = code(FILES.prep);
+  const body = /await od\.post\('\/procedurelogs', \{([\s\S]*?)\}\);/.exec(src);
+  assert.ok(body, 'the procedurelog create must be findable');
+  const fields = [...body[1].matchAll(/^\s*([A-Za-z]+):/gm)].map((m) => m[1]).sort();
+  assert.deepEqual(
+    fields,
+    ['PatNum', 'ProcDate', 'ProcFee', 'ProcStatus', 'ProvNum', 'procCode'].sort(),
+    'exactly the four required fields plus the two deliberate optionals'
+  );
+  assert.ok(!/DateEntryC/.test(src), 'DateEntryC is not a documented create parameter');
+});
+
+test('the prep script derives ProcDate in the office timezone, not UTC', () => {
+  /*
+   * UTC midnight lands mid-evening in Central, so a prep run at 7pm the night
+   * before the walk would stamp TOMORROW on the procedure. The matcher would then
+   * score the 835's service date against a chart date a day out, and §11 would
+   * reconcile against a row dated after the walk that created it.
+   *
+   * Same reasoning and same implementation as `postingDrain.officeToday()`.
+   */
+  const src = code(FILES.prep);
+  assert.match(src, /OFFICE_TIMEZONE \|\| 'America\/Chicago'/);
+  assert.match(src, /timeZone: tz/, 'the date must be formatted IN that zone');
+  assert.match(src, /const procDate = officeToday\(\)/);
+  assert.ok(
+    !/ProcDate: new Date\(\)|ProcDate: .*toISOString/.test(src),
+    'never a bare UTC timestamp'
+  );
+
+  // 03:00 UTC on the 26th is still the 25th in Central — the exact off-by-one
+  // this guards, exercised rather than asserted about.
+  const { officeToday } = require(path.join(SCRIPTS, FILES.prep));
+  const prior = process.env.OFFICE_TIMEZONE;
+  process.env.OFFICE_TIMEZONE = 'America/Chicago';
+  try {
+    assert.equal(officeToday(new Date('2026-08-26T03:00:00Z')), '2026-08-25');
+    assert.equal(officeToday(new Date('2026-08-26T13:00:00Z')), '2026-08-26');
+  } finally {
+    if (prior === undefined) delete process.env.OFFICE_TIMEZONE;
+    else process.env.OFFICE_TIMEZONE = prior;
+  }
+});
+
+test('the prep script checks the output directory BEFORE its first Open Dental call', () => {
+  /*
+   * THE ORDERING DEFECT, 2026-08-25. The run aborted correctly on the ProcDate
+   * 400, printed "Nothing was created for this target" — and then died on EACCES
+   * writing the manifest in the abort path. The last line the operator saw was
+   * `PREP FAILED: EACCES`, which describes neither the real failure nor what the
+   * script did about it. A failure in the REPORTING path masked the failure being
+   * reported.
+   *
+   * Checking up front makes the first error the only error, and means the
+   * chart-touching part never begins when the cheap precondition it depends on is
+   * already broken. A prep that creates two live claims and only THEN finds it
+   * cannot record them is the exact outcome the manifest exists to prevent.
+   */
+  /*
+   * Measured from the start of `main()`, not from the top of the file: `od.get(`
+   * and `od.post(` also appear inside the `pacedOd` helper DEFINED above main,
+   * and a whole-file index comparison would be testing where functions are
+   * declared rather than the order in which they run.
+   */
+  const whole = code(FILES.prep);
+  const mainAt = whole.indexOf('async function main()');
+  assert.ok(mainAt > 0, 'main() must be findable');
+  const src = whole.slice(mainAt);
+
+  const check = src.indexOf('T.checkOutDirWritable()');
+  assert.ok(check > 0, 'the prep must check the output directory inside main()');
+
+  for (const later of ['loadSecrets()', 'odOffices.getOdOffice', 'od.get(', 'od.post(']) {
+    const at = src.indexOf(later);
+    assert.ok(at > 0, `sanity: ${later} is called in main()`);
+    assert.ok(at > check, `checkOutDirWritable must precede ${later}`);
+  }
+
+  // And the manifest write no longer creates the directory itself — that would
+  // be a second, later, unguarded chance to hit the same EACCES.
+  assert.ok(!/fs\.mkdirSync\(T\.OUT_DIR/.test(src), 'no late mkdir in the prep');
+});
+
+test('the prep prints the created ids BEFORE writing the manifest, and survives a failed write', () => {
+  /*
+   * `checkOutDirWritable` ran before the first Open Dental call, so this write
+   * should not fail. "Should not" is not "cannot" — a volume can go away between
+   * the two — and if it does, the console transcript becomes the only surviving
+   * record of what was created on a live chart. Whatever happens to the file, an
+   * operator ends up holding the numbers.
+   */
+  const src = code(FILES.prep);
+  const printed = src.indexOf('WHAT THIS RUN CREATED');
+  const written = src.indexOf('fs.writeFileSync(T.MANIFEST_PATH');
+  assert.ok(printed > 0 && written > 0);
+  assert.ok(printed < written, 'the ids are printed before the file is written');
+
+  // The write is guarded, and the failure path re-prints the whole manifest so it
+  // can be reconstructed by hand rather than lost.
+  assert.match(src, /try \{\s*\n\s*fs\.writeFileSync\(T\.MANIFEST_PATH/);
+  assert.match(src, /COULD NOT WRITE THE MANIFEST/);
+  assert.match(src, /ONLY record of what was created/);
 });
 
 test('the prep script refuses any office but roland, and refuses an existing manifest', () => {

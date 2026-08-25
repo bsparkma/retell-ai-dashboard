@@ -8,8 +8,11 @@
  * NO OPEN DENTAL ACCESS AT ALL. No secrets, no network, no office handle. It
  * reads the manifest `rcm-s10-prep.js` wrote and emits two files:
  *
- *     scripts/out/rcm-s10-835-A.txt   pays $1.00 on target A's claim
- *     scripts/out/rcm-s10-835-B.txt   pays $1.00 on target B's claim
+ *     /data/rcm-s10/rcm-s10-835-A.txt   pays $1.00 on target A's claim
+ *     /data/rcm-s10/rcm-s10-835-B.txt   pays $1.00 on target B's claim
+ *
+ * (`/data` is the AzureFile volume. `/app` is read-only to the user the container
+ * runs as; `S10_OUT_DIR` overrides the location for local runs.)
  *
  * and prints both to stdout, because the container's filesystem is not where
  * Beau uploads from. See "GETTING THE FILES OUT" at the bottom of this header.
@@ -64,8 +67,9 @@
  *
  * The one identifying string in the file is the TEST PATIENT'S OWN chart name,
  * which is what makes the match work at all. 12827 is a designated synthetic
- * fixture (CLAUDE.md), the files are gitignored, and this script does not print
- * that name outside the file bodies it emits.
+ * fixture (CLAUDE.md), the files are written outside the repository entirely (to
+ * the /data volume), and this script does not print that name outside the file
+ * bodies it emits.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY THE BUILDER IS HERE RATHER THAN REUSED
@@ -201,23 +205,47 @@ function main() {
   }
 
   const paths = [T.ERA_A_PATH, T.ERA_B_PATH];
-  fs.mkdirSync(T.OUT_DIR, { recursive: true });
+  // Same gate the prep uses, for the same reason: fail on the precondition
+  // rather than half way through emitting the pair. This script touches no
+  // chart, so the cost of a late failure is smaller — but an operator who has
+  // file A and a stack trace where B should be is still worse off than one who
+  // has a sentence.
+  const outDirProblem = T.checkOutDirWritable();
+  if (outDirProblem) {
+    console.error(`REFUSED: ${outDirProblem}`);
+    process.exitCode = 7;
+    return;
+  }
 
   console.log(`\n=== S10 SYNTHETIC 835s — ${T.TARGET_COUNT} files, $${(T.PROC_FEE_CENTS / 100).toFixed(2)} each ===`);
 
   for (const [i, target] of usable.entries()) {
     const label = String.fromCharCode(65 + i);
     /*
-     * The service date, in order of preference: the claim's own date from the
-     * manifest, then the day the target was created. NOT `new Date()` — these
-     * files are written at prep time and uploaded days later, and a date derived
-     * at generation would still be wrong; a date derived at UPLOAD would be
-     * wronger. If neither is present the generator refuses rather than inventing
-     * one: an invented service date is evidence that is not evidence.
+     * The service date comes from the manifest and from NOWHERE ELSE.
+     *
+     * It used to fall back to the day the target was created, which was a fallback
+     * for a value that might be absent. It cannot be absent any more: `ProcDate`
+     * is a REQUIRED field on `POST /procedurelogs`, so the prep now sends it
+     * explicitly, checks the read-back agrees, and records the chart's version.
+     * The fallback was dead code that could only ever fire when something had
+     * gone wrong upstream — and its effect would have been to paper over that by
+     * inventing a plausible date.
+     *
+     * NOT `new Date()` at any point. These files are written at prep time and
+     * uploaded days later; the matcher scores the 835's service date against the
+     * chart's, so it must be the CHART's date, however long the gap.
      */
-    const serviceDate = target.serviceDate || String(target.createdAt || '').slice(0, 10);
+    const serviceDate = String(target.serviceDate || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) {
-      console.error(`REFUSED: target ${label} has no usable service date. Re-run the prep.`);
+      console.error(
+        [
+          `REFUSED: target ${label} carries no service date (got ${JSON.stringify(target.serviceDate)}).`,
+          '  The prep records the ProcDate it read back from Open Dental. A manifest without one',
+          '  did not come from a completed prep run — re-run it rather than inventing a date the',
+          '  chart does not have.',
+        ].join('\n')
+      );
       process.exitCode = 6;
       return;
     }

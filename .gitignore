@@ -107,4 +107,8 @@ deploy/container/.env.container
 # RCM section 10/11 staging-walk artifacts. The manifest names live Open Dental
 # rows and the two synthetic 835s carry the test patient chart name, so neither
 # belongs in git; the scripts that produce them do.
+#
+# These now default to /data/rcm-s10 (the AzureFile volume) rather than into the
+# repo -- /app is read-only in the container. The rule stays so that a local run
+# with S10_OUT_DIR pointed back at the old path still cannot commit a manifest.
 backend/scripts/out/
