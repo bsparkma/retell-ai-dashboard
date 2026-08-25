@@ -291,11 +291,15 @@ somebody is waiting on.
 
 ### 2.6 Matching, resolve, and link-only
 
-Search is **call-scoped by design**: `GET /api/unified-calls/:id/patient-search?q=`
-(`unifiedCalls.js:374`), *"Deliberately call-scoped rather than a bare
-/opendental/patients/search?office_id=… : the office is derived server-side from the
-call."* Requires `q.length >= 2`, and audits with `resourceId: null` because the query
-itself may be PHI.
+Search is **call-scoped by design**: `GET
+/api/unified-calls/:id/patient-search?q=&target_office=`, *"Deliberately call-scoped
+rather than a bare /opendental/patients/search?office_id=… "* — the call is what fixes
+the ORIGIN office and puts the look through a practice's records in the trail next to
+the call that prompted it. Requires `q.length >= 2`, and audits with `resourceId: null`
+because the query itself may be PHI.
+
+`target_office` (optional) chooses WHICH practice's list to search; see **The
+cross-office chart target** below.
 
 Older non-office-aware searches still exist at `GET /api/opendental/patients/search` and
 `GET /api/opendental-sync/patients/search` — they route through the tenant seam and take
@@ -337,6 +341,86 @@ returns 200 for the same patient and **409 `ALREADY_SENT_TO_CHART`** for a diffe
 Legacy route caution: `POST /api/opendental-sync/calls/:callId/link` defaults
 `syncNow = true` and does **not** pass `expectOfficeKey`. It writes a commlog. Don't reach
 for it in new code.
+
+### The cross-office chart target
+
+A call belongs to the office it rang at, permanently — that attribution is the call's
+identity and drives the worklists, filters and analytics. **Which chart a note is filed
+in is a separate fact**, and since 2026-08-24 it is a per-send choice.
+
+The reason: the front desk at one practice regularly takes a call about the other
+practice's patient. Locking the chart to the call's office meant Pick Patient searched
+only that office's Open Dental, the patient was not in it, and the call could not be
+charted anywhere at all.
+
+|  | Origin | Target |
+| --- | --- | --- |
+| What | The office the call rang at | The office whose chart/patient list we touch |
+| Where from | `getOfficeForCall(call)` — derived, never from a request | `target_office`, else the default below |
+| Mutable | **Never** | Per request |
+
+Three routes take `target_office` — `patient-search` (query), `commlog-preview` (query),
+`resolve-patient` (body):
+
+- **Absent → the default**, and that default is a **service invariant, not a route
+  convenience**: `openDentalSync.defaultTargetOfficeFor(call)` — the office of the call's
+  *linked patient* when it has one, otherwise the call's own. It follows the patient
+  because a stored PatNum is only meaningful in the database it came from; defaulting a
+  call linked at Riley back to Roland would aim a Riley PatNum at Roland's database.
+
+  It lives in the **service** because `syncCallToCommLog` is reachable from callers that
+  know nothing about targets — the legacy `POST /api/opendental-sync/calls/:id/sync` and
+  the batch drain. A default defined in `routes/unifiedCalls.js` was a rule only the SPA's
+  route obeyed, and the other callers resolved back to the call's office, hit the
+  stale-match guard, discarded the human's link and re-matched by phone. The route now
+  delegates; there is one definition.
+- **Present → validated against the office registry** (`odOffices.isChartTargetOffice()`,
+  the single definition of "one of this practice group's offices"; excludes `unknown`).
+  Unrecognised → **400 `TARGET_OFFICE_UNKNOWN`**, never a fallback. Reachability is then
+  the same per-office fail-closed check as everywhere else (`odBlockReason` → 409/503).
+- **A stored link that disagrees with the resolved office is REFUSED**, not routed around:
+  `syncCallToCommLog` returns `PATIENT_OFFICE_MISMATCH` (409), writes nothing and
+  re-matches nothing. Which of the two facts is wrong is a question only a person can
+  answer. Reachable today for a legacy row carrying no `od_patient_office` (read as
+  `roland` by stated assumption) on a valley call — the pre-slice corruption shape.
+- **`matchAndSetStatus` never re-matches an already-linked call** — it returns
+  `already_linked` and touches nothing. Three of its four callers only skipped `'synced'`,
+  so the hourly Mango sync would otherwise re-match a cross-office-linked call in the
+  *call's* office and silently re-point it within the hour.
+- `openDentalSync.linkCallToPatient` / `syncCallToCommLog` take `targetOfficeKey`
+  (**selects**, from a validated human choice) alongside `expectOfficeKey` (**asserts**,
+  can only refuse). `odForTarget()` is the seam; `odForCall()` is the call's own office.
+
+`office_id` keeps its old job — an assertion that can only 409 — but is now compared to
+the resolved **target**, not the call. A stale screen that names only the call's office
+on a request whose target is elsewhere still gets `OFFICE_MISMATCH`. The UI sends both.
+
+The `linkOnly` no-op check on an already-`synced` call compares **(PatNum, office)**,
+never PatNum alone: 7115-in-Roland and 7115-in-Riley are two different people, and
+comparing the number by itself would read a re-point at the other practice as a harmless
+no-op.
+
+Audit rows carry both: **`office` = the chart touched, `origin_office` = the call it came
+from** (`migrations-tenant/1787200000000_audit_log_origin_office.js`). A cross-office
+action is `origin_office IS DISTINCT FROM office`. The not-a-patient close-out records
+only `office` — it touches no chart, so naming a target would be a lie.
+
+Permission: `voice.chart_write`, and no new action. Aiming an existing privilege at a
+different chart is not a new privilege — but a **cross-office patient search** takes the
+same permission, because paging through the other practice's records is only ever the
+first half of writing a note there. Same-office search stays open to every voice role
+(a `tc` user identifying a caller is unaffected). The check is in the handler
+(`holdsPermission(req, 'voice.chart_write')`) rather than at the mount, because the answer
+depends on a target resolved mid-request; refusal is **403 `CROSS_OFFICE_SEARCH_FORBIDDEN`**
+and is audited `READ … UNAUTHORIZED` with both offices.
+
+UI: `pages/calls/ChartOfficeSelect.tsx` (selector + the persistent mismatch line), used by
+both `PickPatientModal` and `SendToChartDialog`, and rendered only when the caller holds
+`voice.chart_write` (`canCrossOffice` prop — the parents already compute it for the chart
+buttons). Changing the office **clears the selected patient** and, in Pick Patient,
+**hides the stored match candidates** — those PatNums were matched in the other database
+and mean a different person here. The Send dialog's confirm button names the practice. Tests: `backend/test/crossOfficeChartTarget.test.js` and
+`new-dashboard/tests/cross-office-chart-target.test.tsx`.
 
 ### 2.7 Send to TC — `backend/services/tcCaseClient.js`
 
@@ -408,7 +492,7 @@ Families in Layer A:
 | Mango office attribution | `called_number`, `direction` | `getOfficeForCall` reads `called_number`; dropping it made **every** Mango call resolve to office `unknown` (day-1 bug) |
 | Chart-note compact summary | `action_needed`, `callback_number` | Otherwise the note's Action/Callback lines reset |
 | Transcription attribution | `transcribed_at`, `transcribed_by`, `transcribe_source`, `transcribe_last_outcome`, `transcribe_last_attempt_at`, `transcribe_last_attempt_by` | The hourly sync re-ingests inside the watermark overlap; without these, "who pressed Transcribe" is erased within the hour. `no_speech` in particular must survive or accidental re-billing is silently re-armed |
-| OD commlog sync state | `od_sync_status`, `od_patient_id`, `od_patient_name`, `od_commlog_num`, `od_synced_at`, `od_match_confidence`, `od_match_candidates`, `od_sync_attempted_at`, `od_sync_error`, `sent_by`, `sent_at`, `sent_note`, `note_edited` | Losing these defeats commlog dedup and drops the matched name from the worklist |
+| OD commlog sync state | `od_sync_status`, `od_patient_id`, **`od_patient_office`**, `od_patient_name`, `od_commlog_num`, `od_synced_at`, `od_match_confidence`, `od_match_candidates`, `od_sync_attempted_at`, `od_sync_error`, `sent_by`, `sent_at`, `sent_note`, `note_edited` | Losing these defeats commlog dedup and drops the matched name from the worklist. **`od_patient_office` is the load-bearing one**: `openDentalSync.patientOfficeOf()` reads an absent value as `'roland'`, so a PatNum that loses its office is not a vaguer match — it is a different person. Added to both layers with the cross-office target |
 | Triage / review queue | `triage_status` (default `'new'`), `triage_outcome`, `triage_by`, `triage_at`, `triage_note`, `not_a_patient` (default `false`), `not_a_patient_reason`, `resolved_by`, `resolved_at` | A re-add would reset a triaged call to `'new'` and lose attribution |
 | TC handoff | `tc_case_id`, `tc_case_url`, `tc_sent_at`, `tc_sent_by` | The "In TC" chip would vanish within the hour and invite a second send while the case sits in TC unreferenced |
 | Twin linkage | `linked_call_id`, `link_role` | A linked duplicate leg would un-hide itself within the hour and resolved clutter would reappear |
@@ -487,16 +571,29 @@ These are enforced in code. If a change would relax one, stop and ask.
    worklist. The matcher itself (`openDentalSync.js:1132`) only sets status — *"No
    auto-write ever happens here."* Confidence gate is 0.80 **plus** a hard no-alternatives
    rule; ambiguity means `needs_review`, never a guess.
-2. **Office comes from the call, never from a parameter.** `getOfficeForCall`
+2. **A call's OFFICE comes from the call, never from a parameter.** `getOfficeForCall`
    (`officeAgents.js:137`) derives it from `called_number` for Mango (via the
    `MANGO_LINE_OFFICE` DID map; unmapped → `unknown`, warn-once, **never Roland**) and from
    `handler_id ?? agent_id` for Retell (unmapped → fallback `roland`). A body `office_id`
-   is an assertion that can only 409. *"There is no argument a route (or a request) can
-   pass that changes which chart gets written."*
+   is an assertion that can only 409. Nothing re-attributes a call.
+
+   The one thing a request may choose is the **chart target** — `target_office`, a
+   validated office key naming which practice's chart a note is filed in (see §2.6).
+   It never changes the call's office, it is refused unless it names a registered
+   office, and it only exists because a call about one practice's patient can ring at
+   the other. Everything else — the OD client, the DefNum, the PatNum validation — then
+   follows that one resolved key. There is still no way for a request to end up at an
+   office nobody named.
 3. **A PatNum needs an office.** PatNum numbering restarts in every OD database. Every
-   stored `od_patient_id` is written with `od_patient_office`; a stored match belonging to
-   another office is **discarded and re-matched**, not used. Any route taking a bare
-   `:patientId` must be given `?office_id=` and 400s without it.
+   stored `od_patient_id` is written with `od_patient_office` — including a deliberate
+   cross-office link, where they disagree with the call's own office — and both survive
+   re-normalization (§2.8). A stored match whose office disagrees with the one an
+   operation resolves to is **refused** — `PATIENT_OFFICE_MISMATCH`, nothing written and
+   nothing re-matched. (It was discarded and re-matched until 2026-08-24; re-matching by
+   phone lands the note on whoever shares the caller's number in the resolved office,
+   which is worse than refusing and much worse once a human can link cross-office on
+   purpose.) Any route taking a bare `:patientId` must be given `?office_id=` and 400s
+   without it.
 4. **Honest states.** A failed send never looks sent. A transcription success is only
    reported after the transcript is read back. A 200 without a case id is a refusal.
    Ambiguity is a refusal, not a coin flip.

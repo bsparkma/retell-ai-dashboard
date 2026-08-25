@@ -388,3 +388,74 @@ test('Mango called_number (office DID) survives store normalization → correct 
   assert.equal(stored.action_needed, 'Call back to confirm');
   assert.equal(stored.callback_number, '4795554557');
 });
+
+test('od_patient_office survives a Retell re-add (regression — a PatNum without its database is a different person)', () => {
+  // 1. A call that rang at Roland.
+  unifiedCallStore.addRetellCall({
+    call_id: 'call_cross_office_link',
+    from_number: '+14795551414',
+    start_timestamp: 1777908187899,
+  });
+
+  // 2. The front desk links it to a patient in the OTHER practice — the call rang
+  //    here, the patient is theirs. linkCallToPatient stamps both halves.
+  unifiedCallStore.updateCall('call_cross_office_link', {
+    od_sync_status: 'matched',
+    od_patient_id: 7115,
+    od_patient_office: 'valley',
+    od_patient_name: 'Stedi TestValley',
+  });
+
+  // 3. The 15-min poller re-adds the same call with a bare Retell payload.
+  const readded = unifiedCallStore.addRetellCall({
+    call_id: 'call_cross_office_link',
+    from_number: '+14795551414',
+    start_timestamp: 1777908187899,
+  });
+
+  assert.equal(readded.od_patient_id, 7115);
+  // THIS is the load-bearing one. Dropped, openDentalSync.patientOfficeOf() reads an
+  // absent office as 'roland' — the office every pre-per-location match came from —
+  // so a Riley PatNum would silently re-point at Roland's database. 7115 is "Stedi
+  // TestValley" in Riley and a DIFFERENT real person in Roland, so the note would be
+  // filed on a stranger's chart within the hour, with nothing on screen to show it.
+  assert.equal(readded.od_patient_office, 'valley');
+  assert.equal(readded.od_patient_name, 'Stedi TestValley');
+});
+
+test('od_patient_office survives a Mango re-ingest inside the watermark overlap', () => {
+  const [added] = unifiedCallStore.addMangoCalls([{
+    source: 'mango',
+    external_id: 'mango_call_cross_office',
+    mango_call_id: 'cross_office',
+    call_date: '2026-08-24T20:00:00.000Z',
+    caller_number: '+14795554558',
+    called_number: '(918) 503-6262', // Roland main
+    direction: 'inbound',
+    duration_seconds: 120,
+  }]);
+
+  unifiedCallStore.updateCall(added.id, {
+    od_sync_status: 'matched',
+    od_patient_id: 7115,
+    od_patient_office: 'valley',
+  });
+
+  // Every sync re-reads MANGO_WATERMARK_OVERLAP_MINUTES of already-ingested calls,
+  // so this path runs on its own, hourly, with no user action at all. The upsert
+  // returns nothing new, which is exactly why it is easy to forget it rewrites the
+  // stored record from scratch.
+  unifiedCallStore.addMangoCalls([{
+    source: 'mango',
+    external_id: 'mango_call_cross_office',
+    mango_call_id: 'cross_office',
+    call_date: '2026-08-24T20:00:00.000Z',
+    caller_number: '+14795554558',
+    called_number: '(918) 503-6262',
+    direction: 'inbound',
+    duration_seconds: 120,
+  }]);
+
+  assert.equal(unifiedCallStore.getCall(added.id).od_patient_office, 'valley');
+  assert.equal(unifiedCallStore.getCall(added.id).od_patient_id, 7115);
+});

@@ -22,7 +22,7 @@ const odHealth = require('../services/odHealthCheck');
 const commlogTypeCatalogue = require('../services/commlogTypes');
 const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
-const { requirePermission, roleHasPermission, isMachineCaller } = require('../config/permissions');
+const { requirePermission, roleHasPermission, isMachineCaller, holdsPermission } = require('../config/permissions');
 const tcCaseClient = require('../services/tcCaseClient');
 const {
   DISPOSITIONS, NOTE_MAX_LENGTH, isDisposition, canDeleteNote,
@@ -101,6 +101,80 @@ const officeRoster = () =>
     ...odOffices.describeOffice(o.officeId),
     odHealth: odHealth.getOfficeHealth(o.officeId),
   }));
+
+// ── Cross-office chart target ───────────────────────────────────────
+//
+// A call belongs to the office it rang at, permanently. That attribution is the
+// call's identity: it drives the worklists, the filters and the analytics, and
+// nothing here changes it — `office_id` on every call record this file returns is
+// still, always, the office derived from the call.
+//
+// What CAN differ is which practice's chart a note is filed in. The front desk at
+// one practice regularly handles a call about a patient of the other, and until
+// now that was a dead end: Pick Patient searched only the call's own Open Dental,
+// so the patient could not be found and the call could not be charted anywhere.
+//
+// So origin and target are now two different facts:
+//
+//   origin  — the office the call rang at.       Derived from the call. Immutable.
+//   target  — the office whose chart we write.   Defaults to the origin; a human
+//                                                may deliberately choose another.
+//
+// The rules that keep this from becoming the cross-office bug it looks like:
+//
+//   * A target is only ever what someone EXPLICITLY named. Absent, the target is
+//     openDentalSync.defaultTargetOfficeFor(call) — the call's own office unless the
+//     call is already linked to a patient, in which case it is that link's office.
+//   * A named target is validated against the office registry. Unknown → 400. It
+//     never falls back to the call's office, to a default office, or to anything
+//     else — an unrecognised office is a refusal, not a redirect.
+//   * 'unknown' is not an office. It is the bucket for calls whose line we cannot
+//     attribute, and it has no chart, so it is not a valid target either.
+//   * Whether the target can actually reach Open Dental is the SAME per-office
+//     fail-closed check every other path uses (odBlockReason → 409/503).
+//   * Both offices are recorded on the audit row: `office` is the chart that was
+//     touched, `originOffice` is the call it came from.
+//
+// Neither the registry test nor the default lives in this file. `isChartTargetOffice`
+// is odOffices'; `defaultTargetOfficeFor` is openDentalSync's. That is deliberate:
+// syncCallToCommLog is reachable from routes that know nothing about any of this
+// (the legacy /api/opendental-sync/calls/:id/sync, the batch drain), so a default
+// defined HERE would be a rule only the nice UI obeyed — which is exactly how a
+// deliberate cross-office link came to be discarded and re-matched in the wrong
+// database. One definition, in the service, used by everyone including this file.
+
+/**
+ * Resolve the office whose chart this request is aimed at.
+ *
+ * @param {object} call the stored call
+ * @param {string} callOfficeKey the call's own office, already derived server-side
+ * @param {unknown} rawTarget the caller's explicit `target_office`, if any
+ * @returns {{ ok: true, targetKey: string, crossOffice: boolean }
+ *          | { ok: false, error: string, code: string }}
+ */
+function resolveChartTarget(call, callOfficeKey, rawTarget) {
+  const named = rawTarget === undefined || rawTarget === null || rawTarget === ''
+    ? null
+    : rawTarget;
+
+  if (named === null) {
+    // The service's default, not a copy of it — see the note above.
+    const targetKey = openDentalSync.defaultTargetOfficeFor(call);
+    return { ok: true, targetKey, crossOffice: targetKey !== callOfficeKey };
+  }
+
+  // Fail closed on anything we do not recognise. No fallback — a request naming
+  // an office we cannot identify is refused, never quietly re-aimed somewhere else.
+  if (!odOffices.isChartTargetOffice(named)) {
+    return {
+      ok: false,
+      error: 'That office is not one of this practice group’s offices',
+      code: 'TARGET_OFFICE_UNKNOWN',
+    };
+  }
+
+  return { ok: true, targetKey: named, crossOffice: named !== callOfficeKey };
+}
 
 // --- Slice B: triage worklist + patient review queue -----------------------
 
@@ -572,16 +646,31 @@ router.get('/offices', (req, res) => {
 });
 
 /**
- * GET /api/unified-calls/:id/patient-search?q=
+ * GET /api/unified-calls/:id/patient-search?q=&target_office=
  *
- * The Pick Patient modal's Open Dental search, scoped to the office of THE CALL
- * BEING RESOLVED. Deliberately call-scoped rather than a bare
- * /opendental/patients/search?office_id=… : the office is derived server-side
- * from the call, so no request can search one practice while resolving a call
- * that belongs to another. The response names the office so the modal can show
- * the operator which patient list they are looking at.
+ * The Pick Patient modal's Open Dental search. Call-scoped, deliberately, rather
+ * than a bare /opendental/patients/search?office_id=… : the call is what fixes the
+ * ORIGIN office, so the audit trail always records which call's resolution
+ * prompted a look through a practice's patient records.
  *
- * Returns patient records (PHI) → audited READ.
+ * `target_office` chooses WHICH practice's patient list to search. Omitted, it is
+ * the call's own office — unchanged behaviour, and the overwhelming majority of
+ * searches. Named, it must be one of this practice group's offices (unknown → 400,
+ * never a fallback), because the front desk at one practice does take calls about
+ * the other's patients, and searching only the call's office made those calls
+ * impossible to chart anywhere at all.
+ *
+ * A CROSS-office search additionally requires `voice.chart_write`. Reading your own
+ * practice's patient list to answer "who called?" is part of triage and stays open
+ * to every voice role; paging through the OTHER practice's list is only ever the
+ * first half of writing a note there, so it takes the permission that writing takes.
+ * No new action — the same `voice.chart_write` the send routes are gated on, checked
+ * here in the handler because the answer depends on a target only resolved mid-request.
+ *
+ * The response names BOTH offices so the modal can show which patient list is on
+ * screen and say plainly when it is not the one the call rang at.
+ *
+ * Returns patient records (PHI) → audited READ, against the office searched.
  */
 router.get('/:id/patient-search', async (req, res) => {
   try {
@@ -593,24 +682,63 @@ router.get('/:id/patient-search', async (req, res) => {
       return res.status(404).json({ error: 'Call not found' });
     }
 
-    const officeKey = getOfficeForCall(call);
-    const office = odOffices.describeOffice(officeKey);
+    // The call's own office — derived, never taken from the request.
+    const callOfficeKey = getOfficeForCall(call);
+    const callOffice = odOffices.describeOffice(callOfficeKey);
+
+    const target = resolveChartTarget(call, callOfficeKey, req.query.target_office);
+    if (!target.ok) {
+      return res.status(400).json({
+        error: target.error,
+        code: target.code,
+        callOffice,
+        office: null,
+        patients: [],
+      });
+    }
+    const { targetKey, crossOffice } = target;
+    const office = odOffices.describeOffice(targetKey);
+
+    // Reading the OTHER practice's patient list is the first half of writing there.
+    // Same permission, checked before any PHI is read — and recorded, because a
+    // refused attempt to page through another practice's records is exactly the kind
+    // of thing the trail exists to hold.
+    if (crossOffice && !holdsPermission(req, 'voice.chart_write')) {
+      await audit.audit(req, {
+        action: 'READ',
+        resourceType: 'patient',
+        resourceId: null,
+        office: targetKey,
+        originOffice: callOfficeKey,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        error: 'You do not have permission to look up patients at another office',
+        code: 'CROSS_OFFICE_SEARCH_FORBIDDEN',
+        office,
+        callOffice,
+        crossOffice,
+        patients: [],
+      });
+    }
 
     // Unknown / not-connected / unkeyed office: no search, no guessing.
     let od;
     try {
-      od = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+      od = odOffices.assertOfficeMatch(targetKey, odOffices.getOdOffice(targetKey));
     } catch (err) {
       return res.status(odOffices.httpStatusFor(err)).json({
         error: err.publicMessage || 'Open Dental is not available for this office',
         code: err.code,
         office,
+        callOffice,
+        crossOffice,
         patients: [],
       });
     }
 
     if (q.length < 2) {
-      return res.json({ patients: [], office });
+      return res.json({ patients: [], office, callOffice, crossOffice });
     }
 
     const patients = await od.client.searchPatients(q);
@@ -618,14 +746,15 @@ router.get('/:id/patient-search', async (req, res) => {
     await audit.audit(req, {
       action: 'READ',
       resourceType: 'patient',
-      // The query is PHI — never store it. The office IS recorded, so the trail
-      // shows which practice's records were searched.
+      // The query is PHI — never store it. Both offices ARE recorded, so the trail
+      // shows which practice's records were searched AND which call sent us there.
       resourceId: null,
-      office: officeKey,
+      office: targetKey,
+      originOffice: callOfficeKey,
       result: 'SUCCESS',
     });
 
-    res.json({ patients: patients || [], office });
+    res.json({ patients: patients || [], office, callOffice, crossOffice });
   } catch (error) {
     console.error('Error searching patients for call:', error);
     res.status(500).json({ error: 'Failed to search patients' });
@@ -660,12 +789,30 @@ router.get('/:id/commlog-preview', async (req, res) => {
     // content_type (item 4): 'summary' (default, compact block) | 'transcript' (full note).
     const contentType = req.query.content_type === 'transcript' ? 'transcript' : 'summary';
     const entry = openDentalSync.formatCommLogEntry(call, { contentType });
-    const officeKey = getOfficeForCall(call);
+
+    // The call's own office (the ORIGIN) and the office whose chart this note is
+    // headed for (the TARGET). Equal unless someone deliberately chose otherwise.
+    const callOfficeKey = getOfficeForCall(call);
+    const callOffice = odOffices.describeOffice(callOfficeKey);
+
+    const target = resolveChartTarget(call, callOfficeKey, req.query.target_office);
+    if (!target.ok) {
+      return res.status(400).json({ error: target.error, code: target.code, callOffice });
+    }
+    const { targetKey, crossOffice } = target;
+
     // Config, not PHI, and never a reason to fail the preview — listForOfficeKey
-    // reports an unavailable catalogue rather than throwing.
-    const commlogTypes = await commlogTypeCatalogue.listForOfficeKey(officeKey);
+    // reports an unavailable catalogue rather than throwing. Read from the TARGET
+    // office: a DefNum is only meaningful in the database it is about to be
+    // written to, so the list has to follow the chart, not the call.
+    const commlogTypes = await commlogTypeCatalogue.listForOfficeKey(targetKey);
     await audit.audit(req, {
-      action: 'READ', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+      action: 'READ',
+      resourceType: 'call',
+      resourceId: id,
+      office: targetKey,
+      originOffice: callOfficeKey,
+      result: 'SUCCESS',
     });
     res.json({
       note: entry.Note,
@@ -673,9 +820,15 @@ router.get('/:id/commlog-preview', async (req, res) => {
       patientName: call.od_patient_name ?? null,
       // Which chart this note is about to land in — shown in the confirm dialog so
       // the operator sees the practice, not just the patient, before sending.
-      office: odOffices.describeOffice(officeKey),
-      // The chart-note types THIS office offers, plus its default. The list is
-      // this practice's own Open Dental definitions — DefNums are not portable
+      office: odOffices.describeOffice(targetKey),
+      // Which office the call itself rang at. Immutable, and NOT changed by
+      // choosing a different chart target — the dialog shows the two side by side
+      // so a cross-office send is something the sender read, not something that
+      // happened to them.
+      callOffice,
+      crossOffice,
+      // The chart-note types the TARGET office offers, plus its default. The list
+      // is that practice's own Open Dental definitions — DefNums are not portable
       // between practices, so it is only ever meaningful next to the office above.
       commlogTypes,
     });
@@ -1072,6 +1225,17 @@ router.delete('/:id/notes/:noteId', async (req, res) => {
  *                            Audited UPDATE.
  *
  * Both stamp resolve attribution (resolved_by / resolved_at) from the session.
+ *
+ * `target_office` (optional) is WHICH practice's chart to write. Omitted, it is the
+ * call's own office and this route behaves exactly as it did before the option
+ * existed. Named, it must be one of this practice group's offices — an unrecognised
+ * one is a 400 and never a fallback — and the OD client, the commlog DefNum, the
+ * PatNum validation and the stored od_patient_office all follow it. The call's own
+ * office attribution is untouched: it is the call's identity, not a routing choice.
+ *
+ * Permission is unchanged: voice.chart_write gates every shape of this route,
+ * cross-office or not. Choosing a different chart is not a different privilege —
+ * it is the same chart write, aimed by a human who can already make it.
  */
 router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
   try {
@@ -1085,27 +1249,59 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       return res.status(404).json({ error: 'Call not found' });
     }
 
-    // The office of THIS call, resolved server-side. Everything below that touches
-    // Open Dental is bound to it.
-    const officeKey = getOfficeForCall(call);
+    // The office of THIS call, resolved server-side from the call itself. It is the
+    // call's identity and nothing in this handler changes it.
+    const callOfficeKey = getOfficeForCall(call);
+    const callOffice = odOffices.describeOffice(callOfficeKey);
 
-    // Cross-office guard. `office_id` in the body is the client saying which office
-    // it BELIEVES it is acting on. It can only ever cause a refusal — it never
-    // selects the target — so a request naming the wrong office is rejected rather
-    // than obeyed. (This is the "valley call + roland office param" case.)
-    if (typeof body.office_id === 'string' && body.office_id && body.office_id !== officeKey) {
+    // The office whose CHART this request is aimed at. The call's own unless the
+    // caller deliberately named another and that office is one of ours. Unknown →
+    // 400, never a fallback. Everything below that touches Open Dental — the
+    // client, the commlog DefNum, the PatNum validation — is bound to THIS key.
+    const target = resolveChartTarget(call, callOfficeKey, body.target_office);
+    if (!target.ok) {
+      await audit.audit(req, {
+        action: 'UPDATE',
+        resourceType: 'call',
+        resourceId: id,
+        office: callOfficeKey,
+        originOffice: callOfficeKey,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(400).json({
+        success: false, error: target.error, code: target.code, callOffice,
+      });
+    }
+    const { targetKey, crossOffice } = target;
+
+    // Cross-office guard, unchanged in what it protects. `office_id` in the body is
+    // the client saying which office it BELIEVES its chart action is aimed at. It
+    // can only ever cause a refusal — it never selects anything — so a screen whose
+    // idea of the target disagrees with the resolved one is rejected rather than
+    // obeyed. It is asserted against the TARGET rather than the call because the
+    // target is what the dialog shows the sender and what the chart write goes to;
+    // a stale tab that only knows the call's office still refuses here, exactly as
+    // it did before a target could be chosen.
+    if (typeof body.office_id === 'string' && body.office_id && body.office_id !== targetKey) {
       console.error(
         `[unifiedCalls] BLOCKED cross-office resolve on call ${id}: client claimed ` +
-        `office '${body.office_id}' but the call belongs to '${officeKey}'`
+        `office '${body.office_id}' but this request resolves to target '${targetKey}' ` +
+        `(call belongs to '${callOfficeKey}')`
       );
       await audit.audit(req, {
-        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'UNAUTHORIZED',
+        action: 'UPDATE',
+        resourceType: 'call',
+        resourceId: id,
+        office: targetKey,
+        originOffice: callOfficeKey,
+        result: 'UNAUTHORIZED',
       });
       return res.status(409).json({
         success: false,
-        error: 'This call belongs to a different office — refusing to touch that chart',
+        error: 'This chart action is aimed at a different office than this screen expects — refusing to touch that chart',
         code: 'OFFICE_MISMATCH',
-        office: odOffices.describeOffice(officeKey),
+        office: odOffices.describeOffice(targetKey),
+        callOffice,
       });
     }
 
@@ -1124,8 +1320,12 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
         resolved_at: nowIso,
       });
 
+      // No chart was touched, so there is no target to record — only the call's
+      // own office. Naming a target here would put an office in the trail that
+      // nothing was written to.
       await audit.audit(req, {
-        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+        action: 'UPDATE', resourceType: 'call', resourceId: id,
+        office: callOfficeKey, result: 'SUCCESS',
       });
 
       return res.json({ success: true, notAPatient: true, call: updatedCall });
@@ -1140,16 +1340,17 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
     // Server-side OD lockout. The worklist already hides these actions for an
     // unmapped/unconnected office, but the UI is not the control — an 'unknown'
     // call must be unable to reach a chart even by a hand-rolled request.
-    const blocked = odOffices.odBlockReason(officeKey);
+    const blocked = odOffices.odBlockReason(targetKey);
     if (blocked) {
       await audit.audit(req, {
-        action: 'CREATE', resourceType: 'commlog', resourceId: id, office: officeKey, result: 'UNAUTHORIZED',
+        action: 'CREATE', resourceType: 'commlog', resourceId: id,
+        office: targetKey, originOffice: callOfficeKey, result: 'UNAUTHORIZED',
       });
       return res.status(odOffices.httpStatusFor({ code: blocked.code })).json({
         success: false,
         error: blocked.message,
         code: blocked.code,
-        office: odOffices.describeOffice(officeKey),
+        office: odOffices.describeOffice(targetKey),
       });
     }
 
@@ -1170,22 +1371,32 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       // against. Silently re-pointing the linkage would make the stored record
       // disagree with the chart, so a DIFFERENT patient is refused outright. The
       // same patient is a harmless no-op.
+      //
+      // "Same patient" is (PatNum, office) — never PatNum alone. PatNum numbering
+      // restarts in every Open Dental database, so 7115-in-Roland and 7115-in-Riley
+      // are two different people, and comparing the number by itself would read a
+      // re-point at the OTHER practice as a no-op and quietly accept it.
       if (call.od_sync_status === 'synced') {
-        if (String(call.od_patient_id) === String(patientId)) {
+        const samePatient =
+          String(call.od_patient_id) === String(patientId) &&
+          openDentalSync.patientOfficeOf(call) === targetKey;
+        if (samePatient) {
           return res.json({
             success: true,
             linked: true,
             alreadySynced: true,
             patientId: call.od_patient_id,
-            office: odOffices.describeOffice(officeKey),
-            call: { ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+            office: odOffices.describeOffice(targetKey),
+            callOffice,
+            crossOffice,
+            call: { ...call, office_id: callOfficeKey, office: callOffice },
           });
         }
         return res.status(409).json({
           success: false,
           error: 'This call already has a chart note on another patient — re-linking would leave the note filed under the wrong person',
           code: 'ALREADY_SENT_TO_CHART',
-          office: odOffices.describeOffice(officeKey),
+          office: odOffices.describeOffice(targetKey),
         });
       }
 
@@ -1195,7 +1406,8 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       const linkResult = await openDentalSync.linkCallToPatient(id, patientId, {
         syncNow: false,
         userId: actor?.email || 'system',
-        expectOfficeKey: officeKey,
+        targetOfficeKey: targetKey,
+        expectOfficeKey: targetKey,
       });
       if (!linkResult.success) {
         const status = linkResult.officeBlocked
@@ -1205,7 +1417,7 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
           success: false,
           error: linkResult.error,
           code: linkResult.code,
-          office: odOffices.describeOffice(officeKey),
+          office: odOffices.describeOffice(targetKey),
         });
       }
 
@@ -1221,15 +1433,21 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       // UPDATE on the call, NOT CREATE on a commlog — nothing was written to any
       // chart, and the audit trail must not imply that it was.
       await audit.audit(req, {
-        action: 'UPDATE', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
+        action: 'UPDATE', resourceType: 'call', resourceId: id,
+        office: targetKey, originOffice: callOfficeKey, result: 'SUCCESS',
       });
 
       return res.json({
         success: true,
         linked: true,
         patientId: linkedCall.od_patient_id ?? patientId,
-        office: odOffices.describeOffice(officeKey),
-        call: { ...linkedCall, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+        // The office the PatNum was verified in and is now stored against. The
+        // client reads its next chart target from here rather than re-deriving it,
+        // so a cross-office link cannot be followed by a same-office send.
+        office: odOffices.describeOffice(targetKey),
+        callOffice,
+        crossOffice,
+        call: { ...linkedCall, office_id: callOfficeKey, office: callOffice },
       });
     }
 
@@ -1241,9 +1459,12 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
         alreadySynced: true,
         commLogNum: call.od_commlog_num ?? null,
         patientId: call.od_patient_id ?? null,
+        office: odOffices.describeOffice(targetKey),
+        callOffice,
+        crossOffice,
         // Same complete record GET /:id returns — see the note on the success
         // response below.
-        call: { ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+        call: { ...call, office_id: callOfficeKey, office: callOffice },
       });
     }
 
@@ -1265,7 +1486,7 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
     let commTypeDefNum;
     if (body.commTypeDefNum !== undefined && body.commTypeDefNum !== null) {
       try {
-        const odHandle = odOffices.assertOfficeMatch(officeKey, odOffices.getOdOffice(officeKey));
+        const odHandle = odOffices.assertOfficeMatch(targetKey, odOffices.getOdOffice(targetKey));
         commTypeDefNum = await commlogTypeCatalogue.assertAllowed(odHandle, body.commTypeDefNum);
       } catch (err) {
         // A rejected type is a chart write that was asked for and refused —
@@ -1274,7 +1495,8 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
           action: 'CREATE',
           resourceType: 'commlog',
           resourceId: id,
-          office: officeKey,
+          office: targetKey,
+          originOffice: callOfficeKey,
           result: err.code === 'COMMLOG_TYPE_UNVERIFIABLE' ? 'ERROR' : 'UNAUTHORIZED',
         });
         const typeStatus = commlogTypeCatalogue.httpStatusFor(err);
@@ -1282,7 +1504,7 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
           success: false,
           error: err.publicMessage || 'That chart note type is not valid for this office',
           code: err.code,
-          office: odOffices.describeOffice(officeKey),
+          office: odOffices.describeOffice(targetKey),
         });
       }
     }
@@ -1296,7 +1518,8 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
     const linkResult = await openDentalSync.linkCallToPatient(id, patientId, {
       syncNow: false,
       userId: actor?.email || 'system',
-      expectOfficeKey: officeKey,
+      targetOfficeKey: targetKey,
+      expectOfficeKey: targetKey,
     });
     if (!linkResult.success) {
       const status = linkResult.officeBlocked
@@ -1306,7 +1529,7 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
         success: false,
         error: linkResult.error,
         code: linkResult.code,
-        office: odOffices.describeOffice(officeKey),
+        office: odOffices.describeOffice(targetKey),
       });
     }
 
@@ -1323,7 +1546,8 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
     // Write the commlog via the hardened, non-forced path (skips if already synced).
     const syncResult = await openDentalSync.syncCallToCommLog(id, {
       noteOverride: sentNote,
-      expectOfficeKey: officeKey,
+      targetOfficeKey: targetKey,
+      expectOfficeKey: targetKey,
       ...(commTypeDefNum === undefined ? {} : { commTypeDefNum }),
     });
     if (!syncResult.success) {
@@ -1337,7 +1561,7 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
         error: syncResult.error || 'CommLog write failed',
         code: syncResult.code,
         requiresManualLink: syncResult.requiresManualLink || false,
-        office: odOffices.describeOffice(officeKey),
+        office: odOffices.describeOffice(targetKey),
       });
     }
 
@@ -1359,7 +1583,8 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       action: 'CREATE',
       resourceType: 'commlog',
       resourceId: syncResult.commLogNum ?? id,
-      office: officeKey,
+      office: targetKey,
+      originOffice: callOfficeKey,
       result: 'SUCCESS',
     });
 
@@ -1367,14 +1592,19 @@ router.post('/:id/resolve-patient', canChartWrite, async (req, res) => {
       success: true,
       commLogNum: syncResult.commLogNum ?? null,
       patientId: updatedCall.od_patient_id ?? patientId,
-      office: odOffices.describeOffice(officeKey),
+      // Which chart this landed in, and which call it came from. They differ on a
+      // deliberate cross-office send, and the confirmation the user reads names the
+      // chart — not the call — because the chart is what changed.
+      office: odOffices.describeOffice(targetKey),
+      callOffice,
+      crossOffice,
       // The COMPLETE updated record, stamped with the server-resolved office
       // exactly as GET /:id stamps it. The client renders the post-send state
       // from this instead of hand-patching the two or three fields it happens to
       // know changed — a subset that silently goes stale every time a new
       // consumer starts reading a field nobody remembered to include (which is
       // how the TC button came to sit disabled until a page refresh).
-      call: { ...updatedCall, office_id: officeKey, office: odOffices.describeOffice(officeKey) },
+      call: { ...updatedCall, office_id: callOfficeKey, office: callOffice },
     });
   } catch (error) {
     console.error('Error resolving patient:', error);

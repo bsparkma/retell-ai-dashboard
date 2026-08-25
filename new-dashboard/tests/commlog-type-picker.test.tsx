@@ -145,7 +145,7 @@ describe("the office default", () => {
     renderDialog();
     await ready();
 
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
 
     await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalledTimes(1));
     expect(apiMock.resolvePatient.mock.calls[0][1]).toMatchObject({
@@ -168,7 +168,7 @@ describe("picking a different type", () => {
     await waitFor(() => expect(screen.getAllByRole("option").length).toBe(3));
     fireEvent.click(screen.getAllByRole("option").find((o) => o.textContent?.startsWith("Recall"))!);
 
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
     await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalledTimes(1));
     expect(apiMock.resolvePatient.mock.calls[0][1]).toMatchObject({ commTypeDefNum: 227 });
   });
@@ -201,7 +201,7 @@ describe("picking a different type", () => {
     fireEvent.click(options.find((o) => o.textContent?.startsWith("CareIN AI Call"))!);
     await waitFor(() => expect(screen.queryAllByRole("option").length).toBe(0));
 
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
     await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalledTimes(1));
     // Riley's "CareIN AI Call", never Roland's 486.
     expect(apiMock.resolvePatient.mock.calls[0][1]).toMatchObject({ commTypeDefNum: 451 });
@@ -226,7 +226,7 @@ describe("when Open Dental's type list is unavailable", () => {
     expect(trigger.hasAttribute("disabled") || trigger.getAttribute("data-disabled") !== null).toBe(true);
     expect(screen.getByText(/note types aren't available right now/i)).toBeTruthy();
 
-    const send = screen.getByRole("button", { name: /send to chart/i }) as HTMLButtonElement;
+    const send = screen.getByRole("button", { name: /send to .*chart/i }) as HTMLButtonElement;
     expect(send.disabled).toBe(false);
 
     fireEvent.click(send);
@@ -258,11 +258,11 @@ describe("when Open Dental's type list is unavailable", () => {
     // to assert, so the request looks exactly like a pre-picker one.
     apiMock.getCommlogPreview.mockResolvedValue(preview({ commlogTypes: undefined }));
     renderDialog();
-    await waitFor(() => expect(screen.getByRole("button", { name: /send to chart/i })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: /send to .*chart/i })).toBeTruthy());
 
     expect(screen.queryByRole("combobox", { name: /note type/i })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /send to chart/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send to .*chart/i }));
     await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalledTimes(1));
     expect("commTypeDefNum" in (apiMock.resolvePatient.mock.calls[0][1] as object)).toBe(false);
   });

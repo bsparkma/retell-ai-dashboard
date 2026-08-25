@@ -461,25 +461,57 @@ test('an office with no credentials cannot be sent to, even switched on', async 
 });
 
 // ── The stale-match guard (pre-slice rows) ──────────────────────────────────
+//
+// Two shapes used to be indistinguishable here, and the cross-office chart target
+// is what separated them:
+//
+//   LEGACY CORRUPTION — a valley call auto-matched while valley had no OD of its
+//     own, so its stored PatNum is really a ROLAND PatNum. These rows predate the
+//     od_patient_office field entirely, so the field is ABSENT and patientOfficeOf()
+//     reads it as 'roland' by stated assumption.
+//   DELIBERATE LINK — a human at one practice linked a call to the other practice's
+//     patient. The office is RECORDED, and it is true.
+//
+// The old guard treated both as corruption and re-matched by phone. That is now the
+// wrong answer for the second shape (it throws away what a person said) and, it
+// turns out, a worse answer than refusing for the first: re-matching lands the note
+// on whoever happens to share the caller's phone number in the resolved office.
 
-test('a PatNum banked against another office is discarded, not written', async () => {
-  // The dangerous shape: a valley call auto-matched while valley had no OD of its
-  // own, so its stored PatNum is really a ROLAND PatNum. Sending it as-is would
-  // chart a note on whoever holds that number in Riley.
+test('a PatNum banked against another office with NO recorded office is refused, not written', async () => {
+  // The legacy-corruption shape: no od_patient_office, so nothing here is trustworthy
+  // enough to write from. Sending it as-is would chart a note on whoever holds that
+  // number in Riley; re-matching would chart it on whoever shares the caller's phone.
+  // Neither is a thing to guess at, so nothing is written at all.
   seedCall('x1', VALLEY_DID, {
-    od_patient_id: 999999,          // a Roland PatNum
-    od_patient_office: 'roland',
+    od_patient_id: 999999,          // really a Roland PatNum, from before offices existed
     od_sync_status: 'matched',
   });
 
   const result = await sync.syncCallToCommLog('x1', {});
 
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'PATIENT_OFFICE_MISMATCH');
+  assert.equal(result.officeBlocked, true);
+  const write = odCalls.find((c) => c.op === 'POST /commlogs');
+  assert.equal(write, undefined, 'a foreign PatNum must never be written');
+});
+
+test('a PatNum with a RECORDED other-practice office is a deliberate link and is honoured', async () => {
+  // Same call, but the office is recorded — which only happens when someone said so.
+  // The write follows the patient into their own practice's database, because that
+  // is the only database that PatNum means anything in.
+  seedCall('x1b', VALLEY_DID, {
+    od_patient_id: 7115,
+    od_patient_office: 'roland',
+    od_sync_status: 'matched',
+  });
+
+  const result = await sync.syncCallToCommLog('x1b', {});
+
   assert.equal(result.success, true);
   const write = odCalls.find((c) => c.op === 'POST /commlogs');
-  assert.equal(write.office, 'valley');
-  // Re-matched in valley rather than trusting the foreign PatNum.
+  assert.equal(write.office, 'roland');
   assert.equal(write.arg.PatNum, 7115);
-  assert.notEqual(write.arg.PatNum, 999999, 'a foreign PatNum must never be written');
 });
 
 test('legacy rows with no recorded office are read as roland', async () => {

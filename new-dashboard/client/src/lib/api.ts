@@ -1281,11 +1281,23 @@ export const api = {
   async resolvePatient(
     id: string,
     body:
-      | { patientId: number; linkOnly: true; office_id?: string }
+      | { patientId: number; linkOnly: true; office_id?: string; target_office?: string }
       // content_type (item 4): 'summary' (default compact block) | 'transcript' (full note).
-      | { patientId: number; note?: string; content_type?: "summary" | "transcript"; commTypeDefNum?: number; office_id?: string }
+      | { patientId: number; note?: string; content_type?: "summary" | "transcript"; commTypeDefNum?: number; office_id?: string; target_office?: string }
       | { notAPatient: true; reason: NotAPatientReason }
-  ): Promise<{ success: boolean; linked?: boolean; alreadySynced?: boolean; commLogNum?: number | null; office?: OfficeConfig; call?: BackendUnifiedCall }> {
+  ): Promise<{
+    success: boolean;
+    linked?: boolean;
+    alreadySynced?: boolean;
+    commLogNum?: number | null;
+    /** The office whose chart was written / the patient was verified in (the TARGET). */
+    office?: OfficeConfig;
+    /** The office the call itself rang at (the ORIGIN) — unchanged by any of this. */
+    callOffice?: OfficeConfig;
+    /** The two above disagree: a deliberate cross-office chart action. */
+    crossOffice?: boolean;
+    call?: BackendUnifiedCall;
+  }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/resolve-patient`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -1335,40 +1347,67 @@ export const api = {
   async getCommlogPreview(
     id: string,
     contentType: "summary" | "transcript" = "summary",
+    /**
+     * Which practice's chart to preview against. Omitted, the server picks: the
+     * office the call's linked patient is in, else the call's own. Named, it must
+     * be one of this practice group's offices or the request is refused — the
+     * client can ask, it can never make one up.
+     */
+    targetOffice?: string,
   ): Promise<{
     note: string;
     patientId: number | null;
     patientName: string | null;
+    /** The office whose chart this note is headed for (the TARGET). */
     office?: OfficeConfig;
+    /** The office the call rang at (the ORIGIN). Immutable; shown next to the target. */
+    callOffice?: OfficeConfig;
+    /** Target ≠ origin — the dialog says so in words before anything is sent. */
+    crossOffice?: boolean;
     /**
-     * The chart-note types THIS call's office offers. Rides the preview rather
-     * than having its own endpoint because the office is derived server-side
-     * from the call here — asking for a list by office id would have handed the
-     * client the office selection this whole path keeps away from it.
+     * The chart-note types the TARGET office offers. Rides the preview rather than
+     * having its own endpoint because the office resolution — including validating
+     * a chosen target against the registry — happens server-side here; a bare
+     * /commlog-types?office_id=… would have let the client name any office it liked.
      */
     commlogTypes?: CommlogTypeCatalogue;
   }> {
-    const q = contentType === "transcript" ? "?content_type=transcript" : "";
-    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q}`);
+    const params = new URLSearchParams();
+    if (contentType === "transcript") params.set("content_type", "transcript");
+    if (targetOffice) params.set("target_office", targetOffice);
+    const q = params.toString();
+    return request(`/unified-calls/${encodeURIComponent(id)}/commlog-preview${q ? `?${q}` : ""}`);
   },
 
   /**
-   * Search Open Dental patients for the Pick Patient modal, scoped to the office of
-   * THE CALL being resolved.
+   * Search Open Dental patients for the Pick Patient modal, always in the context
+   * of THE CALL being resolved.
    *
-   * Deliberately call-scoped rather than passing an office id: the server derives
-   * the office from the call, so this cannot search one practice while resolving a
-   * call that belongs to another. The response names the office searched so the
-   * modal can show the operator whose patient list they are looking at.
+   * Still call-scoped rather than a bare patient search: the call is what fixes the
+   * origin office and puts the look through a practice's records in the audit trail
+   * next to the call that prompted it.
+   *
+   * `targetOffice` chooses WHICH practice's list to search. Omitted, it is the
+   * call's own office — the ordinary case. Named, the server validates it against
+   * the office registry and refuses anything it does not recognise, so the client
+   * picks from a list, it does not invent an office. The front desk at one practice
+   * really does take calls about the other's patients, and searching only the call's
+   * office left those calls impossible to chart at all.
+   *
+   * The response names the office searched so the modal can show whose patient list
+   * is on screen.
    */
   async searchPatientsForCall(
     callId: string,
     q: string,
+    targetOffice?: string,
   ): Promise<{ patients: OdPatient[]; office: OfficeConfig | null; error?: string }> {
     if (!q || q.trim().length < 2) return { patients: [], office: null };
     try {
+      const params = new URLSearchParams({ q: q.trim() });
+      if (targetOffice) params.set("target_office", targetOffice);
       const res = await request<{ patients: OdPatient[]; office: OfficeConfig; error?: string }>(
-        `/unified-calls/${encodeURIComponent(callId)}/patient-search?q=${encodeURIComponent(q.trim())}`
+        `/unified-calls/${encodeURIComponent(callId)}/patient-search?${params.toString()}`
       );
       return { patients: res.patients ?? [], office: res.office ?? null };
     } catch (err) {
