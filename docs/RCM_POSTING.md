@@ -512,9 +512,13 @@ recorded here.
 
 | # | Prerequisite | Status |
 | --- | --- | --- |
-| **(a)** | The Riley key's **write** permission groups (Insurance, Documents) proven by the zero-risk probe. TC #97 proved the **read** groups, which is a different entitlement — Open Dental licenses reads and writes separately, by permission group, and **no read can establish write entitlement**. | ❌ **NOT DONE** — see below |
+| **(a)** | The Riley key's **write** permission groups (Insurance, Documents) proven by the zero-risk probe. TC #97 proved the **read** groups, which is a different entitlement — Open Dental licenses reads and writes separately, by permission group, and **no read can establish write entitlement**. | ✅ **DONE 2026-08-24** — transcript below |
 | **(b)** | Riley's own Category 32 / 1 / 18 DefNums read from Riley's own Open Dental. | ✅ **DONE 2026-08-19** — recorded below |
 | **(c)** | PatNum 7115 can carry a claim (an active plan). | ✅ **coverage confirmed 2026-08-19**; the e2e itself still to run |
+
+All three are now recorded, and the code above still reads `['roland']` — that is
+the design, not a lag. Enabling valley is a code change in a diff, and it lands in
+**Slice 6d** alongside the 7115 end-to-end evidence, not here.
 
 ---
 
@@ -591,19 +595,19 @@ Two things worth not misreading:
 
 ---
 
-### (a) The write-verb probe — APPROVED, SCRIPTED, NOT YET RUN
+### (a) The write-verb probe — RUN 2026-08-24 21:13 Central
 
-**This is the one prerequisite still outstanding, and it is the one that actually
-gates posting.**
+**PASS. The Riley key is entitled on both the Insurance and the Documents write
+groups**, and the read sweep afterwards was clean — nothing landed. This was the
+prerequisite that actually gated posting, and it is now discharged.
 
-Beau approved it on 2026-08-20 with three conditions. Two are satisfied by the
-scripts below; the third is a scheduling decision:
+Beau approved the probe on 2026-08-20 with three conditions. All three are met:
 
 | Condition | State |
 | --- | --- |
-| 1. Run at a **quiet hour for the Valley office** | ⬜ **the blocker.** The go-ahead arrived at 08:52 Central on a Thursday — the busiest part of a practice's day, with the voice module actively using the same credential. Not run. |
-| 2. A read sweep immediately after, proving nothing landed | ✅ scripted: `backend/scripts/rcm-d7-read-sweep.js` |
-| 3. The full transcript pasted into this section | ✅ ready — the scripts print request, status and refusal text verbatim, in the Spike 0b style |
+| 1. Run at a **quiet hour for the Valley office** | ✅ run **21:13 Central Sunday 8/24**, Valley phones closed |
+| 2. A read sweep immediately after, proving nothing landed | ✅ `backend/scripts/rcm-d7-read-sweep.js` — ran at 21:14, **SWEEP CLEAN** |
+| 3. The full transcript pasted into this section | ✅ verbatim below |
 
 Both scripts are **checked into the repo** rather than pasted from a scratchpad,
 so the thing that gets run is the thing that was reviewed:
@@ -633,10 +637,151 @@ The sweep is not ceremony. *"Zero-risk by construction"* is an argument, and thi
 module's whole discipline is that an argument about a chart is not evidence about
 a chart — G2 is the same lesson one level down. The sweep re-reads the ghost ids,
 lists the newest claimpayments with their dates and amounts (a $0.01 check minted
-minutes earlier would be unmissable), and checks for a stray document.
+minutes earlier would be unmissable), and checks for a stray document. It found
+neither.
 
-Until (a) is recorded here, **valley stays fail-closed in code** — which is where
-it would have stayed regardless, so nothing that shipped depends on it.
+#### Two things to read past in the transcript
+
+Running the probe is what exposed two defects **in the scripts themselves**. Both
+are fixed in the same PR that records this transcript, because the canon here is
+that the thing that was run is the thing that was reviewed — and what ran on the
+night needed a wrapper. The transcript is pasted **as it happened**, so both are
+still visible in it:
+
+1. **The `node -e` wrapper is defect 1.** Neither script loaded secrets.
+   `config/odOffices` reads the customer key from `process.env`, and only
+   `server.js` ever called `loadSecrets()` to put it there — so the documented
+   command died on `OFFICE_OD_KEY_MISSING` and the operator wrapped it by hand.
+   `main()` in both scripts now awaits `loadSecrets()` as its first statement, so
+   the plain command below works as written.
+
+2. **The PROBE lines inside the second half are defect 2.** The read sweep
+   imported the write probe for its shared ghost id, and the probe called
+   `main()` at module load — so requiring it **re-issued every write verb**,
+   interleaved with the sweep's reads. That is why `=== WRITE-VERB ENTITLEMENT
+   PROBE ===`, the `precheck` lines and the `PUT` / `POST` lines all appear a
+   second time under the sweep. Harmless on the night (same ghost id, same 404s),
+   but a script named "read sweep" issued writes. **The sweep's own output is the
+   `still absent OK` / `rows=0 OK` / `GET /claimpayments` / `SWEEP CLEAN` lines** —
+   those are the evidence; the interleaved PROBE lines are the bug.
+
+   Both halves are now fixed: the ghost id lives in `scripts/rcm-d7-ghost.js` (one
+   constant, no requires) so neither script imports the other, and both guard
+   `main()` behind `require.main === module`. `test/rcmD7ProbeScripts.test.js`
+   proves requiring either script reaches Open Dental zero times;
+   `rcmNoOdWrites.test.js` adds the static rule, since its verb scan could not
+   have caught this — the verbs were legitimately present in the file that
+   legitimately owns them, and the defect was that importing the file ran them.
+
+#### Transcript (verbatim, 2026-08-24, staging, `PROBE_OFFICE=valley`)
+
+```
+/app $ PROBE_OFFICE=valley node -e "require('./config/secrets').loadSecrets().then(() => require('./scripts/rcm-d7-write-probe.js'))"
+[secrets] credential: user-assigned ManagedIdentityCredential (Azure-hosted)
+[secrets] production: loaded 11 secret(s) from Key Vault 'kv-carein-staging', skipped 4 optional/absent
+[OD API] Initializing with URL: https://api.opendental.com/api/v1
+[OD API] Using ODFHIR authentication: true
+[OD API] Initializing with URL: https://api.opendental.com/api/v1 (office: valley)
+[OD API] Using ODFHIR authentication: true
+=== valley (Valley Fort Smith) — WRITE-VERB ENTITLEMENT PROBE ===
+    ghost id: 999888777   started: 2026-08-25T02:13:41.903Z
+[OD API] GET /claimprocs/999888777
+[OD API] Response Error: ClaimProc not found.
+  precheck GET /claimprocs/999888777 -> 404 absent
+[OD API] GET /claims/999888777
+[OD API] Response Error: Claim not found.
+  precheck GET /claims/999888777 -> 404 absent
+[OD API] GET /patients/999888777
+[OD API] Response Error: Patient not found.
+  precheck GET /patients/999888777 -> 404 absent
+[OD API] PUT /claimprocs/999888777
+[OD API] Response Error: ClaimProc not found.
+  PUT /claimprocs/999888777 [Insurance] -> 404 ENTITLED (reached the row lookup)
+      ClaimProc not found.
+[OD API] PUT /claims/999888777
+[OD API] Response Error: Claim not found.
+  PUT /claims/999888777 [Insurance] -> 404 ENTITLED (reached the row lookup)
+      Claim not found.
+[OD API] POST /claimpayments
+[OD API] Response Error: Claim not found.
+  POST /claimpayments [Insurance] -> 404 ENTITLED (reached the row lookup)
+      Claim not found.
+[OD API] POST /claimpayments/Batch
+[OD API] Response Error: ClaimNum 999888777 is invalid.
+  POST /claimpayments/Batch [Insurance] -> 404 ENTITLED (reached the row lookup)
+      ClaimNum 999888777 is invalid.
+[OD API] POST /documents/Upload
+[OD API] Response Error: Patient not found.
+  POST /documents/Upload [Documents] -> 404 ENTITLED (reached the row lookup)
+      Patient not found.
+DONE 2026-08-25T02:13:59.317Z — no row was created, updated or deleted.
+NOW RUN: node scripts/rcm-d7-read-sweep.js
+/app $ PROBE_OFFICE=valley node -e "require('./config/secrets').loadSecrets().then(() => require('./scripts/rcm-d7-read-sweep.js'))"
+[secrets] credential: user-assigned ManagedIdentityCredential (Azure-hosted)
+[secrets] production: loaded 11 secret(s) from Key Vault 'kv-carein-staging', skipped 4 optional/absent
+[OD API] Initializing with URL: https://api.opendental.com/api/v1
+[OD API] Using ODFHIR authentication: true
+[OD API] Initializing with URL: https://api.opendental.com/api/v1 (office: valley)
+[OD API] Using ODFHIR authentication: true
+=== valley (Valley Fort Smith) — WRITE-VERB ENTITLEMENT PROBE ===
+    ghost id: 999888777   started: 2026-08-25T02:14:18.643Z
+=== valley (Valley Fort Smith) — POST-PROBE READ SWEEP ===
+    ghost id: 999888777   swept: 2026-08-25T02:14:18.644Z
+[OD API] GET /claimprocs/999888777
+[OD API] GET /claimprocs/999888777
+[OD API] Response Error: ClaimProc not found.
+  precheck GET /claimprocs/999888777 -> 404 absent
+[OD API] Response Error: ClaimProc not found.
+  GET /claimprocs/999888777 -> 404 still absent  OK
+[OD API] GET /claims/999888777
+[OD API] Response Error: Claim not found.
+  precheck GET /claims/999888777 -> 404 absent
+[OD API] GET /claims/999888777
+[OD API] Response Error: Claim not found.
+  GET /claims/999888777 -> 404 still absent  OK
+[OD API] GET /patients/999888777
+[OD API] GET /patients/999888777
+[OD API] Response Error: Patient not found.
+  precheck GET /patients/999888777 -> 404 absent
+[OD API] Response Error: Patient not found.
+  GET /patients/999888777 -> 404 still absent  OK
+[OD API] PUT /claimprocs/999888777
+[OD API] GET /claimprocs
+[OD API] Response Error: ClaimProc not found.
+  PUT /claimprocs/999888777 [Insurance] -> 404 ENTITLED (reached the row lookup)
+      ClaimProc not found.
+[OD API] Response Error: Claim not found.
+  GET /claimprocs?ClaimNum=999888777 -> 404  rows=0  OK
+[OD API] PUT /claims/999888777
+[OD API] Response Error: Claim not found.
+  PUT /claims/999888777 [Insurance] -> 404 ENTITLED (reached the row lookup)
+      Claim not found.
+[OD API] GET /claimpayments
+[OD API] Response: 200 /claimpayments
+  GET /claimpayments -> 200  100 rows; newest 10:
+      ClaimPaymentNum=12850  CheckDate=2023-12-04  CheckAmt=1295.3  PayType=259
+      ClaimPaymentNum=12849  CheckDate=2026-08-20  CheckAmt=54.08  PayType=259
+      ClaimPaymentNum=12848  CheckDate=2025-04-15  CheckAmt=171  PayType=258
+      ClaimPaymentNum=12847  CheckDate=2023-12-07  CheckAmt=225  PayType=258
+      ClaimPaymentNum=12846  CheckDate=2026-08-18  CheckAmt=280.32  PayType=259
+      ClaimPaymentNum=12845  CheckDate=2026-08-18  CheckAmt=152.4  PayType=259
+      ClaimPaymentNum=12844  CheckDate=2026-08-18  CheckAmt=150.28  PayType=259
+      ClaimPaymentNum=12843  CheckDate=2026-08-18  CheckAmt=2973.61  PayType=259
+      ClaimPaymentNum=12842  CheckDate=2026-08-18  CheckAmt=762.87  PayType=259
+      ClaimPaymentNum=12841  CheckDate=2026-08-18  CheckAmt=0  PayType=259
+[OD API] POST /claimpayments
+[OD API] Response Error: Claim not found.
+  POST /claimpayments [Insurance] -> 404 ENTITLED (reached the row lookup)
+      Claim not found.
+[OD API] GET /documents
+[OD API] Response Error: Patient not found.
+  GET /documents?PatNum=999888777 -> 404  rows=0  OK
+SWEEP CLEAN — nothing landed.
+```
+
+**All three prerequisites are recorded.** Valley may be added to
+`OFFICES_ENABLED_FOR_POSTING` in Slice 6d, in the same commit as the 7115
+end-to-end evidence.
 
 ### How the probes are run
 
@@ -645,15 +790,25 @@ from Key Vault by the app's own loader and is never printed. Running them locall
 is **not** an option: `kv-carein-staging` sits in a different Entra tenant from a
 workstation `az` token (`AKV10032: Invalid issuer`).
 
+The scripts ship in the image at `/app/scripts/`, so there is nothing to upload —
+open a shell and run them:
+
 ```bash
-# az containerapp exec splits --command on whitespace, so ${IFS} stands in for
-# a space and the payload is uploaded gzip+base64 in chunks. The exec endpoint
-# throttles hard (429) — space the calls out.
 MSYS_NO_PATHCONV=1 az containerapp exec \
-  -n ca-carein-backend -g rg-carein-staging \
-  --replica <replica> --container ca-carein-backend \
-  --command 'sh -c node${IFS}/tmp/probe.js'
+  -n ca-carein-backend -g rg-carein-staging --command sh
 ```
+
+Then, from `/app`:
+
+```bash
+PROBE_OFFICE=valley node scripts/rcm-d7-write-probe.js
+PROBE_OFFICE=valley node scripts/rcm-d7-read-sweep.js
+```
+
+That is the whole invocation. No `node -e` wrapper (the scripts load their own
+secrets) and no `${IFS}` upload dance — that recipe is for pushing a *scratchpad*
+file into a container, which is exactly what checking these two in was meant to
+avoid.
 
 ---
 

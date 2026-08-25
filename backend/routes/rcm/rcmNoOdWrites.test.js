@@ -852,13 +852,19 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
   ];
 
   const offenders = [];
+  /** Scripts that DO name a write verb — allowed or not — must not self-execute. */
+  const unguarded = [];
   for (const name of fs.readdirSync(scriptsDir)) {
     if (!name.endsWith('.js') && !name.endsWith('.cjs')) continue;
-    if (ALLOWED.has(name)) continue;
     const code = fs
       .readFileSync(path.join(scriptsDir, name), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
+    const namesAWrite = WRITE_SIGNALS.some((signal) => code.includes(signal));
+    if (namesAWrite && !/require\.main\s*===\s*module/.test(code)) {
+      unguarded.push(`scripts/${name}`);
+    }
+    if (ALLOWED.has(name)) continue;
     for (const signal of WRITE_SIGNALS) {
       if (code.includes(signal)) offenders.push(`scripts/${name} → ${signal}`);
     }
@@ -868,6 +874,30 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
     [],
     'a script that writes to Open Dental is module code in the wrong folder. Found: ' +
       offenders.join(', ')
+  );
+
+  /*
+   * AND A SCRIPT THAT NAMES A WRITE MUST NOT RUN ON IMPORT.
+   *
+   * The scan above asks WHICH files may name a write verb. It cannot ask when
+   * those verbs FIRE, and on 2026-08-24 that gap was live: the read sweep
+   * imported the write probe for its shared ghost id, the probe called `main()`
+   * at module load, and so a script named "read sweep" re-issued every write
+   * verb — invisibly to this guard, because the verbs sat in the one file that
+   * is allowed to name them.
+   *
+   * Requiring a file must not be enough to make it write to a chart. Both D-7
+   * scripts now guard `main()`, and share the ghost id through a one-constant
+   * module that requires nothing, so no file's import can run anything.
+   * `test/rcmD7ProbeScripts.test.js` proves the behaviour; this is the static
+   * rule that keeps a third script from reopening the hole.
+   */
+  assert.deepEqual(
+    unguarded,
+    [],
+    'a script that names an Open Dental write verb must guard main() behind ' +
+      '`require.main === module`, or requiring it writes to a chart. Found: ' +
+      unguarded.join(', ')
   );
 
   // And the two that ARE allowed really are there — an allow-list pointing at
