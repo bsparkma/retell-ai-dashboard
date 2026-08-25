@@ -816,11 +816,30 @@ avoid.
 
 **Designated test patients only. Roland only, until §9 is discharged.**
 
-> ⚠️ **Do NOT reuse claim 53648.** Spike 0b left permanent residue on PatNum
-> 12827: procedure `405237`, the **negative supplemental claimproc `533931`**
-> (which Open Dental will not let any API caller remove), and adjustments
-> `19109`–`19112`. That supplemental permanently pins claim 53648 and its
-> procedure. **Author a synthetic 835 that pays a NEW disposable claim.**
+> ⚠️ **Do NOT reuse claim 53648** — and as of 2026-08-25 you could not if you
+> tried. **Author a synthetic 835 that pays a NEW disposable claim.**
+>
+> **Corrected 2026-08-25, from the first §10.0 inventory run.** This section used
+> to say the negative supplemental claimproc `533931` permanently pins claim
+> `53648` and its procedure, because Open Dental will not let any API caller
+> remove it. That is still true *of the API*. It was not true of the practice:
+>
+> ```
+> GET /claims/53648      -> 404 "Claim not found."
+> GET /claimprocs/533931 -> 404 "ClaimProc not found."
+> ```
+>
+> Both were removed some time after 2026-08-13, almost certainly through Open
+> Dental's **desktop UI**, which can do what the cloud API cannot. Read "the API
+> cannot undo this" as exactly that, and never as "this row is now immortal".
+>
+> What is actually left of Spike 0b on 12827: procedure `405237` (live, $1.00), a
+> **detached** $0.00 estimate claimproc `533930` (`ClaimNum: 0`), adjustments
+> `19109`–`19112` (−$1.20), and soft-deleted procedures `405238`/`405239` that no
+> doc mentioned until the inventory printed them. All of them, plus the two that
+> now 404, stay on the scripts' deny-list — Open Dental does not reissue ids, and
+> dropping a guard because the thing it guarded went away is how a guard quietly
+> stops guarding.
 
 ### 10.0 Prep — everything that is not a human decision, done in advance
 
@@ -1002,28 +1021,47 @@ to a chart while measuring a drain.
 "returned to where it started" is meaningless without a picture of where that
 was, and 12827 already carries Spike 0b's permanent residue.
 
-> **RUN NOT YET PERFORMED.** These scripts are checked in on
-> `chore/rcm-s10-prep` and have not been run against staging: the worktree cannot
-> resolve Roland's customer key (§9, "How the probes are run"), so they run only
-> from inside the deployed container. Fill this table in from the inventory and
-> prep transcripts, and paste both transcripts here, once the branch is on
-> staging.
+**RUN 2026-08-25 19:14 UTC**, staging, revision `ca-carein-backend--0000122`,
+`PROBE_OFFICE=roland`. Read-only; nothing was created, updated or deleted.
 
 ```
-BASELINE (rcm-s10-inventory.js, PROBE_OFFICE=roland, PatNum 12827)
-  claims          : <ClaimNum list — expect 53648, the Spike 0b residue>
-  procedurelogs   : <ProcNum list, with any ProcStatus "D" flagged>
-  claimprocs      : <ClaimProcNum list — expect 533931, unremovable>
-  adjustments     : <AdjNum list — expect 19109–19112>
-  computed balance: <expect $0.00; the residue nets out>
-  claim count for S10_EXPECTED_CLAIMS: <n>
-
-TARGETS (rcm-s10-prep.js)
-  A  ProcNum=<P1>  ClaimNum=<C1>  ClaimProcNum=<CP1>   — §10.2, the drain
-  B  ProcNum=<P2>  ClaimNum=<C2>  ClaimProcNum=<CP2>   — §10.3, kill-mid-drain
+BASELINE (rcm-s10-inventory.js, PatNum 12827)
+  claims          : NONE                      <- 53648 is gone; see the box above
+  procedurelogs   : 405237 (C, $1.00)
+                    405238 (D, soft-deleted)
+                    405239 (D, soft-deleted)
+  claimprocs      : 533930  ClaimNum 0, Status "Estimate", $0.00  [DETACHED]
+                    (533931 is gone)
+  adjustments     : 19109  19110  19111  19112   (net -$1.20)
+  computed balance: -$0.20      <- NOT $0.00. See section 11.
+  claim count for S10_EXPECTED_CLAIMS: 0
 ```
 
 Ids only. No names, and no amounts beyond the $1.00 the targets carry.
+
+Two things that run changed:
+
+1. **The claim count is 0**, which is the cleanest baseline this walk could ask
+   for: the two targets will be the only claims on the patient, so nothing in
+   §10.2 or §10.3 can be confused with anything pre-existing.
+2. **The inventory had a gap, and this run found it.** It discovered claimprocs
+   by walking the claims, the way `odClaimReads.js` does — correct for matching,
+   where a candidate *is* a claim. It is wrong for a ledger: with zero claims it
+   reported zero claimprocs while `533930` sat there detached. It carries $0.00,
+   so the balance did not move, but a balance that is right only because the row
+   it missed happened to be empty is not a balance. Both the inventory and the
+   §11 unwind now read `/claimprocs?PatNum=`, in one call instead of N, and flag
+   detached rows in the table.
+
+> **TARGETS NOT YET CREATED.** `rcm-s10-prep.js` has not been run — the exec was
+> refused by a local permission gate, not by anything in Azure or Open Dental.
+> Fill this in and paste the prep transcript when it runs.
+>
+> ```
+> TARGETS (rcm-s10-prep.js, S10_EXPECTED_CLAIMS=0)
+>   A  ProcNum=<P1>  ClaimNum=<C1>  ClaimProcNum=<CP1>   — §10.2, the drain
+>   B  ProcNum=<P2>  ClaimNum=<C2>  ClaimProcNum=<CP2>   — §10.3, kill-mid-drain
+> ```
 
 ### 10.2 The walk
 
@@ -1085,7 +1123,7 @@ The screen says why. After §9 is discharged, the same walk on **PatNum 7115**.
 
 ---
 
-## 11. The unwind — returning the test patient to $0.00
+## 11. The unwind — returning the test patient to where it started (−$0.20)
 
 Measured end to end in the Spike 0b teardown. **Order is mandatory** and the
 first pass fails if you try it any other way.
@@ -1137,8 +1175,18 @@ adjustments                   ...
 PATIENT BALANCE               0.00
 ```
 
-12827's permanent Spike 0b residue (`-0.20` supplemental, offset by adjustments
-19109–19112) already nets to $0.00 and must be left alone.
+**The target is −$0.20, not $0.00 — corrected 2026-08-25.** This used to read
+"12827's permanent Spike 0b residue (`-0.20` supplemental, offset by adjustments
+19109–19112) already nets to $0.00". That arithmetic was right *while the
+supplemental existed*: $1.00 charge − (−$0.20 insurance) + (−$1.20 adjustments)
+= $0.00. The supplemental has since been removed outside the API (see §10's
+box), so what is left is $1.00 − $0.00 + (−$1.20) = **−$0.20**, which is what the
+inventory measured.
+
+Whatever the residue nets to, it must be **left alone**. `rcm-s11-unwind.js`
+prints the balance before and after and reports the delta; the number to check is
+that the delta is $0.00 and the claim count is back to the prep baseline — not
+that the absolute balance is any particular figure.
 
 ---
 

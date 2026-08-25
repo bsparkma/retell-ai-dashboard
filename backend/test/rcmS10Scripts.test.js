@@ -91,12 +91,20 @@ test('the targets module pins the office, the patient and the fee as constants',
 
 test('the Spike 0b residue is a deny-list, not a comment', () => {
   /*
-   * Procedure 405237, claim 53648, the unremovable negative supplemental 533931,
-   * adjustments 19109–19112, and the fake subscriber plan 20469. RCM_OD_WRITES
-   * "Cleanup ledger" and RCM_POSTING §10/§11.
+   * The docs' list — claim 53648, procedure 405237, supplemental 533931,
+   * adjustments 19109-19112, PatPlanNum 20469 — plus what the 2026-08-25
+   * inventory actually found on the patient: soft-deleted procedures 405238 and
+   * 405239, and the detached $0.00 estimate 533930.
+   *
+   * 53648 and 533931 now read 404 — they were removed through Open Dental's
+   * desktop UI, which can do what the cloud API cannot. They STAY denied.
+   * Denying an id that no longer exists costs nothing, Open Dental does not
+   * reissue ids, and the list's job is to refuse a manifest that names one —
+   * which is exactly as valuable as it was. Dropping a guard because the thing
+   * it guarded went away is how a guard quietly stops guarding.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  for (const id of [53648, 405237, 533931, 19109, 19110, 19111, 19112, 20469]) {
+  for (const id of [53648, 405237, 405238, 405239, 533930, 533931, 19109, 19110, 19111, 19112, 20469]) {
     assert.ok(T.DENY_IDS.includes(id), `${id} must be on the deny-list`);
   }
 });
@@ -126,6 +134,30 @@ test('the inventory excludes soft-deleted procedures from its balance (G12)', ()
   const src = read(FILES.inventory);
   assert.match(src, /ProcStatus\) === 'D'/, 'it must identify "D" rows');
   assert.match(src, /excluded from every total/i, 'and say how many it excluded');
+});
+
+test('the inventory reads claimprocs BY PATIENT, so a detached row cannot hide', () => {
+  /*
+   * The 2026-08-25 run is why. PatNum 12827 had ZERO claims and a claimproc all
+   * the same — 533930, ClaimNum 0, a detached Spike 0b estimate. A claim-scoped
+   * walk cannot see a row that belongs to no claim, so the baseline the §11
+   * unwind is measured against silently omitted it. That row carries $0.00, so
+   * the number did not move; "the number did not move this time" is not a
+   * property.
+   */
+  for (const name of [FILES.inventory, FILES.unwind]) {
+    const src = code(name);
+    assert.match(
+      src,
+      /'\/claimprocs',\s*\{\s*PatNum: T\.PAT_NUM|list\('\/claimprocs'\)/,
+      `${name} must read claimprocs by patient`
+    );
+    assert.ok(
+      !/'\/claimprocs',\s*\{\s*ClaimNum/.test(src),
+      `${name} must not derive the ledger from claim-scoped claimproc reads`
+    );
+  }
+  assert.match(read(FILES.inventory), /DETACHED — belongs to no claim/, 'and say so in the table');
 });
 
 // ─── 3. The prep creates two targets and cannot be talked into a third ──────

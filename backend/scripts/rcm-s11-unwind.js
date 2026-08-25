@@ -141,22 +141,23 @@ async function balanceOf(get) {
   const procs = await list('/procedurelogs');
   const claims = await list('/claims');
   const adjustments = await list('/adjustments');
+  /*
+   * BY PATIENT, not by claim. A claim-scoped walk cannot see a claimproc that
+   * belongs to no claim, and PatNum 12827 has one: `533930`, `ClaimNum: 0`, a
+   * detached Spike 0b estimate found on 2026-08-25. It carries $0.00 today, so
+   * omitting it did not move the number — but a balance that is right only
+   * because the row it missed happened to be empty is not a balance.
+   *
+   * It matters MORE here than in the inventory: this function runs twice, and a
+   * detached row that appeared between the two readings would show up as an
+   * unexplained delta on a script whose entire output is a delta.
+   */
+  const claimProcs = await list('/claimprocs');
 
   const deletedCount = procs.filter((p) => String(p.ProcStatus) === 'D').length;
   const liveProcNums = new Set(
     procs.filter((p) => String(p.ProcStatus) !== 'D').map((p) => Number(p.ProcNum))
   );
-
-  /** @type {Record<string, unknown>[]} */
-  const claimProcs = [];
-  for (const claim of claims) {
-    const claimNum = Number(claim.ClaimNum);
-    const res = await get('/claimprocs', { ClaimNum: claimNum });
-    if (!res.ok) throw new Error(`GET /claimprocs failed (${res.status}): ${res.error}`);
-    for (const r of Array.isArray(res.data) ? res.data : []) {
-      if (Number(r.ClaimNum) === claimNum) claimProcs.push(r);
-    }
-  }
 
   const charges = procs
     .filter((p) => String(p.ProcStatus) === 'C')

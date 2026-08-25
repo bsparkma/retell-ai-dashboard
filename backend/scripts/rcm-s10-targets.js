@@ -92,13 +92,37 @@ const ERA_A_PATH = path.join(OUT_DIR, 'rcm-s10-835-A.txt');
 const ERA_B_PATH = path.join(OUT_DIR, 'rcm-s10-835-B.txt');
 
 /**
- * SPIKE 0b's PERMANENT RESIDUE ON 12827 — never touched, by any script here.
+ * SPIKE 0b's RESIDUE ON 12827 — never touched, by any script here.
  *
  * `docs/RCM_OD_WRITES.md` "Cleanup ledger" and `docs/RCM_POSTING.md` §10/§11.
- * The negative supplemental claimproc 533931 cannot be reverted (400: "Cannot
- * change Status from Supplemental…") and cannot be deleted (`DELETE /claimprocs`
- * does not exist on 25.4.48). It permanently pins claim 53648 and procedure
- * 405237; adjustments 19109–19112 offset it so the patient nets to $0.00.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * MEASURED 2026-08-25 — "PERMANENT" TURNED OUT NOT TO BE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The docs say the negative supplemental claimproc 533931 cannot be reverted
+ * (400 "Cannot change Status from Supplemental…"), cannot be deleted (`DELETE
+ * /claimprocs` does not exist on 25.4.48), and therefore pins claim 53648 and
+ * procedure 405237 forever. That was true of the API. It was not true of the
+ * practice: the first §10 inventory run found
+ *
+ *     GET /claims/53648      -> 404 "Claim not found."
+ *     GET /claimprocs/533931 -> 404 "ClaimProc not found."
+ *
+ * Both were removed some time after 2026-08-13, almost certainly through Open
+ * Dental's desktop UI, which can do what the cloud API cannot. What is actually
+ * left is procedure 405237 (live, $1.00), a DETACHED $0.00 estimate claimproc
+ * 533930 (`ClaimNum: 0`), the four adjustments, and two soft-deleted procedures
+ * 405238/405239 the docs never mentioned.
+ *
+ * The 404ing ids stay on the deny-list anyway. Denying an id that no longer
+ * exists costs nothing, and the list exists so that a manifest naming one is
+ * REFUSED — which is exactly as valuable as it was. "It is gone, so we can stop
+ * guarding it" is how a guard quietly stops guarding, and Open Dental ids are
+ * not reissued.
+ *
+ * Consequence for §11: the patient nets to **−$0.20**, not $0.00. The $0.00 the
+ * docs quote was only true while the −$0.20 supplemental existed to offset the
+ * −$1.20 of adjustments against the $1.00 charge. It does not now.
  *
  * This is a DENY-LIST, not a comment. The unwind refuses any of these ids even
  * if one somehow reaches its manifest — because the failure mode that matters is
@@ -113,8 +137,13 @@ const ERA_B_PATH = path.join(OUT_DIR, 'rcm-s10-835-B.txt');
  */
 const SPIKE_0B_RESIDUE = Object.freeze({
   claims: Object.freeze([53648]),
-  procedures: Object.freeze([405237]),
-  claimProcs: Object.freeze([533931]),
+  // 405238 and 405239 are Spike 0b's, soft-deleted ("D"), and absent from every
+  // doc until the 2026-08-25 inventory printed them. Denied for the same reason
+  // as the rest: a manifest that names one did not come from the prep script.
+  procedures: Object.freeze([405237, 405238, 405239]),
+  // 533930 is the DETACHED $0.00 estimate that is actually still there; 533931 is
+  // the supplemental that is not.
+  claimProcs: Object.freeze([533930, 533931]),
   adjustments: Object.freeze([19109, 19110, 19111, 19112]),
   patPlans: Object.freeze([20469]),
 });
