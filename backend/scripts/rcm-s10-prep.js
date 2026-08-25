@@ -17,8 +17,9 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * The §10.1 recipe, run twice:
  *
- *   POST /procedurelogs {PatNum, procCode:"D0140", ProcStatus:"C", ProcFee:1.00,
- *                        ProvNum:1}                     -> 201  ProcNum
+ *   POST /procedurelogs {PatNum, ProcDate:<today, Central>, procCode:"D0140",
+ *                        ProcStatus:"C", ProcFee:1.00, ProvNum:1}
+ *                                                        -> 201  ProcNum
  *   POST /claims        {PatNum, procNums:[ProcNum], ClaimType:"P"}
  *                                                        -> 201  ClaimNum, status W
  *   GET  /claimprocs?ClaimNum=<C>                        -> exactly 1 NotReceived row
@@ -52,6 +53,9 @@
  *      aborts if the count moved — a claim that appeared between the inventory
  *      and now means somebody else is working on this patient.
  *   8. >= 1.3 s between calls, so it cannot crowd the shared credential.
+ *   9. It proves the output directory is WRITABLE before the first Open Dental
+ *      call, so it cannot create two live claims and then discover it has no way
+ *      to record them.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * IF `POST /claims` FAILS
@@ -89,6 +93,39 @@ function isoDay(value) {
   if (!m) return null;
   const day = `${m[1]}-${m[2]}-${m[3]}`;
   return day === '0001-01-01' ? null : day;
+}
+
+/**
+ * Today, in the OFFICE's timezone, as Open Dental's `"yyyy-MM-dd"`.
+ *
+ * `ProcDate` is REQUIRED on `POST /procedurelogs` (the Open Dental API reference
+ * for procedurelogs says so in as many words, and the first prep run got
+ * `400 "ProcDate is required."`). It has to come from somewhere, and UTC is the
+ * wrong somewhere: UTC midnight lands mid-evening in Central, so a prep run at
+ * 7pm the night before the walk would stamp TOMORROW on the procedure. The
+ * matcher then scores the 835's service date against a chart date a day out, and
+ * §11's arithmetic reconciles against a row dated after the walk that created it.
+ *
+ * Same reasoning and same implementation as `postingDrain.officeToday()`;
+ * duplicated rather than imported because requiring a service from an operational
+ * script drags a database seam in with it.
+ *
+ * @param {Date} [now]
+ * @returns {string}
+ */
+function officeToday(now = new Date()) {
+  const tz = process.env.OFFICE_TIMEZONE || 'America/Chicago';
+  try {
+    // en-CA formats as YYYY-MM-DD, which is exactly Open Dental's date shape.
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
+  } catch {
+    return now.toISOString().slice(0, 10);
+  }
 }
 
 /**
@@ -144,8 +181,33 @@ async function claimCount(od) {
 }
 
 async function main() {
-  // FIRST, before any odOffices call. See rcm-s10-inventory.js for what a
-  // script that cannot load its own secrets costs at a live chart database.
+  /*
+   * BEFORE ANYTHING ELSE — before the secrets, before the office, before the
+   * first Open Dental call.
+   *
+   * The 2026-08-25 run is why this is here and why it is here FIRST. It aborted
+   * correctly on a 400, printed "Nothing was created for this target", and then
+   * died on EACCES writing the manifest in the abort path. The last thing the
+   * operator saw was `PREP FAILED: EACCES`, which describes neither the real
+   * failure nor what the script did about it: a failure in the REPORTING path
+   * masked the failure being reported.
+   *
+   * Checking here makes the first error the only error. And it means the
+   * chart-touching part never starts when the cheap precondition it depends on is
+   * already broken — a prep that creates two live claims and only THEN discovers
+   * it cannot record them is precisely the outcome the manifest exists to
+   * prevent.
+   */
+  const outDirProblem = T.checkOutDirWritable();
+  if (outDirProblem) {
+    console.error(`REFUSED: ${outDirProblem}`);
+    console.error('  Nothing was created. No Open Dental call was made.');
+    process.exitCode = 10;
+    return;
+  }
+
+  // Then the secrets, before any odOffices call. See rcm-s10-inventory.js for
+  // what a script that cannot load its own costs at a live chart database.
   await require('../config/secrets').loadSecrets();
 
   const office = process.env.PROBE_OFFICE || T.OFFICE;
@@ -276,8 +338,28 @@ async function main() {
     console.log(`   pre-check: ${before} claims — matches the baseline.`);
 
     // ── 1. The procedure ────────────────────────────────────────────────────
+    //
+    // ProcDate is REQUIRED. The Open Dental API reference for procedurelogs
+    // lists PatNum, ProcDate, ProcStatus and procCode-or-CodeNum as required;
+    // the recipe transcribed into RCM_OD_WRITES and RCM_POSTING omitted it, and
+    // the first prep run got `400 "ProcDate is required."` for exactly that
+    // reason. Both docs are corrected alongside this change.
+    //
+    // ProcFee and ProvNum are documented as OPTIONAL. Both are sent anyway:
+    // ProcFee because the walk's whole arithmetic is that this procedure costs
+    // exactly $1.00, and the default is "the procedure code's fee, with
+    // consideration of the patient's insurance" — a number this walk does not
+    // control. ProvNum because its default chain is appointment provider ->
+    // patient's default -> office default, which would make the created row
+    // depend on practice configuration rather than on this script.
+    //
+    // DateEntryC is NOT sent: it appears in responses but the reference does not
+    // list it as a create parameter, and inventing a field the API does not
+    // document is how a 400 becomes a mystery.
+    const procDate = officeToday();
     const procRes = await od.post('/procedurelogs', {
       PatNum: T.PAT_NUM,
+      ProcDate: procDate,
       procCode: T.PROC_CODE,
       ProcStatus: 'C',
       ProcFee: T.PROC_FEE,
@@ -306,11 +388,29 @@ async function main() {
       process.exitCode = 7;
       break;
     }
-    console.log(`   POST /procedurelogs -> ${procRes.status}  ProcNum=${procNum}  (read back: ProcStatus="${procBack.data?.ProcStatus}", ProcFee=${procBack.data?.ProcFee})`);
+    console.log(
+      `   POST /procedurelogs -> ${procRes.status}  ProcNum=${procNum}  ` +
+        `(read back: ProcStatus="${procBack.data?.ProcStatus}", ProcFee=${procBack.data?.ProcFee}, ProcDate=${procBack.data?.ProcDate})`
+    );
 
-    // The chart's own service date, read back rather than assumed. See the
-    // `targets` declaration above for why the 835 generator must not derive it.
+    /*
+     * The service date, taken from the READ-BACK and checked against what was
+     * sent (G2: a 201 is a claim about a row, not the row). If Open Dental
+     * stored a different date than it was given, the manifest must carry the
+     * chart's version — that is what the 835 has to agree with and what §11
+     * reconciles against — and the disagreement is worth stopping for, because it
+     * would mean a documented-required field was quietly reinterpreted.
+     */
     const serviceDate = isoDay(procBack.data?.ProcDate);
+    if (serviceDate !== procDate) {
+      console.error(
+        `\nABORTING: procedure ${procNum} was created with ProcDate=${procDate} but reads back as ${serviceDate}.`
+      );
+      console.error('  The 835 and the section 11 arithmetic both key off this date. Not guessing which is right.');
+      targets.push({ procNum, claimNum: 0, claimProcNum: 0, serviceDate, createdAt: new Date().toISOString() });
+      process.exitCode = 7;
+      break;
+    }
 
     // ── 2. The claim ────────────────────────────────────────────────────────
     const claimRes = await od.post('/claims', {
@@ -390,13 +490,24 @@ async function main() {
     targets.push({ procNum, claimNum, claimProcNum, serviceDate, createdAt: new Date().toISOString() });
   }
 
-  // ── The manifest ──────────────────────────────────────────────────────────
-  //
-  // Written even on a partial run — ESPECIALLY on a partial run. An abort that
-  // leaves a procedure behind and no record of it is the worst outcome available
-  // here: the unwind takes ids from this file and from nowhere else, so a row
-  // created but unrecorded can never be removed by the tooling that created it.
-  fs.mkdirSync(T.OUT_DIR, { recursive: true });
+  /*
+   * ── The manifest ─────────────────────────────────────────────────────────
+   *
+   * Written even on a partial run — ESPECIALLY on a partial run. An abort that
+   * leaves a procedure behind and no record of it is the worst outcome available
+   * here: the unwind takes ids from this file and from nowhere else, so a row
+   * created but unrecorded can never be removed by the tooling that created it.
+   *
+   * THE IDS ARE PRINTED BEFORE THE FILE IS WRITTEN, not after.
+   *
+   * `checkOutDirWritable()` ran before the first Open Dental call, so this write
+   * should not fail. "Should not" is not "cannot" — a volume can go away between
+   * the check and here — and if it does, the console transcript is then the only
+   * surviving record of what was created. On 2026-08-25 the ordering was the
+   * other way round and an EACCES here became the last line of the run, printed
+   * over the top of the real failure. Whatever happens to the file, an operator
+   * ends up holding the numbers.
+   */
   const manifest = {
     office,
     patNum: T.PAT_NUM,
@@ -409,15 +520,28 @@ async function main() {
     complete: targets.length === T.TARGET_COUNT && targets.every((t) => t.claimNum && t.claimProcNum),
     targets,
   };
-  fs.writeFileSync(T.MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 
-  console.log(`\n-- MANIFEST ---------------------------------------------------------`);
-  console.log(`   ${T.MANIFEST_PATH}`);
-  console.log(`   complete: ${manifest.complete}`);
+  console.log(`\n-- WHAT THIS RUN CREATED --------------------------------------------`);
+  if (targets.length === 0) {
+    console.log('   nothing');
+  }
   for (const [i, t] of targets.entries()) {
     console.log(
-      `   ${String.fromCharCode(65 + i)}: ProcNum=${t.procNum}  ClaimNum=${t.claimNum}  ClaimProcNum=${t.claimProcNum}`
+      `   ${String.fromCharCode(65 + i)}: ProcNum=${t.procNum}  ClaimNum=${t.claimNum}  ClaimProcNum=${t.claimProcNum}  ProcDate=${t.serviceDate}`
     );
+  }
+  console.log(`   complete: ${manifest.complete}`);
+
+  try {
+    fs.writeFileSync(T.MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    console.log(`\n   manifest written: ${T.MANIFEST_PATH}`);
+  } catch (err) {
+    console.error(`\n! COULD NOT WRITE THE MANIFEST to ${T.MANIFEST_PATH}: ${err.code || ''} ${err.message}`);
+    console.error('  The ids above are now the ONLY record of what was created. Copy them somewhere');
+    console.error('  before closing this shell, then hand-write the manifest so the unwind can read it:');
+    console.error(JSON.stringify(manifest, null, 2));
+    process.exitCode = 11;
+    return;
   }
   console.log('\n   Record these ids in docs/RCM_POSTING.md section 10.1.');
 
@@ -445,4 +569,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main };
+module.exports = { main, officeToday, isoDay };

@@ -15,13 +15,14 @@
  * The inventory, the prep, the 835 generator and the unwind all need the same
  * patient, the same office and the same manifest path. None of them may import
  * another, because two of them write and one of them DELETEs. So the agreement
- * lives here: constants, no requires beyond `path`, no side effects. There is
- * nothing here that importing could run.
+ * lives here: constants and one pure helper, from `node:fs` and `node:path`
+ * only, with NO top-level call. There is nothing here that importing could run.
  *
  * Everything in this file is a decision, not a default. Read the reasons before
  * changing a value.
  */
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 /**
@@ -71,8 +72,34 @@ const TARGET_COUNT = 2;
  */
 const PACE_MS = 1300;
 
-/** Where the manifest lands. Gitignored: it names live chart rows. */
-const OUT_DIR = path.join(__dirname, 'out');
+/**
+ * Where the manifest and the two 835s land.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `/data`, NOT `scripts/out` — MEASURED 2026-08-25
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This was `path.join(__dirname, 'out')`, which is `/app/scripts/out` in the
+ * container. The first prep run died on it:
+ *
+ *     EACCES: permission denied, mkdir '/app/scripts/out'
+ *
+ * **`/app` is read-only to the non-root user the container runs as.** The image
+ * is not a scratch directory, and treating it as one is how a script works on a
+ * workstation and fails in the only place it is ever actually run.
+ *
+ * `/data` is the AzureFile volume — the same mount `CALLSTORE_DIR` uses in prod
+ * and staging. That matters beyond writability: **§10.3 deliberately kills and
+ * restarts the container mid-drain**, and days may pass between the walk and the
+ * §11 unwind. A manifest on the ephemeral container layer would be gone by the
+ * time the thing it describes needed removing — leaving live $1.00 claims on a
+ * chart with no record of which rows this walk had created, and therefore no way
+ * for the unwind to remove them. The manifest MUST outlive the container.
+ *
+ * `S10_OUT_DIR` overrides it, for local runs and for tests, where `/data` is
+ * either absent or is `C:\data`.
+ * @type {string}
+ */
+const OUT_DIR = process.env.S10_OUT_DIR || '/data/rcm-s10';
 
 /**
  * THE ONLY AUTHORITY THE UNWIND ACCEPTS.
@@ -92,13 +119,37 @@ const ERA_A_PATH = path.join(OUT_DIR, 'rcm-s10-835-A.txt');
 const ERA_B_PATH = path.join(OUT_DIR, 'rcm-s10-835-B.txt');
 
 /**
- * SPIKE 0b's PERMANENT RESIDUE ON 12827 — never touched, by any script here.
+ * SPIKE 0b's RESIDUE ON 12827 — never touched, by any script here.
  *
  * `docs/RCM_OD_WRITES.md` "Cleanup ledger" and `docs/RCM_POSTING.md` §10/§11.
- * The negative supplemental claimproc 533931 cannot be reverted (400: "Cannot
- * change Status from Supplemental…") and cannot be deleted (`DELETE /claimprocs`
- * does not exist on 25.4.48). It permanently pins claim 53648 and procedure
- * 405237; adjustments 19109–19112 offset it so the patient nets to $0.00.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * MEASURED 2026-08-25 — "PERMANENT" TURNED OUT NOT TO BE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The docs say the negative supplemental claimproc 533931 cannot be reverted
+ * (400 "Cannot change Status from Supplemental…"), cannot be deleted (`DELETE
+ * /claimprocs` does not exist on 25.4.48), and therefore pins claim 53648 and
+ * procedure 405237 forever. That was true of the API. It was not true of the
+ * practice: the first §10 inventory run found
+ *
+ *     GET /claims/53648      -> 404 "Claim not found."
+ *     GET /claimprocs/533931 -> 404 "ClaimProc not found."
+ *
+ * Both were removed some time after 2026-08-13, almost certainly through Open
+ * Dental's desktop UI, which can do what the cloud API cannot. What is actually
+ * left is procedure 405237 (live, $1.00), a DETACHED $0.00 estimate claimproc
+ * 533930 (`ClaimNum: 0`), the four adjustments, and two soft-deleted procedures
+ * 405238/405239 the docs never mentioned.
+ *
+ * The 404ing ids stay on the deny-list anyway. Denying an id that no longer
+ * exists costs nothing, and the list exists so that a manifest naming one is
+ * REFUSED — which is exactly as valuable as it was. "It is gone, so we can stop
+ * guarding it" is how a guard quietly stops guarding, and Open Dental ids are
+ * not reissued.
+ *
+ * Consequence for §11: the patient nets to **−$0.20**, not $0.00. The $0.00 the
+ * docs quote was only true while the −$0.20 supplemental existed to offset the
+ * −$1.20 of adjustments against the $1.00 charge. It does not now.
  *
  * This is a DENY-LIST, not a comment. The unwind refuses any of these ids even
  * if one somehow reaches its manifest — because the failure mode that matters is
@@ -113,8 +164,13 @@ const ERA_B_PATH = path.join(OUT_DIR, 'rcm-s10-835-B.txt');
  */
 const SPIKE_0B_RESIDUE = Object.freeze({
   claims: Object.freeze([53648]),
-  procedures: Object.freeze([405237]),
-  claimProcs: Object.freeze([533931]),
+  // 405238 and 405239 are Spike 0b's, soft-deleted ("D"), and absent from every
+  // doc until the 2026-08-25 inventory printed them. Denied for the same reason
+  // as the rest: a manifest that names one did not come from the prep script.
+  procedures: Object.freeze([405237, 405238, 405239]),
+  // 533930 is the DETACHED $0.00 estimate that is actually still there; 533931 is
+  // the supplemental that is not.
+  claimProcs: Object.freeze([533930, 533931]),
   adjustments: Object.freeze([19109, 19110, 19111, 19112]),
   patPlans: Object.freeze([20469]),
 });
@@ -127,6 +183,58 @@ const DENY_IDS = Object.freeze([
   ...SPIKE_0B_RESIDUE.adjustments,
   ...SPIKE_0B_RESIDUE.patPlans,
 ]);
+
+/**
+ * Make `OUT_DIR` exist and prove it is writable. Returns an error STRING, or
+ * null when all is well.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CALLED BEFORE THE FIRST OPEN DENTAL CALL, NEVER AFTER
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The 2026-08-25 prep run is why this exists, and why it is a separate step
+ * rather than a `try` around the write at the end. The run aborted correctly on
+ * an unrelated 400, printed *"Nothing was created for this target"* — and then
+ * died on `EACCES` from the manifest write in the abort path. The last line an
+ * operator saw was `PREP FAILED: EACCES`, which describes neither what went
+ * wrong nor what the script did about it. **A failure in the reporting path had
+ * masked the failure being reported.**
+ *
+ * Checking up front makes the first error the only error. It also means the
+ * expensive, chart-touching part of the script never starts when the cheap
+ * precondition it depends on is already broken — a prep that creates two live
+ * claims and THEN discovers it cannot record them is the one outcome this whole
+ * design exists to prevent.
+ *
+ * It writes and removes a probe file rather than trusting `fs.accessSync(W_OK)`:
+ * on an AzureFile mount, and under an overlay filesystem, access bits are not a
+ * reliable predictor of whether a write lands.
+ *
+ * @param {string} [dir]
+ * @returns {string|null}
+ */
+function checkOutDirWritable(dir = OUT_DIR) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    return (
+      `cannot create the output directory ${dir}: ${err.code || ''} ${err.message}\n` +
+      `  In the container this must be on the /data volume — /app is READ-ONLY to the user\n` +
+      `  the app runs as. Set S10_OUT_DIR to somewhere writable if you are running locally.`
+    );
+  }
+  const probe = path.join(dir, '.write-probe');
+  try {
+    fs.writeFileSync(probe, 'ok', 'utf8');
+    fs.unlinkSync(probe);
+  } catch (err) {
+    return (
+      `${dir} exists but is not writable: ${err.code || ''} ${err.message}\n` +
+      `  The manifest is the only record of what this walk created, and the only authority\n` +
+      `  the unwind accepts. Refusing to create anything that could not be recorded.`
+    );
+  }
+  return null;
+}
 
 /** Open Dental list page size, and the cap on how many pages any read here walks. */
 const OD_PAGE_SIZE = 100;
@@ -152,4 +260,5 @@ module.exports = {
   OD_PAGE_SIZE,
   MAX_PAGES,
   OD_TIMEOUT_MS,
+  checkOutDirWritable,
 };

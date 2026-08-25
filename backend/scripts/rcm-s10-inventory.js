@@ -222,25 +222,49 @@ async function main() {
   );
   console.log(`   ${deleted.length} row(s) read ProcStatus "D" and are excluded from every total below.`);
 
-  // -- ClaimProcs, per claim -------------------------------------------------
-  /** @type {Array<Record<string, unknown>>} */
-  const allClaimProcs = [];
+  /*
+   * -- ClaimProcs, BY PATIENT rather than by claim --------------------------
+   *
+   * This read used to loop the claims and ask for each one's lines. That is how
+   * `odClaimReads.js` does it, and for matching it is right: a candidate is a
+   * claim, so its lines come from the claim.
+   *
+   * It is WRONG for a ledger, and the 2026-08-25 run proved it. PatNum 12827 had
+   * ZERO claims and a claimproc all the same: `533930`, `ClaimNum: 0`, a detached
+   * Spike 0b estimate. A claim-scoped walk cannot see a row that belongs to no
+   * claim, so the baseline the §11 unwind is measured against silently omitted
+   * it. That row happens to carry $0.00, so the number did not move — but "the
+   * number did not move this time" is not a property, and the next detached row
+   * could carry money.
+   *
+   * One PatNum-scoped read replaces N claim-scoped ones: fewer calls against the
+   * shared credential AND a complete set.
+   */
+  const claimProcScan = await scan(
+    handle,
+    '/claimprocs',
+    { PatNum: T.PAT_NUM },
+    (r) => Number(r.PatNum) === T.PAT_NUM
+  );
+  if (claimProcScan.dropped) {
+    console.log(
+      `\n   ! Open Dental ignored the PatNum filter on /claimprocs and returned ${claimProcScan.dropped} other rows; discarded here.`
+    );
+  }
+  if (claimProcScan.truncated) {
+    console.log('\n   ! /claimprocs was TRUNCATED at the page cap — this inventory is incomplete.');
+  }
+  const allClaimProcs = claimProcScan.rows;
+
   /** @type {Set<number>} */
   const claimPaymentNums = new Set();
-  for (const claim of claims.rows) {
-    const claimNum = Number(claim.ClaimNum);
-    const cps = await scan(handle, '/claimprocs', { ClaimNum: claimNum }, (r) => Number(r.ClaimNum) === claimNum);
-    if (cps.dropped) {
-      console.log(
-        `\n   ! /claimprocs ignored the ClaimNum=${claimNum} filter and returned ${cps.dropped} other rows; discarded here.`
-      );
-    }
-    for (const cp of cps.rows) {
-      allClaimProcs.push(cp);
-      const n = Number(cp.ClaimPaymentNum);
-      if (Number.isFinite(n) && n > 0) claimPaymentNums.add(n);
-    }
+  for (const cp of allClaimProcs) {
+    const n = Number(cp.ClaimPaymentNum);
+    if (Number.isFinite(n) && n > 0) claimPaymentNums.add(n);
   }
+
+  const claimNums = new Set(claims.rows.map((c) => Number(c.ClaimNum)));
+  const detached = allClaimProcs.filter((cp) => !claimNums.has(Number(cp.ClaimNum)));
 
   table(
     'CLAIMPROCS',
@@ -253,11 +277,20 @@ async function main() {
       cp.InsPayAmt,
       cp.WriteOff,
       cp.ClaimPaymentNum,
-      T.SPIKE_0B_RESIDUE.claimProcs.includes(Number(cp.ClaimProcNum))
-        ? '*** SPIKE 0b NEGATIVE SUPPLEMENTAL — UNREMOVABLE, DO NOT TOUCH'
-        : '',
+      [
+        claimNums.has(Number(cp.ClaimNum)) ? '' : 'DETACHED — belongs to no claim on this patient',
+        T.SPIKE_0B_RESIDUE.claimProcs.includes(Number(cp.ClaimProcNum)) ? '*** SPIKE 0b RESIDUE — DO NOT TOUCH' : '',
+      ]
+        .filter(Boolean)
+        .join('  '),
     ])
   );
+  if (detached.length) {
+    console.log(
+      `   ${detached.length} claimproc(s) belong to no claim on this patient. They are counted in the balance` +
+        ' below — a claim-scoped read would have missed them entirely.'
+    );
+  }
 
   // -- ClaimPayments referenced by those lines -------------------------------
   const payments = [];
