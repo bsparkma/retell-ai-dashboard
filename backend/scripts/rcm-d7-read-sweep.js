@@ -8,6 +8,16 @@
  *
  *     PROBE_OFFICE=valley node scripts/rcm-d7-read-sweep.js
  *
+ * THIS SCRIPT ISSUES ONLY READS — and as of the 2026-08-24 run that is finally
+ * true. It used to import the write probe for the shared ghost id, and the probe
+ * ran itself on import, so the sweep re-fired every write verb between its own
+ * reads. The transcript in §9(a) still shows those interleaved PROBE lines.
+ *
+ * Both halves of that are now fixed: the ghost id comes from a one-constant
+ * module with no requires, and both scripts guard `main()` behind
+ * `require.main === module`. Pinned by `test/rcmD7ProbeScripts.test.js` and by
+ * the scripts/ scan in `routes/rcm/rcmNoOdWrites.test.js`.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY A SWEEP AT ALL, WHEN THE PROBE WAS ZERO-RISK BY CONSTRUCTION
  * ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +42,11 @@
  */
 
 const odOffices = require('../config/odOffices');
-const { GHOST } = require('./rcm-d7-write-probe');
+// NOT from the write probe. Importing that file used to RUN it, so this sweep —
+// a script whose entire job is to issue nothing but reads — re-fired every write
+// verb on import. The shared id now lives in a one-constant module that has no
+// requires and no side effects.
+const { GHOST } = require('./rcm-d7-ghost');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,6 +58,11 @@ function asArray(data) {
 }
 
 async function main() {
+  // The customer key, for the same reason and in the same order as the probe:
+  // `odOffices` reads it from `process.env`, and only this loader puts it there.
+  // Awaited before the first odOffices call.
+  await require('../config/secrets').loadSecrets();
+
   const office = process.env.PROBE_OFFICE || 'valley';
   const handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
   const od = handle.client;
@@ -108,10 +127,15 @@ async function main() {
   );
 }
 
-main().then(
-  () => process.exit(0),
-  (e) => {
-    console.error('SWEEP FAILED:', e && e.message);
-    process.exit(1);
-  }
-);
+// Run ONLY when invoked directly — see the same guard on the write probe.
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    (e) => {
+      console.error('SWEEP FAILED:', e && e.message);
+      process.exit(1);
+    }
+  );
+}
+
+module.exports = { main };
