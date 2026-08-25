@@ -198,6 +198,13 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   // (hide) rather than throwing.
   const actorIsAdmin = auth.status === "authenticated"
     && (auth.user.isSuperAdmin || can(auth.user.permissions, "admin.all"));
+  // May this person file a chart note? Same action the send routes are gated on,
+  // computed here the same way CallDetail computes it. It decides whether the
+  // dialogs below offer the OTHER practice's chart at all — the server 403s a
+  // cross-office search without it, and a control that earns a 403 is worse than
+  // no control.
+  const canChartWrite = auth.status === "authenticated"
+    && (auth.user.isSuperAdmin || can(auth.user.permissions, "voice.chart_write"));
 
   const applyTriage = async (
     call: UnifiedCall,
@@ -814,6 +821,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           call={pickCall}
           onLinked={(updated) => onLinked(pickCall, updated)}
           onNotPatient={(reason) => onNotPatient(pickCall, reason)}
+          canCrossOffice={canChartWrite}
         />
       )}
 
@@ -824,6 +832,7 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
           call={sendTarget.call}
           patientId={sendTarget.patientId}
           patientName={sendTarget.patientName}
+          canCrossOffice={canChartWrite}
           onSent={(updated) => onSent(sendTarget.call, sendTarget.patientId, updated)}
         />
       )}

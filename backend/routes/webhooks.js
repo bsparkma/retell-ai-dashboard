@@ -335,6 +335,20 @@ async function writeCommlogForAnalyzedCall(callData) {
       return { officeBlocked: true, code: outcome.code, reason: outcome.reason };
     }
 
+    // The call already has a patient. matchAndSetStatus did not re-match it and did
+    // not touch it — a link, once made, is an answer, and a webhook re-delivery is
+    // not new information about who called. Nothing is written here either: a
+    // re-delivered webhook is not the human pressing Send, and the link may well be
+    // to the other practice's patient, which the auto-write path below has no way to
+    // honour (it resolves the CALL's office).
+    if (outcome.status === 'already_linked') {
+      console.log(
+        `🔵 [Webhook] ${callId} already linked (patient=${outcome.patientId} @ ${outcome.officeKey}) — ` +
+        `not re-matched, nothing written`
+      );
+      return { matched: true, autoWrite: false, alreadyLinked: true, patientId: outcome.patientId };
+    }
+
     // Fix 3: ambiguous / low-confidence / no match -> needs_review. NEVER auto-write to a
     // guessed chart (e.g. when the caller's number is on more than one patient record).
     if (outcome.status === 'needs_review') {

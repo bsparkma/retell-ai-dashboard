@@ -50,7 +50,7 @@ test('writes one audit row with the expected column order and values', async () 
 
   assert.match(captured.text, /INSERT INTO audit_log/);
   // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint,
-  //  office, source_ref]
+  //  office, origin_office, source_ref]
   assert.deepEqual(captured.params, [
     'staff@carein.ai',
     'T1',
@@ -61,6 +61,7 @@ test('writes one audit row with the expected column order and values', async () 
     'SUCCESS',
     '/api/opendental/patients/123',
     null, // office omitted → NULL ("not an office-scoped action"), never a guess
+    null, // origin_office omitted → NULL ("no origin distinct from the target")
     null, // source_ref omitted → NULL ("no recorded external cause"), same rule
   ]);
 });
@@ -85,7 +86,31 @@ test('records the external cause when one is given', async () => {
 
   // tc_case_events is normal CRUD; audit_log is append-only. This is the copy
   // of "which call caused this case" that survives.
-  assert.equal(captured.params[9], 'mango_call_9');
+  assert.equal(captured.params[10], 'mango_call_9');
+});
+
+test('records both offices when a chart action crosses practices', async () => {
+  const captured = captureQuery();
+  const req = {
+    user: { email: 'staff@carein.ai' },
+    tenant: { id: 'T1' },
+    ip: '203.0.113.7',
+    originalUrl: '/api/unified-calls/abc/resolve-patient',
+  };
+
+  await audit.audit(req, {
+    action: 'CREATE',
+    resourceType: 'commlog',
+    resourceId: 9001,
+    office: 'roland',
+    originOffice: 'valley',
+    result: 'SUCCESS',
+  });
+
+  // "Why is there a Roland chart note from a call that rang at Riley?" has to be
+  // answerable from the row itself — office is the chart, origin_office is the call.
+  assert.equal(captured.params[8], 'roland');
+  assert.equal(captured.params[9], 'valley');
 });
 
 test('records the office key when the action is office-scoped', async () => {

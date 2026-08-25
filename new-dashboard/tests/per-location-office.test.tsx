@@ -7,7 +7,9 @@
  * Roland. The server refuses cross-office writes; what is pinned HERE is the part
  * a HUMAN can get wrong, and therefore has to be able to SEE:
  *
- *   - the Pick Patient modal searches the office of the CALL, and says which one;
+ *   - the Pick Patient modal searches the office of the CALL BY DEFAULT, and says
+ *     which one (searching another practice is now possible, but only as a
+ *     deliberate choice — see cross-office-chart-target.test.tsx);
  *   - a failed search never reads as "no such patient";
  *   - the Send dialog states which practice's chart it is about to write to, and
  *     asserts that office back to the server;
@@ -34,6 +36,8 @@ const apiMock = vi.hoisted(() => ({
   searchPatientsForCall: vi.fn(),
   getCommlogPreview: vi.fn(),
   resolvePatient: vi.fn(),
+  // Both dialogs now load the office roster to populate the chart-target picker.
+  getOffices: vi.fn(),
 }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
@@ -63,16 +67,19 @@ beforeEach(() => {
   apiMock.searchPatientsForCall.mockReset();
   apiMock.getCommlogPreview.mockReset();
   apiMock.resolvePatient.mockReset();
+  apiMock.getOffices.mockReset();
+  apiMock.getOffices.mockResolvedValue([VALLEY]);
 });
 
 afterEach(cleanup);
 
 describe("Pick Patient modal — office visibility", () => {
-  it("searches by CALL id, not by a client-chosen office", async () => {
+  it("searches THIS CALL's own office unless someone deliberately changes it", async () => {
     apiMock.searchPatientsForCall.mockResolvedValue({ patients: [], office: VALLEY });
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -86,9 +93,15 @@ describe("Pick Patient modal — office visibility", () => {
     });
 
     await waitFor(() => expect(apiMock.searchPatientsForCall).toHaveBeenCalled());
-    // The call id is the ONLY scope passed — the office is derived server-side, so
-    // no client state can search one practice while resolving another's call.
-    expect(apiMock.searchPatientsForCall).toHaveBeenCalledWith("call-valley-1", "TestValley");
+    // The search is still call-scoped — the call id is always the first argument, so
+    // the server fixes the ORIGIN office and the audit trail records which call sent
+    // us looking through a practice's records.
+    //
+    // The office is no longer implicit, because searching only the call's office made
+    // a caller who belongs to the other practice impossible to find at all. But it
+    // still DEFAULTS to the call's own: opening this modal and typing must never
+    // quietly look somewhere else.
+    expect(apiMock.searchPatientsForCall).toHaveBeenCalledWith("call-valley-1", "TestValley", "valley");
   });
 
   it("names the office whose patients it searched", async () => {
@@ -99,6 +112,7 @@ describe("Pick Patient modal — office visibility", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -125,6 +139,7 @@ describe("Pick Patient modal — office visibility", () => {
 
     render(
       <PickPatientModal
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -152,6 +167,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -162,7 +178,10 @@ describe("Send to chart dialog — which practice", () => {
     );
 
     // "PatNum 7115" alone is ambiguous across practices; the office resolves it.
-    await waitFor(() => expect(screen.getByText(/Valley Fort Smith/)).toBeTruthy());
+    // Named in more than one place now (the target picker AND the "Writing to" line),
+    // so assert the line that states where the note lands rather than a bare match.
+    await waitFor(() => expect(screen.getByText(/Writing to/)).toBeTruthy());
+    expect(screen.getByText(/Writing to/).textContent).toMatch(/Valley Fort Smith/);
     expect(screen.getByText(/PatNum 7115/)).toBeTruthy();
   });
 
@@ -174,6 +193,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -182,15 +202,18 @@ describe("Send to chart dialog — which practice", () => {
         onSent={() => {}}
       />,
     );
-    await waitFor(() => expect(screen.getByText(/Valley Fort Smith/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Writing to/)).toBeTruthy());
 
-    fireEvent.click(screen.getByRole("button", { name: /Send to chart/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send to .*chart/i }));
 
     await waitFor(() => expect(apiMock.resolvePatient).toHaveBeenCalled());
     const [, body] = apiMock.resolvePatient.mock.calls[0];
-    // A stale screen naming the wrong office gets refused server-side rather than
-    // writing a note into the wrong practice.
+    // A screen whose idea of the target disagrees with the server's gets refused
+    // rather than writing a note into the wrong practice. office_id still only ever
+    // asserts — target_office is the half that selects, and here they agree because
+    // nobody changed the office.
     expect(body.office_id).toBe("valley");
+    expect(body.target_office).toBe("valley");
     expect(body.patientId).toBe(7115);
   });
 
@@ -202,6 +225,7 @@ describe("Send to chart dialog — which practice", () => {
 
     render(
       <SendToChartDialog
+        canCrossOffice
         open
         onOpenChange={() => {}}
         call={valleyCall()}
@@ -210,8 +234,8 @@ describe("Send to chart dialog — which practice", () => {
         onSent={() => {}}
       />,
     );
-    await waitFor(() => expect(screen.getByText(/Valley Fort Smith/)).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: /Send to chart/i }));
+    await waitFor(() => expect(screen.getByText(/Writing to/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Send to .*chart/i }));
 
     await waitFor(() => expect(toasts.calls.length).toBeGreaterThan(0));
     expect(toasts.calls[0].kind).toBe("success");

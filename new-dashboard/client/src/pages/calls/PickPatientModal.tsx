@@ -11,6 +11,25 @@
  * caller or to hand the call to TC, forced a note into someone's chart. The call
  * lands in 'matched', where "Send to chart" and "Send to TC" are independent,
  * optional next steps.
+ *
+ * WHICH PRACTICE'S PATIENTS
+ * -------------------------
+ * The search used to be locked to the office the call rang at. That is right for
+ * almost every call and wrong for the one that matters: the front desk at one
+ * practice takes a call about the other practice's patient, the patient is simply
+ * not in the list, and the call cannot be resolved to anyone at all.
+ *
+ * So the office is a choice. Two things keep it honest:
+ *
+ *   - Switching offices clears the results AND hides the stored suggestions. Those
+ *     candidates were matched in the call's own database, and a PatNum means a
+ *     different person in the other one — offering them under a new office name is
+ *     how the wrong record gets picked.
+ *   - When the office being searched is not the office the call rang at, the modal
+ *     says so, in words, for as long as it is true.
+ *
+ * The link then stores the office alongside the PatNum, because a PatNum without
+ * its database does not identify a person.
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -20,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, UserCheck, Ban, Loader2, Building2, AlertTriangle } from "lucide-react";
 import { api, normalizeUnifiedCall, type UnifiedCall, type OdPatient, type NotAPatientReason, type OfficeConfig } from "@/lib/api";
+import { ChartOfficeSelect, CrossOfficeNotice, officeNameOf } from "./ChartOfficeSelect";
 import { toast } from "sonner";
 
 const NOT_A_PATIENT_REASONS: { value: NotAPatientReason; label: string }[] = [
@@ -44,15 +64,28 @@ interface PickPatientModalProps {
   onLinked: (updated: UnifiedCall) => void;
   /** Closed out as not-a-patient (already persisted; no OD write). */
   onNotPatient: (reason: NotAPatientReason) => void;
+  /**
+   * May this person search the OTHER practice's patient list? The server gates a
+   * cross-office search on `voice.chart_write` — browsing another practice's
+   * records is the first half of writing a note there — so without it the office
+   * picker is not offered and the search stays where it always was: this call's
+   * own office. A `tc` user identifying a caller is unaffected.
+   */
+  canCrossOffice: boolean;
 }
 
-export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPatient }: PickPatientModalProps) {
+export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPatient, canCrossOffice }: PickPatientModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OdPatient[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   // The office whose patient list is being searched, as reported by the server.
   const [office, setOffice] = useState<OfficeConfig | null>(null);
+  // Every office this tenant has, for the search-office picker.
+  const [offices, setOffices] = useState<OfficeConfig[]>([]);
+  // Which office to search. Starts at the call's own — the ordinary case, and the
+  // only one that needs no thought — and is changed only deliberately.
+  const [searchOffice, setSearchOffice] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<number | "not_patient" | null>(null);
   const [reason, setReason] = useState<NotAPatientReason>("spam");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,12 +98,19 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
       setSearching(false);
       setSearchError(null);
       setOffice(null);
+      setSearchOffice(call.officeId ?? null);
       setSubmittingId(null);
       setReason("spam");
+      // Tenant configuration, so its own request rather than a field on every
+      // search response. Failing to load it leaves the modal working exactly as
+      // it did before there was a picker: the call's own office, no choice.
+      api.getOffices().then(setOffices).catch(() => setOffices([]));
     }
-  }, [open, call.id]);
+  }, [open, call.id, call.officeId]);
 
-  // Debounced OD patient search, scoped server-side to THIS call's office.
+  // Debounced OD patient search, in the CHOSEN office. Still call-scoped on the
+  // server — the office is validated against the registry there, so this asks for
+  // one of a known set rather than naming any database it likes.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (query.trim().length < 2) {
@@ -81,7 +121,9 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
     }
     setSearching(true);
     debounceRef.current = setTimeout(async () => {
-      const { patients, office: searchedOffice, error } = await api.searchPatientsForCall(call.id, query);
+      const { patients, office: searchedOffice, error } = await api.searchPatientsForCall(
+        call.id, query, searchOffice ?? undefined,
+      );
       setResults(patients);
       setSearchError(error ?? null);
       if (searchedOffice) setOffice(searchedOffice);
@@ -90,7 +132,24 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, call.id]);
+  }, [query, call.id, searchOffice]);
+
+  /**
+   * Search a different practice's patients.
+   *
+   * Everything on screen that came from the previous office goes: results are rows
+   * from another database, and a PatNum shown under the wrong office name is how
+   * someone links a call to a stranger who happens to hold that number.
+   */
+  const changeSearchOffice = (officeId: string) => {
+    if (officeId === searchOffice) return;
+    setSearchOffice(officeId);
+    setQuery("");
+    setResults([]);
+    setSearchError(null);
+    setSearching(false);
+    setOffice(null);
+  };
 
   /**
    * Link the call to this patient. This establishes WHO called and nothing else —
@@ -104,9 +163,12 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
       const res = await api.resolvePatient(call.id, {
         patientId,
         linkOnly: true,
-        // Assert the office this screen believes it is acting on. The server
-        // resolves the real one and refuses on a mismatch.
-        ...(office ? { office_id: office.officeId } : {}),
+        // The office this PatNum was found in — both as the target the server
+        // should verify and store it against, and as the assertion it checks that
+        // choice against. target_office selects; office_id can only refuse. Sending
+        // both means a request that loses the choice in transit is rejected rather
+        // than quietly linked against whichever office the server defaulted to.
+        ...(searchOffice ? { target_office: searchOffice, office_id: searchOffice } : {}),
       });
       if (res.success && res.call) {
         toast.success(`Linked to ${label}`);
@@ -140,7 +202,15 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
     }
   };
 
-  const candidates = call.odMatchCandidates ?? [];
+  const callOfficeId = call.officeId ?? null;
+  const crossOffice = !!searchOffice && !!callOfficeId && searchOffice !== callOfficeId;
+  const searchOfficeName = office?.officeName ?? officeNameOf(offices, searchOffice);
+
+  // The stored candidates were matched in the CALL's own Open Dental. Their PatNums
+  // mean a different person in the other practice's database, so they are shown only
+  // while that is the database being searched — hidden, not greyed out, because a
+  // suggestion nobody should act on is not a suggestion.
+  const candidates = crossOffice ? [] : (call.odMatchCandidates ?? []);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -186,18 +256,38 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
           )}
 
           {/* OD patient search — always says WHICH practice is being searched, so a
-              wrong-office moment is visible before anyone picks a patient. */}
+              wrong-office moment is visible before anyone picks a patient, and lets
+              that practice be changed when the caller belongs to the other one. */}
           <div>
             <div className="flex items-center justify-between gap-2 mb-1.5">
               <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 Search Open Dental
               </div>
-              {office && (
+              {office && !crossOffice && (
                 <div className="flex items-center gap-1 text-xs text-muted-foreground min-w-0">
                   <Building2 size={12} className="flex-shrink-0" />
                   <span className="truncate">Searching {office.officeName} patients</span>
                 </div>
               )}
+            </div>
+
+            <div className="mb-2 space-y-2">
+              <ChartOfficeSelect
+                offices={offices}
+                value={searchOffice}
+                onChange={changeSearchOffice}
+                callOfficeId={callOfficeId}
+                disabled={submittingId !== null}
+                canCrossOffice={canCrossOffice}
+                purpose="patients"
+                testId="search-office-select"
+              />
+              <CrossOfficeNotice
+                offices={offices}
+                callOfficeId={callOfficeId}
+                targetOfficeId={searchOffice}
+                purpose="patients"
+              />
             </div>
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -224,7 +314,7 @@ export function PickPatientModal({ open, onOpenChange, call, onLinked, onNotPati
                 </div>
               ) : query.trim().length >= 2 && results.length === 0 ? (
                 <div className="text-center py-4 text-xs text-muted-foreground">
-                  No patients found{office ? ` in ${office.officeName}` : ""}.
+                  No patients found{searchOfficeName ? ` in ${searchOfficeName}` : ""}.
                 </div>
               ) : (
                 results.map((p) => (
