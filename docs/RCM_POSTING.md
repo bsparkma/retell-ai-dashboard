@@ -1096,15 +1096,18 @@ Two things that run changed:
    §11 unwind now read `/claimprocs?PatNum=`, in one call instead of N, and flag
    detached rows in the table.
 
-> **TARGETS NOT YET CREATED.** `rcm-s10-prep.js` has not been run — the exec was
-> refused by a local permission gate, not by anything in Azure or Open Dental.
-> Fill this in and paste the prep transcript when it runs.
->
-> ```
-> TARGETS (rcm-s10-prep.js, S10_EXPECTED_CLAIMS=0)
->   A  ProcNum=<P1>  ClaimNum=<C1>  ClaimProcNum=<CP1>   — §10.2, the drain
->   B  ProcNum=<P2>  ClaimNum=<C2>  ClaimProcNum=<CP2>   — §10.3, kill-mid-drain
-> ```
+**TARGETS CREATED 2026-08-25**, `S10_EXPECTED_CLAIMS=0`, `ProcDate 2026-08-25`,
+manifest at `/data/rcm-s10/rcm-s10-manifest.json`:
+
+```
+TARGETS (rcm-s10-prep.js)
+  A  ProcNum=406124  ClaimNum=53784  ClaimProcNum=535194   check 21399  — §10.2
+  B  ProcNum=406125  ClaimNum=53785  ClaimProcNum=535195   check 21400  — §10.3
+```
+
+The check numbers are Open Dental's `ClaimPaymentNum`, written by the drain on
+the night; they are recorded here because §11 has to remove them and because
+"exactly one ClaimPayment per plan" is the property §10.3 tests.
 
 ### 10.2 The walk
 
@@ -1140,6 +1143,27 @@ SELECT position, status, skip_reason, readback->>'agreed' AS verified
   FROM rcm_posting_queue_line ORDER BY position;
 ```
 
+#### RUN 2026-08-25 ~20:05 CT — **PASSED**
+
+Both plans drained. The step that matters — *"open Roland's Open Dental and see
+the payment on the ledger"* — was done by eye for each.
+
+| | A (claim 53784) | B (claim 53785) |
+| --- | --- | --- |
+| queue before drain | `Queued · CAREIN SYNTHETIC PAYER · check S10A-53784 · $1.00 · Approved and waiting. Nothing has been written to Open Dental.` | same, `S10B-53785` |
+| after drain | `Posted · Open Dental check #21399 · verified by read-back` | `Posted · Open Dental check #21400 · verified by read-back` |
+| ledger rows | `D0140  Ins Paid $1.00` · `Pri Claim  Received 08/25  Payment $1.00` · `InsPay 1.00` | same |
+| patient balance after | `0.80` | `−0.20` |
+
+Header after both: `0 waiting · 2 posted · 0 blocked · 2 total`, Drain button
+disabled.
+
+Confirmed incidentally: Roland's payment types read `296 Check · 297 EFT ·
+404 Credit Card · 472 Insurance Check`.
+
+**Exactly one ClaimPayment per plan**, which is the invariant the whole forced
+order exists to protect.
+
 ### 10.3 Kill-mid-drain
 
 Same flow on a **second** disposable claim. Stop the container once a line reads
@@ -1154,10 +1178,41 @@ SELECT count(DISTINCT od_claim_payment_num) FROM rcm_posting_queue_line
  WHERE queue_id = '<plan>' AND od_claim_payment_num IS NOT NULL;   -- 1
 ```
 
+#### RUN 2026-08-25 — **THE KILL MISSED THE WINDOW. NOT PROVEN.**
+
+`az containerapp revision restart` was issued after B posted. The drain takes
+**~9 s** end to end; the restart takes **~3 s** to take effect. The container came
+back *after* the drain had already finished, so nothing was ever interrupted.
+
+Record it as untested rather than as passed. Nothing about the resume path was
+exercised: no plan was left mid-flight, so the startup sweep had nothing to
+re-queue.
+
+What the restart **did** prove, and it is worth having: **both plans stayed
+`posted` across it, and neither was re-queued.** The sweep re-homes rows a dead
+process left mid-flight and leaves finished plans alone — that is the half of the
+sweep's contract this run actually tested, and it held.
+
+**Pause hook → 6d.** A kill test that depends on beating a 9-second drain by hand
+is not a test, it is a coin flip. 6d adds `RCM_DRAIN_STEP_DELAY_MS`, a
+staging-only sleep between drain steps, so the window is as wide as the tester
+needs. It must be **refused when `NODE_ENV=production` AND the office registry
+says prod**, and default to `0` — a delay knob that can be set in production is a
+way to hold a chart write open, not a testing aid.
+
 ### 10.4 Replay
 
 Press Drain again on the posted plan. Expect `ran: 0` and **no Open Dental call
 at all**.
+
+#### RUN 2026-08-25 — passes by construction
+
+With both plans `posted` the queue read `0 waiting` and **the Drain button was
+disabled**, so the replay could not be issued from the UI at all. That is a
+stronger guarantee than `ran: 0` — the call is not made because it cannot be —
+but it is a *different* guarantee, and it means the `ran: 0` path itself is still
+unexercised. Noted, not papered over. (The disabled button says nothing about
+why; see §15.2.)
 
 ### 10.5 Valley
 
@@ -1168,8 +1223,51 @@ The screen says why. After §9 is discharged, the same walk on **PatNum 7115**.
 
 ## 11. The unwind — returning the test patient to where it started (−$0.20)
 
-Measured end to end in the Spike 0b teardown. **Order is mandatory** and the
-first pass fails if you try it any other way.
+> ### ⚠️ THE ORDER IN THIS SECTION WAS WRONG UNTIL 2026-08-26
+>
+> It came from the Spike 0b teardown, and it was correct for what 0b produced.
+> **Spike 0b never set the claim to Received. Slice 6c does** — `PUT /claims
+> {ClaimStatus:"R"}` is step 2 of the drain's own forced order (§3). So the
+> teardown recipe described a claim shape the thing it tears down never produces,
+> and the first time it was run against a 6c-posted claim it failed at its second
+> step and cascaded. See the transcript below.
+>
+> This is worth generalising: **a teardown written against one producer is not
+> validated against another.** 0b's recipe was measured, and it was still wrong
+> here.
+
+**Order is mandatory.** Each step is refused until the one before it has run.
+
+```
+1.  DELETE /claimpayments/{ClaimPaymentNum}        -> 200
+      (only possible BEFORE an EOB or a deposit is attached)
+      Deleting the check does NOT clear the claimproc: InsPayAmt stays put,
+      ClaimPaymentNum resets to 0. SKIP this step when it is already 0.
+
+2.  PUT /claims/{ClaimNum} {ClaimStatus: "W"}      -> 200   ← THE NEW STEP
+      UN-RECEIVE THE CLAIM. Steps 3 and 4 are BOTH refused while it reads "R".
+      Read back and require ClaimStatus === "W" before going near a DELETE.
+
+      The claims reference lists ClaimStatus as updatable and accepting
+      "U" | "H" | "W" | "S" | "R", with no documented restriction on moving back
+      off "R". "W" is chosen over "S" because it is where POST /claims already
+      lands a new claim, so the unwind restores a shape the system produces
+      rather than a different legal one.
+
+3.  PUT /claimprocs/{n} {Status:"NotReceived", InsPayAmt:0, WriteOff:0, DedApplied:0}
+                                                   -> 200
+      Refused while the claim reads Received. Once it takes, the claim is pinned
+      by the money on its lines until this has run.
+
+4.  DELETE /claims/{ClaimNum}                      -> 200
+      The reference: "Will not delete claims with insurance payments/checks
+      attached or have a status of Received."
+
+5.  DELETE /procedurelogs/{ProcNum}                -> 200
+      ⚠️ SOFT DELETE (G12): the row comes back with ProcStatus:"D" and STILL
+      APPEARS in GET /procedurelogs. Any ledger arithmetic must filter it out —
+      this bit the spike's own teardown and over-applied a reversal by $2.00.
+```
 
 `backend/scripts/rcm-s11-unwind.js` implements exactly this, against the ids in
 the §10.0 manifest and no others. Dry run first, then `--execute`:
@@ -1179,28 +1277,22 @@ PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js             # prints the plan
 PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute   # writes
 ```
 
-It prints the balance before and after with `ProcStatus:"D"` rows filtered — the
-G12 trap that over-applied Spike 0b's own teardown by $2.00 — and reads every
-deletion back, because a 200 from Open Dental is a claim about a row rather than
-the row. Paste its transcript below when the walk is done.
+**Every step is resumable, so the whole script is re-runnable.** Each one reads
+its target state first and reports `already done` rather than re-issuing: a check
+that is gone, a claim that is no longer Received, a line already at
+`NotReceived`/0, a claim that is deleted, a procedure already `"D"`. A second run
+against a finished unwind issues **zero** writes. That is not a convenience — the
+8/25 run left the patient half-unwound, and a teardown that only works against a
+pristine post-walk state cannot clean up after its own failure.
 
-```
-1.  DELETE /claimpayments/{ClaimPaymentNum}        -> 200
-      (only possible BEFORE an EOB or a deposit is attached)
-      Deleting the check does NOT clear the claimproc: InsPayAmt stays put,
-      ClaimPaymentNum resets to 0.
+If step 2 does not read back as `"W"`, the target **stops there, before any
+DELETE**. A claim that will not un-receive is a claim whose deletes are going to
+be refused anyway, and issuing them regardless buries the real reason under three
+more 400s — which is exactly how the transcript below reads.
 
-2.  PUT /claimprocs/{n} {Status:"NotReceived", InsPayAmt:0, WriteOff:0, DedApplied:0}
-                                                   -> 200
-      The claim is pinned by the money on its lines until this runs.
-
-3.  DELETE /claims/{ClaimNum}                      -> 200
-
-4.  DELETE /procedurelogs/{ProcNum}                -> 200
-      ⚠️ SOFT DELETE (G12): the row comes back with ProcStatus:"D" and STILL
-      APPEARS in GET /procedurelogs. Any ledger arithmetic must filter it out —
-      this bit the spike's own teardown and over-applied a reversal by $2.00.
-```
+The script prints the balance before and after with `ProcStatus:"D"` rows
+filtered (the G12 trap), a per-target × per-step table of what is done / already
+done / failed, and reads every write back.
 
 **What cannot be unwound:** a negative supplemental. It cannot be reverted
 (`400 "Cannot change Status from Supplemental when there is a ClaimProc with a
@@ -1230,6 +1322,94 @@ Whatever the residue nets to, it must be **left alone**. `rcm-s11-unwind.js`
 prints the balance before and after and reports the delta; the number to check is
 that the delta is $0.00 and the claim count is back to the prep baseline — not
 that the absolute balance is any particular figure.
+
+### 11.1 First attempt, 2026-08-26 — refused at step 2
+
+The dry run looked clean, because a dry run cannot discover a refusal:
+
+```
+=== S11 UNWIND — roland (Roland), PatNum 12827 ===
+    mode: DRY RUN (pass --execute to write)
+    manifest: /data/rcm-s10/rcm-s10-manifest.json
+    baseline claim count recorded at prep: 0
+-- BALANCE BEFORE (ProcStatus "D" excluded) ------------------------
+   charges  (ProcStatus "C")          $3.00
+   insurance paid                    -$2.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   PATIENT BALANCE                   -$0.20
+   claims: 2   soft-deleted procedures excluded: 2
+-- TARGET A: ProcNum=406124 ClaimNum=53784 ClaimProcNum=535194 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21399
+   [dry run] DELETE /claimpayments/21399
+   [dry run] PUT /claimprocs/535194 {"Status":"NotReceived","InsPayAmt":0,"WriteOff":0,"DedApplied":0}
+   [dry run] DELETE /claims/53784
+   [dry run] DELETE /procedurelogs/406124
+-- TARGET B: ProcNum=406125 ClaimNum=53785 ClaimProcNum=535195 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21400
+   [dry run] DELETE /claimpayments/21400
+   [dry run] PUT /claimprocs/535195 {"Status":"NotReceived","InsPayAmt":0,"WriteOff":0,"DedApplied":0}
+   [dry run] DELETE /claims/53785
+   [dry run] DELETE /procedurelogs/406125
+-- VERDICT: before -$0.20   after -$0.20   delta $0.00   DRY RUN
+```
+
+Then `--execute`. The check came out; nothing else did:
+
+```
+-- TARGET A: ProcNum=406124 ClaimNum=53784 ClaimProcNum=535194 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21399
+   DELETE /claimpayments/21399 -> 200
+   read-back: GET /claimpayments/21399 -> 404 gone
+   PUT /claimprocs/535194 -> 400 FAILED
+       Cannot change Status to NotReceived when attached to a received claim.
+   DELETE /claims/53784 -> 400 FAILED
+       Claim cannot be deleted. Claim status is Received.
+   DELETE /procedurelogs/406124 -> 400 FAILED
+       Not allowed to delete a procedure that is attached to a claim.
+-- TARGET B: ProcNum=406125 ClaimNum=53785 ClaimProcNum=535195 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21400
+   DELETE /claimpayments/21400 -> 200
+   read-back: GET /claimpayments/21400 -> 404 gone
+   PUT /claimprocs/535195 -> 400 FAILED
+       Cannot change Status to NotReceived when attached to a received claim.
+   DELETE /claims/53785 -> 400 FAILED
+       Claim cannot be deleted. Claim status is Received.
+   DELETE /procedurelogs/406125 -> 400 FAILED
+       Not allowed to delete a procedure that is attached to a claim.
+-- BALANCE AFTER: charges $3.00  insurance paid -$2.00  adjustments -$1.20  PATIENT BALANCE -$0.20  claims: 2
+-- VERDICT: before -$0.20   after -$0.20   delta $0.00
+   ! claim count is 2, not the prep baseline of 0.
+```
+
+Three things this transcript teaches, beyond the missing step:
+
+1. **The delta was $0.00 and almost nothing had worked.** The verdict line is not
+   a success signal on its own — the balance did not move because the money moved
+   from a deleted check onto a still-paid line. Only the claim-count line said
+   anything true. That is why the per-step table was added.
+2. **Two of the three 400s were noise.** Once the claimproc PUT was refused, both
+   DELETEs were certain to fail for the same underlying reason. Issuing them
+   anyway put the real cause third from last. The script now stops the target at
+   the first refusal.
+3. **The state it left is the real test of the fix.** Checks gone,
+   `ClaimPaymentNum` reset to 0, claims still `Received`, claimprocs still
+   `InsPayAmt=1`, procedures still `"C"`. It was deliberately left that way so the
+   corrected script has to repair it rather than run against a clean slate.
+
+### 11.2 Re-run — to be pasted
+
+> **NOT YET RUN.** After `fix/rcm-s11-unwind-received-claims` merges and staging
+> deploys, from inside the container at `/app`:
+>
+> ```bash
+> PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js            # expect: payment already done, 4 steps pending per target
+> PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute  # expect: every step done, claims 0, balance -$0.20
+> PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js         # expect: 0 claims, 405237 C + 4 x D, balance -$0.20
+> ```
+>
+> The inventory is the one that closes this out: 12827 back to zero claims, the
+> Spike 0b procedure plus four soft-deleted ones, and −$0.20.
 
 ---
 
@@ -1407,6 +1587,29 @@ remittance is already under way"* — which was **false** for every status but
 finished hours earlier. The limitation was real either way; the sentence hid it.
 
 ---
+
+### 15.2 UX findings from the 2026-08-25 walk — for the RCM UX slice
+
+Not defects in the posting machinery; every one of them is a thing that made the
+walk harder to drive than it needed to be. Logged here because a walk is the only
+time anyone uses these screens in anger.
+
+1. **Approve is on a different page from review and match, with no link between
+   them.** The approve panel lives on the remittance page; review and match live
+   on the claim page. Getting from one to the other is navigation the operator
+   has to already know.
+2. **"Approved Aug 26" showed the UTC date.** It was Aug 25 in Roland. A
+   timezone display bug on the posting queue — the same `OFFICE_TIMEZONE`
+   reasoning the drain applies to `DateReceived` (§3.3) has not reached the
+   screen that reports it.
+3. **The posting summary strip said "1 posted" while the header said
+   "2 posted".** Two counters over the same queue disagreeing; at least one is
+   scoped differently from what its label claims.
+4. **The Drain button is disabled at `0 waiting` with no text saying why.** This
+   is the one that cost real time in §10.4: a disabled button with no reason is
+   indistinguishable from a broken one, and the replay step reads as untestable
+   rather than as already-guaranteed. The honest-states rule that governs the
+   backend applies here too — say *"nothing waiting to drain"*.
 
 ## 16. Out of scope
 
