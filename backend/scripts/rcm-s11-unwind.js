@@ -142,6 +142,24 @@ const fs = require('node:fs');
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
 
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6d: WHICH PRACTICE THIS RUN ADDRESSES, RESOLVED ONCE, AT LOAD.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `PROBE_OFFICE` selects; an office the registry does not name THROWS here,
+ * before `main()` and before any Open Dental client exists. Failing at require
+ * time rather than mid-run is deliberate: a typo must not get as far as holding
+ * a credential.
+ *
+ * Every id below is per-office, because ClaimNum, ProcNum and ClaimProcNum
+ * numbering restarts in every Open Dental database — and PatNum 7115 is valley's
+ * test patient and a DIFFERENT, REAL person in Roland.
+ */
+const TARGET = T.resolveTarget();
+const PATHS = T.pathsFor(TARGET.office);
+const DENY = T.denyIdsFor(TARGET);
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** @param {unknown} value */
@@ -178,14 +196,14 @@ async function balanceOf(get) {
     const rows = [];
     for (let page = 0; page < T.MAX_PAGES; page++) {
       const res = await get(path, {
-        PatNum: T.PAT_NUM,
+        PatNum: TARGET.patNum,
         ...(page > 0 ? { Offset: page * T.OD_PAGE_SIZE } : {}),
       });
       if (!res.ok) throw new Error(`GET ${path} failed (${res.status}): ${res.error}`);
       const batch = Array.isArray(res.data) ? res.data : [];
       // Client-side re-filter: OD silently ignores list filters it does not
       // implement and answers 200 with everybody's rows.
-      for (const r of batch) if (Number(r.PatNum) === T.PAT_NUM) rows.push(r);
+      for (const r of batch) if (Number(r.PatNum) === TARGET.patNum) rows.push(r);
       if (batch.length < T.OD_PAGE_SIZE) return rows;
     }
     throw new Error(`GET ${path} did not terminate within the page cap.`);
@@ -333,7 +351,7 @@ async function unwindTarget(io, target) {
    * the same test to every step costs nothing and means no future step can be
    * added that skips it.
    */
-  const denied = (id) => T.DENY_IDS.includes(Number(id));
+  const denied = (id) => DENY.includes(Number(id));
 
   /*
    * A TARGET IS ALL-OR-NOTHING.
@@ -575,17 +593,22 @@ async function main() {
 
   const execute = process.argv.includes('--execute');
 
-  const office = process.env.PROBE_OFFICE || T.OFFICE;
-  if (office !== T.OFFICE) {
-    console.error(`REFUSED: PROBE_OFFICE='${office}'. This script touches '${T.OFFICE}' only.`);
-    process.exitCode = 2;
-    return;
-  }
+  /*
+   * 6d: THE OFFICE ALREADY REFUSED, ABOVE, AT LOAD.
+   *
+   * `T.resolveTarget()` throws on a `PROBE_OFFICE` the registry does not name,
+   * so by the time `main()` runs the office is one of exactly two and its PatNum
+   * came from the same frozen row. There is no longer a roland-only refusal to
+   * make here -- what there IS, and what matters more, is the assertion below
+   * that the Open Dental handle we are about to use is frozen to this same
+   * office. A PatNum in the wrong database is a different, real person.
+   */
+  const office = TARGET.office;
 
   // SAFETY 1 — the manifest is the ONLY authority.
-  if (!fs.existsSync(T.MANIFEST_PATH)) {
+  if (!fs.existsSync(PATHS.manifestPath)) {
     console.error(
-      `REFUSED: no manifest at\n  ${T.MANIFEST_PATH}\n` +
+      `REFUSED: no manifest at\n  ${PATHS.manifestPath}\n` +
         '  This script deletes only what the prep script recorded creating. No manifest means\n' +
         '  this walk created nothing, so there is nothing here to unwind. It will NOT go looking\n' +
         "  for rows to remove: an unwind that reads a live chart for its targets is a script that\n" +
@@ -595,11 +618,11 @@ async function main() {
     return;
   }
 
-  const manifest = JSON.parse(fs.readFileSync(T.MANIFEST_PATH, 'utf8'));
-  if (manifest.office !== T.OFFICE || Number(manifest.patNum) !== T.PAT_NUM) {
+  const manifest = JSON.parse(fs.readFileSync(PATHS.manifestPath, 'utf8'));
+  if (manifest.office !== TARGET.office || Number(manifest.patNum) !== TARGET.patNum) {
     console.error(
       `REFUSED: the manifest is for office='${manifest.office}' patNum=${manifest.patNum}; ` +
-        `this script is '${T.OFFICE}'/${T.PAT_NUM} only.`
+        `this script is '${TARGET.office}'/${TARGET.patNum} only.`
     );
     process.exitCode = 4;
     return;
@@ -619,7 +642,7 @@ async function main() {
       ['claimNum', Number(t.claimNum)],
       ['claimProcNum', Number(t.claimProcNum)],
     ]) {
-      if (T.DENY_IDS.includes(id)) denied.push(`${field}=${id}`);
+      if (DENY.includes(id)) denied.push(`${field}=${id}`);
     }
   }
   if (denied.length) {
@@ -661,10 +684,10 @@ async function main() {
     return handle.client.apiGetRaw(path, params, { timeoutMs: T.OD_TIMEOUT_MS });
   };
 
-  console.log(`\n=== S11 UNWIND — ${office} (${handle.officeName}), PatNum ${T.PAT_NUM} ===`);
+  console.log(`\n=== S11 UNWIND — ${office} (${handle.officeName}), PatNum ${TARGET.patNum} ===`);
   console.log(`    mode: ${execute ? '*** EXECUTE — THIS WILL WRITE ***' : 'DRY RUN (pass --execute to write)'}`);
   console.log(`    started: ${new Date().toISOString()}`);
-  console.log(`    manifest: ${T.MANIFEST_PATH}`);
+  console.log(`    manifest: ${PATHS.manifestPath}`);
   console.log(`    baseline claim count recorded at prep: ${manifest.baselineClaimCount}`);
 
   const before = await balanceOf(get);

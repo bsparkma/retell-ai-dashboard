@@ -48,6 +48,24 @@
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
 
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6d: WHICH PRACTICE THIS RUN ADDRESSES, RESOLVED ONCE, AT LOAD.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `PROBE_OFFICE` selects; an office the registry does not name THROWS here,
+ * before `main()` and before any Open Dental client exists. Failing at require
+ * time rather than mid-run is deliberate: a typo must not get as far as holding
+ * a credential.
+ *
+ * Every id below is per-office, because ClaimNum, ProcNum and ClaimProcNum
+ * numbering restarts in every Open Dental database — and PatNum 7115 is valley's
+ * test patient and a DIFFERENT, REAL person in Roland.
+ */
+const TARGET = T.resolveTarget();
+const PATHS = T.pathsFor(TARGET.office);
+const DENY = T.denyIdsFor(TARGET);
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -168,17 +186,17 @@ async function main() {
    */
   await require('../config/secrets').loadSecrets();
 
-  const office = process.env.PROBE_OFFICE || T.OFFICE;
-  if (office !== T.OFFICE) {
-    console.error(
-      `REFUSED: PROBE_OFFICE='${office}'. These scripts run against '${T.OFFICE}' only.\n` +
-        `  valley is fail-closed until D-7 is discharged (RCM_POSTING.md section 9), and\n` +
-        `  PatNum ${T.PAT_NUM} exists only in ${T.OFFICE}'s database. A PatNum in the\n` +
-        `  wrong database is a different, real person.`
-    );
-    process.exitCode = 2;
-    return;
-  }
+  /*
+   * 6d: THE OFFICE ALREADY REFUSED, ABOVE, AT LOAD.
+   *
+   * `T.resolveTarget()` throws on a `PROBE_OFFICE` the registry does not name,
+   * so by the time `main()` runs the office is one of exactly two and its PatNum
+   * came from the same frozen row. There is no longer a roland-only refusal to
+   * make here -- what there IS, and what matters more, is the assertion below
+   * that the Open Dental handle we are about to use is frozen to this same
+   * office. A PatNum in the wrong database is a different, real person.
+   */
+  const office = TARGET.office;
 
   // Belt AND braces: the office is validated against the registry above, and the
   // handle is asserted to be the one that office froze onto itself. That is the
@@ -187,11 +205,11 @@ async function main() {
   // per-office slice.
   const handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
 
-  console.log(`\n=== S10 INVENTORY — ${office} (${handle.officeName}), PatNum ${T.PAT_NUM} ===`);
+  console.log(`\n=== S10 INVENTORY — ${office} (${handle.officeName}), PatNum ${TARGET.patNum} ===`);
   console.log(`    READ-ONLY. started: ${new Date().toISOString()}`);
 
   // -- Claims ----------------------------------------------------------------
-  const claims = await scan(handle, '/claims', { PatNum: T.PAT_NUM }, (r) => Number(r.PatNum) === T.PAT_NUM);
+  const claims = await scan(handle, '/claims', { PatNum: TARGET.patNum }, (r) => Number(r.PatNum) === TARGET.patNum);
   if (claims.dropped) {
     console.log(
       `\n   ! Open Dental ignored the PatNum filter on /claims and returned ${claims.dropped} other rows; discarded here.`
@@ -212,7 +230,7 @@ async function main() {
   );
 
   // -- Procedures ------------------------------------------------------------
-  const procs = await scan(handle, '/procedurelogs', { PatNum: T.PAT_NUM }, (r) => Number(r.PatNum) === T.PAT_NUM);
+  const procs = await scan(handle, '/procedurelogs', { PatNum: TARGET.patNum }, (r) => Number(r.PatNum) === TARGET.patNum);
   if (procs.dropped) {
     console.log(
       `\n   ! Open Dental ignored the PatNum filter on /procedurelogs and returned ${procs.dropped} other rows; discarded here.`
@@ -264,8 +282,8 @@ async function main() {
   const claimProcScan = await scan(
     handle,
     '/claimprocs',
-    { PatNum: T.PAT_NUM },
-    (r) => Number(r.PatNum) === T.PAT_NUM
+    { PatNum: TARGET.patNum },
+    (r) => Number(r.PatNum) === TARGET.patNum
   );
   if (claimProcScan.dropped) {
     console.log(
@@ -331,7 +349,7 @@ async function main() {
   );
 
   // -- Adjustments -----------------------------------------------------------
-  const adj = await scan(handle, '/adjustments', { PatNum: T.PAT_NUM }, (r) => Number(r.PatNum) === T.PAT_NUM);
+  const adj = await scan(handle, '/adjustments', { PatNum: TARGET.patNum }, (r) => Number(r.PatNum) === TARGET.patNum);
   table(
     'ADJUSTMENTS',
     ['AdjNum', 'AdjDate', 'AdjAmt', 'note'],
@@ -394,7 +412,7 @@ async function main() {
   }
 
   console.log(`\nDONE ${new Date().toISOString()} — nothing was created, updated or deleted.`);
-  console.log(`NEXT: PROBE_OFFICE=${T.OFFICE} S10_EXPECTED_CLAIMS=${claims.rows.length} node scripts/rcm-s10-prep.js`);
+  console.log(`NEXT: PROBE_OFFICE=${TARGET.office} S10_EXPECTED_CLAIMS=${claims.rows.length} node scripts/rcm-s10-prep.js`);
 }
 
 // Run ONLY when invoked directly — requiring this file must not issue a single

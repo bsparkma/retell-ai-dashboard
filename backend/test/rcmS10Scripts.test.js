@@ -35,6 +35,19 @@ const os = require('node:os');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 
+/**
+ * The roland deny-list, resolved through the 6d registry.
+ *
+ * Per-office because ClaimNum, ProcNum and ClaimProcNum numbering restarts in
+ * every Open Dental database: a flat cross-office list would refuse a legitimate
+ * Riley id because Roland once used the number, and — far worse — would fail to
+ * protect a Riley id that Roland's list happens not to name.
+ */
+const DENY_ROLAND = (() => {
+  const T_ = require('../scripts/rcm-s10-targets');
+  return T_.denyIdsFor(T_.resolveTarget('roland'));
+})();
+
 const FILES = {
   targets: 'rcm-s10-targets.js',
   inventory: 'rcm-s10-inventory.js',
@@ -179,8 +192,22 @@ test('checkOutDirWritable proves a write lands, and reports rather than throws',
 
 test('the targets module pins the office, the patient and the fee as constants', () => {
   const T = require(path.join(SCRIPTS, FILES.targets));
-  assert.equal(T.OFFICE, 'roland', 'valley is fail-closed until D-7 is discharged');
+  assert.equal(T.OFFICE, 'roland', 'the default office a bare command still means');
   assert.equal(T.PAT_NUM, 12827, 'the designated Roland fixture');
+
+  /*
+   * 6d: the registry is what BINDS a PatNum to an office, and it is the reason
+   * the whole per-office layer exists. 7115 is valley's test patient and a
+   * DIFFERENT, REAL person in Roland.
+   */
+  assert.equal(T.resolveTarget('roland').patNum, 12827);
+  assert.equal(T.resolveTarget('valley').patNum, 7115);
+  assert.equal(T.resolveTarget().office, 'roland', 'a bare invocation is still roland');
+  assert.throws(
+    () => T.resolveTarget('rolund'),
+    /not a practice these scripts know/,
+    'a typo must refuse, never fall back to a practice'
+  );
   assert.equal(T.PROC_FEE, 1.0);
   assert.equal(T.PROC_FEE_CENTS, 100);
   assert.equal(T.TARGET_COUNT, 2, 'one target for the drain, one for the kill-mid-drain');
@@ -203,7 +230,7 @@ test('the Spike 0b residue is a deny-list, not a comment', () => {
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
   for (const id of [53648, 405237, 405238, 405239, 533930, 533931, 19109, 19110, 19111, 19112, 20469]) {
-    assert.ok(T.DENY_IDS.includes(id), `${id} must be on the deny-list`);
+    assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
   }
 });
 
@@ -227,7 +254,7 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
   assert.deepEqual([...T.WALK_SPENT_IDS.claimProcs], [535194, 535195]);
 
   for (const id of [53784, 53785, 406124, 406125, 535194, 535195]) {
-    assert.ok(T.DENY_IDS.includes(id), `${id} must be on the deny-list`);
+    assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
     for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
       assert.ok(!bucket.includes(id), `${id} must NOT be filed as Spike 0b residue`);
     }
@@ -235,7 +262,7 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
 
   // One flat list, no duplicates — a repeated id means a bucket was merged rather
   // than added.
-  assert.equal(new Set(T.DENY_IDS).size, T.DENY_IDS.length);
+  assert.equal(new Set(DENY_ROLAND).size, DENY_ROLAND.length);
 });
 
 // ─── 2. The inventory reads and only reads ──────────────────────────────────
@@ -278,7 +305,7 @@ test('the inventory reads claimprocs BY PATIENT, so a detached row cannot hide',
     const src = code(name);
     assert.match(
       src,
-      /'\/claimprocs',\s*\{\s*PatNum: T\.PAT_NUM|list\('\/claimprocs'\)/,
+      /'\/claimprocs',\s*\{\s*PatNum: TARGET\.patNum|list\('\/claimprocs'\)/,
       `${name} must read claimprocs by patient`
     );
     assert.ok(
@@ -307,7 +334,7 @@ test('the prep script hard-codes the patient, the fee and the target count', () 
   // Every one of these comes from the frozen constants module. A PatNum or a fee
   // read from argv or the environment is a parameter, and a parameter is a typo
   // away from a real patient.
-  assert.match(src, /PatNum: T\.PAT_NUM/);
+  assert.match(src, /PatNum: TARGET\.patNum/);
   assert.match(src, /ProcFee: T\.PROC_FEE/);
   assert.match(src, /i < T\.TARGET_COUNT/, 'a fixed loop, not a configurable count');
   assert.ok(
@@ -315,9 +342,14 @@ test('the prep script hard-codes the patient, the fee and the target count', () 
     'the prep must take no positional arguments — there is nothing about it to vary'
   );
   /*
-   * Three env vars, and none of them can redirect the write.
+   * TWO env vars now, and neither can redirect the write.
    *
-   *   PROBE_OFFICE        an assertion that can only refuse (never redirect).
+   * `PROBE_OFFICE` is no longer read HERE — 6d moved it into
+   * `rcm-s10-targets.js`, which is the single place that turns it into a frozen
+   * (office, PatNum) pair. That is strictly better than the previous shape: one
+   * reader means one refusal, and no script can disagree with another about
+   * which practice it is addressing.
+   *
    *   S10_EXPECTED_CLAIMS the inventory's baseline; gates whether it runs.
    *   OFFICE_TIMEZONE     the zone ProcDate is derived in. It DOES affect what is
    *                       written — by at most one day — which is why the value is
@@ -330,7 +362,7 @@ test('the prep script hard-codes the patient, the fee and the target count', () 
   const envs = [...src.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]).sort();
   assert.deepEqual(
     [...new Set(envs)],
-    ['OFFICE_TIMEZONE', 'PROBE_OFFICE', 'S10_EXPECTED_CLAIMS'],
+    ['OFFICE_TIMEZONE', 'S10_EXPECTED_CLAIMS'],
     'no env var may name a patient, an amount, a count or an id'
   );
 });
@@ -450,21 +482,31 @@ test('the prep prints the created ids BEFORE writing the manifest, and survives 
    */
   const src = code(FILES.prep);
   const printed = src.indexOf('WHAT THIS RUN CREATED');
-  const written = src.indexOf('fs.writeFileSync(T.MANIFEST_PATH');
+  const written = src.indexOf('fs.writeFileSync(PATHS.manifestPath');
   assert.ok(printed > 0 && written > 0);
   assert.ok(printed < written, 'the ids are printed before the file is written');
 
   // The write is guarded, and the failure path re-prints the whole manifest so it
   // can be reconstructed by hand rather than lost.
-  assert.match(src, /try \{\s*\n\s*fs\.writeFileSync\(T\.MANIFEST_PATH/);
+  assert.match(src, /try \{\s*\n\s*fs\.writeFileSync\(PATHS\.manifestPath/);
   assert.match(src, /COULD NOT WRITE THE MANIFEST/);
   assert.match(src, /ONLY record of what was created/);
 });
 
-test('the prep script refuses any office but roland, and refuses an existing manifest', () => {
+test('the prep resolves its practice from the registry, and refuses an existing manifest', () => {
   const src = read(FILES.prep);
-  assert.match(src, /office !== T\.OFFICE/, 'it must refuse a foreign PROBE_OFFICE');
-  assert.match(src, /fs\.existsSync\(T\.MANIFEST_PATH\)/, 'it must refuse if a manifest exists');
+  /*
+   * 6d: the office is no longer refused inside `main()`. `T.resolveTarget()`
+   * throws at LOAD on anything the registry does not name — before main runs and
+   * before any Open Dental client exists — so a typo cannot get as far as
+   * holding a credential.
+   */
+  assert.match(src, /T\.resolveTarget\(\)/, 'it must resolve its practice from the registry');
+  assert.match(
+    src,
+    /if \(fs\.existsSync\(PATHS\.manifestPath\)\)/,
+    'it must refuse if a manifest exists'
+  );
   assert.match(src, /REFUSED: a manifest already exists/);
   // The office assertion is belt AND braces: validated against the registry, then
   // asserted against the handle the registry froze.
@@ -514,7 +556,7 @@ test('the prep script records a partial run in the manifest rather than losing i
    * does not name can never be removed by the tooling that made it.
    */
   const src = read(FILES.prep);
-  const write = src.indexOf('fs.writeFileSync(T.MANIFEST_PATH');
+  const write = src.indexOf('fs.writeFileSync(PATHS.manifestPath');
   assert.ok(write > 0, 'it must write a manifest');
   // The write sits AFTER the loop and outside every abort path, so a run that
   // stopped at target A still records target A.
@@ -671,12 +713,17 @@ test('the unwind takes its ids from the manifest and from nowhere else', () => {
   assert.equal(argvUses.length, 1, 'argv may be read once');
   assert.match(argvUses[0], /includes\('--execute'\)/, 'and only for the execute flag');
 
-  // No id-shaped env var. PROBE_OFFICE is the office assertion, nothing else.
+  /*
+   * NO env var at all now, and certainly no id-shaped one. `PROBE_OFFICE` moved
+   * into the targets registry in 6d, so the one file in this repository that may
+   * DELETE from a chart reads NOTHING from the environment — every id it acts on
+   * comes from a manifest the prep wrote.
+   */
   const envs = [...new Set([...src.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]))];
-  assert.deepEqual(envs.sort(), ['PROBE_OFFICE']);
+  assert.deepEqual(envs.sort(), []);
 
   // Every id it acts on is destructured from a manifest target.
-  assert.match(src, /const manifest = JSON\.parse\(fs\.readFileSync\(T\.MANIFEST_PATH/);
+  assert.match(src, /const manifest = JSON\.parse\(fs\.readFileSync\(PATHS\.manifestPath/);
   assert.match(src, /Number\(target\.procNum\)/);
   assert.match(src, /Number\(target\.claimNum\)/);
   assert.match(src, /Number\(target\.claimProcNum\)/);
@@ -684,7 +731,7 @@ test('the unwind takes its ids from the manifest and from nowhere else', () => {
 
 test('the unwind refuses when there is no manifest', () => {
   const src = read(FILES.unwind);
-  assert.match(src, /if \(!fs\.existsSync\(T\.MANIFEST_PATH\)\)/);
+  assert.match(src, /if \(!fs\.existsSync\(PATHS\.manifestPath\)\)/);
   assert.match(src, /REFUSED: no manifest/);
   // And the refusal comes BEFORE the office handle is ever obtained, so a run
   // without a manifest does not even open a client.
@@ -732,7 +779,7 @@ test('the unwind hard-denies the Spike 0b residue even if a manifest names it', 
    * list.
    */
   const src = read(FILES.unwind);
-  assert.match(src, /T\.DENY_IDS\.includes\(id\)/);
+  assert.match(src, /DENY\.includes\(id\)/);
   assert.match(src, /REFUSED: the manifest names Spike 0b residue/);
   assert.ok(
     src.indexOf('REFUSED: the manifest names Spike 0b residue') < src.indexOf('const axios = handle.client.client'),
@@ -747,7 +794,7 @@ test('the unwind hard-denies the Spike 0b residue even if a manifest names it', 
    * cannot be added that quietly skips it.
    */
   const body = code(FILES.unwind);
-  assert.match(body, /const denied = \(id\) => T\.DENY_IDS\.includes\(Number\(id\)\);/);
+  assert.match(body, /const denied = \(id\) => DENY\.includes\(Number\(id\)\);/);
   assert.match(body, /denied\(claimPaymentNum\)/, 'the run-time-discovered check id');
   assert.match(body, /denied\(claimNum\)/);
   assert.match(body, /denied\(claimProcNum\)/);
@@ -1178,16 +1225,72 @@ test('every walk script paces itself to the shared credential', () => {
   }
 });
 
-test('no walk script can be pointed at valley', () => {
+test('the walk scripts can be pointed at valley — and at nothing else', () => {
   /*
-   * valley is fail-closed until D-7 is discharged (RCM_POSTING §9), and PatNum
-   * 7115 — valley's test patient — belongs to 6d. More sharply: PatNum 7115 in
-   * Roland is a DIFFERENT, REAL person, which is the entire reason the per-office
-   * layer exists. `PROBE_OFFICE` is an assertion that can only cause a refusal.
+   * 6d INVERTED THIS TEST, and the inversion is the point.
+   *
+   * Through 6c valley was fail-closed and `PROBE_OFFICE` could only refuse, so
+   * the test asserted that no script named valley at all. §9's three
+   * prerequisites are now discharged and §10.5 needs the same walk run in
+   * Riley's own database — so what has to be true is no longer "valley is
+   * unreachable" but "only the two practices in the registry are reachable, and
+   * each is bound to its OWN patient."
+   *
+   * PatNum 7115 in Roland is still a DIFFERENT, REAL person. That is what the
+   * binding below protects, and it is why a typo must throw rather than fall
+   * back to a practice.
    */
+  const T_ = require('../scripts/rcm-s10-targets');
+  assert.deepEqual(Object.keys(T_.OFFICES).sort(), ['roland', 'valley']);
+  assert.equal(T_.resolveTarget('valley').patNum, 7115);
+  assert.equal(T_.resolveTarget('roland').patNum, 12827);
+  assert.throws(() => T_.resolveTarget('valey'), /not a practice/);
+  assert.throws(() => T_.resolveTarget('unknown'), /not a practice/);
+
+  /*
+   * A ROLAND PatNum IN A VALLEY RUN IS UNREACHABLE BY CONSTRUCTION: the office
+   * and the patient come out of one frozen row, so there is no combination of
+   * env vars that pairs 12827 with valley.
+   */
+  for (const key of Object.keys(T_.OFFICES)) {
+    const t = T_.resolveTarget(key);
+    assert.equal(t.office, key, 'the row is frozen to its own office');
+    const other = T_.resolveTarget(key === 'roland' ? 'valley' : 'roland');
+    assert.notEqual(t.patNum, other.patNum, 'the two practices never share a PatNum here');
+  }
+
+  /*
+   * AND THE MANIFESTS CANNOT COLLIDE. The office is in the PATH, so a valley
+   * unwind cannot be handed roland's ids by running in the wrong order.
+   */
+  assert.notEqual(T_.pathsFor('roland').manifestPath, T_.pathsFor('valley').manifestPath);
+  assert.match(T_.pathsFor('valley').manifestPath, /valley/);
+
+  // No script hard-codes a practice any more; they all resolve through the registry.
   for (const name of [FILES.inventory, FILES.prep, FILES.unwind]) {
     const src = code(name);
-    assert.match(src, /office !== T\.OFFICE/, `${name} must refuse a foreign office`);
-    assert.ok(!/'valley'/.test(src), `${name} must not name valley as a target`);
+    assert.match(src, /T\.resolveTarget\(\)/, `${name} must resolve its office from the registry`);
   }
+});
+
+test("valley's live insurance plan is deny-listed before the first valley walk", () => {
+  /*
+   * §9(c): 7115 already carries `PatPlanNum 12402` — unlike 12827, which needed
+   * Beau to add one before Spike 0b could run. The prep creates a procedure and
+   * a claim and NOTHING else; the plan is a prerequisite it reads, never a thing
+   * it manages, and the unwind must refuse to touch it however a manifest is
+   * shaped.
+   */
+  const T_ = require('../scripts/rcm-s10-targets');
+  const valley = T_.resolveTarget('valley');
+  assert.ok(T_.denyIdsFor(valley).includes(12402), 'PatPlanNum 12402 must be untouchable');
+
+  /*
+   * And valley has NO spent ids yet, which is a measured answer rather than an
+   * empty default: no walk has ever run in Riley. The first one's ids get added
+   * here afterwards, the same way roland's were.
+   */
+  assert.deepEqual([...valley.walkSpentIds.claims], []);
+  assert.deepEqual([...valley.walkSpentIds.procedures], []);
+  assert.deepEqual([...valley.walkSpentIds.claimProcs], []);
 });
