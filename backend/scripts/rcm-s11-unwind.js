@@ -12,25 +12,75 @@
  * into §11.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE ORDER IS MANDATORY
+ * THE ORDER IS MANDATORY — AND IT CHANGED ON 2026-08-25
  * ─────────────────────────────────────────────────────────────────────────────
- * Measured end to end in the Spike 0b teardown; the first pass fails if you try
- * it any other way (RCM_POSTING.md §11):
+ * The four-step order this file shipped with came from the Spike 0b teardown.
+ * It was correct for what 0b produced and WRONG for what the drain produces, and
+ * the first real §11 run is how that was found:
+ *
+ *     DELETE /claimpayments/21399 -> 200   (read-back 404, gone)
+ *     PUT    /claimprocs/535194   -> 400   "Cannot change Status to NotReceived
+ *                                           when attached to a received claim."
+ *     DELETE /claims/53784        -> 400   "Claim cannot be deleted. Claim status
+ *                                           is Received."
+ *     DELETE /procedurelogs/406124-> 400   "Not allowed to delete a procedure
+ *                                           that is attached to a claim."
+ *
+ * **Spike 0b never set the claim to Received. Slice 6c does** — `PUT /claims
+ * {ClaimStatus:"R"}` is step 2 of the drain's forced order
+ * (`services/rcm/odPostingWrites.js`). So the teardown recipe was written for a
+ * claim shape the thing it is meant to tear down never produces. Everything after
+ * the check-delete cascaded off that one missing step.
+ *
+ * The order now, per target:
  *
  *   1. DELETE /claimpayments/{n}   only possible BEFORE an EOB or deposit is
  *                                  attached. Deleting the check does NOT clear
  *                                  the claimproc: InsPayAmt stays put and
  *                                  ClaimPaymentNum resets to 0.
- *   2. PUT /claimprocs/{n}         {Status:"NotReceived", InsPayAmt:0,
- *                                  WriteOff:0, DedApplied:0}. The claim is
- *                                  pinned by the money on its lines until this
- *                                  runs.
- *   3. DELETE /claims/{n}
- *   4. DELETE /procedurelogs/{n}   SOFT delete (G12) — see below.
+ *   2. PUT /claims/{n}             {ClaimStatus:"W"} — UN-RECEIVE THE CLAIM.
+ *                                  The new step. Open Dental's claims reference
+ *                                  lists ClaimStatus as updatable, accepting
+ *                                  "U" | "H" | "W" | "S" | "R", and documents no
+ *                                  restriction on moving back off "R". "W"
+ *                                  (waiting in queue) is chosen because it is the
+ *                                  status a freshly created claim already has —
+ *                                  the prep's own POST lands there — so the claim
+ *                                  is returned to its pre-drain shape rather than
+ *                                  to some other legal one.
+ *   3. PUT /claimprocs/{n}         {Status:"NotReceived", InsPayAmt:0,
+ *                                  WriteOff:0, DedApplied:0}. Refused while the
+ *                                  claim reads Received, which is why 2 precedes
+ *                                  it. The claim is then pinned by the money on
+ *                                  its lines until this runs.
+ *   4. DELETE /claims/{n}          Refused while the claim reads Received (the
+ *                                  reference: "Will not delete claims with
+ *                                  insurance payments/checks attached or have a
+ *                                  status of Received") — 2 again.
+ *   5. DELETE /procedurelogs/{n}   SOFT delete (G12) — see below.
  *
- * The steps run per target and in this order, and a step that fails stops THAT
- * target rather than the run: target B's rows are not held hostage by whatever
- * went wrong on A, and every failure is printed with the reason Open Dental gave.
+ * If step 2 does not read back as "W", the target STOPS THERE, before any DELETE.
+ * A claim that would not un-receive is a claim whose deletes are going to be
+ * refused anyway, and issuing them regardless just buries the real reason under
+ * three more 400s — which is precisely how the 8/25 transcript reads.
+ *
+ * A step that fails stops THAT target rather than the run: target B's rows are
+ * not held hostage by whatever went wrong on A, and every failure is printed with
+ * the reason Open Dental gave.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * EVERY STEP IS RESUMABLE, SO THE WHOLE SCRIPT IS RE-RUNNABLE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The 8/25 run left 12827 half-unwound: the checks were gone, but the claims were
+ * still Received and the claimprocs still carried `InsPayAmt=1` with
+ * `ClaimPaymentNum=0`. A teardown script that can only run against a pristine
+ * post-walk state is a script that cannot clean up after its own failure.
+ *
+ * So every step READS FIRST and reports `already done` when the resource is
+ * already in its target state — a deleted check, a claim that is no longer
+ * Received, a line already at NotReceived/0, a claim that is gone, a procedure
+ * already `"D"`. Nothing is issued twice, and a re-run from any partial state
+ * finishes the job rather than piling refusals on top of it.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * G12 — DELETE /procedurelogs IS A SOFT DELETE
@@ -72,8 +122,11 @@
  *   3. DRY RUN IS THE DEFAULT. `--execute` is required to issue anything.
  *   4. Roland only. Any other PROBE_OFFICE is a refusal.
  *   5. >= 1.3 s between calls.
- *   6. Every deletion is READ BACK (G2). A 200 from Open Dental is a claim about
- *      a row, not the row.
+ *   6. Every write is READ BACK (G2). A 200 from Open Dental is a claim about a
+ *      row, not the row — and the un-receive read-back is load-bearing, because a
+ *      200 that did not take would send two DELETEs at a still-Received claim.
+ *   7. RESUMABLE. Every step reads before it writes and reports `already done`
+ *      rather than re-issuing. The script is safe to run from any partial state.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT CANNOT BE UNWOUND
@@ -191,6 +244,305 @@ function printBalance(label, b) {
   console.log('   ' + '-'.repeat(40));
   console.log(`   PATIENT BALANCE             ${money(b.total).padStart(12)}`);
   console.log(`   claims: ${b.claimCount}   soft-deleted procedures excluded: ${b.deletedCount}`);
+}
+
+// ─── The step machine ────────────────────────────────────────────────────────
+
+/**
+ * The five steps, in the only order Open Dental accepts. Exported so the tests
+ * assert against the same list the script runs, rather than a copy of it.
+ * @type {ReadonlyArray<'payment'|'unreceive'|'line'|'claim'|'procedure'>}
+ */
+const STEPS = Object.freeze(['payment', 'unreceive', 'line', 'claim', 'procedure']);
+
+/** Human labels for the summary table. */
+const STEP_LABELS = Object.freeze({
+  payment: 'DELETE claimpayment',
+  unreceive: 'PUT claim -> W',
+  line: 'PUT claimproc -> NotReceived',
+  claim: 'DELETE claim',
+  procedure: 'DELETE procedurelog',
+});
+
+/**
+ * The status a claim is returned to.
+ *
+ * "W" = waiting in queue, which is what `POST /claims` produces (Spike 0b test 1
+ * confirmed a new claim defaults to "W", not "U"). Returning the claim to the
+ * status it had before the drain touched it means the unwind restores a shape the
+ * system already knows how to produce, rather than inventing a legal-but-novel
+ * one. The reference's full set is "U" | "H" | "W" | "S" | "R".
+ */
+const UNRECEIVED_STATUS = 'W';
+
+/**
+ * Unwind ONE target, resumably.
+ *
+ * Split out of `main()` and given its I/O rather than reaching for it, so the
+ * order and the idempotence can be driven by a recorded fake in
+ * `test/rcmS10Scripts.test.js`. Those are behavioural properties — "step 2 runs
+ * before step 3", "a second run issues nothing" — and a source grep cannot
+ * express either.
+ *
+ * @param {{
+ *   get: (path: string, params?: Record<string, unknown>) => Promise<{ok:boolean,status:number,data?:any,error?:string}>,
+ *   write: (verb: 'PUT'|'DELETE', path: string, body?: Record<string, unknown>) => Promise<{ok:boolean,status:number,data?:any,error?:string,dryRun?:boolean}>,
+ *   log: (line: string) => void,
+ *   execute: boolean,
+ * }} io
+ * @param {{ procNum: number, claimNum: number, claimProcNum: number }} target
+ * @returns {Promise<{ steps: Record<string, string>, aborted: boolean }>}
+ */
+async function unwindTarget(io, target) {
+  const procNum = Number(target.procNum);
+  const claimNum = Number(target.claimNum);
+  const claimProcNum = Number(target.claimProcNum);
+
+  /*
+   * THE SECOND DRY-RUN GATE.
+   *
+   * `main()`'s `issue()` already short-circuits when `--execute` is absent, and
+   * that was the only gate until this function was split out of it. The split
+   * created a trap: `unwindTarget` was handed `io.execute` and never read it, so
+   * any caller whose `write` did not implement dry-run itself would have written
+   * during what it believed was a dry run. A test harness found that in seconds;
+   * a future caller would have found it against a chart.
+   *
+   * Two independent gates on a path that issues DELETE is proportionate. Reads
+   * still happen either way -- that is what lets a dry run report what is already
+   * done rather than guess at it.
+   */
+  const write = async (verb, wpath, body) => {
+    if (io.execute === false) {
+      io.log(`   [dry run] ${verb} ${wpath}${body ? ' ' + JSON.stringify(body) : ''}`);
+      return { ok: true, status: 0, dryRun: true };
+    }
+    return io.write(verb, wpath, body);
+  };
+
+  /** @type {Record<string, string>} */
+  const steps = {};
+  for (const s of STEPS) steps[s] = 'blocked';
+  let aborted = false;
+
+  /**
+   * Refuse any id on the deny-list, wherever it came from.
+   *
+   * The manifest is screened up front, but `payment` acts on a ClaimPaymentNum
+   * discovered at RUN time off a live read — so it needs its own check. Applying
+   * the same test to every step costs nothing and means no future step can be
+   * added that skips it.
+   */
+  const denied = (id) => T.DENY_IDS.includes(Number(id));
+
+  // ── 1. The check ─────────────────────────────────────────────────────────
+  let claimPaymentNum = 0;
+  if (claimProcNum > 0) {
+    const cp = await io.get(`/claimprocs/${claimProcNum}`);
+    if (cp.ok) {
+      const n = Number(cp.data?.ClaimPaymentNum);
+      if (Number.isFinite(n) && n > 0) claimPaymentNum = n;
+      io.log(
+        `   read: Status="${cp.data?.Status}" InsPayAmt=${cp.data?.InsPayAmt} WriteOff=${cp.data?.WriteOff} ClaimPaymentNum=${cp.data?.ClaimPaymentNum}`
+      );
+    } else {
+      io.log(`   read: GET /claimprocs/${claimProcNum} -> ${cp.status} (${cp.error || ''})`);
+    }
+  }
+
+  if (claimPaymentNum === 0) {
+    // Either the drain never wrote a check, or a previous run already deleted it
+    // and Open Dental reset ClaimPaymentNum to 0 — which is exactly the state the
+    // 8/25 half-run left behind. Both mean there is nothing to delete.
+    steps.payment = 'already done';
+    io.log('   1. payment      already done — no ClaimPaymentNum on this line');
+  } else if (denied(claimPaymentNum)) {
+    steps.payment = 'skipped';
+    io.log(`   1. payment      SKIPPED — ClaimPaymentNum ${claimPaymentNum} is on the deny-list`);
+  } else {
+    const exists = await io.get(`/claimpayments/${claimPaymentNum}`);
+    if (!exists.ok && exists.status === 404) {
+      steps.payment = 'already done';
+      io.log(`   1. payment      already done — /claimpayments/${claimPaymentNum} is gone`);
+    } else {
+      const r = await write('DELETE', `/claimpayments/${claimPaymentNum}`);
+      if (r.dryRun) {
+        steps.payment = 'pending';
+      } else if (!r.ok) {
+        steps.payment = 'failed';
+        aborted = true;
+      } else {
+        const back = await io.get(`/claimpayments/${claimPaymentNum}`);
+        io.log(`   read-back: GET /claimpayments/${claimPaymentNum} -> ${back.status} ${back.ok ? 'STILL EXISTS' : 'gone'}`);
+        steps.payment = back.ok ? 'failed' : 'done';
+        if (back.ok) aborted = true;
+      }
+    }
+  }
+  if (aborted) return { steps, aborted };
+
+  // ── 2. Un-receive the claim — THE STEP THE 8/25 RUN WAS MISSING ──────────
+  //
+  // Both DELETEs below are refused while the claim reads Received, and so is the
+  // claimproc PUT. This is the one that unblocks all three.
+  if (claimNum > 0 && !denied(claimNum)) {
+    const claim = await io.get(`/claims/${claimNum}`);
+    if (!claim.ok && claim.status === 404) {
+      // Already deleted by an earlier run; steps 2 and 4 are both moot.
+      steps.unreceive = 'already done';
+      steps.claim = 'already done';
+      io.log(`   2. unreceive    already done — /claims/${claimNum} is gone`);
+    } else if (String(claim.data?.ClaimStatus) !== 'R') {
+      steps.unreceive = 'already done';
+      io.log(`   2. unreceive    already done — ClaimStatus is "${claim.data?.ClaimStatus}", not "R"`);
+    } else {
+      const r = await write('PUT', `/claims/${claimNum}`, { ClaimStatus: UNRECEIVED_STATUS });
+      if (r.dryRun) {
+        steps.unreceive = 'pending';
+      } else if (!r.ok) {
+        steps.unreceive = 'failed';
+        aborted = true;
+      } else {
+        /*
+         * G2, and it matters more here than anywhere else in this file. A 200
+         * that did not take would leave the claim Received, and the two DELETEs
+         * after this would each answer 400 — burying the real reason under three
+         * refusals, which is exactly how the 8/25 transcript reads. Stop instead.
+         */
+        const back = await io.get(`/claims/${claimNum}`);
+        const status = String(back.data?.ClaimStatus);
+        io.log(`   read-back: GET /claims/${claimNum} -> ${back.status} ClaimStatus="${status}"`);
+        if (back.ok && status === UNRECEIVED_STATUS) {
+          steps.unreceive = 'done';
+        } else {
+          steps.unreceive = 'failed';
+          aborted = true;
+          io.log(
+            `   ! the claim did not un-receive (wanted "${UNRECEIVED_STATUS}", read "${status}").` +
+              ' STOPPING this target before any DELETE — they would only 400.'
+          );
+        }
+      }
+    }
+  } else if (claimNum > 0) {
+    steps.unreceive = 'skipped';
+    io.log(`   2. unreceive    SKIPPED — ClaimNum ${claimNum} is on the deny-list`);
+  } else {
+    steps.unreceive = 'already done';
+    steps.claim = 'already done';
+  }
+  if (aborted) return { steps, aborted };
+
+  // ── 3. The line, back to NotReceived ─────────────────────────────────────
+  if (claimProcNum > 0 && !denied(claimProcNum)) {
+    const cp = await io.get(`/claimprocs/${claimProcNum}`);
+    const clean =
+      cp.ok &&
+      String(cp.data?.Status) === 'NotReceived' &&
+      cents(cp.data?.InsPayAmt) === 0 &&
+      cents(cp.data?.WriteOff) === 0 &&
+      cents(cp.data?.DedApplied) === 0;
+    if (!cp.ok && cp.status === 404) {
+      steps.line = 'already done';
+      io.log(`   3. line         already done — /claimprocs/${claimProcNum} is gone`);
+    } else if (clean) {
+      steps.line = 'already done';
+      io.log('   3. line         already done — Status="NotReceived" and every amount is 0');
+    } else {
+      const r = await write('PUT', `/claimprocs/${claimProcNum}`, {
+        Status: 'NotReceived',
+        InsPayAmt: 0,
+        WriteOff: 0,
+        DedApplied: 0,
+      });
+      if (r.dryRun) {
+        steps.line = 'pending';
+      } else if (!r.ok) {
+        steps.line = 'failed';
+        aborted = true;
+      } else {
+        const back = await io.get(`/claimprocs/${claimProcNum}`);
+        io.log(
+          `   read-back: Status="${back.data?.Status}" InsPayAmt=${back.data?.InsPayAmt} WriteOff=${back.data?.WriteOff}`
+        );
+        if (back.ok && String(back.data?.Status) === 'NotReceived' && cents(back.data?.InsPayAmt) === 0) {
+          steps.line = 'done';
+        } else {
+          steps.line = 'failed';
+          aborted = true;
+          io.log('   ! THE PUT DID NOT TAKE (G2). The claim stays pinned by the money on its line.');
+        }
+      }
+    }
+  } else if (claimProcNum > 0) {
+    steps.line = 'skipped';
+  } else {
+    steps.line = 'already done';
+  }
+  if (aborted) return { steps, aborted };
+
+  // ── 4. The claim ─────────────────────────────────────────────────────────
+  if (steps.claim !== 'already done' && claimNum > 0 && !denied(claimNum)) {
+    const claim = await io.get(`/claims/${claimNum}`);
+    if (!claim.ok && claim.status === 404) {
+      steps.claim = 'already done';
+      io.log(`   4. claim        already done — /claims/${claimNum} is gone`);
+    } else {
+      const r = await write('DELETE', `/claims/${claimNum}`);
+      if (r.dryRun) {
+        steps.claim = 'pending';
+      } else if (!r.ok) {
+        steps.claim = 'failed';
+        aborted = true;
+      } else {
+        const back = await io.get(`/claims/${claimNum}`);
+        io.log(`   read-back: GET /claims/${claimNum} -> ${back.status} ${back.ok ? 'STILL EXISTS' : 'gone'}`);
+        steps.claim = back.ok ? 'failed' : 'done';
+        if (back.ok) aborted = true;
+      }
+    }
+  } else if (claimNum > 0 && denied(claimNum)) {
+    steps.claim = 'skipped';
+  }
+  if (aborted) return { steps, aborted };
+
+  // ── 5. The procedure — SOFT delete (G12) ─────────────────────────────────
+  if (procNum > 0 && !denied(procNum)) {
+    const proc = await io.get(`/procedurelogs/${procNum}`);
+    if (!proc.ok && proc.status === 404) {
+      // Not expected — the delete is soft — but "gone" is still not "to do".
+      steps.procedure = 'already done';
+      io.log(`   5. procedure    already done — /procedurelogs/${procNum} is gone`);
+    } else if (String(proc.data?.ProcStatus) === 'D') {
+      steps.procedure = 'already done';
+      io.log(`   5. procedure    already done — ProcStatus is already "D"`);
+    } else {
+      const r = await write('DELETE', `/procedurelogs/${procNum}`);
+      if (r.dryRun) {
+        steps.procedure = 'pending';
+      } else if (!r.ok) {
+        steps.procedure = 'failed';
+        aborted = true;
+      } else {
+        const back = await io.get(`/procedurelogs/${procNum}`);
+        const ps = String(back.data?.ProcStatus);
+        // G12: the row is EXPECTED to still be there, reading "D". A read-back
+        // that said "gone" would mean something other than a delete happened.
+        io.log(
+          `   read-back: GET /procedurelogs/${procNum} -> ${back.status} ProcStatus="${ps}"` +
+            (ps === 'D' ? '  (soft delete, as documented — G12)' : '  ! NOT "D"')
+        );
+        steps.procedure = ps === 'D' ? 'done' : 'failed';
+        if (ps !== 'D') aborted = true;
+      }
+    }
+  } else if (procNum > 0) {
+    steps.procedure = 'skipped';
+  } else {
+    steps.procedure = 'already done';
+  }
+
+  return { steps, aborted };
 }
 
 async function main() {
@@ -311,7 +663,7 @@ async function main() {
     try {
       const res = verb === 'DELETE' ? await axios.delete(path) : await axios.put(path, body);
       console.log(`   ${verb} ${path} -> ${res.status}`);
-      return { ok: true, status: res.status, dryRun: false };
+      return { ok: true, status: res.status, data: res.data, dryRun: false };
     } catch (err) {
       const status = err.response?.status ?? 0;
       const raw = err.response?.data;
@@ -322,98 +674,48 @@ async function main() {
     }
   }
 
+  /** @type {Array<{label:string, target:object, steps:Record<string,string>, aborted:boolean}>} */
+  const results = [];
   for (const [i, target] of (manifest.targets || []).entries()) {
     const label = String.fromCharCode(65 + i);
-    const procNum = Number(target.procNum);
-    const claimNum = Number(target.claimNum);
-    const claimProcNum = Number(target.claimProcNum);
-    console.log(`\n-- TARGET ${label}: ProcNum=${procNum} ClaimNum=${claimNum} ClaimProcNum=${claimProcNum} --`);
-
-    // ── 1. The check, if the drain wrote one ────────────────────────────────
-    //
-    // Read the claimproc to find its ClaimPaymentNum rather than assuming one:
-    // on target B the drain may have been killed before the check was written,
-    // and on a plan that never drained there is no check at all.
-    let claimPaymentNum = 0;
-    if (claimProcNum > 0) {
-      const cp = await get(`/claimprocs/${claimProcNum}`);
-      if (cp.ok) {
-        const n = Number(cp.data?.ClaimPaymentNum);
-        if (Number.isFinite(n) && n > 0) claimPaymentNum = n;
-        console.log(
-          `   read: Status="${cp.data?.Status}" InsPayAmt=${cp.data?.InsPayAmt} WriteOff=${cp.data?.WriteOff} ClaimPaymentNum=${cp.data?.ClaimPaymentNum}`
-        );
-      } else {
-        console.log(`   read: GET /claimprocs/${claimProcNum} -> ${cp.status} (${cp.error})`);
-      }
-    }
-
-    if (claimPaymentNum > 0) {
-      if (T.DENY_IDS.includes(claimPaymentNum)) {
-        console.log(`   SKIPPED: ClaimPaymentNum ${claimPaymentNum} is on the deny-list.`);
-      } else {
-        const r = await issue('DELETE', `/claimpayments/${claimPaymentNum}`);
-        if (execute && r.ok) {
-          // G2: read it back. A 200 is a claim about a row, not the row.
-          const back = await get(`/claimpayments/${claimPaymentNum}`);
-          console.log(`   read-back: GET /claimpayments/${claimPaymentNum} -> ${back.status} ${back.ok ? 'STILL EXISTS' : 'gone'}`);
-        }
-      }
-    } else {
-      console.log('   no ClaimPaymentNum on this line — nothing to delete at step 1.');
-    }
-
-    // ── 2. The line, back to NotReceived ────────────────────────────────────
-    //
-    // The claim is pinned by the money on its lines until this runs, so step 3
-    // fails without it. Deleting the check does NOT clear it: InsPayAmt stays
-    // put and ClaimPaymentNum resets to 0.
-    if (claimProcNum > 0) {
-      const r = await issue('PUT', `/claimprocs/${claimProcNum}`, {
-        Status: 'NotReceived',
-        InsPayAmt: 0,
-        WriteOff: 0,
-        DedApplied: 0,
-      });
-      if (execute && r.ok) {
-        const back = await get(`/claimprocs/${claimProcNum}`);
-        console.log(
-          `   read-back: Status="${back.data?.Status}" InsPayAmt=${back.data?.InsPayAmt} WriteOff=${back.data?.WriteOff}`
-        );
-        if (back.ok && (String(back.data?.Status) !== 'NotReceived' || cents(back.data?.InsPayAmt) !== 0)) {
-          console.log('   ! THE PUT DID NOT TAKE. Open Dental answers 200 to writes it ignores (G2).');
-          console.log('     Step 3 will fail while money remains on the line. Stopping this target.');
-          continue;
-        }
-      }
-    }
-
-    // ── 3. The claim ────────────────────────────────────────────────────────
-    if (claimNum > 0) {
-      const r = await issue('DELETE', `/claims/${claimNum}`);
-      if (execute && r.ok) {
-        const back = await get(`/claims/${claimNum}`);
-        console.log(`   read-back: GET /claims/${claimNum} -> ${back.status} ${back.ok ? 'STILL EXISTS' : 'gone'}`);
-      }
-    }
-
-    // ── 4. The procedure — SOFT delete ──────────────────────────────────────
-    if (procNum > 0) {
-      const r = await issue('DELETE', `/procedurelogs/${procNum}`);
-      if (execute && r.ok) {
-        const back = await get(`/procedurelogs/${procNum}`);
-        // G12: the row is EXPECTED to still exist, reading ProcStatus "D". A
-        // read-back that said "gone" here would mean something else happened.
-        console.log(
-          `   read-back: GET /procedurelogs/${procNum} -> ${back.status} ProcStatus="${back.data?.ProcStatus}"` +
-            (String(back.data?.ProcStatus) === 'D' ? '  (soft delete, as documented — G12)' : '  ! NOT "D"')
-        );
-      }
-    }
+    console.log(
+      `\n-- TARGET ${label}: ProcNum=${target.procNum} ClaimNum=${target.claimNum} ClaimProcNum=${target.claimProcNum} --`
+    );
+    const io = { get, write: issue, log: (line) => console.log(line), execute };
+    const outcome = await unwindTarget(io, target);
+    results.push({ label, target, ...outcome });
   }
 
   const after = await balanceOf(get);
   printBalance(execute ? 'AFTER' : 'AFTER (unchanged — dry run)', after);
+
+  /*
+   * ── The per-step table ───────────────────────────────────────────────────
+   *
+   * Added after the 8/25 run, whose transcript said what each CALL returned but
+   * never what STATE the patient ended in. Reading "400, 400, 400" and working
+   * out that target A still had a Received claim, a paid line and a live
+   * procedure took longer than it should have. Now the last thing printed is the
+   * answer to "what is left to do", per target, per step.
+   */
+  console.log('\n-- STEPS ------------------------------------------------------------');
+  const widest = Math.max(...STEPS.map((s) => STEP_LABELS[s].length));
+  console.log('   ' + 'step'.padEnd(widest + 4) + results.map((r) => r.label.padEnd(14)).join(''));
+  console.log('   ' + '-'.repeat(widest + 4 + results.length * 14));
+  for (const step of STEPS) {
+    console.log(
+      '   ' +
+        STEP_LABELS[step].padEnd(widest + 4) +
+        results.map((r) => String(r.steps[step] ?? '-').padEnd(14)).join('')
+    );
+  }
+  const stuck = results.filter((r) => r.aborted);
+  if (stuck.length) {
+    console.log(
+      `   ! ${stuck.map((r) => r.label).join(', ')} stopped early. Read that target's output above;` +
+        ' re-running is safe — every finished step reports "already done" and issues nothing.'
+    );
+  }
 
   console.log('\n-- VERDICT ----------------------------------------------------------');
   console.log(`   before ${money(before.total)}   after ${money(after.total)}   delta ${money(after.total - before.total)}`);
@@ -445,4 +747,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, balanceOf, cents, money };
+module.exports = { main, unwindTarget, balanceOf, cents, money, STEPS, STEP_LABELS, UNRECEIVED_STATUS };

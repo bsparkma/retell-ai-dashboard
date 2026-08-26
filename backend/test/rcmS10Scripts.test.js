@@ -670,7 +670,7 @@ test('the unwind never issues a DELETE against an id that is not in the manifest
    * names). There is no literal id and no id from any other source.
    */
   const src = code(FILES.unwind);
-  const deletes = [...src.matchAll(/issue\('DELETE',\s*`([^`]+)`/g)].map((m) => m[1]);
+  const deletes = [...src.matchAll(/\bwrite\('DELETE',\s*`([^`]+)`/g)].map((m) => m[1]);
   assert.deepEqual(
     deletes.sort(),
     ['/claimpayments/${claimPaymentNum}', '/claims/${claimNum}', '/procedurelogs/${procNum}'].sort(),
@@ -679,6 +679,15 @@ test('the unwind never issues a DELETE against an id that is not in the manifest
   // No bare axios.delete outside the one issue() helper — a second call site is
   // a second policy about what may be removed.
   assert.equal((src.match(/axios\.delete\(/g) || []).length, 1);
+
+  // And the two PUTs are equally bounded: the un-receive and the line revert,
+  // nothing else. A third PUT would be a third thing this script can change.
+  const puts = [...src.matchAll(/\bwrite\('PUT',\s*`([^`]+)`/g)].map((m) => m[1]);
+  assert.deepEqual(
+    puts.sort(),
+    ['/claims/${claimNum}', '/claimprocs/${claimProcNum}'].sort(),
+    'exactly two PUT targets'
+  );
 });
 
 test('the unwind hard-denies the Spike 0b residue even if a manifest names it', () => {
@@ -698,9 +707,20 @@ test('the unwind hard-denies the Spike 0b residue even if a manifest names it', 
     src.indexOf('REFUSED: the manifest names Spike 0b residue') < src.indexOf('const axios = handle.client.client'),
     'the deny-list must be applied before the raw client is even reached'
   );
-  // The claimpayment it discovers at run time is checked too — that id comes off
-  // a live read rather than off the manifest, so it needs its own check.
-  assert.match(src, /T\.DENY_IDS\.includes\(claimPaymentNum\)/);
+  /*
+   * And EVERY step re-checks, through one predicate.
+   *
+   * The manifest is screened up front, but `payment` acts on a ClaimPaymentNum
+   * discovered at RUN time off a live read — so it cannot rely on that screening.
+   * Applying the same test to all five costs nothing and means a sixth step
+   * cannot be added that quietly skips it.
+   */
+  const body = code(FILES.unwind);
+  assert.match(body, /const denied = \(id\) => T\.DENY_IDS\.includes\(Number\(id\)\);/);
+  assert.match(body, /denied\(claimPaymentNum\)/, 'the run-time-discovered check id');
+  assert.match(body, /denied\(claimNum\)/);
+  assert.match(body, /denied\(claimProcNum\)/);
+  assert.match(body, /denied\(procNum\)/);
 });
 
 test('the unwind is a dry run unless --execute is passed', () => {
@@ -727,11 +747,17 @@ test('the unwind re-checks OPENDENTAL_WRITE_DISABLED, because it bypasses the tr
   );
 });
 
-test('the unwind runs the four steps in the mandatory order', () => {
+test('the unwind runs the FIVE steps in the mandatory order', () => {
   /*
-   * DELETE claimpayment -> PUT claimproc back to NotReceived -> DELETE claim ->
-   * DELETE procedurelog. Measured in the Spike 0b teardown; the first pass fails
-   * in any other order, because the claim is pinned by the money on its lines.
+   * DELETE claimpayment -> PUT claim to "W" -> PUT claimproc to NotReceived ->
+   * DELETE claim -> DELETE procedurelog.
+   *
+   * It was four until 2026-08-25. The un-receive is the step the Spike 0b
+   * teardown never needed, because 0b never set the claim to Received — and the
+   * drain does, as step 2 of its own forced order. Without it Open Dental refuses
+   * the claimproc PUT ("Cannot change Status to NotReceived when attached to a
+   * received claim.") and both DELETEs ("Claim cannot be deleted. Claim status is
+   * Received." / "Not allowed to delete a procedure that is attached to a claim.")
    */
   const src = code(FILES.unwind);
   const at = (needle) => {
@@ -739,13 +765,20 @@ test('the unwind runs the four steps in the mandatory order', () => {
     assert.ok(i > 0, `expected to find ${needle}`);
     return i;
   };
-  const payment = at("issue('DELETE', `/claimpayments/");
-  const line = at("issue('PUT', `/claimprocs/");
-  const claim = at("issue('DELETE', `/claims/");
-  const proc = at("issue('DELETE', `/procedurelogs/");
-  assert.ok(payment < line, 'the check comes out before the line is cleared');
+  const payment = at("write('DELETE', `/claimpayments/");
+  const unreceive = at("write('PUT', `/claims/");
+  const line = at("write('PUT', `/claimprocs/");
+  const claim = at("write('DELETE', `/claims/");
+  const proc = at("write('DELETE', `/procedurelogs/");
+  assert.ok(payment < unreceive, 'the check comes out first');
+  assert.ok(unreceive < line, 'the claim is un-received before the line is reverted');
   assert.ok(line < claim, 'the line is cleared before the claim is deleted');
   assert.ok(claim < proc, 'the claim is deleted before the procedure');
+
+  // The STEPS constant the script iterates for its summary table must agree with
+  // the order above, rather than being a second list that can drift from it.
+  const { STEPS } = require(path.join(SCRIPTS, FILES.unwind));
+  assert.deepEqual([...STEPS], ['payment', 'unreceive', 'line', 'claim', 'procedure']);
 });
 
 test('the unwind reads every deletion back, and expects the procedure to survive as "D"', () => {
@@ -756,7 +789,12 @@ test('the unwind reads every deletion back, and expects the procedure to survive
   // A read-back that reported "gone" would mean something other than a delete
   // happened, so the assertion is on the "D", not on absence.
   assert.match(src, /soft delete, as documented — G12/);
-  assert.match(src, /ProcStatus="\$\{back\.data\?\.ProcStatus\}"/, 'the read-back prints what came back');
+  assert.match(src, /ProcStatus="\$\{ps\}"/, 'the read-back prints what came back');
+  // The un-receive read-back is the load-bearing one: a 200 that did not take
+  // would send two DELETEs at a still-Received claim and bury the reason under
+  // three 400s, which is how the 2026-08-25 transcript reads.
+  assert.match(src, /read-back: GET \/claims\/\$\{claimNum\} -> \$\{back\.status\} ClaimStatus=/);
+  assert.match(src, /the claim did not un-receive/);
 });
 
 test('the unwind prints a balance before and after, with "D" rows filtered', () => {
@@ -765,6 +803,265 @@ test('the unwind prints a balance before and after, with "D" rows filtered', () 
   assert.match(src, /printBalance\(execute \? 'AFTER'/);
   assert.match(src, /ProcStatus\) !== 'D'/, 'live procedures only');
   assert.match(src, /soft-deleted procedures excluded/);
+});
+
+
+// ─── 5b. The unwind, DRIVEN — the 2026-08-25 defect and its fix ─────────────
+//
+// Everything above about the unwind is a source assertion, which is the right
+// tool for "no id comes from argv" and the wrong one for "step 2 runs before
+// step 3". The order and the resumability are BEHAVIOUR, and behaviour is what
+// broke on 2026-08-25: the file said the right things about itself and still
+// issued three writes Open Dental refused.
+//
+// So these drive the real `unwindTarget` against a recorded fake Open Dental,
+// and assert on the call log.
+
+/**
+ * A tiny Open Dental that remembers rows and records every call.
+ *
+ * Deliberately NOT a mock that returns canned answers per call: it holds STATE,
+ * so a second `unwindTarget` over the same instance sees what the first one did.
+ * That is the whole property being tested — a script that can finish a job it
+ * started — and a stateless stub cannot express it.
+ *
+ * @param {{ claim?: object|null, claimProc?: object|null, procedure?: object|null, payment?: object|null }} seed
+ */
+function fakeOd(seed) {
+  const rows = {
+    claim: seed.claim === undefined ? null : seed.claim,
+    claimProc: seed.claimProc === undefined ? null : seed.claimProc,
+    procedure: seed.procedure === undefined ? null : seed.procedure,
+    payment: seed.payment === undefined ? null : seed.payment,
+  };
+  /** @type {string[]} */
+  const calls = [];
+  /** @type {string[]} */
+  const writes = [];
+
+  const missing = { ok: false, status: 404, data: null, error: 'not found' };
+  const found = (data) => ({ ok: true, status: 200, data });
+
+  /** Which stored row a path refers to. */
+  function route(p) {
+    if (/^\/claimpayments\//.test(p)) return 'payment';
+    if (/^\/claimprocs\//.test(p)) return 'claimProc';
+    if (/^\/claims\//.test(p)) return 'claim';
+    if (/^\/procedurelogs\//.test(p)) return 'procedure';
+    return null;
+  }
+
+  return {
+    rows,
+    calls,
+    writes,
+    async get(p) {
+      calls.push(`GET ${p}`);
+      const key = route(p);
+      return key && rows[key] ? found(rows[key]) : missing;
+    },
+    async write(verb, p, body) {
+      calls.push(`${verb} ${p}`);
+      writes.push(`${verb} ${p}`);
+      const key = route(p);
+      if (!key || !rows[key]) return { ok: false, status: 404, error: 'not found' };
+
+      if (verb === 'DELETE') {
+        if (key === 'claim' && String(rows.claim.ClaimStatus) === 'R') {
+          // The live refusal, verbatim from the 2026-08-25 run.
+          return { ok: false, status: 400, error: 'Claim cannot be deleted. Claim status is Received.' };
+        }
+        if (key === 'procedure') {
+          if (rows.claim) {
+            return { ok: false, status: 400, error: 'Not allowed to delete a procedure that is attached to a claim.' };
+          }
+          // G12: soft. The row survives, reading "D".
+          rows.procedure = { ...rows.procedure, ProcStatus: 'D' };
+          return { ok: true, status: 200 };
+        }
+        if (key === 'payment') rows.claimProc = { ...rows.claimProc, ClaimPaymentNum: 0 };
+        rows[key] = null;
+        return { ok: true, status: 200 };
+      }
+
+      // PUT
+      if (key === 'claimProc' && rows.claim && String(rows.claim.ClaimStatus) === 'R') {
+        return {
+          ok: false,
+          status: 400,
+          error: 'Cannot change Status to NotReceived when attached to a received claim.',
+        };
+      }
+      rows[key] = { ...rows[key], ...body };
+      return { ok: true, status: 200 };
+    },
+  };
+}
+
+/** The state the 2026-08-25 walk left behind, before any unwind ran. */
+function postedTarget() {
+  return fakeOd({
+    payment: { ClaimPaymentNum: 21399, CheckAmt: 1 },
+    claimProc: { ClaimProcNum: 535194, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 21399 },
+    claim: { ClaimNum: 53784, ClaimStatus: 'R' },
+    procedure: { ProcNum: 406124, ProcStatus: 'C' },
+  });
+}
+
+const TARGET = { procNum: 406124, claimNum: 53784, claimProcNum: 535194 };
+
+/** @param {ReturnType<typeof fakeOd>} od */
+const drive = (od, execute = true) =>
+  require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: () => {}, execute },
+    TARGET
+  );
+
+test('the unwind un-receives the claim BEFORE reverting the claimproc', async () => {
+  /*
+   * THE 2026-08-25 DEFECT, as a test. The old order went straight from the check
+   * to the claimproc PUT, and Open Dental refused it — "Cannot change Status to
+   * NotReceived when attached to a received claim." — then refused both DELETEs
+   * for the same underlying reason. Spike 0b never hit it because 0b never set
+   * the claim to Received; the drain does.
+   *
+   * The fake reproduces both refusals, so this test fails against the old order
+   * for exactly the reason the live run did.
+   */
+  const od = postedTarget();
+  const { steps, aborted } = await drive(od);
+
+  assert.equal(aborted, false, 'the whole target should complete');
+  assert.deepEqual(steps, {
+    payment: 'done',
+    unreceive: 'done',
+    line: 'done',
+    claim: 'done',
+    procedure: 'done',
+  });
+
+  const order = od.writes;
+  assert.deepEqual(order, [
+    'DELETE /claimpayments/21399',
+    'PUT /claims/53784',
+    'PUT /claimprocs/535194',
+    'DELETE /claims/53784',
+    'DELETE /procedurelogs/406124',
+  ]);
+  assert.ok(
+    order.indexOf('PUT /claims/53784') < order.indexOf('PUT /claimprocs/535194'),
+    'the un-receive must precede the line revert'
+  );
+
+  // And the end state is the one §11 wants: no check, no claim, the line at
+  // NotReceived/0, the procedure soft-deleted.
+  assert.equal(od.rows.payment, null);
+  assert.equal(od.rows.claim, null);
+  assert.equal(od.rows.claimProc.Status, 'NotReceived');
+  assert.equal(od.rows.claimProc.InsPayAmt, 0);
+  assert.equal(od.rows.procedure.ProcStatus, 'D');
+});
+
+test('the unwind skips a claim payment that is already gone and still proceeds', async () => {
+  /*
+   * Exactly the state the half-failed 2026-08-25 run left: the checks were
+   * deleted (so Open Dental reset ClaimPaymentNum to 0) but everything after that
+   * was refused. A teardown that can only run against a pristine post-walk state
+   * cannot clean up after its own failure.
+   */
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 535194, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 53784, ClaimStatus: 'R' },
+    procedure: { ProcNum: 406124, ProcStatus: 'C' },
+  });
+  const { steps, aborted } = await drive(od);
+
+  assert.equal(aborted, false);
+  assert.equal(steps.payment, 'already done', 'no ClaimPaymentNum means nothing to delete');
+  assert.deepEqual(od.writes, [
+    'PUT /claims/53784',
+    'PUT /claimprocs/535194',
+    'DELETE /claims/53784',
+    'DELETE /procedurelogs/406124',
+  ]);
+  assert.ok(!od.writes.some((w) => w.includes('/claimpayments/')), 'no payment write at all');
+  for (const s of ['unreceive', 'line', 'claim', 'procedure']) {
+    assert.equal(steps[s], 'done', `${s} must still run`);
+  }
+});
+
+test('the unwind on an already-unwound target issues zero writes', async () => {
+  /*
+   * Re-running must be free. Not "harmless" — FREE: no write of any kind reaches
+   * a chart, because every step reads its target state first. That is what makes
+   * "just run it again" a safe instruction to give an operator at 1am.
+   */
+  const od = postedTarget();
+  await drive(od);
+  const afterFirst = od.writes.length;
+  assert.ok(afterFirst > 0, 'sanity: the first pass wrote');
+
+  od.writes.length = 0;
+  const { steps, aborted } = await drive(od);
+
+  assert.equal(aborted, false);
+  assert.deepEqual(od.writes, [], 'a second pass must issue nothing');
+  for (const step of Object.keys(steps)) {
+    assert.equal(steps[step], 'already done', `${step} should report already done`);
+  }
+});
+
+test('a ClaimStatus read-back that is not "W" aborts before any DELETE', async () => {
+  /*
+   * G2 at its most load-bearing. Open Dental answers 200 to writes it ignores
+   * (`PUT /claimprocs {DateCP}`, Spike 0b test 2b), so a 200 here is not proof
+   * the claim un-received. If it did not, the two DELETEs after it are going to
+   * be refused — and issuing them anyway is what buried the real reason under
+   * three 400s on 2026-08-25.
+   *
+   * This fake accepts the PUT with a 200 and quietly keeps the claim Received.
+   */
+  const od = postedTarget();
+  const realWrite = od.write;
+  od.write = async (verb, p, body) => {
+    if (verb === 'PUT' && p.startsWith('/claims/')) {
+      od.calls.push(`${verb} ${p}`);
+      od.writes.push(`${verb} ${p}`);
+      return { ok: true, status: 200 }; // 200, and nothing changed.
+    }
+    return realWrite(verb, p, body);
+  };
+
+  const { steps, aborted } = await drive(od);
+
+  assert.equal(aborted, true, 'the target must stop');
+  assert.equal(steps.unreceive, 'failed');
+  assert.deepEqual(od.writes, ['DELETE /claimpayments/21399', 'PUT /claims/53784']);
+  assert.ok(!od.writes.some((w) => w.startsWith('DELETE /claims/')), 'no claim DELETE');
+  assert.ok(!od.writes.some((w) => w.startsWith('DELETE /procedurelogs/')), 'no procedure DELETE');
+  // The rows are untouched past the check, so a re-run can still finish the job.
+  assert.equal(od.rows.claim.ClaimStatus, 'R');
+  assert.equal(od.rows.procedure.ProcStatus, 'C');
+});
+
+test('a dry run reads everything and writes nothing', async () => {
+  /*
+   * The dry run still performs the READS — that is what lets it report "the
+   * payments are already gone, four steps pending per target" rather than a
+   * guess at what it would do.
+   */
+  const od = postedTarget();
+  const { steps, aborted } = await drive(od, false);
+
+  assert.equal(aborted, false);
+  assert.deepEqual(od.writes, [], 'a dry run issues no write');
+  assert.ok(od.calls.some((c) => c.startsWith('GET ')), 'but it does read');
+  assert.equal(steps.payment, 'pending');
+  assert.equal(steps.unreceive, 'pending');
+  // The claim is still Received in the fake, so the later steps are reported as
+  // pending too rather than being silently reordered.
+  assert.equal(od.rows.claim.ClaimStatus, 'R');
 });
 
 // ─── 6. Every one of them loads its own secrets and guards main() ───────────
