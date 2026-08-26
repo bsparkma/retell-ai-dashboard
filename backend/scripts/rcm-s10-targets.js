@@ -175,13 +175,51 @@ const SPIKE_0B_RESIDUE = Object.freeze({
   patPlans: Object.freeze([20469]),
 });
 
-/** Every residue id, flattened — what the unwind actually checks against. */
+/**
+ * IDS THIS WALK HAS ALREADY SPENT — retired, never to be named again.
+ *
+ * A SEPARATE object from `SPIKE_0B_RESIDUE`, not an addition to it. These rows
+ * are not Spike 0b's: `rcm-s10-prep.js` created them on 2026-08-25 and the §11
+ * unwind removed them on 2026-08-26. Folding them into the 0b bucket would make
+ * the inventory print `*** SPIKE 0b RESIDUE` beside rows 0b never touched, and a
+ * label that is wrong is worse than no label at all.
+ *
+ * Why deny ids that are already deleted:
+ *
+ *   - Open Dental does not reissue ids, so nothing can ever legitimately sit at
+ *     these numbers again;
+ *   - therefore a manifest naming one did not come from a prep run — it came
+ *     from a stale file, a copy, or a hand-edit — and acting on it would mean
+ *     issuing writes at numbers whose meaning nobody can vouch for;
+ *   - and screening the manifest is the whole job of the deny-list, so the moment
+ *     an id is spent is exactly the moment it belongs here.
+ *
+ * The claims are `53784`/`53785`, the procedures `406124`/`406125` (both now
+ * soft-deleted, `ProcStatus:"D"`, G12), the lines `535194`/`535195`.
+ *
+ * NOT included: ClaimPaymentNums `21399`/`21400`. The manifest has no field for a
+ * check — its shape is `{procNum, claimNum, claimProcNum}` — so "a future
+ * manifest must never name them" cannot apply to a check. The unwind discovers a
+ * ClaimPaymentNum from a live read of the claimproc, and both of those lines are
+ * gone.
+ * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
+ */
+const WALK_SPENT_IDS = Object.freeze({
+  claims: Object.freeze([53784, 53785]),
+  procedures: Object.freeze([406124, 406125]),
+  claimProcs: Object.freeze([535194, 535195]),
+});
+
+/** Every denied id, flattened — what the unwind actually checks against. */
 const DENY_IDS = Object.freeze([
   ...SPIKE_0B_RESIDUE.claims,
   ...SPIKE_0B_RESIDUE.procedures,
   ...SPIKE_0B_RESIDUE.claimProcs,
   ...SPIKE_0B_RESIDUE.adjustments,
   ...SPIKE_0B_RESIDUE.patPlans,
+  ...WALK_SPENT_IDS.claims,
+  ...WALK_SPENT_IDS.procedures,
+  ...WALK_SPENT_IDS.claimProcs,
 ]);
 
 /**
@@ -256,6 +294,7 @@ module.exports = {
   ERA_A_PATH,
   ERA_B_PATH,
   SPIKE_0B_RESIDUE,
+  WALK_SPENT_IDS,
   DENY_IDS,
   OD_PAGE_SIZE,
   MAX_PAGES,

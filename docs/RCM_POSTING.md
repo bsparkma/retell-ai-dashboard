@@ -1109,6 +1109,24 @@ The check numbers are Open Dental's `ClaimPaymentNum`, written by the drain on
 the night; they are recorded here because §11 has to remove them and because
 "exactly one ClaimPayment per plan" is the property §10.3 tests.
 
+> **ALL SIX IDS ARE SPENT AND DENIED.** The §11 unwind removed them on
+> 2026-08-26. `53784`/`53785`, `406124`/`406125` and `535194`/`535195` are on
+> `WALK_SPENT_IDS` in `backend/scripts/rcm-s10-targets.js` — a bucket kept
+> separate from `SPIKE_0B_RESIDUE`, because these are not 0b's rows and a label
+> that is wrong is worse than none. Open Dental does not reissue ids, so a
+> manifest naming one of them did not come from a prep run.
+>
+> **A re-run of this walk creates NEW targets.** These numbers are history; do
+> not reuse them, and do not hand-write a manifest that names them — the unwind
+> now skips such a target entirely rather than acting on the parts of it that
+> look fine.
+
+**PatNum 12827 is confirmed back at baseline** (`rcm-s10-inventory.js`,
+2026-08-26T02:29Z): **0 claims**, procedure `405237` still `"C"` plus **four**
+`"D"` rows (`405238`/`405239` from Spike 0b, `406124`/`406125` from this walk),
+the detached `533930` estimate untouched at $0.00, adjustments `19109`–`19112`
+unchanged, **balance −$0.20**. The full transcript is in §11.2.
+
 ### 10.2 The walk
 
 1. **The 835s are prep artifacts, not authored on the night.**
@@ -1221,7 +1239,7 @@ The screen says why. After §9 is discharged, the same walk on **PatNum 7115**.
 
 ---
 
-## 11. The unwind — returning the test patient to where it started (−$0.20)
+## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 
 > ### ⚠️ THE ORDER IN THIS SECTION WAS WRONG UNTIL 2026-08-26
 >
@@ -1397,19 +1415,143 @@ Three things this transcript teaches, beyond the missing step:
    `InsPayAmt=1`, procedures still `"C"`. It was deliberately left that way so the
    corrected script has to repair it rather than run against a clean slate.
 
-### 11.2 Re-run — to be pasted
+### 11.2 Re-run, 2026-08-26 — ✅ **PASSED**
 
-> **NOT YET RUN.** After `fix/rcm-s11-unwind-received-claims` merges and staging
-> deploys, from inside the container at `/app`:
->
-> ```bash
-> PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js            # expect: payment already done, 4 steps pending per target
-> PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute  # expect: every step done, claims 0, balance -$0.20
-> PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js         # expect: 0 claims, 405237 C + 4 x D, balance -$0.20
-> ```
->
-> The inventory is the one that closes this out: 12827 back to zero claims, the
-> Spike 0b procedure plus four soft-deleted ones, and −$0.20.
+Staging revision `--0000124`, after the corrected order shipped.
+
+The dry run reported both `DELETE claimpayment` steps **already done** and four
+pending steps per target, the first being `PUT /claims → W`. That is the
+resumability contract doing its job against the state §11.1 left: the checks were
+already gone, so it did not try to delete them again.
+
+#### `--execute`
+
+```
+=== S11 UNWIND — roland (Roland), PatNum 12827 ===
+    mode: *** EXECUTE — THIS WILL WRITE ***
+    started: 2026-08-26T02:27:17.387Z
+    manifest: /data/rcm-s10/rcm-s10-manifest.json
+    baseline claim count recorded at prep: 0
+-- BALANCE BEFORE (ProcStatus "D" excluded) ------------------------
+   charges  (ProcStatus "C")          $3.00
+   insurance paid                    -$2.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                   -$0.20
+   claims: 2   soft-deleted procedures excluded: 2
+-- TARGET A: ProcNum=406124 ClaimNum=53784 ClaimProcNum=535194 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=0
+   1. payment      already done — no ClaimPaymentNum on this line
+   PUT /claims/53784 -> 200
+   read-back: GET /claims/53784 -> 200 ClaimStatus="W"
+   PUT /claimprocs/535194 -> 200
+   read-back: Status="NotReceived" InsPayAmt=0 WriteOff=0
+   DELETE /claims/53784 -> 200
+   read-back: GET /claims/53784 -> 404 gone
+   DELETE /procedurelogs/406124 -> 200
+   read-back: GET /procedurelogs/406124 -> 200 ProcStatus="D"  (soft delete, as documented — G12)
+-- TARGET B: ProcNum=406125 ClaimNum=53785 ClaimProcNum=535195 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=0
+   1. payment      already done — no ClaimPaymentNum on this line
+   PUT /claims/53785 -> 200
+   read-back: GET /claims/53785 -> 200 ClaimStatus="W"
+   PUT /claimprocs/535195 -> 200
+   read-back: Status="NotReceived" InsPayAmt=0 WriteOff=0
+   DELETE /claims/53785 -> 200
+   read-back: GET /claims/53785 -> 404 gone
+   DELETE /procedurelogs/406125 -> 200
+   read-back: GET /procedurelogs/406125 -> 200 ProcStatus="D"  (soft delete, as documented — G12)
+-- BALANCE AFTER (ProcStatus "D" excluded) ------------------------
+   charges  (ProcStatus "C")          $1.00
+   insurance paid                     $0.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                   -$0.20
+   claims: 0   soft-deleted procedures excluded: 4
+-- STEPS ------------------------------------------------------------
+   step                            A             B
+   ------------------------------------------------------------
+   DELETE claimpayment             already done  already done
+   PUT claim -> W                  done          done
+   PUT claimproc -> NotReceived    done          done
+   DELETE claim                    done          done
+   DELETE procedurelog             done          done
+-- VERDICT ----------------------------------------------------------
+   before -$0.20   after -$0.20   delta $0.00
+   claim count is back to the prep baseline (0).
+DONE 2026-08-26T02:28:19.673Z
+```
+
+**`PUT /claims {ClaimStatus:"W"}` was accepted, and read back as `"W"`.** That
+was the open question: the reference documents no restriction on leaving `"R"`,
+but a reference is not a run. `"S"` was never needed.
+
+Note the two balance blocks and what they say together. `−$0.20` before and
+`−$0.20` after, delta `$0.00` — **the same numbers §11.1 printed while almost
+nothing had worked.** What separates the two runs is not the verdict line but the
+lines around it: charges fell `$3.00 → $1.00`, insurance paid `−$2.00 → $0.00`,
+soft-deleted rows `2 → 4`, and claims `2 → 0`. This is exactly why the per-step
+table was added, and why "claim count is back to the prep baseline" is the
+sentence that actually closes §11.
+
+#### Inventory, read-only — the confirmation
+
+```
+=== S10 INVENTORY — roland (Roland), PatNum 12827 ===
+    READ-ONLY. started: 2026-08-26T02:29:24.251Z
+-- CLAIMS (0) ----------------------------------------------------
+   (none)
+-- PROCEDURELOGS (5) ---------------------------------------------
+   ProcNum  ProcStatus  code   ProcFee  ProcDate    note
+   406125   D           D0140  1.00     2026-08-25  SOFT-DELETED (G12) — excluded from balance
+   406124   D           D0140  1.00     2026-08-25  SOFT-DELETED (G12) — excluded from balance
+   405239   D           D0140  1.00     2026-08-13  SOFT-DELETED (G12) — excluded from balance  *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   405238   D           D0140  1.00     2026-08-13  SOFT-DELETED (G12) — excluded from balance  *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   405237   C           D0140  1.00     2026-08-13  *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   4 row(s) read ProcStatus "D" and are excluded from every total below.
+-- CLAIMPROCS (1) ------------------------------------------------
+   ClaimProcNum  ClaimNum  ProcNum  Status    InsPayAmt  WriteOff  ClaimPaymentNum  note
+   533930        0         405237   Estimate  0          0         0                DETACHED — belongs to no claim on this patient  *** SPIKE 0b RESIDUE — DO NOT TOUCH
+-- CLAIMPAYMENTS referenced by the lines above (0) ---------------
+   (none)
+-- ADJUSTMENTS (4) -----------------------------------------------
+   19109   2026-08-13  -1     *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   19110   2026-08-13  1      *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   19111   2026-08-13  -3.2   *** SPIKE 0b RESIDUE — DO NOT TOUCH
+   19112   2026-08-13  2      *** SPIKE 0b RESIDUE — DO NOT TOUCH
+-- COMPUTED BALANCE (ProcStatus "D" excluded) -----------------------
+   charges  (ProcStatus "C")          $1.00
+   insurance paid                     $0.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                   -$0.20
+   (4 soft-deleted procedure row(s) excluded)
+-- BASELINE VERDICT -------------------------------------------------
+   Spike 0b residue claims present : NONE
+   Other claims on this patient    : none
+   CLAIM COUNT FOR THE PREP PRE-CHECK : 0
+DONE 2026-08-26T02:29:31.861Z — nothing was created, updated or deleted.
+```
+
+**12827 is back at baseline**: 0 claims, `405237` still `"C"` plus four `"D"`
+rows, the detached `533930` untouched at $0.00 (a claim-scoped read would still
+not see it — that is the #109 fix holding), and **−$0.20**, which is the number
+the corrected §11 predicted rather than the $0.00 the doc used to claim.
+
+The two extra `"D"` procedures are the permanent cost of running this walk once:
+`DELETE /procedurelogs` is soft, so every future run leaves two more. That is
+expected, harmless to the balance, and worth knowing before the tenth run —
+the note in §10.1 records the ids so nobody mistakes them for live charges.
+
+#### §11 is closed
+
+Both halves of the teardown are now measured rather than assumed: the order
+(§11.1 found it wrong, §11.2 proves the fix) and the resumability (§11.2 ran
+against a half-unwound patient and finished the job without re-issuing a single
+completed step).
 
 ---
 
