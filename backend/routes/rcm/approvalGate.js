@@ -1387,16 +1387,31 @@ async function runApproval(req, office, batchId, actor) {
        * plan whose header disagrees with its own lines.
        */
       const written = await client.query(
-        `SELECT COALESCE(SUM(intended_ins_pay_amt_cents), 0)::bigint AS total ` +
+        `SELECT COALESCE(SUM(intended_ins_pay_amt_cents), 0)::bigint AS total, ` +
+          `COUNT(*) FILTER (WHERE is_supplemental = false)::int AS ordinary ` +
           `FROM rcm_posting_queue_line WHERE office_id = $1 AND queue_id = $2`,
         [office, queueId]
       );
       const writtenTotal = num(written.rows[0] && written.rows[0].total);
+      /*
+       * `requires_check` — DOES THIS PLAN OWE THE PRACTICE A CHECK?
+       *
+       * Derived from the LINES ACTUALLY WRITTEN, in the same statement as the
+       * total and by the same rule the drain uses: true when at least one
+       * ordinary (non-supplemental) line is on the plan.
+       *
+       * NOT `is_recoupment`. A MIXED plan — ordinary claims approved here, a
+       * takeback appended by the recoupment path — is a recoupment AND owes a
+       * check, and the database's `posted` proof turns on this column. Getting
+       * it from the flag would let that plan claim `posted` with no check
+       * number.
+       */
+      const requiresCheck = num(written.rows[0] && written.rows[0].ordinary) > 0;
 
       await client.query(
-        `UPDATE rcm_posting_queue SET intended_total_cents = $3, updated_at = now() ` +
-          `WHERE office_id = $1 AND queue_id = $2`,
-        [office, queueId, writtenTotal]
+        `UPDATE rcm_posting_queue SET intended_total_cents = $3, requires_check = $4, ` +
+          `updated_at = now() WHERE office_id = $1 AND queue_id = $2`,
+        [office, queueId, writtenTotal, requiresCheck]
       );
 
       await client.query('COMMIT');
@@ -1722,16 +1737,31 @@ async function approveRecoupment(req, office, batchId, actor, confirmation) {
       // approve — a bug in the loop above fails here rather than shipping a plan
       // whose header disagrees with its own lines.
       const written = await client.query(
-        `SELECT COALESCE(SUM(intended_ins_pay_amt_cents), 0)::bigint AS total ` +
+        `SELECT COALESCE(SUM(intended_ins_pay_amt_cents), 0)::bigint AS total, ` +
+          `COUNT(*) FILTER (WHERE is_supplemental = false)::int AS ordinary ` +
           `FROM rcm_posting_queue_line WHERE office_id = $1 AND queue_id = $2`,
         [office, queueId]
       );
       const writtenTotal = num(written.rows[0] && written.rows[0].total);
+      /*
+       * `requires_check` — DOES THIS PLAN OWE THE PRACTICE A CHECK?
+       *
+       * Derived from the LINES ACTUALLY WRITTEN, in the same statement as the
+       * total and by the same rule the drain uses: true when at least one
+       * ordinary (non-supplemental) line is on the plan.
+       *
+       * NOT `is_recoupment`. A MIXED plan — ordinary claims approved here, a
+       * takeback appended by the recoupment path — is a recoupment AND owes a
+       * check, and the database's `posted` proof turns on this column. Getting
+       * it from the flag would let that plan claim `posted` with no check
+       * number.
+       */
+      const requiresCheck = num(written.rows[0] && written.rows[0].ordinary) > 0;
 
       await client.query(
-        `UPDATE rcm_posting_queue SET intended_total_cents = $3, updated_at = now() ` +
-          `WHERE office_id = $1 AND queue_id = $2`,
-        [office, queueId, writtenTotal]
+        `UPDATE rcm_posting_queue SET intended_total_cents = $3, requires_check = $4, ` +
+          `updated_at = now() WHERE office_id = $1 AND queue_id = $2`,
+        [office, queueId, writtenTotal, requiresCheck]
       );
 
       await client.query('COMMIT');

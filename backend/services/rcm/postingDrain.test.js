@@ -126,6 +126,9 @@ function seedPlan(db, overrides = {}) {
       remittance_key: 'roland:830200001',
       status: 'approved',
       is_recoupment: false,
+      // 6d: the plan's SHAPE. NOT NULL DEFAULT true in the schema, so the
+      // fixture carries the default rather than leaving it undefined.
+      requires_check: true,
       carrier_eob_date: '2026-03-01',
       intended_total_cents: 15000,
       posted_total_cents: 0,
@@ -2032,5 +2035,153 @@ test('no stored PDF is "nothing to file", not a failure', async () => {
     od.writesIssued().filter((w) => w.includes('documents')).length,
     0,
     'and it costs no Open Dental call at all'
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. `requires_check` — the plan's SHAPE, not a flag about its contents
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The hole this closes: a MIXED plan is `is_recoupment = true` AND owes a
+ * check. A `posted` proof keyed on the flag would have accepted that plan with
+ * no check number — the exact false-`posted` the constraint exists to stop.
+ *
+ * The database is the guarantee (proven in the migration rehearsal); these
+ * prove the CODE writes the value the database will be judging.
+ */
+
+test('a pure-recoupment plan records that it owes NO check', async () => {
+  const db = seedTakeback(new FakeRcmDb(), 'adjustment');
+  const od = takebackFixture();
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'posted');
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.requires_check, false, 'takebacks only — there is no check to owe');
+  assert.equal(row.od_claim_payment_num, null);
+});
+
+test('an ORDINARY plan records that it DOES owe a check', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  /*
+   * SEEDED WRONG ON PURPOSE. `requires_check` defaults to `true` in the schema,
+   * so a test starting from the default would pass whether or not the drain
+   * ever wrote the column — it would assert the fixture, not the behaviour.
+   */
+  db.table('rcm_posting_queue')[0].requires_check = false;
+  const od = odFixture();
+
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.requires_check, true);
+  assert.ok(row.od_claim_payment_num, 'and it produced one');
+});
+
+test('a MIXED plan owes a check even though it IS a recoupment', async () => {
+  /*
+   * THE CASE THE FLAG WOULD HAVE GOT WRONG. Nine paid claims and one clawed
+   * back on the same carrier check: `is_recoupment` is true, and the positive
+   * side still has to produce a real check before this plan may say `posted`.
+   */
+  const db = seedPlan(new FakeRcmDb(), {
+    // Seeded FALSE — the value a flag-keyed derivation would have produced for
+    // a recoupment plan, and the one that would let this plan post with no
+    // check. The drain must correct it.
+    queue: { is_recoupment: true, intended_total_cents: 15000 - 1500, requires_check: false },
+    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+  });
+  db.seed('rcm_posting_queue_line', [
+    {
+      ...db.table('rcm_posting_queue_line')[0],
+      queue_line_id: 'bb22cc33-dd44-4e55-8f66-001122334455',
+      position: 2,
+      od_claim_proc_num: 533931,
+      intended_ins_pay_amt_cents: -1500,
+      intended_write_off_cents: 0,
+      is_supplemental: true,
+      recoupment_path: 'adjustment',
+    },
+  ]);
+
+  const od = odFixture();
+  od.rows.definitions = RECOUPMENT_DEFINITIONS;
+  od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
+  od.rows.claimProcs.push({
+    ClaimProcNum: 533931,
+    ClaimNum: 53648,
+    Status: 'Received',
+    InsPayAmt: 15.0,
+    WriteOff: 0,
+    DedApplied: 0,
+    ClaimPaymentNum: 21399,
+  });
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.is_recoupment, true, 'it IS a recoupment…');
+  assert.equal(row.requires_check, true, '…and it STILL owes a check');
+  assert.ok(
+    row.od_claim_payment_num,
+    'and produced one — a `posted` mixed plan without a check number is the ' +
+      'false-posted the constraint exists to refuse'
+  );
+});
+
+test('the shape is persisted BEFORE the first Open Dental write', async () => {
+  /*
+   * The column is what the database's `posted` proof turns on, so it must be
+   * true of the row before anything can reach a chart. A process that dies
+   * mid-sequence must leave the constraint judging THIS plan's shape rather
+   * than the `true` default.
+   */
+  const db = seedTakeback(new FakeRcmDb(), 'adjustment');
+  const od = takebackFixture();
+
+  let shapeAtFirstWrite = null;
+  const realApply = od.applyWrite.bind(od);
+  od.applyWrite = (verb, path, body) => {
+    if (shapeAtFirstWrite === null) {
+      shapeAtFirstWrite = db.table('rcm_posting_queue')[0].requires_check;
+    }
+    return realApply(verb, path, body);
+  };
+
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+
+  assert.equal(
+    shapeAtFirstWrite,
+    false,
+    'the plan already knew it owed no check before the first write went out'
+  );
+});
+
+test('the drain re-asserts the shape, so a plan whose lines changed cannot post stale', async () => {
+  /*
+   * The gate derives this at enqueue and the drain derives it again. Belt and
+   * braces on purpose: the drain is the last thing to see the plan before money
+   * moves, and a stale `requires_check = false` on a plan that has since gained
+   * an ordinary line would be a plan allowed to say `posted` with no check.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  // A stale value, as an enqueue that ran before the ordinary line existed
+  // would have left behind.
+  db.table('rcm_posting_queue')[0].requires_check = false;
+
+  const od = odFixture();
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+
+  assert.equal(
+    db.table('rcm_posting_queue')[0].requires_check,
+    true,
+    'the drain corrected it from the lines it is actually about to post'
   );
 });

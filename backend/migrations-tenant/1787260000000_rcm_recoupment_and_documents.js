@@ -13,6 +13,13 @@
  *      `posted`. A PURE-RECOUPMENT plan creates no check by design, so under
  *      that constraint it could never reach `posted` — it would sit
  *      `partially_posted` forever with the takeback correctly on the chart.
+ *
+ *      ⚠ The relaxation is keyed on a new `requires_check` column and NOT on
+ *      `is_recoupment`. They are different questions, and a MIXED plan (paid
+ *      claims plus a takeback) answers them differently: it is a recoupment
+ *      AND it owes a check. Keying on `is_recoupment` would have let that plan
+ *      say `posted` with no check number — the exact false-`posted` this
+ *      constraint exists to prevent.
  *   2. `rcm_posting_queue_line_status_check` has no word for a line whose
  *      takeback landed. Reusing `paid` would say a carrier paid when it took.
  *   3. Nothing anywhere can hold an `od_doc_num`, an `od_adjustment_num`, or
@@ -134,11 +141,33 @@ exports.up = (pgm) => {
   //
   // `reconciled_at` is still required in BOTH cases. Whatever a recoupment
   // wrote, something read it back and agreed before this row could say `posted`.
+  /*
+   * `requires_check` — DOES THIS PLAN OWE THE PRACTICE A CHECK?
+   *
+   * NOT the same question as `is_recoupment`, and conflating them was a real
+   * hole: a MIXED plan (nine paid claims plus one takeback) is
+   * `is_recoupment = true` AND must create a check for the positive side. A
+   * constraint keyed on `is_recoupment` would have accepted `posted` on that
+   * plan with `od_claim_payment_num` NULL — precisely the false-`posted` the
+   * constraint exists to stop.
+   *
+   * So the column records the SHAPE of the plan rather than a flag about its
+   * contents: true when it carries at least one ordinary (non-supplemental)
+   * line, false only for a plan that is takebacks and nothing else.
+   *
+   * DEFAULT true, and that direction is deliberate. An un-derived plan DEMANDS
+   * its check number before it may say `posted`; the failure mode of the
+   * default is a refusal, never a false claim that money landed.
+   */
+  pgm.addColumns('rcm_posting_queue', {
+    requires_check: { type: 'boolean', notNull: true, default: true },
+  });
+
   pgm.dropConstraint('rcm_posting_queue', 'rcm_posting_queue_posted_proof_check');
   pgm.addConstraint('rcm_posting_queue', 'rcm_posting_queue_posted_proof_check', {
     check: `status <> 'posted'
             OR (reconciled_at IS NOT NULL
-                AND (od_claim_payment_num IS NOT NULL OR is_recoupment = true))`,
+                AND (od_claim_payment_num IS NOT NULL OR requires_check = false))`,
   });
 
   // ── 2. The EOB filing, on its own axis ────────────────────────────────────
@@ -340,7 +369,20 @@ exports.down = (pgm) => {
     'document_attach_at',
   ]);
 
+  /*
+   * ORDER MATTERS HERE, and getting it wrong made `down` fail outright.
+   *
+   * `rcm_posting_queue_posted_proof_check` REFERENCES `requires_check`, and
+   * Postgres silently drops a CHECK when the column it depends on goes — so
+   * dropping the column first left the later `dropConstraint` aiming at
+   * something that no longer existed, and the whole rollback errored.
+   *
+   * Constraint first, then the column, then the 6c constraint back. Found by
+   * running it rather than by reading it, which is the only way this kind of
+   * thing is ever found.
+   */
   pgm.dropConstraint('rcm_posting_queue', 'rcm_posting_queue_posted_proof_check');
+  pgm.dropColumns('rcm_posting_queue', ['requires_check']);
   pgm.addConstraint('rcm_posting_queue', 'rcm_posting_queue_posted_proof_check', {
     check: `status <> 'posted'
             OR (od_claim_payment_num IS NOT NULL AND reconciled_at IS NOT NULL)`,

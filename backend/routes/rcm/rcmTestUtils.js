@@ -491,6 +491,35 @@ class FakeRcmDb {
       return { rows: [{ [alias]: String(total) }] };
     }
 
+    /*
+     * 6d: the same aggregate PLUS a filtered count, in one statement —
+     *   SELECT COALESCE(SUM(col), 0)::bigint AS a,
+     *          COUNT(*) FILTER (WHERE pred)::int AS b FROM t WHERE …
+     *
+     * `requires_check` is derived from the lines ACTUALLY WRITTEN alongside the
+     * plan's total, in one round trip, so the two can never disagree about the
+     * same set of rows. Modelled explicitly for the reason above: the generic
+     * SELECT would project the aggregate expression as a column name and hand
+     * back `undefined`, which is exactly how a plan comes to demand a check it
+     * does not owe — or worse, not demand one it does.
+     */
+    if (
+      (m = text.match(
+        /^SELECT COALESCE\(SUM\((\w+)\), 0\)::bigint AS (\w+), COUNT\(\*\) FILTER \(WHERE (.+?)\)::int AS (\w+) FROM (\w+) WHERE (.+)$/i
+      ))
+    ) {
+      const [, col, alias, filterPred, countAlias, table, where] = m;
+      const rows = this.table(table).filter(this.wherePredicate(where, params));
+      const total = rows.reduce((n, r) => n + Number(r[col] || 0), 0);
+      // The filter is a simple `col = true|false` predicate; anything else is
+      // unknown SQL and must fail loudly rather than be guessed at.
+      const fm = filterPred.match(/^(\w+)\s*=\s*(true|false)$/i);
+      if (!fm) throw new Error(`FakeRcmDb: unsupported FILTER predicate: ${filterPred}`);
+      const want = fm[2].toLowerCase() === 'true';
+      const n = rows.filter((r) => Boolean(r[fm[1]]) === want).length;
+      return { rows: [{ [alias]: String(total), [countAlias]: n }] };
+    }
+
     // eob.js dedup probe: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT <n>
     if ((m = text.match(/^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT (\d+)$/i))) {
       let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));

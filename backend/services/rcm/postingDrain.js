@@ -1928,6 +1928,29 @@ async function drainRow(ctx, queueId) {
   );
   const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
 
+  /*
+   * ── THE PLAN'S SHAPE, PERSISTED BEFORE THE FIRST OPEN DENTAL WRITE ────────
+   *
+   * `requires_check` is what the database's `posted` proof turns on, and it is
+   * NOT `is_recoupment`. A MIXED plan is a recoupment AND owes a check; keying
+   * the constraint on the flag would have let such a plan claim `posted` with
+   * no check number — the exact false-`posted` the constraint exists to stop.
+   *
+   * Written HERE, from the same split the check step will use, and committed
+   * before anything reaches a chart. A process that dies after this leaves a row
+   * whose shape is already recorded, so the constraint is enforcing the truth
+   * about this plan rather than the `true` default.
+   *
+   * The gate derives the same value at enqueue; this re-asserts it because the
+   * drain is the last thing to see the plan before money moves, and a plan whose
+   * lines changed underneath the gate must not post against a stale shape.
+   */
+  const requiresCheck = ordinaryLines.length > 0;
+  await pool.query(
+    'UPDATE rcm_posting_queue SET requires_check = $2, updated_at = now() WHERE queue_id = $1',
+    [queueId, requiresCheck]
+  );
+
   const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
   const decisions = new Map();
@@ -2277,7 +2300,9 @@ async function drainRow(ctx, queueId) {
      * `posted` proof for exactly this row: `reconciled_at` is still required,
      * and the takeback read-backs are what supply it.
      */
-    const needsCheck = ordinaryLines.length > 0;
+    // The same value persisted above, so the code and the CHECK constraint
+    // cannot disagree about whether this plan owes a check.
+    const needsCheck = requiresCheck;
 
     if (needsCheck && !claimPaymentNum && adoptable.size === 1) {
       claimPaymentNum = [...adoptable][0];
