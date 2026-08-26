@@ -32,6 +32,13 @@ import {
   QUEUE_STATE_COPY,
 } from "../client/src/features/rcm/posting";
 import { QUEUE_COLLISION_COPY } from "../client/src/features/rcm/api";
+// The RCM UX slice — the approval checklist's biller-language copy.
+import {
+  CHECK_COPY,
+  checkDetail,
+  checkTitle,
+  checkWhy,
+} from "../client/src/features/rcm/checks";
 
 const VOCAB = fs.readFileSync(
   path.join(__dirname, "..", "..", "backend", "services", "rcm", "rcmVocabulary.js"),
@@ -351,5 +358,152 @@ describe("the queue-collision refusals", () => {
     const thrown = new Set([...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]));
     const orphans = Object.keys(QUEUE_COLLISION_COPY).filter((c) => !thrown.has(c));
     expect(orphans, `client copy for codes the gate never sends: ${orphans.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * The RCM UX slice — every approval check has three strings, and two of them
+ * are never the same one.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS TEST IS SHAPED LIKE THIS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `approvalGate.js` owns WHICH conditions exist; `features/rcm/checks.ts` owns
+ * what a biller reads. Two files for one list is exactly the arrangement that
+ * went stale in Slice 5.5 and produced raw slugs on a blocking proposal, so it
+ * is enforced the same way: this test reads the gate's own `CHECKS` block and
+ * fails if a code has no copy here.
+ *
+ * The second half is §15.2's copy bug. `add('SNAPSHOT_CURRENT', usable, <a
+ * ternary chain>)` evaluates its chain whether the check passed or not, so a
+ * PASSING row printed "the confirmed claim is not among the candidates the
+ * match recorded" beside a green tick. The rule that prevents it is that the
+ * passing string and the failing string come from DIFFERENT FIELDS — and this
+ * asserts they are also different WORDS, because a copy edit that made them
+ * equal would restore the confusion without restoring the bug.
+ */
+describe("the approval checklist speaks a biller's language", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "routes", "rcm", "approvalGate.js"),
+    "utf8",
+  );
+
+  /** Every key of the gate's own `CHECKS = Object.freeze({ ... })`. */
+  function checkCodes(): string[] {
+    const open = GATE.indexOf("const CHECKS = Object.freeze({");
+    expect(open, "approvalGate.js must declare CHECKS").toBeGreaterThan(-1);
+    const end = GATE.indexOf("\n});", open);
+    expect(end, "CHECKS must be closed").toBeGreaterThan(open);
+    const body = GATE.slice(open, end);
+    return [...body.matchAll(/^ {2}([A-Z][A-Z0-9_]+):\s*\{/gm)].map((m) => m[1]);
+  }
+
+  it("reads a real list off the gate rather than an empty one", () => {
+    // A regex that silently matched nothing would make every assertion below
+    // vacuously true, which is the way this kind of test dies quietly.
+    const codes = checkCodes();
+    expect(codes.length).toBeGreaterThanOrEqual(12);
+    expect(codes).toContain("MATCH_CONFIRMED");
+    expect(codes).toContain("SNAPSHOT_CURRENT");
+  });
+
+  it("has a title, a failure instruction and a pass confirmation for every check", () => {
+    const missing = checkCodes().filter((code) => {
+      const copy = CHECK_COPY[code];
+      return !copy || !copy.title || !copy.fail || !copy.pass;
+    });
+    expect(missing, `checks with no biller-language copy: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("names no check the gate does not evaluate", () => {
+    const codes = new Set(checkCodes());
+    const orphans = Object.keys(CHECK_COPY).filter((c) => !codes.has(c));
+    expect(orphans, `copy for checks that do not exist: ${orphans.join(", ")}`).toEqual([]);
+  });
+
+  it("never prints the failure text on a check that passed — §15.2's copy bug", () => {
+    for (const code of checkCodes()) {
+      const copy = CHECK_COPY[code];
+      expect(copy.pass, `${code} pass detail equals its failure detail`).not.toBe(copy.fail);
+    }
+  });
+
+  it("starts every failure detail with a verb", () => {
+    /*
+     * "what to DO, starting with a verb" is the rule, and it is checkable:
+     * the gate's own wording began "The match record is current and complete"
+     * and "At least one procedure line has no ClaimProcNum" — descriptions of
+     * a state, which is what left a biller reading five ✗ marks with nothing
+     * to act on.
+     */
+    const notAVerb = /^(the|a|an|this|it|there|every|no|nobody|at least)\b/i;
+    const offenders = checkCodes().filter((c) => notAVerb.test(CHECK_COPY[c].fail));
+    expect(offenders, `failure details that do not start with a verb: ${offenders.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("keeps pass confirmations short — one line, not a restatement", () => {
+    const long = checkCodes().filter((c) => CHECK_COPY[c].pass.length > 60);
+    expect(long, `pass details that are not one short confirmation: ${long.join(", ")}`).toEqual([]);
+  });
+
+  it("renders the pass string on a pass and the instruction on a failure", () => {
+    const passed = {
+      code: "REVIEWED",
+      label: "Reviewed by a person",
+      passed: true,
+      detail: null,
+      fix: "Mark the claim reviewed, with a note.",
+    };
+    expect(checkTitle(passed)).toBe("Reviewed");
+    expect(checkDetail(passed)).toBe("Reviewed.");
+    expect(checkWhy(passed)).toBeNull();
+
+    const failed = { ...passed, passed: false, detail: "nobody has dispositioned this claim" };
+    expect(checkDetail(failed)).toBe("Add a note and mark this claim reviewed.");
+    expect(checkWhy(failed)).toBe("nobody has dispositioned this claim");
+  });
+
+  it("drops the gate's leftover failure sentence from a PASSING SNAPSHOT_CURRENT", () => {
+    /*
+     * The bug, reproduced. The gate really does send this string with
+     * `passed: true`, because its ternary chain has no branch for success.
+     */
+    const asTheGateSendsIt = {
+      code: "SNAPSHOT_CURRENT",
+      label: "The match record is current and complete",
+      passed: true,
+      detail: "the confirmed claim is not among the candidates the match recorded",
+      fix: "Run the match again and re-confirm it.",
+    };
+    expect(checkDetail(asTheGateSendsIt)).toBe("Up to date.");
+    expect(checkDetail(asTheGateSendsIt)).not.toContain("not among the candidates");
+    expect(checkWhy(asTheGateSendsIt)).toBeNull();
+  });
+
+  it("keeps the one passing detail that IS a fact", () => {
+    // MATCH_CONFIRMED sends `ClaimNum 53784` on a pass, which is worth reading.
+    const linked = {
+      code: "MATCH_CONFIRMED",
+      label: "Matched to an Open Dental claim",
+      passed: true,
+      detail: "ClaimNum 53784",
+      fix: "Open the claim, run the match, and confirm the right one.",
+    };
+    expect(checkDetail(linked)).toContain("53784");
+  });
+
+  it("falls back to the gate's own words for a check nobody has re-worded", () => {
+    // FAIL READABLE, like every other map in this module. An unmapped code must
+    // render the server's sentence rather than nothing.
+    const future = {
+      code: "SOME_FUTURE_CHECK",
+      label: "The server's own label",
+      passed: false,
+      detail: null,
+      fix: "The server's own fix.",
+    };
+    expect(checkTitle(future)).toBe("The server's own label");
+    expect(checkDetail(future)).toBe("The server's own fix.");
   });
 });
