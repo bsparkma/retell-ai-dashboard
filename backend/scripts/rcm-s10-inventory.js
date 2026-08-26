@@ -113,6 +113,27 @@ async function scan(handle, path, params, keep) {
 }
 
 /**
+ * Why a row is on the deny-list, or empty when it is not.
+ *
+ * Two buckets, and they are kept apart deliberately. Spike 0b's rows and the ids
+ * this walk spent are both untouchable, for the same underlying reason (Open
+ * Dental does not reissue ids, so a manifest naming one did not come from a prep
+ * run) — but printing `SPIKE 0b RESIDUE` beside a procedure 0b never created
+ * would be a label that is simply false, and a false label in an inventory is
+ * worse than none.
+ *
+ * @param {number} id
+ * @param {'claims'|'procedures'|'claimProcs'|'adjustments'} bucket
+ * @returns {string}
+ */
+function denyNote(id, bucket) {
+  const n = Number(id);
+  if ((T.SPIKE_0B_RESIDUE[bucket] || []).includes(n)) return '*** SPIKE 0b RESIDUE — DO NOT TOUCH';
+  if ((T.WALK_SPENT_IDS[bucket] || []).includes(n)) return '*** SPENT BY THE 2026-08-25 WALK — DO NOT TOUCH';
+  return '';
+}
+
+/**
  * Fixed-width table printer. Nothing fancy — this output is pasted into a doc.
  * @param {string} title
  * @param {string[]} columns
@@ -186,7 +207,7 @@ async function main() {
       c.ClaimStatus,
       c.DateService,
       c.ClaimFee,
-      T.SPIKE_0B_RESIDUE.claims.includes(Number(c.ClaimNum)) ? '*** SPIKE 0b RESIDUE — DO NOT TOUCH' : '',
+      denyNote(c.ClaimNum, 'claims'),
     ])
   );
 
@@ -214,7 +235,7 @@ async function main() {
       p.ProcDate,
       [
         String(p.ProcStatus) === 'D' ? 'SOFT-DELETED (G12) — excluded from balance' : '',
-        T.SPIKE_0B_RESIDUE.procedures.includes(Number(p.ProcNum)) ? '*** SPIKE 0b RESIDUE — DO NOT TOUCH' : '',
+        denyNote(p.ProcNum, 'procedures'),
       ]
         .filter(Boolean)
         .join('  '),
@@ -279,7 +300,7 @@ async function main() {
       cp.ClaimPaymentNum,
       [
         claimNums.has(Number(cp.ClaimNum)) ? '' : 'DETACHED — belongs to no claim on this patient',
-        T.SPIKE_0B_RESIDUE.claimProcs.includes(Number(cp.ClaimProcNum)) ? '*** SPIKE 0b RESIDUE — DO NOT TOUCH' : '',
+        denyNote(cp.ClaimProcNum, 'claimProcs'),
       ]
         .filter(Boolean)
         .join('  '),
@@ -318,7 +339,7 @@ async function main() {
       a.AdjNum,
       a.AdjDate,
       a.AdjAmt,
-      T.SPIKE_0B_RESIDUE.adjustments.includes(Number(a.AdjNum)) ? '*** SPIKE 0b RESIDUE — DO NOT TOUCH' : '',
+      denyNote(a.AdjNum, 'adjustments'),
     ])
   );
 

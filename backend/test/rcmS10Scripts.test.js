@@ -207,6 +207,37 @@ test('the Spike 0b residue is a deny-list, not a comment', () => {
   }
 });
 
+test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => {
+  /*
+   * Created by the prep on 2026-08-25, unwound on 2026-08-26. Denied for the same
+   * underlying reason as Spike 0b's rows — Open Dental does not reissue ids, so a
+   * manifest naming one did not come from a prep run and its numbers mean nothing
+   * anybody can vouch for.
+   *
+   * SEPARATE from SPIKE_0B_RESIDUE, and the separation is the assertion. Folding
+   * them in would make the inventory print '*** SPIKE 0b RESIDUE' beside rows 0b
+   * never touched, and a label that is wrong is worse than no label.
+   *
+   * ClaimPaymentNums 21399/21400 are deliberately absent: the manifest has no
+   * field for a check, so "a future manifest must never name them" cannot apply.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785]);
+  assert.deepEqual([...T.WALK_SPENT_IDS.procedures], [406124, 406125]);
+  assert.deepEqual([...T.WALK_SPENT_IDS.claimProcs], [535194, 535195]);
+
+  for (const id of [53784, 53785, 406124, 406125, 535194, 535195]) {
+    assert.ok(T.DENY_IDS.includes(id), `${id} must be on the deny-list`);
+    for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
+      assert.ok(!bucket.includes(id), `${id} must NOT be filed as Spike 0b residue`);
+    }
+  }
+
+  // One flat list, no duplicates — a repeated id means a bucket was merged rather
+  // than added.
+  assert.equal(new Set(T.DENY_IDS).size, T.DENY_IDS.length);
+});
+
 // ─── 2. The inventory reads and only reads ──────────────────────────────────
 
 test('the inventory names no write verb of any kind', () => {
@@ -898,17 +929,33 @@ function fakeOd(seed) {
   };
 }
 
-/** The state the 2026-08-25 walk left behind, before any unwind ran. */
+/*
+ * FICTIONAL IDS, and they have to be.
+ *
+ * These fixtures first used the walk's real numbers — claim 53784, claimproc
+ * 535194, procedure 406124 — which read well until those ids were retired onto
+ * the deny-list once the unwind had spent them. Every one of these tests then
+ * failed, correctly: `unwindTarget` skips a denied id, which is exactly what the
+ * deny-list is for.
+ *
+ * That is a good failure and a bad fixture. What these tests assert is the ORDER
+ * and the IDEMPOTENCE of the step machine; the specific numbers are scenery. So
+ * the scenery moves to ids nothing will ever retire, and the deny-list behaviour
+ * gets an assertion of its own below rather than breaking five unrelated tests
+ * every time the walk is run again.
+ */
+const TARGET = { procNum: 419901, claimNum: 59901, claimProcNum: 549901 };
+const PAYMENT_NUM = 29901;
+
+/** The shape the 2026-08-25 walk left behind, before any unwind ran. */
 function postedTarget() {
   return fakeOd({
-    payment: { ClaimPaymentNum: 21399, CheckAmt: 1 },
-    claimProc: { ClaimProcNum: 535194, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 21399 },
-    claim: { ClaimNum: 53784, ClaimStatus: 'R' },
-    procedure: { ProcNum: 406124, ProcStatus: 'C' },
+    payment: { ClaimPaymentNum: PAYMENT_NUM, CheckAmt: 1 },
+    claimProc: { ClaimProcNum: TARGET.claimProcNum, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: PAYMENT_NUM },
+    claim: { ClaimNum: TARGET.claimNum, ClaimStatus: 'R' },
+    procedure: { ProcNum: TARGET.procNum, ProcStatus: 'C' },
   });
 }
-
-const TARGET = { procNum: 406124, claimNum: 53784, claimProcNum: 535194 };
 
 /** @param {ReturnType<typeof fakeOd>} od */
 const drive = (od, execute = true) =>
@@ -942,14 +989,14 @@ test('the unwind un-receives the claim BEFORE reverting the claimproc', async ()
 
   const order = od.writes;
   assert.deepEqual(order, [
-    'DELETE /claimpayments/21399',
-    'PUT /claims/53784',
-    'PUT /claimprocs/535194',
-    'DELETE /claims/53784',
-    'DELETE /procedurelogs/406124',
+    `DELETE /claimpayments/${PAYMENT_NUM}`,
+    `PUT /claims/${TARGET.claimNum}`,
+    `PUT /claimprocs/${TARGET.claimProcNum}`,
+    `DELETE /claims/${TARGET.claimNum}`,
+    `DELETE /procedurelogs/${TARGET.procNum}`,
   ]);
   assert.ok(
-    order.indexOf('PUT /claims/53784') < order.indexOf('PUT /claimprocs/535194'),
+    order.indexOf(`PUT /claims/${TARGET.claimNum}`) < order.indexOf(`PUT /claimprocs/${TARGET.claimProcNum}`),
     'the un-receive must precede the line revert'
   );
 
@@ -971,24 +1018,61 @@ test('the unwind skips a claim payment that is already gone and still proceeds',
    */
   const od = fakeOd({
     payment: null,
-    claimProc: { ClaimProcNum: 535194, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 0 },
-    claim: { ClaimNum: 53784, ClaimStatus: 'R' },
-    procedure: { ProcNum: 406124, ProcStatus: 'C' },
+    claimProc: { ClaimProcNum: TARGET.claimProcNum, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: TARGET.claimNum, ClaimStatus: 'R' },
+    procedure: { ProcNum: TARGET.procNum, ProcStatus: 'C' },
   });
   const { steps, aborted } = await drive(od);
 
   assert.equal(aborted, false);
   assert.equal(steps.payment, 'already done', 'no ClaimPaymentNum means nothing to delete');
   assert.deepEqual(od.writes, [
-    'PUT /claims/53784',
-    'PUT /claimprocs/535194',
-    'DELETE /claims/53784',
-    'DELETE /procedurelogs/406124',
+    `PUT /claims/${TARGET.claimNum}`,
+    `PUT /claimprocs/${TARGET.claimProcNum}`,
+    `DELETE /claims/${TARGET.claimNum}`,
+    `DELETE /procedurelogs/${TARGET.procNum}`,
   ]);
   assert.ok(!od.writes.some((w) => w.includes('/claimpayments/')), 'no payment write at all');
   for (const s of ['unreceive', 'line', 'claim', 'procedure']) {
     assert.equal(steps[s], 'done', `${s} must still run`);
   }
+});
+
+test('the unwind writes nothing at all for a target made of denied ids', async () => {
+  /*
+   * The behaviour that broke the five fixtures above when the 2026-08-25 walk's
+   * ids were retired, asserted deliberately instead of by accident.
+   *
+   * A manifest naming a spent id did not come from a prep run, so nothing about
+   * it can be trusted — not even the rows that look fine. Every step reports
+   * `skipped` and issues nothing; there is no partial cooperation with an
+   * untrustworthy list.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const spent = {
+    procNum: T.WALK_SPENT_IDS.procedures[0],
+    claimNum: T.WALK_SPENT_IDS.claims[0],
+    claimProcNum: T.WALK_SPENT_IDS.claimProcs[0],
+  };
+  const od = fakeOd({
+    payment: { ClaimPaymentNum: 29901, CheckAmt: 1 },
+    claimProc: { ClaimProcNum: spent.claimProcNum, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 29901 },
+    claim: { ClaimNum: spent.claimNum, ClaimStatus: 'R' },
+    procedure: { ProcNum: spent.procNum, ProcStatus: 'C' },
+  });
+
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: () => {}, execute: true },
+    spent
+  );
+
+  assert.deepEqual(od.writes, [], 'a denied target must produce no write of any kind');
+  for (const step of ['unreceive', 'line', 'claim', 'procedure']) {
+    assert.equal(steps[step], 'skipped', `${step} must be skipped`);
+  }
+  // The rows are untouched, which is the point.
+  assert.equal(od.rows.claim.ClaimStatus, 'R');
+  assert.equal(od.rows.procedure.ProcStatus, 'C');
 });
 
 test('the unwind on an already-unwound target issues zero writes', async () => {
@@ -1037,7 +1121,7 @@ test('a ClaimStatus read-back that is not "W" aborts before any DELETE', async (
 
   assert.equal(aborted, true, 'the target must stop');
   assert.equal(steps.unreceive, 'failed');
-  assert.deepEqual(od.writes, ['DELETE /claimpayments/21399', 'PUT /claims/53784']);
+  assert.deepEqual(od.writes, [`DELETE /claimpayments/${PAYMENT_NUM}`, `PUT /claims/${TARGET.claimNum}`]);
   assert.ok(!od.writes.some((w) => w.startsWith('DELETE /claims/')), 'no claim DELETE');
   assert.ok(!od.writes.some((w) => w.startsWith('DELETE /procedurelogs/')), 'no procedure DELETE');
   // The rows are untouched past the check, so a re-run can still finish the job.

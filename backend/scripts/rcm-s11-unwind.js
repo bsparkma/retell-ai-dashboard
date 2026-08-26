@@ -335,6 +335,29 @@ async function unwindTarget(io, target) {
    */
   const denied = (id) => T.DENY_IDS.includes(Number(id));
 
+  /*
+   * A TARGET IS ALL-OR-NOTHING.
+   *
+   * `main()` already refuses the whole run when the manifest names a denied id,
+   * so this is unreachable through the normal path — and it is here anyway,
+   * because a test found the hole it closes. Step 1 discovers its
+   * ClaimPaymentNum by READING the claimproc, and it checked only the payment's
+   * own id. So a target whose CLAIMPROC was denied would still have had its check
+   * deleted, because the check's number was innocent.
+   *
+   * A manifest naming a spent id did not come from a prep run, so nothing about
+   * it can be trusted — not even the parts that look fine. There is no partial
+   * cooperation with an untrustworthy list.
+   */
+  if (denied(procNum) || denied(claimNum) || denied(claimProcNum)) {
+    for (const s of STEPS) steps[s] = 'skipped';
+    io.log(
+      `   SKIPPED ENTIRELY — this target names a denied id (proc ${procNum}, claim ${claimNum},` +
+        ` claimproc ${claimProcNum}). Nothing was read past this point, and nothing was written.`
+    );
+    return { steps, aborted: false };
+  }
+
   // ── 1. The check ─────────────────────────────────────────────────────────
   let claimPaymentNum = 0;
   if (claimProcNum > 0) {
