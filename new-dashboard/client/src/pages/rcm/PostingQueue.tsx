@@ -492,38 +492,55 @@ function PlanCard({
       className="rounded-xl border border-border bg-card"
       data-testid={`posting-plan-${row.queueId}`}
     >
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-3 p-4 text-left"
-        aria-expanded={open}
-      >
-        {open ? (
-          <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        )}
+      {/*
+        ── THE DISCLOSURE IS THE HEADER ROW ONLY ───────────────────────────────
+        Everything used to live INSIDE this button. It cannot any more: the check
+        number is now a copyable chip, and a `<button>` inside a `<button>` is
+        not something the HTML parser tolerates — it closes the outer one at the
+        inner start tag, so the proof line, the explainer and the metadata all
+        got ejected out of the card and rendered flush against the page edge.
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
-              data-testid={`posting-state-${row.queueId}`}
-            >
-              {copy.label}
-            </span>
-            <span className="font-medium text-foreground">
-              {row.payer ?? "Unknown payer"}
-            </span>
-            {row.checkNumber && (
-              <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
-            )}
-            <span className="text-sm font-medium text-foreground">
-              {money(row.intendedTotalCents)}
-            </span>
-          </div>
+        The header stays a button (it is what toggles), and the plan's facts sit
+        beside it as siblings. That is also the more honest markup: a read-back
+        proof and a blocking reason are content, not part of a control's label.
+      */}
+      <div className="p-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-start gap-3 text-left"
+          aria-expanded={open}
+          data-testid={`posting-toggle-${row.queueId}`}
+        >
+          {open ? (
+            <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          )}
 
-          <p className="mt-1 text-sm text-muted-foreground">{copy.hint}</p>
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
+                data-testid={`posting-state-${row.queueId}`}
+              >
+                {copy.label}
+              </span>
+              <span className="font-medium text-foreground">{row.payer ?? "Unknown payer"}</span>
+              {row.checkNumber && (
+                <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
+              )}
+              <span className="text-sm font-medium text-foreground">
+                {money(row.intendedTotalCents)}
+              </span>
+            </span>
 
+            <span className="mt-1 block text-sm text-muted-foreground">{copy.hint}</span>
+          </span>
+        </button>
+
+        {/* Indented to sit under the header's text rather than under its
+            chevron — the facts belong to the plan named above them. */}
+        <div className="pl-7">
           {/* THE PROOF, on the row that claims it. A `posted` plan cannot exist
               without both halves — the database refuses — so this is a
               statement of fact rather than an optimistic label.
@@ -557,7 +574,7 @@ function PlanCard({
               and a tooltip is no use on the tablet at the front desk. */}
           {explainReadback && (
             <p
-              className="mt-1 text-xs text-muted-foreground"
+              className="mt-1 max-w-3xl text-xs text-muted-foreground"
               data-testid={`posting-readback-explainer-${row.queueId}`}
             >
               Verified by read-back means CareIN asked Open Dental for the check after writing it
@@ -586,7 +603,7 @@ function PlanCard({
             </div>
           )}
 
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
             {/* `officeDay`, not `day`. An approval at 20:10 Central is 01:10Z
                 the next morning, and `day` printed that UTC date — "Approved
                 Aug 26" over work done on Aug 25. §15.2, finding 2. */}
@@ -605,7 +622,7 @@ function PlanCard({
             <span>{OFFICE_TIME_NOTE}</span>
           </div>
         </div>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-border px-4 py-3">

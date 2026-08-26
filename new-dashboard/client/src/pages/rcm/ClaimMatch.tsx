@@ -509,8 +509,12 @@ export default function ClaimMatchPage() {
                   <ShieldCheck size={14} />
                   Approve
                 </button>
+                {/* Width-capped so the sentence stacks under its button at
+                    1024 rather than stretching across and colliding with the
+                    section heading beside it. */}
                 <DisabledReason testId="approve-disabled-reason">
-                  Approving happens on the remittance — the whole check is approved at once.
+                  <span className="block max-w-[15rem] text-right">
+                    Approving happens on the remittance — the whole check is approved at once.
                   {fromBatchId ? (
                     <>
                       {" "}
@@ -524,6 +528,7 @@ export default function ClaimMatchPage() {
                       .
                     </>
                   ) : null}
+                  </span>
                 </DisabledReason>
               </div>
             </div>

@@ -187,6 +187,49 @@ describe("the rail", () => {
     }
   });
 
+  it("lights exactly one step, even when two are genuinely available", () => {
+    /*
+     * Review does not depend on matching — a claim with no chart match can
+     * still be finished work — so a fresh remittance really is available at two
+     * steps at once. Two filled dots answer "where am I" with two places,
+     * which is not an answer, so the later one reads `todo`.
+     */
+    const fresh = remittanceFlow(remittance(), [claim()]);
+    expect(stateOf(fresh, "match")).toBe("current");
+    expect(stateOf(fresh, "review")).toBe("todo");
+    // The sentence survives the demotion — it is still true, and the notes
+    // under the rail are where a biller reads what each step is waiting for.
+    expect(detailOf(fresh, "review")).toContain("note and a Mark reviewed");
+
+    for (const rail of [
+      fresh,
+      remittanceFlow(remittance(), [claim({ odMatchStatus: "candidates" })]),
+      claimFlow(workbenchClaim(), "b-1"),
+      planFlow(plan()),
+    ]) {
+      expect(rail.steps.filter((s) => s.state === "current").length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("never demotes a blocked step, because it is work rather than a position", () => {
+    // A no-candidate claim on an unbalanced check is blocked twice, and hiding
+    // the second would hide a thing somebody has to fix.
+    const flow = remittanceFlow(
+      remittance({
+        balance: {
+          batchTotalCents: 12000,
+          claimTotalCents: 7000,
+          differenceCents: 5000,
+          plbTotalCents: 0,
+          balanced: false,
+        },
+      }),
+      [claim({ odMatchStatus: "no_candidate" })],
+    );
+    expect(stateOf(flow, "confirm")).toBe("blocked");
+    expect(stateOf(flow, "approve")).toBe("blocked");
+  });
+
   it("never offers more than one call to action", () => {
     const rails = [
       remittanceFlow(remittance(), [claim()]),

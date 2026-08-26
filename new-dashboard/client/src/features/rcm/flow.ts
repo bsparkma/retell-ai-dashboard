@@ -142,6 +142,32 @@ const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`);
 /** "1 claim" / "3 claims" */
 const claims = (n: number) => `${n} ${plural(n, "claim")}`;
 
+/** "1 of 3 claims has" / "2 of 3 claims have" — the subject is the COUNT. */
+const someOf = (n: number, total: number) =>
+  `${n} of ${total} ${plural(total, "claim")} ${n === 1 ? "has" : "have"}`;
+
+/**
+ * EXACTLY ONE STEP IS LIT.
+ *
+ * Review does not depend on matching — "looked, nothing to do" is finished work
+ * on a claim with no chart match — so a fresh remittance is genuinely available
+ * at two steps at once. Drawing both filled makes the rail answer "where am I"
+ * with two places, which is not an answer.
+ *
+ * The first live step keeps its state; anything live after it reads `todo`,
+ * detail and all. A BLOCKED step is never demoted: it is not "where you are",
+ * it is a thing that has to change, and burying the second one would hide work.
+ */
+function oneCurrent(steps: StepView[]): StepView[] {
+  let seen = false;
+  return steps.map((s) => {
+    if (s.state !== "current") return s;
+    if (seen) return { ...s, state: "todo" as StepState };
+    seen = true;
+    return s;
+  });
+}
+
 /**
  * The claim page's URL, carrying where it was opened from.
  *
@@ -211,7 +237,7 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     match = view(
       "match",
       "current",
-      `${claims(unmatched.length)} of ${total} have not been looked for in Open Dental yet.`,
+      `${someOf(unmatched.length, total)} not been looked for in Open Dental yet.`,
       remittanceHref(batchId),
     );
   } else {
@@ -235,7 +261,7 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     confirm = view(
       "confirm",
       "current",
-      `${claims(undecided.length)} found candidates and are waiting for somebody to pick the right one.`,
+      `${claims(undecided.length)} found candidates and ${undecided.length === 1 ? "is" : "are"} waiting for somebody to pick the right one.`,
       firstUndecided ? claimHref(firstUndecided.claimId, batchId) : null,
     );
   } else if (confirmed.length === 0 && noCandidate.length > 0) {
@@ -268,7 +294,7 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     review = view(
       "review",
       "current",
-      `${claims(unreviewed.length)} still need a note and a Mark reviewed.`,
+      `${claims(unreviewed.length)} ${unreviewed.length === 1 ? "still needs" : "still need"} a note and a Mark reviewed.`,
       claimHref(unreviewed[0].claimId, batchId),
     );
   } else {
@@ -353,7 +379,7 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     post = view("post", "todo", "Approve first.", "/rcm/posting");
   }
 
-  const steps = [upload, match, confirm, review, approve, post, DEPOSIT];
+  const steps = oneCurrent([upload, match, confirm, review, approve, post, DEPOSIT]);
   return {
     steps,
     cta: ctaFor(steps, {
@@ -442,7 +468,7 @@ export function claimFlow(claim: WorkbenchClaim, batchId: string | null): RcmFlo
       )
     : view("post", "todo", "Approve first.", "/rcm/posting");
 
-  const steps = [upload, match, confirm, review, approve, post, DEPOSIT];
+  const steps = oneCurrent([upload, match, confirm, review, approve, post, DEPOSIT]);
   return {
     steps,
     cta: ctaFor(steps, { batchId, claimId: claim.claimId, odClaimNum: claim.odClaimNum }),
@@ -511,7 +537,7 @@ export function planFlow(row: PostingQueueRow): RcmFlow {
     back,
   );
 
-  const steps = [upload, match, confirm, review, approve, postStepFor(row), DEPOSIT];
+  const steps = oneCurrent([upload, match, confirm, review, approve, postStepFor(row), DEPOSIT]);
   return { steps, cta: ctaFor(steps, { queueId: row.queueId }) };
 }
 

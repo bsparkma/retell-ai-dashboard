@@ -31,7 +31,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
@@ -394,7 +394,7 @@ describe("no RCM screen greys a control without saying why", () => {
   });
 
   it("the claim screen, with one candidate confirmed and the other greyed", async () => {
-    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "?from=b-1");
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
     await screen.findByTestId("rcm-claim-match");
 
     // THE §15.2 CASE, exactly: confirm one and the other's button goes grey.
@@ -442,6 +442,46 @@ describe("no RCM screen greys a control without saying why", () => {
       "Nothing waiting to drain.",
     );
     expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("never nests one control inside another", async () => {
+    /*
+     * NOT A STYLE RULE — a rendering bug with teeth.
+     *
+     * The posted plan's check number became a copyable chip, which is a
+     * `<button>`, and the plan card's whole body was inside the disclosure
+     * `<button>`. The HTML parser does not tolerate that: it closes the outer
+     * button at the inner start tag, so the read-back proof, the explainer and
+     * the metadata were EJECTED from the card and rendered flush against the
+     * page edge. It only showed up in a screenshot.
+     *
+     * jsdom parses the same way, so the DOM can be asked directly.
+     */
+    renderAt(<PostingQueue />, "/rcm/posting");
+    await screen.findByTestId("posting-checknum-q-1");
+
+    const nested = Array.from(document.querySelectorAll("button button, a button, button a"));
+    expect(
+      nested.map((el) => el.getAttribute("data-testid") ?? el.tagName),
+      "interactive elements nested inside other interactive elements",
+    ).toEqual([]);
+
+    // And the proof really is inside its card, not orphaned beside it.
+    const card = screen.getByTestId("posting-plan-q-1");
+    expect(card.contains(screen.getByTestId("posting-proof-q-1"))).toBe(true);
+    expect(card.contains(screen.getByTestId("posting-approved-q-1"))).toBe(true);
+
+    // The expanded detail carries the stepper and the plan's scope, and adds
+    // no nested control of its own.
+    fireEvent.click(screen.getByTestId("posting-toggle-q-1"));
+    await screen.findByTestId("posting-plan-lines");
+    expect(screen.getByTestId("posting-stepper-q-1")).toBeTruthy();
+    // HOW MANY PATIENTS — a check across nine patients and one across nine
+    // lines of one patient are different things to reconcile, and the row
+    // above shows neither.
+    expect(screen.getByTestId("posting-plan-scope-q-1").textContent).toContain("1 patient");
+    expect(unexplainedDisabledControls()).toEqual([]);
+    expect(Array.from(document.querySelectorAll("button button, a button, button a"))).toEqual([]);
   });
 
   it("finds a control that has no reason — the scan is not vacuous", async () => {
