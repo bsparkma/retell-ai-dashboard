@@ -21,11 +21,16 @@ export function money(cents: number): string {
 }
 
 /**
- * A 'YYYY-MM-DD' date, rendered without a timezone shift.
+ * A DATE-ONLY value ('YYYY-MM-DD'), rendered without a timezone shift.
  *
  * Parsed at NOON UTC on purpose: `new Date("2026-03-02")` is midnight UTC,
  * which in America/Chicago is the evening of March 1st — so a service date
  * would render one day early for every user in the practice's own timezone.
+ *
+ * ONLY for values that carry no time. Slicing an ISO INSTANT to ten characters
+ * here yields its UTC calendar day, which is what printed "Approved Aug 26"
+ * over an approval made at 20:10 on Aug 25 in Roland (§15.2, finding 2). Those
+ * go through `officeDay` below.
  */
 export function day(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -34,18 +39,24 @@ export function day(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** An ISO instant → a short local date and time. */
-export function stamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+/**
+ * An ISO instant → a short date and time IN THE PRACTICE'S OWN ZONE.
+ *
+ * `stamp` used to render in the BROWSER's zone, so the same approval reported a
+ * different date to a biller on a laptop set to UTC than to one beside the
+ * chair. Every RCM instant now goes through `time.ts`, where the reasoning
+ * lives; these are re-exported from here so the screens already importing
+ * `stamp` are fixed without each one changing its import, and so there is one
+ * obvious answer to "how do I print a time on an RCM page".
+ */
+export {
+  officeDay,
+  officeStamp as stamp,
+  officeDayKey,
+  withinLastDays,
+  OFFICE_TIMEZONE,
+  OFFICE_TIME_NOTE,
+} from "@/features/rcm/time";
 
 /** A snake_case slug rendered readably when we have no label for it. */
 export function humanize(slug: string): string {

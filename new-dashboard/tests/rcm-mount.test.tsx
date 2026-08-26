@@ -81,9 +81,25 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
+/**
+ * The landing page reads TWO endpoints now, not one.
+ *
+ * It stopped being a stats page in the RCM UX slice: three totals do not tell a
+ * biller what to do next, so `/rcm` is a work queue. The remittance list
+ * answers "what is waiting on a person", the posting queue answers "what
+ * happened to the money", and neither can answer the other's question.
+ *
+ * `getRcmSummary` stays mocked because the endpoint still exists; the page no
+ * longer reads it.
+ */
 const rcmState = vi.hoisted(() => ({
   summary: null as unknown,
   error: null as Error | null,
+  remittances: [] as unknown[],
+  /** What the office holds, which may exceed what a client-side scan read. */
+  remittanceTotal: null as number | null,
+  queueRows: [] as unknown[],
+  queueByStatus: null as unknown,
 }));
 
 vi.mock("@/features/rcm/api", async (importOriginal) => {
@@ -108,6 +124,40 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
           depth: 0,
         },
         ...((rcmState.summary as object) ?? {}),
+      };
+    }),
+    listRemittances: vi.fn(async (office: string) => {
+      if (rcmState.error) throw rcmState.error;
+      return {
+        office,
+        view: "all",
+        remittances: rcmState.remittances,
+        total: rcmState.remittanceTotal ?? rcmState.remittances.length,
+        needsAttentionCount: rcmState.remittances.length,
+        matchingCount: rcmState.remittances.length,
+        limit: 200,
+        offset: 0,
+      };
+    }),
+    listPostingQueue: vi.fn(async (office: string) => {
+      if (rcmState.error) throw rcmState.error;
+      return {
+        office,
+        rows: rcmState.queueRows,
+        byStatus: (rcmState.queueByStatus as object) ?? {
+          approved: 0,
+          posting: 0,
+          posted: 0,
+          partially_posted: 0,
+          failed: 0,
+          blocked: 0,
+        },
+        total: rcmState.queueRows.length,
+        limit: 200,
+        offset: 0,
+        canDrain: true,
+        drainRequires: "rcm.write",
+        postingEnabled: true,
       };
     }),
   };
@@ -151,6 +201,10 @@ beforeEach(() => {
   authState.modules = ["voice", "rcm"];
   rcmState.summary = null;
   rcmState.error = null;
+  rcmState.remittances = [];
+  rcmState.remittanceTotal = null;
+  rcmState.queueRows = [];
+  rcmState.queueByStatus = null;
 });
 
 afterEach(() => {
@@ -200,7 +254,7 @@ describe("RCM hub tile", () => {
 });
 
 describe("RCM landing page", () => {
-  it("renders a summary card per office with the server's numbers", async () => {
+  it("renders a work queue per office, with honest zeros", async () => {
     renderWithProviders(<AppRouter />, "/rcm");
     await waitFor(() => {
       expect(screen.getByTestId("rcm-summary-roland")).toBeTruthy();
@@ -209,29 +263,166 @@ describe("RCM landing page", () => {
     // Zeros are a real answer for a freshly-entitled practice, and must render
     // as 0 rather than as the not-yet-measured em dash.
     await waitFor(() => {
-      expect(screen.getByTestId("rcm-claims-total-roland").textContent).toBe("0");
+      expect(screen.getByTestId("rcm-queue-count-match-roland").textContent).toBe("0");
     });
-    expect(screen.getByTestId("rcm-queue-depth-roland").textContent).toBe("0");
+    expect(screen.getByTestId("rcm-queue-count-review-roland").textContent).toBe("0");
+    expect(screen.getByTestId("rcm-queue-count-approve-roland").textContent).toBe("0");
+    expect(screen.getByTestId("rcm-blocked-count-roland").textContent).toBe("0");
   });
 
-  it("renders non-zero counts as given", async () => {
-    rcmState.summary = {
-      claims: {
-        byStatus: { posted: 7, pending_review: 3, processing: 0, error: 0, matched: 0 },
-        total: 10,
+  it("counts each work state and links to that state's filtered list", async () => {
+    /*
+     * The three cards are the three states a biller works, and each is a LINK
+     * into the same filter the remittance list applies. One predicate lives in
+     * `features/rcm/worklist.ts`, so a card saying 2 cannot open a page
+     * showing 1.
+     */
+    const batch = (over: Record<string, unknown>) => ({
+      batchId: `b-${over.batchId ?? "1"}`,
+      officeId: "roland",
+      payer: "SYNTHETIC DENTAL",
+      checkNumber: "830200001",
+      eftNumber: null,
+      traceNumber: null,
+      paymentMethod: "check",
+      depositDate: "2026-03-04",
+      totalAmountCents: 12000,
+      postedAmountCents: 0,
+      plbTotalCents: 0,
+      claimCount: 1,
+      status: "ready",
+      source: "835",
+      flags: [],
+      notes: "",
+      createdAt: "2026-03-05T12:00:00.000Z",
+      createdBy: null,
+      balance: {
+        batchTotalCents: 12000,
+        claimTotalCents: 12000,
+        differenceCents: 0,
+        plbTotalCents: 0,
+        balanced: true,
       },
-      queue: {
-        byStatus: { approved: 4, posting: 0, posted: 9, failed: 1, partially_posted: 0 },
-        total: 14,
-        depth: 4,
+      needsAttention: true,
+      attentionReasons: [],
+      attentionObservations: [],
+      reviewReasonCount: 0,
+      unmatchedClaimCount: 0,
+      queuedClaimCount: 0,
+      approvalAttemptedAt: null,
+      approvalAttemptedBy: null,
+      upload: null,
+      ...over,
+    });
+
+    rcmState.remittances = [
+      batch({ batchId: "1", attentionObservations: ["claims_unmatched"] }),
+      batch({ batchId: "2", attentionReasons: ["claims_unreviewed"] }),
+      // In BOTH: a remittance can be waiting on more than one thing, and
+      // hiding it from one queue because it appears in another loses work.
+      batch({
+        batchId: "3",
+        attentionReasons: ["claims_unreviewed"],
+        attentionObservations: ["claims_unmatched"],
+      }),
+      batch({ batchId: "4", attentionReasons: ["claims_awaiting_approval"] }),
+    ];
+
+    renderWithProviders(<AppRouter />, "/rcm");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("rcm-queue-count-match-roland").textContent).toBe("2");
+    });
+    expect(screen.getByTestId("rcm-queue-count-review-roland").textContent).toBe("2");
+    expect(screen.getByTestId("rcm-queue-count-approve-roland").textContent).toBe("1");
+
+    // Each card opens the list already filtered to that state.
+    expect(screen.getByTestId("rcm-queue-match-roland").getAttribute("href")).toBe(
+      "/rcm/remittances?view=match",
+    );
+    expect(screen.getByTestId("rcm-queue-approve-roland").getAttribute("href")).toBe(
+      "/rcm/remittances?view=approve",
+    );
+  });
+
+  it("names the commonest blocking reason rather than only counting", async () => {
+    // "3 blocked" sends somebody looking. "3 blocked · this practice is not
+    // switched on for posting yet" ends the search on the card.
+    rcmState.queueRows = [
+      {
+        queueId: "q-1",
+        office: "roland",
+        batchId: "b-1",
+        status: "blocked",
+        statusLabel: "blocked",
+        blockedReason: "valley_not_enabled",
+        step: null,
+        isRecoupment: false,
+        carrierEobDate: null,
+        intendedTotalCents: 12000,
+        postedTotalCents: 0,
+        odClaimPaymentNum: null,
+        reconciledAt: null,
+        approvedAt: "2026-03-06T15:00:00.000Z",
+        approvedBy: "biller@example.invalid",
+        startedAt: null,
+        finishedAt: null,
+        drainAttemptAt: null,
+        drainedBy: null,
+        attemptCount: 1,
+        lastError: null,
+        checkNumber: "830200001",
+        payer: "SYNTHETIC DENTAL",
       },
+    ];
+    rcmState.queueByStatus = {
+      approved: 0,
+      posting: 0,
+      posted: 0,
+      partially_posted: 0,
+      failed: 0,
+      blocked: 1,
     };
+
+    renderWithProviders(<AppRouter />, "/rcm");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("rcm-blocked-count-roland").textContent).toBe("1");
+    });
+    expect(screen.getByTestId("rcm-blocked-roland").textContent).toContain(
+      "not switched on for posting yet",
+    );
+    // The slug never reaches the screen.
+    expect(screen.getByTestId("rcm-blocked-roland").textContent).not.toContain(
+      "valley_not_enabled",
+    );
+  });
+
+  it("says what the work-state counts were computed over when it is not everything", async () => {
+    /*
+     * The counts are client-side over the newest page, because the list
+     * endpoint has no work-state view. A filter that will not admit what it is
+     * hiding is the failure Slice 6b fixed one level down, so the caveat is
+     * printed — but ONLY when it is true, since a caveat over a complete answer
+     * teaches people to ignore caveats.
+     */
+    rcmState.remittances = [];
+    rcmState.remittanceTotal = 0;
     renderWithProviders(<AppRouter />, "/rcm");
     await waitFor(() => {
-      expect(screen.getByTestId("rcm-claims-total-roland").textContent).toBe("10");
+      expect(screen.getByTestId("rcm-queue-count-match-roland").textContent).toBe("0");
     });
-    expect(screen.getByTestId("rcm-queue-depth-roland").textContent).toBe("4");
-    expect(screen.getByTestId("rcm-pending-roland").textContent).toContain("3 claims pending review");
+    // Nothing hidden, so nothing to caveat.
+    expect(screen.queryByTestId("rcm-scan-note-roland")).toBeNull();
+  });
+
+  it("admits the scan depth when the practice holds more than it read", async () => {
+    rcmState.remittances = [];
+    rcmState.remittanceTotal = 640;
+    renderWithProviders(<AppRouter />, "/rcm");
+    await waitFor(() => {
+      expect(screen.getByTestId("rcm-scan-note-roland").textContent).toContain("of 640");
+    });
   });
 
   it("reports MODULE_NOT_ENTITLED as itself, not as a generic failure", async () => {

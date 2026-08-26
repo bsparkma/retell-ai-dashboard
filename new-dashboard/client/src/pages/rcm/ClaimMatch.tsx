@@ -27,7 +27,7 @@
  * "Run match".
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link, useRoute } from "wouter";
+import { Link, useRoute, useSearchParams } from "wouter";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -71,12 +71,30 @@ import {
   stamp,
 } from "@/features/rcm/format";
 import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
+import { claimFlow, remittanceHref } from "@/features/rcm/flow";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
   const claimId = params?.id ?? "";
   const { office: selected } = useOffice();
   const auth = useAuth();
+  /**
+   * WHICH REMITTANCE THIS CAME FROM — carried in the URL, not fetched.
+   *
+   * `GET /api/rcm/claims/:id` does not return the claim's `batch_id`
+   * (`CLAIM_LIST_COLUMNS` in matchService.js does not select it), so this screen
+   * has no server-side way to link back to the check it arrived on. §15.2's
+   * first finding is exactly that missing link.
+   *
+   * Every route into this page now passes `?from=<batchId>`. A deep link
+   * without it still works and the breadcrumb falls back to the list — an
+   * honest "all remittances" rather than a guessed one. `batchId` on the claim
+   * payload is the backend ask that would make this a fact rather than a hint.
+   */
+  const [search] = useSearchParams();
+  const fromBatchId = search.get("from");
 
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -233,12 +251,33 @@ export default function ClaimMatchPage() {
 
   return (
     <div className="p-6" data-testid="rcm-claim-match">
-      <Link
-        href="/rcm/remittances"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ArrowLeft size={14} /> All remittances
-      </Link>
+      {/*
+        ── THE WAY BACK, AND WHAT IS OVER THERE ────────────────────────────────
+        §15.2, finding 1. Approve lives on the remittance and review and match
+        live here, and getting between them was navigation the operator had to
+        already know. The breadcrumb now names what is at the other end.
+
+        It degrades honestly: arriving without `?from=` (a bookmark, a pasted
+        link) falls back to the list rather than guessing a batch id.
+      */}
+      {fromBatchId ? (
+        <Link
+          href={remittanceHref(fromBatchId)}
+          data-testid="back-to-remittance"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft size={14} /> Back to the remittance
+          <span className="text-muted-foreground/70">— Approve is there</span>
+        </Link>
+      ) : (
+        <Link
+          href="/rcm/remittances"
+          data-testid="back-to-remittances"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft size={14} /> All remittances
+        </Link>
+      )}
 
       <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -261,6 +300,18 @@ export default function ClaimMatchPage() {
           {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
         </span>
       </div>
+
+      {/* The same seven steps as the remittance and the posting plan, scoped to
+          this one claim. `post` reads `unknown` rather than "no": this screen
+          can see that a plan exists and cannot see whether it drained. */}
+      <RcmStepper
+        flow={claimFlow(claim, fromBatchId)}
+        here="confirm"
+        onAction={{
+          "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
+          review: markReviewed,
+        }}
+      />
 
       {notice && (
         <div
@@ -405,38 +456,81 @@ export default function ClaimMatchPage() {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Open Dental
             </h2>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => runMatch(claim.odMatchStatus === "confirmed")}
-                disabled={busy !== null || !mayRerun}
-                data-testid="run-match"
-                title={
-                  mayRerun
-                    ? undefined
-                    : "Releasing a confirmed match needs posting permission. Ask an approver to re-run it."
-                }
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {busy === "match" ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Search size={14} />
-                )}
-                {claim.odMatchStatus === "not_run"
-                  ? "Run match"
-                  : claim.odMatchStatus === "confirmed"
-                    ? "Re-run match"
-                    : "Run again"}
-              </button>
-              <button
-                disabled
-                data-testid="approve-disabled"
-                title="Posting arrives in the next release."
-                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-foreground/10 px-3 py-1.5 text-sm font-medium text-muted-foreground"
-              >
-                <ShieldCheck size={14} />
-                Approve
-              </button>
+            {/*
+              EVERY DISABLED CONTROL SAYS WHY, IN THE FLOW OF THE PAGE.
+              Not a `title` — the practice reads these screens on a tablet, and
+              there is no hover on a tablet. §15.2, finding 4.
+            */}
+            <div className="flex flex-wrap items-start justify-end gap-x-2 gap-y-1">
+              <div className="flex flex-col items-start gap-1">
+                <button
+                  onClick={() => runMatch(claim.odMatchStatus === "confirmed")}
+                  disabled={busy !== null || !mayRerun}
+                  data-testid="run-match"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busy === "match" ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Search size={14} />
+                  )}
+                  {claim.odMatchStatus === "not_run"
+                    ? "Run match"
+                    : claim.odMatchStatus === "confirmed"
+                      ? "Re-run match"
+                      : "Run again"}
+                </button>
+                {!mayRerun ? (
+                  <DisabledReason testId="run-match-reason">
+                    Releasing a confirmed match needs posting permission. Ask an approver.
+                  </DisabledReason>
+                ) : busy !== null ? (
+                  <DisabledReason testId="run-match-reason">
+                    Waiting for the {busy === "match" ? "match" : busy} to finish.
+                  </DisabledReason>
+                ) : null}
+              </div>
+
+              <div className="flex flex-col items-start gap-1">
+                {/*
+                  Approving is a WHOLE-CHECK act — the gate evaluates every claim
+                  on a remittance and writes one plan. It has never happened
+                  here, and this button used to say only "Posting arrives in the
+                  next release", which stopped being true when 6b shipped and
+                  left a dead control on the page a biller reaches from the
+                  approve step. It now names where approving lives and links
+                  there when we know which remittance this is.
+                */}
+                <button
+                  disabled
+                  data-testid="approve-disabled"
+                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-foreground/10 px-3 py-1.5 text-sm font-medium text-muted-foreground"
+                >
+                  <ShieldCheck size={14} />
+                  Approve
+                </button>
+                {/* Width-capped so the sentence stacks under its button at
+                    1024 rather than stretching across and colliding with the
+                    section heading beside it. */}
+                <DisabledReason testId="approve-disabled-reason">
+                  <span className="block max-w-[15rem] text-right">
+                    Approving happens on the remittance — the whole check is approved at once.
+                  {fromBatchId ? (
+                    <>
+                      {" "}
+                      <Link
+                        href={remittanceHref(fromBatchId)}
+                        className="underline underline-offset-2 hover:text-foreground"
+                        data-testid="approve-disabled-link"
+                      >
+                        Go there
+                      </Link>
+                      .
+                    </>
+                  ) : null}
+                  </span>
+                </DisabledReason>
+              </div>
             </div>
           </div>
 
@@ -651,6 +745,14 @@ function CandidateCard({
   onConfirm: () => void;
 }) {
   const isConfirmed = confirmedClaimNum === c.odClaimNum;
+  /**
+   * The claim that took the link, when it is not this one.
+   *
+   * Null covers both "nothing is confirmed" and "this card IS the confirmed
+   * one" — the two cases that need a different sentence, or none at all.
+   */
+  const lockedByOther =
+    confirmedClaimNum !== null && confirmedClaimNum !== c.odClaimNum ? confirmedClaimNum : null;
   const blocking = c.blockers.filter((b) => b.blocking);
   const cautions = c.blockers.filter((b) => !b.blocking);
 
@@ -773,19 +875,48 @@ function CandidateCard({
         </ul>
       </div>
 
-      <div className="border-t border-border px-4 py-3">
-        <button
-          onClick={onConfirm}
-          disabled={disabled || isConfirmed}
-          data-testid={`confirm-${c.odClaimNum}`}
-          className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <CheckCircle2 size={14} />
-          {isConfirmed ? "Confirmed" : "Confirm this match"}
-        </button>
-        <span className="ml-2 text-xs text-muted-foreground">
-          Links the claim. Still writes nothing to the chart.
-        </span>
+      {/*
+        ── WHY THE OTHER CANDIDATE GREYED OUT ──────────────────────────────────
+        §15.2's fourth finding in its most confusing form: confirm one candidate
+        and the second one's button goes grey with nothing said. To the person
+        who just clicked, that reads as a bug — the two cards look identical and
+        only one of them stopped working.
+
+        One claim links to one Open Dental claim, so the answer is short and it
+        names the claim that won. Every disabled state on this card has its own
+        sentence rather than sharing a vague one.
+      */}
+      <div className="flex flex-col items-start gap-1 border-t border-border px-4 py-3">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <button
+            onClick={onConfirm}
+            disabled={disabled || isConfirmed}
+            data-testid={`confirm-${c.odClaimNum}`}
+            className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <CheckCircle2 size={14} />
+            {isConfirmed ? "Confirmed" : "Confirm this match"}
+          </button>
+          {!disabled && !isConfirmed && (
+            <span className="text-xs text-muted-foreground">
+              Links the claim. Still writes nothing to the chart.
+            </span>
+          )}
+        </div>
+
+        {isConfirmed ? (
+          <DisabledReason testId={`confirm-reason-${c.odClaimNum}`}>
+            This is the linked claim. Re-run the match to change it.
+          </DisabledReason>
+        ) : lockedByOther !== null ? (
+          <DisabledReason testId={`confirm-reason-${c.odClaimNum}`}>
+            One claim per remittance — {lockedByOther} is linked. Re-run the match to change it.
+          </DisabledReason>
+        ) : disabled ? (
+          <DisabledReason testId={`confirm-reason-${c.odClaimNum}`}>
+            Waiting for the last action to finish.
+          </DisabledReason>
+        ) : null}
       </div>
     </div>
   );
@@ -827,15 +958,20 @@ function ReviewBox({
         placeholder="What did you find? e.g. carrier owes a corrected EOB — nothing to post."
         className="mt-2 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-2 focus:ring-ring"
       />
-      <button
-        onClick={onSave}
-        disabled={busy}
-        data-testid="mark-reviewed"
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
-      >
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-        {claim.reviewedAt ? "Update review" : "Mark reviewed"}
-      </button>
+      <div className="mt-2 flex flex-col items-start gap-1">
+        <button
+          onClick={onSave}
+          disabled={busy}
+          data-testid="mark-reviewed"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+        >
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+          {claim.reviewedAt ? "Update review" : "Mark reviewed"}
+        </button>
+        {busy && (
+          <DisabledReason testId="mark-reviewed-reason">Saving the review…</DisabledReason>
+        )}
+      </div>
     </div>
   );
 }

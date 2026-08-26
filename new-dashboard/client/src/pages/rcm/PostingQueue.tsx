@@ -76,7 +76,7 @@ import {
   type PostingQueueRow,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { day, money } from "@/features/rcm/format";
+import { day, money, officeDay, OFFICE_TIME_NOTE } from "@/features/rcm/format";
 import {
   blockedCopy,
   LINE_STATE_COPY,
@@ -84,6 +84,10 @@ import {
   queueStateTone,
   stepCopy,
 } from "@/features/rcm/posting";
+import { planFlow } from "@/features/rcm/flow";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import DisabledReason from "@/components/rcm/DisabledReason";
+import CopyChip from "@/components/rcm/CopyChip";
 
 export default function PostingQueue() {
   const scope = useRcmOfficeScope();
@@ -211,9 +215,18 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
           {page && (
+            /*
+              "QUEUE:", ALWAYS — §15.2, finding 3.
+              The header counts every plan this office holds; the strip after a
+              run counts THAT RUN. They said "2 posted" and "1 posted" about the
+              same screen and both were true, because neither said which
+              population it was counting. Both now carry their scope in the
+              string, so the two numbers cannot be read as one contradicting the
+              other.
+            */
             <span className="text-sm text-muted-foreground" data-testid={`posting-counts-${office}`}>
-              {waiting} waiting · {page.byStatus.posted} posted · {page.byStatus.blocked} blocked ·{" "}
-              {page.total} total
+              Queue: {waiting} waiting · {page.byStatus.posted} posted · {page.byStatus.blocked}{" "}
+              blocked · {page.total} total
             </span>
           )}
         </div>
@@ -289,7 +302,17 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
         {state.kind === "loaded" && state.page.rows.length > 0 && (
           <div className="space-y-3">
             {state.page.rows.map((row) => (
-              <PlanCard key={row.queueId} office={office} row={row} />
+              <PlanCard
+                key={row.queueId}
+                office={office}
+                row={row}
+                // The explainer goes on the FIRST posted plan on the page and
+                // nowhere else. See PlanCard.
+                explainReadback={
+                  row.queueId ===
+                  state.page.rows.find((r) => r.status === "posted" && r.odClaimPaymentNum)?.queueId
+                }
+              />
             ))}
           </div>
         )}
@@ -305,6 +328,20 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
  * holds rather than leaving the screen to be inferred from a greyed-out control.
  * `canDrain` comes from the server, so a role the client has never heard of
  * still gets the right answer.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE REASON IS RENDERED, NOT HOVERED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It was a `title` attribute, which is to say it was invisible. §10.4 of this
+ * module's walk lost real time to a Drain button greyed at `0 waiting` with
+ * nothing on screen saying why: a disabled control with no reason is
+ * indistinguishable from a broken one, so the replay step read as untestable
+ * rather than as already-guaranteed. §15.2, finding 4. And a tooltip would not
+ * have fixed it either — the practice reads this screen on a tablet.
+ *
+ * Permission comes FIRST in the order below, ahead of the empty queue: telling
+ * a reviewer "nothing waiting to drain" would hide the thing that is still true
+ * when a plan arrives.
  */
 function DrainButton({
   office,
@@ -320,37 +357,61 @@ function DrainButton({
   const waiting = page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted;
   const disabled = draining || !page.canDrain || waiting === 0;
 
-  const title = !page.canDrain
-    ? `Posting to Open Dental needs ${page.drainRequires} — an approver can press this`
-    : waiting === 0
-      ? "Nothing is waiting to post"
-      : `Post ${waiting} plan${waiting === 1 ? "" : "s"} to Open Dental`;
+  const reason = !page.canDrain
+    ? `Posting to Open Dental needs ${page.drainRequires}. An approver can press this.`
+    : draining
+      ? "A posting run is under way. It stops cleanly between plans."
+      : waiting === 0
+        ? "Nothing waiting to drain."
+        : null;
 
   return (
-    <button
-      onClick={onDrain}
-      disabled={disabled}
-      title={title}
-      data-testid={`posting-drain-${office}`}
-      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
-        disabled
-          ? "cursor-not-allowed bg-muted text-muted-foreground"
-          : "bg-foreground text-background hover:opacity-90"
-      }`}
-    >
-      {draining ? (
-        <Loader2 size={14} className="animate-spin" />
-      ) : page.canDrain ? (
-        <PlayCircle size={14} />
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={onDrain}
+        disabled={disabled}
+        data-testid={`posting-drain-${office}`}
+        className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
+          disabled
+            ? "cursor-not-allowed bg-muted text-muted-foreground"
+            : "bg-foreground text-background hover:opacity-90"
+        }`}
+      >
+        {draining ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : page.canDrain ? (
+          <PlayCircle size={14} />
+        ) : (
+          <Lock size={14} />
+        )}
+        {draining ? "Posting…" : waiting > 0 ? `Drain ${waiting}` : "Drain"}
+      </button>
+      {reason ? (
+        <DisabledReason testId={`posting-drain-reason-${office}`}>{reason}</DisabledReason>
       ) : (
-        <Lock size={14} />
+        <span className="text-xs text-muted-foreground">
+          Writes {waiting} plan{waiting === 1 ? "" : "s"} to Open Dental.
+        </span>
       )}
-      {draining ? "Posting…" : "Drain"}
-    </button>
+    </div>
   );
 }
 
-/** What the run just did, including when it ran out of time. */
+/**
+ * What THE RUN JUST NOW did, including when it ran out of time.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THIS RUN, NOT THE QUEUE — §15.2, finding 3
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This strip counts `result.outcomes`: the plans THIS press of Drain touched.
+ * The header above counts every plan the office holds. On the walk they read
+ * "1 posted" and "2 posted" on one screen, and there was no way to tell that
+ * both were true — a queue that already held a posted plan, plus one more
+ * posted just now.
+ *
+ * Neither number moves. What changed is that each one now says which population
+ * it counted, in the string itself, so they cannot be read as a contradiction.
+ */
 function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainResult }) {
   const posted = result.outcomes.filter((o) => o.status === "posted").length;
   const blocked = result.outcomes.filter((o) => o.status === "blocked").length;
@@ -365,9 +426,13 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
     >
       <div className="font-medium text-foreground">
         {result.ran === 0
-          ? "Nothing was waiting to post."
-          : `${posted} posted · ${blocked} blocked · ${trouble} needing attention`}
+          ? "This run: nothing was waiting to post."
+          : `This run: ${posted} posted · ${blocked} blocked · ${trouble} needing attention`}
       </div>
+      <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`posting-run-scope-${office}`}>
+        Counts the {result.ran} plan{result.ran === 1 ? "" : "s"} this press of Drain touched. The
+        totals beside the practice name count every plan it holds.
+      </p>
 
       {result.outOfTime && (
         <p className="mt-1 flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
@@ -390,8 +455,23 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
   );
 }
 
-/** One plan, with its lines behind a disclosure. */
-function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }) {
+/**
+ * One plan, with its lines behind a disclosure.
+ *
+ * `firstPosted` decides which card carries the read-back explainer: the phrase
+ * "verified by read-back" is precise and it is not self-explanatory, and
+ * printing the paragraph on every posted row would turn a queue into an essay.
+ * Once per page, on the first one that says it.
+ */
+function PlanCard({
+  office,
+  row,
+  explainReadback,
+}: {
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+  explainReadback: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<PostingQueueDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -412,49 +492,94 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
       className="rounded-xl border border-border bg-card"
       data-testid={`posting-plan-${row.queueId}`}
     >
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-3 p-4 text-left"
-        aria-expanded={open}
-      >
-        {open ? (
-          <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        )}
+      {/*
+        ── THE DISCLOSURE IS THE HEADER ROW ONLY ───────────────────────────────
+        Everything used to live INSIDE this button. It cannot any more: the check
+        number is now a copyable chip, and a `<button>` inside a `<button>` is
+        not something the HTML parser tolerates — it closes the outer one at the
+        inner start tag, so the proof line, the explainer and the metadata all
+        got ejected out of the card and rendered flush against the page edge.
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
-              data-testid={`posting-state-${row.queueId}`}
-            >
-              {copy.label}
-            </span>
-            <span className="font-medium text-foreground">
-              {row.payer ?? "Unknown payer"}
-            </span>
-            {row.checkNumber && (
-              <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
-            )}
-            <span className="text-sm font-medium text-foreground">
-              {money(row.intendedTotalCents)}
-            </span>
-          </div>
+        The header stays a button (it is what toggles), and the plan's facts sit
+        beside it as siblings. That is also the more honest markup: a read-back
+        proof and a blocking reason are content, not part of a control's label.
+      */}
+      <div className="p-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-start gap-3 text-left"
+          aria-expanded={open}
+          data-testid={`posting-toggle-${row.queueId}`}
+        >
+          {open ? (
+            <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          )}
 
-          <p className="mt-1 text-sm text-muted-foreground">{copy.hint}</p>
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
+                data-testid={`posting-state-${row.queueId}`}
+              >
+                {copy.label}
+              </span>
+              <span className="font-medium text-foreground">{row.payer ?? "Unknown payer"}</span>
+              {row.checkNumber && (
+                <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
+              )}
+              <span className="text-sm font-medium text-foreground">
+                {money(row.intendedTotalCents)}
+              </span>
+            </span>
 
+            <span className="mt-1 block text-sm text-muted-foreground">{copy.hint}</span>
+          </span>
+        </button>
+
+        {/* Indented to sit under the header's text rather than under its
+            chevron — the facts belong to the plan named above them. */}
+        <div className="pl-7">
           {/* THE PROOF, on the row that claims it. A `posted` plan cannot exist
               without both halves — the database refuses — so this is a
-              statement of fact rather than an optimistic label. */}
+              statement of fact rather than an optimistic label.
+
+              The check number is a COPYABLE CHIP: the next thing a biller does
+              with it is find that check in Open Dental, and retyping a
+              seven-digit number off a screen is how the wrong check gets
+              opened.
+
+              `officeDay`, not `day`: `reconciledAt` is an instant, and slicing
+              an instant to ten characters prints its UTC calendar day — which
+              is what put an Aug 25 evening approval on Aug 26 (§15.2). */}
           {row.status === "posted" && row.odClaimPaymentNum && (
-            <p
-              className="mt-1 flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400"
+            <div
+              className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-emerald-700 dark:text-emerald-400"
               data-testid={`posting-proof-${row.queueId}`}
             >
-              <CheckCircle2 size={14} />
-              Open Dental check <strong>#{row.odClaimPaymentNum}</strong> · verified by read-back at{" "}
-              {day(row.reconciledAt)}
+              <CheckCircle2 size={14} className="shrink-0" />
+              <span>Open Dental check</span>
+              <CopyChip
+                value={String(row.odClaimPaymentNum)}
+                label={`#${row.odClaimPaymentNum}`}
+                testId={`posting-checknum-${row.queueId}`}
+              />
+              <span>verified by read-back on {officeDay(row.reconciledAt, office)}</span>
+            </div>
+          )}
+
+          {/* WHAT "VERIFIED BY READ-BACK" MEANS. Once per page, under the first
+              plan that claims it — the phrase is exact and it is not obvious,
+              and a tooltip is no use on the tablet at the front desk. */}
+          {explainReadback && (
+            <p
+              className="mt-1 max-w-3xl text-xs text-muted-foreground"
+              data-testid={`posting-readback-explainer-${row.queueId}`}
+            >
+              Verified by read-back means CareIN asked Open Dental for the check after writing it
+              and got back exactly this plan's lines. Open Dental answers 200 to writes it quietly
+              ignores, so the read is the proof and the status code is not.
             </p>
           )}
 
@@ -478,18 +603,26 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
             </div>
           )}
 
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-            <span>Approved {day(row.approvedAt)}</span>
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+            {/* `officeDay`, not `day`. An approval at 20:10 Central is 01:10Z
+                the next morning, and `day` printed that UTC date — "Approved
+                Aug 26" over work done on Aug 25. §15.2, finding 2. */}
+            <span data-testid={`posting-approved-${row.queueId}`}>
+              Approved {officeDay(row.approvedAt, office)}
+            </span>
             {row.attemptCount > 0 && (
               <span>
                 {row.attemptCount} posting attempt{row.attemptCount === 1 ? "" : "s"}
               </span>
             )}
             {row.status === "posting" && row.step && <span>{stepCopy(row.step)}</span>}
-            {row.carrierEobDate && <span>Carrier EOB date {row.carrierEobDate}</span>}
+            {/* A DATE-ONLY value from the carrier's file — `day`, correctly:
+                it carries no time, so no zone may move it. */}
+            {row.carrierEobDate && <span>Carrier EOB date {day(row.carrierEobDate)}</span>}
+            <span>{OFFICE_TIME_NOTE}</span>
           </div>
         </div>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-border px-4 py-3">
@@ -502,16 +635,51 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
           {!loading && !detail && (
             <div className="text-sm text-muted-foreground">Could not load this plan.</div>
           )}
-          {detail && <PlanLines detail={detail} />}
+          {detail && <PlanLines detail={detail} office={office} row={row} />}
         </div>
       )}
     </div>
   );
 }
 
-function PlanLines({ detail }: { detail: PostingQueueDetail }) {
+function PlanLines({
+  detail,
+  office,
+  row,
+}: {
+  detail: PostingQueueDetail;
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+}) {
+  const patients = new Set(detail.claims.map((c) => c.patientName ?? c.claimId)).size;
+
   return (
     <div data-testid="posting-plan-lines">
+      {/*
+        THE SAME SEVEN STEPS AS THE OTHER TWO SCREENS.
+        Everything before `post` is done by construction — a plan cannot exist
+        unless a person confirmed every match and approved the check — so this
+        stepper is mostly a record of what already happened, and one live step.
+        Its value is that a biller who opened this row from the posting queue
+        can still see where the remittance is and click back to it.
+      */}
+      <RcmStepper flow={planFlow(row)} here="post" testId={`posting-stepper-${row.queueId}`} />
+
+      {/*
+        HOW MANY PATIENTS. A check for $4,317 across nine patients and one
+        across nine lines of the same patient are different things to reconcile,
+        and the row above shows neither. The count comes from the plan's own
+        claims — the queue LIST row does not carry it (see the backend asks).
+      */}
+      <p
+        className="mb-3 mt-3 text-xs text-muted-foreground"
+        data-testid={`posting-plan-scope-${row.queueId}`}
+      >
+        {detail.lines.length} line{detail.lines.length === 1 ? "" : "s"} · {detail.claims.length}{" "}
+        claim{detail.claims.length === 1 ? "" : "s"} · {patients} patient
+        {patients === 1 ? "" : "s"}
+      </p>
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[46rem] text-sm">
           <thead>
@@ -554,7 +722,7 @@ function PlanLines({ detail }: { detail: PostingQueueDetail }) {
                     line.readback.agreed ? (
                       <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
                         <CheckCircle2 size={14} />
-                        read back {day(line.readbackAt)}
+                        read back {officeDay(line.readbackAt, office)}
                       </span>
                     ) : (
                       <span className="text-rose-700 dark:text-rose-400">

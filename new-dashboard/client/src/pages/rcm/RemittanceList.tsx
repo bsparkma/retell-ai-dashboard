@@ -46,15 +46,17 @@
  * against.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "wouter";
+import { Link, useSearchParams } from "wouter";
 import {
   AlertCircle,
+  ChevronDown,
   ChevronRight,
   FileText,
   Inbox,
   Loader2,
   RefreshCw,
   ScrollText,
+  Upload,
 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
@@ -75,18 +77,63 @@ import {
   SOURCE_LABELS,
   SOURCE_TITLES,
 } from "@/features/rcm/format";
+import {
+  FILTER_COPY,
+  isWorklistFilter,
+  matchesFilter,
+  oldestWaitingFirst,
+  SERVER_VIEWS,
+  WORKLIST_FILTERS,
+  type WorklistFilter,
+} from "@/features/rcm/worklist";
+import EobUploadPanel from "./EobUploadPanel";
+import EraUploadPanel from "./EraUploadPanel";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
-type Filter = RemittanceView;
+type Filter = WorklistFilter;
 
 /** Rows per page. The server caps at 200; this is what a screen reads well. */
 const PAGE_SIZE = 50;
 
+/**
+ * How deep a CLIENT-SIDE filter reads before it starts telling a half-truth.
+ *
+ * The four work-state tabs are applied in the browser (see `worklist.ts`), so
+ * they can only see what came back. 200 is the server's own cap; past it the
+ * header says what it counted over rather than pretending the number is the
+ * office's.
+ */
+const SCAN_LIMIT = 200;
+
 export default function RemittanceList() {
   const scope = useRcmOfficeScope();
   const { reload } = useOffice();
-  // NEEDS ATTENTION FIRST. Shared across the office cards on purpose: a biller
-  // works one queue, not one queue per practice.
-  const [filter, setFilter] = useState<Filter>("attention");
+  /**
+   * The tab. `?view=` is how you ARRIVE at one; state is what keeps you there.
+   *
+   * The overview's "what needs me" cards link straight into a filtered list, so
+   * the filter has to survive a link — and "show me the blocked ones" becomes a
+   * URL somebody can send rather than an instruction they have to give.
+   *
+   * The URL is read, not written. Writing it back would make the tab depend on
+   * the router's search hook being wired, and it is not everywhere this
+   * component is rendered; a tab that silently stops responding under one
+   * router is a worse trade than an address bar that does not follow every
+   * click. The effect below still follows a link that arrives while this page
+   * is already mounted.
+   *
+   * NEEDS ATTENTION is the default, and it is shared across the office sections
+   * on purpose: a biller works one queue, not one per practice.
+   */
+  const [search] = useSearchParams();
+  const fromUrl = search.get("view");
+  const [filter, setFilter] = useState<Filter>(
+    isWorklistFilter(fromUrl) ? fromUrl : "attention",
+  );
+  useEffect(() => {
+    if (isWorklistFilter(fromUrl)) setFilter(fromUrl);
+  }, [fromUrl]);
+  const [showUpload, setShowUpload] = useState(false);
 
   if (scope.loading) {
     return (
@@ -133,30 +180,87 @@ export default function RemittanceList() {
           </p>
         </div>
 
-        <div className="flex rounded-lg border border-border p-0.5" role="tablist">
-          {(
-            [
-              ["attention", "Needs attention"],
-              ["all", "All"],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              role="tab"
-              aria-selected={filter === value}
-              data-testid={`remittance-filter-${value}`}
-              onClick={() => setFilter(value)}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                filter === value
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          {/*
+            UPLOADING LIVES HERE TOO — §15.2's navigation problem in its first
+            form. The upload panels were only on the Revenue Cycle overview, so
+            a biller who had bookmarked the list (which is where the work is)
+            had to go somewhere else to add a file and then come back. Same
+            components, both places; the empty state below opens this drawer
+            rather than telling somebody to navigate.
+          */}
+          <button
+            onClick={() => setShowUpload((v) => !v)}
+            aria-expanded={showUpload}
+            data-testid="remittance-upload-toggle"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            <Upload size={14} />
+            Upload a remittance
+            <ChevronDown
+              size={13}
+              className={showUpload ? "rotate-180 transition-transform" : "transition-transform"}
+            />
+          </button>
+
+          <div
+            className="flex flex-wrap justify-end gap-0.5 rounded-lg border border-border p-0.5"
+            role="tablist"
+          >
+            {WORKLIST_FILTERS.map((value) => (
+              <button
+                key={value}
+                role="tab"
+                aria-selected={filter === value}
+                data-testid={`remittance-filter-${value}`}
+                onClick={() => setFilter(value)}
+                title={FILTER_COPY[value].hint}
+                className={`rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors ${
+                  filter === value
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {FILTER_COPY[value].label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      <p className="mt-2 text-sm text-muted-foreground" data-testid="remittance-filter-hint">
+        {FILTER_COPY[filter].hint}
+        {!SERVER_VIEWS.has(filter) && (
+          <>
+            {" "}
+            <span className="text-muted-foreground/70">
+              Sorted oldest-waiting first, and applied to the newest {SCAN_LIMIT} remittances each
+              practice holds — the counts beside each practice say what was read.
+            </span>
+          </>
+        )}
+      </p>
+
+      {showUpload && scope.offices.length > 0 && (
+        <div className="mt-4 space-y-6" data-testid="remittance-upload-panels">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">Remittance files (835)</h2>
+            <div className="mt-2 grid grid-cols-1 gap-4 xl:grid-cols-2">
+              {scope.offices.map((office) => (
+                <EraUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">EOB PDFs</h2>
+            <div className="mt-2 grid grid-cols-1 gap-4 xl:grid-cols-2">
+              {scope.offices.map((office) => (
+                <EobUploadPanel key={office} office={office} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {scope.offices.length === 0 ? (
         <div
@@ -171,7 +275,12 @@ export default function RemittanceList() {
       ) : (
         <div className="mt-6 space-y-8">
           {scope.offices.map((office) => (
-            <OfficeRemittances key={office} office={office} filter={filter} />
+            <OfficeRemittances
+              key={office}
+              office={office}
+              filter={filter}
+              onUpload={() => setShowUpload(true)}
+            />
           ))}
         </div>
       )}
@@ -179,10 +288,27 @@ export default function RemittanceList() {
   );
 }
 
-function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Filter }) {
+function OfficeRemittances({
+  office,
+  filter,
+  onUpload,
+}: {
+  office: RcmOfficeId;
+  filter: Filter;
+  /** Open the upload drawer from an empty state, rather than pointing at it. */
+  onUpload: () => void;
+}) {
   const [state, setState] = useState<
     | { kind: "loading" }
-    | { kind: "loaded"; rows: Remittance[]; total: number; attention: number; matching: number }
+    | {
+        kind: "loaded";
+        rows: Remittance[];
+        total: number;
+        attention: number;
+        matching: number;
+        /** How many rows the SERVER handed over for a client-side filter. */
+        scanned: number;
+      }
     | { kind: "failed"; message: string }
   >({ kind: "loading" });
   /** Which page of the CURRENT view. Reset whenever the view changes. */
@@ -190,23 +316,46 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
 
   useEffect(() => setOffset(0), [filter, office]);
 
+  /**
+   * Two shapes of load, because there are two shapes of filter.
+   *
+   * A SERVER view (`attention`, `all`) is paged and counted by the server over
+   * the whole office — the arrangement Slice 6b introduced and nothing here
+   * weakens. A WORK-STATE view is applied in the browser, so it asks for one
+   * deep page and says so; `scanned` versus `total` is what the header prints.
+   */
+  const serverBacked = SERVER_VIEWS.has(filter);
+
   const load = useCallback(() => {
     let cancelled = false;
     setState({ kind: "loading" });
-    // `view` goes to the SERVER. The rows that come back are already the ones
-    // this tab shows, so nothing is filtered again here — which is what makes
-    // paging correct rather than paging-then-filtering.
-    listRemittances(office, { limit: PAGE_SIZE, offset, view: filter })
+    const request = serverBacked
+      ? listRemittances(office, { limit: PAGE_SIZE, offset, view: filter as RemittanceView })
+      : listRemittances(office, { limit: SCAN_LIMIT, offset: 0, view: "all" });
+
+    request
       .then((page) => {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (serverBacked) {
           setState({
             kind: "loaded",
             rows: page.remittances,
             total: page.total,
             attention: page.needsAttentionCount,
             matching: page.matchingCount,
+            scanned: page.remittances.length,
           });
+          return;
         }
+        const hits = oldestWaitingFirst(page.remittances.filter((r) => matchesFilter(r, filter)));
+        setState({
+          kind: "loaded",
+          rows: hits.slice(offset, offset + PAGE_SIZE),
+          total: page.total,
+          attention: page.needsAttentionCount,
+          matching: hits.length,
+          scanned: page.remittances.length,
+        });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -223,7 +372,7 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
     return () => {
       cancelled = true;
     };
-  }, [office, offset, filter]);
+  }, [office, offset, filter, serverBacked]);
 
   useEffect(load, [load]);
 
@@ -235,12 +384,27 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
         <h2 className="text-base font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           {state.kind === "loaded" && (
-            // The count is ALWAYS visible, on both tabs. A filter that does not
+            // The count is ALWAYS visible, on every tab. A filter that does not
             // say how much it is hiding is a filter people forget is on.
-            // Both numbers are computed server-side over the SAME population,
-            // which is what makes this sentence true rather than merely short.
+            //
+            // On a server view both numbers are computed server-side over the
+            // SAME population, which is what makes the sentence true rather
+            // than merely short. On a client-side one the sentence says what it
+            // read, because "3 waiting on match" over the newest 200 of 640 is
+            // not the same claim as "3 in this practice" and must not look
+            // like it.
             <span data-testid={`remittance-counts-${office}`}>
-              {state.attention} needing attention · {state.total} total
+              {serverBacked ? (
+                <>
+                  {state.attention} needing attention · {state.total} total
+                </>
+              ) : (
+                <>
+                  {state.matching} {FILTER_COPY[filter].label.toLowerCase()} over the newest{" "}
+                  {state.scanned}
+                  {state.total > state.scanned ? ` of ${state.total}` : ""}
+                </>
+              )}
             </span>
           )}
           <button
@@ -273,11 +437,42 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
           data-testid={`remittances-empty-${office}`}
         >
           <Inbox size={20} className="mx-auto text-muted-foreground/50" />
-          <p className="mt-2 text-sm text-muted-foreground">
-            {filter === "attention" && state.total > 0
-              ? "Nothing needs attention here. Switch to All to see everything."
-              : "No remittances yet. Upload an 835 or an EOB from the Revenue Cycle overview."}
-          </p>
+          {/*
+            THREE DIFFERENT EMPTIES, AND THEY ARE NOT THE SAME NEWS.
+              · this practice has nothing at all  → offer the upload, here
+              · this queue is clear               → say so, and where the rest is
+            "No remittances yet" over a practice holding 600 of them was the old
+            copy's failure; it read as a broken screen.
+          */}
+          {state.total === 0 ? (
+            <>
+              <p className="mt-2 text-sm font-medium text-foreground">
+                Nothing has been uploaded for {RCM_OFFICE_LABELS[office]} yet
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Upload a carrier's 835 file or an EOB PDF and it is read into a proposal. Nothing is
+                posted to a chart.
+              </p>
+              <button
+                onClick={onUpload}
+                data-testid={`remittances-empty-upload-${office}`}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+              >
+                <Upload size={14} />
+                Upload a remittance
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted-foreground">{FILTER_COPY[filter].empty}</p>
+              {filter !== "all" && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {state.total} remittance{state.total === 1 ? "" : "s"} in this practice — switch to
+                  All to see them.
+                </p>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <div className="mt-3 overflow-hidden rounded-xl border border-border bg-card">
@@ -317,23 +512,40 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
           <span>
             {offset + 1}–{Math.min(offset + rows.length, state.matching)} of {state.matching}
           </span>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
-              disabled={offset === 0}
-              data-testid={`remittance-prev-${office}`}
-              className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              onClick={() => setOffset((o) => o + PAGE_SIZE)}
-              disabled={offset + rows.length >= state.matching}
-              data-testid={`remittance-next-${office}`}
-              className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
-            >
-              Next
-            </button>
+          {/* The two pager buttons grey at the ends of the list, and each one
+              says which end it is at. Cheap, and it is the same rule as the
+              Drain button: a disabled control with no reason reads as broken. */}
+          <div className="flex items-start gap-2">
+            <div className="flex flex-col items-center gap-0.5">
+              <button
+                onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+                disabled={offset === 0}
+                data-testid={`remittance-prev-${office}`}
+                className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+              >
+                Previous
+              </button>
+              {offset === 0 && (
+                <DisabledReason testId={`remittance-prev-reason-${office}`}>
+                  First page
+                </DisabledReason>
+              )}
+            </div>
+            <div className="flex flex-col items-center gap-0.5">
+              <button
+                onClick={() => setOffset((o) => o + PAGE_SIZE)}
+                disabled={offset + rows.length >= state.matching}
+                data-testid={`remittance-next-${office}`}
+                className="rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+              >
+                Next
+              </button>
+              {offset + rows.length >= state.matching && (
+                <DisabledReason testId={`remittance-next-reason-${office}`}>
+                  Last page
+                </DisabledReason>
+              )}
+            </div>
           </div>
         </div>
       )}

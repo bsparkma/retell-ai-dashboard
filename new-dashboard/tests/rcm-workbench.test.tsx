@@ -639,11 +639,39 @@ describe("the remittance list", () => {
 
     renderAt(<RemittanceList />, "/rcm/remittances");
 
+    // A CLEAR QUEUE, not an empty practice. That distinction is the point of
+    // the test: the office holds a remittance, this tab does not show it, and
+    // the copy has to say both — "no remittances yet" over a practice holding
+    // 600 of them reads as a broken screen.
     await waitFor(() =>
       expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
-        "Switch to All to see everything",
+        "Nothing needs attention here.",
       ),
     );
+    expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
+      "1 remittance in this practice — switch to All to see them.",
+    );
+    // And it does NOT offer the upload: that is the other empty.
+    expect(screen.queryByTestId("remittances-empty-upload-roland")).toBeNull();
+  });
+
+  it("offers the upload from a practice that holds nothing at all", async () => {
+    /*
+     * The OTHER empty, and §15.2's navigation problem in its first form:
+     * uploading lived on the overview only, so the first thing a biller saw on
+     * an empty workbench was an instruction to go somewhere else. The dropzone
+     * is now one click away, on the page where the work is.
+     */
+    state.remittances = [];
+    state.needsAttentionCount = 0;
+
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const empty = await screen.findByTestId("remittances-empty-roland");
+    expect(empty.textContent).toContain("Nothing has been uploaded for Roland yet");
+
+    fireEvent.click(screen.getByTestId("remittances-empty-upload-roland"));
+    await waitFor(() => expect(screen.getByTestId("remittance-upload-panels")).toBeTruthy());
   });
 
   it("reports MODULE_NOT_ENTITLED in the server's own words", async () => {
@@ -820,10 +848,17 @@ describe("the remittance detail", () => {
     expect(screen.getByTestId("approval-counts").textContent).toContain("1 of 2 claims can be posted");
     expect(screen.getByTestId("approval-counts").textContent).toContain("1 withheld");
 
-    // Mixed pass/fail, per claim, with the FIX under the failure.
+    // Mixed pass/fail, per claim, with the INSTRUCTION under the failure.
     expect(screen.getByTestId("approval-state-c-1").textContent).toContain("Ready to post");
     expect(screen.getByTestId("approval-state-c-2").textContent).toContain("Withheld");
-    expect(screen.getByTestId("check-fix-REVIEWED").textContent).toContain("Mark the claim reviewed");
+    // The instruction is verb-first and comes from `features/rcm/checks.ts`;
+    // the server's own `detail` survives as the quieter "why" line beneath it.
+    expect(screen.getByTestId("check-detail-REVIEWED").textContent).toContain(
+      "Add a note and mark this claim reviewed.",
+    );
+    expect(screen.getByTestId("check-why-REVIEWED").textContent).toContain(
+      "nobody has dispositioned this claim",
+    );
 
     // The button is LIVE, and it says what it will do.
     const approve = screen.getByTestId("approve-button") as HTMLButtonElement;

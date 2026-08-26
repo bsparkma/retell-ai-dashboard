@@ -52,6 +52,8 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { money, stamp } from "@/features/rcm/format";
+import { checkDetail, checkTitle, checkWhy } from "@/features/rcm/checks";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 type State =
   | { kind: "loading" }
@@ -62,11 +64,26 @@ export default function ApprovalPanel({
   office,
   batchId,
   onApproved,
+  unmatchedCount = 0,
+  onRunMatch,
 }: {
   office: RcmOfficeId;
   batchId: string;
   /** Re-load the remittance so the claim cards pick up their new state. */
   onApproved: () => void;
+  /**
+   * How many claims on this check have never been matched.
+   *
+   * Drives the one-line banner at the top of the checklist. §15.2's third
+   * finding: a fresh remittance shows a wall of ✗ and the thing that clears
+   * most of them is a button somewhere else on the page. Saying so in one line
+   * costs nothing and keeps the page the length it already is — the alternative
+   * was moving the match section above the gate, which would have pushed the
+   * checklist further from the button it explains.
+   */
+  unmatchedCount?: number;
+  /** Run the batch match from the banner, so the fix is where the problem is. */
+  onRunMatch?: () => void;
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [approving, setApproving] = useState(false);
@@ -163,7 +180,11 @@ export default function ApprovalPanel({
   const canPress = p.canApprove && p.postableCount > 0 && p.balanced;
 
   return (
-    <section className="mt-6 rounded-xl border border-border bg-card" data-testid="approval-panel">
+    <section
+      id="rcm-approval-gate"
+      className="mt-6 scroll-mt-6 rounded-xl border border-border bg-card"
+      data-testid="approval-panel"
+    >
       {/* ── Header: the counts, and the button ─────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border p-4">
         <div>
@@ -201,23 +222,32 @@ export default function ApprovalPanel({
                 : "Approve for posting"}
           </button>
 
-          {/* WHY it cannot be pressed — always, and specifically. */}
+          {/* WHY it cannot be pressed — always, specifically, and RENDERED
+              rather than hovered: the practice reads these screens on a tablet
+              at the front desk, where there is no hover. `DisabledReason` also
+              carries the marker `rcm-disabled-reasons.test.tsx` scans for. */}
           {!p.canApprove ? (
-            <span className="text-xs text-muted-foreground" data-testid="approve-needs-permission">
+            <DisabledReason testId="approve-needs-permission">
               Approving needs posting permission ({p.approveRequires}). Ask an approver to press it.
-            </span>
+            </DisabledReason>
           ) : !p.balanced ? (
-            <span className="text-xs text-amber-700 dark:text-amber-400" data-testid="approve-unbalanced">
+            <DisabledReason tone="warn" testId="approve-unbalanced">
               This remittance does not balance — {money(p.differenceCents)} unaccounted. Nothing on
               it can be approved.
-            </span>
+            </DisabledReason>
           ) : p.postableCount === 0 ? (
-            <span className="text-xs text-muted-foreground" data-testid="approve-nothing-postable">
-              Nothing on this remittance can be posted yet — see the checklist below.
-            </span>
+            <DisabledReason testId="approve-nothing-postable">
+              Nothing on this remittance can be approved yet — the checklist below says what each
+              claim is waiting for.
+            </DisabledReason>
+          ) : approving ? (
+            <DisabledReason testId="approve-in-flight">
+              Approving — this writes a posting plan, not a chart note.
+            </DisabledReason>
           ) : (
             <span className="text-xs text-muted-foreground">
-              Writes a posting plan. Nothing reaches Open Dental until the next release.
+              Writes a posting plan. Nothing reaches Open Dental until somebody drains it on the
+              Posting screen.
             </span>
           )}
         </div>
@@ -304,6 +334,35 @@ export default function ApprovalPanel({
         </div>
       )}
 
+      {/*
+        ── RUN THE MATCH FIRST ─────────────────────────────────────────────────
+        §15.2, finding 3. On a fresh remittance most of the ✗ marks below are
+        one button away from clearing, and the walk showed somebody reading all
+        of them before finding it. One line, only while it is true, with the
+        button in it.
+      */}
+      {unmatchedCount > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-muted/40 px-4 py-2.5 text-sm"
+          data-testid="approval-match-first"
+        >
+          <span className="text-foreground">
+            <strong className="font-semibold">Run the match first</strong> — most of these clear on
+            their own. {unmatchedCount} claim{unmatchedCount === 1 ? " has" : "s have"} not been
+            looked for in Open Dental yet.
+          </span>
+          {onRunMatch && (
+            <button
+              onClick={onRunMatch}
+              data-testid="approval-run-match"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              Match all claims
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ── The checklist ──────────────────────────────────────────────────── */}
       <div className="divide-y divide-border">
         {p.claims.map((claim) => (
@@ -362,7 +421,27 @@ function ClaimChecklist({ claim }: { claim: ApprovalClaim }) {
   );
 }
 
+/**
+ * One condition, in biller language.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE PASS DETAIL IS NEVER THE FAILURE TEXT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This row used to print `check.detail` whether the check passed or failed. The
+ * gate builds `SNAPSHOT_CURRENT`'s detail from a ternary chain that is evaluated
+ * either way, so a PASSING check rendered with a green tick beside the sentence
+ * "the confirmed claim is not among the candidates the match recorded" — §15.2's
+ * copy bug, and a row a biller has no way to read.
+ *
+ * `features/rcm/checks.ts` now owns the three strings, keyed off the machine
+ * slug: a plain title, a verb-first instruction on failure, and a short
+ * confirmation on a pass that comes from a DIFFERENT FIELD than the failure
+ * text, so the two can never be the same string again. The server's own
+ * `detail` survives as the quiet "why" line, on failures only, where it carries
+ * the specific number or reason behind the instruction.
+ */
 function CheckRow({ check }: { check: ApprovalCheck }) {
+  const why = checkWhy(check);
   return (
     <li className="flex items-start gap-2 text-xs" data-testid={`check-${check.code}`}>
       {check.passed ? (
@@ -371,25 +450,24 @@ function CheckRow({ check }: { check: ApprovalCheck }) {
         <X size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
       )}
       <div className={check.passed ? "text-muted-foreground" : "text-foreground"}>
-        <span className={check.passed ? "" : "font-medium"}>{check.label}</span>
-        {check.detail && <span className="text-muted-foreground"> — {check.detail}</span>}
-        {/* The FIX, in the server's words, only where it is needed. A checklist
-            that says "no" without saying "and here is what to do" is a wall. */}
-        {!check.passed && (
+        <span className={check.passed ? "" : "font-medium"}>{checkTitle(check)}</span>
+        <span className="text-muted-foreground" data-testid={`check-detail-${check.code}`}>
+          {" — "}
+          {checkDetail(check)}
+        </span>
+        {!check.passed && (why || check.code === "NOT_REVERSAL" || check.code === "NOT_RECOUPMENT") && (
           <p className="mt-0.5 text-muted-foreground" data-testid={`check-fix-${check.code}`}>
-            {check.fix}
+            {/* The specific number or reason the gate recorded. Failures only —
+                this is the field that carried the copy bug. */}
+            {why && <span data-testid={`check-why-${check.code}`}>{why}. </span>}
             {check.code === "NOT_REVERSAL" || check.code === "NOT_RECOUPMENT" ? (
-              <>
-                {" "}
-                <Link
-                  href="/rcm/sop/takeback"
-                  className="underline underline-offset-2 hover:text-foreground"
-                  data-testid={`check-sop-${check.code}`}
-                >
-                  The takeback procedure
-                </Link>
-                .
-              </>
+              <Link
+                href="/rcm/sop/takeback"
+                className="underline underline-offset-2 hover:text-foreground"
+                data-testid={`check-sop-${check.code}`}
+              >
+                The takeback procedure
+              </Link>
             ) : null}
           </p>
         )}
