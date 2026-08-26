@@ -71,8 +71,11 @@ import {
   stamp,
 } from "@/features/rcm/format";
 import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
+import { claimHref, remittanceFlow } from "@/features/rcm/flow";
 import { describePlbAdjustment } from "@/features/rcm/plb";
 import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
 
 export default function RemittanceDetailPage() {
@@ -186,6 +189,21 @@ export default function RemittanceDetailPage() {
   }
 
   const { remittance: r, claims, office } = state.data;
+  const flow = remittanceFlow(r, claims);
+  const unmatchedCount = claims.filter((c) => c.odMatchStatus === "not_run").length;
+
+  /**
+   * Take the operator to the approve button rather than growing a second one.
+   *
+   * `focus()` as well as `scrollIntoView()`: a page that jumps but leaves the
+   * keyboard where it was has moved the eye and not the hand.
+   */
+  function goToApprovalGate() {
+    const gate = document.getElementById("rcm-approval-gate");
+    gate?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const button = gate?.querySelector<HTMLButtonElement>('[data-testid="approve-button"]');
+    button?.focus({ preventScroll: true });
+  }
 
   async function runBatchMatch() {
     setMatching(true);
@@ -247,7 +265,7 @@ export default function RemittanceDetailPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-end gap-1">
           <button
             onClick={runBatchMatch}
             disabled={matching}
@@ -257,6 +275,11 @@ export default function RemittanceDetailPage() {
             {matching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {matching ? "Matching…" : "Match all claims"}
           </button>
+          {matching && (
+            <DisabledReason testId="match-in-flight">
+              A match is running. It reads Open Dental and writes nothing.
+            </DisabledReason>
+          )}
 
           {/*
             SLICE 6b: the Approve button now lives in ApprovalPanel below, beside
@@ -265,6 +288,27 @@ export default function RemittanceDetailPage() {
           */}
         </div>
       </div>
+
+      {/*
+        ── WHERE THIS ONE IS ───────────────────────────────────────────────────
+        The same seven steps as the claim screen and the posting plan, computed
+        once in `features/rcm/flow.ts`. The CTA below it is the next click — and
+        the reason "approve is on a different page from review and match, with
+        no link between them" (§15.2, finding 1) stops being navigation somebody
+        has to already know.
+      */}
+      <RcmStepper
+        flow={flow}
+        here="approve"
+        onAction={{
+          "run-match": runBatchMatch,
+          // Not a second Approve button. The real one is on this page already,
+          // below the checklist that explains it; this takes you to it and puts
+          // the focus there. Two controls that both approve a check would be
+          // exactly the confusion this slice exists to remove.
+          approve: goToApprovalGate,
+        }}
+      />
 
       {/*
         ── REMITTANCE-LEVEL FLAGS ──────────────────────────────────────────────
@@ -496,7 +540,13 @@ export default function RemittanceDetailPage() {
       )}
 
       {/* ── The approval gate ──────────────────────────────────────────────── */}
-      <ApprovalPanel office={office} batchId={r.batchId} onApproved={load} />
+      <ApprovalPanel
+        office={office}
+        batchId={r.batchId}
+        onApproved={load}
+        unmatchedCount={unmatchedCount}
+        onRunMatch={runBatchMatch}
+      />
 
       {/* ── Claims ─────────────────────────────────────────────────────────── */}
       <h2 className="mt-8 text-lg font-semibold tracking-tight text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
@@ -513,6 +563,7 @@ export default function RemittanceDetailPage() {
             <ClaimCard
               key={claim.claimId}
               claim={claim}
+              batchId={r.batchId}
               open={expanded.has(claim.claimId)}
               onToggle={() =>
                 setExpanded((prev) => {
@@ -565,10 +616,13 @@ function Stat({
 
 function ClaimCard({
   claim,
+  batchId,
   open,
   onToggle,
 }: {
   claim: RemittanceClaim;
+  /** Threaded through so the claim page can offer a way back to this one. */
+  batchId: string;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -627,12 +681,20 @@ function ClaimCard({
               of {money(claim.totalBilledCents)} billed
             </div>
           </div>
+          {/*
+            "Review & match", not "Match".
+            §15.2, finding 1: review and match live behind this link and approve
+            lives above it, and nothing said so. The label now names BOTH things
+            the claim page does, and `claimHref` carries this remittance's id so
+            the claim screen can offer a way back — the claim endpoint does not
+            return its own batch id (see the backend asks).
+          */}
           <Link
-            href={`/rcm/claims/${claim.claimId}`}
+            href={claimHref(claim.claimId, batchId)}
             data-testid={`open-claim-${claim.claimId}`}
             className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
           >
-            Match
+            Review &amp; match
             <ChevronRight size={12} />
           </Link>
         </div>
