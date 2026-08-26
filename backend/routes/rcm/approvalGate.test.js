@@ -1179,3 +1179,186 @@ test('6c: every already-ran status gets a sentence that is true of it', async ()
   assert.ok(!approvalGate.TERMINAL_QUEUE_STATUSES.includes('posting'));
   assert.ok(!approvalGate.TERMINAL_QUEUE_STATUSES.includes('approved'));
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// D-6 — the typed confirmation (6d)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The friction D-6 chose over a second approver: the person authorising an
+ * irreversible chart write reads an amount and types it back.
+ *
+ * These tests are about the STRING, because that is the contract. The dialog
+ * shows what the server computed; the server demands what it showed. Any
+ * looseness in between — a parse, a locale, a currency symbol — is a place where
+ * two people can disagree about what "as displayed" meant.
+ */
+
+
+/**
+ * A claim row shaped exactly as `toApprovalClaim` produces one, PASSING every
+ * check that is not the subject of the test using it.
+ *
+ * Built by hand rather than seeded through the database because these tests are
+ * about `evaluateClaim` as a pure function — one claim in, a verdict out — and
+ * a fixture that had to travel through Postgres to be judged would make a
+ * failure ambiguous between the rule and the round trip.
+ */
+function baseClaim() {
+  return {
+    claimId: 'c0000000-0000-4000-8000-000000000001',
+    officeId: 'roland',
+    claimNumber: '53648',
+    patientName: 'Test 2, Stedi',
+    odClaimNum: 53648,
+    odMatchStatus: 'confirmed',
+    matchSnapshot: {
+      version: SNAPSHOT_VERSION_FOR_TEST,
+      office: 'roland',
+      candidates: [{ odClaimNum: 53648 }],
+      confirmed: { odClaimNum: 53648 },
+    },
+    reviewedAt: '2026-08-26T00:00:00.000Z',
+    needsReviewReasons: [],
+    totalPaidCents: 0,
+    patientBalanceCents: 0,
+    postingQueueId: null,
+    approvedAt: null,
+    approvedByKey: null,
+  };
+}
+
+/** The snapshot version the gate demands, read from the module rather than typed. */
+const SNAPSHOT_VERSION_FOR_TEST = require('./matchService').SNAPSHOT_VERSION;
+
+test('the displayed total and the demanded phrase come from ONE formatter', () => {
+  assert.equal(approvalGate.formatRecoupmentTotal(-5408), '-54.08');
+  assert.equal(approvalGate.formatRecoupmentTotal(-20), '-0.20');
+  assert.equal(approvalGate.formatRecoupmentTotal(-100000), '-1000.00');
+  // No thousands separators: a comma is a decimal point in half the world.
+  assert.doesNotMatch(approvalGate.formatRecoupmentTotal(-123456), /,/);
+  // Two decimals always, so 54.8 and 54.80 are never both "right".
+  assert.equal(approvalGate.formatRecoupmentTotal(-5480), '-54.80');
+  // A positive total still formats, so a mixed remittance can display one.
+  assert.equal(approvalGate.formatRecoupmentTotal(1500), '15.00');
+});
+
+test('the typed phrase must match EXACTLY — a parse would accept four wrong answers', () => {
+  const expected = -5408;
+  assert.equal(approvalGate.checkTypedRecoupmentTotal('-54.08', expected).ok, true);
+  // Whitespace is invisible on a screen and carries no meaning.
+  assert.equal(approvalGate.checkTypedRecoupmentTotal('  -54.08 ', expected).ok, true);
+
+  /*
+   * Every one of these parses to the same NUMBER and none of them is what the
+   * screen displayed. Accepting them would mean the approver never had to look.
+   */
+  for (const near of ['-54.080', '-54.8', '- 54.08', '(54.08)', '−54.08', '54.08', '-5408']) {
+    assert.equal(
+      approvalGate.checkTypedRecoupmentTotal(near, expected).ok,
+      false,
+      `${JSON.stringify(near)} must NOT be accepted as -54.08`
+    );
+  }
+});
+
+test('an empty or non-string confirmation is refused, never treated as absent', () => {
+  for (const junk of ['', '   ', null, undefined, 5408, {}, ['-54.08']]) {
+    assert.equal(
+      approvalGate.checkTypedRecoupmentTotal(junk, -5408).ok,
+      false,
+      `${JSON.stringify(junk)} must be refused`
+    );
+  }
+});
+
+test('the checker reports what it WANTED, so a refusal can show the phrase again', () => {
+  const got = approvalGate.checkTypedRecoupmentTotal('-54.00', -5408);
+  assert.equal(got.ok, false);
+  assert.equal(got.expected, '-54.08', 'a dialog that says "wrong" without saying what is wanted is a guessing game');
+});
+
+test('the ordinary approve can NEVER take a takeback, whatever it is passed', () => {
+  /*
+   * The load-bearing half of the swap. `recoupmentAllowed` defaults to false and
+   * `POST /:id/approve` never passes it, so both takeback checks block exactly
+   * as they did in 6b.
+   */
+  const claim = { totalPaidCents: -5408, patientBalanceCents: 0, needsReviewReasons: [] };
+  const codes = (checks) => checks.filter((c) => !c.passed).map((c) => c.code);
+
+  const ordinary = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim: { ...baseClaim(), ...claim },
+    lines: [],
+    payment: { paidCents: -5408, batchClaimPaymentId: null },
+    batchFlags: [],
+  });
+  assert.ok(codes(ordinary.checks).includes('NOT_RECOUPMENT'));
+  assert.equal(ordinary.postable, false);
+});
+
+test('the recoupment approve SWAPS the takeback checks — it does not remove them', () => {
+  /*
+   * On the recoupment path `NOT_RECOUPMENT` is gone and `RECOUPMENT_CONFIRMED`
+   * is in its place, so the gate never has FEWER conditions on a takeback than
+   * on an ordinary claim — it has a different, harder one.
+   */
+  const evaluated = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim: { ...baseClaim(), totalPaidCents: -5408, patientBalanceCents: 0, needsReviewReasons: [] },
+    lines: [],
+    payment: { paidCents: -5408, batchClaimPaymentId: null },
+    batchFlags: [],
+    recoupmentAllowed: true,
+  });
+  const codes = evaluated.checks.map((c) => c.code);
+  assert.ok(!codes.includes('NOT_RECOUPMENT'), 'the blanket refusal is gone');
+  assert.ok(codes.includes('RECOUPMENT_CONFIRMED'), 'and something harder took its place');
+  assert.equal(
+    evaluated.checks.find((c) => c.code === 'RECOUPMENT_CONFIRMED').passed,
+    true
+  );
+
+  // …and every OTHER condition still applies. This is the whole claim.
+  for (const still of ['OFFICE_CONSISTENT', 'MATCH_CONFIRMED', 'REVIEWED', 'LINES_PAIRED', 'CLAIM_TOTALS_AGREE']) {
+    assert.ok(codes.includes(still), `${still} must still be checked on a takeback`);
+  }
+});
+
+test('an ORDINARY claim cannot ride along on a takeback confirmation', () => {
+  /*
+   * The typed phrase confirms one specific negative total. A positive claim
+   * riding on it would post money the approver never typed a number for — the
+   * confirmation would describe a smaller set than the one it authorised.
+   */
+  const evaluated = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim: { ...baseClaim(), totalPaidCents: 15000, patientBalanceCents: 0, needsReviewReasons: [] },
+    lines: [],
+    payment: { paidCents: 15000, batchClaimPaymentId: null },
+    batchFlags: [],
+    recoupmentAllowed: true,
+  });
+  const confirmed = evaluated.checks.find((c) => c.code === 'RECOUPMENT_CONFIRMED');
+  assert.equal(confirmed.passed, false);
+  assert.equal(evaluated.postable, false);
+});
+
+test('every check the gate can fail has copy a screen can print', () => {
+  /*
+   * `RECOUPMENT_CONFIRMED` is new, and a check with no entry in CHECKS renders
+   * as an empty row on the checklist — the same failure the 6b labels test
+   * caught one level down.
+   */
+  for (const code of approvalGate.CHECK_ORDER) {
+    assert.ok(approvalGate.CHECKS[code], `${code} has no label`);
+    assert.ok(approvalGate.CHECKS[code].label, `${code} has no label`);
+    assert.ok(approvalGate.CHECKS[code].fix, `${code} has no fix text`);
+  }
+  assert.ok(approvalGate.CHECK_ORDER.includes('RECOUPMENT_CONFIRMED'));
+});
+
+test('the two takeback paths are named, and the reversible one is the default', () => {
+  assert.deepEqual([...approvalGate.RECOUPMENT_PATHS], ['adjustment', 'supplemental']);
+});

@@ -101,6 +101,9 @@ function toQueueRow(row, label) {
     /** What the run was doing when it last persisted. */
     step: row.drain_step == null ? null : String(row.drain_step),
     isRecoupment: row.is_recoupment === true,
+    /** 6d: the EOB filing, on its own axis. Null = not attempted. */
+    documentAttachStatus:
+      row.document_attach_status == null ? null : String(row.document_attach_status),
     carrierEobDate: isoDate(row.carrier_eob_date),
     intendedTotalCents: num(row.intended_total_cents),
     postedTotalCents: num(row.posted_total_cents),
@@ -146,6 +149,18 @@ function toLineRow(row) {
     intendedWriteOffCents: num(row.intended_write_off_cents),
     intendedDedAppliedCents: num(row.intended_ded_applied_cents),
     isSupplemental: row.is_supplemental === true,
+    /**
+     * 6d. Which takeback path this line was AUTHORISED for, and what it left in
+     * the chart. The two ids are separate because one can be undone and one
+     * cannot, and "is this reversible" is the only question that matters about
+     * a takeback after the fact.
+     */
+    recoupmentPath: row.recoupment_path == null ? null : String(row.recoupment_path),
+    odAdjustmentNum: row.od_adjustment_num == null ? null : num(row.od_adjustment_num),
+    odSupplementalClaimProcNum:
+      row.od_supplemental_claim_proc_num == null
+        ? null
+        : num(row.od_supplemental_claim_proc_num),
     claimprocWrittenAt: iso(row.claimproc_written_at),
     claimReceivedAt: iso(row.claim_received_at),
     paidAt: iso(row.paid_at),
@@ -280,7 +295,21 @@ router.get(
           `WHERE posting_queue_id = $1 AND office_id = $2`,
         [queueId, office]
       );
-      return { row: q.rows[0], batch: batch.rows[0] || null, lines: lines.rows, claims: claims.rows };
+      // 6d: one row per patient the EOB was filed into. Ordered so a screen
+      // showing three patients shows them the same way twice running.
+      const documents = await pool.query(
+        `SELECT od_patient_id, od_doc_num, description, status, error, attached_at ` +
+          `FROM rcm_posting_document WHERE queue_id = $1 AND office_id = $2 ` +
+          `ORDER BY od_patient_id`,
+        [queueId, office]
+      );
+      return {
+        row: q.rows[0],
+        batch: batch.rows[0] || null,
+        lines: lines.rows,
+        claims: claims.rows,
+        documents: documents.rows,
+      };
     });
 
     if (!found) {
@@ -305,14 +334,40 @@ router.get(
       drainRequires: 'rcm.write',
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
       /**
-       * The seam 6d fills. Said out loud rather than omitted: a plan that is
-       * `posted` with no EOB in the chart is a complete and honest description
-       * of what happened, and a screen that showed nothing here would leave a
-       * biller assuming the PDF was filed.
+       * THE EOB FILING — 6d FILLED THIS SEAM, so it no longer says "not yet".
+       *
+       * It is reported on its OWN axis rather than folded into `plan.status`,
+       * because §8 puts the document last precisely on the grounds that *"a
+       * document failure is retryable and never a financial error"*. A plan
+       * whose money is correct and proven stays `posted` whether or not a PDF
+       * reached the chart.
+       *
+       * `status: null` means NOT ATTEMPTED, and it is a third state rather than
+       * a missing value — a plan that has not posted yet legitimately has
+       * nothing here, and so does a remittance that arrived as raw 835 with no
+       * document to file. A screen renders null as "nothing to file", never as
+       * a failure with a retry button behind it.
        */
       documentAttach: {
-        implemented: false,
-        note: 'The EOB PDF is not yet filed into the patient images — that is a later slice.',
+        implemented: true,
+        status: found.row.document_attach_status == null
+          ? null
+          : String(found.row.document_attach_status),
+        error: found.row.document_attach_error == null
+          ? null
+          : String(found.row.document_attach_error),
+        at: iso(found.row.document_attach_at),
+        /** One row per patient on the plan. The DocNum is the read-back proof. */
+        documents: found.documents.map((d) => ({
+          odPatientId: num(d.od_patient_id),
+          odDocNum: d.od_doc_num == null ? null : num(d.od_doc_num),
+          description: d.description == null ? null : String(d.description),
+          status: String(d.status),
+          error: d.error == null ? null : String(d.error),
+          attachedAt: iso(d.attached_at),
+        })),
+        canRetry: holdsPermission(req, 'rcm.write'),
+        retryRequires: 'rcm.write',
       },
     });
   })
@@ -451,6 +506,89 @@ router.post(
       stepDelayMs: result.stepDelayMs || 0,
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
     });
+  })
+);
+
+/**
+ * POST /queue/:id/attach-document — re-file an EOB that did not file (6d).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY A FAILED ATTACH GETS ITS OWN BUTTON RATHER THAN "DRAIN AGAIN"
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `posted` is the only terminal plan state, and a plan whose EOB failed to file
+ * IS posted — the money is correct and proven. Re-draining it would be pressing
+ * the money button to fix a document, and the drain would correctly find nothing
+ * to do. So the retry acts on the document axis alone and cannot move a cent:
+ * `retryDocumentAttach` refuses any plan that is not already `posted`, and the
+ * only Open Dental verb it can reach is the document upload.
+ *
+ * It is `rcm.write` all the same. D-9's split is about what a role may put IN a
+ * patient's chart, not about how much money is involved — and a PDF filed into
+ * somebody's images is a chart write.
+ *
+ * Pressing it twice is safe by construction: the attach lists the patient's own
+ * documents first and adopts one already carrying this plan's description,
+ * rather than filing a second copy of the same EOB.
+ */
+router.post(
+  '/queue/:id/attach-document',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const queueId = String(req.params.id);
+
+    if (!holdsPermission(req, 'rcm.write')) {
+      await auditRcmDenial(req, 'rcm_od_document', queueId, { office, result: 'UNAUTHORIZED' });
+      return res.status(403).json({
+        success: false,
+        error: 'Filing a document into a patient chart needs posting permission',
+        code: 'ATTACH_REQUIRES_WRITE',
+        action: 'rcm.write',
+      });
+    }
+
+    if (!isUuid(queueId)) {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+
+    let outcome;
+    try {
+      outcome = await tenantDb.withTenantDb(req, (pool) =>
+        postingDrain.retryDocumentAttach({ pool, req, office }, queueId)
+      );
+    } catch (err) {
+      if (err && err.code && String(err.code).startsWith('OFFICE_')) {
+        // The per-office registry refused. Never falls back to another
+        // practice's client, and never an internal error.
+        return res.status(err.code === 'OFFICE_OD_KEY_MISSING' ? 503 : 409).json({
+          success: false,
+          error: err.userMessage || err.message,
+          code: err.code,
+        });
+      }
+      throw err;
+    }
+
+    if (outcome.code === 'QUEUE_NOT_FOUND') {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+    if (outcome.code === 'PLAN_NOT_POSTED') {
+      return res.status(409).json({
+        success: false,
+        error:
+          'This plan has not posted yet, so there is no payment for an EOB to document. ' +
+          'The EOB files itself when the plan posts.',
+        code: 'PLAN_NOT_POSTED',
+        queueStatus: outcome.status,
+      });
+    }
+
+    return res.json({ success: true, office, queueId, documentAttach: outcome.result });
   })
 );
 

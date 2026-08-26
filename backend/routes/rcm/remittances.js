@@ -977,9 +977,16 @@ router.post(
  *
  * @returns {boolean} true when the response has been sent
  */
-function respondToApprovalError(req, res, office, err, batchId) {
+function respondToApprovalError(req, res, office, err, batchId, resourceType = 'rcm_posting_approval') {
   if (!(err instanceof approvalGate.ApprovalError)) return false;
-  void auditRcmDenial(req, 'rcm_posting_approval', batchId, {
+  /*
+   * The refusal is filed under the resource the CALLER was acting on, so a
+   * takeback that was refused does not appear in the ordinary-approval trail.
+   * That keeps `rcm_recoupment_approval` a complete record of every takeback
+   * anybody attempted, refusals included, rather than only the ones that
+   * succeeded.
+   */
+  void auditRcmDenial(req, resourceType, batchId, {
     office,
     result: err.httpStatus === 404 ? 'UNAUTHORIZED' : 'ERROR',
   });
@@ -998,6 +1005,17 @@ function respondToApprovalError(req, res, office, err, batchId) {
    * finished — without parsing prose.
    */
   if (typeof err.queueStatus === 'string') body.queueStatus = err.queueStatus;
+  /*
+   * Slice 6d. On a typed-confirmation mismatch the screen must be able to show
+   * the phrase again — a dialog that says "wrong" without saying what was
+   * wanted is a dialog somebody guesses at. `expected` is the same string the
+   * checklist served; no patient data is in it, only the carrier's own money.
+   */
+  if (typeof err.expected === 'string') body.expected = err.expected;
+  if (typeof err.recoupmentTotalCents === 'number') {
+    body.recoupmentTotalCents = err.recoupmentTotalCents;
+  }
+  if (Array.isArray(err.paths)) body.paths = err.paths;
   res.status(err.httpStatus).json(body);
   return true;
 }
@@ -1158,6 +1176,200 @@ router.post(
        * being true the day Slice 6c ships, which is the day this line changes.
        */
       note: 'Queued for posting — nothing has been written to Open Dental yet.',
+    });
+  })
+);
+
+/**
+ * GET /:id/recoupment — the takeback checklist, and the phrase to type.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE PHRASE COMES FROM THE SERVER
+ * ─────────────────────────────────────────────────────────────────────────────
+ * D-6's friction is that a person reads an amount and types it back. That only
+ * works if the amount on the screen and the amount the server will demand are
+ * produced by ONE function — otherwise the dialog shows `-54.08`, the server
+ * wants `-54.8`, and the approver is stuck typing a phrase nothing displayed.
+ *
+ * So `typedTotalExpected` ships from here, already formatted, and the client
+ * renders it verbatim rather than formatting cents itself. `rcm-labels.test.ts`
+ * has the mirror rule one level down for exactly this class of drift.
+ *
+ * A READ, on `rcm.read` — a `reviewer` may look at what a takeback would do
+ * without being able to authorise it, the same split every other RCM screen has.
+ */
+router.get(
+  '/:id/recoupment',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const preview = await approvalGate.previewRecoupment(req, office, batchId);
+    if (!preview) return notFound(req, res, office, batchId);
+
+    // The claim rows name patients. Same PHI trail the ordinary checklist writes.
+    await auditRcmRead(req, 'rcm_posting_approval', { office, resourceId: batchId });
+
+    return res.json({
+      success: true,
+      office,
+      batchId,
+      claims: preview.claims,
+      /** Zero is a real answer: this remittance carries no takeback at all. */
+      recoupmentClaims: preview.recoupmentClaims,
+      recoupmentTotalCents: preview.recoupmentTotalCents,
+      /** THE STRING to type. Rendered verbatim; never re-derived by the client. */
+      typedTotalExpected: preview.typedTotalExpected,
+      paths: preview.paths,
+      /**
+       * Stated by the server so a client cannot quietly pre-select the
+       * irreversible one. The adjustment is the default; the supplemental is
+       * the opt-in.
+       */
+      defaultPath: preview.defaultPath,
+      balanced: preview.batchBalanced,
+      differenceCents: preview.batchDifferenceCents,
+      canApprove: holdsPermission(req, 'rcm.write'),
+      approveRequires: 'rcm.write',
+    });
+  })
+);
+
+/**
+ * POST /:id/approve-recoupment — D-6. The one-way door, behind a typed phrase.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS IS A SEPARATE ROUTE AND NOT A FLAG ON APPROVE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `POST /:id/approve` refuses every takeback and always will — `NOT_RECOUPMENT`
+ * and `NOT_REVERSAL` block it, and nothing a request can say turns them off. A
+ * takeback is approved HERE or nowhere.
+ *
+ * A boolean on the ordinary route would have been one line shorter and one
+ * missed default away from an irreversible chart write. A separate path means
+ * the dangerous thing has its own URL, its own audit resource, its own screen
+ * and its own test file — and that a reviewer reading a diff can see which one
+ * they are looking at.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SERVER VALIDATES THE PHRASE. THE DIALOG IS A COURTESY.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `approveRecoupment` computes the total from the claim rows and compares it to
+ * `typedTotal` byte for byte after trim. There is no request shape that gets
+ * past it — no flag, no header, no pre-confirmed token — so the confirmation
+ * cannot be skipped by a client that simply does not render the dialog.
+ *
+ * `path` picks WHICH write the drain will make later:
+ *   `adjustment`   reversible (by an offsetting adjustment — there is no
+ *                  DELETE /adjustments, G6). The default.
+ *   `supplemental` G10. Cannot be reverted, cannot be deleted, and permanently
+ *                  pins its claim and procedure.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * D-6 DELIBERATELY DID *NOT* ADD A PERMISSION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Alternative (b) — a separate `rcm.recoup` granted to fewer roles — was
+ * rejected for now: it is role-admin overhead at a solo-biller practice where
+ * the same person would hold it anyway. `rcm.write` PLUS the typed phrase is
+ * the gate. If that changes, this is the one handler that has to learn about it.
+ */
+router.post(
+  '/:id/approve-recoupment',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    if (!holdsPermission(req, 'rcm.write')) {
+      await auditRcmDenial(req, 'rcm_recoupment_approval', batchId, {
+        office,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        success: false,
+        error:
+          'Approving a takeback needs posting permission — ask an approver to press it',
+        code: 'APPROVE_REQUIRES_WRITE',
+        action: 'rcm.write',
+      });
+    }
+
+    let result;
+    try {
+      result = await approvalGate.approveRecoupment(
+        req,
+        office,
+        batchId,
+        {
+          email: actorEmail(req),
+          displayName: (req.user && (req.user.name || req.user.displayName)) || null,
+        },
+        {
+          // Carried as a STRING, deliberately. Parsing it here would accept
+          // `-54.080` and `-54.8` as the same answer and defeat the ceremony.
+          typedTotal: typeof req.body?.typedTotal === 'string' ? req.body.typedTotal : '',
+          path: typeof req.body?.path === 'string' ? req.body.path : '',
+        }
+      );
+    } catch (err) {
+      if (respondToApprovalError(req, res, office, err, batchId, 'rcm_recoupment_approval')) {
+        return undefined;
+      }
+      throw err;
+    }
+
+    /*
+     * A DISTINCT AUDIT EVENT — AND WHY IT IS NAMED IN `resource_type`.
+     *
+     * The 6d brief asked for an `APPROVE_RECOUPMENT` audit ACTION. `audit_log`
+     * permits only READ | CREATE | UPDATE | DELETE by CHECK constraint and has
+     * no `detail` column, and widening an append-only cross-module table so one
+     * RCM event can name itself is a far larger change than the event warrants.
+     *
+     * So the distinctness lives where this platform already puts it: an ordinary
+     * approve writes `rcm_posting_approval`, and a takeback writes
+     * `rcm_recoupment_approval`. **An ordinary APPROVE row is never written for
+     * a recoupment plan** — the two resource types are disjoint, so "every
+     * takeback anyone ever authorised" is one indexed query on
+     * `(resource_type, resource_id)`.
+     *
+     * The numbers the brief wanted in `detail` are all recoverable from the plan
+     * this row points at: `is_recoupment`, `intended_total_cents`, the line
+     * count and each line's `recoupment_path`. `typed_ok` needs no column —
+     * this row cannot exist unless the phrase matched, because the approve
+     * throws before it.
+     */
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'rcm_recoupment_approval',
+      resourceId: result.queueId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({
+      success: true,
+      office,
+      batchId,
+      queueId: result.queueId,
+      approvedBy: result.approvedBy,
+      /** Which write the drain will make. The client shows this back. */
+      recoupmentPath: result.recoupmentPath,
+      recoupmentTotalCents: result.recoupmentTotalCents,
+      queued: result.queued,
+      withheld: result.withheld,
+      alreadyQueued: result.alreadyQueued,
+      intendedTotalCents: result.intendedTotalCents,
+      /**
+       * The honest sentence for each path. A biller who chose the supplemental
+       * should be told, at the moment they chose it, that nothing will undo it.
+       */
+      note:
+        result.recoupmentPath === 'supplemental'
+          ? 'Queued as a negative supplemental. Nothing has been written to Open Dental yet — but once it is, it cannot be reversed or deleted.'
+          : 'Queued as an adjustment. Nothing has been written to Open Dental yet; once it is, it can be reversed by an offsetting adjustment.',
     });
   })
 );

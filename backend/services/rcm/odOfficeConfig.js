@@ -367,6 +367,98 @@ function pickPayType(config, method) {
 }
 
 /**
+ * AdjType names this module will accept, by PURPOSE, most specific first.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SINGLE BEST ARGUMENT FOR THIS WHOLE FILE IS IN THIS TABLE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * **DefNum 10 is live in BOTH practices and means something DIFFERENT in each:**
+ * `Write-off` in Roland, `Insurance Write off` in Riley (RCM_POSTING §9(b)). That
+ * is the CommType 486/451 collision repeated with money attached. A hardcoded 10
+ * would post a plain write-off in one practice and an insurance write-off in the
+ * other, silently, forever.
+ *
+ * So these are NAMES, matched exactly and case-insensitively against the
+ * office's own Category-1 list, and the DefNum is whatever that practice says it
+ * is — roland 477 / valley 435 for the recoupment type, roland 260 / valley 402
+ * for the offsetting one. Nothing here is a number.
+ *
+ * `recoupment` is D-6's reversible alternative: the carrier is taking money back
+ * and this books it as a deduction rather than as an irreversible negative
+ * supplemental.
+ *
+ * `recoupment_reversal` exists because **there is no `DELETE /adjustments`** —
+ * see the header note in `odPostingWrites.js`. Undoing an adjustment means
+ * posting an OFFSETTING one, which is a `+` type, so the teardown has to resolve
+ * that by name too.
+ */
+const ADJ_TYPE_NAMES = Object.freeze({
+  recoupment: ['insurance deductions from previous payments'],
+  recoupment_reversal: ['insurance adjustment'],
+});
+
+/**
+ * Where an EOB belongs in the patient's images, most specific first (6d).
+ *
+ * `131 Insurance` happens to be the number in BOTH practices, and that is a
+ * COINCIDENCE rather than a rule — `Consent Forms` is 473 in roland and 429 in
+ * valley on the very same list (RCM_POSTING §9(b)). Two numbers agreeing is not
+ * evidence about a third.
+ *
+ * `Financial` is the fallback a practice that never made an Insurance category
+ * would have: still a defensible home for a remittance, and better than
+ * declining to file one at all.
+ */
+const DOC_CATEGORY_NAMES = Object.freeze(['insurance', 'financial']);
+
+/**
+ * Choose the office's AdjType DefNum for a purpose, and check its sign.
+ *
+ * Returns null when the office's own list carries nothing by that name — a
+ * REFUSAL upstream, never a fallback to a plausible-looking neighbour. An
+ * adjustment booked under the wrong type is a number in the practice's books
+ * meaning something other than what happened, and unlike a wrong PayType it is
+ * not even correctable by deletion.
+ *
+ * THE SIGN IS CHECKED HERE RATHER THAN DISCOVERED AS A 400. `ItemValue` is `'+'`
+ * or `'-'` and `AdjAmt`'s sign must agree, or Open Dental refuses with
+ * `400 "AdjAmt must be negative for this AdjType."` (Spike 0b test 8). A
+ * definition whose stated sign disagrees with the purpose is not the definition
+ * we meant, however right its name looks. An UNSIGNED row is accepted — the sign
+ * is advisory metadata and refusing on its absence would make a correctly-named
+ * type unusable; only a stated disagreement is a refusal.
+ *
+ * @param {PostingConfig} config
+ * @param {'recoupment'|'recoupment_reversal'} purpose
+ * @returns {OdDefinition|null}
+ */
+function pickAdjType(config, purpose) {
+  const wanted = ADJ_TYPE_NAMES[purpose];
+  if (!wanted) return null;
+  // A takeback deducts; its reversal adds it back.
+  const requiredSign = purpose === 'recoupment' ? '-' : '+';
+  for (const name of wanted) {
+    const hit = config.adjTypes.find((a) => a.name.trim().toLowerCase() === name);
+    if (hit && (hit.sign === null || hit.sign === requiredSign)) return hit;
+  }
+  return null;
+}
+
+/**
+ * Choose the office's DocCategory for an EOB, by NAME (6d).
+ *
+ * @param {PostingConfig} config
+ * @returns {OdDefinition|null}
+ */
+function pickDocCategory(config) {
+  for (const name of DOC_CATEGORY_NAMES) {
+    const hit = config.docCategories.find((d) => d.name.trim().toLowerCase() === name);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
  * Which `/claimpayments` endpoint this office permits.
  *
  * `ClaimPaymentBatchOnly = true` makes the single-claim POST a hard refusal, so
@@ -397,11 +489,15 @@ module.exports = {
   CACHE_TTL_MS,
   FETCH_TIMEOUT_MS,
   PAY_TYPE_NAMES,
+  ADJ_TYPE_NAMES,
+  DOC_CATEGORY_NAMES,
   OdConfigError,
   readDefinitions,
   readPreference,
   resolvePostingConfig,
   pickPayType,
+  pickAdjType,
+  pickDocCategory,
   resolveCheckEndpoint,
   isHiddenRow,
   _resetForTests,

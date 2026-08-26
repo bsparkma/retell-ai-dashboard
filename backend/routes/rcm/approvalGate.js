@@ -89,7 +89,16 @@ const CHECKS = Object.freeze({
   },
   NOT_RECOUPMENT: {
     label: 'Not a recoupment',
-    fix: 'The carrier is taking money back on this claim. Recoupments are the one irreversible Open Dental operation and are not approvable here.',
+    fix: 'The carrier is taking money back on this claim. Approve it from the takeback panel instead — that path asks you to type the amount, and it offers the reversible adjustment as well as the permanent supplemental.',
+  },
+  /**
+   * D-6's replacement for the two checks above, on the recoupment path ONLY.
+   * It can only be true because the SERVER matched the approver's typed total
+   * against money it computed itself — never because a client said so.
+   */
+  RECOUPMENT_CONFIRMED: {
+    label: 'A takeback, confirmed by typing its amount',
+    fix: 'This claim is not a takeback, so it cannot be approved on a recoupment confirmation. Approve it normally.',
   },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     label: 'The carrier actually paid something',
@@ -241,7 +250,7 @@ function isRecoupment(claim, payment) {
  *               lines: Array<{ lineId: string, position: number, odClaimProcNum: number,
  *                              insPayAmtCents: number, writeOffCents: number, dedAppliedCents: number }> } }}
  */
-function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaimprocs = new Map() }) {
+function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaimprocs = new Map(), recoupmentAllowed = false }) {
   /** @type {Array<{ code: string, label: string, passed: boolean, detail: string|null, fix: string }>} */
   const checks = [];
   const add = (code, passed, detail) =>
@@ -349,10 +358,47 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
   const reversal = claim.needsReviewReasons.includes(
     rcmVocabulary.ERA_REVIEW_REASONS.REVERSAL
   );
-  add('NOT_REVERSAL', !reversal, reversal ? 'the carrier reversed this claim' : null);
-
   const recoup = isRecoupment(claim, payment);
-  add('NOT_RECOUPMENT', !recoup, recoup ? `the remittance moves ${payment ? payment.paidCents : claim.totalPaidCents} cents` : null);
+
+  /*
+   * ── D-6: THE TWO TAKEBACK CHECKS SWAP, THEY DO NOT VANISH (6d) ────────────
+   *
+   * On the ORDINARY approve (`recoupmentAllowed: false`, the default and what
+   * `POST /:id/approve` always passes) these two block exactly as they did in
+   * 6b. A takeback cannot reach the chart through the ordinary button, ever.
+   *
+   * On the RECOUPMENT approve they are replaced by `RECOUPMENT_CONFIRMED` —
+   * which the caller only sets true after the SERVER has matched the typed
+   * total against the money it computed itself. So the gate never has fewer
+   * conditions on a recoupment than on an ordinary claim; it has a different,
+   * harder one, and the claim still has to satisfy every other check on the
+   * list (matched, reviewed, office-consistent, lines paired, totals agree).
+   *
+   * Written as a swap rather than as an early return because a reviewer needs
+   * to see, in one place, that nothing was merely switched off.
+   */
+  if (!recoupmentAllowed) {
+    add('NOT_REVERSAL', !reversal, reversal ? 'the carrier reversed this claim' : null);
+    add(
+      'NOT_RECOUPMENT',
+      !recoup,
+      recoup ? `the remittance moves ${payment ? payment.paidCents : claim.totalPaidCents} cents` : null
+    );
+  } else {
+    /*
+     * A RECOUPMENT APPROVE MAY ONLY CARRY RECOUPMENTS.
+     *
+     * The typed phrase confirms a specific negative total. Letting an ordinary
+     * positive claim ride along on that confirmation would post money the
+     * approver never typed a number for — the confirmation would be attached to
+     * a set larger than the one it described.
+     */
+    add(
+      'RECOUPMENT_CONFIRMED',
+      recoup,
+      recoup ? null : 'this claim is not a takeback and cannot ride on a recoupment confirmation'
+    );
+  }
 
   const prOnly = isPatientResponsibilityOnly(claim);
   add(
@@ -575,6 +621,7 @@ function evaluateRemittance({
   linesByClaim,
   paymentsByClaim,
   plannedClaimprocs = new Map(),
+  recoupmentAllowed = false,
 }) {
   const evaluated = claims.map((claim) =>
     evaluateClaim({
@@ -584,6 +631,7 @@ function evaluateRemittance({
       payment: paymentsByClaim.get(claim.claimId) || null,
       batchFlags: batch.flags,
       plannedClaimprocs,
+      recoupmentAllowed,
     })
   );
 
@@ -1001,6 +1049,98 @@ async function approveRemittance(req, office, batchId, actor) {
   return result;
 }
 
+
+// ─── D-6: the typed confirmation (6d) ────────────────────────────────────────
+
+/**
+ * The two ways a takeback can be written, and the words the API accepts.
+ *
+ * `adjustment` is the DEFAULT the dialog pre-selects and the one a cautious
+ * biller should take. `supplemental` is G10 — the single irreversible Open
+ * Dental operation — and is opt-in only.
+ */
+const RECOUPMENT_PATHS = Object.freeze(['adjustment', 'supplemental']);
+
+/**
+ * What a takeback's total looks like ON THE SCREEN, and therefore exactly what
+ * the approver has to type.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE STRING IS THE CONTRACT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * D-6's friction is that a person reads a number and types it back. That only
+ * works if the number they read and the number the server expects are produced
+ * by ONE function — otherwise the dialog shows `-54.08`, the server wants
+ * `-54.8`, and the approver is stuck typing a phrase the screen never displayed.
+ * So this is the single formatter, it is exported, and the client renders the
+ * value the server sent rather than formatting cents itself.
+ *
+ * Always signed, always two decimals, no thousands separators and no currency
+ * symbol: every one of those is a place where a locale, a font or a habit could
+ * make two people disagree about what "as displayed" meant.
+ *
+ * @param {number} cents
+ * @returns {string}
+ */
+function formatRecoupmentTotal(cents) {
+  const n = Number(cents) || 0;
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/**
+ * Does what the approver typed match what this remittance actually moves?
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SERVER COMPUTES THE NUMBER. THE CLIENT ONLY CARRIES A STRING.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The expected value is derived here from the claim rows, never taken from the
+ * request. A request that could name its own expected total would be a
+ * confirmation dialog that confirms whatever it is told, which is not a gate at
+ * all — the same reasoning that keeps `office_id` in a send-to-TC body an
+ * assertion that can only cause a refusal.
+ *
+ * COMPARISON IS EXACT AFTER TRIM, and deliberately not "parse both and compare
+ * numbers". Parsing would accept `-54.080`, `-54.8`, `(54.08)` and `- 54.08` as
+ * the same answer — and the whole point of the ceremony is that the approver
+ * looked at a specific number and reproduced it. Surrounding whitespace is
+ * forgiven because it is invisible on a screen and carries no meaning; nothing
+ * else is.
+ *
+ * @param {string|unknown} typed what the approver sent
+ * @param {number} expectedCents what the server computed
+ * @returns {{ ok: boolean, expected: string, typed: string }}
+ */
+function checkTypedRecoupmentTotal(typed, expectedCents) {
+  const expected = formatRecoupmentTotal(expectedCents);
+  const given = typeof typed === 'string' ? typed.trim() : '';
+  return { ok: given.length > 0 && given === expected, expected, typed: given };
+}
+
+/**
+ * The recoupment total for a loaded remittance, in cents.
+ *
+ * Summed over the claims that ARE takebacks, from the batch's own claim-payment
+ * rows where it has them and the claim's paid total otherwise — the same two
+ * places `isRecoupment` reads, so a claim that counts as a takeback for the gate
+ * counts in the number the approver types.
+ *
+ * @param {{ claims: ReadonlyArray<object>, paymentsByClaim: Map<string, {paidCents:number}> }} loaded
+ * @returns {{ totalCents: number, claimIds: string[] }}
+ */
+function recoupmentTotal(loaded) {
+  let totalCents = 0;
+  const claimIds = [];
+  for (const claim of loaded.claims) {
+    const payment = loaded.paymentsByClaim.get(claim.claimId) || null;
+    if (!isRecoupment(claim, payment)) continue;
+    claimIds.push(claim.claimId);
+    totalCents += payment ? Number(payment.paidCents) : Number(claim.totalPaidCents);
+  }
+  return { totalCents, claimIds };
+}
+
 /**
  * The approval itself. Separated from `approveRemittance` only so the attempt
  * stamp above can wrap every exit path without indenting the whole body.
@@ -1294,6 +1434,343 @@ async function runApproval(req, office, batchId, actor) {
   });
 }
 
+/**
+ * What a takeback approve WOULD do — including the exact phrase to type.
+ *
+ * The dialog renders `typedTotalExpected` verbatim. It is not a hint and the
+ * client must not re-derive it from cents: `formatRecoupmentTotal` is the single
+ * formatter precisely so the number a person reads and the number the server
+ * will demand cannot drift apart.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} batchId
+ * @returns {Promise<null|object>}
+ */
+async function previewRecoupment(req, office, batchId) {
+  const loaded = await tenantDb.withTenantDb(req, (pool) => loadForApproval(pool, office, batchId));
+  if (!loaded) return null;
+
+  const { totalCents, claimIds } = recoupmentTotal(loaded);
+  const verdict = evaluateRemittance({ office, ...loaded, recoupmentAllowed: true });
+
+  return {
+    batch: loaded.batch,
+    ...verdict,
+    /** How many claims on this remittance are takebacks. Zero is a real answer. */
+    recoupmentClaims: claimIds.length,
+    recoupmentTotalCents: totalCents,
+    /** THE STRING. Exactly what must be typed back. */
+    typedTotalExpected: formatRecoupmentTotal(totalCents),
+    paths: RECOUPMENT_PATHS,
+    /**
+     * The dialog's pre-selection, stated by the server so a client cannot
+     * quietly default to the irreversible one. D-6: the adjustment is the
+     * default and the supplemental is the opt-in.
+     */
+    defaultPath: 'adjustment',
+  };
+}
+
+/**
+ * Approve a takeback. D-6's gate, and the only way `is_recoupment` becomes true.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE CONFIRMATION IS VALIDATED HERE, NOT IN THE DIALOG
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A client-side confirm is a speed bump for the person who reads the code and no
+ * obstacle at all to the request that skips it. So this function computes the
+ * total from the claim rows, formats it with the same function the screen used,
+ * and compares it to the string the approver sent. There is NO request shape
+ * that reaches the enqueue without matching — no flag, no header, no
+ * already-confirmed token.
+ *
+ * A mismatch REFUSES BEFORE ANYTHING IS WRITTEN. No queue row, no claim links,
+ * and deliberately no approval-attempt stamp: an attempt stamp is how the
+ * worklist remembers that a human owes this remittance an action, and somebody
+ * mistyping a number has not changed what is owed.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT THE PATH CHOICE MEANS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `adjustment`   `POST /adjustments` under the office's own "Insurance
+ *                deductions from previous payments" type. Reversible — though
+ *                by an OFFSETTING adjustment, because there is no
+ *                `DELETE /adjustments` (G6). The default.
+ * `supplemental` `POST /claimprocs/Supplemental`. G10: cannot be reverted,
+ *                cannot be deleted, and permanently pins its claim and
+ *                procedure. Recorded on every line so the drain executes what
+ *                was authorised rather than re-deciding.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} batchId
+ * @param {{ email: string, displayName?: string }} actor
+ * @param {{ typedTotal: unknown, path: unknown }} confirmation
+ * @returns {Promise<object>}
+ */
+async function approveRecoupment(req, office, batchId, actor, confirmation) {
+  const path = String((confirmation && confirmation.path) || '').trim();
+  if (!RECOUPMENT_PATHS.includes(path)) {
+    throw new ApprovalError(
+      'RECOUPMENT_PATH_INVALID',
+      422,
+      'Choose how this takeback is written: adjustment (reversible) or supplemental (permanent).',
+      { paths: RECOUPMENT_PATHS }
+    );
+  }
+
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const loaded = await loadForApproval(client, office, batchId, { lock: true });
+      if (!loaded) {
+        await client.query('ROLLBACK');
+        throw new ApprovalError('REMITTANCE_NOT_FOUND', 404, 'No such remittance for this office');
+      }
+
+      const { totalCents, claimIds } = recoupmentTotal(loaded);
+      if (claimIds.length === 0) {
+        await client.query('ROLLBACK');
+        throw new ApprovalError(
+          'NOT_A_RECOUPMENT',
+          409,
+          'Nothing on this remittance is a takeback. Approve it normally.'
+        );
+      }
+
+      /*
+       * THE TYPED PHRASE, CHECKED BEFORE ANY OTHER WORK.
+       *
+       * First because a wrong phrase must cost nothing and record nothing — and
+       * because doing it first makes it impossible for a later edit to
+       * accidentally move a write above it.
+       */
+      const typed = checkTypedRecoupmentTotal(confirmation && confirmation.typedTotal, totalCents);
+      if (!typed.ok) {
+        await client.query('ROLLBACK');
+        throw new ApprovalError(
+          'RECOUPMENT_CONFIRM_MISMATCH',
+          422,
+          `That is not the amount this takeback moves. Type ${typed.expected} exactly as it is shown.`,
+          {
+            expected: typed.expected,
+            recoupmentTotalCents: totalCents,
+            recoupmentClaims: claimIds.length,
+          }
+        );
+      }
+
+      const verdict = evaluateRemittance({ office, ...loaded, recoupmentAllowed: true });
+
+      // The batch's own arithmetic holds a takeback exactly as it holds an
+      // ordinary approve. See evaluateRemittance.
+      if (!verdict.batchBalanced) {
+        await client.query('ROLLBACK');
+        throw new ApprovalError(
+          'REMITTANCE_UNBALANCED',
+          409,
+          'This remittance does not balance — the check total, its provider-level adjustments and the sum of its claim payments disagree. Nothing on it can be approved until they reconcile.',
+          { differenceCents: verdict.batchDifferenceCents, claims: verdict.claims }
+        );
+      }
+
+      if (verdict.postable.length === 0) {
+        await client.query('ROLLBACK');
+        throw new ApprovalError(
+          'NOTHING_APPROVABLE',
+          409,
+          'The takeback on this remittance cannot be posted yet.',
+          { claims: verdict.claims }
+        );
+      }
+
+      const approvedBy = await resolveRcmActor(client, actor);
+      const remittanceKey = await resolveRemittanceKey(client, office, loaded.batch);
+
+      /*
+       * ONE PLAN PER REMITTANCE, STILL — and `is_recoupment` is set on the way
+       * in AND re-asserted on an existing plan.
+       *
+       * A MIXED remittance is real: nine clean claims approved through the
+       * ordinary button created a plan with `is_recoupment = false`, and the
+       * tenth is a takeback approved here. The same plan takes it, and the flag
+       * flips true — which is what tells the drain this plan needs the
+       * recoupment sequence and what lets it reach `posted` without a check for
+       * the takeback part.
+       */
+      const inserted = await client.query(
+        `INSERT INTO rcm_posting_queue ` +
+          `(office_id, batch_id, remittance_key, status, is_recoupment, carrier_eob_date, ` +
+          `intended_total_cents, posted_total_cents, approved_by) ` +
+          `VALUES ($1, $2, $3, 'approved', true, $4, 0, 0, $5) ` +
+          `ON CONFLICT (office_id, remittance_key) DO NOTHING RETURNING queue_id`,
+        [office, loaded.batch.batchId, remittanceKey, loaded.batch.depositDate, approvedBy]
+      );
+
+      let queueId = inserted.rows.length ? inserted.rows[0].queue_id : null;
+      if (!queueId) {
+        const existing = await client.query(
+          `SELECT queue_id, status FROM rcm_posting_queue WHERE office_id = $1 AND remittance_key = $2`,
+          [office, remittanceKey]
+        );
+        if (existing.rows.length === 0) {
+          await client.query('ROLLBACK');
+          throw new ApprovalError(
+            'QUEUE_ROW_UNAVAILABLE',
+            500,
+            'The posting plan for this remittance could neither be created nor found.'
+          );
+        }
+        const existingStatus = String(existing.rows[0].status);
+        if (TERMINAL_QUEUE_STATUSES.includes(existingStatus)) {
+          await client.query('ROLLBACK');
+          throw new ApprovalError('QUEUE_ALREADY_RAN', 409, alreadyRanMessage(existingStatus), {
+            queueStatus: existingStatus,
+          });
+        }
+        if (existingStatus !== 'approved') {
+          await client.query('ROLLBACK');
+          throw new ApprovalError(
+            'QUEUE_ALREADY_RUNNING',
+            409,
+            'A posting run for this remittance is already under way — it cannot take more claims.',
+            { queueStatus: existingStatus }
+          );
+        }
+        queueId = existing.rows[0].queue_id;
+        await client.query(
+          `UPDATE rcm_posting_queue SET is_recoupment = true, updated_at = now() ` +
+            `WHERE office_id = $1 AND queue_id = $2`,
+          [office, queueId]
+        );
+      }
+
+      const positions = await client.query(
+        `SELECT COUNT(*)::int AS n FROM rcm_posting_queue_line WHERE office_id = $1 AND queue_id = $2`,
+        [office, queueId]
+      );
+      let position = num(positions.rows[0] && positions.rows[0].n);
+
+      /** @type {Array<object>} */
+      const queued = [];
+
+      for (const claim of verdict.postable) {
+        const linked = await client.query(
+          `UPDATE rcm_claims SET posting_queue_id = $3, approved_at = now(), approved_by = $4, ` +
+            `updated_at = now() ` +
+            `WHERE office_id = $1 AND claim_id = $2 AND posting_queue_id IS NULL`,
+          [office, claim.claimId, queueId, approvedBy]
+        );
+        if (linked.rowCount === 0) {
+          await client.query('ROLLBACK');
+          throw new ApprovalError(
+            'CLAIM_ALREADY_QUEUED',
+            409,
+            'A claim on this remittance was approved by somebody else while this approval was being written. Nothing was queued; open the remittance again.'
+          );
+        }
+
+        for (const line of claim.intent.lines) {
+          position += 1;
+          /*
+           * `is_supplemental = true` ON EVERY RECOUPMENT LINE, whichever path
+           * was chosen.
+           *
+           * The column is not "this is a supplemental claimproc" — it is which
+           * side of the money guard the row sits on. The partial unique index
+           * on `(office_id, od_claim_proc_num) WHERE is_supplemental = false`
+           * exists because a takeback TARGETS an already-paid claimproc that a
+           * previous plan legitimately posted. A recoupment line marked false
+           * would collide with the very adjudication it is reversing.
+           */
+          await client.query(
+            `INSERT INTO rcm_posting_queue_line ` +
+              `(queue_id, office_id, position, od_claim_proc_num, od_claim_num, claim_id, ` +
+              `batch_claim_payment_id, intended_ins_pay_amt_cents, intended_write_off_cents, ` +
+              `intended_ded_applied_cents, is_supplemental, recoupment_path, status) ` +
+              `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, 'pending')`,
+            [
+              queueId,
+              office,
+              position,
+              line.odClaimProcNum,
+              claim.intent.odClaimNum,
+              claim.claimId,
+              claim.batchClaimPaymentId,
+              line.insPayAmtCents,
+              line.writeOffCents,
+              line.dedAppliedCents,
+              path,
+            ]
+          );
+        }
+
+        queued.push({
+          claimId: claim.claimId,
+          claimNumber: claim.claimNumber,
+          patientName: claim.patientName,
+          odClaimNum: claim.intent.odClaimNum,
+          lines: claim.intent.lines.length,
+          totalCents: claim.intent.totalCents,
+        });
+      }
+
+      // Re-derived from the lines actually written, exactly like the ordinary
+      // approve — a bug in the loop above fails here rather than shipping a plan
+      // whose header disagrees with its own lines.
+      const written = await client.query(
+        `SELECT COALESCE(SUM(intended_ins_pay_amt_cents), 0)::bigint AS total ` +
+          `FROM rcm_posting_queue_line WHERE office_id = $1 AND queue_id = $2`,
+        [office, queueId]
+      );
+      const writtenTotal = num(written.rows[0] && written.rows[0].total);
+
+      await client.query(
+        `UPDATE rcm_posting_queue SET intended_total_cents = $3, updated_at = now() ` +
+          `WHERE office_id = $1 AND queue_id = $2`,
+        [office, queueId, writtenTotal]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        queueId,
+        remittanceKey,
+        approvedBy,
+        recoupmentPath: path,
+        recoupmentTotalCents: totalCents,
+        typedTotal: typed.expected,
+        intendedTotalCents: writtenTotal,
+        queued,
+        withheld: verdict.withheld.map((c) => ({
+          claimId: c.claimId,
+          claimNumber: c.claimNumber,
+          patientName: c.patientName,
+          reasons: c.failed,
+          checks: c.checks,
+        })),
+        alreadyQueued: verdict.alreadyQueued.map((c) => ({
+          claimId: c.claimId,
+          claimNumber: c.claimNumber,
+          patientName: c.patientName,
+        })),
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* the original error is the one worth reporting */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+}
+
 /** Postgres' unique-violation SQLSTATE. */
 const UNIQUE_VIOLATION = '23505';
 
@@ -1379,4 +1856,10 @@ module.exports = {
   loadForApproval,
   previewApproval,
   approveRemittance,
+  RECOUPMENT_PATHS,
+  formatRecoupmentTotal,
+  checkTypedRecoupmentTotal,
+  recoupmentTotal,
+  previewRecoupment,
+  approveRecoupment,
 };

@@ -30,6 +30,9 @@
  *   PUT  /claims/{n}        {ClaimStatus:"R", DateReceived}             test 3
  *   POST /claimpayments     {claimNum, CheckAmt, PayType, CheckNum}     test 4
  *   POST /claimpayments/Batch {claimNums[], CheckAmt, PayType}          test 10
+ *   POST /adjustments       {PatNum, AdjType, AdjAmt, AdjDate}      test 8 (6d)
+ *   POST /claimprocs/Supplemental {ClaimNum, InsPayAmt}            test 6 (6d)
+ *   POST /documents/Upload  {PatNum, DocCategory, rawBase64}       test 9 (6d)
  *
  * **Do not add a call this module does not already make.** An unproven write
  * path is the one thing the whole spike existed to eliminate.
@@ -59,17 +62,32 @@
  * human-run script against a test patient (docs/RCM_POSTING.md), not a code
  * path.
  *
- * No `POST /claimprocs/Supplemental` — that is the recoupment path, it is the
- * single IRREVERSIBLE Open Dental operation (G10: cannot be reverted, cannot be
- * deleted, and it then pins its claim and procedure forever), and it belongs to
- * 6d behind its own harder gate. The drain REFUSES a recoupment row rather than
- * posting one.
- *
- * No `POST /documents/Upload` — the EOB attach is 6d. The seam exists in the
- * state machine as an unimplemented step, reported honestly as "not yet".
- *
  * No `/payments`, no `/paysplits` — the patient-portion flow is PRD-deferred and
  * `ApiPayments` is not even enabled on this key (G11).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT 6d ADDED, AND WHY IT IS STILL ONE FILE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6c refused a recoupment outright and left the EOB unfiled. 6d does both — and
+ * both arrive HERE rather than anywhere else, because the allow-list is the
+ * whole guarantee: one file, one policy about when money moves.
+ *
+ * The three additions are not equal in danger and the code does not treat them
+ * as though they were:
+ *
+ *   `POST /adjustments`             REVERSIBLE — but only by an OFFSETTING
+ *                                   adjustment. **There is no
+ *                                   `DELETE /adjustments`** (G6). The default.
+ *   `POST /claimprocs/Supplemental` G10, THE ONE-WAY DOOR. Cannot be reverted,
+ *                                   cannot be deleted, and permanently pins its
+ *                                   claim and procedure. Opt-in, behind a typed
+ *                                   confirmation the SERVER validates.
+ *   `POST /documents/Upload`        Harmless by comparison, and deliberately
+ *                                   last: a document failure is retryable and
+ *                                   never a financial error.
+ *
+ * Neither recoupment path is ever CHOSEN here. The approver chose, the plan
+ * recorded it, and these functions only execute what was recorded.
  */
 
 const odOffices = require('../../config/odOffices');
@@ -77,6 +95,17 @@ const odPacer = require('./odPacer');
 
 /** Per-OD-call timeout. Same default and reasoning as the RCM read layer. */
 const OD_CALL_TIMEOUT_MS = 30000;
+
+/**
+ * The document upload gets its own, longer leash.
+ *
+ * A base64 PDF is orders of magnitude larger than any other body this module
+ * sends — Spike 0b pushed 13.3 MB of base64 through this endpoint without
+ * finding a ceiling — and timing out a large but perfectly good upload would
+ * leave a document that may or may not have landed, which is exactly the
+ * ambiguity the read-back exists to resolve.
+ */
+const OD_DOCUMENT_TIMEOUT_MS = 120000;
 
 /**
  * The forced order, as data.
@@ -737,10 +766,383 @@ function reconcileCheck(attached, planned) {
     attachedTotalCents,
   };
 }
+// ─── Step 5 (6d): the takeback — two paths, only one of them undoable ────────
+
+/**
+ * READ THIS BEFORE TOUCHING EITHER RECOUPMENT FUNCTION.
+ *
+ * A carrier taking money back can be written to Open Dental two ways, and they
+ * are NOT equivalent. The difference is the whole of D-6:
+ *
+ *  `POST /adjustments`                  the DEFAULT the dialog offers.
+ *      Books the takeback against the patient's ledger under the office's own
+ *      "Insurance deductions from previous payments" type.
+ *
+ *      ⚠ **THERE IS NO `DELETE /adjustments`.** RCM_OD_WRITES §5 and G6:
+ *      *"No DELETE documented. Reversal must be an offsetting adjustment."*
+ *      This module's own brief described this path as deletable; it is not.
+ *      It is REVERSIBLE — Spike 0b test 8 proved a −1.00 reversed by a +1.00
+ *      nets the ledger to zero — but reversal means posting a second,
+ *      offsetting adjustment, never removing the first. That is still a very
+ *      different thing from the supplemental below, which cannot be undone by
+ *      ANY means the API offers.
+ *
+ *  `POST /claimprocs/Supplemental`      G10. THE ONE-WAY DOOR.
+ *      A negative `InsPayAmt` supplemental claimproc. Spike 0b proved it works
+ *      — and proved it cannot be reverted (`400 "Cannot change Status from
+ *      Supplemental when there is a ClaimProc with a different status and the
+ *      same ProcNum."`) and cannot be deleted. It then PERMANENTLY PINS its
+ *      claim and its procedure: neither can ever be removed again.
+ *
+ * So the supplemental is opt-in, behind a typed confirmation, and the
+ * adjustment is what a cautious biller gets by default. Neither is ever chosen
+ * by this file — the approver chose, the plan recorded it, and these two
+ * functions only execute what was recorded.
+ */
+
+/**
+ * `POST /adjustments` — the REVERSIBLE takeback, then prove it.
+ *
+ * `AdjAmt`'s sign must agree with the AdjType's `ItemValue` or Open Dental
+ * refuses with `400 "AdjAmt must be negative for this AdjType."` (test 8). The
+ * caller resolved the type by NAME from this office's own Category-1 list and
+ * checked its sign there, so a refusal here is a genuine surprise rather than a
+ * predictable one.
+ *
+ * Read back through `GET /adjustments?PatNum=` — a LIST endpoint, so the filter
+ * is re-checked client-side like every other list read in this module. The new
+ * AdjNum is found by id rather than by "the newest row", because two takebacks
+ * on one patient in one drain would make "newest" a race.
+ *
+ * @param {{ get: Function, write: Function }} od
+ * @param {{ odPatientId: number, adjTypeDefNum: number, amountCents: number,
+ *           adjDate: string, note: string, odProcNum: number|null }} adj
+ * @returns {Promise<{ adjNum: number, verdict: object }>}
+ */
+async function writeRecoupmentAdjustment(od, adj) {
+  // Negative: this is money leaving the practice. `centsToDollars` carries the
+  // sign through untouched, and the caller has already proven the type agrees.
+  const amount = centsToDollars(adj.amountCents);
+
+  /** @type {Record<string, unknown>} */
+  const sent = {
+    PatNum: adj.odPatientId,
+    AdjType: adj.adjTypeDefNum,
+    AdjAmt: amount,
+    AdjDate: adj.adjDate,
+    AdjNote: adj.note,
+  };
+  // Attaching the adjustment to the procedure it reverses when we know it. A
+  // ledger entry a biller cannot trace back to a procedure is one they have to
+  // reconcile by hand.
+  if (adj.odProcNum) sent.ProcNum = adj.odProcNum;
+
+  const res = await od.write('POST', '/adjustments', sent, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  if (!res.ok) {
+    throw new OdWriteError(
+      `POST /adjustments refused (${res.status})`,
+      'OD_ADJUSTMENT_WRITE_REFUSED',
+      { status: res.status, detail: res.error || '' }
+    );
+  }
+
+  const row = Array.isArray(res.data) ? res.data[0] : res.data;
+  const adjNum = Number(row && row.AdjNum);
+  if (!Number.isInteger(adjNum) || adjNum <= 0) {
+    /*
+     * A 201 WITHOUT AN AdjNum IS A REFUSAL. Same ruling as the check's
+     * `OD_CHECK_NO_PAYMENT_NUM`: without the id we can neither read it back nor
+     * find it again to offset it, so we could not prove what happened OR undo
+     * it. Not retryable — a second POST risks a second takeback.
+     */
+    throw new OdWriteError(
+      'POST /adjustments returned no AdjNum',
+      'OD_ADJUSTMENT_NO_NUM',
+      { status: res.status, retryable: false }
+    );
+  }
+
+  const readBack = await readAdjustmentsForPatient(od, adj.odPatientId);
+  const found = readBack.find((r) => Number(r.AdjNum) === adjNum);
+  if (!found) {
+    // G2. The POST said 201 and the patient's ledger does not show it.
+    return {
+      adjNum,
+      verdict: {
+        agreed: false,
+        sent,
+        read: null,
+        mismatches: [{ field: 'AdjNum', sent: adjNum, read: null }],
+      },
+    };
+  }
+
+  const readCents = dollarsToCents(found.AdjAmt);
+  const mismatches = [];
+  if (readCents !== Number(adj.amountCents)) {
+    mismatches.push({ field: 'AdjAmt', sent: amount, read: found.AdjAmt });
+  }
+  if (Number(found.AdjType) !== Number(adj.adjTypeDefNum)) {
+    mismatches.push({ field: 'AdjType', sent: adj.adjTypeDefNum, read: found.AdjType });
+  }
+
+  return {
+    adjNum,
+    verdict: {
+      agreed: mismatches.length === 0,
+      sent,
+      read: { AdjNum: adjNum, AdjAmt: found.AdjAmt, AdjType: found.AdjType },
+      mismatches,
+    },
+  };
+}
+
+/**
+ * One patient's adjustments, re-filtered client-side.
+ *
+ * `?PatNum=` is a list filter, and this module's standing rule is that a filter
+ * we have not proven is re-checked rather than trusted — *"never trust a filter
+ * you haven't proven returns a different result for a different value."*
+ *
+ * @param {{ get: Function }} od
+ * @param {number} odPatientId
+ * @returns {Promise<Record<string, unknown>[]>}
+ */
+async function readAdjustmentsForPatient(od, odPatientId) {
+  const res = await od.get('/adjustments', { PatNum: odPatientId }, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  if (!res.ok) {
+    throw new OdWriteError(
+      `GET /adjustments?PatNum=${odPatientId} failed (${res.status})`,
+      'OD_ADJUSTMENT_READ_FAILED',
+      { status: res.status, detail: res.error || '' }
+    );
+  }
+  return asArray(res.data).filter(
+    (r) => r && typeof r === 'object' && Number(r.PatNum) === Number(odPatientId)
+  );
+}
+
+/**
+ * `POST /claimprocs/Supplemental` — THE IRREVERSIBLE TAKEBACK (G10).
+ *
+ * ⚠ Once this returns 201 there is no way back. The supplemental cannot be
+ * reverted, cannot be deleted, and permanently pins its claim and its procedure.
+ * Spike 0b's own −$0.20 supplemental on PatNum 12827 needed Open Dental's
+ * DESKTOP application to remove, which the cloud API cannot do.
+ *
+ * Because of that, the read-back here is not merely evidence — it decides what
+ * the row is allowed to SAY. A supplemental whose amount reads back differently
+ * is `failed`, not `posted`, AND the row must record that the supplemental
+ * nevertheless EXISTS and is permanent. A `failed` that reads as "nothing
+ * happened" would be the worst lie this module could tell, because the one
+ * thing a person could do about it — undo it — is not available.
+ *
+ * @param {{ get: Function, write: Function }} od
+ * @param {{ claimNum: number, odProcNum: number|null, insPayAmtCents: number,
+ *           note: string }} sup
+ * @returns {Promise<{ claimProcNum: number|null, verdict: object }>}
+ */
+async function writeRecoupmentSupplemental(od, sup) {
+  const amount = centsToDollars(sup.insPayAmtCents);
+
+  /** @type {Record<string, unknown>} */
+  const sent = { ClaimNum: sup.claimNum, InsPayAmt: amount };
+  if (sup.odProcNum) sent.ProcNum = sup.odProcNum;
+  if (sup.note) sent.Remarks = sup.note;
+
+  const res = await od.write('POST', '/claimprocs/Supplemental', sent, {
+    timeoutMs: OD_CALL_TIMEOUT_MS,
+  });
+  if (!res.ok) {
+    // A REFUSAL HERE IS THE GOOD OUTCOME. Nothing was written, and nothing
+    // needed undoing.
+    throw new OdWriteError(
+      `POST /claimprocs/Supplemental refused (${res.status})`,
+      'OD_SUPPLEMENTAL_WRITE_REFUSED',
+      { status: res.status, detail: res.error || '' }
+    );
+  }
+
+  const row = Array.isArray(res.data) ? res.data[0] : res.data;
+  const claimProcNum = Number(row && row.ClaimProcNum);
+  const minted = Number.isInteger(claimProcNum) && claimProcNum > 0 ? claimProcNum : null;
+
+  /*
+   * READ THE CLAIM BACK WHATEVER THE RESPONSE SAID.
+   *
+   * Even when the 201 carried no ClaimProcNum, a supplemental may still have
+   * landed — and unlike every other write in this module we cannot clean it up
+   * if it did. So the claim is re-read and the verdict describes what is
+   * actually on the chart, not what the response claimed.
+   */
+  const procs = await readClaimProcsForClaim(od, sup.claimNum);
+  const found = minted
+    ? procs.find((r) => Number(r.ClaimProcNum) === minted)
+    : procs.find(
+        (r) =>
+          String(r.Status || '').trim() === 'Supplemental' &&
+          dollarsToCents(r.InsPayAmt) === Number(sup.insPayAmtCents)
+      );
+
+  if (!found) {
+    return {
+      claimProcNum: minted,
+      verdict: {
+        agreed: false,
+        permanent: minted !== null,
+        sent,
+        read: null,
+        mismatches: [{ field: 'ClaimProcNum', sent: minted, read: null }],
+      },
+    };
+  }
+
+  const readCents = dollarsToCents(found.InsPayAmt);
+  const mismatches = [];
+  if (readCents !== Number(sup.insPayAmtCents)) {
+    mismatches.push({ field: 'InsPayAmt', sent: amount, read: found.InsPayAmt });
+  }
+
+  return {
+    claimProcNum: Number(found.ClaimProcNum) || minted,
+    verdict: {
+      agreed: mismatches.length === 0,
+      /*
+       * THE FLAG THE STATE MACHINE MUST NOT LOSE. True means a supplemental is
+       * on this chart for good, whatever `agreed` says. The queue row's message
+       * is built from it.
+       */
+      permanent: true,
+      sent,
+      read: { ClaimProcNum: found.ClaimProcNum, InsPayAmt: found.InsPayAmt, Status: found.Status },
+      mismatches,
+    },
+  };
+}
+
+// ─── Step 6 (6d): the EOB document ───────────────────────────────────────────
+
+/**
+ * `POST /documents/Upload` — file the remittance into a patient's images.
+ *
+ * LAST IN THE SEQUENCE, and §8 says why: *"a document failure is retryable and
+ * never a financial error."* A plan whose money is correct and proven does not
+ * stop being posted because a PDF did not file.
+ *
+ * `DateCreated` demands `"yyyy-MM-dd HH:mm:ss"` — unlike every other date in
+ * this API, which takes `"yyyy-MM-dd"`. Spike 0b hit this; it is a real
+ * inconsistency in Open Dental, not a transcription error here.
+ *
+ * The upload's own response is NOT the proof. `GET /documents?PatNum=` is —
+ * G2 one more time, and the DocNum only becomes real once the patient's own
+ * document list shows it.
+ *
+ * @param {{ get: Function, write: Function }} od
+ * @param {{ odPatientId: number, docCategoryDefNum: number, description: string,
+ *           base64: string, extension: string, dateCreated: string }} doc
+ * @returns {Promise<{ docNum: number, verdict: object }>}
+ */
+async function writeDocumentUpload(od, doc) {
+  /** @type {Record<string, unknown>} */
+  const sent = {
+    PatNum: doc.odPatientId,
+    DocCategory: doc.docCategoryDefNum,
+    Description: doc.description,
+    extension: doc.extension,
+    rawBase64: doc.base64,
+  };
+  if (doc.dateCreated) sent.DateCreated = doc.dateCreated;
+
+  const res = await od.write('POST', '/documents/Upload', sent, {
+    timeoutMs: OD_DOCUMENT_TIMEOUT_MS,
+  });
+  if (!res.ok) {
+    throw new OdWriteError(
+      `POST /documents/Upload refused (${res.status})`,
+      'OD_DOCUMENT_WRITE_REFUSED',
+      { status: res.status, detail: res.error || '' }
+    );
+  }
+
+  const row = Array.isArray(res.data) ? res.data[0] : res.data;
+  const claimed = Number(row && row.DocNum);
+
+  // The read-back IS the proof. A DocNum from the response that the patient's
+  // own list does not carry is not a document.
+  const listed = await readDocumentsForPatient(od, doc.odPatientId);
+  const found =
+    (Number.isInteger(claimed) && claimed > 0
+      ? listed.find((r) => Number(r.DocNum) === claimed)
+      : null) || listed.find((r) => String(r.Description || '').trim() === doc.description.trim());
+
+  if (!found) {
+    throw new OdWriteError(
+      'the upload returned 200 but the document is not in the patient\'s images',
+      'OD_DOCUMENT_NOT_FOUND_AFTER_UPLOAD',
+      { status: res.status, retryable: false }
+    );
+  }
+
+  return {
+    docNum: Number(found.DocNum),
+    verdict: {
+      agreed: true,
+      sent: { PatNum: doc.odPatientId, DocCategory: doc.docCategoryDefNum, Description: doc.description },
+      read: { DocNum: Number(found.DocNum), Description: found.Description },
+      mismatches: [],
+    },
+  };
+}
+
+/**
+ * One patient's documents, re-filtered client-side.
+ *
+ * Used twice: as the read-back above, and as the ADOPT-BEFORE-CREATE check
+ * before an upload is attempted at all. A retry after a lost response must find
+ * the document it already filed rather than filing a second copy into a
+ * patient's chart — the same rule §5.1 applies to the check.
+ *
+ * @param {{ get: Function }} od
+ * @param {number} odPatientId
+ * @returns {Promise<Record<string, unknown>[]>}
+ */
+async function readDocumentsForPatient(od, odPatientId) {
+  const res = await od.get('/documents', { PatNum: odPatientId }, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  if (!res.ok) {
+    throw new OdWriteError(
+      `GET /documents?PatNum=${odPatientId} failed (${res.status})`,
+      'OD_DOCUMENT_READ_FAILED',
+      { status: res.status, detail: res.error || '' }
+    );
+  }
+  return asArray(res.data).filter(
+    (r) => r && typeof r === 'object' && Number(r.PatNum) === Number(odPatientId)
+  );
+}
+
+/**
+ * The description an EOB is filed under, and the adopt-before-create key.
+ *
+ * Deterministic, so the same plan produces the same string on every attempt —
+ * that is what makes "has this already been filed" answerable by a list read.
+ * NO PATIENT IDENTITY: the payer, the check and the date are the carrier's
+ * facts, and the patient is already identified by the chart the document is in.
+ *
+ * @param {{ payer: string|null, checkNumber: string|null, checkDate: string|null }} ctx
+ * @returns {string}
+ */
+function buildDocumentDescription(ctx) {
+  const parts = ['CareIN RCM'];
+  parts.push(ctx.payer ? String(ctx.payer).trim() : 'remittance');
+  if (ctx.checkNumber) parts.push(`check ${String(ctx.checkNumber).trim()}`);
+  if (ctx.checkDate) parts.push(String(ctx.checkDate).trim());
+  return parts.join(' · ');
+}
 
 module.exports = {
   STEPS,
   OD_CALL_TIMEOUT_MS,
+  OD_DOCUMENT_TIMEOUT_MS,
   CLAIMPROC_VERIFY_FIELDS,
   OdWriteError,
   centsToDollars,
@@ -754,6 +1156,12 @@ module.exports = {
   writeClaimProcReceived,
   writeClaimReceived,
   writeClaimPayment,
+  writeRecoupmentAdjustment,
+  readAdjustmentsForPatient,
+  writeRecoupmentSupplemental,
+  writeDocumentUpload,
+  readDocumentsForPatient,
+  buildDocumentDescription,
   buildPostingNote,
   appendClaimNote,
   eligibleTotalCents,

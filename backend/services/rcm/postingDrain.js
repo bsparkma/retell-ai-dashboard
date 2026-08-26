@@ -139,7 +139,22 @@ const { STEPS, OdWriteError } = odPostingWrites;
  */
 const BLOCK_REASONS = Object.freeze({
   VALLEY_NOT_ENABLED: 'valley_not_enabled',
-  RECOUPMENT_NOT_IN_SCOPE: 'recoupment_not_in_scope',
+  /**
+   * 6d RE-SCOPED THIS. In 6c it meant "this module does not do takebacks at
+   * all". It now means the narrower and sharper thing: a takeback reached the
+   * drain WITHOUT going through D-6's typed confirmation. That is the only way
+   * a negative amount can arrive unauthorised, and it must never post.
+   */
+  RECOUPMENT_UNCONFIRMED: 'recoupment_unconfirmed',
+  /**
+   * The office's own Category-1 list carries nothing named "Insurance
+   * deductions from previous payments", so the REVERSIBLE path is unavailable
+   * in this practice. A refusal rather than a silent promotion to the
+   * irreversible one — nobody authorised that.
+   */
+  NO_ADJ_TYPE: 'no_adj_type',
+  /** The office's Category-18 list has no Insurance or Financial category (6d). */
+  NO_DOC_CATEGORY: 'no_doc_category',
   OFFICE_CONFIG_UNRESOLVED: 'office_config_unresolved',
   OFFICE_MISMATCH: 'office_mismatch',
   PLAN_EMPTY: 'plan_empty',
@@ -155,6 +170,16 @@ const BLOCK_REASONS = Object.freeze({
 
 /** The one skip reason 6c can produce. See the migration's column comment. */
 const SKIP_ALREADY_RECEIVED = 'already_received_matching';
+
+/**
+ * The two ways a takeback may be written, mirrored from the approval gate.
+ *
+ * Duplicated as a constant rather than imported so this service does not depend
+ * on a ROUTE module — the drain is the layer routes call, not the other way
+ * round. `postingDrain.test.js` pins the two lists identical, so the copy
+ * cannot drift silently.
+ */
+const RECOUPMENT_PATHS = Object.freeze(['adjustment', 'supplemental']);
 
 /**
  * The map between what the database stores and what a screen says.
@@ -446,35 +471,62 @@ function checkPreconditions(ctx) {
     };
   }
 
-  // -- Policy: D-6. A recoupment is 6d's, and it is irreversible. ------------
-  //
-  // Checked in THREE ways because the flag, the sign on a line and the sign on
-  // the plan total are three independent chances for a takeback to reach this
-  // machine, and the operation at the end of it cannot be undone (G10).
-  if (queue.isRecoupment) {
-    return {
-      reason: BLOCK_REASONS.RECOUPMENT_NOT_IN_SCOPE,
-      detail:
-        'This plan is a recoupment. A negative supplemental cannot be reverted or ' +
-        'deleted in Open Dental, so it posts behind its own harder gate (6d), not here.',
-    };
-  }
-  const negative = lines.find(
+  /*
+   * -- Policy: D-6. A takeback posts only if a human typed its amount. --------
+   *
+   * 6c refused every recoupment outright. 6d lets one through — but ONLY when
+   * `approveRecoupment` authorised it, and that function cannot be reached
+   * without the typed confirmation matching a total the SERVER computed.
+   *
+   * The check is still three-way, for exactly the reason it was in 6c: the
+   * plan's flag, the sign on a line, and the sign on the plan total are three
+   * independent chances for a takeback to arrive, and what waits at the end of
+   * this sequence may be the one Open Dental operation that cannot be undone
+   * (G10). What changed is not how many ways it is checked — it is what
+   * "authorised" means.
+   *
+   * `is_recoupment` on the PLAN is the authorisation. `recoupment_path` on each
+   * LINE is which write was authorised. A negative amount missing either is a
+   * takeback nobody confirmed.
+   */
+  const negativeLine = lines.find(
     (l) => Number(l.intendedInsPayAmtCents) < 0 || l.isSupplemental === true
   );
-  if (negative) {
+  const carriesTakeback = Boolean(negativeLine) || Number(queue.intendedTotalCents) < 0;
+
+  if (carriesTakeback && !queue.isRecoupment) {
+    /*
+     * Money moving backwards on a plan that was approved through the ORDINARY
+     * button. `NOT_RECOUPMENT` should have stopped this at the gate, so
+     * reaching here means either a parse defect or a row edited underneath us —
+     * both of which are reasons to stop, not to improvise.
+     */
     return {
-      reason: BLOCK_REASONS.RECOUPMENT_NOT_IN_SCOPE,
-      detail:
-        `Line ${negative.position} carries a negative payment or is marked supplemental. ` +
-        'Negative posting is 6d and is irreversible once written.',
+      reason: BLOCK_REASONS.RECOUPMENT_UNCONFIRMED,
+      detail: negativeLine
+        ? `Line ${negativeLine.position} carries a negative payment or is marked supplemental, ` +
+          'but this plan was never confirmed as a takeback. Nothing was sent.'
+        : 'The plan total is negative but this plan was never confirmed as a takeback. Nothing was sent.',
     };
   }
-  if (Number(queue.intendedTotalCents) < 0) {
-    return {
-      reason: BLOCK_REASONS.RECOUPMENT_NOT_IN_SCOPE,
-      detail: 'The plan total is negative — the whole remittance is a takeback.',
-    };
+
+  if (queue.isRecoupment) {
+    /*
+     * EVERY takeback line must name the path it was authorised for. The
+     * approver chose adjustment or supplemental; a line with no path is a line
+     * whose irreversibility nobody agreed to, and the drain will not pick one.
+     */
+    const unauthorised = lines.find(
+      (l) => l.isSupplemental === true && !RECOUPMENT_PATHS.includes(String(l.recoupmentPath || ''))
+    );
+    if (unauthorised) {
+      return {
+        reason: BLOCK_REASONS.RECOUPMENT_UNCONFIRMED,
+        detail:
+          `Line ${unauthorised.position} is a takeback that does not say how it was ` +
+          'authorised to be written. Re-approve it from the takeback panel.',
+      };
+    }
   }
 
   // -- Environment. A dev box sharing production credentials must not post. ---
@@ -809,6 +861,12 @@ const QUEUE_COLUMNS = [
   'drained_by',
   'drain_attempt_at',
   'reconciled_at',
+  // 6d: the EOB filing, on its own axis. NEVER a plan status -- a document
+  // failure is retryable and never a financial error, so it must not disturb
+  // `posted`.
+  'document_attach_status',
+  'document_attach_error',
+  'document_attach_at',
 ];
 
 const LINE_COLUMNS = [
@@ -833,11 +891,21 @@ const LINE_COLUMNS = [
   'readback',
   'readback_at',
   'skip_reason',
+  // 6d: which takeback path this line was authorised for, and what it left
+  // behind in the chart. See the migration for why the two ids are separate.
+  'recoupment_path',
+  'od_adjustment_num',
+  'od_supplemental_claim_proc_num',
 ];
 
 /** Row → the camelCase shape the pure core takes. */
 function toQueue(row) {
   return {
+    documentAttachStatus:
+      row.document_attach_status == null ? null : String(row.document_attach_status),
+    documentAttachError:
+      row.document_attach_error == null ? null : String(row.document_attach_error),
+    documentAttachAt: row.document_attach_at || null,
     queueId: String(row.queue_id),
     officeId: String(row.office_id),
     batchId: String(row.batch_id),
@@ -870,6 +938,12 @@ function toLine(row) {
     intendedWriteOffCents: Number(row.intended_write_off_cents || 0),
     intendedDedAppliedCents: Number(row.intended_ded_applied_cents || 0),
     isSupplemental: row.is_supplemental === true,
+    recoupmentPath: row.recoupment_path == null ? null : String(row.recoupment_path),
+    odAdjustmentNum: row.od_adjustment_num == null ? null : Number(row.od_adjustment_num),
+    odSupplementalClaimProcNum:
+      row.od_supplemental_claim_proc_num == null
+        ? null
+        : Number(row.od_supplemental_claim_proc_num),
     status: String(row.status),
     odClaimPaymentNum: row.od_claim_payment_num == null ? null : Number(row.od_claim_payment_num),
     readback: row.readback || null,
@@ -904,9 +978,21 @@ async function loadPlan(pool, office, queueId) {
     [queueId, office]
   );
 
+  /*
+   * `od_patient_id` is 6d's addition and it is not cosmetic. `POST /adjustments`
+   * is keyed by PatNum, not by ClaimNum — a takeback booked as an adjustment
+   * lands on a PATIENT's ledger — and the EOB document is filed into a
+   * patient's images. Neither is derivable from a ClaimNum without another
+   * paced read.
+   *
+   * `od_patient_office` rides with it because a PatNum without its office names
+   * nothing: numbering restarts in every Open Dental database, and PatNum 7115
+   * is a different, real person in Roland than in Riley. Hard rule 3.
+   */
   const c = await pool.query(
     `SELECT claim_id, office_id, od_match_status, od_claim_num, posting_queue_id, ` +
-      `od_match_snapshot, claim_number FROM rcm_claims WHERE posting_queue_id = $1`,
+      `od_match_snapshot, claim_number, od_patient_id, od_patient_office ` +
+      `FROM rcm_claims WHERE posting_queue_id = $1`,
     [queueId]
   );
 
@@ -934,6 +1020,9 @@ async function loadPlan(pool, office, queueId) {
         postingQueueId: row.posting_queue_id == null ? null : String(row.posting_queue_id),
         snapshotVersion: Number.isFinite(version) ? version : null,
         claimNumber: row.claim_number == null ? null : String(row.claim_number),
+        odPatientId: row.od_patient_id == null ? null : Number(row.od_patient_id),
+        odPatientOffice:
+          row.od_patient_office == null ? null : String(row.od_patient_office),
       };
     }),
     batch: b.rows.length
@@ -1027,6 +1116,13 @@ async function persistLine(pool, queueLineId, patch) {
   }
   // The three timestamps are set to now() rather than passed in, so the recorded
   // time is the database's and cannot drift with a container's clock.
+  // 6d: the two takeback ids. Assigned only when this run produced one — a null
+  // would erase which write actually landed, and for a supplemental that is the
+  // permanent record of an operation nothing can undo.
+  if (patch.odAdjustmentNum !== undefined) put('od_adjustment_num', patch.odAdjustmentNum);
+  if (patch.odSupplementalClaimProcNum !== undefined) {
+    put('od_supplemental_claim_proc_num', patch.odSupplementalClaimProcNum);
+  }
   if (patch.claimprocWrittenAt) sets.push('claimproc_written_at = now()');
   if (patch.claimReceivedAt) sets.push('claim_received_at = now()');
   if (patch.paidAt) sets.push('paid_at = now()');
@@ -1149,6 +1245,592 @@ async function auditOd(req, entry) {
  * @returns {Promise<{ queueId: string, status: string, reason?: string,
  *                     odClaimPaymentNum?: number|null, detail?: string }>}
  */
+/**
+ * Write the takeback lines on a plan, whichever path each was authorised for.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THIS FUNCTION NEVER CHOOSES. IT EXECUTES WHAT WAS AUTHORISED.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `recoupment_path` was written by `approveRecoupment`, which could not be
+ * reached without a human typing the exact total this plan moves. If a line
+ * does not name a path, `checkPreconditions` already blocked the plan and this
+ * function was never called. There is no default here and there must never be
+ * one — defaulting would mean picking, on a biller's behalf, between an
+ * operation that can be undone and one that cannot.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY TAKEBACKS RUN *AFTER* THE CHECK, NOT INSIDE THE ORDINARY SEQUENCE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A takeback targets a claimproc that is ALREADY Received and ALREADY on a
+ * check — that is what makes it a takeback. Run through `decideLineAction` it
+ * would read as `attached`, be adopted, and be marked `paid`: the machine would
+ * record money arriving where money left. So takeback lines are held out of the
+ * ordinary decision loop entirely and settled here, once the positive side of
+ * the plan is done and its check exists.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A FAILURE HERE IS NEVER `blocked`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * By the time this runs, either the ordinary lines are on a chart or a
+ * supplemental may be. `blocked` promises nothing was attempted, so the caller
+ * turns any failure into `partially_posted` — and for the supplemental path the
+ * message says the write is PERMANENT, because the one action a person would
+ * otherwise reach for is not available to them.
+ *
+ * @param {object} ctx the drain context (pool, req, office, od, operator…)
+ * @param {object} plan the loaded plan
+ * @param {ReadonlyArray<object>} takebackLines
+ * @param {object} config this office's resolved posting configuration
+ * @param {Map<string, object>} claimById claims on the plan, by claimId
+ * @param {string} note the posting note
+ * @returns {Promise<{ recoupedCents: number, permanentWrites: number }>}
+ */
+async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note) {
+  const { pool, req, office, od } = ctx;
+  let recoupedCents = 0;
+  let permanentWrites = 0;
+
+  for (const line of takebackLines) {
+    /*
+     * ADOPT BEFORE RE-WRITING, one line down from §5.1's rule about the check.
+     *
+     * A row that already carries the id its path produces was written by an
+     * earlier attempt that died before it could say so. Re-issuing would post a
+     * SECOND takeback — and for the supplemental path that second one could
+     * never be removed. Resume must not double-recoup.
+     */
+    if (line.recoupmentPath === 'adjustment' && line.odAdjustmentNum) {
+      recoupedCents += Number(line.intendedInsPayAmtCents);
+      continue;
+    }
+    if (line.recoupmentPath === 'supplemental' && line.odSupplementalClaimProcNum) {
+      recoupedCents += Number(line.intendedInsPayAmtCents);
+      permanentWrites += 1;
+      continue;
+    }
+
+    const claim = claimById.get(line.claimId) || null;
+
+    if (line.recoupmentPath === 'adjustment') {
+      /*
+       * THE REVERSIBLE PATH — and reversible means "undone by an OFFSETTING
+       * adjustment", not "deleted". There is no `DELETE /adjustments` (G6).
+       *
+       * It is keyed by PatNum, so a claim with no linked patient cannot take
+       * this path at all. That is a refusal rather than a fall-through to the
+       * supplemental: nobody authorised the irreversible one.
+       */
+      if (!claim || !claim.odPatientId) {
+        await persistLine(pool, line.queueLineId, {
+          status: 'failed',
+          lastError:
+            'This takeback is booked as an adjustment, which posts to a patient ledger, ' +
+            'and the claim carries no linked Open Dental patient. Nothing was written.',
+        });
+        throw new OdWriteError(
+          `line ${line.position} has no PatNum for an adjustment`,
+          'OD_ADJUSTMENT_NO_PATIENT',
+          { status: 0, retryable: false }
+        );
+      }
+
+      const adjType = odOfficeConfig.pickAdjType(config, 'recoupment');
+      if (!adjType) {
+        /*
+         * The office's own Category-1 list has nothing named for a recoupment.
+         * A REFUSAL, never a promotion to the supplemental — the whole point of
+         * offering the reversible path is that a practice which cannot express
+         * it gets told, not quietly given the permanent one instead.
+         */
+        await blockRow(
+          pool,
+          plan.queue.queueId,
+          BLOCK_REASONS.NO_ADJ_TYPE,
+          "This practice's Open Dental has no adjustment type named 'Insurance deductions " +
+            "from previous payments' (definitions Category 1), so a reversible takeback " +
+            'cannot be written here. Nothing was sent for this line.',
+          'recoupment'
+        );
+        throw new OdWriteError(
+          'no recoupment adjustment type in this practice',
+          'OD_NO_ADJ_TYPE',
+          { status: 0, retryable: false }
+        );
+      }
+
+      const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
+        odPatientId: claim.odPatientId,
+        adjTypeDefNum: adjType.defNum,
+        amountCents: line.intendedInsPayAmtCents,
+        adjDate: plan.queue.carrierEobDate || officeToday(),
+        note,
+        odProcNum: null,
+      });
+      await auditOd(req, {
+        action: 'CREATE',
+        resourceType: 'rcm_od_adjustment',
+        resourceId: adjNum,
+        office,
+        result: verdict.agreed ? 'SUCCESS' : 'ERROR',
+      });
+      // Its read-back gets its own row — rule 13 is per read AND per write.
+      await auditOd(req, {
+        action: 'READ',
+        resourceType: 'rcm_od_adjustment',
+        resourceId: claim.odPatientId,
+        office,
+      });
+
+      // The id is recorded WHATEVER the verdict: the adjustment exists, and a
+      // row that could not name it would leave the offsetting reversal with
+      // nothing to aim at.
+      await persistLine(pool, line.queueLineId, {
+        status: verdict.agreed ? 'recouped' : 'failed',
+        odAdjustmentNum: adjNum,
+        readback: { step: 'recoupment_adjustment', ...verdict },
+        paidAt: verdict.agreed,
+        lastError: verdict.agreed
+          ? null
+          : 'Open Dental accepted the adjustment but read back different values: ' +
+            verdict.mismatches.map((m) => m.field).join(', '),
+      });
+      await stepPause(ctx, 'recoupment_adjustment');
+
+      if (!verdict.agreed) {
+        throw new OdWriteError(
+          `adjustment ${adjNum} read back different values`,
+          'OD_READBACK_MISMATCH',
+          { status: 200, retryable: false }
+        );
+      }
+      recoupedCents += Number(line.intendedInsPayAmtCents);
+      continue;
+    }
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * THE ONE-WAY DOOR (G10)
+     * ─────────────────────────────────────────────────────────────────────────
+     * A negative supplemental cannot be reverted, cannot be deleted, and once
+     * written it permanently pins its claim and its procedure. Spike 0b's own
+     * −$0.20 supplemental needed Open Dental's DESKTOP application to remove,
+     * which the cloud API cannot do.
+     *
+     * So the ordering below is deliberate: persist the id BEFORE judging the
+     * verdict. If this process dies between the 201 and the next statement, the
+     * supplemental is in the chart and nothing anywhere would know its number.
+     */
+    const { claimProcNum, verdict } = await odPostingWrites.writeRecoupmentSupplemental(od, {
+      claimNum: line.odClaimNum,
+      odProcNum: null,
+      insPayAmtCents: line.intendedInsPayAmtCents,
+      note,
+    });
+    await auditOd(req, {
+      action: 'CREATE',
+      resourceType: 'rcm_od_claimproc_supplemental',
+      resourceId: claimProcNum,
+      office,
+      result: verdict.agreed ? 'SUCCESS' : 'ERROR',
+    });
+    await auditOd(req, {
+      action: 'READ',
+      resourceType: 'rcm_od_claimproc',
+      resourceId: line.odClaimNum,
+      office,
+    });
+    permanentWrites += 1;
+
+    /*
+     * A SUPPLEMENTAL THAT READS BACK DIFFERENTLY IS `failed` — AND THE ROW SAYS
+     * IT EXISTS AND IS PERMANENT.
+     *
+     * This is the one place in the module where `failed` would otherwise be a
+     * dangerous word. Everywhere else a failure invites "fix it and drain
+     * again"; here there is a negative supplemental on a patient's claim that
+     * no retry, no offsetting entry through this API, and no amount of
+     * re-pressing will remove. Saying so is the whole of the honest-states rule
+     * at the one moment it cannot be walked back.
+     */
+    await persistLine(pool, line.queueLineId, {
+      status: verdict.agreed ? 'recouped' : 'failed',
+      odSupplementalClaimProcNum: claimProcNum,
+      readback: { step: 'recoupment_supplemental', ...verdict },
+      paidAt: verdict.agreed,
+      lastError: verdict.agreed
+        ? null
+        : 'Open Dental accepted the negative supplemental but read back different values (' +
+          verdict.mismatches.map((m) => m.field).join(', ') +
+          '). THE SUPPLEMENTAL EXISTS AND IS PERMANENT — it cannot be reverted or deleted ' +
+          'through the API, and it now pins its claim and procedure. Correct it in Open ' +
+          "Dental's desktop application; do not drain this plan again expecting a fix.",
+    });
+    await stepPause(ctx, 'recoupment_supplemental');
+
+    if (!verdict.agreed) {
+      throw new OdWriteError(
+        `supplemental ${claimProcNum} read back different values — PERMANENT`,
+        'OD_READBACK_MISMATCH_PERMANENT',
+        { status: 200, retryable: false }
+      );
+    }
+    recoupedCents += Number(line.intendedInsPayAmtCents);
+  }
+
+  return { recoupedCents, permanentWrites };
+}
+
+/**
+ * File the remittance into every patient on the plan (6d). The last step, and
+ * the only one whose failure changes nothing about the money.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT RUNS ONLY AFTER `posted`, AND IT NEVER THROWS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * §8 puts the document last because *"a document failure is retryable and never
+ * a financial error"*. So this is called after `finalizeRow` has already written
+ * `posted`, and every failure inside it is caught and recorded on the plan's own
+ * `document_attach_*` columns. A plan whose money is correct and proven does not
+ * stop being posted because a PDF did not file, and an exception escaping here
+ * would flip it to `partially_posted` and send a biller hunting for a payment
+ * that is sitting correctly in the chart.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ONE DOCUMENT PER PATIENT, NOT PER PLAN AND NOT PER LINE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A document is filed into a PATIENT's images. A plan spanning three patients
+ * files three copies of the same remittance, one into each chart, because that
+ * is where each of those people's biller will look for it. `rcm_posting_document`
+ * carries one row per (plan, patient) and the database enforces it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ADOPT BEFORE CREATE, THE SAME RULE AS §5.1's CHECK
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Before uploading, the patient's own document list is read and a document
+ * already carrying this plan's description is ADOPTED. A retry after a lost
+ * response must find what it already filed rather than put a second copy of the
+ * same EOB into somebody's chart — a mess that can only be cleaned up by hand in
+ * Open Dental's desktop application.
+ *
+ * @param {object} ctx the drain context
+ * @param {object} plan the loaded plan
+ * @param {object} config this office's resolved posting configuration
+ * @param {Map<string, object>} claimById
+ * @returns {Promise<{ status: string|null, attached: number, failed: number,
+ *                     skipped: number, error: string|null }>}
+ */
+/**
+ * Fetch the remittance's stored PDF, if this remittance has one (6d).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ONLY AN ACTUAL PDF IS FILED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The two intake lanes store very different things. Slice 4's EOB lane stores
+ * the scanned or emailed document a human received — that is a PDF and it is
+ * exactly what a biller wants to see in a chart. Slice 5's ERA lane stores raw
+ * X12 835 text, which is not a document any person would open.
+ *
+ * So this returns the EOB upload's file when there is one and NULL otherwise,
+ * and null means *"there is nothing to file"* rather than *"filing failed"*. The
+ * brief suggested rendering the 835 as a PDF as a fallback; nothing in this repo
+ * renders one today, and inventing a renderer here would be a second, unproven
+ * document pipeline hidden inside a posting drain. Recorded as a gap instead —
+ * an ERA-only remittance simply reports no document, honestly.
+ *
+ * Returns `{ base64, extension }` — the shape `POST /documents/Upload` wants.
+ *
+ * @param {{ pool: any, office: string }} ctx
+ * @param {object} plan
+ * @returns {Promise<{ base64: string, extension: string }|null>}
+ */
+async function loadRemittancePdf(ctx, plan) {
+  if (!plan.batch) return null;
+
+  const blobStore = require('./eobBlobStore');
+  if (!blobStore.isConfigured || !blobStore.isConfigured()) return null;
+
+  /*
+   * The upload that PRODUCED this batch. `result_batch_id` is the link Slice 4
+   * writes when an extraction lands, so this is the document the numbers on
+   * this plan were read out of — not merely a file that happens to share an
+   * office.
+   *
+   * Newest first, because a remittance re-uploaded after a bad scan should file
+   * the copy the biller actually worked from.
+   */
+  const found = await ctx.pool.query(
+    `SELECT file_key, content_type FROM rcm_eob_uploads
+      WHERE office_id = $1 AND result_batch_id = $2 AND file_key IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1`,
+    [ctx.office, plan.batch.batchId]
+  );
+  if (found.rows.length === 0) return null;
+
+  const contentType = String(found.rows[0].content_type || '').toLowerCase();
+  // A scan lane that one day stores a TIFF must not be filed as a `.pdf`; Open
+  // Dental would take the extension at its word and the image would not open.
+  if (contentType && !contentType.includes('pdf')) return null;
+
+  const buffer = await blobStore.getEob(String(found.rows[0].file_key));
+  if (!buffer || !buffer.length) return null;
+
+  return { base64: Buffer.from(buffer).toString('base64'), extension: '.pdf' };
+}
+
+async function attachEobDocuments(ctx, plan, config, claimById) {
+  const { pool, req, office, od } = ctx;
+  const queueId = plan.queue.queueId;
+
+  /** @type {(status: string|null, error: string|null) => Promise<void>} */
+  const record = async (status, error) => {
+    await pool.query(
+      `UPDATE rcm_posting_queue
+          SET document_attach_status = $2, document_attach_error = $3,
+              document_attach_at = now(), updated_at = now()
+        WHERE queue_id = $1`,
+      [queueId, status, error ? String(error).slice(0, 1000) : null]
+    );
+  };
+
+  try {
+    const pdf = await ctx.loadRemittancePdf(plan);
+    if (!pdf || !pdf.base64) {
+      /*
+       * NOT A FAILURE — there is nothing to file. An 835 that arrived as raw
+       * EDI with no rendered PDF is a real and ordinary case, and marking it
+       * `failed` would put a retry button on a screen with nothing behind it.
+       */
+      await record(null, null);
+      return { status: null, attached: 0, failed: 0, skipped: 0, error: null };
+    }
+
+    const docCategory = odOfficeConfig.pickDocCategory(config);
+    if (!docCategory) {
+      await record(
+        'failed',
+        "This practice's Open Dental has no document category named 'Insurance' or " +
+          "'Financial' (definitions Category 18), so there is nowhere to file the EOB. " +
+          'The payment itself posted correctly.'
+      );
+      return {
+        status: 'failed',
+        attached: 0,
+        failed: 0,
+        skipped: 0,
+        error: 'no document category in this practice',
+      };
+    }
+
+    const description = odPostingWrites.buildDocumentDescription({
+      payer: plan.batch ? plan.batch.payer : null,
+      checkNumber: plan.batch ? plan.batch.checkNumber || plan.batch.eftNumber : null,
+      checkDate: (plan.batch && plan.batch.depositDate) || plan.queue.carrierEobDate,
+    });
+
+    /*
+     * The DISTINCT patients on the plan. A remittance covering four claims for
+     * one person files once, not four times.
+     *
+     * A claim with no linked PatNum is skipped rather than failing the attach:
+     * the money on it posted through a ClaimNum, which needs no patient link,
+     * and refusing to file the other patients' copies over it would help nobody.
+     */
+    const patients = [
+      ...new Set(
+        [...claimById.values()].map((c) => c.odPatientId).filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+    const skipped = claimById.size - patients.length > 0 ? claimById.size - patients.length : 0;
+
+    if (patients.length === 0) {
+      await record(null, null);
+      return { status: null, attached: 0, failed: 0, skipped, error: null };
+    }
+
+    let attached = 0;
+    let failed = 0;
+    /** @type {string|null} */
+    let firstError = null;
+
+    for (const odPatientId of patients) {
+      /*
+       * The intent row is written BEFORE the upload, so a process that dies
+       * mid-call leaves a `pending` row naming exactly which chart was being
+       * written to. `ON CONFLICT DO NOTHING` makes this find-or-create — a
+       * retry re-uses the row it already made rather than colliding with it.
+       */
+      await pool.query(
+        `INSERT INTO rcm_posting_document (office_id, queue_id, od_patient_id, description, status)
+         VALUES ($1, $2, $3, $4, 'pending')
+         ON CONFLICT (office_id, queue_id, od_patient_id) DO NOTHING`,
+        [office, queueId, odPatientId, description]
+      );
+
+      const already = await pool.query(
+        `SELECT status, od_doc_num FROM rcm_posting_document
+          WHERE office_id = $1 AND queue_id = $2 AND od_patient_id = $3`,
+        [office, queueId, odPatientId]
+      );
+      if (already.rows.length > 0 && String(already.rows[0].status) === 'attached') {
+        attached += 1;
+        continue;
+      }
+
+      try {
+        /*
+         * ADOPT BEFORE CREATE. The read happens on EVERY attempt, including the
+         * first — "first attempt" is not something the machine can know, for
+         * exactly the reason rule 4 gives about the chart.
+         */
+        const existing = await odPostingWrites.readDocumentsForPatient(od, odPatientId);
+        await auditOd(req, {
+          action: 'READ',
+          resourceType: 'rcm_od_document',
+          resourceId: odPatientId,
+          office,
+        });
+        const mine = existing.find(
+          (d) => String(d.Description || '').trim() === description.trim()
+        );
+
+        let docNum;
+        if (mine) {
+          // Filed by an earlier attempt whose response we never saw.
+          docNum = Number(mine.DocNum);
+        } else {
+          const uploaded = await odPostingWrites.writeDocumentUpload(od, {
+            odPatientId,
+            docCategoryDefNum: docCategory.defNum,
+            description,
+            base64: pdf.base64,
+            extension: pdf.extension || '.pdf',
+            // `DateCreated` wants "yyyy-MM-dd HH:mm:ss" here and nowhere else in
+            // this API. Spike 0b hit that; it is Open Dental's inconsistency.
+            dateCreated: `${officeToday()} 00:00:00`,
+          });
+          await auditOd(req, {
+            action: 'CREATE',
+            resourceType: 'rcm_od_document',
+            resourceId: uploaded.docNum,
+            office,
+            result: 'SUCCESS',
+          });
+          docNum = uploaded.docNum;
+        }
+
+        await pool.query(
+          `UPDATE rcm_posting_document
+              SET status = 'attached', od_doc_num = $4, error = NULL,
+                  attached_at = now(), updated_at = now()
+            WHERE office_id = $1 AND queue_id = $2 AND od_patient_id = $3`,
+          [office, queueId, odPatientId, docNum]
+        );
+        attached += 1;
+        await stepPause(ctx, 'document_attach');
+      } catch (err) {
+        /*
+         * ONE PATIENT'S FAILURE IS NOT THE OTHERS'. The loop continues, the row
+         * records why, and the plan ends `partial` — which is a real state and
+         * not a hedge: claiming `attached` would say a document exists in a
+         * chart where it does not.
+         */
+        failed += 1;
+        const message = err && err.message ? String(err.message) : String(err);
+        if (!firstError) firstError = message;
+        await pool.query(
+          `UPDATE rcm_posting_document
+              SET status = 'failed', od_doc_num = NULL, error = $4, updated_at = now()
+            WHERE office_id = $1 AND queue_id = $2 AND od_patient_id = $3`,
+          [office, queueId, odPatientId, message.slice(0, 1000)]
+        );
+      }
+    }
+
+    const status = failed === 0 ? 'attached' : attached > 0 ? 'partial' : 'failed';
+    await record(status, firstError);
+    return { status, attached, failed, skipped, error: firstError };
+  } catch (err) {
+    /*
+     * THE OUTER NET. Whatever went wrong — the PDF could not be loaded, the
+     * database refused, Open Dental was unreachable — the plan stays `posted`
+     * and this says why the EOB is not filed. The retry button on the posting
+     * screen is what a person does about it.
+     */
+    const message = err && err.message ? String(err.message) : String(err);
+    console.error(`[rcm/drain] ${office} plan ${queueId} EOB attach failed: ${message}`);
+    try {
+      await record('failed', message);
+    } catch {
+      /* the original failure is the one worth reporting */
+    }
+    return { status: 'failed', attached: 0, failed: 0, skipped: 0, error: message };
+  }
+}
+
+/**
+ * Re-file an EOB that did not file, without touching a cent (6d).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS ITS OWN ENTRY POINT AND NOT "DRAIN AGAIN"
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `posted` is the only terminal plan state, and a plan whose EOB failed to file
+ * IS posted — the money is correct and proven by the reconciliation read.
+ * Re-draining it would be pressing the money button to fix a document, and the
+ * drain would correctly find nothing to do and say so. So the retry acts on the
+ * document axis alone: it cannot write a claimproc, cannot create a check, and
+ * cannot change the plan's status.
+ *
+ * It re-reads before it re-uploads. `attachEobDocuments` lists the patient's own
+ * documents and adopts one already carrying this plan's description, which is
+ * what makes pressing this twice safe — the second press finds what the first
+ * filed rather than putting a second copy of the same EOB into a chart.
+ *
+ * Lives here rather than in the route so the route keeps no knowledge of the
+ * transport or the office registry, exactly like `drainOffice`.
+ *
+ * @param {{ pool: any, req: any, office: string, transport?: any,
+ *           loadRemittancePdf?: Function, stepDelayMs?: number }} ctx
+ * @param {string} queueId
+ * @returns {Promise<{ code: string, status?: string, result?: object }>}
+ */
+async function retryDocumentAttach(ctx, queueId) {
+  const plan = await loadPlan(ctx.pool, ctx.office, queueId);
+  if (!plan) return { code: 'QUEUE_NOT_FOUND' };
+
+  /*
+   * ONLY A POSTED PLAN HAS AN EOB TO FILE.
+   *
+   * Filing the remittance for a plan whose money has not landed would put a
+   * document in a chart asserting a payment that is not there — and §8's
+   * ordering (document last) exists precisely so the two cannot disagree.
+   */
+  if (plan.queue.status !== 'posted') {
+    return { code: 'PLAN_NOT_POSTED', status: plan.queue.status };
+  }
+
+  const od = ctx.transport || odPostingWrites.postingTransportFor(ctx.office);
+  const resolved = await odOfficeConfig.resolvePostingConfig(od.get, ctx.office);
+  const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
+
+  const result = await attachEobDocuments(
+    {
+      pool: ctx.pool,
+      req: ctx.req,
+      office: ctx.office,
+      od,
+      stepDelayMs: 0,
+      loadRemittancePdf:
+        ctx.loadRemittancePdf ||
+        ((p) => loadRemittancePdf({ pool: ctx.pool, office: ctx.office }, p)),
+    },
+    plan,
+    resolved.config,
+    claimById
+  );
+
+  return { code: 'OK', result };
+}
+
 async function drainRow(ctx, queueId) {
   const { pool, req, office, od } = ctx;
   let step = STEPS[0];
@@ -1204,7 +1886,38 @@ async function drainRow(ctx, queueId) {
     };
   }
 
-  const grouped = groupByClaim(plan.lines);
+  /*
+   * ── 6d: THE PLAN SPLITS IN TWO HERE ──────────────────────────────────────
+   *
+   * A takeback line targets a claimproc that is ALREADY Received and ALREADY on
+   * a check — that is what makes it a takeback. Sent through the ordinary
+   * sequence it would read as `attached`, be adopted, and be recorded as `paid`:
+   * money arriving where money left. So the two sets are separated before any
+   * decision is made about either, and the ordinary machinery below sees only
+   * the ordinary lines.
+   *
+   * A MIXED plan is the normal case for a real remittance — nine claims paid
+   * and one clawed back on the same check — and the two halves are settled in
+   * order: adjudication, claim receipts, the check for the POSITIVE side, its
+   * reconciliation, then the takebacks.
+   */
+  const takebackLines = plan.lines.filter((l) => l.isSupplemental === true);
+  const ordinaryLines = plan.lines.filter((l) => l.isSupplemental !== true);
+  /**
+   * THE CHECK IS FOR THE POSITIVE SIDE ONLY.
+   *
+   * `intended_total_cents` is the whole plan including the negatives, and
+   * asserting that as a `CheckAmt` would be asserting a number Open Dental's
+   * own eligible-total rule cannot produce — the takeback's target claimproc is
+   * on an earlier check and contributes nothing to this one.
+   */
+  const ordinaryTotalCents = ordinaryLines.reduce(
+    (a, l) => a + Number(l.intendedInsPayAmtCents),
+    0
+  );
+  const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
+
+  const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
   const decisions = new Map();
   /** Every distinct check number the chart already shows on our own lines. */
@@ -1282,7 +1995,7 @@ async function drainRow(ctx, queueId) {
      * CheckAmt over a set we do not understand — and the refusal we would get is
      * a 400 in the §8 window rather than a clean stop here.
      */
-    const conflicted = plan.lines.filter((l) => decisions.get(l.queueLineId).action === 'conflict');
+    const conflicted = ordinaryLines.filter((l) => decisions.get(l.queueLineId).action === 'conflict');
     if (conflicted.length > 0) {
       for (const line of conflicted) {
         await persistLine(pool, line.queueLineId, {
@@ -1326,6 +2039,13 @@ async function drainRow(ctx, queueId) {
      * write; a foreign line that is unreceived or zero contributes nothing to
      * the total and is not a problem.
      */
+    /*
+     * The takebacks' target claimprocs are counted as PLANNED too, even though
+     * they are settled later. They are on an earlier check, so the
+     * `attachedCheckNum` guard below already skips them — but naming them here
+     * means a future edit to that guard cannot turn this plan's own targets
+     * into "foreign money we did not put there".
+     */
     const plannedProcNums = new Set(plan.lines.map((l) => l.odClaimProcNum));
     let foreignEligibleCents = 0;
     for (const group of grouped) {
@@ -1343,7 +2063,7 @@ async function drainRow(ctx, queueId) {
         BLOCK_REASONS.ELIGIBLE_TOTAL_MISMATCH,
         `These claims carry ${foreignEligibleCents} cents of insurance payment that this plan ` +
           `did not put there and no check has taken. Open Dental would refuse a check for ` +
-          `${plan.queue.intendedTotalCents} cents. NOTHING was written. Resolve the extra line ` +
+          `${ordinaryTotalCents} cents. NOTHING was written. Resolve the extra line ` +
           'in the chart, then drain again.',
         step
       );
@@ -1536,9 +2256,21 @@ async function drainRow(ctx, queueId) {
      * one carrier payment and a deposit that cannot be reconciled. There is no
      * path below that reaches the POST with a check already in hand.
      */
-    if (!claimPaymentNum && adoptable.size === 1) {
+    /*
+     * A PURE-RECOUPMENT PLAN CREATES NO CHECK, AND THAT IS NOT A SKIP.
+     *
+     * `POST /claimpayments` asserts that a carrier SENT money. A plan whose
+     * every line is a takeback has no positive side to assert, and minting a
+     * $0.00 or negative check to keep the shape uniform would put an entry in
+     * the practice's deposit that never existed. The migration relaxed the
+     * `posted` proof for exactly this row: `reconciled_at` is still required,
+     * and the takeback read-backs are what supply it.
+     */
+    const needsCheck = ordinaryLines.length > 0;
+
+    if (needsCheck && !claimPaymentNum && adoptable.size === 1) {
       claimPaymentNum = [...adoptable][0];
-    } else if (!claimPaymentNum && adoptable.size > 1) {
+    } else if (needsCheck && !claimPaymentNum && adoptable.size > 1) {
       throw new OdWriteError(
         `this plan's lines are spread across ${adoptable.size} different checks in Open Dental`,
         'OD_MULTIPLE_CHECKS',
@@ -1546,7 +2278,7 @@ async function drainRow(ctx, queueId) {
       );
     }
 
-    if (!claimPaymentNum) {
+    if (needsCheck && !claimPaymentNum) {
       /*
        * THE ELIGIBLE TOTAL, RE-VERIFIED AGAINST THE CHART WE JUST WROTE.
        *
@@ -1576,7 +2308,7 @@ async function drainRow(ctx, queueId) {
         eligibleCents += odPostingWrites.eligibleTotalCents(procs);
       }
 
-      if (eligibleCents !== plan.queue.intendedTotalCents) {
+      if (eligibleCents !== ordinaryTotalCents) {
         await finalizeRow(pool, queueId, {
           status: 'partially_posted',
           odClaimPaymentNum: null,
@@ -1584,7 +2316,7 @@ async function drainRow(ctx, queueId) {
           postedTotalCents,
           lastError:
             `Open Dental's eligible total for these claims is ${eligibleCents} cents; this plan ` +
-            `intends ${plan.queue.intendedTotalCents}. The lines ARE written and the claims ARE ` +
+            `intends ${ordinaryTotalCents}. The lines ARE written and the claims ARE ` +
             'received; no check was created. Resolve the extra or missing line in the chart, then ' +
             'drain again — the resume re-reads Open Dental and will not re-write what is already there.',
           step,
@@ -1614,7 +2346,7 @@ async function drainRow(ctx, queueId) {
       const created = await odPostingWrites.writeClaimPayment(od, {
         endpoint,
         claimNums: grouped.map((g) => g.odClaimNum),
-        checkAmtCents: plan.queue.intendedTotalCents,
+        checkAmtCents: ordinaryTotalCents,
         payTypeDefNum: payType.defNum,
         checkNumber: plan.batch ? plan.batch.checkNumber || plan.batch.eftNumber : null,
         checkDate: (plan.batch && plan.batch.depositDate) || plan.queue.carrierEobDate,
@@ -1648,23 +2380,36 @@ async function drainRow(ctx, queueId) {
     step = 'reconcile';
     await persistStep(pool, queueId, step);
 
-    const attachedRows = await odPostingWrites.readClaimProcsForPayment(od, claimPaymentNum);
-    await auditOd(req, {
-      action: 'READ',
-      resourceType: 'rcm_od_claimpayment',
-      resourceId: claimPaymentNum,
-      office,
-    });
+    /*
+     * With no check there is nothing to reconcile AGAINST, so the read is not
+     * made rather than made against a null. `matched: true` here is not a
+     * shortcut: a pure-recoupment plan's proof is the per-line read-back each
+     * takeback already performed, and `drainTakebacks` throws rather than
+     * returning if any of them disagreed.
+     */
+    const attachedRows = claimPaymentNum
+      ? await odPostingWrites.readClaimProcsForPayment(od, claimPaymentNum)
+      : [];
+    if (claimPaymentNum) {
+      await auditOd(req, {
+        action: 'READ',
+        resourceType: 'rcm_od_claimpayment',
+        resourceId: claimPaymentNum,
+        office,
+      });
+    }
 
-    const reconciliation = odPostingWrites.reconcileCheck(
-      attachedRows,
-      plan.lines.map((l) => ({
-        odClaimProcNum: l.odClaimProcNum,
-        intendedInsPayAmtCents: l.intendedInsPayAmtCents,
-      }))
-    );
+    const reconciliation = claimPaymentNum
+      ? odPostingWrites.reconcileCheck(
+          attachedRows,
+          ordinaryLines.map((l) => ({
+            odClaimProcNum: l.odClaimProcNum,
+            intendedInsPayAmtCents: l.intendedInsPayAmtCents,
+          }))
+        )
+      : { matched: true, missing: [], unexpected: [], amountMismatches: [], attachedTotalCents: 0 };
 
-    for (const line of plan.lines) {
+    for (const line of ordinaryLines) {
       const onCheck = attachedRows.some(
         (r) => Number(r.ClaimProcNum) === line.odClaimProcNum
       );
@@ -1706,24 +2451,49 @@ async function drainRow(ctx, queueId) {
     }
 
     /*
-     * DOCUMENT ATTACH IS 6d's, AND THE STEP SAYS SO RATHER THAN VANISHING.
+     * ── STEP: the takebacks (6d) ─────────────────────────────────────────────
      *
-     * The plan is `posted` — the money is correct and proven — and the EOB PDF is
-     * not yet in the patient's images. §8 puts the document last precisely
-     * because *"a document failure is retryable and never a financial error"*, so
-     * a posted plan with an unfiled EOB is an honest and complete description of
-     * what happened.
+     * LAST among the money writes, and after the check on purpose. The ordinary
+     * side of a mixed plan is complete and proven by this point, so a takeback
+     * that fails leaves a chart whose positive half is intact and legible —
+     * rather than a half-written claim with a permanent negative supplemental
+     * hanging off it.
+     */
+    let recoupedCents = 0;
+    if (takebackLines.length > 0) {
+      step = 'recoupment';
+      await persistStep(pool, queueId, step);
+      const takeback = await drainTakebacks(ctx, plan, takebackLines, config, claimById, note);
+      recoupedCents = takeback.recoupedCents;
+    }
+
+    /*
+     * THE EOB IS FILED LAST, AND ITS FAILURE CANNOT UNSEAT `posted`.
+     *
+     * §8: *"a document failure is retryable and never a financial error."* The
+     * money above is correct and proven; whether a PDF reached the patient's
+     * images is a different question on a different axis, so it is recorded in
+     * its own columns and the plan's status is decided before it is attempted.
      */
     await finalizeRow(pool, queueId, {
       status: 'posted',
       odClaimPaymentNum: claimPaymentNum,
       reconciled: true,
-      postedTotalCents: reconciliation.attachedTotalCents,
+      postedTotalCents: reconciliation.attachedTotalCents + recoupedCents,
       lastError: null,
       step: 'document_attach',
     });
 
-    return { queueId, status: 'posted', odClaimPaymentNum: claimPaymentNum };
+    step = 'document_attach';
+    const document = await attachEobDocuments(ctx, plan, config, claimById);
+
+    return {
+      queueId,
+      status: 'posted',
+      odClaimPaymentNum: claimPaymentNum,
+      recoupedCents,
+      documentAttach: document,
+    };
   } catch (err) {
     /*
      * WHERE IT FAILED DECIDES WHAT THE ROW SAYS.
@@ -1734,7 +2504,21 @@ async function drainRow(ctx, queueId) {
      * `failed` because an exception was thrown would be the honest-states rule
      * failing at the only moment it costs money.
      */
-    const touchedChart = ['claimproc_writes', 'claim_receipts', 'check', 'reconcile'].includes(step);
+    /*
+     * `recoupment` is on this list and `document_attach` is NOT, and the split
+     * is the point. A failed takeback may have left a permanent supplemental on
+     * a chart; a failed document attach cannot move a cent. The document step
+     * also runs AFTER the row was finalised `posted`, so it has no business
+     * rewriting that status — `attachEobDocuments` handles its own failures on
+     * its own columns and never throws to here.
+     */
+    const touchedChart = [
+      'claimproc_writes',
+      'claim_receipts',
+      'check',
+      'reconcile',
+      'recoupment',
+    ].includes(step);
     const message = err instanceof OdWriteError ? `${err.message}: ${err.detail}` : String(err && err.message ? err.message : err);
     console.error(`[rcm/drain] ${office} plan ${queueId} failed at ${step}: ${message}`);
 
@@ -1931,7 +2715,26 @@ async function drainOffice(ctx) {
         continue;
       }
 
-      outcomes.push(await drainRow({ ...ctx, od, ensureConfig, stepDelayMs: stepDelay.delayMs }, queueId));
+      outcomes.push(
+        await drainRow(
+          {
+            ...ctx,
+            od,
+            ensureConfig,
+            stepDelayMs: stepDelay.delayMs,
+            /*
+             * The document seam, injectable so the suite can drive the attach
+             * without a blob account. Bound here rather than required inside
+             * `attachEobDocuments`, so a test that supplies its own is
+             * supplying it to the same argument production uses.
+             */
+            loadRemittancePdf:
+              ctx.loadRemittancePdf ||
+              ((plan) => loadRemittancePdf({ pool: ctx.pool, office: ctx.office }, plan)),
+          },
+          queueId
+        )
+      );
     }
 
     return {
@@ -2047,6 +2850,7 @@ async function sweepInterruptedPostings(deps = {}) {
 module.exports = {
   BLOCK_REASONS,
   SKIP_ALREADY_RECEIVED,
+  RECOUPMENT_PATHS,
   QUEUE_STATUS_LABEL,
   DRAINABLE_STATUSES,
   OFFICES_ENABLED_FOR_POSTING,
@@ -2073,6 +2877,10 @@ module.exports = {
   persistLine,
   blockRow,
   finalizeRow,
+  drainTakebacks,
+  attachEobDocuments,
+  retryDocumentAttach,
+  loadRemittancePdf,
   drainRow,
   drainOffice,
   describeConfig,
