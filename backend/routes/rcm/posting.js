@@ -442,6 +442,13 @@ router.post(
        * practices rather than merely asserted in a doc.
        */
       config: result.config || null,
+      /**
+       * Non-zero only when `RCM_DRAIN_STEP_DELAY_MS` is set AND the environment
+       * could prove it is not production. Reported so a staging run that took
+       * minutes reads as deliberate rather than as the drain having hung —
+       * the same honest-states reasoning as `outOfTime`.
+       */
+      stepDelayMs: result.stepDelayMs || 0,
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
     });
   })

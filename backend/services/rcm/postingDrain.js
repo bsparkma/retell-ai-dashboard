@@ -263,6 +263,144 @@ const DEFAULT_BUDGET_MS = 4 * 60 * 1000;
  */
 const DRAIN_MUTEX = { running: false, since: null, office: null };
 
+// ─── The pause hook (6d) ─────────────────────────────────────────────────────
+
+/**
+ * `RCM_DRAIN_STEP_DELAY_MS` — a sleep after each write's READ-BACK, so a kill
+ * test can land between steps instead of racing a nine-second drain.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS EXISTS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `docs/RCM_POSTING.md` §10.3 is the kill-mid-drain proof, and on 2026-08-25 it
+ * did not happen: the drain takes ~9 s end to end and a container restart takes
+ * ~3 s to take effect, so the restart landed after the run had already finished
+ * and nothing was ever interrupted. *"A kill test that depends on beating a
+ * nine-second drain by hand is not a test, it is a coin flip."* This widens the
+ * window to whatever the tester needs.
+ *
+ * IT SLEEPS AFTER THE READ-BACK, NOT BEFORE IT. A write whose verification has
+ * not run yet is a state the resume logic never has to handle — the drain
+ * persists a step only once it has proven it. Pausing between the PUT and its
+ * GET would manufacture a window that cannot occur in production and prove
+ * nothing about the code that ships.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT IS REFUSED UNLESS THE ENVIRONMENT IS PROVABLY NOT PRODUCTION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A delay knob that works in production is not a testing aid — it is a way to
+ * hold a patient's chart half-written for as long as somebody likes, in the one
+ * window (§8: lines Received, claims `R`, no check yet) this whole design exists
+ * to survive.
+ *
+ * So the guard is FAIL-CLOSED rather than a `NODE_ENV === 'production'` refusal,
+ * and the difference matters here: **staging runs with `NODE_ENV=production`
+ * too** — that is what turns on Key Vault loading and `cookieSecure` — so
+ * NODE_ENV alone cannot tell the two apart, and a naive check would either
+ * disable the hook on the one environment it is for or leave it live on prod.
+ *
+ * The only marker the platform already exposes that separates them is the Key
+ * Vault it loads secrets from (`AZURE_KEY_VAULT_NAME`: `kv-carein-staging` vs
+ * prod's own). No new flag is invented. The rule is positive identification:
+ *
+ *   NODE_ENV !== 'production'          → a dev box. Allowed.
+ *   NODE_ENV === 'production' AND the vault name names staging or dev → allowed.
+ *   anything else — INCLUDING the variable being unset — → refused as 0.
+ *
+ * Unset resolving to REFUSED is the load-bearing half. The default vault is
+ * `kv-carein-core`, so an environment that forgot to say who it is gets treated
+ * as production, which is the only direction this may be wrong in.
+ */
+const DRAIN_STEP_DELAY_ENV = 'RCM_DRAIN_STEP_DELAY_MS';
+
+/**
+ * An upper bound, so a fat-fingered `150000` cannot pin a row open for the rest
+ * of the afternoon. Two minutes is far more than any kill test needs and still
+ * well inside the drain's own four-minute budget.
+ */
+const MAX_STEP_DELAY_MS = 2 * 60 * 1000;
+
+/** Said once per process, not once per step — a pause is not an incident. */
+let stepDelayAnnounced = false;
+
+/** Test seam: the announcement is process-wide and must not leak between suites. */
+function _resetStepDelayAnnouncementForTests() {
+  stepDelayAnnounced = false;
+}
+
+/**
+ * Is this process provably NOT production?
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean}
+ */
+function isNonProdEnvironment(env = process.env) {
+  if (String(env.NODE_ENV || '').trim() !== 'production') return true;
+  const vault = String(env.AZURE_KEY_VAULT_NAME || '').trim().toLowerCase();
+  if (!vault) return false;
+  return vault.includes('staging') || vault.includes('-dev') || vault.endsWith('dev');
+}
+
+/**
+ * Resolve the configured pause, refusing it where it must not apply.
+ *
+ * Read ONCE at the start of a run (see `drainOffice`) rather than per step: a
+ * knob that could change halfway through a sequence would make the run's own
+ * behaviour unreportable, and the value is reported back to the caller so the
+ * screen can say the drain is running slowly on purpose.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ delayMs: number, requestedMs: number, refused: boolean, reason: string|null }}
+ */
+function resolveStepDelayMs(env = process.env) {
+  const raw = String(env[DRAIN_STEP_DELAY_ENV] ?? '').trim();
+  if (!raw) return { delayMs: 0, requestedMs: 0, refused: false, reason: null };
+
+  const requested = Number(raw);
+  // A non-numeric value is 0, not a crash and not a default. The same rule the
+  // per-office DefNum overrides use: never write NaN into anything.
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return { delayMs: 0, requestedMs: 0, refused: false, reason: null };
+  }
+
+  if (!isNonProdEnvironment(env)) {
+    return {
+      delayMs: 0,
+      requestedMs: requested,
+      refused: true,
+      reason:
+        `${DRAIN_STEP_DELAY_ENV}=${requested} was IGNORED: this process cannot prove it is ` +
+        'outside production, and a step delay there would hold a chart write open. Treated as 0.',
+    };
+  }
+
+  return {
+    delayMs: Math.min(Math.floor(requested), MAX_STEP_DELAY_MS),
+    requestedMs: requested,
+    refused: false,
+    reason: null,
+  };
+}
+
+/**
+ * Sleep, if a pause is configured for this run.
+ *
+ * `sleep` is injectable so the suite proves the delay is REQUESTED without
+ * spending it — a test that actually waited fifteen seconds would be a test
+ * nobody runs.
+ *
+ * @param {{ stepDelayMs?: number, sleep?: (ms: number) => Promise<void> }} ctx
+ * @param {string} step
+ * @returns {Promise<void>}
+ */
+async function stepPause(ctx, step) {
+  const ms = Number(ctx && ctx.stepDelayMs) || 0;
+  if (ms <= 0) return;
+  console.warn(`[rcm/drain] pausing ${ms}ms after ${step} (${DRAIN_STEP_DELAY_ENV})`);
+  const sleep = (ctx && ctx.sleep) || ((n) => new Promise((r) => setTimeout(r, n)));
+  await sleep(ms);
+}
+
 // ─── Pure core: preconditions ────────────────────────────────────────────────
 
 /**
@@ -1302,6 +1440,10 @@ async function drainRow(ctx, queueId) {
           lastError: null,
         });
         postedTotalCents += line.intendedInsPayAmtCents;
+        // The pause lands HERE — after the write, its read-back and the persist
+        // that records both. That is the state a killed process really leaves
+        // behind, and the one resume has to handle.
+        await stepPause(ctx, 'claimproc_write');
       }
     }
 
@@ -1361,6 +1503,7 @@ async function drainRow(ctx, queueId) {
             { status: 200, retryable: false }
           );
         }
+        await stepPause(ctx, 'claim_receipt');
       }
 
       /*
@@ -1498,6 +1641,7 @@ async function drainRow(ctx, queueId) {
         'UPDATE rcm_posting_queue SET od_claim_payment_num = $2, updated_at = now() WHERE queue_id = $1',
         [queueId, claimPaymentNum]
       );
+      await stepPause(ctx, 'check');
     }
 
     // ── STEP: reconciliation ────────────────────────────────────────────────
@@ -1636,6 +1780,25 @@ async function drainOffice(ctx) {
   const budgetMs = Number.isFinite(ctx.budgetMs) && ctx.budgetMs > 0 ? ctx.budgetMs : DEFAULT_BUDGET_MS;
   const deadline = clock() + budgetMs;
 
+  /*
+   * THE PAUSE HOOK IS RESOLVED ONCE, HERE, FOR THE WHOLE RUN.
+   *
+   * Not per row and not per step: a knob that could change halfway through a
+   * sequence would make the run's own behaviour unreportable afterwards, which
+   * is the opposite of what a deliberately-slowed test run is for.
+   *
+   * A REFUSAL IS SAID OUT LOUD, ONCE PER PROCESS. Somebody who set the variable
+   * and saw a nine-second drain needs to know it was ignored — silence would
+   * read as "the delay is not working" and send them looking in the wrong place.
+   */
+  const stepDelay = ctx.stepDelayMs !== undefined
+    ? { delayMs: Number(ctx.stepDelayMs) || 0, requestedMs: Number(ctx.stepDelayMs) || 0, refused: false, reason: null }
+    : resolveStepDelayMs();
+  if (stepDelay.refused && !stepDelayAnnounced) {
+    stepDelayAnnounced = true;
+    console.warn(`[rcm/drain] ${stepDelay.reason}`);
+  }
+
   DRAIN_MUTEX.running = true;
   DRAIN_MUTEX.since = new Date().toISOString();
   DRAIN_MUTEX.office = ctx.office;
@@ -1755,6 +1918,7 @@ async function drainOffice(ctx) {
           outOfTime,
           remaining: queueIds.length - i,
           config: describeConfig(config),
+          stepDelayMs: stepDelay.delayMs,
         };
       }
 
@@ -1767,7 +1931,7 @@ async function drainOffice(ctx) {
         continue;
       }
 
-      outcomes.push(await drainRow({ ...ctx, od, ensureConfig }, queueId));
+      outcomes.push(await drainRow({ ...ctx, od, ensureConfig, stepDelayMs: stepDelay.delayMs }, queueId));
     }
 
     return {
@@ -1776,6 +1940,7 @@ async function drainOffice(ctx) {
       outOfTime,
       remaining: 0,
       config: describeConfig(config),
+      stepDelayMs: stepDelay.delayMs,
     };
   } finally {
     DRAIN_MUTEX.running = false;
@@ -1890,6 +2055,12 @@ module.exports = {
   LINE_COLUMNS,
   STEPS,
   DRAIN_MUTEX,
+  DRAIN_STEP_DELAY_ENV,
+  MAX_STEP_DELAY_MS,
+  isNonProdEnvironment,
+  resolveStepDelayMs,
+  stepPause,
+  _resetStepDelayAnnouncementForTests,
   checkPreconditions,
   decideLineAction,
   groupByClaim,

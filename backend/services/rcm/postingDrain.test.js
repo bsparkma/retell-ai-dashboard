@@ -1423,3 +1423,132 @@ test('a config failure is not re-attempted once per plan in the same run', async
     'one attempt for the run, not one per plan'
   );
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. RCM_DRAIN_STEP_DELAY_MS — the staging-only pause hook (6d)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * §10.3's kill-mid-drain has never been proven: the drain takes ~9 s and a
+ * container restart takes ~3 s to land, so the 2026-08-25 attempt restarted a
+ * run that had already finished. This knob widens the window.
+ *
+ * The tests below are about the GUARD far more than the sleep. A delay that
+ * works in production is a way to hold a chart write open in the §8 window, and
+ * the environment this must never be live in is the one that looks MOST like
+ * the one it is for: staging also runs `NODE_ENV=production`.
+ */
+
+test('the pause is off by default, and a blank or junk value is 0 rather than a crash', () => {
+  assert.deepEqual(postingDrain.resolveStepDelayMs({}), {
+    delayMs: 0,
+    requestedMs: 0,
+    refused: false,
+    reason: null,
+  });
+  for (const raw of ['', '   ', 'soon', 'NaN', '-5', '0']) {
+    const got = postingDrain.resolveStepDelayMs({ RCM_DRAIN_STEP_DELAY_MS: raw });
+    assert.equal(got.delayMs, 0, `${JSON.stringify(raw)} must resolve to 0`);
+    assert.equal(got.refused, false, `${JSON.stringify(raw)} is absent, not refused`);
+  }
+});
+
+test('on a dev box the delay applies', () => {
+  const got = postingDrain.resolveStepDelayMs({
+    NODE_ENV: 'development',
+    RCM_DRAIN_STEP_DELAY_MS: '15000',
+  });
+  assert.equal(got.delayMs, 15000);
+  assert.equal(got.refused, false);
+});
+
+test('on STAGING the delay applies — NODE_ENV alone cannot tell it from prod', () => {
+  /*
+   * The whole reason the guard is not `NODE_ENV === 'production'`. Staging sets
+   * NODE_ENV=production so Key Vault loading and cookieSecure switch on, so a
+   * naive check would disable the hook on the one environment it exists for.
+   */
+  const got = postingDrain.resolveStepDelayMs({
+    NODE_ENV: 'production',
+    AZURE_KEY_VAULT_NAME: 'kv-carein-staging',
+    RCM_DRAIN_STEP_DELAY_MS: '15000',
+  });
+  assert.equal(got.delayMs, 15000);
+  assert.equal(got.refused, false);
+});
+
+test('in PRODUCTION the delay is refused, says so, and is treated as 0', () => {
+  const got = postingDrain.resolveStepDelayMs({
+    NODE_ENV: 'production',
+    AZURE_KEY_VAULT_NAME: 'kv-carein-prod',
+    RCM_DRAIN_STEP_DELAY_MS: '15000',
+  });
+  assert.equal(got.delayMs, 0, 'production must not pause mid-sequence');
+  assert.equal(got.refused, true);
+  assert.equal(got.requestedMs, 15000, 'what was asked for is reported, not erased');
+  assert.match(String(got.reason), /IGNORED/);
+});
+
+test('an environment that cannot SAY who it is counts as production', () => {
+  /*
+   * FAIL CLOSED, and this is the load-bearing case. `AZURE_KEY_VAULT_NAME`
+   * defaults to `kv-carein-core` when unset, so an app setting nobody added
+   * must not read as "probably staging".
+   */
+  for (const env of [
+    { NODE_ENV: 'production' },
+    { NODE_ENV: 'production', AZURE_KEY_VAULT_NAME: '' },
+    { NODE_ENV: 'production', AZURE_KEY_VAULT_NAME: 'kv-carein-core' },
+  ]) {
+    const got = postingDrain.resolveStepDelayMs({ ...env, RCM_DRAIN_STEP_DELAY_MS: '15000' });
+    assert.equal(got.delayMs, 0, `${JSON.stringify(env)} must refuse`);
+    assert.equal(got.refused, true);
+  }
+});
+
+test('a fat-fingered delay is capped rather than honoured', () => {
+  const got = postingDrain.resolveStepDelayMs({
+    NODE_ENV: 'development',
+    RCM_DRAIN_STEP_DELAY_MS: '9999999',
+  });
+  assert.equal(got.delayMs, postingDrain.MAX_STEP_DELAY_MS);
+  assert.ok(postingDrain.MAX_STEP_DELAY_MS < postingDrain.DEFAULT_BUDGET_MS,
+    'the cap must sit inside the drain\'s own budget or the run would time out pausing');
+});
+
+test('the pause is spent AFTER each write read-back, and the plan still posts', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+
+  /** Spent time is RECORDED, not waited — a suite that slept 45 s is a suite nobody runs. */
+  const slept = [];
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { stepDelayMs: 15000, sleep: async (ms) => { slept.push(ms); } })
+  );
+
+  assert.equal(result.outcomes[0].status, 'posted');
+  assert.equal(result.stepDelayMs, 15000, 'the run reports that it was deliberately slowed');
+
+  /*
+   * One pause per write in the forced order — the claimproc PUT, the claim PUT
+   * and the check POST. Three writes, three windows a kill can land in.
+   */
+  assert.deepEqual(slept, [15000, 15000, 15000]);
+  assert.deepEqual(od.writesIssued(), [
+    'PUT /claimprocs/533930',
+    'PUT /claims/53648',
+    'POST /claimpayments',
+  ]);
+});
+
+test('with no delay configured the drain never sleeps at all', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  const slept = [];
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { stepDelayMs: 0, sleep: async (ms) => { slept.push(ms); } })
+  );
+  assert.equal(result.outcomes[0].status, 'posted');
+  assert.deepEqual(slept, [], 'the default path must not acquire a timer it does not need');
+  assert.equal(result.stepDelayMs, 0);
+});
