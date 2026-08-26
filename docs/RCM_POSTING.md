@@ -563,6 +563,28 @@ So attribution is three things, and only the middle one is in the chart:
 
 Plus `rcm_posting_queue.drained_by` / `drain_attempt_at`: who pressed, and when.
 
+### 6d — the takeback's own trail, successes AND refusals
+
+An ordinary approve writes `CREATE rcm_posting_approval`. **A takeback writes
+`CREATE rcm_recoupment_approval`, and an ordinary `APPROVE` row is never written
+for a recoupment plan.** The two resource types are disjoint, so *"every takeback
+anybody ever authorised"* is one indexed query on `(resource_type, resource_id)`.
+
+**A REFUSED takeback is on the same trail.** `respondToApprovalError` files every
+refusal through `auditRcmDenial` under the resource the caller was acting on, so
+a wrong typed phrase leaves a row with `result: ERROR`, the actor, the office and
+the remittance — three wrong guesses leave three rows. That is deliberate: the
+brief's *"nothing recorded"* means **no approval** (no plan, no claim link, no
+attempt stamp), not *no trail*. Read the other way it would make repeated
+guessing at an irreversible operation invisible, which is the one thing an audit
+log exists to prevent.
+
+*(Why the event is named in `resource_type` rather than as an
+`APPROVE_RECOUPMENT` action: `audit_log_action_check` permits only
+`READ | CREATE | UPDATE | DELETE`, and there is no `detail` column. Widening an
+append-only, cross-module table so one RCM event can name itself is a much larger
+change than the event warrants — see the 6d migration's header.)*
+
 The audit write is **fail-closed**, and the consequence is deliberate: a failed
 audit throws, which aborts the row mid-sequence and leaves it `partially_posted`.
 That is correct — carrying on writing to a chart with no recorded trail is what
@@ -2027,7 +2049,7 @@ The same queue. A disabled button, naming the permission an approver holds.
 | **Recoupments, the EOB attach** | ✅ **BUILT IN 6d.** See §3.7 and §3.8. | — |
 | **Patient portion / PaySplits** | Still deferred. `ApiPayments` is not enabled on the key at all (G11), so it is an unproven path in the strongest sense. | By design. |
 | **An ERA-only remittance files no EOB** | Slice 5 stores raw X12 835 text, which is not a document anybody would open, and nothing in this repo renders one as a PDF. Reported honestly as `document_attach_status: null` — *nothing to file* — never as a failure. | Building an 835→PDF renderer inside a posting drain would be a second, unproven document pipeline. Logged rather than improvised. |
-| **A wrong typed confirmation writes no audit row** | A mismatched D-6 phrase refuses at 422 with nothing recorded — no plan, no claim link, no approval-attempt stamp. Repeated wrong guesses are therefore invisible. | The brief said *"nothing recorded"* and this follows it literally. Worth revisiting if the takeback path ever leaves a solo-biller practice. |
+| ~~A wrong typed confirmation writes no audit row~~ | **NOT A LIMIT — corrected 2026-08-26.** An earlier draft of this table claimed it. It was wrong: `respondToApprovalError` files every refusal through `auditRcmDenial`, so a mismatched phrase leaves a row under `rcm_recoupment_approval` with `result: ERROR`, the actor, the office and the remittance. Three wrong guesses leave three rows. `approvalGate.test.js` pins it. | The brief's *"nothing recorded"* means **no approval** — no plan, no claim link, no attempt stamp — and not *no trail*. Read the other way it would make repeated guesses at an irreversible operation invisible, which is the one thing an audit log exists to prevent. |
 
 ### 15.1 A withheld claim fixed after the plan has drained
 

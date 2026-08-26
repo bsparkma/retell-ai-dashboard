@@ -1362,3 +1362,176 @@ test('every check the gate can fail has copy a screen can print', () => {
 test('the two takeback paths are named, and the reversible one is the default', () => {
   assert.deepEqual([...approvalGate.RECOUPMENT_PATHS], ['adjustment', 'supplemental']);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// D-6 at the route: what a WRONG phrase costs, and what it leaves behind
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A takeback: the batch and its claim both move money backwards. */
+function seedTakebackRemittance(db) {
+  seed(db);
+  const batch = db.table('rcm_payment_batches')[0];
+  batch.total_amount_cents = -5408;
+  for (const claim of db.table('rcm_claims')) {
+    claim.total_paid_cents = -5408;
+    claim.patient_balance_cents = 0;
+  }
+  for (const payment of db.table('rcm_batch_claim_payments')) {
+    payment.paid_cents = -5408;
+  }
+  for (const line of db.table('rcm_procedure_lines')) {
+    line.paid_cents = -5408;
+  }
+  return db;
+}
+
+const approveRecoup = (app, body, batch = BATCH) =>
+  api(app.baseUrl, 'POST', `/api/rcm/remittances/${batch}/approve-recoupment${Q}`, json(body));
+
+test('the takeback checklist ships the phrase to type, formatted by the server', async () => {
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await api(app.baseUrl, 'GET', `/api/rcm/remittances/${BATCH}/recoupment${Q}`);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    /*
+     * RENDERED VERBATIM by the client. The whole point of the server owning the
+     * formatting is that the number a person reads and the number the server
+     * will demand cannot drift apart.
+     */
+    assert.equal(res.body.typedTotalExpected, '-54.08');
+    assert.equal(res.body.recoupmentTotalCents, -5408);
+    assert.ok(res.body.recoupmentClaims >= 1);
+    // The server states the default so a client cannot pre-select the
+    // irreversible path by omission.
+    assert.equal(res.body.defaultPath, 'adjustment');
+    assert.deepEqual(res.body.paths, ['adjustment', 'supplemental']);
+  });
+});
+
+test('a WRONG typed phrase refuses, records no approval — and LEAVES AN AUDIT ROW', async () => {
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * "NOTHING RECORDED" MEANS NO APPROVAL. IT DOES NOT MEAN NO TRAIL.
+   * ─────────────────────────────────────────────────────────────────────────
+   * The 6d brief said a mismatch records nothing, and read literally that would
+   * make repeated wrong guesses at an irreversible operation INVISIBLE — which
+   * is the one thing an audit log exists to prevent. Beau's ruling: the refusal
+   * is audited.
+   *
+   * The two halves are different claims and both are asserted below:
+   *   - nothing was AUTHORISED — no plan, no claim link, no attempt stamp;
+   *   - something was RECORDED — who tried, on which remittance, in which
+   *     office, and that it failed.
+   */
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await approveRecoup(app, { typedTotal: '-54.00', path: 'adjustment' });
+
+    assert.equal(res.status, 422, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'RECOUPMENT_CONFIRM_MISMATCH');
+    // The refusal says what it WANTED — a dialog that says "wrong" without
+    // saying what is wanted is a guessing game.
+    assert.equal(res.body.expected, '-54.08');
+
+    // ── Nothing was authorised. ──────────────────────────────────────────
+    assert.equal(db.table('rcm_posting_queue').length, 0, 'no plan may exist');
+    assert.equal(db.table('rcm_posting_queue_line').length, 0, 'and no lines');
+    for (const claim of db.table('rcm_claims')) {
+      assert.equal(claim.posting_queue_id, null, 'no claim may be linked to a plan');
+    }
+
+    // ── But the attempt IS on the record. ────────────────────────────────
+    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_recoupment_approval');
+    assert.equal(rows.length, 1, 'a refused takeback must still leave a trail');
+    assert.equal(rows[0].result, 'ERROR', 'it failed, and says so');
+    assert.equal(rows[0].resource_id, BATCH, 'on which remittance');
+    assert.equal(rows[0].office, 'roland', 'and in which practice');
+    assert.ok(rows[0].user_id, 'and who tried — the point of recording it at all');
+
+    /*
+     * AND IT IS FILED UNDER THE TAKEBACK RESOURCE, NOT THE ORDINARY ONE.
+     * That is what keeps `rcm_recoupment_approval` a COMPLETE record of every
+     * takeback anybody attempted — refusals included — rather than only the
+     * ones that succeeded.
+     */
+    assert.equal(
+      auditRows(db).filter((r) => r.resource_type === 'rcm_posting_approval').length,
+      0,
+      'a refused takeback must not appear in the ordinary-approval trail'
+    );
+  });
+});
+
+test('repeated wrong guesses are each recorded, which is the whole reason to record them', async () => {
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    for (const guess of ['-54.00', '-54.8', '54.08']) {
+      const res = await approveRecoup(app, { typedTotal: guess, path: 'supplemental' });
+      assert.equal(res.status, 422, `${guess} must refuse`);
+    }
+    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_recoupment_approval');
+    assert.equal(rows.length, 3, 'three attempts, three rows — a pattern is visible');
+    assert.equal(db.table('rcm_posting_queue').length, 0, 'and still nothing authorised');
+  });
+});
+
+test('the RIGHT phrase approves, records the path, and audits as a CREATE', async () => {
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await approveRecoup(app, { typedTotal: '-54.08', path: 'adjustment' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.recoupmentPath, 'adjustment');
+
+    const plan = db.table('rcm_posting_queue')[0];
+    assert.ok(plan, 'a plan exists');
+    assert.equal(plan.is_recoupment, true, 'and it is flagged as a takeback');
+
+    /*
+     * EVERY takeback line is `is_supplemental = true` whichever path was
+     * chosen. The column is not "this is a supplemental claimproc" — it is
+     * which side of the money guard the row sits on, and a takeback TARGETS an
+     * already-paid claimproc a previous plan legitimately posted.
+     */
+    for (const line of db.table('rcm_posting_queue_line')) {
+      assert.equal(line.is_supplemental, true);
+      assert.equal(line.recoupment_path, 'adjustment');
+    }
+
+    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_recoupment_approval');
+    const created = rows.filter((r) => r.action === 'CREATE');
+    assert.equal(created.length, 1, 'a person authorised an irreversible-class write');
+    assert.equal(created[0].result, 'SUCCESS');
+    // ORDINARY APPROVE IS NEVER WRITTEN FOR A TAKEBACK. The two resource types
+    // are disjoint, so "every takeback anyone ever authorised" is one query.
+    assert.equal(
+      auditRows(db).filter((r) => r.resource_type === 'rcm_posting_approval').length,
+      0
+    );
+  });
+});
+
+test('the ordinary approve still refuses this remittance outright', async () => {
+  /*
+   * The other half of the swap, driven through the real route rather than the
+   * pure function: a takeback cannot reach the chart through the ordinary
+   * button, and no request shape changes that.
+   */
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await approve(app);
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'NOTHING_APPROVABLE');
+    assert.equal(db.table('rcm_posting_queue').length, 0);
+  });
+});
+
+test('an unrecognised path is refused before the phrase is even considered', async () => {
+  const db = seedTakebackRemittance(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await approveRecoup(app, { typedTotal: '-54.08', path: 'delete_it' });
+    assert.equal(res.status, 422);
+    assert.equal(res.body.code, 'RECOUPMENT_PATH_INVALID');
+    assert.deepEqual(res.body.paths, ['adjustment', 'supplemental']);
+    assert.equal(db.table('rcm_posting_queue').length, 0);
+  });
+});
