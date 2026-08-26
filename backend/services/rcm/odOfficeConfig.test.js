@@ -283,3 +283,165 @@ test('a second resolve inside the TTL reuses the cache rather than re-reading', 
   await odOfficeConfig.resolvePostingConfig(odGet, 'roland', { force: true });
   assert.ok(odGet.calls.length > callsAfterFirst);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6d — the DefNums the takeback and the document write, per office
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Both practices' real definition rows, as `docs/RCM_POSTING.md` §9(b) recorded
+ * them live on 2026-08-19. Configuration, not patient data.
+ *
+ * ⚠ Read the two Category-1 lists side by side. **DefNum 10 is live in BOTH and
+ * means something different in each** — `Write-off` in Roland, `Insurance Write
+ * off` in Riley. That is the CommType 486/451 collision repeated with money
+ * attached, and it is the single best argument in this repository for why every
+ * one of these is resolved by NAME.
+ */
+const ROLAND_DEFS_6D = [
+  { DefNum: 296, Category: 32, ItemName: 'Check', isHidden: 'false' },
+  { DefNum: 297, Category: 32, ItemName: 'EFT', isHidden: 'false' },
+  { DefNum: 404, Category: 32, ItemName: 'Credit Card', isHidden: 'false' },
+  { DefNum: 472, Category: 32, ItemName: 'Insurance Check', isHidden: 'false' },
+  { DefNum: 10, Category: 1, ItemName: 'Write-off', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 12, Category: 1, ItemName: 'Insurance Write-off', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 260, Category: 1, ItemName: 'Insurance Adjustment', ItemValue: '+', isHidden: 'false' },
+  { DefNum: 477, Category: 1, ItemName: 'Insurance deductions from previous payments', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 131, Category: 18, ItemName: 'Insurance', isHidden: 'false' },
+  { DefNum: 134, Category: 18, ItemName: 'Financial', isHidden: 'false' },
+  { DefNum: 473, Category: 18, ItemName: 'Consent Forms', isHidden: 'false' },
+];
+
+const VALLEY_DEFS_6D = [
+  { DefNum: 258, Category: 32, ItemName: 'Check', isHidden: 'false' },
+  { DefNum: 259, Category: 32, ItemName: 'EFT', isHidden: 'false' },
+  { DefNum: 334, Category: 32, ItemName: 'Credit Card', isHidden: 'false' },
+  { DefNum: 428, Category: 32, ItemName: 'Insurance Check', isHidden: 'false' },
+  { DefNum: 10, Category: 1, ItemName: 'Insurance Write off', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 408, Category: 1, ItemName: 'Write-off', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 402, Category: 1, ItemName: 'Insurance Adjustment', ItemValue: '+', isHidden: 'false' },
+  { DefNum: 435, Category: 1, ItemName: 'Insurance deductions from previous payments', ItemValue: '-', isHidden: 'false' },
+  { DefNum: 131, Category: 18, ItemName: 'Insurance', isHidden: 'false' },
+  { DefNum: 134, Category: 18, ItemName: 'Financial', isHidden: 'false' },
+  { DefNum: 429, Category: 18, ItemName: 'Consent Forms', isHidden: 'false' },
+];
+
+function configFrom6dRows(rows) {
+  return {
+    officeKey: 'fixture',
+    payTypes: rows
+      .filter((r) => r.Category === 32)
+      .map((r) => ({ defNum: r.DefNum, name: r.ItemName, sign: null })),
+    adjTypes: rows
+      .filter((r) => r.Category === 1)
+      .map((r) => ({ defNum: r.DefNum, name: r.ItemName, sign: r.ItemValue || null })),
+    docCategories: rows
+      .filter((r) => r.Category === 18)
+      .map((r) => ({ defNum: r.DefNum, name: r.ItemName, sign: null })),
+    prefs: { claimPaymentBatchOnly: false, showAutoDeposit: false },
+    filterHonored: { payTypes: true, adjTypes: true, docCategories: true },
+    resolvedAt: '2026-08-26T00:00:00.000Z',
+  };
+}
+
+test('every DefNum the drain writes resolves per office, and NOT ONE crosses', () => {
+  const roland = configFrom6dRows(ROLAND_DEFS_6D);
+  const valley = configFrom6dRows(VALLEY_DEFS_6D);
+
+  // PayType — the check.
+  assert.equal(odOfficeConfig.pickPayType(roland, 'check').defNum, 472);
+  assert.equal(odOfficeConfig.pickPayType(valley, 'check').defNum, 428);
+
+  // AdjType — the reversible takeback (6d).
+  assert.equal(odOfficeConfig.pickAdjType(roland, 'recoupment').defNum, 477);
+  assert.equal(odOfficeConfig.pickAdjType(valley, 'recoupment').defNum, 435);
+
+  // AdjType — the offsetting reversal, because there is no DELETE /adjustments.
+  assert.equal(odOfficeConfig.pickAdjType(roland, 'recoupment_reversal').defNum, 260);
+  assert.equal(odOfficeConfig.pickAdjType(valley, 'recoupment_reversal').defNum, 402);
+
+  /*
+   * NOT ONE ROLAND NUMBER MAY APPEAR IN A VALLEY ANSWER. This is the assertion
+   * the §10.5 valley transcript will be grepped for by hand; making it a test
+   * means it holds on every build rather than on one night.
+   */
+  const valleyAnswers = [
+    odOfficeConfig.pickPayType(valley, 'check').defNum,
+    odOfficeConfig.pickPayType(valley, 'eft').defNum,
+    odOfficeConfig.pickAdjType(valley, 'recoupment').defNum,
+    odOfficeConfig.pickAdjType(valley, 'recoupment_reversal').defNum,
+    odOfficeConfig.pickDocCategory(valley).defNum,
+  ];
+  for (const rolandOnly of [472, 297, 477, 260, 296, 404, 473]) {
+    assert.ok(
+      !valleyAnswers.includes(rolandOnly),
+      `Roland's DefNum ${rolandOnly} must never appear in a valley answer`
+    );
+  }
+});
+
+test('DefNum 10 means something different in each practice, and NAME is what saves us', () => {
+  /*
+   * The whole argument for this module, in one assertion. A hardcoded 10 would
+   * post a plain write-off in one practice and an insurance write-off in the
+   * other, silently, forever.
+   */
+  const roland = configFrom6dRows(ROLAND_DEFS_6D);
+  const valley = configFrom6dRows(VALLEY_DEFS_6D);
+  assert.equal(roland.adjTypes.find((a) => a.defNum === 10).name, 'Write-off');
+  assert.equal(valley.adjTypes.find((a) => a.defNum === 10).name, 'Insurance Write off');
+  // And neither is what a recoupment resolves to in either practice.
+  assert.notEqual(odOfficeConfig.pickAdjType(roland, 'recoupment').defNum, 10);
+  assert.notEqual(odOfficeConfig.pickAdjType(valley, 'recoupment').defNum, 10);
+});
+
+test('the DocCategory numbers AGREEING is a coincidence, not a rule', () => {
+  /*
+   * `131 Insurance` and `134 Financial` happen to match in both practices —
+   * while `Consent Forms` is 473 in roland and 429 in valley on the very same
+   * list. Two numbers agreeing is not evidence about a third, so this resolves
+   * by name like everything else.
+   */
+  const roland = configFrom6dRows(ROLAND_DEFS_6D);
+  const valley = configFrom6dRows(VALLEY_DEFS_6D);
+  assert.equal(odOfficeConfig.pickDocCategory(roland).defNum, 131);
+  assert.equal(odOfficeConfig.pickDocCategory(valley).defNum, 131);
+  assert.notEqual(
+    roland.docCategories.find((d) => d.name === 'Consent Forms').defNum,
+    valley.docCategories.find((d) => d.name === 'Consent Forms').defNum
+  );
+});
+
+test('an AdjType whose stated sign disagrees with the purpose is refused', () => {
+  /*
+   * `AdjAmt`'s sign must agree with `ItemValue` or Open Dental refuses with
+   * `400 "AdjAmt must be negative for this AdjType."` (Spike 0b test 8).
+   * Predicted here rather than discovered as a 400 mid-takeback.
+   */
+  const wrongSign = configFrom6dRows([
+    { DefNum: 900, Category: 1, ItemName: 'Insurance deductions from previous payments', ItemValue: '+', isHidden: 'false' },
+  ]);
+  assert.equal(odOfficeConfig.pickAdjType(wrongSign, 'recoupment'), null);
+
+  // An UNSIGNED row is accepted: the sign is advisory metadata, and refusing on
+  // its absence would make a correctly-named type unusable.
+  const unsigned = configFrom6dRows([
+    { DefNum: 901, Category: 1, ItemName: 'Insurance deductions from previous payments', isHidden: 'false' },
+  ]);
+  assert.equal(odOfficeConfig.pickAdjType(unsigned, 'recoupment').defNum, 901);
+});
+
+test('a practice with no recoupment type or no document category resolves to null, never a neighbour', () => {
+  /*
+   * A REFUSAL upstream, never a fallback to a plausible-looking row. An
+   * adjustment booked under the wrong type is a number in the practice's books
+   * meaning something other than what happened — and unlike a wrong PayType it
+   * is not even correctable by deletion.
+   */
+  const bare = configFrom6dRows([
+    { DefNum: 12, Category: 1, ItemName: 'Insurance Write-off', ItemValue: '-', isHidden: 'false' },
+    { DefNum: 999, Category: 18, ItemName: 'Consent Forms', isHidden: 'false' },
+  ]);
+  assert.equal(odOfficeConfig.pickAdjType(bare, 'recoupment'), null);
+  assert.equal(odOfficeConfig.pickDocCategory(bare), null);
+});

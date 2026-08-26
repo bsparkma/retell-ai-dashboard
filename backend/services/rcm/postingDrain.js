@@ -82,9 +82,20 @@
  *                               in docs/RCM_POSTING.md this is where a valley
  *                               row stops. Never a silent skip; never a roland
  *                               fallback.
- *   `recoupment_not_in_scope`   D-6. A negative supplemental is the ONE
- *                               irreversible Open Dental operation (G10) and it
- *                               belongs to 6d behind a harder gate.
+ *   `recoupment_unconfirmed`    D-6, RE-SCOPED BY 6d. It no longer means "this
+ *                               module does not do takebacks" — it means a
+ *                               takeback reached the drain WITHOUT going
+ *                               through the typed confirmation: either the plan
+ *                               is not flagged `is_recoupment`, or a takeback
+ *                               line does not name the path it was authorised
+ *                               for. The drain will not pick between an
+ *                               operation that can be undone and one that
+ *                               cannot on a biller's behalf.
+ *   `no_adj_type`               The office's own Category-1 list carries nothing
+ *                               named for a recoupment, so the REVERSIBLE path
+ *                               is unavailable here. A refusal — never a silent
+ *                               promotion to the irreversible supplemental.
+ *   `no_doc_category`           Nowhere to file the EOB (Category 18).
  *   `office_config_unresolved`  The office's own PayType could not be read. A
  *                               check posted under a guessed payment type is a
  *                               reconciliation failure discovered weeks later.

@@ -1,4 +1,4 @@
-# RCM Slice 6c — the drain
+# RCM Slices 6c + 6d — the drain, the takeback and the EOB
 
 **The first Open Dental write in this module.** Approved remittances become real
 insurance payments on real patients' ledgers, in the correct office's database,
@@ -8,14 +8,14 @@ through the forced call sequence `docs/RCM_OD_WRITES.md` proved live on
 | | |
 | --- | --- |
 | Routes (UI) | `/rcm/posting` |
-| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain` |
+| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain`, **`GET /api/rcm/remittances/:id/recoupment`**, **`POST /api/rcm/remittances/:id/approve-recoupment`**, **`POST /api/rcm/posting/queue/:id/attach-document`** |
 | Entitlement | `requireModule('rcm')` — ships dark; no tenant is entitled yet |
 | Permission | `rcm.read` for the queue, `rcm.write` for the drain (D-9) |
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Offices enabled | **roland only.** valley is fail-closed (D-7, §9) |
-| Migration | `backend/migrations-tenant/1787120000000_rcm_posting_drain.js` (additive only) |
+| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) — both additive only |
 | Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx) |
-| Tests | `postingDrain.test.js` (48), `odOfficeConfig.test.js` (15), `posting.test.js` (17), `rcmNoOdWrites.test.js` (14), `rcm-labels.test.ts` (17) |
+| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (17), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), `rcm-labels.test.ts` (20) |
 
 ---
 
@@ -126,20 +126,37 @@ pending ──► claimproc_written ──► claim_received ──► paid
 about money, and only the second one proves a resume did not double-post.
 Slice 1's `skipped` stays in the vocabulary and stays unused by this slice.
 
-`document_attached` is **6d's**. The step exists in `odPostingWrites.STEPS` and
-the queue detail reports it honestly:
+**`recouped` is 6d's, and it is a separate word from `paid` on purpose.** A line
+that ends `paid` is money the carrier sent; a line that ends `recouped` is money
+the carrier took back. Collapsing them would make the queue unable to answer
+*"what did this practice actually receive"*, which is the question the whole
+module exists to answer.
 
-```json
-"documentAttach": {
-  "implemented": false,
-  "note": "The EOB PDF is not yet filed into the patient images — that is a later slice."
-}
+```
+pending ──► recouped        (a takeback: POST /adjustments, or the supplemental)
 ```
 
-A plan that is `posted` with an unfiled EOB is a complete and honest description
-of what happened — §8 puts the document last precisely because *"a document
-failure is retryable and never a financial error"*. A screen that showed nothing
-here would leave a biller assuming the PDF was filed.
+A takeback line never passes through `claimproc_written` / `claim_received` /
+`paid`. It targets a claimproc that is **already** Received and **already** on a
+check — that is what makes it a takeback — so it is held out of the ordinary
+decision loop entirely (§3.7).
+
+### The EOB filing is NOT a line state and NOT a plan state
+
+It is its own axis, on its own columns, and that is the whole of §8's *"a
+document failure is retryable and never a financial error"* expressed in the
+schema. A plan whose money is correct and proven **stays `posted`** whether or
+not a PDF reached the chart.
+
+| `document_attach_status` | Means |
+| --- | --- |
+| `null` | **Not attempted.** A real third state — the plan has not posted yet, or the remittance arrived as raw 835 with no document to file. The screen says *"nothing to file"* and offers no retry button. |
+| `attached` | Filed into every patient chart on the plan, each with the `DocNum` read back from that patient's own document list. |
+| `partial` | Some patients filed and some did not. Named rather than rounded up — `attached` would claim a document exists in a chart where it does not. |
+| `failed` | Nothing filed. The payment is unaffected and the plan is still `posted`. |
+
+Per-patient rows live in `rcm_posting_document`, one per `(plan, patient)`,
+enforced by a unique index rather than by the code that files them.
 
 ### 2.4 Blocked reasons
 
@@ -150,7 +167,9 @@ backend gains one the client has no copy for.
 | Reason | Means |
 | --- | --- |
 | `valley_not_enabled` | D-7 (§9). Never a silent skip, never a roland fallback. |
-| `recoupment_not_in_scope` | D-6. A negative supplemental is the one irreversible OD operation (G10). |
+| `recoupment_unconfirmed` | **6d re-scoped this.** In 6c it meant *"this module does not do takebacks at all"*. It now means the narrower and sharper thing: a takeback reached the drain **without** going through D-6's typed confirmation — either the plan is not flagged `is_recoupment`, or a takeback line does not name the path it was authorised for. Either way, nothing is sent. |
+| `no_adj_type` | This practice's own Category-1 list carries nothing named `Insurance deductions from previous payments`, so the **reversible** takeback cannot be written here. A refusal, and **never** a silent promotion to the irreversible supplemental — nobody authorised that. |
+| `no_doc_category` | This practice's Category-18 list has no `Insurance` or `Financial` category, so there is nowhere to file the EOB. |
 | `office_config_unresolved` | This practice's own PayType could not be read from its own Open Dental. |
 | `no_pay_type` | The practice's Category-32 list carries nothing named for a check or an EFT. |
 | `eligible_total_mismatch` | The claims carry insurance money this plan did not put there. Caught **before the first write**, so nothing was attempted. |
@@ -180,8 +199,20 @@ per claim  PUT  /claims/{n}       {ClaimStatus:"R", DateReceived}
            GET  /claims/{n}                ◄── READ BACK AND COMPARE
 per check  POST /claimpayments[/Batch]     CheckAmt = Σ eligible InsPayAmt
            GET  /claimprocs?ClaimPaymentNum=  ◄── RECONCILE
-(6d)       POST /documents/Upload
+per line   POST /adjustments                    (6d, takeback — REVERSIBLE)
+           GET  /adjustments?PatNum=       ◄── READ BACK AND COMPARE
+    …or   POST /claimprocs/Supplemental        (6d, takeback — G10, PERMANENT)
+           GET  /claimprocs?ClaimNum=      ◄── READ BACK AND COMPARE
+per patient POST /documents/Upload              (6d, the EOB)
+           GET  /documents?PatNum=         ◄── READ BACK; the DocNum is the proof
 ```
+
+**The two 6d steps are last, and in that order, for two different reasons.** A
+takeback runs after the positive side is complete and proven, so a failure there
+leaves a chart whose paid half is intact and legible rather than a half-written
+claim with a permanent negative supplemental hanging off it. The document runs
+after everything, because a document failure is retryable and never a financial
+error.
 
 **Every call is one the Spike 0b transcript executed.** Test 2 wrote
 `{Status:"Received", InsPayAmt:0.60, WriteOff:0.20, DedApplied:0.20}` and read
@@ -275,6 +306,77 @@ It is checked **twice**, and the placement of the first one is the point:
 `batch`**, because Batch is legal on a practice that permits both — the choice
 that is correct under either truth. Guessing `single` would be a coin flip whose
 losing side is a 400 in the middle of the sequence.
+
+### 3.7 The takeback — two paths, and only one of them can be undone
+
+**D-6.** A carrier taking money back can be written two ways, and they are not
+equivalent. The difference *is* the decision:
+
+| Path | Verb | Undo |
+| --- | --- | --- |
+| `adjustment` — **the default** | `POST /adjustments` under the office's own `Insurance deductions from previous payments` type | **Reversible — by an OFFSETTING adjustment.** ⚠ There is **no `DELETE /adjustments`** (G6). Spike 0b test 8 proved a −1.00 reversed by a +1.00 nets the ledger to zero. |
+| `supplemental` — **opt-in only** | `POST /claimprocs/Supplemental` with a negative `InsPayAmt` | **G10. NONE.** Cannot be reverted, cannot be deleted, and it permanently pins its claim and its procedure. |
+
+> ⚠️ **A correction to the 6d brief.** The brief described the adjustment path as
+> *"deletable"*. It is not. `docs/RCM_OD_WRITES.md` §5 and G6 are explicit:
+> *"No DELETE documented. Reversal must be an offsetting adjustment."* The path
+> is genuinely reversible and genuinely the safer of the two — but reversal means
+> posting a second, offsetting entry, never removing the first. The unwind
+> (§11) reflects this.
+
+**Neither path is ever chosen by the drain.** The approver chose, the plan
+recorded it on every line as `recoupment_path`, and `drainTakebacks` executes
+what was recorded. A takeback line that names no path is
+`blocked: recoupment_unconfirmed` — the drain will not pick between an operation
+that can be undone and one that cannot on a biller's behalf.
+
+**A supplemental that reads back with a different amount is `failed`, not
+`posted` — and the row says the supplemental EXISTS and is PERMANENT.** This is
+the one place in the module where `failed` would otherwise be a dangerous word:
+everywhere else a failure invites *"fix it and drain again"*, and here there is a
+negative supplemental on a patient's claim that no retry, no offsetting entry
+through this API and no amount of re-pressing will remove. The line's
+`last_error` says so, and says the only remedy is Open Dental's desktop
+application.
+
+**A mixed plan's check is the POSITIVE total only.** `intended_total_cents` is
+the whole plan including the negatives; asserting *that* as a `CheckAmt` would be
+asserting a number Open Dental's own eligible-total rule cannot produce, because
+the takeback's target claimproc sits on an earlier check and contributes nothing
+to this one. **A pure-recoupment plan creates no check at all** — there is no
+positive side to assert, and minting one to keep the shape uniform would put an
+entry in the practice's deposit that never existed.
+
+That last point is why the migration had to relax `rcm_posting_queue_posted_proof_check`:
+`posted` demanded a `ClaimPaymentNum`, which a pure recoupment correctly does not
+have. The relaxation opens exactly that one door — an ordinary plan **still**
+cannot be `posted` without its check number, and `reconciled_at` is still
+required either way.
+
+### 3.8 The EOB document
+
+Filed **after** the plan reaches `posted`, into **each** patient on the plan,
+under the office's own `Insurance` (or `Financial`) DocCategory resolved by
+**name** — `131` in both practices, which §9(b) records as a *coincidence*:
+`Consent Forms` is `473` in roland and `429` in valley on the very same list.
+
+`DateCreated` wants `"yyyy-MM-dd HH:mm:ss"` here and nowhere else in this API.
+Spike 0b hit that; it is Open Dental's own inconsistency, not a transcription
+error.
+
+**Adopt before create.** Before uploading, the patient's own document list is
+read and a document already carrying this plan's description is adopted. A retry
+after a lost response must find what it already filed rather than putting a
+second copy of the same EOB into somebody's chart — a mess only Open Dental's
+desktop application can clean up. The description is deterministic and carries
+**no patient identity**: `CareIN RCM · <payer> · check <num> · <date>`.
+
+**Only an actual PDF is filed.** Slice 4's EOB lane stores the document a human
+received; Slice 5's ERA lane stores raw X12 835 text, which is not a document
+anybody would open. An ERA-only remittance reports `status: null` — *nothing to
+file* — rather than a failure. The brief suggested rendering the 835 as a PDF;
+nothing in this repo renders one, and inventing a renderer inside a posting drain
+would be a second unproven document pipeline. **Logged as a gap, not built.**
 
 ---
 
@@ -395,8 +497,8 @@ never hardcoded.
 | What | Where | Roland (verified live) |
 | --- | --- | --- |
 | PayType | definitions **Category 32** | 296 Check · 297 EFT · 404 Credit Card · 472 Insurance Check |
-| AdjType | definitions **Category 1** | 39 rows; sign carried from `ItemValue` |
-| DocCategory | definitions **Category 18** | 33 rows incl. 131 Insurance, 134 Financial (6d) |
+| AdjType | definitions **Category 1** | 39 rows; sign carried from `ItemValue`. **WRITTEN by 6d** — `pickAdjType(config,'recoupment')` → roland **477** / valley **435** `Insurance deductions from previous payments` |
+| DocCategory | definitions **Category 18** | 33 rows. **WRITTEN by 6d** — `pickDocCategory` → **131** `Insurance` in both practices, which is a coincidence (`Consent Forms` is 473/429) |
 | `ClaimPaymentBatchOnly` | preferences | `0` |
 | `ShowAutoDeposit` | preferences | `0` |
 
@@ -410,6 +512,27 @@ a correct (possibly empty) set rather than a wrong one.
 **An insurance check prefers `Insurance Check` (472) over `Check` (296)** — exact
 case-insensitive name match, most specific first. A substring rule would make the
 answer depend on list order.
+
+**6d: AdjType and DocCategory are now WRITTEN, not merely read.** Both resolve by
+name on the same rules, and the AdjType additionally checks the **sign**:
+`ItemValue` is `+` or `-` and `AdjAmt` must agree, or Open Dental refuses with
+`400 "AdjAmt must be negative for this AdjType."` (Spike 0b test 8). A definition
+whose stated sign disagrees with the purpose is refused here rather than
+discovered as a 400 mid-takeback; an *unsigned* row is accepted, because the sign
+is advisory metadata and refusing on its absence would make a correctly-named
+type unusable.
+
+> ⚠️ **DefNum 10 is live in BOTH practices and means something different in each:**
+> `Write-off` in Roland, `Insurance Write off` in Riley. A hardcoded 10 would post
+> a plain write-off in one practice and an insurance write-off in the other,
+> silently, forever. `odOfficeConfig.test.js` asserts both meanings and that
+> neither is what a recoupment resolves to, in either practice.
+
+A practice carrying **no** recoupment AdjType is `blocked: no_adj_type` — a
+refusal, never a fallback to a plausible-looking neighbour and never a promotion
+to the irreversible supplemental. An adjustment booked under the wrong type is a
+number in the practice's books meaning something other than what happened, and
+unlike a wrong PayType it is not even correctable by deletion.
 
 **No stale fallback, unlike `commlogTypes.js`.** That module serves a stale
 catalogue on a failed refresh, and that is right for a dropdown: the office's own
@@ -516,9 +639,30 @@ recorded here.
 | **(b)** | Riley's own Category 32 / 1 / 18 DefNums read from Riley's own Open Dental. | ✅ **DONE 2026-08-19** — recorded below |
 | **(c)** | PatNum 7115 can carry a claim (an active plan). | ✅ **coverage confirmed 2026-08-19**; the e2e itself still to run |
 
-All three are now recorded, and the code above still reads `['roland']` — that is
-the design, not a lag. Enabling valley is a code change in a diff, and it lands in
-**Slice 6d** alongside the 7115 end-to-end evidence, not here.
+All three are now recorded.
+
+### Status after 6d: PREPARED, NOT ENABLED
+
+`OFFICES_ENABLED_FOR_POSTING` still reads **`['roland']`**, and that is the design
+rather than a lag.
+
+§9's own rule is that *"enabling valley is a code change, in a diff, with the
+evidence in the same commit"* — and prerequisite (c) is only half discharged.
+7115's **coverage** is confirmed; the **end-to-end walk has not been run**. There
+is no §10.5 transcript yet, so there is nothing for the flip to land beside.
+
+What 6d **did** do, so the walk can happen:
+
+- the walk scripts are per-office (`PROBE_OFFICE=valley`, PatNum **7115**),
+  manifests at `/data/rcm-s10/<office>/`, deny-lists per office;
+- **`PatPlanNum 12402` is deny-listed** — 7115's plan is LIVE, and unlike 12827 the
+  prep does not create one. It is a prerequisite the scripts read, never a thing
+  they manage;
+- Riley's DefNums are proven resolvable **by name** in `odOfficeConfig.test.js`,
+  with an explicit assertion that **not one Roland number** (472, 297, 477, 260,
+  296, 404, 473) can appear in a valley answer.
+
+**The flip is one line, and it lands in the same commit as the §10.5 transcript.**
 
 ---
 
@@ -1211,12 +1355,65 @@ What the restart **did** prove, and it is worth having: **both plans stayed
 process left mid-flight and leaves finished plans alone — that is the half of the
 sweep's contract this run actually tested, and it held.
 
-**Pause hook → 6d.** A kill test that depends on beating a 9-second drain by hand
-is not a test, it is a coin flip. 6d adds `RCM_DRAIN_STEP_DELAY_MS`, a
-staging-only sleep between drain steps, so the window is as wide as the tester
-needs. It must be **refused when `NODE_ENV=production` AND the office registry
-says prod**, and default to `0` — a delay knob that can be set in production is a
-way to hold a chart write open, not a testing aid.
+**Pause hook → SHIPPED IN 6d.** A kill test that depends on beating a 9-second
+drain by hand is not a test, it is a coin flip.
+
+#### `RCM_DRAIN_STEP_DELAY_MS` — the re-run recipe
+
+Integer milliseconds, default `0`, capped at **120 000** (inside the drain's own
+4-minute budget). It sleeps **after each write's read-back** — never between the
+write and its verification, because a write whose read-back has not run is a
+state the resume logic never has to handle, so pausing there would manufacture a
+window that cannot occur in production. Three writes in the forced order, three
+windows a kill can land in. The run reports `stepDelayMs` on the drain response
+so a slow staging run reads as deliberate rather than as a hang.
+
+**The guard is positive identification, not a `NODE_ENV` check**, and the
+difference matters: **staging also runs `NODE_ENV=production`** — that is what
+turns on Key Vault loading and `cookieSecure` — so a naive check would disable
+the hook on the one environment it exists for.
+
+| Environment | Delay |
+| --- | --- |
+| `NODE_ENV` ≠ `production` (a dev box) | applies |
+| `NODE_ENV=production` **and** `AZURE_KEY_VAULT_NAME` names staging/dev | applies |
+| anything else — **including the variable being unset** | **refused**, logged once, treated as `0` |
+
+Unset resolving to *refused* is the load-bearing half: the default vault is
+`kv-carein-core`, so an environment that forgot to say who it is is treated as
+production, which is the only direction this may be wrong in.
+
+```bash
+# 1. Widen the window on STAGING (never prod).
+az containerapp update -n ca-carein-backend -g rg-carein-staging \
+  --set-env-vars RCM_DRAIN_STEP_DELAY_MS=15000
+
+# 2. Wait for the new revision, then confirm it took.
+az containerapp revision list -n ca-carein-backend -g rg-carein-staging \
+  --query "[?properties.active].{rev:name,created:properties.createdTime}" -o table
+
+# 3. Press Drain on the second disposable target from /rcm/posting.
+#    The response carries "stepDelayMs": 15000.
+
+# 4. WHILE it is paused — restart the container.
+az containerapp revision restart -n ca-carein-backend -g rg-carein-staging \
+  --revision <the active revision from step 2>
+
+# 5. Expect: the startup sweep re-homes the plan to `approved` with a
+#    `last_error` mentioning the restart. Press Drain again → `posted`.
+
+# 6. Prove there is EXACTLY ONE check.
+#    SELECT count(DISTINCT od_claim_payment_num) FROM rcm_posting_queue_line
+#     WHERE queue_id = '<plan>' AND od_claim_payment_num IS NOT NULL;   -- 1
+
+# 7. UNSET IT AFTERWARDS. This is not a setting to leave on.
+az containerapp update -n ca-carein-backend -g rg-carein-staging \
+  --remove-env-vars RCM_DRAIN_STEP_DELAY_MS
+```
+
+> `az containerapp exec`'s `--command` splits on whitespace and 429s for long
+> stretches — see the exec recipe note. Steps 1–7 use `update`/`restart`/`revision
+> list` only, none of which need `exec`.
 
 ### 10.4 Replay
 
@@ -1232,10 +1429,56 @@ but it is a *different* guarantee, and it means the `ran: 0` path itself is stil
 unexercised. Noted, not papered over. (The disabled button says nothing about
 why; see §15.2.)
 
-### 10.5 Valley
+### 10.5 Valley — ⏳ NOT YET RUN
 
-A valley plan drains to `blocked: valley_not_enabled`, with no Open Dental call.
-The screen says why. After §9 is discharged, the same walk on **PatNum 7115**.
+Today a valley plan still drains to `blocked: valley_not_enabled` with no Open
+Dental call, and the screen says why. **That is correct and expected**: §9 is
+prepared, not enabled (see the status box there).
+
+**This slot is what the flip lands beside.** Until Beau runs the walk below there
+is no evidence, and without evidence `OFFICES_ENABLED_FOR_POSTING` does not
+change.
+
+#### The run, on staging, PatNum 7115
+
+```bash
+# 0. Inventory FIRST — nothing has ever run in Riley, so the baseline is unknown
+#    and the deny-list is deliberately empty except PatPlanNum 12402.
+PROBE_OFFICE=valley node scripts/rcm-s10-inventory.js
+
+# 1. Prep. S10_EXPECTED_CLAIMS comes from the line the inventory prints.
+#    ONE target is enough for §10.5 — the kill test (§10.3) is roland's.
+PROBE_OFFICE=valley S10_EXPECTED_CLAIMS=<n> node scripts/rcm-s10-prep.js
+
+# 2. Build the synthetic 835 against the manifest the prep just wrote.
+PROBE_OFFICE=valley node scripts/rcm-s10-835.js
+
+# 3. Upload from the UI — /rcm → Remittances. This CANNOT be scripted: the
+#    endpoint needs the SSO session, and the shared DASHBOARD_API_TOKEN carries
+#    no user identity, so tenantContext 403s before the handler.
+
+# 4. Match → review → approve → Drain, all from /rcm with ?office=valley.
+
+# 5. Read Riley's OD ledger by eye.
+
+# 6. Unwind.
+PROBE_OFFICE=valley node scripts/rcm-s11-unwind.js            # DRY RUN first
+PROBE_OFFICE=valley node scripts/rcm-s11-unwind.js --execute
+```
+
+#### What the transcript must show
+
+| # | Assertion |
+| --- | --- |
+| 1 | `PayType` resolved to Riley's **428** `Insurance Check` — **not** 472. |
+| 2 | `DocCategory` resolved to Riley's **131** `Insurance` (the same number as roland, and a coincidence — see §9(b)). |
+| 3 | **No Roland DefNum anywhere.** Grep the whole transcript for `472`, `486`, `296`, `297` and assert **absent**. |
+| 4 | The manifest is at `/data/rcm-s10/valley/`, not `/data/rcm-s10/`. |
+| 5 | `PatPlanNum 12402` untouched — the unwind refuses it by deny-list. |
+| 6 | The unwind returns 7115 to its inventory baseline: check the **delta** is $0.00 and the claim count is back, not that the balance is any particular figure. |
+
+*(Paste the verbatim transcript here, then flip
+`OFFICES_ENABLED_FOR_POSTING = ['roland', 'valley']` in the same commit.)*
 
 ---
 
@@ -1553,12 +1796,73 @@ Both halves of the teardown are now measured rather than assumed: the order
 against a half-unwound patient and finished the job without re-issuing a single
 completed step).
 
+### 11.3 What 6d leaves behind — and what the unwind can and cannot remove
+
+6d adds three kinds of row to a chart. **Only one of them is deletable, and one
+of them is permanent by design.** The teardown must say which is which rather
+than implying it can tidy up after all three.
+
+| What 6d writes | Removable? | How |
+| --- | --- | --- |
+| `POST /adjustments` (the **default** takeback) | **Reversible, NOT deletable** | ⚠ **There is no `DELETE /adjustments`** (G6, documented-absence, verified). Reversal is an **offsetting** adjustment: Spike 0b test 8 posted −1.00 (DefNum 12) and reversed it with +1.00 (DefNum 260), netting the ledger to zero. `pickAdjType(config,'recoupment_reversal')` resolves the `+` type by name — roland **260** / valley **402**. |
+| `POST /claimprocs/Supplemental` | **NO. G10.** | Cannot be reverted, cannot be deleted, and it permanently pins its claim and its procedure. Spike 0b's own −$0.20 supplemental needed Open Dental's **desktop** application to remove, which the cloud API cannot do. |
+| `POST /documents/Upload` | **Confirm the verb before relying on it** | `DELETE /documents/{n}` is **not** proven on 25.4.48 by any spike in this repository. Until it is probed the way every other verb here was — against a non-existent id, where a `404` means the permission group is reached and a `400 "…is not a valid method."` means the verb does not exist — treat a filed EOB as **permanent residue** on the test patient. |
+
+> **A correction the 6d brief needs.** The brief said the adjustment path *"IS
+> deletable"* and that the unwind should extend to `DELETE /adjustments/{n}` from
+> a manifest. It cannot: that endpoint does not exist. The path is still the right
+> default and still genuinely reversible — but by posting a second entry, not by
+> removing the first, and a teardown written against the wrong verb is exactly the
+> defect §11.1 already cost a night to.
+
+**Consequence for the staging walks.** `DELETE /procedurelogs` is already a soft
+delete, so every walk leaves two more `"D"` rows on 12827 permanently. 6d adds to
+that list: any takeback exercised on a real fixture leaves either an adjustment
+pair (the original plus its reversal, netting zero) or — if the supplemental path
+is ever exercised — a row nothing can remove.
+
+> **THE STAGING WALK FOR 6d EXERCISES THE ADJUSTMENT PATH ONLY.**
+> **Never create a negative supplemental on a real patient. Not even 12827.**
+> Spike 0b's took a desktop cleanup to remove. The supplemental path is proven by
+> the unit suite plus the D-7-style zero-risk probe in
+> `docs/RCM_OD_WRITES.md` — `POST /claimprocs/Supplemental` against ClaimProcNum
+> `999888777`, where a `404 "not found"` means the permission group was reached
+> and **nothing was written**.
+
 ---
 
 ## 11a. Migration rehearsal (PostgreSQL 17)
 
 `up` (all) → objects present → the constraints exercised → `down 1` → `up` again
 → `down` all the way, clean on a throwaway `postgres:17` container.
+
+### 6d — `1787260000000_rcm_recoupment_and_documents.js`
+
+Rehearsed the same way, and the constraints were **exercised rather than
+asserted about**. Eight proofs, all behaving as designed:
+
+| # | Proof | Result |
+| --- | --- | --- |
+| 1 | An **ordinary** plan still cannot be `posted` without a ClaimPaymentNum | ✅ refused |
+| 2 | A **recoupment** plan with no `reconciled_at` | ✅ refused |
+| 3 | A **recoupment** plan, reconciled, **no check** — *the one door 6d opens* | ✅ accepted |
+| 4 | An ordinary plan with its check number, as before | ✅ accepted |
+| 5 | The adjustment path carrying its own `od_adjustment_num` | ✅ accepted |
+| 6 | **Two supplemental lines targeting the SAME claimproc** — the partial unique index 6b built for exactly this | ✅ accepted |
+| 7 | A second document row for the same `(plan, patient)` | ✅ refused |
+| 8 | A junk line status (`document_attached`) | ✅ refused |
+
+Plus the shape rules: `recoupment_path` on a non-supplemental line is refused,
+and a line holding **both** takeback ids is refused — because one can be undone
+and one cannot, and a row holding both would make *"is this reversible"*
+unanswerable.
+
+**`down` refuses while `recouped` rows exist**, deliberately, and this is the
+same property the 6c migration's `down` carries for `blocked`. Silently
+rewriting a takeback into some other state to make a rollback succeed would erase
+the fact that money moved. Resolve those rows first; then `down` restores the 6c
+shape exactly (verified: `rcm_posting_document` gone, `posted_proof_check` back
+to demanding a ClaimPaymentNum, zero leftover 6d columns).
 
 **Both halves are exercised** — seven refusals and six allowances — because a
 constraint that refuses everything is as wrong as one that refuses nothing, and
@@ -1601,6 +1905,21 @@ a human still owes an action.
 
 ## 12. Permission (D-9)
 
+**6d added no permission**, and that was a decision rather than an omission.
+D-6's alternative (b) — a separate `rcm.recoup` granted to fewer roles — is
+role-admin overhead at a solo-biller practice where the same person would hold it
+anyway. **`rcm.write` plus the typed phrase is the gate.** Both new POSTs
+(`/remittances/:id/approve-recoupment`, `/posting/queue/:id/attach-document`) are
+absent from `QUEUE_PATHS`, so the mount demands `rcm.write` for them by
+construction and a `reviewer` never reaches either handler. Their GET
+counterparts run on `rcm.read`, so the person who did the reviewing can see what
+a takeback would do without being able to authorise it.
+
+The document retry is `rcm.write` too, even though it cannot move a cent: D-9's
+split is about what a role may put **in a patient's chart**, not about how much
+money is involved.
+
+
 | Tier | `GET /posting/queue[/:id]` | `POST /posting/drain` |
 | --- | --- | --- |
 | `admin`, `office` | ✅ | ✅ |
@@ -1627,15 +1946,24 @@ Dental"*. It is now:
 1. **Allow-list of one.** `services/rcm/odPostingWrites.js` may name
    `apiWriteRaw` and the posting endpoints. Nothing else may — a static scan over
    every RCM source.
-2. **The allow-listed file is real** and does **not** reach for
-   `claimprocs/Supplemental`, `documents/Upload`, `/payments` or `/paysplits` —
-   the three paths 6c deliberately excludes.
+2. **The allow-listed file is real**, and the out-of-scope list **shrank in 6d**
+   to what genuinely remains unbuilt: `/payments` and `/paysplits`. Those stay
+   off it not merely by policy — **`ApiPayments` is not enabled on the key at
+   all** (G11), so they are unproven in the strongest sense.
+   `claimprocs/Supplemental` and `documents/Upload` moved from *forbidden* to
+   *required*: the test now asserts all three 6d verbs (`/adjustments`,
+   `claimprocs/Supplemental`, `documents/Upload`) **are** present in the
+   allow-listed file, because an allow-list pointing at a file the writes have
+   left is one that passes trivially.
 3. **The old claim, unweakened.** Driving approve, match, review and every read
    route still yields no write verb — against a plan that IS drainable and a
    client that CAN write.
 4. **The new claim, bounded.** Driving the drain yields exactly
    `PUT /claimprocs/{n}` → `PUT /claims/{n}` → `POST /claimpayments`, in that
-   order, and nothing else.
+   order, and nothing else. **6d adds exactly two verbs to the allow-list and
+   nowhere else** — `POST /adjustments` and `POST /claimprocs/Supplemental` —
+   plus `POST /documents/Upload` for the EOB. `'/adjustments'` joined the
+   `WRITE_SIGNALS` scan, so naming it in any *other* RCM source fails the build.
 5. **Two separate powers over the queue.** Only `approvalGate.js` may `INSERT`
    a plan; only `postingDrain.js` may `UPDATE` one. The drain must never be able
    to mint a plan — that would let it post money nobody approved.
@@ -1645,8 +1973,10 @@ Dental"*. It is now:
 
 The transport gained one method, `OpenDentalService.apiWriteRaw(method, path,
 body)` — POST and PUT only. **No DELETE**: nothing in the posting sequence
-deletes, the unwind is a human-run script, and `DELETE /claimprocs` does not exist
-on this build at all. `OPENDENTAL_WRITE_DISABLED` is enforced **inside the
+deletes, the unwind is a human-run script, `DELETE /claimprocs` does not exist on
+this build at all, and **`DELETE /adjustments` does not exist either** (G6) —
+which is why 6d's reversible path is reversed by an *offsetting* adjustment
+rather than by removal. `OPENDENTAL_WRITE_DISABLED` is enforced **inside the
 transport**, so it cannot be routed around by anything writing through the class.
 
 ---
@@ -1688,13 +2018,16 @@ The same queue. A disabled button, naming the permission an approver holds.
 
 | | Limit | Why it waits |
 | --- | --- | --- |
-| **A partially-approved remittance posts as more than one check** | The plan's `CheckAmt` is the sum of the claims that were approved, so a check with nine clean claims and one reversal posts a check for nine. The practice's deposit then sees two OD checks summing to the carrier's one. **PM ruling wanted.** | Inherent to 6b's partial approve, which is a deliberate feature. Changing it means either refusing partial approves or teaching the drain to wait for the whole remittance. |
+| **A partially-approved remittance posts as more than one check** | ✅ **PM RULING: ACCEPTED AS DESIGNED.** Deposit reconciliation is 6e's job and matches at the **deposit** level, where two OD checks summing to one carrier EFT is a normal case. Revisit only if 6e's matcher cannot express it. | Inherent to 6b's partial approve, which is a deliberate feature. |
 | **A claim fixed after its remittance's plan has run cannot post through CareIN at all** | See §15.1 below — it now has its own refusal and its own sentence rather than hiding behind "already under way". | Needs a decision about whether a remittance may carry a second plan, which the `(office_id, remittance_key)` unique index currently forbids. |
 | **The drain is a held HTTP request** | Like the batch matcher. Bounded by a wall-clock budget and honest about running out. | A polled job needs run state; the queue row is close but the request/response shape is a separate change. |
 | **maxReplicas = 1 is a standing requirement, not a constraint the code enforces** | §8. | A lease + heartbeat on the queue row. Do it **before** raising maxReplicas. |
 | **A 429 replays the request, writes included** | The transport's backoff retries on 429 only. A 429 is a rate-limit rejection *before* processing, so a replay is safe in practice — and §5.1's adopt-before-create covers the residual case. | Noted rather than fixed; making writes non-retryable would trade a real safety margin for a theoretical one. |
 | **`audit.source_ref` is unused** | Same gap the voice→TC handoff has. | A column, not a design. |
-| **Recoupments, the EOB attach, patient portion** | 6d and the PRD's deferred flow. `ApiPayments` is not enabled on the key at all (G11). | By design. |
+| **Recoupments, the EOB attach** | ✅ **BUILT IN 6d.** See §3.7 and §3.8. | — |
+| **Patient portion / PaySplits** | Still deferred. `ApiPayments` is not enabled on the key at all (G11), so it is an unproven path in the strongest sense. | By design. |
+| **An ERA-only remittance files no EOB** | Slice 5 stores raw X12 835 text, which is not a document anybody would open, and nothing in this repo renders one as a PDF. Reported honestly as `document_attach_status: null` — *nothing to file* — never as a failure. | Building an 835→PDF renderer inside a posting drain would be a second, unproven document pipeline. Logged rather than improvised. |
+| **A wrong typed confirmation writes no audit row** | A mismatched D-6 phrase refuses at 422 with nothing recorded — no plan, no claim link, no approval-attempt stamp. Repeated wrong guesses are therefore invisible. | The brief said *"nothing recorded"* and this follows it literally. Worth revisiting if the takeback path ever leaves a solo-biller practice. |
 
 ### 15.1 A withheld claim fixed after the plan has drained
 
@@ -1707,8 +2040,26 @@ feature — nine clean claims enqueue and the tenth is withheld and named — bu
 tenth can only join that plan while it is still `approved`. Once a drain has had
 it, approving again is refused.
 
-The money still has to go in. **It goes in by hand, in Open Dental**, until a
-later slice adds a follow-on plan.
+The money still has to go in. **It goes in by hand, in Open Dental**, until the
+follow-on plan below ships.
+
+#### ✅ PM RULING: DECIDED, SCHEDULED **6d.2** — a follow-on plan
+
+Not built in this PR, and deliberately no migration for it here: shipping an
+unused `sequence` column and a weaker uniqueness guarantee months before anything
+enforced the new one would trade a real guarantee for an anticipated one.
+
+The design, as ruled:
+
+- relax the unique index from `(office_id, remittance_key)` to
+  `(office_id, remittance_key, sequence)`, `sequence` default `1`;
+- a remittance whose plan is `posted` **may** enqueue a **second** plan, for
+  claims that are on no prior plan;
+- the follow-on's check is a **separate OD check**, with `-2` suffixed to the
+  check number so the practice's deposit can tell the two apart.
+
+Until then the two 409s below are the honest answer, and `QUEUE_ALREADY_RAN`
+means *"post this claim by hand"* rather than *"wait"*.
 
 Two refusals, because they are two different facts:
 
@@ -1755,6 +2106,15 @@ time anyone uses these screens in anger.
 
 ## 16. Out of scope
 
-Recoupments and negative anything (6d) · document attach (6d) · patient portion /
-PaySplits / `/payments` (PRD-deferred, G11) · auto-drain on approve (a later
-decision) · reconciliation, VCC, Stedi, OCR · entitlement changes · prod.
+**Built in 6d and no longer out of scope:** recoupments (§3.7) · the EOB document
+attach (§3.8) · the `RCM_DRAIN_STEP_DELAY_MS` pause hook (§10.3).
+
+**Still out of scope:** patient portion / PaySplits / `/payments` (PRD-deferred,
+and `ApiPayments` is not enabled on the key at all, G11) · auto-drain on approve
+(a later decision) · the 6d.2 follow-on plan (**decided and scheduled**, §15.1) ·
+rendering an 835 as a PDF (§3.8) · reconciliation, VCC, Stedi, OCR · entitlement
+changes · prod.
+
+**Prepared but not enabled:** valley posting. §9 is discharged on all three
+prerequisites bar the 7115 end-to-end itself; the flip is one line and lands with
+the §10.5 transcript.
