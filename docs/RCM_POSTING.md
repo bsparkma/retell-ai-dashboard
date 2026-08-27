@@ -1458,11 +1458,37 @@ probed `/data/rcm-s10` while the manifest goes to `/data/rcm-s10/<office>/`.
 Beau hand-wrote the manifest and the walk continued. Also fixed — the check now
 takes the directory it is being asked about and has no default to fall back to.
 
-**How the plan was re-homed:** ⏳ *to be recorded — Beau to report whether the
-startup sweep picked it up on the next deploy, or whether it was still sitting
-at `running` when the fix landed.* Either answer is worth having: the first
-would be the sweep's contract holding on a case it was written for, the second
-would say how long a wedged plan actually sits there in practice.
+**How the plan was re-homed — the startup sweep got it, 26 minutes later.**
+From staging's console logs:
+
+```
+00:41:35  rev 0000127   startup sweep: (no interrupted plans)
+00:52:08  rev 0000128   startup sweep: (no interrupted plans)
+00:54:59  rev 0000128   startup sweep: (no interrupted plans)
+01:21:35  rev 0000128   startup sweep: 1 interrupted posting plan(s) re-queued
+                                       for tenant 'carein' — press Drain to resume
+01:24:23  rev 0000129   startup sweep: (no interrupted plans)
+01:56:28  rev 0000130   startup sweep: (no interrupted plans)   ← the fix deployed
+```
+
+**Both halves of that are worth having.**
+
+The sweep's contract held exactly as written: the plan went back to `approved`,
+nothing was drained automatically, and no chart was touched. This is the first
+time the re-queue half has fired on a real wedged plan rather than in a test —
+§10.3's kill test has still never landed inside the window, but the state it was
+meant to produce occurred by accident and the sweep handled it correctly.
+
+And: **the plan sat at `posting` for up to 26 minutes, and was rescued only
+because a restart happened to occur.** The sweep runs at boot and nowhere else.
+On a quiet day a wedged plan waits for the next deploy — hours, or longer. That
+is the argument for releasing the row at the point of failure rather than
+leaving it to the sweep, which is what this fix does: the sweep is the net for a
+process that *died*, not the remedy for one that threw and kept running.
+
+Note also the second sweep line on every boot: `2 posted plan(s) ... have never
+had their EOB filed`. That is §10.2's two plans, counted and reported and
+deliberately **not** filed — filing on boot would be an automatic chart write.
 
 **Why CI was green.** The unit suite's database is a `Map` that hands back
 whatever a fixture seeded — eleven fixtures seeded `od_patient_office`. CI
