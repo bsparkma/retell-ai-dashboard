@@ -394,10 +394,21 @@ const DENY_IDS = Object.freeze([
  * on an AzureFile mount, and under an overlay filesystem, access bits are not a
  * reliable predictor of whether a write lands.
  *
- * @param {string} [dir]
+ * THE DIRECTORY IS AN ARGUMENT AND HAS NO DEFAULT, which is the 2026-08-26
+ * lesson. It defaulted to `OUT_DIR`, and every caller took the default — but
+ * the manifest is written to `pathsFor(office).outDir`, one level DEEPER, and
+ * that level was never created. The probe wrote happily into the parent and the
+ * prep then died on `ENOENT` writing the manifest, after creating the live
+ * claims it was supposed to be recording. A check that passes for a directory
+ * nothing writes to is worse than no check.
+ *
+ * Pass the directory you are about to write to. Nothing else is a check.
+ *
+ * @param {string} dir
  * @returns {string|null}
  */
-function checkOutDirWritable(dir = OUT_DIR) {
+function checkOutDirWritable(dir) {
+  if (!dir) return 'checkOutDirWritable needs the directory that will be written to';
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (err) {

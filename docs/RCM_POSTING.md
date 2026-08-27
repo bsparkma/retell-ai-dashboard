@@ -452,12 +452,33 @@ round trip.
 
 | Failed at | Row becomes |
 | --- | --- |
+| **before `resolve_config`** — loading the plan, its preconditions, recording its shape | **back to `approved`**, `drain_step` null, the message in `last_error`, `attempt_count` returned to what it was. The exception is still re-thrown. |
 | `resolve_config`, `read_od_truth` | `failed` — no write was issued, so nothing moved. |
 | `claimproc_writes` onwards | `partially_posted` — a request that threw **may** have reached Open Dental. |
 
 A dead socket does not say whether the server acted, so "the first PUT was
 attempted" and "the first PUT landed" are indistinguishable from inside. Claiming
 `failed` would be claiming nothing moved. `postingDrain.test.js` pins this.
+
+**The first row is 2026-08-26's.** `drainOffice` claims a plan before
+`drainRow` runs, so from that instant it reads `posting` to every screen in the
+practice. An exception that escapes the pre-flight left it there forever — a
+plan showing a step, with no process behind it, until a container restart. But
+nothing had been attempted: no configuration read, no chart touched, no line
+moved. The honest state for that is the state the plan was already in, so
+`releaseRow` gives it back and the biller simply presses again once the defect
+is fixed.
+
+`attempt_count` comes back down with it. `claimRow` increments on the way in,
+and that number means *times this plan has been tried against Open Dental* — a
+crash that never reached Open Dental did not try it. `WHERE status = 'posting'`
+on the release is what makes it safe to call from a catch: it can only release a
+row this run claimed, never one `blockRow` has already settled.
+
+The exception is **re-thrown**, and the route returns it: 500 `DRAIN_FAILED`
+with the message. A plan that cannot be loaded is a defect, not a state a biller
+can act on, and the flat *"Internal error"* the walk actually showed threw away
+the one sentence that named the bug.
 
 ---
 
@@ -1404,6 +1425,58 @@ sweep's contract this run actually tested, and it held.
 **Pause hook → SHIPPED IN 6d.** A kill test that depends on beating a 9-second
 drain by hand is not a test, it is a coin flip.
 
+#### RUN 2026-08-26 attempt 1 — **STOPPED AT THE DRAIN. NOT A KILL TEST.**
+
+The walk never reached this section. The first press of Drain on the prepared
+plan (claim 53805, roland, 12827) returned **500** before any Open Dental call:
+
+```
+[rcm] POST /api/rcm/posting/drain?office=roland failed: column "od_patient_office" does not exist
+```
+
+`loadPlan` selected a column of `rcm_claims` that has never existed. **Nothing
+reached a chart** — the failure is upstream of the first write, and the OD
+audit trail for the run is empty. The prepared target is untouched and the walk
+can be re-run against it as-is.
+
+Two further defects fell out of the first, both fixed in
+`fix/rcm-6d-drain-column`:
+
+* **The plan was left `running`** — step *"Reading this practice's Open Dental
+  settings"*, line *Not started* — with no process behind it. The exception
+  escaped `drainRow` after `drainOffice` had already claimed the row. A failure
+  before the first Open Dental call now hands the plan back to `approved` with
+  `drain_step` null, the message in `last_error`, and `attempt_count` returned
+  to what it was.
+* **The banner read "Internal error"** and nothing else. The sentence naming the
+  bug was discarded by the generic route handler one layer above the code that
+  had it. `POST /drain` now returns 500 `DRAIN_FAILED` carrying the message.
+
+And at prep, before any of that: **`rcm-s10-prep.js` created its targets and
+then failed to write the manifest** (`ENOENT`). `checkOutDirWritable()` had
+probed `/data/rcm-s10` while the manifest goes to `/data/rcm-s10/<office>/`.
+Beau hand-wrote the manifest and the walk continued. Also fixed — the check now
+takes the directory it is being asked about and has no default to fall back to.
+
+**How the plan was re-homed:** ⏳ *to be recorded — Beau to report whether the
+startup sweep picked it up on the next deploy, or whether it was still sitting
+at `running` when the fix landed.* Either answer is worth having: the first
+would be the sweep's contract holding on a case it was written for, the second
+would say how long a wedged plan actually sits there in practice.
+
+**Why CI was green.** The unit suite's database is a `Map` that hands back
+whatever a fixture seeded — eleven fixtures seeded `od_patient_office`. CI
+migrates a real Postgres and runs a spine smoke test, but it never drains a
+plan, so no query was ever put in front of the schema it would meet. Two guards
+now close that: `test/rcmQueryColumns.test.js` (replays the migrations, holds
+every literal column reference in `services/rcm` and `routes/rcm` against the
+result, no database needed) and `scripts/rcm-verify-queries.js` (sends the
+drain's real statements to the real migrated schema in CI, with parameters that
+match nothing). Both were proven red against the defect before being kept.
+
+**The kill test itself is still unrun.** The recipe below is unchanged and the
+pause hook is untouched by this fix.
+
 #### `RCM_DRAIN_STEP_DELAY_MS` — the re-run recipe
 
 Integer milliseconds, default `0`, capped at **120 000** (inside the drain's own
@@ -2074,6 +2147,7 @@ The same queue. A disabled button, naming the permission an approver holds.
 | **Recoupments, the EOB attach** | ✅ **BUILT IN 6d.** See §3.7 and §3.8. | — |
 | **Patient portion / PaySplits** | Still deferred. `ApiPayments` is not enabled on the key at all (G11), so it is an unproven path in the strongest sense. | By design. |
 | **An ERA-only remittance files no EOB** | Slice 5 stores raw X12 835 text, which is not a document anybody would open, and nothing in this repo renders one as a PDF. Reported honestly as `document_attach_status: 'none'` — *examined, nothing to file* — never as a failure, and never as the `null` that means an attach is still owed. | Building an 835→PDF renderer inside a posting drain would be a second, unproven document pipeline. Logged rather than improvised. |
+| **A unit double can accept a column Postgres refuses** | ✅ **CLOSED 2026-08-26 — it cost the first staging walk.** `FakeRcmDb` is a `Map`: it hands back whatever a fixture seeded, so a `SELECT` naming a column that has never existed passed 1,700 tests and failed on the first real press. Two guards now stand between a query and a walk night — `test/rcmQueryColumns.test.js` replays the migrations and holds every literal column reference in `services/rcm` and `routes/rcm` against the result, and `scripts/rcm-verify-queries.js` sends the drain's real statements to a real migrated schema in CI. | The general lesson is not about this column. **A fixture is a claim about the database, and nothing was checking the claim.** Any double that answers more generously than the thing it stands in for will certify code the real thing rejects; the fix is a check against the schema itself, not a stricter double. |
 | ~~A wrong typed confirmation writes no audit row~~ | **NOT A LIMIT — corrected 2026-08-26.** An earlier draft of this table claimed it. It was wrong: `respondToApprovalError` files every refusal through `auditRcmDenial`, so a mismatched phrase leaves a row under `rcm_recoupment_approval` with `result: ERROR`, the actor, the office and the remittance. Three wrong guesses leave three rows. `approvalGate.test.js` pins it. | The brief's *"nothing recorded"* means **no approval** — no plan, no claim link, no attempt stamp — and not *no trail*. Read the other way it would make repeated guesses at an irreversible operation invisible, which is the one thing an audit log exists to prevent. |
 
 ### 15.1 A withheld claim fixed after the plan has drained

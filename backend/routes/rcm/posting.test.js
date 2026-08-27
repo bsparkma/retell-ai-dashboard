@@ -476,3 +476,72 @@ test('the drain run is audited as its own CREATE, on top of the per-call rows', 
     await app.close();
   }
 });
+
+// ─── When the drain hits a defect, the operator is told what it was ──────────
+
+/**
+ * The banner the first staging walk showed a biller was the word
+ * "Internal error". The drain had hit
+ * `column "od_patient_office" does not exist` — the one sentence that named the
+ * bug — and `h()` discarded it one layer above the code that had it.
+ *
+ * The same text is already written into `last_error` and rendered on the queue
+ * screen to this same person, so returning it here is not a new audience for
+ * anything; it is the same fact, an hour earlier.
+ */
+test('a drain defect returns its real message, not "Internal error"', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const DB_ERROR = 'column "od_patient_office" does not exist';
+  const realQuery = db.query.bind(db);
+  db.query = (text, params) => {
+    if (String(text).includes('FROM rcm_claims')) return Promise.reject(new Error(DB_ERROR));
+    return realQuery(text, params);
+  };
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'DRAIN_FAILED');
+    assert.equal(res.body.error, DB_ERROR, 'the words Postgres used, reaching the person');
+    assert.notEqual(res.body.error, 'Internal error');
+  } finally {
+    await app.close();
+  }
+});
+
+test('and the plan it was draining is back to approved, pressable again', async () => {
+  /*
+   * The two halves of the same defect. Surfacing the message without releasing
+   * the row would still have left a plan wedged at `posting` with nothing behind
+   * it; releasing it without the message would leave a biller with a plan that
+   * silently reappeared and no idea why.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const realQuery = db.query.bind(db);
+  db.query = (text, params) => {
+    if (String(text).includes('FROM rcm_claims')) {
+      return Promise.reject(new Error('column "od_patient_office" does not exist'));
+    }
+    return realQuery(text, params);
+  };
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+
+    const row = db.table('rcm_posting_queue')[0];
+    assert.equal(row.status, 'approved');
+    assert.equal(row.drain_step, null);
+    assert.match(row.last_error, /od_patient_office/);
+  } finally {
+    await app.close();
+  }
+});

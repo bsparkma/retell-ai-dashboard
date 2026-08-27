@@ -880,6 +880,29 @@ const QUEUE_COLUMNS = [
   'document_attach_at',
 ];
 
+/*
+ * The claim columns the drain reads. `od_patient_id` is 6d's addition and it is
+ * not cosmetic: `POST /adjustments` is keyed by PatNum, not by ClaimNum — a
+ * takeback booked as an adjustment lands on a PATIENT's ledger — and the EOB
+ * document is filed into a patient's images. Neither is derivable from a
+ * ClaimNum without another paced read.
+ *
+ * A LIST, not an inline string, so `rcmQueryColumns.test.js` can hold every name
+ * here against the migrated schema. The first staging walk died on
+ * `od_patient_office`, a column that has never existed; the test double accepted
+ * it and Postgres did not.
+ */
+const CLAIM_COLUMNS = [
+  'claim_id',
+  'office_id',
+  'od_match_status',
+  'od_claim_num',
+  'posting_queue_id',
+  'od_match_snapshot',
+  'claim_number',
+  'od_patient_id',
+];
+
 const LINE_COLUMNS = [
   'queue_line_id',
   'queue_id',
@@ -964,54 +987,53 @@ function toLine(row) {
 }
 
 /**
+ * THE FOUR STATEMENTS `loadPlan` RUNS, as named constants.
+ *
+ * Named rather than inlined so `scripts/rcm-verify-queries.js` can execute the
+ * REAL text against a real migrated Postgres in CI, with parameters that match
+ * nothing. Postgres resolves column names at parse time, so a statement naming a
+ * column that does not exist fails there whether or not any row would come back.
+ *
+ * A copy in the verifier would drift; this cannot.
+ */
+const PLAN_QUERIES = {
+  queue:
+    `SELECT ${QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
+    `WHERE queue_id = $1 AND office_id = $2`,
+  lines:
+    `SELECT ${LINE_COLUMNS.join(', ')} FROM rcm_posting_queue_line ` +
+    `WHERE queue_id = $1 AND office_id = $2 ORDER BY position`,
+  claims: `SELECT ${CLAIM_COLUMNS.join(', ')} FROM rcm_claims WHERE posting_queue_id = $1`,
+  batch:
+    `SELECT batch_id, payer, check_number, eft_number, payment_method, deposit_date ` +
+    `FROM rcm_payment_batches WHERE batch_id = $1 AND office_id = $2`,
+};
+
+/**
  * Load a plan and everything needed to judge it: the queue row, its lines, the
  * claims linked to it, and the batch the money came on.
  *
  * Office-scoped on every table. A plan is unreachable from the wrong office
  * rather than refused there — the same idiom every other RCM read uses.
  *
+ * The claims read is scoped by `posting_queue_id` alone, and does not need an
+ * office of its own: the queue row it came from was office-scoped, and a claim
+ * carries the office it was matched under. Hard rule 3 is satisfied by that one
+ * `office_id`, which is exactly why there is no `od_patient_office` column to
+ * ask for.
+ *
  * @param {{ query: Function }} pool
  * @param {string} office
  * @param {string} queueId
  */
 async function loadPlan(pool, office, queueId) {
-  const q = await pool.query(
-    `SELECT ${QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
-      `WHERE queue_id = $1 AND office_id = $2`,
-    [queueId, office]
-  );
+  const q = await pool.query(PLAN_QUERIES.queue, [queueId, office]);
   if (q.rows.length === 0) return null;
   const queue = toQueue(q.rows[0]);
 
-  const l = await pool.query(
-    `SELECT ${LINE_COLUMNS.join(', ')} FROM rcm_posting_queue_line ` +
-      `WHERE queue_id = $1 AND office_id = $2 ORDER BY position`,
-    [queueId, office]
-  );
-
-  /*
-   * `od_patient_id` is 6d's addition and it is not cosmetic. `POST /adjustments`
-   * is keyed by PatNum, not by ClaimNum — a takeback booked as an adjustment
-   * lands on a PATIENT's ledger — and the EOB document is filed into a
-   * patient's images. Neither is derivable from a ClaimNum without another
-   * paced read.
-   *
-   * `od_patient_office` rides with it because a PatNum without its office names
-   * nothing: numbering restarts in every Open Dental database, and PatNum 7115
-   * is a different, real person in Roland than in Riley. Hard rule 3.
-   */
-  const c = await pool.query(
-    `SELECT claim_id, office_id, od_match_status, od_claim_num, posting_queue_id, ` +
-      `od_match_snapshot, claim_number, od_patient_id, od_patient_office ` +
-      `FROM rcm_claims WHERE posting_queue_id = $1`,
-    [queueId]
-  );
-
-  const b = await pool.query(
-    `SELECT batch_id, payer, check_number, eft_number, payment_method, deposit_date ` +
-      `FROM rcm_payment_batches WHERE batch_id = $1 AND office_id = $2`,
-    [queue.batchId, office]
-  );
+  const l = await pool.query(PLAN_QUERIES.lines, [queueId, office]);
+  const c = await pool.query(PLAN_QUERIES.claims, [queueId]);
+  const b = await pool.query(PLAN_QUERIES.batch, [queue.batchId, office]);
 
   return {
     queue,
@@ -1032,8 +1054,19 @@ async function loadPlan(pool, office, queueId) {
         snapshotVersion: Number.isFinite(version) ? version : null,
         claimNumber: row.claim_number == null ? null : String(row.claim_number),
         odPatientId: row.od_patient_id == null ? null : Number(row.od_patient_id),
-        odPatientOffice:
-          row.od_patient_office == null ? null : String(row.od_patient_office),
+        /*
+         * THE PATIENT'S OFFICE IS THE CLAIM'S OFFICE. It is not a column of its
+         * own, and asking for one is what broke the first staging walk.
+         *
+         * A PatNum without its office names nothing — numbering restarts in
+         * every Open Dental database, and 7115 is a different, real person in
+         * Roland than in Riley. But hard rule 3 is satisfied by `office_id`
+         * already on this row: a remittance belongs to one office, every claim
+         * on it was matched against that office's own Open Dental, and there is
+         * no such thing here as a claim whose patient lives in another practice.
+         * Storing the same fact twice would create a pair that can disagree.
+         */
+        odPatientOffice: String(row.office_id),
       };
     }),
     batch: b.rows.length
@@ -1086,6 +1119,52 @@ async function claimRow(pool, office, queueId, drainedBy) {
     [queueId, office, [...DRAINABLE_STATUSES], STEPS[0], drainedBy]
   );
   return res.rows.length > 0;
+}
+
+/**
+ * Give the row back, having touched nothing.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SECOND DEFECT THE STAGING WALK EXPOSED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * When `loadPlan` threw, the exception escaped `drainRow` entirely: the plan had
+ * already been claimed, so it sat at `posting` — "Reading this practice's Open
+ * Dental settings", first line Not started — with no process behind it. Nothing
+ * would move it again until a container restart ran the startup sweep. A screen
+ * whose whole job is to be honest about what is happening was showing a run that
+ * had not existed for hours.
+ *
+ * A failure BEFORE the first Open Dental call is not a posting state at all.
+ * Nothing was attempted, nothing can be half-done, and the plan is exactly as
+ * drainable as it was a second earlier — so it goes back to `approved` and says
+ * why.
+ *
+ * `attempt_count` COMES BACK DOWN. `claimRow` increments it on the way in, and
+ * that number means "times this plan has been tried against Open Dental". A
+ * crash that never reached Open Dental did not try it. Leaving the increment
+ * would inflate the one counter a human uses to judge whether a plan is cursed.
+ *
+ * `WHERE status = 'posting'` is what makes this safe to call from a catch: it can
+ * only ever release a row THIS run claimed. A row that `blockRow` has already
+ * settled, or that another process owns, does not match and is left alone.
+ *
+ * @param {{ query: Function }} pool
+ * @param {string} queueId
+ * @param {string} message
+ */
+async function releaseRow(pool, queueId, message) {
+  await pool.query(
+    `UPDATE rcm_posting_queue
+        SET status = 'approved',
+            drain_step = NULL,
+            blocked_reason = NULL,
+            last_error = $2,
+            finished_at = NULL,
+            attempt_count = GREATEST(attempt_count - 1, 0),
+            updated_at = now()
+      WHERE queue_id = $1 AND status = 'posting'`,
+    [queueId, message ? String(message).slice(0, 1000) : null]
+  );
 }
 
 /** Move the row's step cursor. One statement, before the call it precedes. */
@@ -1872,110 +1951,148 @@ async function drainRow(ctx, queueId) {
   const { pool, req, office, od } = ctx;
   let step = STEPS[0];
 
-  const plan = await loadPlan(pool, office, queueId);
-  if (!plan) return { queueId, status: 'not_found' };
-
   /*
-   * PRE-FLIGHT, BEFORE ANY OPEN DENTAL CALL.
+   * ── EVERYTHING BEFORE THE FIRST OPEN DENTAL CALL, IN ONE PLACE ───────────
    *
-   * Note what is NOT consulted here: the environment guard is read live rather
-   * than passed in, because a plan loaded a minute ago says nothing about the
-   * process's current configuration.
+   * Not a stylistic grouping. `drainOffice` has already claimed this row, so it
+   * reads `posting` to every screen in the practice; if anything in here throws
+   * the row must be handed back rather than left mid-flight. On 2026-08-26 a
+   * `loadPlan` that named a column the schema does not have escaped this
+   * function entirely and left a plan stuck at "Reading this practice's Open
+   * Dental settings" with nothing running behind it.
+   *
+   * The exception is still RE-THROWN. A plan that cannot be loaded is a defect,
+   * not a state a biller can act on, and the operator who pressed the button is
+   * owed the message rather than a plan that silently reappears in the queue.
    */
-  const blocked = checkPreconditions({
-    queue: plan.queue,
-    lines: plan.lines,
-    claims: plan.claims,
-    office,
-    odWritesDisabled: require('../../middleware/envGuards').isOdWriteDisabled(),
-    snapshotVersion: ctx.snapshotVersion,
-  });
-  if (blocked) {
-    await blockRow(pool, queueId, blocked.reason, blocked.detail, step);
-    return { queueId, status: 'blocked', reason: blocked.reason, detail: blocked.detail };
-  }
-
-  /*
-   * ONLY NOW does this practice's Open Dental get read at all.
-   *
-   * Every refusal above is a POLICY refusal — valley, a recoupment, the
-   * environment guard, an office disagreement, arithmetic that does not add up —
-   * and not one of them needs to know a single DefNum. Resolving the
-   * configuration before them would make "a blocked plan costs zero Open Dental
-   * calls" false for every office but valley, which matters now that a blocked
-   * plan can be pressed again as many times as a biller likes.
-   *
-   * A failure here is `blocked`, not `failed`: nothing was attempted, and marking
-   * a plan `failed` because a definitions read timed out would put it in a state
-   * that means "something went wrong mid-posting".
-   */
-  let config;
+  const DONE = (result) => ({ __done: true, result });
+  let pre;
   try {
-    config = await ctx.ensureConfig();
+    pre = await (async () => {
+      const plan = await loadPlan(pool, office, queueId);
+      if (!plan) return DONE({ queueId, status: 'not_found' });
+
+      /*
+       * PRE-FLIGHT, BEFORE ANY OPEN DENTAL CALL.
+       *
+       * Note what is NOT consulted here: the environment guard is read live rather
+       * than passed in, because a plan loaded a minute ago says nothing about the
+       * process's current configuration.
+       */
+      const blocked = checkPreconditions({
+        queue: plan.queue,
+        lines: plan.lines,
+        claims: plan.claims,
+        office,
+        odWritesDisabled: require('../../middleware/envGuards').isOdWriteDisabled(),
+        snapshotVersion: ctx.snapshotVersion,
+      });
+      if (blocked) {
+        await blockRow(pool, queueId, blocked.reason, blocked.detail, step);
+        return DONE({ queueId, status: 'blocked', reason: blocked.reason, detail: blocked.detail });
+      }
+
+      /*
+       * ONLY NOW does this practice's Open Dental get read at all.
+       *
+       * Every refusal above is a POLICY refusal — valley, a recoupment, the
+       * environment guard, an office disagreement, arithmetic that does not add up —
+       * and not one of them needs to know a single DefNum. Resolving the
+       * configuration before them would make "a blocked plan costs zero Open Dental
+       * calls" false for every office but valley, which matters now that a blocked
+       * plan can be pressed again as many times as a biller likes.
+       *
+       * A failure here is `blocked`, not `failed`: nothing was attempted, and marking
+       * a plan `failed` because a definitions read timed out would put it in a state
+       * that means "something went wrong mid-posting".
+       */
+      let config;
+      try {
+        config = await ctx.ensureConfig();
+      } catch (err) {
+        const detail = err && err.message ? err.message : String(err);
+        await blockRow(pool, queueId, BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED, detail, step);
+        return DONE({
+          queueId,
+          status: 'blocked',
+          reason: BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED,
+          detail,
+        });
+      }
+
+      /*
+       * ── 6d: THE PLAN SPLITS IN TWO HERE ──────────────────────────────────────
+       *
+       * A takeback line targets a claimproc that is ALREADY Received and ALREADY on
+       * a check — that is what makes it a takeback. Sent through the ordinary
+       * sequence it would read as `attached`, be adopted, and be recorded as `paid`:
+       * money arriving where money left. So the two sets are separated before any
+       * decision is made about either, and the ordinary machinery below sees only
+       * the ordinary lines.
+       *
+       * A MIXED plan is the normal case for a real remittance — nine claims paid
+       * and one clawed back on the same check — and the two halves are settled in
+       * order: adjudication, claim receipts, the check for the POSITIVE side, its
+       * reconciliation, then the takebacks.
+       */
+      const takebackLines = plan.lines.filter((l) => l.isSupplemental === true);
+      const ordinaryLines = plan.lines.filter((l) => l.isSupplemental !== true);
+      /**
+       * THE CHECK IS FOR THE POSITIVE SIDE ONLY.
+       *
+       * `intended_total_cents` is the whole plan including the negatives, and
+       * asserting that as a `CheckAmt` would be asserting a number Open Dental's
+       * own eligible-total rule cannot produce — the takeback's target claimproc is
+       * on an earlier check and contributes nothing to this one.
+       */
+      const ordinaryTotalCents = ordinaryLines.reduce(
+        (a, l) => a + Number(l.intendedInsPayAmtCents),
+        0
+      );
+      const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
+
+      /*
+       * ── THE PLAN'S SHAPE, PERSISTED BEFORE THE FIRST OPEN DENTAL WRITE ────────
+       *
+       * `requires_check` is what the database's `posted` proof turns on, and it is
+       * NOT `is_recoupment`. A MIXED plan is a recoupment AND owes a check; keying
+       * the constraint on the flag would have let such a plan claim `posted` with
+       * no check number — the exact false-`posted` the constraint exists to stop.
+       *
+       * Written HERE, from the same split the check step will use, and committed
+       * before anything reaches a chart. A process that dies after this leaves a row
+       * whose shape is already recorded, so the constraint is enforcing the truth
+       * about this plan rather than the `true` default.
+       *
+       * The gate derives the same value at enqueue; this re-asserts it because the
+       * drain is the last thing to see the plan before money moves, and a plan whose
+       * lines changed underneath the gate must not post against a stale shape.
+       */
+      const requiresCheck = ordinaryLines.length > 0;
+      await pool.query(
+        'UPDATE rcm_posting_queue SET requires_check = $2, updated_at = now() WHERE queue_id = $1',
+        [queueId, requiresCheck]
+      );
+
+      return {
+        plan,
+        config,
+        takebackLines,
+        ordinaryLines,
+        ordinaryTotalCents,
+        claimById,
+        requiresCheck,
+      };
+    })();
   } catch (err) {
-    const detail = err && err.message ? err.message : String(err);
-    await blockRow(pool, queueId, BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED, detail, step);
-    return {
-      queueId,
-      status: 'blocked',
-      reason: BLOCK_REASONS.OFFICE_CONFIG_UNRESOLVED,
-      detail,
-    };
+    const message = err && err.message ? err.message : String(err);
+    console.error(`[rcm/drain] ${office} plan ${queueId} failed before any Open Dental call: ${message}`);
+    await releaseRow(pool, queueId, message);
+    throw err;
   }
-
-  /*
-   * ── 6d: THE PLAN SPLITS IN TWO HERE ──────────────────────────────────────
-   *
-   * A takeback line targets a claimproc that is ALREADY Received and ALREADY on
-   * a check — that is what makes it a takeback. Sent through the ordinary
-   * sequence it would read as `attached`, be adopted, and be recorded as `paid`:
-   * money arriving where money left. So the two sets are separated before any
-   * decision is made about either, and the ordinary machinery below sees only
-   * the ordinary lines.
-   *
-   * A MIXED plan is the normal case for a real remittance — nine claims paid
-   * and one clawed back on the same check — and the two halves are settled in
-   * order: adjudication, claim receipts, the check for the POSITIVE side, its
-   * reconciliation, then the takebacks.
-   */
-  const takebackLines = plan.lines.filter((l) => l.isSupplemental === true);
-  const ordinaryLines = plan.lines.filter((l) => l.isSupplemental !== true);
-  /**
-   * THE CHECK IS FOR THE POSITIVE SIDE ONLY.
-   *
-   * `intended_total_cents` is the whole plan including the negatives, and
-   * asserting that as a `CheckAmt` would be asserting a number Open Dental's
-   * own eligible-total rule cannot produce — the takeback's target claimproc is
-   * on an earlier check and contributes nothing to this one.
-   */
-  const ordinaryTotalCents = ordinaryLines.reduce(
-    (a, l) => a + Number(l.intendedInsPayAmtCents),
-    0
-  );
-  const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
-
-  /*
-   * ── THE PLAN'S SHAPE, PERSISTED BEFORE THE FIRST OPEN DENTAL WRITE ────────
-   *
-   * `requires_check` is what the database's `posted` proof turns on, and it is
-   * NOT `is_recoupment`. A MIXED plan is a recoupment AND owes a check; keying
-   * the constraint on the flag would have let such a plan claim `posted` with
-   * no check number — the exact false-`posted` the constraint exists to stop.
-   *
-   * Written HERE, from the same split the check step will use, and committed
-   * before anything reaches a chart. A process that dies after this leaves a row
-   * whose shape is already recorded, so the constraint is enforcing the truth
-   * about this plan rather than the `true` default.
-   *
-   * The gate derives the same value at enqueue; this re-asserts it because the
-   * drain is the last thing to see the plan before money moves, and a plan whose
-   * lines changed underneath the gate must not post against a stale shape.
-   */
-  const requiresCheck = ordinaryLines.length > 0;
-  await pool.query(
-    'UPDATE rcm_posting_queue SET requires_check = $2, updated_at = now() WHERE queue_id = $1',
-    [queueId, requiresCheck]
-  );
+  if (pre.__done) return pre.result;
+  const { plan, config, takebackLines, ordinaryLines, ordinaryTotalCents, claimById, requiresCheck } =
+    pre;
 
   const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
@@ -2950,6 +3067,8 @@ module.exports = {
   DEFAULT_BUDGET_MS,
   QUEUE_COLUMNS,
   LINE_COLUMNS,
+  CLAIM_COLUMNS,
+  PLAN_QUERIES,
   STEPS,
   DRAIN_MUTEX,
   DRAIN_STEP_DELAY_ENV,
@@ -2966,6 +3085,7 @@ module.exports = {
   asUuidOrNull,
   loadPlan,
   claimRow,
+  releaseRow,
   persistStep,
   persistLine,
   blockRow,
