@@ -148,12 +148,27 @@ document failure is retryable and never a financial error"* expressed in the
 schema. A plan whose money is correct and proven **stays `posted`** whether or
 not a PDF reached the chart.
 
-| `document_attach_status` | Means |
-| --- | --- |
-| `null` | **Not attempted.** A real third state — the plan has not posted yet, or the remittance arrived as raw 835 with no document to file. The screen says *"nothing to file"* and offers no retry button. |
-| `attached` | Filed into every patient chart on the plan, each with the `DocNum` read back from that patient's own document list. |
-| `partial` | Some patients filed and some did not. Named rather than rounded up — `attached` would claim a document exists in a chart where it does not. |
-| `failed` | Nothing filed. The payment is unaffected and the plan is still `posted`. |
+> ⚠️ **`null` and `none` are different, and the difference is outstanding work.**
+> The first draft used `null` for both *"not attempted"* and *"nothing to file"*.
+> Those collide on the one case that matters: a process that dies between
+> `posted` and the attach leaves `null`, the screen renders *"nothing to file"*
+> with no retry offered, and **the EOB is silently never filed**. A state that
+> hides outstanding work is exactly what the honest-states rule forbids.
+
+| `document_attach_status` | Means | Retry offered? |
+| --- | --- | --- |
+| `null` | **Not attempted, and only that.** On a plan that has not posted yet it is simply too early. **On a `posted` plan it is OUTSTANDING WORK** — the attach never ran. | **Yes**, same as `failed` |
+| `none` | **Examined, and there is genuinely nothing to file** — an 835 that arrived with no document. Written explicitly, with `document_attach_at` stamped, so *"we looked"* is a recorded fact rather than an absence somebody has to interpret. | No — nothing behind the button |
+| `attached` | Filed into every patient chart on the plan, each with the `DocNum` read back from that patient's own document list. | No |
+| `partial` | Some patients filed and some did not. Named rather than rounded up — `attached` would claim a document exists in a chart where it does not. | Yes |
+| `failed` | Nothing filed. The payment is unaffected and the plan is still `posted`. | Yes |
+
+**The startup sweep COUNTS the `posted + null` plans and says so in the log; it
+does not file them.** Uploading to a patient's chart on boot would be an
+automatic chart write, and §8's whole doctrine is that a human presses the
+button — the sweep re-homes work so a person can act on it and has never itself
+written to Open Dental. The posting page offers the retry; the sweep makes sure
+somebody knows to look.
 
 Per-patient rows live in `rcm_posting_document`, one per `(plan, patient)`,
 enforced by a unique index rather than by the code that files them.
@@ -373,8 +388,9 @@ desktop application can clean up. The description is deterministic and carries
 
 **Only an actual PDF is filed.** Slice 4's EOB lane stores the document a human
 received; Slice 5's ERA lane stores raw X12 835 text, which is not a document
-anybody would open. An ERA-only remittance reports `status: null` — *nothing to
-file* — rather than a failure. The brief suggested rendering the 835 as a PDF;
+anybody would open. An ERA-only remittance reports `status: 'none'` —
+*examined, nothing to file* — rather than a failure, and explicitly rather than
+as a `null` that would be indistinguishable from an attach that never ran. The brief suggested rendering the 835 as a PDF;
 nothing in this repo renders one, and inventing a renderer inside a posting drain
 would be a second unproven document pipeline. **Logged as a gap, not built.**
 
@@ -2048,7 +2064,7 @@ The same queue. A disabled button, naming the permission an approver holds.
 | **`audit.source_ref` is unused** | Same gap the voice→TC handoff has. | A column, not a design. |
 | **Recoupments, the EOB attach** | ✅ **BUILT IN 6d.** See §3.7 and §3.8. | — |
 | **Patient portion / PaySplits** | Still deferred. `ApiPayments` is not enabled on the key at all (G11), so it is an unproven path in the strongest sense. | By design. |
-| **An ERA-only remittance files no EOB** | Slice 5 stores raw X12 835 text, which is not a document anybody would open, and nothing in this repo renders one as a PDF. Reported honestly as `document_attach_status: null` — *nothing to file* — never as a failure. | Building an 835→PDF renderer inside a posting drain would be a second, unproven document pipeline. Logged rather than improvised. |
+| **An ERA-only remittance files no EOB** | Slice 5 stores raw X12 835 text, which is not a document anybody would open, and nothing in this repo renders one as a PDF. Reported honestly as `document_attach_status: 'none'` — *examined, nothing to file* — never as a failure, and never as the `null` that means an attach is still owed. | Building an 835→PDF renderer inside a posting drain would be a second, unproven document pipeline. Logged rather than improvised. |
 | ~~A wrong typed confirmation writes no audit row~~ | **NOT A LIMIT — corrected 2026-08-26.** An earlier draft of this table claimed it. It was wrong: `respondToApprovalError` files every refusal through `auditRcmDenial`, so a mismatched phrase leaves a row under `rcm_recoupment_approval` with `result: ERROR`, the actor, the office and the remittance. Three wrong guesses leave three rows. `approvalGate.test.js` pins it. | The brief's *"nothing recorded"* means **no approval** — no plan, no claim link, no attempt stamp — and not *no trail*. Read the other way it would make repeated guesses at an irreversible operation invisible, which is the one thing an audit log exists to prevent. |
 
 ### 15.1 A withheld claim fixed after the plan has drained

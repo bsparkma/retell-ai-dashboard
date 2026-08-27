@@ -2013,11 +2013,14 @@ test('adopt before create: a document already carrying our description is not fi
   assert.equal(db.table('rcm_posting_document')[0].status, 'attached');
 });
 
-test('no stored PDF is "nothing to file", not a failure', async () => {
+test('no stored PDF is `none` — examined, nothing to file — and NOT null', async () => {
   /*
    * An 835 that arrived as raw EDI has no rendered PDF, and that is ordinary.
    * Marking it `failed` would put a retry button on a screen with nothing
    * behind it.
+   *
+   * BUT IT IS WRITTEN EXPLICITLY. NULL now means "not attempted" and nothing
+   * else — see the next test for why that distinction is the whole point.
    */
   const db = seedPlan(new FakeRcmDb(), {
     claim: { od_patient_id: 12827, od_patient_office: 'roland' },
@@ -2029,13 +2032,102 @@ test('no stored PDF is "nothing to file", not a failure', async () => {
   );
 
   assert.equal(result.outcomes[0].status, 'posted');
-  assert.equal(db.table('rcm_posting_queue')[0].document_attach_status, null);
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.document_attach_status, 'none', 'examined, and there is nothing to file');
+  assert.ok(row.document_attach_at, 'and "we looked" is a recorded fact, not an absence');
   assert.equal(od.rows.documents.length, 0);
   assert.equal(
     od.writesIssued().filter((w) => w.includes('documents')).length,
     0,
     'and it costs no Open Dental call at all'
   );
+});
+
+test('a crash between `posted` and the attach leaves NULL — and the retry files it', async () => {
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE CASE NULL-MEANING-TWO-THINGS WOULD HAVE HIDDEN
+   * ─────────────────────────────────────────────────────────────────────────
+   * The plan is `posted`, the money is right, the screen is green — and the
+   * attach never ran because the process died. Under the first draft that left
+   * NULL, which the screen rendered as "nothing to file" with no retry offered,
+   * and the EOB was silently never filed. A state that hides outstanding work
+   * is exactly what the honest-states rule forbids.
+   */
+  const db = seedPlan(new FakeRcmDb(), {
+    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+  });
+  const od = odFixture();
+  od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
+
+  // Die inside the attach, after the plan has been finalised `posted`.
+  const dying = ctxFor(db, od, {
+    loadRemittancePdf: async () => {
+      throw Object.assign(new Error('killed'), { __crash: true });
+    },
+  });
+  await postingDrain.drainOffice(dying);
+
+  const posted = db.table('rcm_posting_queue')[0];
+  assert.equal(posted.status, 'posted', 'the money is fine and stays fine');
+
+  /*
+   * Simulate the crash precisely: a process that died mid-attach never got to
+   * write ANY status, so the column is NULL rather than `failed`.
+   */
+  posted.document_attach_status = null;
+  posted.document_attach_error = null;
+  posted.document_attach_at = null;
+
+  // The sweep SEES it — and deliberately does not file it. Filing on boot
+  // would be an automatic chart write.
+  assert.equal(
+    db.table('rcm_posting_queue').filter(
+      (r) => r.status === 'posted' && r.document_attach_status == null
+    ).length,
+    1,
+    'outstanding work a person can be told about'
+  );
+
+  // And a human pressing retry finishes the job.
+  const retried = await postingDrain.retryDocumentAttach(
+    {
+      pool: db,
+      req: dying.req,
+      office: 'roland',
+      transport: dying.transport,
+      loadRemittancePdf: async () => FAKE_PDF,
+    },
+    QUEUE_ID
+  );
+
+  assert.equal(retried.code, 'OK');
+  assert.equal(retried.result.status, 'attached');
+  assert.equal(od.rows.documents.length, 1, 'the EOB is finally in the chart');
+  assert.equal(db.table('rcm_posting_queue')[0].document_attach_status, 'attached');
+});
+
+test('the retry on an ERA-only plan does nothing and files nothing', async () => {
+  /*
+   * `none` is terminal in the way that matters: there is no document, so a
+   * retry cannot conjure one. It must not invent a failure either.
+   */
+  const db = seedPlan(new FakeRcmDb(), {
+    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+  });
+  const od = odFixture();
+  const ctx = ctxFor(db, od, { loadRemittancePdf: async () => null });
+  await postingDrain.drainOffice(ctx);
+  assert.equal(db.table('rcm_posting_queue')[0].document_attach_status, 'none');
+
+  const retried = await postingDrain.retryDocumentAttach(
+    { pool: db, req: ctx.req, office: 'roland', transport: ctx.transport,
+      loadRemittancePdf: async () => null },
+    QUEUE_ID
+  );
+  assert.equal(retried.code, 'OK');
+  assert.equal(retried.result.status, 'none');
+  assert.equal(od.rows.documents.length, 0);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

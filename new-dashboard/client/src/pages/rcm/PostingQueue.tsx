@@ -791,10 +791,45 @@ function PlanLines({
       */}
       <div className="mt-4 border-t border-border pt-3" data-testid="posting-document-attach">
         <p className="text-xs font-medium">EOB in the patient chart</p>
-        {detail.documentAttach.status === null ? (
+        {detail.documentAttach.status === "none" ? (
+          /*
+           * EXAMINED, AND THERE IS NOTHING TO FILE — an 835 that arrived with no
+           * document. Deliberately no retry: there is nothing behind the button.
+           */
           <p className="mt-1 text-xs text-muted-foreground" data-testid="posting-document-none">
             Nothing to file — this remittance arrived without a document.
           </p>
+        ) : detail.documentAttach.status === null ? (
+          /*
+           * NOT ATTEMPTED. On a posted plan this is OUTSTANDING WORK, not
+           * "nothing to do" — most likely the process died between posting and
+           * the attach. It must read differently from `none` and it must offer
+           * the retry, or the EOB is silently never filed.
+           */
+          <div data-testid="posting-document-unattempted">
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              {detail.plan.statusLabel === "posted"
+                ? "Filing not attempted yet — the payment posted but the EOB was never filed."
+                : "The EOB is filed once this plan posts."}
+            </p>
+            {detail.plan.statusLabel === "posted" &&
+              (detail.documentAttach.canRetry ? (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  data-testid="posting-document-retry"
+                  disabled={retrying}
+                  onClick={onRetryDocument}
+                >
+                  {retrying ? "Filing…" : "File the EOB"}
+                </button>
+              ) : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Filing a document into a chart needs posting permission (
+                  {detail.documentAttach.retryRequires}).
+                </p>
+              ))}
+          </div>
         ) : (
           <>
             <p

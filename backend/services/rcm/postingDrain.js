@@ -1607,12 +1607,22 @@ async function attachEobDocuments(ctx, plan, config, claimById) {
     const pdf = await ctx.loadRemittancePdf(plan);
     if (!pdf || !pdf.base64) {
       /*
-       * NOT A FAILURE — there is nothing to file. An 835 that arrived as raw
-       * EDI with no rendered PDF is a real and ordinary case, and marking it
-       * `failed` would put a retry button on a screen with nothing behind it.
+       * `none` — NOT A FAILURE, and NOT a null either.
+       *
+       * There is genuinely nothing to file: an 835 that arrived as raw EDI with
+       * no rendered PDF is a real and ordinary case, and marking it `failed`
+       * would put a retry button on a screen with nothing behind it.
+       *
+       * But it is written EXPLICITLY rather than left as NULL, because NULL now
+       * means "not attempted" and nothing else. Leaving this as NULL is what
+       * would make a plan whose attach never ran — a process that died between
+       * `posted` and here — indistinguishable from one that was examined and
+       * found to have nothing. The first has outstanding work; the second does
+       * not. `document_attach_at` is stamped either way, so "we looked" is a
+       * recorded fact.
        */
-      await record(null, null);
-      return { status: null, attached: 0, failed: 0, skipped: 0, error: null };
+      await record('none', null);
+      return { status: 'none', attached: 0, failed: 0, skipped: 0, error: null };
     }
 
     const docCategory = odOfficeConfig.pickDocCategory(config);
@@ -1654,8 +1664,24 @@ async function attachEobDocuments(ctx, plan, config, claimById) {
     const skipped = claimById.size - patients.length > 0 ? claimById.size - patients.length : 0;
 
     if (patients.length === 0) {
-      await record(null, null);
-      return { status: null, attached: 0, failed: 0, skipped, error: null };
+      /*
+       * A document EXISTS and there is nowhere to put it — every claim on this
+       * plan lacks a linked Open Dental patient. That is `failed`, not `none`:
+       * something is genuinely unfiled and a person can fix it by linking the
+       * patient and pressing retry. Calling it `none` would retire a real gap.
+       */
+      await record(
+        'failed',
+        'The claims on this plan carry no linked Open Dental patient, so there is ' +
+          'nowhere to file the EOB. The payment itself posted correctly.'
+      );
+      return {
+        status: 'failed',
+        attached: 0,
+        failed: 0,
+        skipped,
+        error: 'no linked patient on any claim',
+      };
     }
 
     let attached = 0;
@@ -2845,6 +2871,8 @@ async function sweepInterruptedPostings(deps = {}) {
   const active = (tenants || []).filter((t) => t && t.status === 'active');
   let swept = 0;
   let skipped = 0;
+  /** Posted plans whose EOB was never even attempted. Counted, never filed. */
+  let attachPending = 0;
 
   for (const tenant of active) {
     try {
@@ -2869,6 +2897,35 @@ async function sweepInterruptedPostings(deps = {}) {
             `for tenant '${tenant.slug}' — press Drain to resume`
         );
       }
+
+      /*
+       * ── 6d: PLANS WHOSE EOB WAS NEVER FILED, COUNTED AND SAID OUT LOUD ────
+       *
+       * A process that dies between `posted` and the attach leaves
+       * `document_attach_status` NULL, which now means one thing only: not
+       * attempted. On a POSTED plan that is outstanding work, and it would
+       * otherwise be invisible — the money is right, the screen is green, and a
+       * document nobody asked about is quietly missing from a chart.
+       *
+       * IT IS COUNTED, NOT FILED. Uploading to a patient's chart on boot would
+       * be an automatic chart write, and §8's whole doctrine is that a human
+       * presses the button — the sweep re-homes work so a person can act on it
+       * and has never itself written to Open Dental. The posting page offers
+       * the retry; this makes sure somebody knows to look.
+       */
+      const unfiled = await pool.query(
+        `SELECT count(*)::int AS n FROM rcm_posting_queue
+          WHERE status = 'posted' AND document_attach_status IS NULL`
+      );
+      const pending = Number((unfiled.rows[0] && unfiled.rows[0].n) || 0);
+      attachPending += pending;
+      if (pending > 0) {
+        console.warn(
+          `[rcm/drain] startup sweep: ${pending} posted plan(s) for tenant '${tenant.slug}' ` +
+            'have never had their EOB filed — open the plan on /rcm/posting and press ' +
+            '"File the EOB again". Nothing was written to a chart by this sweep.'
+        );
+      }
     } catch (err) {
       // A tenant that has never run the rcm_* migration, or whose database is
       // unreachable, is skipped rather than fatal — same ruling as the EOB sweep.
@@ -2880,7 +2937,7 @@ async function sweepInterruptedPostings(deps = {}) {
     }
   }
 
-  return { swept, tenants: active.length, skipped };
+  return { swept, tenants: active.length, skipped, attachPending };
 }
 
 module.exports = {

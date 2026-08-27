@@ -103,11 +103,31 @@ const RECOUPMENT_PATHS = ['adjustment', 'supplemental'];
  * leave `posted` alone — a plan whose money is correct and proven does not stop
  * being posted because a PDF did not file. Two axes, two columns.
  *
- * `partial` is real and not a hedge: a plan spanning three patients can file two
- * of them. Calling that `attached` would claim a document exists in a chart
- * where it does not.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `none` EXISTS BECAUSE NULL WAS DOING TWO JOBS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The first draft used NULL for both *"not attempted yet"* and *"examined, and
+ * there is nothing to file"*. Those collide on the one case that matters: a
+ * process that dies between `posted` and the attach leaves NULL, the screen
+ * renders it as *"nothing to file"* with no retry offered, and the EOB is
+ * **silently never filed**. A state that hides outstanding work is exactly what
+ * the honest-states rule forbids.
+ *
+ * So the two are now separate, and NULL means ONE thing:
+ *
+ *   NULL       not attempted. On a `posted` plan this is OUTSTANDING WORK — the
+ *              screen offers the retry, the same as `failed`.
+ *   `none`     examined, and there is genuinely nothing to file: an 835 that
+ *              arrived with no document. Written EXPLICITLY, with
+ *              `document_attach_at` set, so *"we looked"* is a recorded fact
+ *              rather than an absence anybody has to interpret.
+ *   `attached` filed into every patient chart on the plan.
+ *   `partial`  some patients filed and some did not. Real, not a hedge — a plan
+ *              spanning three patients can file two, and calling that `attached`
+ *              would claim a document exists in a chart where it does not.
+ *   `failed`   nothing filed. The payment is unaffected.
  */
-const DOCUMENT_ATTACH_STATUSES = ['attached', 'partial', 'failed'];
+const DOCUMENT_ATTACH_STATUSES = ['none', 'attached', 'partial', 'failed'];
 
 /** `'a','b','c'` for a CHECK ... IN (...) list. */
 const quoted = (values) => values.map((v) => `'${v}'`).join(',');
@@ -173,10 +193,13 @@ exports.up = (pgm) => {
   // ── 2. The EOB filing, on its own axis ────────────────────────────────────
   pgm.addColumns('rcm_posting_queue', {
     /**
-     * NULL means NOT ATTEMPTED, and that is a third state rather than a missing
-     * value: the attach runs only after a plan reaches `posted`, so every plan
-     * that is not yet posted legitimately has nothing here. A screen renders
-     * null as "not filed yet", never as a failure.
+     * NULL means NOT ATTEMPTED, and it means ONLY that — see the note on
+     * DOCUMENT_ATTACH_STATUSES above for why `none` had to become its own word.
+     *
+     * On a plan that has not posted yet, NULL is simply "too early". On a
+     * `posted` plan it is OUTSTANDING WORK: the attach was never run, most
+     * likely because the process died between the two, and the screen offers
+     * the retry exactly as it does for `failed`.
      */
     document_attach_status: { type: 'text' },
     /** Why the last attempt did not file. Prose for a human; never PHI. */

@@ -342,11 +342,17 @@ router.get(
        * whose money is correct and proven stays `posted` whether or not a PDF
        * reached the chart.
        *
-       * `status: null` means NOT ATTEMPTED, and it is a third state rather than
-       * a missing value — a plan that has not posted yet legitimately has
-       * nothing here, and so does a remittance that arrived as raw 835 with no
-       * document to file. A screen renders null as "nothing to file", never as
-       * a failure with a retry button behind it.
+       * `null` AND `none` ARE DIFFERENT, and the difference is outstanding work.
+       *
+       *   `null`  not attempted, and ONLY that. On a plan that has not posted
+       *           yet it is simply too early; on a POSTED plan it means the
+       *           attach never ran — most likely the process died between the
+       *           two — so the screen offers the retry, exactly as for `failed`.
+       *   `none`  examined, and there is genuinely nothing to file: an 835 that
+       *           arrived with no document. No retry; nothing is behind it.
+       *
+       * An earlier draft used `null` for both, which let a plan sit green with
+       * an EOB silently missing from a chart.
        */
       documentAttach: {
         implemented: true,

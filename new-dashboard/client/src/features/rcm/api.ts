@@ -1377,8 +1377,8 @@ export interface PostingQueueRow {
   blockedReason: string | null;
   step: PostingStep | null;
   isRecoupment: boolean;
-  /** 6d: the EOB filing, on its own axis. Null = not attempted. */
-  documentAttachStatus: "attached" | "partial" | "failed" | null;
+  /** 6d: the EOB filing, on its own axis. See PostingDocumentAttach.status. */
+  documentAttachStatus: "none" | "attached" | "partial" | "failed" | null;
   carrierEobDate: string | null;
   intendedTotalCents: number;
   postedTotalCents: number;
@@ -1464,10 +1464,6 @@ export interface PostingQueueDetail {
    * The EOB filing, on its OWN axis — never folded into `plan.status`. A plan
    * whose money is correct and proven stays `posted` whether or not a PDF
    * reached the chart.
-   *
-   * `status: null` is NOT ATTEMPTED and is a real third state: a remittance that
-   * arrived as raw 835 has no document to file. Render it as "nothing to file",
-   * never as a failure with a retry button behind it.
    */
   documentAttach: PostingDocumentAttach;
 }
@@ -1488,8 +1484,23 @@ export interface PostingDocument {
 
 export interface PostingDocumentAttach {
   implemented: boolean;
-  /** `null` = not attempted. `partial` = some patients filed and some did not. */
-  status: "attached" | "partial" | "failed" | null;
+  /**
+   * ─────────────────────────────────────────────────────────────────────────
+   * `null` AND `none` ARE DIFFERENT, AND THE DIFFERENCE IS OUTSTANDING WORK
+   * ─────────────────────────────────────────────────────────────────────────
+   *   `null`      not attempted. On a POSTED plan that means the attach never
+   *               ran — most likely the process died between the two — so it is
+   *               work somebody still owes, and the screen offers the retry
+   *               exactly as it does for `failed`.
+   *   `none`      examined, and there is genuinely nothing to file: an 835 that
+   *               arrived with no document. No retry — there is nothing behind
+   *               the button.
+   *   `partial`   some patients filed and some did not.
+   *
+   * Collapsing the first two is what would let a plan sit green with an EOB
+   * silently missing from a chart.
+   */
+  status: "none" | "attached" | "partial" | "failed" | null;
   error: string | null;
   at: string | null;
   documents: PostingDocument[];
