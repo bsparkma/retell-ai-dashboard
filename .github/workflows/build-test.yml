@@ -99,6 +99,15 @@ jobs:
         run: |
           node scripts/migrate.js up
           node scripts/migrate-tenant.js up --tenant carein
+      # The drain's own statements, parsed by the real migrated schema. The unit
+      # suite's database is a Map that accepts any column a fixture seeds; this
+      # is what would have caught `od_patient_office` before a walk night.
+      - name: rcm query verification (real statements, real schema)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/rcm-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

@@ -195,7 +195,6 @@ function seedPlan(db, overrides = {}) {
       // to a patient ledger and the EOB files into a patient's images, so both
       // are read off the claim.
       od_patient_id: null,
-      od_patient_office: null,
       ...(overrides.claim || {}),
     },
   ]);
@@ -1662,7 +1661,7 @@ function seedTakeback(db, path, overrides = {}) {
       recoupment_path: path,
       ...(overrides.line || {}),
     },
-    claim: { od_patient_id: 12827, od_patient_office: 'roland', ...(overrides.claim || {}) },
+    claim: { od_patient_id: 12827, ...(overrides.claim || {}) },
   });
 }
 
@@ -1841,7 +1840,7 @@ test('a MIXED plan writes a check for the positive lines ONLY', async () => {
    */
   const db = seedPlan(new FakeRcmDb(), {
     queue: { is_recoupment: true, intended_total_cents: 15000 - 1500 },
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   db.seed('rcm_posting_queue_line', [
     {
@@ -1922,7 +1921,7 @@ const FAKE_PDF = { base64: Buffer.from('%PDF-1.4 fixture').toString('base64'), e
 
 test('the EOB is filed after posting, into the patient chart, under the office DocCategory', async () => {
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
@@ -1948,7 +1947,7 @@ test('the EOB is filed after posting, into the patient chart, under the office D
 
 test('the attach runs ONLY after posted, and is the last thing the drain does', async () => {
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
@@ -1966,7 +1965,7 @@ test('the attach runs ONLY after posted, and is the last thing the drain does', 
 
 test('a FAILED attach leaves `posted` alone — the money does not un-post', async () => {
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
@@ -1988,7 +1987,7 @@ test('a FAILED attach leaves `posted` alone — the money does not un-post', asy
 
 test('adopt before create: a document already carrying our description is not filed twice', async () => {
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
@@ -2023,7 +2022,7 @@ test('no stored PDF is `none` — examined, nothing to file — and NOT null', a
    * else — see the next test for why that distinction is the whole point.
    */
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
 
@@ -2055,7 +2054,7 @@ test('a crash between `posted` and the attach leaves NULL — and the retry file
    * is exactly what the honest-states rule forbids.
    */
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
@@ -2113,7 +2112,7 @@ test('the retry on an ERA-only plan does nothing and files nothing', async () =>
    * retry cannot conjure one. It must not invent a failure either.
    */
   const db = seedPlan(new FakeRcmDb(), {
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   const od = odFixture();
   const ctx = ctxFor(db, od, { loadRemittancePdf: async () => null });
@@ -2185,7 +2184,7 @@ test('a MIXED plan owes a check even though it IS a recoupment', async () => {
     // a recoupment plan, and the one that would let this plan post with no
     // check. The drain must correct it.
     queue: { is_recoupment: true, intended_total_cents: 15000 - 1500, requires_check: false },
-    claim: { od_patient_id: 12827, od_patient_office: 'roland' },
+    claim: { od_patient_id: 12827 },
   });
   db.seed('rcm_posting_queue_line', [
     {

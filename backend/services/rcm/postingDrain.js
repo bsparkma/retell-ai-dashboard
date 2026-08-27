@@ -880,6 +880,29 @@ const QUEUE_COLUMNS = [
   'document_attach_at',
 ];
 
+/*
+ * The claim columns the drain reads. `od_patient_id` is 6d's addition and it is
+ * not cosmetic: `POST /adjustments` is keyed by PatNum, not by ClaimNum — a
+ * takeback booked as an adjustment lands on a PATIENT's ledger — and the EOB
+ * document is filed into a patient's images. Neither is derivable from a
+ * ClaimNum without another paced read.
+ *
+ * A LIST, not an inline string, so `rcmQueryColumns.test.js` can hold every name
+ * here against the migrated schema. The first staging walk died on
+ * `od_patient_office`, a column that has never existed; the test double accepted
+ * it and Postgres did not.
+ */
+const CLAIM_COLUMNS = [
+  'claim_id',
+  'office_id',
+  'od_match_status',
+  'od_claim_num',
+  'posting_queue_id',
+  'od_match_snapshot',
+  'claim_number',
+  'od_patient_id',
+];
+
 const LINE_COLUMNS = [
   'queue_line_id',
   'queue_id',
@@ -964,54 +987,53 @@ function toLine(row) {
 }
 
 /**
+ * THE FOUR STATEMENTS `loadPlan` RUNS, as named constants.
+ *
+ * Named rather than inlined so `scripts/rcm-verify-queries.js` can execute the
+ * REAL text against a real migrated Postgres in CI, with parameters that match
+ * nothing. Postgres resolves column names at parse time, so a statement naming a
+ * column that does not exist fails there whether or not any row would come back.
+ *
+ * A copy in the verifier would drift; this cannot.
+ */
+const PLAN_QUERIES = {
+  queue:
+    `SELECT ${QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
+    `WHERE queue_id = $1 AND office_id = $2`,
+  lines:
+    `SELECT ${LINE_COLUMNS.join(', ')} FROM rcm_posting_queue_line ` +
+    `WHERE queue_id = $1 AND office_id = $2 ORDER BY position`,
+  claims: `SELECT ${CLAIM_COLUMNS.join(', ')} FROM rcm_claims WHERE posting_queue_id = $1`,
+  batch:
+    `SELECT batch_id, payer, check_number, eft_number, payment_method, deposit_date ` +
+    `FROM rcm_payment_batches WHERE batch_id = $1 AND office_id = $2`,
+};
+
+/**
  * Load a plan and everything needed to judge it: the queue row, its lines, the
  * claims linked to it, and the batch the money came on.
  *
  * Office-scoped on every table. A plan is unreachable from the wrong office
  * rather than refused there — the same idiom every other RCM read uses.
  *
+ * The claims read is scoped by `posting_queue_id` alone, and does not need an
+ * office of its own: the queue row it came from was office-scoped, and a claim
+ * carries the office it was matched under. Hard rule 3 is satisfied by that one
+ * `office_id`, which is exactly why there is no `od_patient_office` column to
+ * ask for.
+ *
  * @param {{ query: Function }} pool
  * @param {string} office
  * @param {string} queueId
  */
 async function loadPlan(pool, office, queueId) {
-  const q = await pool.query(
-    `SELECT ${QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
-      `WHERE queue_id = $1 AND office_id = $2`,
-    [queueId, office]
-  );
+  const q = await pool.query(PLAN_QUERIES.queue, [queueId, office]);
   if (q.rows.length === 0) return null;
   const queue = toQueue(q.rows[0]);
 
-  const l = await pool.query(
-    `SELECT ${LINE_COLUMNS.join(', ')} FROM rcm_posting_queue_line ` +
-      `WHERE queue_id = $1 AND office_id = $2 ORDER BY position`,
-    [queueId, office]
-  );
-
-  /*
-   * `od_patient_id` is 6d's addition and it is not cosmetic. `POST /adjustments`
-   * is keyed by PatNum, not by ClaimNum — a takeback booked as an adjustment
-   * lands on a PATIENT's ledger — and the EOB document is filed into a
-   * patient's images. Neither is derivable from a ClaimNum without another
-   * paced read.
-   *
-   * `od_patient_office` rides with it because a PatNum without its office names
-   * nothing: numbering restarts in every Open Dental database, and PatNum 7115
-   * is a different, real person in Roland than in Riley. Hard rule 3.
-   */
-  const c = await pool.query(
-    `SELECT claim_id, office_id, od_match_status, od_claim_num, posting_queue_id, ` +
-      `od_match_snapshot, claim_number, od_patient_id, od_patient_office ` +
-      `FROM rcm_claims WHERE posting_queue_id = $1`,
-    [queueId]
-  );
-
-  const b = await pool.query(
-    `SELECT batch_id, payer, check_number, eft_number, payment_method, deposit_date ` +
-      `FROM rcm_payment_batches WHERE batch_id = $1 AND office_id = $2`,
-    [queue.batchId, office]
-  );
+  const l = await pool.query(PLAN_QUERIES.lines, [queueId, office]);
+  const c = await pool.query(PLAN_QUERIES.claims, [queueId]);
+  const b = await pool.query(PLAN_QUERIES.batch, [queue.batchId, office]);
 
   return {
     queue,
@@ -1032,8 +1054,19 @@ async function loadPlan(pool, office, queueId) {
         snapshotVersion: Number.isFinite(version) ? version : null,
         claimNumber: row.claim_number == null ? null : String(row.claim_number),
         odPatientId: row.od_patient_id == null ? null : Number(row.od_patient_id),
-        odPatientOffice:
-          row.od_patient_office == null ? null : String(row.od_patient_office),
+        /*
+         * THE PATIENT'S OFFICE IS THE CLAIM'S OFFICE. It is not a column of its
+         * own, and asking for one is what broke the first staging walk.
+         *
+         * A PatNum without its office names nothing — numbering restarts in
+         * every Open Dental database, and 7115 is a different, real person in
+         * Roland than in Riley. But hard rule 3 is satisfied by `office_id`
+         * already on this row: a remittance belongs to one office, every claim
+         * on it was matched against that office's own Open Dental, and there is
+         * no such thing here as a claim whose patient lives in another practice.
+         * Storing the same fact twice would create a pair that can disagree.
+         */
+        odPatientOffice: String(row.office_id),
       };
     }),
     batch: b.rows.length
@@ -2950,6 +2983,8 @@ module.exports = {
   DEFAULT_BUDGET_MS,
   QUEUE_COLUMNS,
   LINE_COLUMNS,
+  CLAIM_COLUMNS,
+  PLAN_QUERIES,
   STEPS,
   DRAIN_MUTEX,
   DRAIN_STEP_DELAY_ENV,
