@@ -376,25 +376,6 @@ function pathsFor(office) {
   };
 }
 
-/**
- * The `+` AdjType each office books a takeback REVERSAL under, by DefNum.
- *
- * Written down here rather than resolved live, because the one script that may
- * DELETE from a chart — `rcm-s11-unwind.js` — reads nothing from the
- * environment and contacts nothing but Open Dental's own endpoints. The numbers
- * come from §9(b)'s live read of each practice's own Category-1 list
- * (`Insurance adjustment (+)`), and `rcm-s10-capture.js` copies the right one
- * into the manifest.
- *
- * THEY MUST NEVER CROSS. 260 is not an AdjType in Riley and 402 is not one in
- * Roland; booking either in the other practice would put a number in the books
- * meaning something nobody chose. Same rule as the CommLog DefNums.
- */
-const REVERSAL_ADJ_TYPE_DEFNUM = Object.freeze({
-  roland: 260,
-  valley: 402,
-});
-
 /** Every denied id, flattened — what the unwind actually checks against. */
 const DENY_IDS = Object.freeze([
   ...SPIKE_0B_RESIDUE.claims,
@@ -495,7 +476,6 @@ module.exports = {
   ERA_B_PATH,
   SPIKE_0B_RESIDUE,
   WALK_SPENT_IDS,
-  REVERSAL_ADJ_TYPE_DEFNUM,
   DENY_IDS,
   OD_PAGE_SIZE,
   MAX_PAGES,

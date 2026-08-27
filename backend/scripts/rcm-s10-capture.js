@@ -114,12 +114,16 @@ async function main() {
     if (adjNum && Number(target.odAdjustmentNum) !== adjNum) {
       target.odAdjustmentNum = adjNum;
       /*
-       * The AdjType the unwind will book the OFFSET under, resolved by NAME from
-       * this office's own definitions and carried here so the unwind — which is
-       * the only script allowed to DELETE from a chart, and reads nothing from
-       * the environment — does not have to resolve anything itself.
+       * NO ADJTYPE IS COPIED HERE, deliberately.
+       *
+       * An earlier draft wrote the reversal's DefNum into the manifest so the
+       * unwind would not have to resolve anything. That is a number in a JSON
+       * file that is correct until somebody edits a definitions list in one
+       * practice — after which the unwind books a reversal under whatever that
+       * number now means, in a patient's ledger, silently. DefNums resolve BY
+       * NAME, at the moment of use, or not at all. The unwind does it itself
+       * through `odOfficeConfig.pickAdjType`, name and sign both checked.
        */
-      target.reversalAdjTypeDefNum = T.REVERSAL_ADJ_TYPE_DEFNUM[TARGET.office] || 0;
       changed++;
     }
     if (docNums.length) {

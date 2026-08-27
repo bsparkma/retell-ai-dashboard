@@ -1632,24 +1632,22 @@ PROBE_OFFICE=valley node scripts/rcm-s11-unwind.js --execute
 One night, three things 6d shipped and nothing has yet exercised against a real
 chart: **kill-mid-write**, **the takeback**, and **the EOB attach**.
 
-> ## ⛔ TWO THINGS BLOCK THIS RUN TODAY. READ BOTH BEFORE SCHEDULING IT.
+> ## ONE THING STILL CANNOT BE EXERCISED ON THIS WALK.
 >
-> **1. The approval gate refuses a real reversal 835.** Proven, not inferred —
-> see §10.6.1. Step 6 cannot be reached until there is a ruling.
+> **The EOB attach.** See §10.6.2 — accepted as out of scope for this night; it
+> gets a PDF-lane walk of its own. Step 10 will correctly report `none`, which is
+> the honest answer rather than a failure. **It must be proven before "live at
+> Roland" exits.**
 >
-> **2. The EOB attach cannot be exercised on this walk at all.** See §10.6.2.
-> Step 10 will correctly report `none`, and that is the honest answer rather
-> than a failure.
->
-> Steps 1–5 and 7–9 are runnable now and would prove kill-mid-write, which is
-> §10.3's outstanding item. Whether that is worth a night on its own is Beau's
-> call.
+> ✅ **The gate blocker is resolved.** The D-11 amendment
+> (`TAKEBACK_ACKNOWLEDGED`, RCM_APPROVAL_GATE §3.1) makes step 6 reachable —
+> see §10.6.1 for what was found and how it was ruled.
 
 #### Before the night
 
 | | |
 | --- | --- |
-| Assert the reversal AdjType exists **and is a `+`** in Roland | `Insurance adjustment` = DefNum **260** (roland) / **402** (valley), §9(b). `pickAdjType(config,'recoupment_reversal')` resolves it by NAME and **refuses a type whose `ItemValue` says it deducts** — a reversal booked under a minus type would double the deduction while reporting success. Confirm 260 is still on Roland's Category-1 list and still reads `+` before the night, not during it. |
+| Assert the reversal AdjType exists **and is a `+`** in Roland | The unwind resolves it at RUN TIME through `pickAdjType(config, 'recoupment_reversal')` — by NAME, with the sign checked — and prints `resolved AdjType: "<name>" DefNum=<n>` before it writes. **No DefNum is stored anywhere in this repo**; a number written down is right until somebody edits a definitions list. Confirm `Insurance adjustment` is still on Roland's Category-1 list and still reads `+` before the night, not during it. (It read **260** in Roland and **402** in Riley on 2026-08-13 — a note about one day, not a value to use.) |
 | Prep | `PROBE_OFFICE=roland node scripts/rcm-s10-prep.js --execute` |
 | The two payment 835s **and** the recoupment | `node scripts/rcm-s10-835.js --recoupment` |
 | Set the pause hook | `RCM_DRAIN_STEP_DELAY_MS=15000` on staging only (§10.3) |
@@ -1663,7 +1661,7 @@ chart: **kill-mid-write**, **the takeback**, and **the EOB attach**.
 | 3 | Press **Drain** | `posted`, one ClaimPayment, reconciled by read-back |
 | 4 | Read the ledger | +$1.00 on 12827 |
 | 5 | Upload **835-R-recoupment.txt** | parses as `reversal_of_previous_payment`, `−$1.00` |
-| 6 | Open the takeback panel, **type `-1.00`**, approve | ⛔ **BLOCKED TODAY — §10.6.1** |
+| 6 | Open the takeback panel, **type `-1.00`**, approve | the checklist shows **`TAKEBACK_ACKNOWLEDGED`** — *This is a takeback — confirmed by typing -1.00* — and `NO_BLOCKING_REASON` green (§10.6.1) |
 | 7 | Press **Drain** on the takeback plan | one `POST /adjustments`, DefNum **12**, `−1.00`, read back |
 | 8 | Read the ledger | back to $0.00 net on the walk's money |
 | 9 | Upload **835-B**, approve, Drain — and **restart the container while it is paused** | the startup sweep re-homes it to `approved`; press Drain again → `posted`, **exactly one** ClaimPayment |
@@ -1684,7 +1682,7 @@ nets to nothing". **The ledger returns to zero; the chart does not return to a
 state where the takeback never happened.** Two adjustment rows remain. Nothing
 can remove them.
 
-#### 10.6.1 ⛔ The gate refuses a real reversal 835
+#### 10.6.1 ✅ The gate used to refuse a real reversal 835 — D-11 amendment, 2026-08-27
 
 Run against `evaluateClaim` with `recoupmentAllowed: true`:
 
@@ -1705,19 +1703,22 @@ real carrier would send.
 negative amount and no `needsReviewReasons`. The fixture was a claim that takes
 money back; it was not a claim the parser had produced.
 
-**This needs a ruling, not a patch.** The question is narrow: on the recoupment
-approve *only*, are `reversal_not_postable` and `negative_total_payment`
-non-blocking? The argument for is that they say exactly what the typed
-confirmation is confirming — the operator has read the number off the screen and
-typed it back, which is a stronger statement than the flags are warning about.
-The argument against is that D-11 ratified a single blocking vocabulary
-precisely so no code path gets to decide a flag does not apply to it, and this
-would be the first exception.
+**RULED 2026-08-27.** On the recoupment approve *only*, those two flags are
+answered by one named check, `TAKEBACK_ACKNOWLEDGED`. It is a **partition, not a
+filter**: every reason is still accounted for by exactly one visible check, the
+check itself can fail, and the ordinary approve is untouched and still refuses
+both. Exactly two flags — a third is a ruling, not a fix.
 
-Whatever is decided, it should be one named check with its own code — not a
-filter quietly applied to the list.
+Full reasoning, the pass/fail table and the six tests: **RCM_APPROVAL_GATE
+§3.1**.
 
-#### 10.6.2 ⛔ The EOB attach cannot be exercised on an 835 walk
+**The lesson worth keeping is not about these two flags.** *A hand-built fixture
+for one stage of a pipeline is a claim about the stage upstream of it.* 6d's
+takeback tests built a claim that takes money back; they never built a claim the
+PARSER had produced, so every one of them passed against a gate that would have
+refused the real thing.
+
+#### 10.6.2 ⚠ The EOB attach cannot be exercised on an 835 walk — accepted, deferred
 
 `loadRemittancePdf` finds the upload that produced the batch and **refuses
 anything whose `content_type` is not a PDF**. The ERA lane does write an

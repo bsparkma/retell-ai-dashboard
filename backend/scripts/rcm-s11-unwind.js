@@ -141,6 +141,7 @@
 const fs = require('node:fs');
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
+const odOfficeConfig = require('../services/rcm/odOfficeConfig');
 
 
 /*
@@ -433,11 +434,40 @@ async function unwindTarget(io, target) {
           steps.reversal = 'already done';
           io.log(`   0. reversal     already done — offsetting adjustment ${target.odReversalAdjNum}`);
         } else {
+          /*
+           * THE ADJTYPE IS RESOLVED BY NAME, AT RUN TIME, WITH ITS SIGN CHECKED.
+           *
+           * Not a number in a table in this repo. `Insurance adjustment` is 260
+           * in Roland and 402 in Riley today, and a DefNum written down here is
+           * a number that is right until somebody edits a definitions list in
+           * one practice — at which point this script books a reversal under
+           * whatever that number now means, in a patient's ledger, silently.
+           * Same hard rule the CommLog DefNums and the PayType follow.
+           *
+           * Resolved ONCE per run in `main()` through the same
+           * `odOfficeConfig.pickAdjType(config, 'recoupment_reversal')` the
+           * drain uses, which requires the name AND a `+` sign. No handle here
+           * means no reversal here.
+           */
+          const adjType = io.reversalAdjType;
+          if (!adjType || !Number(adjType.defNum)) {
+            steps.reversal = 'failed';
+            aborted = true;
+            io.log(
+              '   0. reversal     FAILED — this office has no `+` "insurance adjustment" ' +
+                'AdjType. Nothing was written.'
+            );
+            return { steps, aborted };
+          }
+          io.log(
+            `   resolved AdjType: "${adjType.name}" DefNum=${adjType.defNum} (by name, sign +)`
+          );
+
           const r = await write('POST', '/adjustments', {
             PatNum: patNum,
             AdjDate: String(target.serviceDate || '').slice(0, 10),
             AdjAmt: -origAmt,
-            AdjType: Number(target.reversalAdjTypeDefNum),
+            AdjType: Number(adjType.defNum),
             AdjNote: 'CareIN S10 walk unwind: offsetting the takeback adjustment',
           });
           if (r.dryRun) {
@@ -461,7 +491,25 @@ async function unwindTarget(io, target) {
               `   read-back: /adjustments/${newNum} AdjAmt=${backAmt}  ` +
                 `net ${origAmt} + ${backAmt} = ${net}`
             );
-            if (back.ok && net === 0) {
+            /*
+             * THREE FACTS, NOT ONE (ruling F). "The amounts cancel" is necessary
+             * and not sufficient: a row that nets to zero under the WRONG
+             * AdjType is a number in the practice's books meaning something
+             * nobody chose, and one on the wrong PATIENT is money moved in a
+             * stranger's ledger. Both would read as success from the total
+             * alone.
+             */
+            const backType = Number(back.data?.AdjType);
+            const backPat = Number(back.data?.PatNum);
+            const typeOk = backType === Number(adjType.defNum);
+            const patOk = backPat === Number(patNum);
+            if (!typeOk || !patOk) {
+              io.log(
+                `   read-back MISMATCH: AdjType=${backType} (wanted ${adjType.defNum}), ` +
+                  `PatNum=${backPat} (wanted ${patNum})`
+              );
+            }
+            if (back.ok && net === 0 && typeOk && patOk) {
               steps.reversal = 'done';
               target.odReversalAdjNum = newNum;
             } else {
@@ -800,10 +848,50 @@ async function main() {
   const before = await balanceOf(get);
   printBalance('BEFORE', before);
 
+  /*
+   * ─── THE REVERSAL ADJTYPE, RESOLVED ONCE, BY NAME ─────────────────────────
+   *
+   * Resolved here rather than per target, because five paced reads of a
+   * practice's definitions list is six seconds a two-target unwind should spend
+   * once. Resolved AT ALL only when a target actually carries a takeback
+   * adjustment — an ordinary unwind should cost no definitions read.
+   *
+   * A failure here is NOT fatal to the run: the reversal step reports `failed`
+   * for the targets that need it and the rest of the unwind is unaffected. What
+   * it must never do is proceed with a guess.
+   */
+  let reversalAdjType = null;
+  const needsReversal = (manifest.targets || []).some((t) => Number(t.odAdjustmentNum) > 0);
+  if (needsReversal) {
+    try {
+      const resolved = await odOfficeConfig.resolvePostingConfig(get, office);
+      reversalAdjType = odOfficeConfig.pickAdjType(resolved.config, 'recoupment_reversal');
+      console.log(
+        reversalAdjType
+          ? `    reversal AdjType: "${reversalAdjType.name}" DefNum=${reversalAdjType.defNum} ` +
+              `— resolved from ${office}'s OWN definitions, by name, sign +`
+          : `    reversal AdjType: NONE — ${office} has no '+' "insurance adjustment". ` +
+              'Any target needing a reversal will refuse.'
+      );
+    } catch (err) {
+      console.log(
+        `    reversal AdjType: UNRESOLVED — ${err && err.message ? err.message : err}. ` +
+          'Any target needing a reversal will refuse.'
+      );
+    }
+  }
+
   /**
    * Issue one write, or describe it. `--execute` is the only thing that makes
    * this touch the network.
-   * @param {'DELETE'|'PUT'} verb
+   * `POST` IS HERE FOR EXACTLY ONE CALLER: the reversal's offsetting adjustment.
+   * It was missing when that step was written, and `verb === 'DELETE' ? delete :
+   * put` would have sent it as a **PUT to `/adjustments`** — a different verb at
+   * a collection endpoint, which Open Dental answers with a 400 that reads like
+   * a permission problem. Enumerated rather than defaulted, so the next verb
+   * somebody adds has to be named too.
+   *
+   * @param {'DELETE'|'PUT'|'POST'} verb
    * @param {string} path
    * @param {Record<string, unknown>} [body]
    */
@@ -814,7 +902,12 @@ async function main() {
     }
     await sleep(T.PACE_MS);
     try {
-      const res = verb === 'DELETE' ? await axios.delete(path) : await axios.put(path, body);
+      const res =
+        verb === 'DELETE'
+          ? await axios.delete(path)
+          : verb === 'POST'
+            ? await axios.post(path, body)
+            : await axios.put(path, body);
       console.log(`   ${verb} ${path} -> ${res.status}`);
       return { ok: true, status: res.status, data: res.data, dryRun: false };
     } catch (err) {
@@ -834,7 +927,13 @@ async function main() {
     console.log(
       `\n-- TARGET ${label}: ProcNum=${target.procNum} ClaimNum=${target.claimNum} ClaimProcNum=${target.claimProcNum} --`
     );
-    const io = { get, write: issue, log: (line) => console.log(line), execute };
+    const io = {
+      get,
+      write: issue,
+      log: (line) => console.log(line),
+      execute,
+      reversalAdjType,
+    };
     const outcome = await unwindTarget(io, target);
     results.push({ label, target, ...outcome });
   }
