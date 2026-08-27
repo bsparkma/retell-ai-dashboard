@@ -196,8 +196,17 @@ const SPIKE_0B_RESIDUE = Object.freeze({
  *   - and screening the manifest is the whole job of the deny-list, so the moment
  *     an id is spent is exactly the moment it belongs here.
  *
- * The claims are `53784`/`53785`, the procedures `406124`/`406125` (both now
- * soft-deleted, `ProcStatus:"D"`, G12), the lines `535194`/`535195`.
+ * TWO WALKS ARE RECORDED HERE, and the list grows by a set per walk:
+ *
+ * | Walk | Unwound | Claims | Procedures (now `"D"`, G12) | Lines |
+ * | --- | --- | --- | --- | --- |
+ * | 2026-08-25 | 2026-08-26 02:28Z | `53784`, `53785` | `406124`, `406125` | `535194`, `535195` |
+ * | 2026-08-26 | 2026-08-26 01:25Z | `53805`, `53806` | `406272`, `406273` | `535348`, `535349` |
+ *
+ * The 2026-08-26 walk never posted — it stopped at the first Drain on the
+ * `od_patient_office` defect (§10.3) — but its targets were still CREATED, and
+ * created is the only thing that matters to a deny-list. An id is spent the
+ * moment it exists, not the moment it is used successfully.
  *
  * NOT included: ClaimPaymentNums `21399`/`21400`. The manifest has no field for a
  * check — its shape is `{procNum, claimNum, claimProcNum}` — so "a future
@@ -207,9 +216,11 @@ const SPIKE_0B_RESIDUE = Object.freeze({
  * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
  */
 const WALK_SPENT_IDS = Object.freeze({
-  claims: Object.freeze([53784, 53785]),
-  procedures: Object.freeze([406124, 406125]),
-  claimProcs: Object.freeze([535194, 535195]),
+  // 2026-08-25 walk, unwound 2026-08-26 02:28Z (§11.2).
+  // 2026-08-26 walk, unwound 2026-08-26 01:25Z (§11.4).
+  claims: Object.freeze([53784, 53785, 53805, 53806]),
+  procedures: Object.freeze([406124, 406125, 406272, 406273]),
+  claimProcs: Object.freeze([535194, 535195, 535348, 535349]),
 });
 
 /**

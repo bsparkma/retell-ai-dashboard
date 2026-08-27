@@ -147,7 +147,7 @@ async function scan(handle, path, params, keep) {
 function denyNote(id, bucket) {
   const n = Number(id);
   if ((T.SPIKE_0B_RESIDUE[bucket] || []).includes(n)) return '*** SPIKE 0b RESIDUE — DO NOT TOUCH';
-  if ((T.WALK_SPENT_IDS[bucket] || []).includes(n)) return '*** SPENT BY THE 2026-08-25 WALK — DO NOT TOUCH';
+  if ((T.WALK_SPENT_IDS[bucket] || []).includes(n)) return '*** SPENT BY A PREVIOUS WALK — DO NOT TOUCH';
   return '';
 }
 
