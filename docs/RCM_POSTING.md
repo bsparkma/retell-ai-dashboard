@@ -339,6 +339,14 @@ equivalent. The difference *is* the decision:
 > posting a second, offsetting entry, never removing the first. The unwind
 > (§11) reflects this.
 
+**The 422 refusal echoes the expected phrase, and that is deliberate.** The
+dialog already renders the same string verbatim from `GET
+/remittances/:id/recoupment`, so the refusal is telling the approver nothing the
+screen did not just show them. D-6's ceremony is friction against an *accidental*
+click on an irreversible operation — it is not a secret, and it must not be
+"hardened" later into a guessing game where somebody who mistypes is told only
+that they were wrong.
+
 **Neither path is ever chosen by the drain.** The approver chose, the plan
 recorded it on every line as `recoupment_path`, and `drainTakebacks` executes
 what was recorded. A takeback line that names no path is
@@ -1836,9 +1844,10 @@ completed step).
 
 ### 11.3 What 6d leaves behind — and what the unwind can and cannot remove
 
-6d adds three kinds of row to a chart. **Only one of them is deletable, and one
-of them is permanent by design.** The teardown must say which is which rather
-than implying it can tidy up after all three.
+6d adds three kinds of row to a chart. **None of them is deletable through this
+API** — one is reversible by an offsetting entry, one is permanent by design, and
+one has never been probed. The teardown must say which is which rather than
+implying it can tidy up after all three.
 
 | What 6d writes | Removable? | How |
 | --- | --- | --- |

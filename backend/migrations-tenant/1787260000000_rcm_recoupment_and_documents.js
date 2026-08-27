@@ -82,8 +82,13 @@ const LINE_STATUSES_6C = LINE_STATUSES.filter((s) => s !== 'recouped');
 /**
  * Which irreversible-ness a recoupment line was written with.
  *
- *   `adjustment`   `POST /adjustments` — DELETABLE, and the default the dialog
- *                  offers. This is the path a cautious biller takes.
+ *   `adjustment`   `POST /adjustments` — **REVERSIBLE by an offsetting
+ *                  adjustment (G6); NOT deletable.** There is no
+ *                  `DELETE /adjustments` on this Open Dental build — reversal
+ *                  means posting a second, offsetting entry, never removing the
+ *                  first (Spike 0b test 8: −1.00 reversed by +1.00 nets the
+ *                  ledger to zero). The default the dialog offers, and the path
+ *                  a cautious biller takes.
  *   `supplemental` `POST /claimprocs/Supplemental` with a negative InsPayAmt —
  *                  G10, the one Open Dental operation that cannot be reverted,
  *                  cannot be deleted, and permanently pins its claim and
@@ -301,9 +306,15 @@ exports.up = (pgm) => {
     /** Which path this takeback was written by. See RECOUPMENT_PATHS above. */
     recoupment_path: { type: 'text' },
     /**
-     * `POST /adjustments` → AdjNum. The reversible path, and the only id in this
-     * module that a teardown can actually delete — `rcm-s11-unwind.js` reads it
-     * off the manifest.
+     * `POST /adjustments` → AdjNum.
+     *
+     * The reversible path — but **nothing in this module is deletable**, and
+     * this id is no exception. There is no `DELETE /adjustments` (G6), so a
+     * teardown reverses this row by posting an OFFSETTING adjustment against
+     * the same patient, resolved by name through `pickAdjType(…,
+     * 'recoupment_reversal')`. The AdjNum is kept because that reversal has to
+     * be able to name what it is reversing, and because a ledger entry nobody
+     * can trace is one somebody reconciles by hand.
      */
     od_adjustment_num: { type: 'bigint' },
     /**
