@@ -1535,3 +1535,78 @@ test('an unrecognised path is refused before the phrase is even considered', asy
     assert.equal(db.table('rcm_posting_queue').length, 0);
   });
 });
+
+// ─── A REAL reversal 835 is refused, and that is recorded, not fixed ──────────
+
+test('the recoupment approve REFUSES a claim carrying the parser reversal flags', () => {
+  /*
+   * ⛔ FOUND 2026-08-27, NOT FIXED — see docs/RCM_POSTING.md §10.6.1.
+   *
+   * 6d's recoupment tests build the claim BY HAND: a negative amount and an
+   * empty `needsReviewReasons`. A claim the ERA PARSER produced from a real
+   * reversal 835 looks different — it carries `reversal_not_postable`, and its
+   * remittance carries `negative_total_payment`. Both are `blocking` in
+   * rcmVocabulary, and `NO_BLOCKING_REASON` is computed unconditionally, so the
+   * D-6 typed-confirmation path is unreachable for any 835 a carrier would send.
+   *
+   * This test PINS the refusal rather than asserting the behaviour is right.
+   * Whether those two flags should be non-blocking on the recoupment approve is
+   * a ruling — D-11 ratified a single blocking vocabulary precisely so no code
+   * path gets to decide a flag does not apply to it, and this would be the
+   * first exception. When it is decided, it becomes one named check with its own
+   * code, and this test changes with it.
+   */
+  const claim = {
+    claimId: 'c1',
+    officeId: 'roland',
+    patientName: 'X',
+    claimNumber: '53805',
+    totalPaidCents: -100,
+    reviewedAt: new Date(),
+    odMatchStatus: 'confirmed',
+    needsReviewReasons: ['reversal_not_postable'],
+  };
+  const result = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim,
+    lines: [{ flags: [] }],
+    payment: { paidCents: -100, batchClaimPaymentId: 'p1' },
+    batchFlags: ['negative_total_payment'],
+    plannedClaimprocs: new Map(),
+    recoupmentAllowed: true,
+  });
+
+  const check = result.checks.find((c) => c.code === 'NO_BLOCKING_REASON');
+  assert.equal(check.passed, false, 'a real reversal 835 cannot be approved today');
+  assert.match(check.detail, /reversal_not_postable/);
+  assert.match(check.detail, /negative_total_payment/);
+  assert.equal(result.postable, false);
+
+  // And the D-6 swap DID happen — the refusal is the blocking list, not the
+  // takeback checks. That distinction is the whole finding.
+  assert.ok(result.checks.some((c) => c.code === 'RECOUPMENT_CONFIRMED' && c.passed));
+  assert.ok(!result.checks.some((c) => c.code === 'NOT_REVERSAL'));
+});
+
+test('the same claim WITHOUT the parser flags passes — which is why 6d missed it', () => {
+  const result = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim: {
+      claimId: 'c1',
+      officeId: 'roland',
+      patientName: 'X',
+      claimNumber: '53805',
+      totalPaidCents: -100,
+      reviewedAt: new Date(),
+      odMatchStatus: 'confirmed',
+      needsReviewReasons: [],
+    },
+    lines: [{ flags: [] }],
+    payment: { paidCents: -100, batchClaimPaymentId: 'p1' },
+    batchFlags: [],
+    plannedClaimprocs: new Map(),
+    recoupmentAllowed: true,
+  });
+  const check = result.checks.find((c) => c.code === 'NO_BLOCKING_REASON');
+  assert.equal(check.passed, true, 'the hand-built fixture sails through');
+});

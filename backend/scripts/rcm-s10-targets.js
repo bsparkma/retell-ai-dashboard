@@ -344,8 +344,15 @@ function denyIdsFor(target) {
  * pointed at the wrong practice's ids by running in the wrong order. The same
  * reason office is in every database key in this module.
  *
+ * `eraRPath` is the RECOUPMENT file, and it is deliberately a separate name
+ * rather than a `-C` continuing the series. A, B and R are not three of a kind:
+ * A and B each pay a claim of their own, while R takes money BACK off the claim
+ * A already paid, and it is only uploaded once A has actually posted. A name
+ * that read as "the third one" would invite uploading all three together, which
+ * cannot work — there is nothing to recoup yet.
+ *
  * @param {string} office
- * @returns {{ outDir: string, manifestPath: string, eraAPath: string, eraBPath: string }}
+ * @returns {{ outDir: string, manifestPath: string, eraAPath: string, eraBPath: string, eraRPath: string }}
  */
 function pathsFor(office) {
   const outDir = path.join(OUT_DIR, office);
@@ -354,8 +361,28 @@ function pathsFor(office) {
     manifestPath: path.join(outDir, 'rcm-s10-manifest.json'),
     eraAPath: path.join(outDir, 'rcm-s10-835-A.txt'),
     eraBPath: path.join(outDir, 'rcm-s10-835-B.txt'),
+    eraRPath: path.join(outDir, 'rcm-s10-835-R-recoupment.txt'),
   };
 }
+
+/**
+ * The `+` AdjType each office books a takeback REVERSAL under, by DefNum.
+ *
+ * Written down here rather than resolved live, because the one script that may
+ * DELETE from a chart — `rcm-s11-unwind.js` — reads nothing from the
+ * environment and contacts nothing but Open Dental's own endpoints. The numbers
+ * come from §9(b)'s live read of each practice's own Category-1 list
+ * (`Insurance adjustment (+)`), and `rcm-s10-capture.js` copies the right one
+ * into the manifest.
+ *
+ * THEY MUST NEVER CROSS. 260 is not an AdjType in Riley and 402 is not one in
+ * Roland; booking either in the other practice would put a number in the books
+ * meaning something nobody chose. Same rule as the CommLog DefNums.
+ */
+const REVERSAL_ADJ_TYPE_DEFNUM = Object.freeze({
+  roland: 260,
+  valley: 402,
+});
 
 /** Every denied id, flattened — what the unwind actually checks against. */
 const DENY_IDS = Object.freeze([
@@ -457,6 +484,7 @@ module.exports = {
   ERA_B_PATH,
   SPIKE_0B_RESIDUE,
   WALK_SPENT_IDS,
+  REVERSAL_ADJ_TYPE_DEFNUM,
   DENY_IDS,
   OD_PAGE_SIZE,
   MAX_PAGES,

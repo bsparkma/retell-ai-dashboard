@@ -122,7 +122,22 @@ const SEG = '~\n';
 const x12Date = (iso) => String(iso || '').replace(/-/g, '');
 
 /** Cents -> the plain decimal X12 wants: 100 -> "1.00". */
-const x12Amount = (c) => `${Math.trunc(c / 100)}.${String(Math.abs(c) % 100).padStart(2, '0')}`;
+/*
+ * Cents to an X12 decimal string, SIGN-CORRECT below a dollar.
+ *
+ * The old form was `${Math.trunc(c / 100)}.${abs(c) % 100}`, which is right for
+ * every positive amount and for -100, and WRONG for -50: `Math.trunc(-0.5)` is
+ * `-0`, which templates as `"0"`, so fifty cents taken back rendered as fifty
+ * cents paid. Nothing exercised it while every amount here was +$1.00. The
+ * recoupment file is the first negative this function has ever seen, so the sign
+ * is now carried explicitly rather than inferred from the integer part.
+ */
+const x12Amount = (c) => {
+  const cents = Math.trunc(c);
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(cents);
+  return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
+};
 
 /**
  * One complete 835 interchange paying `feeCents` on exactly one claim, one line.
@@ -138,10 +153,46 @@ const x12Amount = (c) => `${Math.trunc(c / 100)}.${String(Math.abs(c) % 100).pad
  * @returns {string}
  */
 function build835(spec) {
-  const amount = x12Amount(spec.feeCents);
+  /*
+   * ─── THE RECOUPMENT FILE IS THE NEGATED MIRROR OF THE PAYMENT ─────────────
+   *
+   * `sign = -1` negates every money element and sets CLP02 = 22, the X12 code
+   * for *reversal of previous payment*. Nothing else about the file changes:
+   * same claim, same patient, same service date, same procedure.
+   *
+   * WHY A MIRROR RATHER THAN A CAS-BALANCED CLAW-BACK, which is what the brief
+   * asked for and is worth saying plainly. An 835 balances per line: billed =
+   * paid + the sum of its CAS adjustments. File A carries **no CAS at all** on
+   * purpose — nothing is disallowed, so the write-off is zero and the night's
+   * arithmetic is one number. A reversal of a claim with no adjustments has no
+   * adjustments to reverse. Expressing the takeback as `CLP03 = 1.00,
+   * CLP04 = -1.00` would need `CAS = 2.00` to balance, and that two dollars is
+   * not a real contractual write-off — it is an artefact of forcing a CAS into a
+   * file that has nothing for one to describe. The walk would then be measuring
+   * the takeback AND a phantom write-off at once.
+   *
+   * So the negation is generic rather than special-cased: `spec.adjustments`
+   * are negated along with everything else, and the day File A grows a CO-45
+   * the reversal will carry `CAS*CO*45*-<that>` without another line of code.
+   * Today that array is empty, so no CAS segment is emitted — which is the
+   * correct 835, not a shortcut.
+   */
+  const sign = spec.sign === -1 ? -1 : 1;
+  const reversal = sign === -1;
+  const amount = x12Amount(sign * spec.feeCents);
   const day = x12Date(spec.serviceDate);
   const checkNum = `S10${spec.label}-${spec.claimNum}`;
   const ctl = spec.controlNumber;
+  /*
+   * CLP02: 1 = processed as primary, 22 = REVERSAL OF PREVIOUS PAYMENT. This is
+   * what tells a human reading the file that it is a takeback rather than a
+   * second, negative payment — and it is the field an 835 reader looks at first.
+   */
+  const claimStatus = reversal ? '22' : '1';
+  /** Reversed adjustments, if the file being mirrored had any. Today: none. */
+  const casSegments = (spec.adjustments || []).map(
+    (a) => `CAS*${a.group}*${a.reason}*${x12Amount(sign * a.cents)}`
+  );
 
   const segments = [
     // Sender/receiver are the synthetic payer and the practice. No real ids.
@@ -150,7 +201,11 @@ function build835(spec) {
     `ST*835*${ctl}`,
     // BPR04=CHK, a paper check. BPR16 is the payment date; DTM*405 below is what
     // the parser actually prefers, and both say the same thing here.
-    `BPR*I*${amount}*C*CHK************${day}`,
+    // BPR03 is the credit/debit flag. A reversal is a DEBIT — money coming back
+    // off the practice — and an 835 reader looks at this before it looks at the
+    // sign on BPR02. BPR02 itself stays SIGNED so the file still reconciles
+    // against its claim payments, which is the property the corpus suite checks.
+    `BPR*I*${amount}*${reversal ? 'D' : 'C'}*CHK************${day}`,
     // TRN02 is the check number — the parser takes it from here, never from
     // BPR16 (which is a date; that confusion is one of the two regressions the
     // ported eraParser suite pins).
@@ -164,11 +219,13 @@ function build835(spec) {
     // CLP01 = the real ClaimNum (the matcher's CLAIM_NUMBER_MATCH, 35/100).
     // CLP02=1 processed as primary, CLP03 billed, CLP04 paid, CLP05 patient
     // responsibility 0, CLP06=12 PPO, CLP07 the payer's own control number.
-    `CLP*${spec.claimNum}*1*${amount}*${amount}*0*12*${checkNum}`,
+    `CLP*${spec.claimNum}*${claimStatus}*${amount}*${amount}*0*12*${checkNum}`,
     `NM1*QC*1*${spec.patLast}*${spec.patFirst}`,
-    // Billed 1.00, paid 1.00, one unit. No CAS: nothing is disallowed, so the
-    // write-off is zero and the night's arithmetic is one number.
+    // Billed and paid are equal and, on a reversal, both negative. One unit.
+    // CAS only if the file being mirrored carried adjustments — see build835's
+    // header for why forcing one in would put a phantom write-off on the walk.
     `SVC*AD:${spec.procCode}*${amount}*${amount}**1`,
+    ...casSegments,
     `DTM*472*${day}`,
   ];
   // SE01 counts ST through SE inclusive: the segments from ST onwards, plus SE.
@@ -177,6 +234,51 @@ function build835(spec) {
   segments.push(`SE*${segmentCount}*${ctl}`, `GE*1*1`, `IEA*1*${ctl}`);
   return segments.join(SEG) + SEG;
 }
+
+/**
+ * The recoupment file: −$1.00 off target A's claim, as a reversal.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * IT IS ONLY UPLOADED AFTER A HAS POSTED, AND THAT IS NOT A CONVENTION
+ * ──────────────────────────────────────────────────────────────────────────────
+ * A takeback acts on a claimproc that is already `Received` and already on a
+ * check — that is what makes it a takeback rather than a negative payment. Sent
+ * before A has drained, there is nothing on the chart to take back from, and the
+ * drain's own line decision would read the claimproc as unpaid.
+ *
+ * Written to its own filename (`…-R-recoupment.txt`) rather than as a `-C`
+ * continuing the series, so nobody uploads all three together.
+ *
+ * The CHECK NUMBER differs from A's (`S10R-…` against `S10A-…`), so the
+ * office-scoped remittance key cannot dedupe one against the other.
+ *
+ * @param {object} manifest
+ * @param {object} target   target A, from the manifest
+ * @param {string} patLast
+ * @param {string} patFirst
+ * @returns {string}
+ */
+function buildRecoupment(manifest, target, patLast, patFirst) {
+  return build835({
+    label: 'R',
+    sign: -1,
+    claimNum: Number(target.claimNum),
+    patLast,
+    patFirst,
+    procCode: manifest.procCode || T.PROC_CODE,
+    feeCents: Number(manifest.feeCents) || T.PROC_FEE_CENTS,
+    serviceDate: String(target.serviceDate || ''),
+    controlNumber: '000000009',
+    // Nothing to reverse: File A carries no CAS. See build835's header.
+    adjustments: [],
+  });
+}
+
+/**
+ * `--recoupment` also emits the takeback file. Off by default — see the flag's
+ * use below for why it is not simply always written.
+ */
+const RECOUPMENT = process.argv.includes('--recoupment');
 
 function main() {
   if (!fs.existsSync(PATHS.manifestPath)) {
@@ -290,6 +392,35 @@ function main() {
     console.log('   ------------------------------ 8< ------------------------------');
   }
 
+  /*
+   * ─── THE RECOUPMENT FILE, ONLY WHEN ASKED FOR ─────────────────────────────
+   *
+   * Behind a flag rather than emitted always, because it is the one file here
+   * that cannot be uploaded alongside the others. A prep run that produced all
+   * three side by side would invite exactly that.
+   */
+  if (RECOUPMENT) {
+    const targetA = usable[0];
+    const era = buildRecoupment(manifest, targetA, patLast, patFirst);
+    fs.writeFileSync(PATHS.eraRPath, era, 'utf8');
+    console.log(`\n-- ${PATHS.eraRPath}`);
+    console.log(
+      `   RECOUPMENT -$${(Number(manifest.feeCents) || T.PROC_FEE_CENTS) / 100} off claim ` +
+        `${targetA.claimNum}  check S10R-${targetA.claimNum}  CLP02=22 reversal_of_previous_payment`
+    );
+    console.log('   ------------------------------ 8< ------------------------------');
+    process.stdout.write(era);
+    console.log('   ------------------------------ 8< ------------------------------');
+    console.log('\n  ! UPLOAD THIS ONE LAST, and only after target A has actually POSTED.');
+    console.log('    A takeback acts on a claimproc that is already Received and already on a');
+    console.log('    check. Before A drains there is nothing on the chart to take back from.');
+    console.log('\n  ! THE APPROVAL GATE REFUSES THIS FILE TODAY. A real reversal carries');
+    console.log('    `reversal_not_postable` on the claim and `negative_total_payment` on the');
+    console.log('    remittance, and BOTH are `blocking` in rcmVocabulary -- so');
+    console.log('    NO_BLOCKING_REASON fails even on the recoupment approve. See');
+    console.log('    docs/RCM_POSTING.md section 10.6. That is a ruling, not a change here.');
+  }
+
   console.log('\nDONE. Nothing was read from or written to Open Dental.');
   console.log('\nNEXT — this part cannot be scripted:');
   console.log('  The upload route POST /api/rcm/era needs the SSO session. The shared');
@@ -308,4 +439,4 @@ if (require.main === module) {
   process.exit(process.exitCode || 0);
 }
 
-module.exports = { main, build835 };
+module.exports = { main, build835, buildRecoupment };

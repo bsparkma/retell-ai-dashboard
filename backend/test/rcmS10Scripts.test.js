@@ -825,7 +825,7 @@ test('the unwind re-checks OPENDENTAL_WRITE_DISABLED, because it bypasses the tr
   );
 });
 
-test('the unwind runs the FIVE steps in the mandatory order', () => {
+test('the unwind runs the SIX steps in the mandatory order', () => {
   /*
    * DELETE claimpayment -> PUT claim to "W" -> PUT claimproc to NotReceived ->
    * DELETE claim -> DELETE procedurelog.
@@ -843,7 +843,15 @@ test('the unwind runs the FIVE steps in the mandatory order', () => {
     assert.ok(i > 0, `expected to find ${needle}`);
     return i;
   };
+  /*
+   * SIX since 2026-08-27. `reversal` goes FIRST: a takeback booked as an
+   * adjustment sits on the PATIENT's ledger rather than on the claim, so
+   * deleting the claim first would leave the deduction behind with nothing left
+   * to explain it.
+   */
+  const reversal = at("write('POST', '/adjustments'");
   const payment = at("write('DELETE', `/claimpayments/");
+  assert.ok(reversal < payment, 'the adjustment is offset while its claim still exists');
   const unreceive = at("write('PUT', `/claims/");
   const line = at("write('PUT', `/claimprocs/");
   const claim = at("write('DELETE', `/claims/");
@@ -856,7 +864,14 @@ test('the unwind runs the FIVE steps in the mandatory order', () => {
   // The STEPS constant the script iterates for its summary table must agree with
   // the order above, rather than being a second list that can drift from it.
   const { STEPS } = require(path.join(SCRIPTS, FILES.unwind));
-  assert.deepEqual([...STEPS], ['payment', 'unreceive', 'line', 'claim', 'procedure']);
+  assert.deepEqual([...STEPS], [
+    'reversal',
+    'payment',
+    'unreceive',
+    'line',
+    'claim',
+    'procedure',
+  ]);
 });
 
 test('the unwind reads every deletion back, and expects the procedure to survive as "D"', () => {
@@ -1027,6 +1042,7 @@ test('the unwind un-receives the claim BEFORE reverting the claimproc', async ()
 
   assert.equal(aborted, false, 'the whole target should complete');
   assert.deepEqual(steps, {
+    reversal: 'already done',
     payment: 'done',
     unreceive: 'done',
     line: 'done',
@@ -1360,5 +1376,219 @@ test('checkOutDirWritable has no default directory to fall back to', () => {
     typeof T.checkOutDirWritable(''),
     'string',
     'and calling it with nothing is refused, not silently defaulted'
+  );
+});
+
+// ─── The recoupment 835 ──────────────────────────────────────────────────────
+
+/**
+ * A third file, paying −$1.00 back off target A's claim, uploaded only after A
+ * has actually posted. It is the negated mirror of File A: same claim, same
+ * patient, same date, every money element flipped, and CLP02 = 22.
+ */
+
+const { parse835 } = require('../services/rcm/eraParser');
+
+function recoupmentEra() {
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { buildRecoupment } = require(path.join(SCRIPTS, FILES.era));
+  return buildRecoupment(
+    { procCode: T.PROC_CODE, feeCents: T.PROC_FEE_CENTS },
+    { claimNum: 53805, serviceDate: '2026-03-01' },
+    'TEST 2',
+    'STEDI'
+  );
+}
+
+test('the recoupment file parses as a reversal that takes money back', () => {
+  const parsed = parse835(recoupmentEra());
+  const remittance = parsed.remittances[0];
+  const claim = remittance.claims[0];
+
+  assert.equal(claim.claimStatusCode, '22');
+  assert.equal(claim.claimStatusLabel, 'reversal_of_previous_payment');
+  assert.equal(claim.isReversal, true);
+  assert.equal(claim.totalPaidCents, -100, 'a dollar comes back off the claim');
+  assert.equal(claim.totalBilledCents, -100, 'and the billed side is mirrored too, so it balances');
+  assert.deepEqual(claim.claimLevelAdjustments, [], 'no CAS: File A has none to reverse');
+});
+
+test('the recoupment file cannot dedupe against the payment it reverses', () => {
+  /*
+   * The office-scoped remittance key is built from the check number. If R
+   * carried A's, the second upload would be swallowed as a duplicate and the
+   * walk would silently have nothing to approve.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const spec = {
+    claimNum: 53805,
+    patLast: 'TEST 2',
+    patFirst: 'STEDI',
+    procCode: T.PROC_CODE,
+    feeCents: T.PROC_FEE_CENTS,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000001',
+  };
+  const paid = parse835(build835({ ...spec, label: 'A' })).remittances[0];
+  const back = parse835(recoupmentEra()).remittances[0];
+
+  assert.notEqual(paid.checkNumber, back.checkNumber);
+  assert.match(back.checkNumber, /^S10R-/);
+});
+
+test('x12Amount carries the sign below a dollar', () => {
+  /*
+   * `Math.trunc(-50 / 100)` is `-0`, which templates as `"0"` — so fifty cents
+   * taken back rendered as fifty cents PAID. Nothing exercised it while every
+   * amount in this file was +$1.00; the recoupment file is the first negative it
+   * has ever seen.
+   */
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'R',
+    sign: -1,
+    claimNum: 1,
+    patLast: 'A',
+    patFirst: 'B',
+    procCode: 'D0140',
+    feeCents: 50,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000009',
+  });
+  assert.match(era, /CLP\*1\*22\*-0\.50\*-0\.50\*/, 'minus fifty cents, not plus');
+  assert.equal(parse835(era).remittances[0].claims[0].totalPaidCents, -50);
+});
+
+test('the payment file is unchanged by the recoupment work', () => {
+  /*
+   * `sign` defaults to +1 and `adjustments` to empty, so File A must come out
+   * byte-identical to what the 2026-08-26 prep produced. A walk whose payment
+   * leg changed underneath it would be measuring two things at once.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'A',
+    claimNum: 53805,
+    patLast: 'TEST 2',
+    patFirst: 'STEDI',
+    procCode: T.PROC_CODE,
+    feeCents: T.PROC_FEE_CENTS,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000001',
+  });
+  assert.match(era, /CLP\*53805\*1\*1\.00\*1\.00\*0\*12\*S10A-53805/);
+  assert.match(era, /BPR\*I\*1\.00\*C\*CHK/, 'still a credit');
+  assert.ok(!era.includes('CAS*'), 'and still no CAS');
+});
+
+test('a reversal that DID have adjustments would negate them too', () => {
+  /*
+   * The negation is generic rather than special-cased for today's file. File A
+   * carries no CAS, so the reversal carries none — but the day it grows a CO-45
+   * the reversal will carry `CAS*CO*45*-…` without another line of code.
+   */
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'R',
+    sign: -1,
+    claimNum: 1,
+    patLast: 'A',
+    patFirst: 'B',
+    procCode: 'D0140',
+    feeCents: 100,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000009',
+    adjustments: [{ group: 'CO', reason: '45', cents: 300 }],
+  });
+  assert.match(era, /CAS\*CO\*45\*-3\.00/);
+});
+
+// ─── The unwind's reversal step ──────────────────────────────────────────────
+
+test('the unwind reverses an adjustment rather than deleting it', () => {
+  /*
+   * `DELETE /adjustments` DOES NOT EXIST (G6, documented-absence). The only way
+   * back is an offsetting adjustment of the opposite sign. A script that reached
+   * for the delete would fail on the night with a 400 that reads like a
+   * permission problem.
+   */
+  const src = code(FILES.unwind);
+  assert.ok(
+    !/DELETE',\s*`?\/adjustments/.test(src),
+    'there is no DELETE /adjustments to reach for'
+  );
+  assert.match(src, /write\('POST', '\/adjustments'/);
+  assert.match(src, /AdjAmt: -origAmt/, 'the offset is the negation of what was read back');
+});
+
+test('the reversal proves itself by the pair netting to zero, not by a 200', () => {
+  /*
+   * G2. And for this step the proof is not "a row exists" but "the two rows add
+   * up to nothing" — the only statement that means the ledger is where it
+   * started.
+   */
+  const src = code(FILES.unwind);
+  assert.match(src, /const net = origAmt \+ backAmt;/);
+  assert.match(src, /net === 0/);
+});
+
+test('a reversal that has already run is not run again', () => {
+  /*
+   * Reversing twice moves the ledger the wrong way by exactly the amount it
+   * moved the right way, and there is no third adjustment that fixes it without
+   * leaving a fourth row.
+   */
+  assert.match(code(FILES.unwind), /Number\(target\.odReversalAdjNum\) > 0/);
+});
+
+// ─── rcm-s10-capture.js — what the WALK produced, written back ───────────────
+
+test('the capture script never touches Open Dental', () => {
+  /*
+   * Every number it needs was already written down by the drain, in the row that
+   * proves what it did. Asking Open Dental again would be a second, weaker
+   * source for a fact the queue already holds — and would put a chart read in a
+   * script whose whole job is bookkeeping.
+   */
+  const src = read('rcm-s10-capture.js');
+  for (const forbidden of ['odOffices', 'odPostingWrites', 'openDental', 'getOdOffice']) {
+    assert.ok(!src.includes(forbidden), `must not reach for ${forbidden}`);
+  }
+});
+
+test('the capture script is a dry run unless --write is given', () => {
+  const src = read('rcm-s10-capture.js');
+  assert.match(src, /const WRITE = process\.argv\.includes\('--write'\)/);
+  assert.match(src, /DRY RUN/);
+});
+
+test('the reversal AdjTypes are per-office and must never cross', () => {
+  /*
+   * 260 is not an AdjType in Riley and 402 is not one in Roland. Booking either
+   * in the other practice would put a number in the books meaning something
+   * nobody chose — the same rule as the CommLog DefNums, and the same reason.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.equal(T.REVERSAL_ADJ_TYPE_DEFNUM.roland, 260);
+  assert.equal(T.REVERSAL_ADJ_TYPE_DEFNUM.valley, 402);
+  assert.notEqual(T.REVERSAL_ADJ_TYPE_DEFNUM.roland, T.REVERSAL_ADJ_TYPE_DEFNUM.valley);
+});
+
+test('the DocNum is captured to be NAMED, never to be deleted', () => {
+  /*
+   * `DELETE /documents/{n}` has never been probed, so a filed EOB is permanent
+   * residue on the test patient. Recording it means the next inventory can name
+   * it rather than rediscovering it as an unexplained row.
+   */
+  const capture = read('rcm-s10-capture.js');
+  assert.match(capture, /PERMANENT/);
+  assert.match(capture, /odDocNums/);
+
+  const unwind = code(FILES.unwind);
+  assert.ok(
+    !/\/documents\//.test(unwind),
+    'the unwind must not try to remove a document — there is no proven verb for it'
   );
 });

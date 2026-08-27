@@ -1627,6 +1627,127 @@ PROBE_OFFICE=valley node scripts/rcm-s11-unwind.js --execute
 
 ---
 
+### 10.6 Walk night 2 — the click-by-click
+
+One night, three things 6d shipped and nothing has yet exercised against a real
+chart: **kill-mid-write**, **the takeback**, and **the EOB attach**.
+
+> ## ⛔ TWO THINGS BLOCK THIS RUN TODAY. READ BOTH BEFORE SCHEDULING IT.
+>
+> **1. The approval gate refuses a real reversal 835.** Proven, not inferred —
+> see §10.6.1. Step 6 cannot be reached until there is a ruling.
+>
+> **2. The EOB attach cannot be exercised on this walk at all.** See §10.6.2.
+> Step 10 will correctly report `none`, and that is the honest answer rather
+> than a failure.
+>
+> Steps 1–5 and 7–9 are runnable now and would prove kill-mid-write, which is
+> §10.3's outstanding item. Whether that is worth a night on its own is Beau's
+> call.
+
+#### Before the night
+
+| | |
+| --- | --- |
+| Assert the reversal AdjType exists **and is a `+`** in Roland | `Insurance adjustment` = DefNum **260** (roland) / **402** (valley), §9(b). `pickAdjType(config,'recoupment_reversal')` resolves it by NAME and **refuses a type whose `ItemValue` says it deducts** — a reversal booked under a minus type would double the deduction while reporting success. Confirm 260 is still on Roland's Category-1 list and still reads `+` before the night, not during it. |
+| Prep | `PROBE_OFFICE=roland node scripts/rcm-s10-prep.js --execute` |
+| The two payment 835s **and** the recoupment | `node scripts/rcm-s10-835.js --recoupment` |
+| Set the pause hook | `RCM_DRAIN_STEP_DELAY_MS=15000` on staging only (§10.3) |
+
+#### The night
+
+| # | Do | Expect |
+| --- | --- | --- |
+| 1 | Upload **835-A**, run the match | one strong candidate; **do not** confirm yet |
+| 2 | Confirm the match, review, approve | plan `approved`, one line |
+| 3 | Press **Drain** | `posted`, one ClaimPayment, reconciled by read-back |
+| 4 | Read the ledger | +$1.00 on 12827 |
+| 5 | Upload **835-R-recoupment.txt** | parses as `reversal_of_previous_payment`, `−$1.00` |
+| 6 | Open the takeback panel, **type `-1.00`**, approve | ⛔ **BLOCKED TODAY — §10.6.1** |
+| 7 | Press **Drain** on the takeback plan | one `POST /adjustments`, DefNum **12**, `−1.00`, read back |
+| 8 | Read the ledger | back to $0.00 net on the walk's money |
+| 9 | Upload **835-B**, approve, Drain — and **restart the container while it is paused** | the startup sweep re-homes it to `approved`; press Drain again → `posted`, **exactly one** ClaimPayment |
+| 10 | Look at the EOB panel | `none` — *"Nothing to file (835 only)"*. **Not a failure.** §10.6.2 |
+| 11 | `node scripts/rcm-s10-capture.js` then `--write` | records `odAdjustmentNum` and any `odDocNums` into the manifest |
+| 12 | `node scripts/rcm-s11-unwind.js` (dry run), then `--execute` | six steps; `reversal` **first** |
+| 13 | `node scripts/rcm-s10-inventory.js` | 12827 back to **0 claims, −$0.20** |
+
+**Step 9 is the one that has never worked.** Both previous attempts missed the
+window — the drain takes ~9 s and a restart takes ~3 s to bite. The pause hook
+exists precisely so the kill lands somewhere real.
+
+**Step 12's `reversal` step is new.** `DELETE /adjustments` does not exist (G6),
+so the unwind posts an **offsetting** adjustment under the `+` type and proves
+itself by reading both rows back and adding them: `origAmt + backAmt === 0`. A
+200 is not proof (G2), and here the proof is not "a row exists" but "the pair
+nets to nothing". **The ledger returns to zero; the chart does not return to a
+state where the takeback never happened.** Two adjustment rows remain. Nothing
+can remove them.
+
+#### 10.6.1 ⛔ The gate refuses a real reversal 835
+
+Run against `evaluateClaim` with `recoupmentAllowed: true`:
+
+```
+6d hand-built fixture (no parser flags) => NO_BLOCKING_REASON passed: true
+a REAL reversal 835 from the parser     => NO_BLOCKING_REASON passed: false
+                                           reversal_not_postable, negative_total_payment
+```
+
+The parser marks a reversal claim `reversal_not_postable` and flags the
+remittance `negative_total_payment`. **Both are `blocking` in `rcmVocabulary`.**
+`NO_BLOCKING_REASON` is computed unconditionally — the D-6 swap replaces
+`NOT_REVERSAL` / `NOT_RECOUPMENT` with `RECOUPMENT_CONFIRMED` and does not touch
+the blocking list — so the typed-confirmation path is unreachable for any 835 a
+real carrier would send.
+
+**6d's tests did not catch this because they built the claim by hand**, with a
+negative amount and no `needsReviewReasons`. The fixture was a claim that takes
+money back; it was not a claim the parser had produced.
+
+**This needs a ruling, not a patch.** The question is narrow: on the recoupment
+approve *only*, are `reversal_not_postable` and `negative_total_payment`
+non-blocking? The argument for is that they say exactly what the typed
+confirmation is confirming — the operator has read the number off the screen and
+typed it back, which is a stronger statement than the flags are warning about.
+The argument against is that D-11 ratified a single blocking vocabulary
+precisely so no code path gets to decide a flag does not apply to it, and this
+would be the first exception.
+
+Whatever is decided, it should be one named check with its own code — not a
+filter quietly applied to the list.
+
+#### 10.6.2 ⛔ The EOB attach cannot be exercised on an 835 walk
+
+`loadRemittancePdf` finds the upload that produced the batch and **refuses
+anything whose `content_type` is not a PDF**. The ERA lane does write an
+`rcm_eob_uploads` row and does set `result_batch_id` (for a single-check file) —
+so the lookup succeeds and then correctly declines, because an `.edi` is not a
+document anybody would open. The plan reports `document_attach_status: 'none'`.
+
+**Could a synthetic EOB PDF target 12827 instead?** Not as things stand, and the
+reason is structural rather than a missing fixture:
+
+* The PDF lane creates its **own** batch from its **own** extraction, so it
+  cannot attach to the 835 walk's batch — it would be a separate remittance.
+* For that batch's plan to land on 12827, the extraction would have to read a
+  patient name and claim number out of the PDF that then MATCH the OD claim the
+  prep created. Extraction is model-driven (Slice 4). Making the walk depend on a
+  model reading a synthetic scan correctly on the night would put a
+  non-deterministic step inside the one run that is supposed to be deterministic.
+* The existing synthetic PDFs (`backend/test/fixtures/rcm/eob/`) exist to measure
+  **OCR accuracy**. They were never built to drive extraction → batch → match →
+  plan against a chosen PatNum, and they name nobody the prep creates.
+
+So the EOB attach needs a walk of its own: a PDF-lane remittance, extracted,
+matched by hand to a disposable claim, then drained. That is a smaller and
+better-scoped run than bolting it onto this one — and **`--recoupment` already
+prints a warning saying so**, so nobody discovers it at 10pm.
+
+When that run happens, the DocNum it produces is **permanent residue**:
+`DELETE /documents/{n}` has never been probed. `rcm-s10-capture.js` records it as
+`odDocNums` so the next inventory can name the row rather than rediscover it.
+
 ## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 
 > ### ⚠️ THE ORDER IN THIS SECTION WAS WRONG UNTIL 2026-08-26
