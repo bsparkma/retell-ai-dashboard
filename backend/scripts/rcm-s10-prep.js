@@ -216,7 +216,7 @@ async function main() {
    * it cannot record them is precisely the outcome the manifest exists to
    * prevent.
    */
-  const outDirProblem = T.checkOutDirWritable();
+  const outDirProblem = T.checkOutDirWritable(PATHS.outDir);
   if (outDirProblem) {
     console.error(`REFUSED: ${outDirProblem}`);
     console.error('  Nothing was created. No Open Dental call was made.');

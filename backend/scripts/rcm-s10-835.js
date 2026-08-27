@@ -228,7 +228,7 @@ function main() {
   // chart, so the cost of a late failure is smaller — but an operator who has
   // file A and a stack trace where B should be is still worse off than one who
   // has a sentence.
-  const outDirProblem = T.checkOutDirWritable();
+  const outDirProblem = T.checkOutDirWritable(PATHS.outDir);
   if (outDirProblem) {
     console.error(`REFUSED: ${outDirProblem}`);
     process.exitCode = 7;

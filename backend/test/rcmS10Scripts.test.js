@@ -458,7 +458,7 @@ test('the prep script checks the output directory BEFORE its first Open Dental c
   assert.ok(mainAt > 0, 'main() must be findable');
   const src = whole.slice(mainAt);
 
-  const check = src.indexOf('T.checkOutDirWritable()');
+  const check = src.indexOf('T.checkOutDirWritable(PATHS.outDir)');
   assert.ok(check > 0, 'the prep must check the output directory inside main()');
 
   for (const later of ['loadSecrets()', 'odOffices.getOdOffice', 'od.get(', 'od.post(']) {
@@ -1293,4 +1293,72 @@ test("valley's live insurance plan is deny-listed before the first valley walk",
   assert.deepEqual([...valley.walkSpentIds.claims], []);
   assert.deepEqual([...valley.walkSpentIds.procedures], []);
   assert.deepEqual([...valley.walkSpentIds.claimProcs], []);
+});
+
+// ─── The directory the manifest actually lands in ────────────────────────────
+
+/**
+ * The 2026-08-26 prep run created its Open Dental targets and then could not
+ * write the manifest: `ENOENT`. Beau hand-wrote it.
+ *
+ * `checkOutDirWritable()` had passed, because it defaulted to `OUT_DIR` and
+ * probed `/data/rcm-s10` — while the manifest goes to
+ * `/data/rcm-s10/<office>/`, one level deeper, which nothing ever created. A
+ * check that proves the wrong directory is writable is worse than no check: it
+ * buys confidence for a write that then fails, and it fails AFTER the live
+ * claims exist.
+ */
+test('checkOutDirWritable creates the per-office directory, not just its parent', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 's10-office-'));
+  try {
+    const T = require(path.join(SCRIPTS, FILES.targets));
+    const officeDir = path.join(root, 'rcm-s10', 'roland');
+    assert.ok(!fs.existsSync(officeDir), 'sanity: nothing has created it yet');
+
+    assert.equal(T.checkOutDirWritable(officeDir), null);
+
+    assert.ok(fs.existsSync(officeDir), 'the office directory now exists');
+    // And a manifest written into it lands, which is the thing that failed.
+    const manifest = path.join(officeDir, 'rcm-s10-manifest.json');
+    fs.writeFileSync(manifest, '{}', 'utf8');
+    assert.ok(fs.existsSync(manifest));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the prep checks the directory it will WRITE to, not the shared root', () => {
+  /*
+   * The regression pin, held against the source rather than a run: the argument
+   * must be the per-office path from `pathsFor`, because that is where the
+   * manifest goes.
+   */
+  const src = code(FILES.prep);
+  assert.match(src, /T\.checkOutDirWritable\(PATHS\.outDir\)/);
+  assert.ok(
+    !/T\.checkOutDirWritable\(\)/.test(src),
+    'the bare call checks a directory the prep never writes to'
+  );
+  const era = code(FILES.era);
+  assert.match(era, /T\.checkOutDirWritable\(PATHS\.outDir\)/);
+  assert.ok(!/T\.checkOutDirWritable\(\)/.test(era));
+});
+
+test('checkOutDirWritable has no default directory to fall back to', () => {
+  /*
+   * The default is what made the bare call look correct at every call site. With
+   * it gone, a future script cannot check the wrong directory by omission — the
+   * only way to get a verdict is to name the directory being written to.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.match(
+    code(FILES.targets),
+    /function checkOutDirWritable\(dir\)/,
+    'no `dir = OUT_DIR` default'
+  );
+  assert.equal(
+    typeof T.checkOutDirWritable(''),
+    'string',
+    'and calling it with nothing is refused, not silently defaulted'
+  );
 });
