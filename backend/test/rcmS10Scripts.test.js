@@ -1362,3 +1362,58 @@ test('checkOutDirWritable has no default directory to fall back to', () => {
     'and calling it with nothing is refused, not silently defaulted'
   );
 });
+
+// ─── rcm-withdraw-plan.js ────────────────────────────────────────────────────
+
+test('the withdraw script is a dry run unless --execute is given', () => {
+  /*
+   * There is no un-withdraw, so the default has to be the safe one — the same
+   * stance every other script in this walk takes.
+   */
+  const { parseArgs } = require(path.join(SCRIPTS, 'rcm-withdraw-plan.js'));
+  assert.equal(parseArgs(['--office', 'roland', '--queue', '9ad950ad']).execute, false);
+  assert.equal(parseArgs(['--execute']).execute, true);
+});
+
+test('the withdraw script resolves a PREFIX and refuses an ambiguous one', () => {
+  /*
+   * Queue ids reach an operator truncated, through a screenshot or a log line.
+   * Retyping 36 characters into a shell that splits on whitespace is how the
+   * wrong plan gets retired — so a prefix is accepted, and two matches is a
+   * refusal rather than a coin flip.
+   */
+  const src = read('rcm-withdraw-plan.js');
+  assert.match(src, /queue_id::text LIKE \$2/, 'resolves by prefix');
+  assert.match(src, /\$\{args\.queue\}%/, 'and binds it, never interpolates into SQL');
+  assert.match(src, /matches\.rows\.length > 1/, 'and refuses more than one');
+  assert.ok(
+    !/queue_id::text LIKE '/.test(src),
+    'the prefix must never be spliced into the statement as a literal'
+  );
+});
+
+test('the withdraw script reaches Open Dental not at all', () => {
+  /*
+   * Retiring a plan is a decision about the QUEUE. It writes nothing to a chart,
+   * and a script that imported the Open Dental layer would be one edit away from
+   * doing so.
+   */
+  const src = read('rcm-withdraw-plan.js');
+  for (const forbidden of ['odOffices', 'odPostingWrites', 'openDental']) {
+    assert.ok(!src.includes(forbidden), `must not import ${forbidden}`);
+  }
+});
+
+test('the withdraw script goes through withdrawRow, not its own UPDATE', () => {
+  /*
+   * The guards live in `withdrawRow` — the state whitelist, the office scope.
+   * A script with its own UPDATE would be a second door into the same table
+   * with none of them.
+   */
+  const src = read('rcm-withdraw-plan.js');
+  assert.match(src, /postingDrain\.withdrawRow\(/);
+  assert.ok(
+    !/UPDATE rcm_posting_queue/i.test(src),
+    'no hand-rolled write — that is exactly the door the guards would miss'
+  );
+});

@@ -268,6 +268,25 @@ function postingTransportFor(office) {
  */
 async function readClaim(od, claimNum) {
   const res = await od.get(`/claims/${claimNum}`, {}, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  /*
+   * A 404 IS ITS OWN ANSWER, NOT A FAILED READ.
+   *
+   * Every other non-ok status means "we could not find out" — a timeout, a 500,
+   * a rate limit — and the honest response to those is to stop and let a human
+   * press again. A 404 means we DID find out: this practice's Open Dental has no
+   * claim at this number. Open Dental does not reissue ClaimNums, so that answer
+   * will not change however many times it is asked.
+   *
+   * Given its own code because the caller's response has to be different in kind
+   * — not a retry, a withdrawal.
+   */
+  if (res.status === 404) {
+    throw new OdWriteError(
+      `GET /claims/${claimNum} — this office's Open Dental has no such claim`,
+      'OD_CLAIM_GONE',
+      { status: 404, claimNum: Number(claimNum), retryable: false }
+    );
+  }
   if (!res.ok) {
     throw new OdWriteError(
       `GET /claims/${claimNum} failed (${res.status})`,

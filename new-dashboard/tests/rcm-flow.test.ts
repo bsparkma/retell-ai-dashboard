@@ -294,6 +294,10 @@ describe("post, one assertion per PostingQueueLabel", () => {
     partially_posted: "blocked",
     failed: "blocked",
     blocked: "blocked",
+    // `unavailable`, not `blocked`. Every other unhappy state here is an
+    // instruction; this one is a full stop, and a plan that can never post must
+    // not sit on a worklist forever.
+    withdrawn: "unavailable",
   };
 
   it("covers every stored status the server can label", () => {
@@ -314,6 +318,7 @@ describe("post, one assertion per PostingQueueLabel", () => {
           statusLabel: labelName,
           odClaimPaymentNum: labelName === "posted" ? 4471 : null,
           blockedReason: labelName === "blocked" ? "valley_not_enabled" : null,
+          withdrawnReason: labelName === "withdrawn" ? "target_removed" : null,
         }),
       );
       expect(step.state).toBe(expected);

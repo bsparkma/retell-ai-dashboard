@@ -98,6 +98,15 @@ function toQueueRow(row, label) {
     statusLabel: postingDrain.QUEUE_STATUS_LABEL[status] || status,
     /** The machine reason, when blocked. The client renders copy from the slug. */
     blockedReason: row.blocked_reason == null ? null : String(row.blocked_reason),
+    /**
+     * The withdrawal, when there is one. A slug the client renders copy from,
+     * and — separately — the sentence a human typed. Kept apart because a
+     * biller withdrawing a plan knows something the machine does not, and
+     * folding her words into the slug would make the slug unusable.
+     */
+    withdrawnReason: row.withdrawn_reason == null ? null : String(row.withdrawn_reason),
+    withdrawnNote: row.withdrawn_note == null ? null : String(row.withdrawn_note),
+    withdrawnAt: iso(row.withdrawn_at),
     /** What the run was doing when it last persisted. */
     step: row.drain_step == null ? null : String(row.drain_step),
     isRecoupment: row.is_recoupment === true,
@@ -533,6 +542,147 @@ router.post(
        */
       stepDelayMs: result.stepDelayMs || 0,
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
+    });
+  })
+);
+
+/**
+ * POST /queue/:id/withdraw — retire a plan that must never run.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ONE THING IN THIS MODULE THAT TAKES A PLAN OFF THE BOARD
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A plan can be approved for money that is never going to post through CareIN.
+ * Its Open Dental claim was deleted; the remittance was re-keyed by hand; the
+ * biller posted it in the desktop and only then found the queue. Until now the
+ * only honest thing the queue could do was keep offering to drain it.
+ *
+ * `withdrawn` is terminal and is NOT in `DRAINABLE_STATUSES`, so a withdrawn
+ * plan cannot be pressed at all. That is the difference from `blocked`, which
+ * §2.2.1 defines by the promise that it HAS a way out.
+ *
+ * **It is not a delete.** The plan, its lines, its approval and its audit trail
+ * stay. `rcm_posting_queue` is unique on `(office_id, remittance_key)` — a
+ * remittance gets exactly one plan, ever (§15.1) — so deleting the row would
+ * silently make a second plan enqueueable for the same money.
+ *
+ * **A note is required.** Every other refusal in this module is the machine's,
+ * and carries a slug the UI renders copy from. This one is a person's, and the
+ * only record of why is what she types. A `withdrawn` plan with no account of
+ * itself would be the queue quietly losing money nobody can later explain, so
+ * the note is a 400 rather than an optional field. (The drain's own automatic
+ * withdrawal carries `target_removed` instead and writes no note — there is no
+ * human in that path, and making the machine invent prose is the habit
+ * `blocked_reason` exists to avoid.)
+ *
+ * `rcm.write`, and deliberately not a new permission. D-9 splits reading from
+ * writing; retiring a plan does not write to a chart, but it does decide that
+ * money will not be posted, which is the same authority as deciding it will.
+ */
+router.post(
+  '/queue/:id/withdraw',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const queueId = String(req.params.id);
+
+    if (!holdsPermission(req, 'rcm.write')) {
+      await auditRcmDenial(req, 'rcm_posting_withdrawal', queueId, {
+        office,
+        result: 'UNAUTHORIZED',
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'Retiring a posting plan needs posting permission — ask an approver',
+        code: 'WITHDRAW_REQUIRES_WRITE',
+        action: 'rcm.write',
+      });
+    }
+
+    if (!isUuid(queueId)) {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+    if (note.length < 3) {
+      await auditRcmDenial(req, 'rcm_posting_withdrawal', queueId, { office });
+      return res.status(400).json({
+        success: false,
+        error:
+          'Say why this plan is being retired. It is the only record of the decision — ' +
+          'the plan stays in the queue forever, and nothing else will explain it.',
+        code: 'WITHDRAW_NOTE_REQUIRED',
+      });
+    }
+
+    const email = actorEmail(req);
+    const displayName = (req.user && (req.user.name || req.user.displayName)) || email;
+
+    const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      // D-5 attribution, resolved first so the FK on `withdrawn_by` is
+      // satisfiable by the statement that sets it.
+      const withdrawnBy = await resolveRcmActor(pool, { email, displayName });
+      return postingDrain.withdrawRow(pool, office, queueId, {
+        reason: postingDrain.WITHDRAW_REASONS.MANUAL,
+        note,
+        by: withdrawnBy,
+      });
+    });
+
+    if (!outcome.withdrawn && outcome.status === undefined) {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+
+    if (!outcome.withdrawn) {
+      /*
+       * The status is named back, because "you cannot withdraw this" is useless
+       * without "because it is already posted". The two families read very
+       * differently to a biller and the message says which one she is in.
+       */
+      await auditRcmDenial(req, 'rcm_posting_withdrawal', queueId, { office });
+      const posted = ['posted', 'partially_posted'].includes(outcome.status);
+      return res.status(409).json({
+        success: false,
+        error: posted
+          ? 'This plan has already put money in the chart. Retiring it would make the ' +
+            'queue disagree with Open Dental — reverse it in Open Dental instead.'
+          : outcome.status === 'posting'
+            ? 'A run holds this plan right now. Wait for it to finish.'
+            : `A plan in '${outcome.status}' cannot be retired.`,
+        code: 'WITHDRAW_NOT_ALLOWED',
+        status: outcome.status,
+      });
+    }
+
+    /*
+     * Audited as a CREATE of a withdrawal rather than an UPDATE of a plan. The
+     * thing that happened is a decision a person made, and `resource_type` is
+     * where this platform expresses which decision — the same reasoning that
+     * kept `rcm_recoupment_approval` out of `audit_log`'s action vocabulary.
+     *
+     * The NOTE IS NOT COPIED INTO THE AUDIT ROW. It is free text a biller typed
+     * and may name a patient; the audit trail records that a withdrawal happened,
+     * by whom, on which plan, and the plan row itself carries the words.
+     */
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'rcm_posting_withdrawal',
+      resourceId: queueId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({
+      success: true,
+      queueId,
+      status: 'withdrawn',
+      withdrawnReason: postingDrain.WITHDRAW_REASONS.MANUAL,
     });
   })
 );

@@ -1297,6 +1297,14 @@ export const POSTING_QUEUE_STATUSES = [
   "partially_posted",
   "failed",
   "blocked",
+  /**
+   * TERMINAL, and the only state a plan can reach without a run.
+   *
+   * Deliberately not a `blockedReason`: `blocked` promises a way out and is
+   * re-drainable, while a plan whose Open Dental claim was deleted has none —
+   * a ClaimNum is never reissued. A withdrawn plan cannot be pressed at all.
+   */
+  "withdrawn",
 ] as const;
 export type PostingQueueStatus = (typeof POSTING_QUEUE_STATUSES)[number];
 
@@ -1307,7 +1315,8 @@ export type PostingQueueLabel =
   | "posted"
   | "partially_posted"
   | "failed"
-  | "blocked";
+  | "blocked"
+  | "withdrawn";
 
 /**
  * The per-line vocabulary. `skipped_already_posted` is resume's word: Open
@@ -1375,6 +1384,18 @@ export interface PostingQueueRow {
   statusLabel: PostingQueueLabel;
   /** The machine reason a plan is blocked. The client renders copy from it. */
   blockedReason: string | null;
+  /**
+   * Why a plan was retired, as a slug. `target_removed` is the drain's own —
+   * it asked Open Dental and the claim is gone. `manual` is a person's.
+   */
+  withdrawnReason: "target_removed" | "manual" | null;
+  /**
+   * The sentence a person typed. Separate from the slug because a biller
+   * retiring a plan knows something the machine does not — and because for a
+   * `manual` withdrawal this is the ONLY record of why.
+   */
+  withdrawnNote: string | null;
+  withdrawnAt: string | null;
   step: PostingStep | null;
   isRecoupment: boolean;
   /** 6d: the EOB filing, on its own axis. See PostingDocumentAttach.status. */
@@ -1658,6 +1679,27 @@ export function retryDocumentAttach(
     { timeoutMs: BATCH_TIMEOUT_MS },
   );
 }
+/**
+ * Retire a plan that must never run.
+ *
+ * TERMINAL and NOT a delete: the plan, its lines and its approval all stay, and
+ * the remittance keeps its record. It simply leaves `DRAINABLE_STATUSES`, so it
+ * can never be pressed again.
+ *
+ * The note is required by the server, not merely by the form. It is the only
+ * account of why money that was approved is not going to post — nothing else on
+ * the row will ever explain it.
+ *
+ * Refused with 409 for a plan that has already put money in a chart.
+ */
+export function withdrawPostingPlan(
+  office: RcmOfficeId,
+  queueId: string,
+  note: string,
+): Promise<{ queueId: string; status: "withdrawn"; withdrawnReason: "manual" }> {
+  return post(`/posting/queue/${encodeURIComponent(queueId)}/withdraw`, { office }, { note });
+}
+
 export function drainPostingQueue(
   office: RcmOfficeId,
   opts: { queueId?: string } = {},

@@ -545,3 +545,162 @@ test('and the plan it was draining is back to approved, pressable again', async 
     await app.close();
   }
 });
+
+// ─── POST /queue/:id/withdraw ────────────────────────────────────────────────
+
+/**
+ * Retiring a plan is the only thing in this module that takes money off the
+ * board without posting it. It writes nothing to a chart, which is exactly why
+ * the guards have to be in the route rather than in the Open Dental layer:
+ * there is no read-back to catch a mistake here.
+ */
+
+function queueRow(db) {
+  return db.table('rcm_posting_queue')[0];
+}
+
+test('a withdrawal needs a note, and refuses without one', async () => {
+  /*
+   * For a `manual` withdrawal the note is the ONLY record of why money that was
+   * approved is not going to post. A plan with no account of itself would be the
+   * queue quietly losing money nobody can later explain, so this is a 400 rather
+   * than an optional field.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    for (const body of [{}, { note: '' }, { note: '  ' }, { note: 'no' }]) {
+      const res = await api(
+        app.baseUrl,
+        'POST',
+        `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+        { body: JSON.stringify(body), json: true }
+      );
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(res.body.code, 'WITHDRAW_NOTE_REQUIRED');
+    }
+    assert.equal(queueRow(db).status, 'approved', 'and nothing moved');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a withdrawal with a note retires the plan and records who and why', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      {
+        body: JSON.stringify({ note: 'Posted by hand in the desktop before this queue existed.' }),
+        json: true,
+      }
+    );
+
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.status, 'withdrawn');
+    assert.equal(res.body.withdrawnReason, 'manual');
+
+    const row = queueRow(db);
+    assert.equal(row.status, 'withdrawn');
+    assert.equal(row.withdrawn_reason, 'manual');
+    assert.match(row.withdrawn_note, /Posted by hand/);
+    assert.ok(row.withdrawn_by, 'D-5: a crosswalk key, because Open Dental cannot attribute');
+    assert.ok(row.withdrawn_at);
+  } finally {
+    await app.close();
+  }
+});
+
+test('a withdrawn plan is not offered for draining', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'retiring this one' }), json: true }
+    );
+
+    const drain = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(drain.status, 200, JSON.stringify(drain.body));
+    assert.equal(drain.body.ran, 0, 'the scan does not pick it up at all');
+    assert.equal(queueRow(db).status, 'withdrawn', 'and it stayed withdrawn');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a plan that already put money in a chart cannot be retired', async () => {
+  /*
+   * The refusal that matters. Retiring a posted plan would be a way to make the
+   * queue disagree with Open Dental — the queue would show nothing owing while
+   * the chart carries a payment.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  queueRow(db).status = 'posted';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'trying to hide this' }), json: true }
+    );
+
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'WITHDRAW_NOT_ALLOWED');
+    assert.equal(res.body.status, 'posted');
+    assert.match(res.body.error, /already put money in the chart/);
+    assert.equal(queueRow(db).status, 'posted');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the queue read carries the withdrawal, so a screen can account for it', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'the claim was voided upstream' }), json: true }
+    );
+
+    const page = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    const row = page.body.rows.find((r) => r.status === 'withdrawn');
+    assert.ok(row, 'the plan is still listed — withdrawing is not a delete');
+    assert.equal(row.withdrawnReason, 'manual');
+    assert.equal(row.withdrawnNote, 'the claim was voided upstream');
+    assert.ok(row.withdrawnAt);
+    assert.equal(row.statusLabel, 'withdrawn');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a plan from another office is a 404, not a refusal', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=valley`,
+      { body: JSON.stringify({ note: 'reaching across offices' }), json: true }
+    );
+    assert.equal(res.status, 404);
+    assert.equal(res.body.code, 'QUEUE_NOT_FOUND');
+    assert.equal(queueRow(db).status, 'approved');
+  } finally {
+    await app.close();
+  }
+});

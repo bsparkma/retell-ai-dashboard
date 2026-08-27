@@ -208,7 +208,23 @@ const QUEUE_STATUS_LABEL = Object.freeze({
   partially_posted: 'partially_posted',
   failed: 'failed',
   blocked: 'blocked',
+  withdrawn: 'withdrawn',
 });
+
+/**
+ * Why a plan was withdrawn. Two causes, and a third would be a design decision
+ * worth stopping for — which is why this one carries a CHECK in the migration
+ * and `blocked_reason` deliberately does not.
+ */
+const WITHDRAW_REASONS = Object.freeze({
+  /** The drain asked, and this office's Open Dental has no such claim. */
+  TARGET_REMOVED: 'target_removed',
+  /** A person with `rcm.write` decided, and said why. */
+  MANUAL: 'manual',
+});
+
+/** Statuses a plan may be withdrawn FROM. Money that moved is not on this list. */
+const WITHDRAWABLE_STATUSES = Object.freeze(['approved', 'failed', 'blocked']);
 
 /**
  * Which stored statuses the drain will pick up.
@@ -878,6 +894,12 @@ const QUEUE_COLUMNS = [
   'document_attach_status',
   'document_attach_error',
   'document_attach_at',
+  // The withdrawal, when there is one. Read so a screen can say who retired a
+  // plan and why, rather than showing a terminal state with no account of it.
+  'withdrawn_at',
+  'withdrawn_by',
+  'withdrawn_reason',
+  'withdrawn_note',
 ];
 
 /*
@@ -954,6 +976,9 @@ function toQueue(row) {
     attemptCount: Number(row.attempt_count || 0),
     lastError: row.last_error == null ? null : String(row.last_error),
     blockedReason: row.blocked_reason == null ? null : String(row.blocked_reason),
+    withdrawnReason: row.withdrawn_reason == null ? null : String(row.withdrawn_reason),
+    withdrawnNote: row.withdrawn_note == null ? null : String(row.withdrawn_note),
+    withdrawnAt: row.withdrawn_at == null ? null : row.withdrawn_at,
     drainStep: row.drain_step == null ? null : String(row.drain_step),
     reconciledAt: row.reconciled_at || null,
   };
@@ -1165,6 +1190,76 @@ async function releaseRow(pool, queueId, message) {
       WHERE queue_id = $1 AND status = 'posting'`,
     [queueId, message ? String(message).slice(0, 1000) : null]
   );
+}
+
+/**
+ * Retire a plan that must never run.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * NOT A DELETE, AND THE DIFFERENCE MATTERS
+ * ──────────────────────────────────────────────────────────────────────────────
+ * The plan, its lines, its approval and its audit trail all stay. `rcm_posting_queue`
+ * is unique on `(office_id, remittance_key)` — a remittance gets exactly ONE
+ * plan, ever (§15.1) — so deleting the row would silently make a second plan
+ * enqueueable for the same money. Withdrawing records a decision ON a plan; it
+ * does not erase the fact that the plan existed and was approved.
+ *
+ * `WHERE status = ANY($3)` is the guard, and the list excludes `posted`,
+ * `partially_posted` and `posting`. Money that moved happened, and a withdrawal
+ * that could cover a posted plan would be a way to make the queue disagree with
+ * the chart. `posting` is excluded for the same reason the drain never picks it
+ * up: a run owns that row.
+ *
+ * `decision.from` OVERRIDES the allowed set, and exactly one caller uses it: the
+ * drain, which has already CLAIMED the row and is therefore looking at
+ * `posting`. That is not a hole in the guard — the guard's purpose is to stop a
+ * withdrawal reaching a row somebody else owns, and the drain owns this one. A
+ * request from outside never passes it, so the route cannot reach `posting` by
+ * any body it sends.
+ *
+ * @param {{ query: Function }} pool
+ * @param {string} office
+ * @param {string} queueId
+ * @param {{ reason: string, note?: string|null, by?: string|null, from?: string[] }} decision
+ * @returns {Promise<{ withdrawn: boolean, status?: string }>}
+ */
+async function withdrawRow(pool, office, queueId, decision) {
+  const res = await pool.query(
+    `UPDATE rcm_posting_queue
+        SET status = 'withdrawn',
+            withdrawn_at = now(),
+            withdrawn_by = $4,
+            withdrawn_reason = $5,
+            withdrawn_note = $6,
+            blocked_reason = NULL,
+            drain_step = NULL,
+            finished_at = now(),
+            updated_at = now()
+      WHERE queue_id = $1 AND office_id = $2 AND status = ANY($3)
+      RETURNING queue_id`,
+    [
+      queueId,
+      office,
+      decision.from ? [...decision.from] : [...WITHDRAWABLE_STATUSES],
+      decision.by || null,
+      decision.reason,
+      decision.note ? String(decision.note).slice(0, 1000) : null,
+    ]
+  );
+  if (res.rows.length > 0) return { withdrawn: true };
+
+  /*
+   * No row matched. That is either "no such plan in this office" or "its status
+   * is not one a plan may be withdrawn from", and the caller has to be able to
+   * tell a 404 from a 409 — so the current status is read back rather than
+   * guessed at.
+   */
+  const now = await pool.query(
+    'SELECT status FROM rcm_posting_queue WHERE queue_id = $1 AND office_id = $2',
+    [queueId, office]
+  );
+  if (now.rows.length === 0) return { withdrawn: false };
+  return { withdrawn: false, status: String(now.rows[0].status) };
 }
 
 /** Move the row's step cursor. One statement, before the call it precedes. */
@@ -2116,7 +2211,54 @@ async function drainRow(ctx, queueId) {
     const claimByNum = new Map();
 
     for (const group of grouped) {
-      const claimRow_ = await odPostingWrites.readClaim(od, group.odClaimNum);
+      /*
+       * THE 404 PRE-CHECK, and it costs nothing extra.
+       *
+       * This is the read the forced order already makes first — rule 3, Open
+       * Dental's truth before any decision — so asking "does this claim still
+       * exist" is not a new call, it is a different reading of the answer.
+       *
+       * A 404 here is not a failure to find out. It IS finding out: this
+       * practice's Open Dental has no claim at this number, and since Open
+       * Dental never reissues a ClaimNum, no future press will get a different
+       * answer. `failed` would invite exactly those presses, one paced read
+       * each, forever. So the plan is withdrawn instead, which cannot be pressed
+       * at all.
+       *
+       * How a plan gets here: the 2026-08-26 walk enqueued a plan for claim
+       * 53805 and then the §11 unwind deleted the claim out from under it. The
+       * unwind touches Open Dental and never the tenant database, so the plan
+       * outlived its target by design.
+       */
+      let claimRow_;
+      try {
+        claimRow_ = await odPostingWrites.readClaim(od, group.odClaimNum);
+      } catch (err) {
+        if (err instanceof OdWriteError && err.code === 'OD_CLAIM_GONE') {
+          await auditOd(req, {
+            action: 'READ',
+            resourceType: 'rcm_od_claim',
+            resourceId: group.odClaimNum,
+            office,
+          });
+          await withdrawRow(pool, office, queueId, {
+            reason: WITHDRAW_REASONS.TARGET_REMOVED,
+            by: ctx.drainedBy || null,
+            note: null,
+            // This run CLAIMED the row, so it is looking at `posting` — the one
+            // state the route may never reach, and the one this caller is
+            // entitled to because it is the owner.
+            from: ['posting'],
+          });
+          return {
+            queueId,
+            status: 'withdrawn',
+            reason: WITHDRAW_REASONS.TARGET_REMOVED,
+            detail: `Open Dental has no claim ${group.odClaimNum} in this office. It was deleted after this plan was approved, and a ClaimNum is never reissued.`,
+          };
+        }
+        throw err;
+      }
       await auditOd(req, {
         action: 'READ',
         resourceType: 'rcm_od_claim',
@@ -3063,6 +3205,8 @@ module.exports = {
   RECOUPMENT_PATHS,
   QUEUE_STATUS_LABEL,
   DRAINABLE_STATUSES,
+  WITHDRAWABLE_STATUSES,
+  WITHDRAW_REASONS,
   OFFICES_ENABLED_FOR_POSTING,
   DEFAULT_BUDGET_MS,
   QUEUE_COLUMNS,
@@ -3086,6 +3230,7 @@ module.exports = {
   loadPlan,
   claimRow,
   releaseRow,
+  withdrawRow,
   persistStep,
   persistLine,
   blockRow,
