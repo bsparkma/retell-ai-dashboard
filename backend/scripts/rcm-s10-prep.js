@@ -79,6 +79,24 @@ const fs = require('node:fs');
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
 
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6d: WHICH PRACTICE THIS RUN ADDRESSES, RESOLVED ONCE, AT LOAD.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `PROBE_OFFICE` selects; an office the registry does not name THROWS here,
+ * before `main()` and before any Open Dental client exists. Failing at require
+ * time rather than mid-run is deliberate: a typo must not get as far as holding
+ * a credential.
+ *
+ * Every id below is per-office, because ClaimNum, ProcNum and ClaimProcNum
+ * numbering restarts in every Open Dental database — and PatNum 7115 is valley's
+ * test patient and a DIFFERENT, REAL person in Roland.
+ */
+const TARGET = T.resolveTarget();
+const PATHS = T.pathsFor(TARGET.office);
+const DENY = T.denyIdsFor(TARGET);
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -169,12 +187,12 @@ async function claimCount(od) {
   let total = 0;
   for (let page = 0; page < T.MAX_PAGES; page++) {
     const res = await od.get('/claims', {
-      PatNum: T.PAT_NUM,
+      PatNum: TARGET.patNum,
       ...(page > 0 ? { Offset: page * T.OD_PAGE_SIZE } : {}),
     });
     if (!res.ok) throw new Error(`GET /claims failed (${res.status}): ${res.error}`);
     const batch = Array.isArray(res.data) ? res.data : [];
-    total += batch.filter((r) => Number(r.PatNum) === T.PAT_NUM).length;
+    total += batch.filter((r) => Number(r.PatNum) === TARGET.patNum).length;
     if (batch.length < T.OD_PAGE_SIZE) return total;
   }
   throw new Error('GET /claims did not terminate within the page cap — refusing to guess the count.');
@@ -210,15 +228,17 @@ async function main() {
   // what a script that cannot load its own costs at a live chart database.
   await require('../config/secrets').loadSecrets();
 
-  const office = process.env.PROBE_OFFICE || T.OFFICE;
-  if (office !== T.OFFICE) {
-    console.error(
-      `REFUSED: PROBE_OFFICE='${office}'. This script writes to '${T.OFFICE}' only.\n` +
-        `  valley is fail-closed until D-7 is discharged, and PatNum 7115 is 6d's, not this walk's.`
-    );
-    process.exitCode = 2;
-    return;
-  }
+  /*
+   * 6d: THE OFFICE ALREADY REFUSED, ABOVE, AT LOAD.
+   *
+   * `T.resolveTarget()` throws on a `PROBE_OFFICE` the registry does not name,
+   * so by the time `main()` runs the office is one of exactly two and its PatNum
+   * came from the same frozen row. There is no longer a roland-only refusal to
+   * make here -- what there IS, and what matters more, is the assertion below
+   * that the Open Dental handle we are about to use is frozen to this same
+   * office. A PatNum in the wrong database is a different, real person.
+   */
+  const office = TARGET.office;
 
   /*
    * SAFETY 5 — the manifest is a lock, not just an output.
@@ -229,11 +249,11 @@ async function main() {
    * the manifest to force a re-run is possible and deliberate; doing it by
    * accident is not.
    */
-  if (fs.existsSync(T.MANIFEST_PATH)) {
+  if (fs.existsSync(PATHS.manifestPath)) {
     console.error(
-      `REFUSED: a manifest already exists at\n  ${T.MANIFEST_PATH}\n` +
+      `REFUSED: a manifest already exists at\n  ${PATHS.manifestPath}\n` +
         `  Two targets were already created. Unwind them first:\n` +
-        `      PROBE_OFFICE=${T.OFFICE} node scripts/rcm-s11-unwind.js --execute\n` +
+        `      PROBE_OFFICE=${TARGET.office} node scripts/rcm-s11-unwind.js --execute\n` +
         `  and delete the manifest, or move it aside deliberately.`
     );
     process.exitCode = 3;
@@ -263,7 +283,7 @@ async function main() {
   const handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
   const od = pacedOd(handle);
 
-  console.log(`\n=== S10 PREP — ${office} (${handle.officeName}), PatNum ${T.PAT_NUM} ===`);
+  console.log(`\n=== S10 PREP — ${office} (${handle.officeName}), PatNum ${TARGET.patNum} ===`);
   console.log(`    started: ${new Date().toISOString()}`);
   console.log(`    creating ${T.TARGET_COUNT} disposable targets at $${T.PROC_FEE.toFixed(2)} each (${T.PROC_CODE}).`);
   console.log(`    baseline claim count from the inventory: ${expectedClaims}`);
@@ -281,9 +301,9 @@ async function main() {
    * 12827 is a designated synthetic fixture. It is written to a gitignored file
    * and it is NOT printed here.
    */
-  const patRes = await od.get(`/patients/${T.PAT_NUM}`);
+  const patRes = await od.get(`/patients/${TARGET.patNum}`);
   if (!patRes.ok) {
-    console.error(`ABORTING: GET /patients/${T.PAT_NUM} failed (${patRes.status}): ${patRes.error}`);
+    console.error(`ABORTING: GET /patients/${TARGET.patNum} failed (${patRes.status}): ${patRes.error}`);
     console.error('  Nothing was created.');
     process.exitCode = 5;
     return;
@@ -323,7 +343,7 @@ async function main() {
     const allowed = expectedClaims + targets.length;
     if (before !== allowed) {
       console.error(
-        `\nABORTING: PatNum ${T.PAT_NUM} has ${before} claims; expected ${allowed}\n` +
+        `\nABORTING: PatNum ${TARGET.patNum} has ${before} claims; expected ${allowed}\n` +
           `  (${expectedClaims} from the inventory + ${targets.length} created by this run).\n` +
           `  A claim appeared or disappeared since the inventory. Somebody else may be working on\n` +
           `  this patient. NOTHING FURTHER WAS CREATED.`
@@ -358,7 +378,7 @@ async function main() {
     // document is how a 400 becomes a mystery.
     const procDate = officeToday();
     const procRes = await od.post('/procedurelogs', {
-      PatNum: T.PAT_NUM,
+      PatNum: TARGET.patNum,
       ProcDate: procDate,
       procCode: T.PROC_CODE,
       ProcStatus: 'C',
@@ -380,9 +400,9 @@ async function main() {
     }
     // G2: read it back. A 201 is a claim about a row, not the row.
     const procBack = await od.get(`/procedurelogs/${procNum}`);
-    if (!procBack.ok || Number(procBack.data?.PatNum) !== T.PAT_NUM || String(procBack.data?.ProcStatus) !== 'C') {
+    if (!procBack.ok || Number(procBack.data?.PatNum) !== TARGET.patNum || String(procBack.data?.ProcStatus) !== 'C') {
       console.error(
-        `\nABORTING: procedure ${procNum} did not read back as a completed procedure on ${T.PAT_NUM}.\n` +
+        `\nABORTING: procedure ${procNum} did not read back as a completed procedure on ${TARGET.patNum}.\n` +
           `  status=${procBack.status} ProcStatus=${procBack.data?.ProcStatus} PatNum=${procBack.data?.PatNum}`
       );
       process.exitCode = 7;
@@ -414,7 +434,7 @@ async function main() {
 
     // ── 2. The claim ────────────────────────────────────────────────────────
     const claimRes = await od.post('/claims', {
-      PatNum: T.PAT_NUM,
+      PatNum: TARGET.patNum,
       procNums: [procNum],
       ClaimType: 'P',
     });
@@ -445,8 +465,8 @@ async function main() {
       break;
     }
     const claimBack = await od.get(`/claims/${claimNum}`);
-    if (!claimBack.ok || Number(claimBack.data?.PatNum) !== T.PAT_NUM) {
-      console.error(`\nABORTING: claim ${claimNum} did not read back on PatNum ${T.PAT_NUM} (status ${claimBack.status}).`);
+    if (!claimBack.ok || Number(claimBack.data?.PatNum) !== TARGET.patNum) {
+      console.error(`\nABORTING: claim ${claimNum} did not read back on PatNum ${TARGET.patNum} (status ${claimBack.status}).`);
       targets.push({ procNum, claimNum, claimProcNum: 0, serviceDate, createdAt: new Date().toISOString() });
       process.exitCode = 8;
       break;
@@ -510,7 +530,7 @@ async function main() {
    */
   const manifest = {
     office,
-    patNum: T.PAT_NUM,
+    patNum: TARGET.patNum,
     patLast,
     patFirst,
     procCode: T.PROC_CODE,
@@ -533,10 +553,10 @@ async function main() {
   console.log(`   complete: ${manifest.complete}`);
 
   try {
-    fs.writeFileSync(T.MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-    console.log(`\n   manifest written: ${T.MANIFEST_PATH}`);
+    fs.writeFileSync(PATHS.manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    console.log(`\n   manifest written: ${PATHS.manifestPath}`);
   } catch (err) {
-    console.error(`\n! COULD NOT WRITE THE MANIFEST to ${T.MANIFEST_PATH}: ${err.code || ''} ${err.message}`);
+    console.error(`\n! COULD NOT WRITE THE MANIFEST to ${PATHS.manifestPath}: ${err.code || ''} ${err.message}`);
     console.error('  The ids above are now the ONLY record of what was created. Copy them somewhere');
     console.error('  before closing this shell, then hand-write the manifest so the unwind can read it:');
     console.error(JSON.stringify(manifest, null, 2));
@@ -547,8 +567,8 @@ async function main() {
 
   if (!manifest.complete) {
     console.error('\n! THE RUN DID NOT COMPLETE. Read the abort above, then unwind what exists:');
-    console.error(`      PROBE_OFFICE=${T.OFFICE} node scripts/rcm-s11-unwind.js            # dry run`);
-    console.error(`      PROBE_OFFICE=${T.OFFICE} node scripts/rcm-s11-unwind.js --execute`);
+    console.error(`      PROBE_OFFICE=${TARGET.office} node scripts/rcm-s11-unwind.js            # dry run`);
+    console.error(`      PROBE_OFFICE=${TARGET.office} node scripts/rcm-s11-unwind.js --execute`);
     return;
   }
 

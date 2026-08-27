@@ -305,7 +305,15 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       canDrain: false,
       drainRequires: "rcm.write",
       postingEnabled: true,
-      documentAttach: { implemented: false, note: "The EOB is filed in a later slice." },
+      documentAttach: {
+        implemented: true,
+        status: null,
+        error: null,
+        at: null,
+        documents: [],
+        canRetry: true,
+        retryRequires: "rcm.write",
+      },
     })),
   };
 });

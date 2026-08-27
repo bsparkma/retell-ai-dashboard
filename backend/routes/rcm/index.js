@@ -57,10 +57,17 @@
  * CHECKLIST beside it is a GET and therefore runs on `rcm.read`, which the
  * `reviewer` tier holds: seeing why a claim is withheld is not a posting act.
  *
- * NOT here, and not yet: the drain and any Open Dental write (6c), the
- * recoupment typed-confirmation gate (6d), reconciliation, VCC and metrics
- * (8/9), Stedi. The only tables anything under this mount touches are rcm_* and
- * the platform audit_log.
+ * The same is true of 6d's two additions. `POST /remittances/:id/approve-
+ * recoupment` and `POST /posting/queue/:id/attach-document` are BOTH absent from
+ * QUEUE_PATHS, so both demand `rcm.write` by construction — a `reviewer` never
+ * reaches either handler. Their GET counterparts (`/remittances/:id/recoupment`,
+ * the posting detail) run on `rcm.read`, so the person who did the reviewing can
+ * see what a takeback would do without being able to authorise it.
+ *
+ * NOT here, and not yet: reconciliation, VCC and metrics (8/9), Stedi, and the
+ * patient-portion flow (PRD-deferred; the key is not entitled for it at all).
+ * The only tables anything under this mount touches are rcm_* and the platform
+ * audit_log.
  */
 
 const express = require('express');

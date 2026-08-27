@@ -807,3 +807,62 @@ with `ProcStatus="D"` and contribute nothing.
 
 **No real patient's chart was touched.** No write of any kind was issued against any patient
 other than 12827, and no office other than Roland was contacted.
+
+---
+
+## Slice 6d — what the posting module now writes, and the one probe still owed
+
+6d turned three of the verbs above from *proven-but-unused* into *used*. All three
+live in `services/rcm/odPostingWrites.js`, which `rcmNoOdWrites.test.js` still
+holds as an allow-list of exactly one file.
+
+| Verb | Proven by | Used by |
+| --- | --- | --- |
+| `POST /adjustments` | **0b test 8** (sign rule enforced) | the takeback's REVERSIBLE path, AdjType resolved by name |
+| `POST /claimprocs/Supplemental` | **0b test 6** (live, on 12827) | the takeback's PERMANENT path, opt-in behind a typed confirmation |
+| `POST /documents/Upload` | **0b test 9** (10 MB accepted) | the EOB filed into each patient's images |
+
+### ⚠️ `DELETE /adjustments` DOES NOT EXIST — read §5 and G6 again before relying on it
+
+The 6d brief described the adjustment path as *"deletable"*. **It is not.** §5's
+matrix says `Delete | none | documented-absence — No DELETE documented. Reversal
+must be an offsetting adjustment`, and G6 says the same with the live proof: 0b
+test 8 posted a −1.00 (DefNum 12) and reversed it with a +1.00 (DefNum 260),
+netting the ledger to zero.
+
+The path is still the right default and still genuinely reversible — reversal just
+means posting a second, offsetting entry rather than removing the first. Read every
+*"the API cannot undo this"* in this document as exactly that, and never as *"this
+row is immortal"*: claim `53648` and the supposedly unremovable supplemental
+`533931` were both later removed through Open Dental's **desktop** application,
+which can do what the cloud API cannot.
+
+### The probe still owed: `DELETE /documents/{n}`
+
+Not exercised by any spike here, so a filed EOB must be treated as **permanent
+residue** on a test patient until it is. It is probeable at zero risk by the
+standard technique — *"the method check runs BEFORE the row lookup, so write-verb
+existence can be probed against a non-existent id"*:
+
+```
+DELETE /documents/999888777
+  → 404 "Document not found."             the verb EXISTS and the group is entitled
+  → 400 "…is not a valid method."         the verb does NOT exist on this build
+  → 403                                    the permission group is not enabled
+```
+
+### The zero-risk supplemental probe (run this instead of a live takeback)
+
+**Never create a negative supplemental on a real patient. Not even 12827** — the
+one Spike 0b made needed a desktop cleanup. Entitlement is confirmed the same way
+the D-7 write probe confirmed Riley's:
+
+```
+POST /claimprocs/Supplemental  {ClaimProcNum: 999888777, InsPayAmt: -0.01}
+  → 404 "ClaimProc not found."   ENTITLED — the row lookup was reached, NOTHING written
+  → 403                          the Insurance write group is not enabled
+```
+
+GET-check the ghost id first and abort if it exists, POST/PUT only, never DELETE,
+and space calls ≥1.3 s — the four safety properties `rcm-d7-write-probe.js`
+enforces in code rather than asserting about itself.

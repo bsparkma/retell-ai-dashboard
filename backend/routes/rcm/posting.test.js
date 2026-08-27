@@ -241,11 +241,19 @@ test('GET /posting/queue/:id carries the lines, the read-back evidence and the 6
     assert.equal(res.body.lines[0].readback.agreed, true, 'the evidence is kept, not just a verdict');
 
     /*
-     * The 6d seam, said out loud. A screen showing nothing here would leave a
-     * biller assuming the EOB PDF was filed into the patient's images.
+     * 6d FILLED THE SEAM. It no longer says "not yet" — it says what actually
+     * happened to the EOB, on its own axis.
+     *
+     * `status: null` is NOT ATTEMPTED, and it is a real third state: this plan
+     * is `posted` with nothing filed, which is exactly what a remittance that
+     * arrived as raw 835 looks like. A screen must render that as "nothing to
+     * file", never as a failure with a retry button behind it.
      */
-    assert.equal(res.body.documentAttach.implemented, false);
-    assert.match(res.body.documentAttach.note, /not yet filed/);
+    assert.equal(res.body.documentAttach.implemented, true);
+    assert.equal(res.body.documentAttach.status, null);
+    assert.equal(res.body.documentAttach.error, null);
+    assert.deepEqual(res.body.documentAttach.documents, []);
+    assert.equal(res.body.documentAttach.retryRequires, 'rcm.write');
   } finally {
     await app.close();
   }

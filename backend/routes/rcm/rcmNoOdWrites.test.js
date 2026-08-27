@@ -466,6 +466,9 @@ test('only the one allow-listed file names an Open Dental write method', () => {
     "'/claimpayments'",
     'claimprocs/Supplemental',
     'documents/Upload',
+    // 6d's two new verbs. They live in the allow-listed file like every other
+    // write; naming one anywhere ELSE is what this list exists to catch.
+    "'/adjustments'",
   ];
   const offenders = [];
 
@@ -514,9 +517,19 @@ test('the allow-listed file is REAL, and it does not reach for the verbs 6c excl
     'the allow-listed file does not actually reach the transport — the writes moved somewhere else'
   );
 
+  /*
+   * 6d MOVED TWO OF THESE FROM "out of scope" TO "in scope, in this file".
+   *
+   * `claimprocs/Supplemental` and `documents/Upload` were on this list because
+   * 6c refused a recoupment and left the EOB unfiled. 6d does both, behind a
+   * typed confirmation and a posted-plan precondition respectively — so the
+   * list shrinks to what genuinely remains unbuilt and un-entitled.
+   *
+   * PATIENT MONEY STAYS OFF IT, and not merely by policy: `ApiPayments` is not
+   * enabled on this key at all (G11), so `/payments` and `/paysplits` are an
+   * unproven path in the strongest sense — nothing has ever exercised them.
+   */
   const outOfScope = [
-    'claimprocs/Supplemental',
-    'documents/Upload',
     "'/payments'",
     "'/paysplits'",
   ].filter((signal) => writer.code.includes(signal));
@@ -524,10 +537,21 @@ test('the allow-listed file is REAL, and it does not reach for the verbs 6c excl
   assert.deepEqual(
     outOfScope,
     [],
-    'Slice 6c posts ordinary insurance adjudication only. Recoupments and the ' +
-      'document attach are 6d; patient money is PRD-deferred and not entitled. Found: ' +
-      outOfScope.join(', ')
+    'The patient-portion flow is PRD-deferred and the key is not entitled for it ' +
+      '(G11). Found: ' + outOfScope.join(', ')
   );
+
+  /*
+   * AND THE THREE 6d VERBS REALLY ARE HERE. An allow-list is only a guarantee
+   * if the file it names holds the writes — if these moved somewhere unwatched
+   * the test above would pass trivially while the module grew a second writer.
+   */
+  for (const signal of ['/adjustments', 'claimprocs/Supplemental', 'documents/Upload']) {
+    assert.ok(
+      writer.code.includes(signal),
+      `6d's ${signal} must live in the allow-listed write layer, not elsewhere`
+    );
+  }
 });
 
 test('only the approval gate may CREATE a posting plan, and only the drain may advance one', () => {

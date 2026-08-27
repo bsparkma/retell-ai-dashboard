@@ -86,8 +86,21 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
   },
   NOT_RECOUPMENT: {
     title: "Not a recoupment",
-    fail: "Handle this one in Open Dental — the carrier is taking money back, and that is the one write CareIN cannot undo.",
+    fail: "Approve this one from the takeback panel instead — the carrier is taking money back, and that needs you to type the amount first.",
     pass: "The carrier is not taking money back.",
+  },
+  /**
+   * 6d. The check that REPLACES the two takeback refusals on the recoupment
+   * path — it is never shown beside them, because they are swapped out for it.
+   *
+   * It can only read as passed because the SERVER matched the approver's typed
+   * total against money it computed itself, so the pass line says what was
+   * confirmed rather than merely that something was.
+   */
+  RECOUPMENT_CONFIRMED: {
+    title: "A takeback, confirmed by typing its amount",
+    fail: "Approve this one normally — it is not a takeback, so it cannot ride on a takeback confirmation.",
+    pass: "You typed the amount being taken back.",
   },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     title: "The carrier actually paid something",

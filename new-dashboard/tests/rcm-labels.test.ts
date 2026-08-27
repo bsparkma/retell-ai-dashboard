@@ -255,6 +255,15 @@ describe("the drain's vocabularies", () => {
   });
 
   it("labels every per-line state the CHECK constraint can hold", () => {
+    /*
+     * READ FROM THE MIGRATION THAT OWNS THE VOCABULARY *NOW*, which is 6d's.
+     *
+     * 6d added `recouped` by dropping and re-adding the CHECK, so the 6c
+     * migration's list is no longer what the database will accept. A drift test
+     * pointed at a superseded constraint is a drift test that stops drifting —
+     * it would have passed while the client had no copy for a state a row can
+     * really hold.
+     */
     const MIGRATION = fs.readFileSync(
       path.join(
         __dirname,
@@ -262,7 +271,7 @@ describe("the drain's vocabularies", () => {
         "..",
         "backend",
         "migrations-tenant",
-        "1787120000000_rcm_posting_drain.js",
+        "1787260000000_rcm_recoupment_and_documents.js",
       ),
       "utf8",
     );
@@ -270,6 +279,7 @@ describe("the drain's vocabularies", () => {
     expect(block).not.toBeNull();
     const states = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(states).toContain("skipped_already_posted");
+    expect(states).toContain("recouped");
 
     const unlabelled = states.filter((s) => !(s in LINE_STATE_COPY));
     expect(unlabelled, `unlabelled line states: ${unlabelled.join(", ")}`).toEqual([]);

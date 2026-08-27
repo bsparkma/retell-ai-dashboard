@@ -82,11 +82,26 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
       "write access proven, and a test-patient run completed before anything posts here. " +
       "Roland is unaffected.",
   },
-  recoupment_not_in_scope: {
-    label: "This is a takeback",
+  recoupment_unconfirmed: {
+    label: "A takeback nobody confirmed",
     fix:
-      "A negative payment cannot be undone once it is in Open Dental, so it posts behind a " +
-      "separate confirmation that is not built yet. Use the manual takeback procedure.",
+      "Money is moving backwards on this plan, but it was approved through the ordinary " +
+      "button rather than the takeback panel. Nothing was sent. Open the remittance and " +
+      "approve the takeback there — it asks you to type the amount first.",
+  },
+  no_adj_type: {
+    label: "This practice cannot book a reversible takeback",
+    fix:
+      "Open Dental has no adjustment type named 'Insurance deductions from previous " +
+      "payments' here, so the takeback cannot be written the reversible way — and it will " +
+      "never be switched to the permanent one on your behalf. Add the type in Open Dental's " +
+      "setup, then drain again.",
+  },
+  no_doc_category: {
+    label: "There is nowhere to file the EOB",
+    fix:
+      "Open Dental has no document category named 'Insurance' or 'Financial' here. The " +
+      "payment itself is unaffected.",
   },
   office_config_unresolved: {
     label: "This practice's Open Dental settings could not be read",
@@ -164,6 +179,8 @@ export const LINE_STATE_COPY: Record<PostingLineStatus, string> = {
   skipped: "Skipped",
   // The distinction that proves a resume did not double-post.
   skipped_already_posted: "Already posted — left alone",
+  // 6d. Not "paid": the carrier took this money back rather than sending it.
+  recouped: "Taken back",
 };
 
 /** How far through the forced sequence a plan got. */
@@ -174,7 +191,8 @@ export const STEP_COPY: Record<PostingStep, string> = {
   claim_receipts: "Marking the claims received",
   check: "Creating the insurance check",
   reconcile: "Reading the check back",
-  document_attach: "Filing the EOB (a later slice)",
+  recoupment: "Writing the takeback",
+  document_attach: "Filing the EOB into the patient chart",
 };
 
 export function stepCopy(step: PostingStep | string | null): string | null {

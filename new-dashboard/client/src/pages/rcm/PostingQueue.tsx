@@ -68,6 +68,7 @@ import {
   drainPostingQueue,
   getPostingPlan,
   listPostingQueue,
+  retryDocumentAttach,
   RcmApiError,
   RCM_OFFICE_LABELS,
   type DrainResult,
@@ -475,8 +476,27 @@ function PlanCard({
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<PostingQueueDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const copy = QUEUE_STATE_COPY[row.statusLabel];
   const blocked = blockedCopy(row.blockedReason);
+
+  /*
+   * Re-file an EOB that did not file. It cannot move a cent — the server
+   * refuses any plan that is not already `posted` — so the plan's own state is
+   * left alone here and only the document panel is refreshed from the answer.
+   */
+  const retryDocument = () => {
+    if (retrying) return;
+    setRetrying(true);
+    retryDocumentAttach(office, row.queueId)
+      .then((res) =>
+        setDetail((prev) => (prev ? { ...prev, documentAttach: res.documentAttach } : prev)),
+      )
+      .catch(() => {
+        /* the panel keeps showing the last known truth rather than inventing one */
+      })
+      .finally(() => setRetrying(false));
+  };
 
   useEffect(() => {
     if (!open || detail || loading) return;
@@ -635,7 +655,15 @@ function PlanCard({
           {!loading && !detail && (
             <div className="text-sm text-muted-foreground">Could not load this plan.</div>
           )}
-          {detail && <PlanLines detail={detail} office={office} row={row} />}
+          {detail && (
+            <PlanLines
+              detail={detail}
+              office={office}
+              row={row}
+              retrying={retrying}
+              onRetryDocument={retryDocument}
+            />
+          )}
         </div>
       )}
     </div>
@@ -646,10 +674,15 @@ function PlanLines({
   detail,
   office,
   row,
+  retrying,
+  onRetryDocument,
 }: {
   detail: PostingQueueDetail;
   office: RcmOfficeId;
   row: PostingQueueRow;
+  /** 6d: the EOB retry, owned by the card so the panel stays presentational. */
+  retrying: boolean;
+  onRetryDocument: () => void;
 }) {
   const patients = new Set(detail.claims.map((c) => c.patientName ?? c.claimId)).size;
 
@@ -741,16 +774,124 @@ function PlanLines({
         </table>
       </div>
 
-      {/* The 6d seam, said out loud. A screen that showed nothing here would
-          leave a biller assuming the EOB PDF had been filed into the chart. */}
-      {!detail.documentAttach.implemented && (
-        <p
-          className="mt-3 text-xs text-muted-foreground"
-          data-testid="posting-document-seam"
-        >
-          {detail.documentAttach.note}
-        </p>
-      )}
+      {/*
+        THE EOB FILING, ON ITS OWN AXIS.
+
+        Never folded into the plan's status chip: a plan whose money is correct
+        and proven stays `posted` whether or not a PDF reached the chart. Three
+        distinct things are said here, and a biller has to be able to tell them
+        apart at a glance —
+
+          null      nothing to file (an 835 with no document). NOT a failure,
+                    and deliberately no retry button.
+          attached  filed, with the DocNum Open Dental gave back.
+          partial   some patients filed and some did not. Named rather than
+                    rounded up to "attached", which would claim a document
+                    exists in a chart where it does not.
+      */}
+      <div className="mt-4 border-t border-border pt-3" data-testid="posting-document-attach">
+        <p className="text-xs font-medium">EOB in the patient chart</p>
+        {detail.documentAttach.status === "none" ? (
+          /*
+           * EXAMINED, AND THERE IS NOTHING TO FILE — an 835 that arrived with no
+           * document. Deliberately no retry: there is nothing behind the button.
+           */
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="posting-document-none">
+            Nothing to file — this remittance arrived without a document.
+          </p>
+        ) : detail.documentAttach.status === null ? (
+          /*
+           * NOT ATTEMPTED. On a posted plan this is OUTSTANDING WORK, not
+           * "nothing to do" — most likely the process died between posting and
+           * the attach. It must read differently from `none` and it must offer
+           * the retry, or the EOB is silently never filed.
+           */
+          <div data-testid="posting-document-unattempted">
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              {detail.plan.statusLabel === "posted"
+                ? "Filing not attempted yet — the payment posted but the EOB was never filed."
+                : "The EOB is filed once this plan posts."}
+            </p>
+            {detail.plan.statusLabel === "posted" &&
+              (detail.documentAttach.canRetry ? (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  data-testid="posting-document-retry"
+                  disabled={retrying}
+                  onClick={onRetryDocument}
+                >
+                  {retrying ? "Filing…" : "File the EOB"}
+                </button>
+              ) : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Filing a document into a chart needs posting permission (
+                  {detail.documentAttach.retryRequires}).
+                </p>
+              ))}
+          </div>
+        ) : (
+          <>
+            <p
+              className="mt-1 text-xs text-muted-foreground"
+              data-testid="posting-document-status"
+            >
+              {detail.documentAttach.status === "attached"
+                ? "Filed into every patient chart on this plan."
+                : detail.documentAttach.status === "partial"
+                  ? "Filed into some of the charts on this plan, but not all of them."
+                  : "Not filed. The payment itself posted correctly and is unaffected."}
+            </p>
+            {detail.documentAttach.documents.length > 0 && (
+              <ul className="mt-2 space-y-1" data-testid="posting-document-list">
+                {detail.documentAttach.documents.map((doc) => (
+                  <li key={doc.odPatientId} className="text-xs text-muted-foreground">
+                    <span className="font-mono">PatNum {doc.odPatientId}</span>{" "}
+                    {doc.status === "attached" ? (
+                      <>
+                        — filed as{" "}
+                        <span className="font-mono">DocNum {doc.odDocNum}</span>
+                      </>
+                    ) : (
+                      <>— {doc.error ?? "not filed"}</>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {detail.documentAttach.error && (
+              <p className="mt-1 text-xs text-rose-700 dark:text-rose-400">
+                {detail.documentAttach.error}
+              </p>
+            )}
+            {/*
+              The retry is offered ONLY where there is something to retry. A
+              button on a clean attach would invite a second upload into a chart
+              that already has one.
+            */}
+            {detail.documentAttach.status !== "attached" &&
+              (detail.documentAttach.canRetry ? (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  data-testid="posting-document-retry"
+                  disabled={retrying}
+                  onClick={onRetryDocument}
+                >
+                  {retrying ? "Filing…" : "File the EOB again"}
+                </button>
+              ) : (
+                <p
+                  className="mt-2 text-xs text-muted-foreground"
+                  data-testid="posting-document-retry-needs-permission"
+                >
+                  Filing a document into a chart needs posting permission (
+                  {detail.documentAttach.retryRequires}).
+                </p>
+              ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }

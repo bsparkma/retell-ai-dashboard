@@ -26,24 +26,26 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 /**
- * The ONLY office these scripts will touch.
+ * The DEFAULT office, kept only so a bare command still means what it meant.
  *
- * Roland, hard-coded, because valley is fail-closed until D-7 is discharged
- * (`docs/RCM_POSTING.md` §9) and because PatNum 7115 — valley's test patient —
- * is 6d's, not this walk's. `PROBE_OFFICE` is still read so the invocation
- * matches the D-7 probes an operator has already run, but any value other than
- * this one is a REFUSAL rather than a redirect. Same stance as hard rule 2 on
- * the voice side: an office in a parameter is an assertion that can only cause a
- * refusal, never a change of destination.
+ * ⚠ **These are no longer the office and patient these scripts act on.** 6d made
+ * the walk per-office — see `OFFICES` / `resolveTarget()` below — because §9's
+ * three D-7 prerequisites are discharged and §10.5 needs the same walk run in
+ * Riley's own database against Riley's own patient.
+ *
+ * They survive as the default `resolveTarget()` falls back to, and as the values
+ * every recorded roland walk used, so a transcript in `docs/RCM_POSTING.md` §10
+ * still lines up with a constant somebody can find. **Do not read a new PatNum
+ * from here** — read it from the registry, which binds it to an office.
  * @type {string}
  */
 const OFFICE = 'roland';
 
 /**
- * The disposable target patient. Roland's, and Roland's only —
- * PatNum 7115 is a DIFFERENT, REAL person in Roland's database than it is in
- * Riley's, which is the whole reason the per-office layer exists. A PatNum
- * without an office is not an address.
+ * Roland's disposable target patient. Bound to Roland by the registry below,
+ * because PatNum 7115 is a DIFFERENT, REAL person in Roland's database than it
+ * is in Riley's — which is the whole reason the per-office layer exists. A
+ * PatNum without an office is not an address.
  * @type {number}
  */
 const PAT_NUM = 12827;
@@ -210,6 +212,151 @@ const WALK_SPENT_IDS = Object.freeze({
   claimProcs: Object.freeze([535194, 535195]),
 });
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 6d: THE WALK IS PER-OFFICE NOW, AND `PROBE_OFFICE` FINALLY SELECTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Through 6c this file hard-coded roland and treated `PROBE_OFFICE` as an
+ * assertion that could only refuse. That was right while valley was fail-closed:
+ * there was nothing for the variable to select.
+ *
+ * §9's three prerequisites are now discharged, so §10.5 needs the same walk run
+ * against Riley — and it must be run against Riley's OWN patient, in Riley's own
+ * database, with Riley's own DefNums. So the constants below are a REGISTRY
+ * keyed by office rather than a set of module-level values.
+ *
+ * WHAT DID NOT CHANGE: an office this registry does not name is a REFUSAL, never
+ * a fallback to roland. Same stance as hard rule 2 — an office in a parameter
+ * can only cause a refusal, never a change of destination.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PatNum 7115 IS THE REASON THE OFFICE LAYER EXISTS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 7115 in Riley is valley's test patient. **7115 in Roland is a different, real
+ * person.** A PatNum without an office is not an address, and this registry is
+ * the one place in these scripts where the two are bound together.
+ */
+const OFFICES = Object.freeze({
+  roland: Object.freeze({
+    office: 'roland',
+    officeName: 'Roland Family Dental',
+    /** The disposable target patient. Roland's, and Roland's only. */
+    patNum: 12827,
+    /**
+     * Spike 0b's residue and the ids two previous walks spent. Never touched by
+     * any script here, and a manifest naming one did not come from the prep.
+     */
+    spike0bResidue: SPIKE_0B_RESIDUE,
+    walkSpentIds: WALK_SPENT_IDS,
+  }),
+  valley: Object.freeze({
+    office: 'valley',
+    officeName: 'Valley Fort Smith',
+    /**
+     * Riley's test patient, and the one §9(c) confirmed can carry a claim:
+     * `PatPlanNum 12402, InsSubNum 9088, Ordinal 1`, PatStatus Patient.
+     *
+     * ⚠ **PatPlanNum 12402 IS LIVE AND MUST NEVER BE TOUCHED.** Unlike 12827 —
+     * which needed Beau to ADD a plan before Spike 0b could run — 7115 already
+     * has one. The prep scripts create a procedure and a claim and nothing else;
+     * the plan is a prerequisite they read, never a thing they manage.
+     */
+    patNum: 7115,
+    /**
+     * NOTHING YET, and that is a measured answer rather than an empty default.
+     *
+     * §9(c)'s read found 7115 carrying 0 claims and 1 procedurelog, and no walk
+     * has ever run in Riley — so there is no residue to deny and no spent id to
+     * protect. `rcm-s10-inventory.js` is what establishes this before the first
+     * valley walk, and the first walk's own ids get added here afterwards, the
+     * same way roland's were.
+     */
+    spike0bResidue: Object.freeze({
+      claims: Object.freeze([]),
+      procedures: Object.freeze([]),
+      claimProcs: Object.freeze([]),
+      adjustments: Object.freeze([]),
+      patPlans: Object.freeze([12402]),
+    }),
+    walkSpentIds: Object.freeze({
+      claims: Object.freeze([]),
+      procedures: Object.freeze([]),
+      claimProcs: Object.freeze([]),
+    }),
+  }),
+});
+
+/**
+ * Resolve the office these scripts will act on, or refuse.
+ *
+ * Reads `PROBE_OFFICE` — the same variable the two D-7 probes take, so an
+ * operator's invocation looks the same across all of them. Defaults to roland
+ * because every recorded walk so far is roland's and a bare command must keep
+ * meaning what it meant.
+ *
+ * THROWS on anything else. A typo must not silently address a practice.
+ *
+ * @param {string} [raw]
+ * @returns {{ office: string, officeName: string, patNum: number,
+ *             spike0bResidue: object, walkSpentIds: object }}
+ */
+function resolveTarget(raw = process.env.PROBE_OFFICE) {
+  const key = String(raw || 'roland').trim().toLowerCase();
+  const found = OFFICES[key];
+  if (!found) {
+    throw new Error(
+      `PROBE_OFFICE='${raw}' is not a practice these scripts know. ` +
+        `Expected one of: ${Object.keys(OFFICES).join(', ')}.`
+    );
+  }
+  return found;
+}
+
+/**
+ * Every denied id for ONE office, flattened — what the unwind checks against.
+ *
+ * Per-office because ClaimNum, ProcNum and ClaimProcNum numbering restarts in
+ * every Open Dental database. A flat cross-office deny-list would refuse a
+ * legitimate Riley id because Roland once used the same number, and — far worse
+ * — would fail to protect a Riley id that Roland's list happens not to name.
+ *
+ * @param {{ spike0bResidue: object, walkSpentIds: object }} target
+ * @returns {ReadonlyArray<number>}
+ */
+function denyIdsFor(target) {
+  return Object.freeze([
+    ...target.spike0bResidue.claims,
+    ...target.spike0bResidue.procedures,
+    ...target.spike0bResidue.claimProcs,
+    ...target.spike0bResidue.adjustments,
+    ...target.spike0bResidue.patPlans,
+    ...target.walkSpentIds.claims,
+    ...target.walkSpentIds.procedures,
+    ...target.walkSpentIds.claimProcs,
+  ]);
+}
+
+/**
+ * Where ONE office's manifest and synthetic 835s live.
+ *
+ * `/data/rcm-s10/<office>/` — the office is in the PATH, so a roland manifest
+ * and a valley manifest cannot overwrite one another and an unwind cannot be
+ * pointed at the wrong practice's ids by running in the wrong order. The same
+ * reason office is in every database key in this module.
+ *
+ * @param {string} office
+ * @returns {{ outDir: string, manifestPath: string, eraAPath: string, eraBPath: string }}
+ */
+function pathsFor(office) {
+  const outDir = path.join(OUT_DIR, office);
+  return {
+    outDir,
+    manifestPath: path.join(outDir, 'rcm-s10-manifest.json'),
+    eraAPath: path.join(outDir, 'rcm-s10-835-A.txt'),
+    eraBPath: path.join(outDir, 'rcm-s10-835-B.txt'),
+  };
+}
+
 /** Every denied id, flattened — what the unwind actually checks against. */
 const DENY_IDS = Object.freeze([
   ...SPIKE_0B_RESIDUE.claims,
@@ -284,6 +431,10 @@ const OD_TIMEOUT_MS = 30000;
 module.exports = {
   OFFICE,
   PAT_NUM,
+  OFFICES,
+  resolveTarget,
+  denyIdsFor,
+  pathsFor,
   PROC_CODE,
   PROC_FEE,
   PROC_FEE_CENTS,

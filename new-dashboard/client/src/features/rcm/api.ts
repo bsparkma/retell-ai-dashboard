@@ -1321,6 +1321,10 @@ export const POSTING_LINE_STATUSES = [
   "claimproc_written",
   "claim_received",
   "paid",
+  // 6d. A takeback that landed, and a separate word from `paid` on purpose: one
+  // is money the carrier sent and the other is money it took back. Collapsing
+  // them would make the queue unable to answer what the practice received.
+  "recouped",
   "failed",
   "skipped",
   "skipped_already_posted",
@@ -1330,10 +1334,11 @@ export type PostingLineStatus = (typeof POSTING_LINE_STATUSES)[number];
 /**
  * The steps of the forced Open Dental call sequence, in order.
  *
- * `document_attach` is present and is NOT implemented — the EOB PDF is filed
- * into the patient images in a later slice. It is listed so the UI can say "not
- * yet" rather than end one step early, which would make a plan look complete
- * while the EOB is still unfiled.
+ * `recoupment` and `document_attach` are 6d's and both are now implemented.
+ * They come last, and in that order, for two different reasons: a takeback runs
+ * after the positive side is complete and proven, so a failure there leaves a
+ * legible chart; and the document runs after everything because a document
+ * failure is retryable and never a financial error.
  */
 export const POSTING_STEPS = [
   "resolve_config",
@@ -1342,6 +1347,7 @@ export const POSTING_STEPS = [
   "claim_receipts",
   "check",
   "reconcile",
+  "recoupment",
   "document_attach",
 ] as const;
 export type PostingStep = (typeof POSTING_STEPS)[number];
@@ -1371,6 +1377,8 @@ export interface PostingQueueRow {
   blockedReason: string | null;
   step: PostingStep | null;
   isRecoupment: boolean;
+  /** 6d: the EOB filing, on its own axis. See PostingDocumentAttach.status. */
+  documentAttachStatus: "none" | "attached" | "partial" | "failed" | null;
   carrierEobDate: string | null;
   intendedTotalCents: number;
   postedTotalCents: number;
@@ -1405,6 +1413,16 @@ export interface PostingQueueLine {
   intendedWriteOffCents: number;
   intendedDedAppliedCents: number;
   isSupplemental: boolean;
+  /**
+   * 6d. Which takeback path this line was AUTHORISED for, and what it left in
+   * the chart. The two ids are separate because one can be undone and one
+   * cannot — `adjustment` is reversible by an offsetting adjustment (there is no
+   * DELETE /adjustments), and `supplemental` cannot be reverted or deleted at
+   * all and permanently pins its claim and procedure.
+   */
+  recoupmentPath: RecoupmentPath | null;
+  odAdjustmentNum: number | null;
+  odSupplementalClaimProcNum: number | null;
   claimprocWrittenAt: string | null;
   claimReceivedAt: string | null;
   paidAt: string | null;
@@ -1442,8 +1460,52 @@ export interface PostingQueueDetail {
   canDrain: boolean;
   drainRequires: string;
   postingEnabled: boolean;
-  /** The 6d seam, stated rather than omitted. */
-  documentAttach: { implemented: boolean; note: string };
+  /**
+   * The EOB filing, on its OWN axis — never folded into `plan.status`. A plan
+   * whose money is correct and proven stays `posted` whether or not a PDF
+   * reached the chart.
+   */
+  documentAttach: PostingDocumentAttach;
+}
+
+/** The two ways a takeback may be written. Only one of them can be undone. */
+export type RecoupmentPath = "adjustment" | "supplemental";
+
+/** How the EOB filing went for one patient on the plan. */
+export interface PostingDocument {
+  odPatientId: number;
+  /** The DocNum, read back from the patient's own document list. */
+  odDocNum: number | null;
+  description: string | null;
+  status: "pending" | "attached" | "failed";
+  error: string | null;
+  attachedAt: string | null;
+}
+
+export interface PostingDocumentAttach {
+  implemented: boolean;
+  /**
+   * ─────────────────────────────────────────────────────────────────────────
+   * `null` AND `none` ARE DIFFERENT, AND THE DIFFERENCE IS OUTSTANDING WORK
+   * ─────────────────────────────────────────────────────────────────────────
+   *   `null`      not attempted. On a POSTED plan that means the attach never
+   *               ran — most likely the process died between the two — so it is
+   *               work somebody still owes, and the screen offers the retry
+   *               exactly as it does for `failed`.
+   *   `none`      examined, and there is genuinely nothing to file: an 835 that
+   *               arrived with no document. No retry — there is nothing behind
+   *               the button.
+   *   `partial`   some patients filed and some did not.
+   *
+   * Collapsing the first two is what would let a plan sit green with an EOB
+   * silently missing from a chart.
+   */
+  status: "none" | "attached" | "partial" | "failed" | null;
+  error: string | null;
+  at: string | null;
+  documents: PostingDocument[];
+  canRetry: boolean;
+  retryRequires: string;
 }
 
 export interface DrainOutcome {
@@ -1513,6 +1575,89 @@ export function getPostingPlan(
  * returns `outOfTime` with how many plans are left, and the button is pressed
  * again.
  */
+
+/**
+ * What a takeback approve WOULD do, and the exact phrase to type back (6d).
+ *
+ * `typedTotalExpected` is RENDERED VERBATIM and never re-derived from cents.
+ * D-6's friction is that a person reads an amount and types it; that only works
+ * if the amount on the screen and the amount the server demands come from one
+ * formatter, and the server's is the one that decides.
+ */
+export interface RecoupmentChecklist {
+  office: RcmOfficeId;
+  batchId: string;
+  claims: ApprovalClaim[];
+  /** Zero is a real answer: nothing on this remittance is a takeback. */
+  recoupmentClaims: number;
+  recoupmentTotalCents: number;
+  /** Type this, exactly. */
+  typedTotalExpected: string;
+  paths: RecoupmentPath[];
+  /** Stated by the server so a client cannot pre-select the irreversible one. */
+  defaultPath: RecoupmentPath;
+  balanced: boolean;
+  differenceCents: number;
+  canApprove: boolean;
+  approveRequires: string;
+}
+
+export interface RecoupmentApprovalResult extends ApprovalResult {
+  recoupmentPath: RecoupmentPath;
+  recoupmentTotalCents: number;
+  note: string;
+}
+
+/** The takeback checklist. A READ — `reviewer` may look without authorising. */
+export function getRecoupmentChecklist(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<RecoupmentChecklist> {
+  return get<RecoupmentChecklist>(
+    `/remittances/${encodeURIComponent(batchId)}/recoupment`,
+    { office },
+  );
+}
+
+/**
+ * D-6. Approve a takeback, having typed its amount.
+ *
+ * The server re-validates `typedTotal` against a total it computes itself, so
+ * this call cannot be made to skip the confirmation by a client that simply
+ * does not render the dialog. A mismatch is 422 `RECOUPMENT_CONFIRM_MISMATCH`
+ * and nothing is recorded.
+ */
+export function approveRecoupment(
+  office: RcmOfficeId,
+  batchId: string,
+  body: { typedTotal: string; path: RecoupmentPath },
+): Promise<RecoupmentApprovalResult> {
+  return post<RecoupmentApprovalResult>(
+    `/remittances/${encodeURIComponent(batchId)}/approve-recoupment`,
+    { office },
+    body,
+  );
+}
+
+/**
+ * Re-file an EOB that did not file (6d).
+ *
+ * Cannot move a cent: the server refuses any plan that is not already `posted`,
+ * and the only Open Dental verb it can reach is the document upload. Pressing it
+ * twice is safe — the attach adopts a document already carrying this plan's
+ * description rather than filing a second copy.
+ */
+export function retryDocumentAttach(
+  office: RcmOfficeId,
+  queueId: string,
+): Promise<{ office: RcmOfficeId; queueId: string; documentAttach: PostingDocumentAttach }> {
+  return post(
+    `/posting/queue/${encodeURIComponent(queueId)}/attach-document`,
+    { office },
+    {},
+    { timeoutMs: BATCH_TIMEOUT_MS },
+  );
+}
 export function drainPostingQueue(
   office: RcmOfficeId,
   opts: { queueId?: string } = {},

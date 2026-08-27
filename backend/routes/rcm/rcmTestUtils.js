@@ -491,6 +491,35 @@ class FakeRcmDb {
       return { rows: [{ [alias]: String(total) }] };
     }
 
+    /*
+     * 6d: the same aggregate PLUS a filtered count, in one statement —
+     *   SELECT COALESCE(SUM(col), 0)::bigint AS a,
+     *          COUNT(*) FILTER (WHERE pred)::int AS b FROM t WHERE …
+     *
+     * `requires_check` is derived from the lines ACTUALLY WRITTEN alongside the
+     * plan's total, in one round trip, so the two can never disagree about the
+     * same set of rows. Modelled explicitly for the reason above: the generic
+     * SELECT would project the aggregate expression as a column name and hand
+     * back `undefined`, which is exactly how a plan comes to demand a check it
+     * does not owe — or worse, not demand one it does.
+     */
+    if (
+      (m = text.match(
+        /^SELECT COALESCE\(SUM\((\w+)\), 0\)::bigint AS (\w+), COUNT\(\*\) FILTER \(WHERE (.+?)\)::int AS (\w+) FROM (\w+) WHERE (.+)$/i
+      ))
+    ) {
+      const [, col, alias, filterPred, countAlias, table, where] = m;
+      const rows = this.table(table).filter(this.wherePredicate(where, params));
+      const total = rows.reduce((n, r) => n + Number(r[col] || 0), 0);
+      // The filter is a simple `col = true|false` predicate; anything else is
+      // unknown SQL and must fail loudly rather than be guessed at.
+      const fm = filterPred.match(/^(\w+)\s*=\s*(true|false)$/i);
+      if (!fm) throw new Error(`FakeRcmDb: unsupported FILTER predicate: ${filterPred}`);
+      const want = fm[2].toLowerCase() === 'true';
+      const n = rows.filter((r) => Boolean(r[fm[1]]) === want).length;
+      return { rows: [{ [alias]: String(total), [countAlias]: n }] };
+    }
+
     // eob.js dedup probe: SELECT <cols> FROM t WHERE … ORDER BY … LIMIT <n>
     if ((m = text.match(/^SELECT (.+?) FROM (\w+) WHERE (.+?) ORDER BY (.+?) LIMIT (\d+)$/i))) {
       let rows = this.table(m[2]).filter(this.wherePredicate(m[3], params));
@@ -743,6 +772,9 @@ class FakeOd {
       procedures: rows.procedures || [],
       definitions: rows.definitions || [],
       preferences: rows.preferences || [],
+      // Slice 6d — the takeback and document lanes.
+      adjustments: rows.adjustments || [],
+      documents: rows.documents || [],
     };
     this.fail = rows.fail || {};
     this.writable = rows.writable === true;
@@ -754,6 +786,10 @@ class FakeOd {
      * or a duplicate check.
      */
     this.dieAfterWrites = rows.dieAfterWrites == null ? null : Number(rows.dieAfterWrites);
+    /** 6d id sequences. Far apart so a test never confuses one kind for another. */
+    this.nextAdjNum = rows.nextAdjNum || 19200;
+    this.nextSupplementalNum = rows.nextSupplementalNum || 540000;
+    this.nextDocNum = rows.nextDocNum || 88000;
     /**
      * THE HARDER CRASH: the write LANDS and the response is lost.
      *
@@ -929,6 +965,85 @@ class FakeOd {
       };
     }
 
+    /*
+     * ── Slice 6d ─────────────────────────────────────────────────────────────
+     */
+
+    // POST /adjustments — Spike 0b test 8. The SIGN RULE is modelled, because it
+    // is the refusal a caller that resolved the wrong AdjType would actually hit.
+    if (path === '/adjustments' && verb === 'POST') {
+      const def = this.rows.definitions.find(
+        (d) => Number(d.Category) === 1 && Number(d.DefNum) === Number(body.AdjType)
+      );
+      const amount = Number(body.AdjAmt);
+      if (def && def.ItemValue === '-' && amount > 0) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: 'AdjAmt must be negative for this AdjType.',
+        };
+      }
+      if (def && def.ItemValue === '+' && amount < 0) {
+        return {
+          ok: false,
+          status: 400,
+          data: null,
+          error: 'AdjAmt must be positive for this AdjType.',
+        };
+      }
+      const row = {
+        AdjNum: this.nextAdjNum++,
+        PatNum: Number(body.PatNum),
+        AdjType: Number(body.AdjType),
+        AdjAmt: amount,
+        AdjDate: body.AdjDate,
+        AdjNote: body.AdjNote || '',
+      };
+      this.rows.adjustments.push(row);
+      return { ok: true, status: 201, data: row };
+    }
+
+    /*
+     * POST /claimprocs/Supplemental — G10, THE ONE-WAY DOOR.
+     *
+     * The fake mints a NEW claimproc rather than editing the target, because
+     * that is what the live API does and it is the whole reason the queue line
+     * keeps `od_supplemental_claim_proc_num` separate from `od_claim_proc_num`.
+     * There is deliberately no way to remove it from this fake either.
+     */
+    if (path === '/claimprocs/Supplemental' && verb === 'POST') {
+      const claim = this.rows.claims.find((c) => Number(c.ClaimNum) === Number(body.ClaimNum));
+      if (!claim) return { ok: false, status: 404, data: null, error: 'Claim not found.' };
+      const row = {
+        ClaimProcNum: this.nextSupplementalNum++,
+        ClaimNum: Number(body.ClaimNum),
+        Status: 'Supplemental',
+        InsPayAmt: Number(body.InsPayAmt),
+        WriteOff: 0,
+        DedApplied: 0,
+        ClaimPaymentNum: 0,
+      };
+      this.rows.claimProcs.push(row);
+      return { ok: true, status: 201, data: row };
+    }
+
+    // POST /documents/Upload — Spike 0b test 9. `rawBase64` + `extension`.
+    if (path === '/documents/Upload' && verb === 'POST') {
+      if (!body.rawBase64) {
+        return { ok: false, status: 400, data: null, error: 'rawBase64 is required.' };
+      }
+      const row = {
+        DocNum: this.nextDocNum++,
+        PatNum: Number(body.PatNum),
+        DocCategory: Number(body.DocCategory),
+        Description: String(body.Description || ''),
+        DateCreated: body.DateCreated || null,
+      };
+      this.rows.documents.push(row);
+      return { ok: true, status: 201, data: row };
+    }
+
     return { ok: false, status: 400, data: null, error: `${path} ${verb} is not a valid method.` };
   }
 
@@ -1007,6 +1122,14 @@ class FakeOd {
     }
     if (path === '/claims') {
       return { ok: true, status: 200, data: this.filtered('claims', params, 'PatNum') };
+    }
+    // Slice 6d — the two read-backs. `?PatNum=` is honoured here; the callers
+    // re-filter anyway, which is the behaviour under test.
+    if (path === '/adjustments') {
+      return { ok: true, status: 200, data: this.filtered('adjustments', params, 'PatNum') };
+    }
+    if (path === '/documents') {
+      return { ok: true, status: 200, data: this.filtered('documents', params, 'PatNum') };
     }
     if (path === '/claimprocs') {
       // `?ClaimPaymentNum=` is the reconciliation read (§9, verified live) and

@@ -97,6 +97,24 @@
 const fs = require('node:fs');
 const T = require('./rcm-s10-targets');
 
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 6d: WHICH PRACTICE THIS RUN ADDRESSES, RESOLVED ONCE, AT LOAD.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `PROBE_OFFICE` selects; an office the registry does not name THROWS here,
+ * before `main()` and before any Open Dental client exists. Failing at require
+ * time rather than mid-run is deliberate: a typo must not get as far as holding
+ * a credential.
+ *
+ * Every id below is per-office, because ClaimNum, ProcNum and ClaimProcNum
+ * numbering restarts in every Open Dental database — and PatNum 7115 is valley's
+ * test patient and a DIFFERENT, REAL person in Roland.
+ */
+const TARGET = T.resolveTarget();
+const PATHS = T.pathsFor(TARGET.office);
+const DENY = T.denyIdsFor(TARGET);
+
 /** X12 segment terminator, matching every fixture in `test/fixtures/rcm`. */
 const SEG = '~\n';
 
@@ -161,9 +179,9 @@ function build835(spec) {
 }
 
 function main() {
-  if (!fs.existsSync(T.MANIFEST_PATH)) {
+  if (!fs.existsSync(PATHS.manifestPath)) {
     console.error(
-      `REFUSED: no manifest at\n  ${T.MANIFEST_PATH}\n` +
+      `REFUSED: no manifest at\n  ${PATHS.manifestPath}\n` +
         '  These files carry the REAL ClaimNums, so they cannot be written before the claims\n' +
         '  exist. Run `node scripts/rcm-s10-prep.js` first.'
     );
@@ -171,12 +189,12 @@ function main() {
     return;
   }
 
-  const manifest = JSON.parse(fs.readFileSync(T.MANIFEST_PATH, 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(PATHS.manifestPath, 'utf8'));
 
-  if (manifest.office !== T.OFFICE || Number(manifest.patNum) !== T.PAT_NUM) {
+  if (manifest.office !== TARGET.office || Number(manifest.patNum) !== TARGET.patNum) {
     console.error(
       `REFUSED: the manifest is for office='${manifest.office}' patNum=${manifest.patNum}; ` +
-        `these scripts are '${T.OFFICE}'/${T.PAT_NUM} only.`
+        `these scripts are '${TARGET.office}'/${TARGET.patNum} only.`
     );
     process.exitCode = 3;
     return;
@@ -204,7 +222,7 @@ function main() {
     return;
   }
 
-  const paths = [T.ERA_A_PATH, T.ERA_B_PATH];
+  const paths = [PATHS.eraAPath, PATHS.eraBPath];
   // Same gate the prep uses, for the same reason: fail on the precondition
   // rather than half way through emitting the pair. This script touches no
   // chart, so the cost of a late failure is smaller — but an operator who has

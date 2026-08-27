@@ -74,6 +74,7 @@ import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/
 import { claimHref, remittanceFlow } from "@/features/rcm/flow";
 import { describePlbAdjustment } from "@/features/rcm/plb";
 import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
+import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
@@ -547,6 +548,19 @@ export default function RemittanceDetailPage() {
         unmatchedCount={unmatchedCount}
         onRunMatch={runBatchMatch}
       />
+      {/*
+        D-6. Rendered BESIDE the ordinary panel rather than inside it, and it
+        returns null when this remittance carries no takeback — so a biller
+        never sees a takeback control on a remittance that has none, and never
+        finds "approve nine claims" and "authorise a permanent write" behind the
+        same button.
+
+        It sits OUTSIDE the stepper deliberately: the stepper describes the
+        ordinary path a remittance walks, and a takeback is not a step on it.
+      */}
+      <div className="mt-4">
+        <RecoupmentPanel office={office} batchId={r.batchId} onApproved={load} />
+      </div>
 
       {/* ── Claims ─────────────────────────────────────────────────────────── */}
       <h2 className="mt-8 text-lg font-semibold tracking-tight text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>

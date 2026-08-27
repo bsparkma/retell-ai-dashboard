@@ -45,7 +45,8 @@
  *
  * 2. `blocked_reason` — a MACHINE reason, not a sentence.
  *
- *    `valley_not_enabled`, `recoupment_not_in_scope`, `office_config_unresolved`,
+ *    `valley_not_enabled`, `recoupment_unconfirmed` (6d re-scoped it),
+ *    `office_config_unresolved`,
  *    ... The UI renders copy from the slug; nothing parses prose. A CHECK is
  *    deliberately NOT put on this column: the reason vocabulary is code that
  *    grows every slice, and a CHECK would make adding a refusal reason a
