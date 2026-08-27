@@ -694,6 +694,13 @@ function literalOrParam(value, params, row) {
     return Number((row && row[m[1]]) || 0) + Number(m[2]);
   }
 
+  // `GREATEST(attempt_count - 1, 0)` — `releaseRow` gives back the increment
+  // `claimRow` took, when the run never reached Open Dental at all. Floored,
+  // because a count of tries cannot be negative however the two get out of step.
+  if ((m = value.match(/^GREATEST\((\w+) - (\d+), (\d+)\)$/i))) {
+    return Math.max(Number((row && row[m[1]]) || 0) - Number(m[2]), Number(m[3]));
+  }
+
   // `COALESCE($3, batch_id)` — finalizeRemittanceKey links the batch it
   // produced without clobbering one already recorded.
   if ((m = value.match(/^COALESCE\((.+)\)$/i))) {

@@ -466,7 +466,29 @@ router.post(
           code: err.code,
         });
       }
-      throw err;
+      /*
+       * ANYTHING ELSE IS A DEFECT, AND THE OPERATOR IS OWED THE SENTENCE.
+       *
+       * `h()` turns an unhandled throw into a flat `Internal error`, which is
+       * what the first staging walk showed a biller when the drain hit
+       * `column "od_patient_office" does not exist`. That banner cost an hour:
+       * the one fact that named the bug in seconds was discarded one layer
+       * above the code that had it.
+       *
+       * Safe here, and only here: this is the same text the drain already
+       * writes into `last_error` and the queue screen already renders, shown to
+       * the same authenticated, tenant-scoped, `rcm.write`-holding person. It
+       * is not a new audience for anything, and the generic handler stays
+       * generic for every other route.
+       *
+       * The plan itself is not left mid-flight — `drainRow` hands a row back to
+       * `approved` before the exception escapes it.
+       */
+      return res.status(500).json({
+        success: false,
+        error: err && err.message ? err.message : String(err),
+        code: 'DRAIN_FAILED',
+      });
     }
 
     /*

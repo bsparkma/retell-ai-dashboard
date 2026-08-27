@@ -2276,3 +2276,111 @@ test('the drain re-asserts the shape, so a plan whose lines changed cannot post 
     'the drain corrected it from the lines it is actually about to post'
   );
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. A FAILURE BEFORE THE FIRST OPEN DENTAL CALL LEAVES NOTHING MID-FLIGHT
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The second defect the 2026-08-26 staging walk exposed, underneath the first.
+ *
+ * `loadPlan` named a column the schema does not have, and the exception escaped
+ * `drainRow` entirely. The plan had already been claimed, so it sat at
+ * `posting` — step "Reading this practice's Open Dental settings", first line
+ * Not started — with no process anywhere behind it. Only a container restart,
+ * and the startup sweep it runs, would ever have moved it.
+ *
+ * Nothing had been attempted against Open Dental. The honest state for that is
+ * the state the plan was already in.
+ */
+
+/** A pool that is a real FakeRcmDb until a named statement goes past it. */
+function poolThatThrowsOn(db, fragment, message) {
+  return {
+    ...db,
+    table: (name) => db.table(name),
+    seed: (name, rows) => db.seed(name, rows),
+    query: (text, params) => {
+      if (String(text).includes(fragment)) return Promise.reject(new Error(message));
+      return db.query(text, params);
+    },
+  };
+}
+
+const DB_ERROR = 'column "od_patient_office" does not exist';
+
+test('loadPlan throwing hands the plan back to approved, not left posting', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  const before = db.table('rcm_posting_queue')[0].attempt_count;
+
+  const pool = poolThatThrowsOn(db, 'FROM rcm_claims', DB_ERROR);
+
+  await assert.rejects(
+    () => postingDrain.drainOffice({ ...ctxFor(db, od), pool }),
+    /od_patient_office/,
+    'the operator is still told — a plan that cannot be loaded is a defect, not a state'
+  );
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'approved', 'THE FIX: not left at `posting` with nothing running');
+  assert.equal(row.drain_step, null, 'and not still showing a step it is not on');
+  assert.equal(row.last_error, DB_ERROR, 'and it says why, in the words Postgres used');
+  assert.equal(
+    row.attempt_count,
+    before,
+    'nothing was attempted against Open Dental, so nothing was attempted'
+  );
+  assert.equal(row.finished_at, null, 'it is not finished — it never started');
+});
+
+test('nothing reached Open Dental when the pre-flight threw', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  const pool = poolThatThrowsOn(db, 'FROM rcm_claims', DB_ERROR);
+
+  await assert.rejects(() => postingDrain.drainOffice({ ...ctxFor(db, od), pool }));
+
+  assert.deepEqual(od.writesIssued(), [], 'no chart was touched');
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'pending', 'and no line moved');
+});
+
+test('the released plan can simply be pressed again', async () => {
+  /*
+   * The whole point of releasing rather than failing: once the defect is fixed
+   * and the container is redeployed, the biller presses the same button and the
+   * plan runs. No sweep, no manual UPDATE, no state a human has to reason about.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  const pool = poolThatThrowsOn(db, 'FROM rcm_claims', DB_ERROR);
+  await assert.rejects(() => postingDrain.drainOffice({ ...ctxFor(db, od), pool }));
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+  assert.equal(
+    db.table('rcm_posting_queue')[0].attempt_count,
+    1,
+    'and the attempt that counts is the one that actually ran'
+  );
+});
+
+test('releaseRow refuses to touch a row this run does not hold', async () => {
+  /*
+   * `WHERE status = 'posting'` is what makes the catch safe to call blind. A
+   * plan `blockRow` has already settled — or one another process owns — must not
+   * be dragged back to `approved` by an exception thrown afterwards.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const row = db.table('rcm_posting_queue')[0];
+  row.status = 'blocked';
+  row.blocked_reason = 'recoupment_unconfirmed';
+
+  await postingDrain.releaseRow(db, row.queue_id, 'something else went wrong');
+
+  assert.equal(row.status, 'blocked', 'left exactly as it was');
+  assert.equal(row.blocked_reason, 'recoupment_unconfirmed');
+});
