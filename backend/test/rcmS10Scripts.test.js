@@ -249,9 +249,11 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
    * field for a check, so "a future manifest must never name them" cannot apply.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785]);
-  assert.deepEqual([...T.WALK_SPENT_IDS.procedures], [406124, 406125]);
-  assert.deepEqual([...T.WALK_SPENT_IDS.claimProcs], [535194, 535195]);
+  // Two walks so far. The list GROWS by a set per walk; it is never rewritten,
+  // because an id Open Dental has issued is never reissued.
+  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785, 53805, 53806]);
+  assert.deepEqual([...T.WALK_SPENT_IDS.procedures], [406124, 406125, 406272, 406273]);
+  assert.deepEqual([...T.WALK_SPENT_IDS.claimProcs], [535194, 535195, 535348, 535349]);
 
   for (const id of [53784, 53785, 406124, 406125, 535194, 535195]) {
     assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
@@ -1377,6 +1379,49 @@ test('checkOutDirWritable has no default directory to fall back to', () => {
     'string',
     'and calling it with nothing is refused, not silently defaulted'
   );
+});
+
+// ─── The 2026-08-26 walk's ids ───────────────────────────────────────────────
+
+test("the 2026-08-26 walk's ids are denied, individually", () => {
+  /*
+   * Asserted one id at a time rather than by comparing the whole list, so a
+   * future walk appending its own set cannot accidentally drop one of these and
+   * still pass a deepEqual somebody updated without reading.
+   *
+   * These are the targets the 2026-08-26 walk created. It never posted — it
+   * stopped at the first Drain on the `od_patient_office` defect — but they were
+   * created, and created is the only thing a deny-list cares about. Unwound
+   * 01:25Z: the claims deleted, the procedures soft-deleted to `ProcStatus:"D"`
+   * (G12), 12827 back to 0 claims and −$0.20.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const denied = T.denyIdsFor(T.OFFICES.roland);
+  for (const id of [406272, 406273, 53805, 53806, 535348, 535349]) {
+    assert.ok(denied.includes(id), `${id} was spent by the 2026-08-26 walk and must be denied`);
+  }
+});
+
+test('a walk id is denied for roland WITHOUT being denied for valley', () => {
+  /*
+   * The per-office property, held against the ids that actually made it real.
+   * ClaimNum numbering restarts in every Open Dental database, so a flat
+   * cross-office list would refuse a legitimate Riley id because Roland once
+   * used the number — and, worse, would leave a Riley id unprotected because
+   * Roland's list happens not to name it.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.ok(T.denyIdsFor(T.OFFICES.roland).includes(53805));
+  assert.ok(!T.denyIdsFor(T.OFFICES.valley).includes(53805));
+});
+
+test('every spent id is distinct — a duplicate would mean two walks claimed one row', () => {
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    const ids = [...T.WALK_SPENT_IDS[bucket]];
+    assert.equal(new Set(ids).size, ids.length, `${bucket} has a duplicate`);
+    assert.deepEqual(ids, [...ids].sort((a, b) => a - b), `${bucket} is not in issue order`);
+  }
 });
 
 // ─── The recoupment 835 ──────────────────────────────────────────────────────

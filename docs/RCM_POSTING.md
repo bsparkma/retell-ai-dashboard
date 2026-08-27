@@ -2098,6 +2098,52 @@ is ever exercised — a row nothing can remove.
 
 ---
 
+### 11.4 The 2026-08-26 targets — unwound 01:25Z
+
+The 8/26 walk stopped at the first Drain (§10.3) and **never posted**. Its
+targets had already been created, so they still had to come out.
+
+| | |
+| --- | --- |
+| Claims | `53805`, `53806` — **deleted** |
+| Procedures | `406272`, `406273` — `ProcStatus:"D"` (soft delete, G12) |
+| Lines | `535348`, `535349` |
+| 12827 after | **0 claims, −$0.20** — the prep baseline |
+
+All six are on `WALK_SPENT_IDS` in `rcm-s10-targets.js`, denied for roland and
+**not** for valley.
+
+**The unwind was simpler than §11.2's because nothing had posted.** No
+ClaimPayment existed, so the first three steps — delete the check, `PUT` the
+claim back to `"W"`, `PUT` the claimproc to `NotReceived` — had nothing to
+reverse. Only the two deletes ran. That is the one silver lining of a walk that
+fails before its first write: the unwind is the trivial case.
+
+> ⏳ **The run transcript is not pasted here.** It was reported rather than
+> captured, and this section states what was reported. §11.2 carries a full
+> transcript and this one does not — if the console output is still available it
+> belongs here, because "0 claims, −$0.20" is a verdict line and §11.2's whole
+> lesson was that the verdict line is not the part that proves anything. The
+> per-step table and the balance block are.
+
+**A claim in PR #114 that this correction supersedes.** That PR's description
+said *"the prepared target is untouched and the walk can be re-run against it
+as-is."* That was true when it was written and is not true now: the targets were
+unwound about half an hour later. Anything downstream that assumed a re-runnable
+prepared target — including the leftover posting plan described in §11.5 — needs
+re-reading with that in mind.
+
+### 11.5 The orphaned posting plan — a plan pointing at a deleted claim
+
+Unwinding the Open Dental side does **not** touch the tenant database. The
+posting plan the 8/26 walk enqueued for claim `53805` (queue `9ad950ad-…`) is
+still sitting in staging at `approved`, and the OD claim it names is gone.
+
+Pressing Drain on it would read a `404` from Open Dental. That is a state the
+drain had no word for, and a plan that can be pressed forever against a claim
+that will never exist again is not `blocked` in the sense §2.2.1 means — there
+is no way out of it.
+
 ## 11a. Migration rehearsal (PostgreSQL 17)
 
 `up` (all) → objects present → the constraints exercised → `down 1` → `up` again
