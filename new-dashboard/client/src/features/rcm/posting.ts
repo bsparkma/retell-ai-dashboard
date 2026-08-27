@@ -177,12 +177,16 @@ const WITHDRAWN_COPY: Record<string, { label: string; fix: string }> = {
     label: "The claim this plan was for no longer exists",
     fix:
       "The drain asked Open Dental and got nothing back — the claim was deleted after this " +
-      "plan was approved. Open Dental never reuses a claim number, so this can never post. " +
-      "If the money still has to go in, it goes in from a new claim.",
+      "plan was approved. Open Dental never reuses a claim number, so this can never post, and " +
+      "this remittance can never be posted through CareIN. If the money still needs to reach the " +
+      "chart, post it by hand in Open Dental.",
   },
   manual: {
     label: "Retired by hand",
-    fix: "Somebody decided this plan should not post. Their reason is below.",
+    fix:
+      "Somebody decided this plan should not post; their reason is below. This remittance can " +
+      "never be posted through CareIN — if the money still needs to reach the chart, post it by " +
+      "hand in Open Dental.",
   },
 };
 

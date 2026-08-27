@@ -223,6 +223,58 @@ const WITHDRAW_REASONS = Object.freeze({
   MANUAL: 'manual',
 });
 
+/**
+ * Line statuses that mean this plan has ALREADY reached a chart.
+ *
+ * `skipped_already_posted` is deliberately absent: it means Open Dental already
+ * showed the line Received with our exact amounts, so THIS module wrote nothing.
+ * `skipped` likewise. Everything else on the list is a write we issued.
+ */
+const CHART_TOUCHED_LINE_STATUSES = Object.freeze([
+  'claimproc_written',
+  'claim_received',
+  'paid',
+  'recouped',
+]);
+
+/**
+ * Has anything on this plan already reached Open Dental?
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE DRAIN'S AUTO-WITHDRAW NEEDS THIS AND THE CONSTRAINT DOES NOT COVER IT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * On a FIRST attempt the question never arises: `read_od_truth` reads every
+ * claim on the plan before `claimproc_writes` issues a single write, so a 404 is
+ * always discovered with nothing written. That ordering is pinned by a test.
+ *
+ * A RESUME is different, and this is the case the ordering argument misses.
+ * `read_od_truth` runs again on EVERY attempt — rule 3, the chart's truth
+ * before any decision — over a plan whose lines may already carry
+ * `claimproc_written` from an attempt that died. If a claim 404s on that second
+ * read, withdrawing would retire a plan that HAS moved money on other claims.
+ *
+ * And `rcm_posting_queue_withdrawn_no_money_check` would NOT catch it: it guards
+ * `od_claim_payment_num`, `reconciled_at` and `posted_total_cents`, all of which
+ * are still null/zero on a plan that wrote claimprocs and died before the check.
+ * The constraint refuses a withdrawal that carries a CHECK; this refuses one
+ * that carries a WRITE. They are different facts and both are needed.
+ *
+ * A refusal here is `failed`, not `withdrawn`: something did happen, the plan
+ * needs a human, and `failed` is the state that says so.
+ *
+ * @param {ReadonlyArray<object>} lines
+ * @returns {boolean}
+ */
+function chartTouchedBy(lines) {
+  return (lines || []).some(
+    (l) =>
+      CHART_TOUCHED_LINE_STATUSES.includes(String(l.status)) ||
+      l.odClaimPaymentNum != null ||
+      l.odAdjustmentNum != null ||
+      l.odSupplementalClaimProcNum != null
+  );
+}
+
 /** Statuses a plan may be withdrawn FROM. Money that moved is not on this list. */
 const WITHDRAWABLE_STATUSES = Object.freeze(['approved', 'failed', 'blocked']);
 
@@ -2241,6 +2293,34 @@ async function drainRow(ctx, queueId) {
             resourceId: group.odClaimNum,
             office,
           });
+
+          /*
+           * WITHDRAW ONLY IF NOTHING ON THIS PLAN HAS EVER REACHED A CHART.
+           *
+           * On a first attempt that is always true — every claim is read before
+           * the first write. On a RESUME it may not be: this same step runs
+           * again over lines that already carry `claimproc_written`, and
+           * retiring such a plan would put "this never happened" on a plan that
+           * partly did. The database would not stop it either; its withdrawal
+           * CHECK guards the check number, not the claimproc writes.
+           */
+          if (chartTouchedBy(plan.lines)) {
+            const detail =
+              `Open Dental has no claim ${group.odClaimNum} in this office, but this plan has ` +
+              'already written to a chart on a previous attempt. It is NOT retired — a human ' +
+              'has to decide what happened to the part that posted.';
+            console.error(`[rcm/drain] ${office} plan ${queueId}: ${detail}`);
+            await finalizeRow(pool, queueId, {
+              status: 'failed',
+              odClaimPaymentNum: null,
+              reconciled: false,
+              postedTotalCents: 0,
+              lastError: detail,
+              step,
+            });
+            return { queueId, status: 'failed', detail };
+          }
+
           await withdrawRow(pool, office, queueId, {
             reason: WITHDRAW_REASONS.TARGET_REMOVED,
             by: ctx.drainedBy || null,
@@ -3206,6 +3286,8 @@ module.exports = {
   QUEUE_STATUS_LABEL,
   DRAINABLE_STATUSES,
   WITHDRAWABLE_STATUSES,
+  CHART_TOUCHED_LINE_STATUSES,
+  chartTouchedBy,
   WITHDRAW_REASONS,
   OFFICES_ENABLED_FOR_POSTING,
   DEFAULT_BUDGET_MS,

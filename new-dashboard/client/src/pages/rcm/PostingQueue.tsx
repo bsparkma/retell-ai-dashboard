@@ -542,6 +542,23 @@ function WithdrawPanel({
         It stays on the remittance so there is still a record, but it can never be drained again.
         There is no undo. Nothing is written to Open Dental.
       </p>
+      {/*
+        THE CONSEQUENCE A BILLER CANNOT DISCOVER FROM THE SCREEN.
+        `rcm_posting_queue` is unique on (office_id, remittance_key) — one plan
+        per remittance, ever — so retiring this one does not free the remittance
+        to be approved again. Somebody who retires a mis-approval intending to
+        redo it correctly would find that out only when the second approve was
+        refused, after the first was already gone. It has to be said BEFORE the
+        confirm, not in a tooltip. (6d.2 makes a follow-on plan possible; until
+        it lands, this is the truth.)
+      */}
+      <p
+        className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+        data-testid={`posting-withdraw-permanence-${row.queueId}`}
+      >
+        This remittance can never be posted through CareIN after this. If the money still needs to
+        reach the chart, post it by hand in Open Dental.
+      </p>
       <label
         htmlFor={`withdraw-note-${row.queueId}`}
         className="mt-2 block text-xs font-medium text-foreground"

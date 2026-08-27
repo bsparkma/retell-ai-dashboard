@@ -1462,3 +1462,40 @@ test('the withdraw script goes through withdrawRow, not its own UPDATE', () => {
     'no hand-rolled write — that is exactly the door the guards would miss'
   );
 });
+
+test('the withdraw script refuses a plan carrying money, client-side too', () => {
+  /*
+   * Belt to the CHECK's braces. `rcm_posting_queue_withdrawn_no_money_check`
+   * already refuses this, but a CHECK violation reaches an operator on
+   * `az containerapp exec` as a Postgres error about a constraint they have
+   * never heard of. "Refused, here is why, nothing was written" is the
+   * difference between stopping and guessing.
+   */
+  const src = read('rcm-withdraw-plan.js');
+  assert.match(src, /if \(paymentNum \|\| postedCents > 0\)/);
+  assert.match(src, /already put money in a chart/);
+  // And it reads the columns it judges on.
+  assert.match(src, /posted_total_cents, reconciled_at/);
+  // The refusal is BEFORE the write, and before the plan is even printed as a
+  // candidate.
+  const guard = src.indexOf('if (paymentNum || postedCents > 0)');
+  const write = src.indexOf('postingDrain.withdrawRow(');
+  assert.ok(guard > 0 && guard < write);
+});
+
+test('the withdraw script consults no deny-list, and says why', () => {
+  /*
+   * The deny-lists screen OPEN DENTAL ids, because the scripts that name them
+   * write to a live chart. This one names a `queue_id` — a uuid in the tenant
+   * database referring to nothing in any chart — and issues no Open Dental call
+   * at all. A screen against a list of ClaimNums could never fire, and would
+   * read to the next person as though it were doing something.
+   */
+  const src = read('rcm-withdraw-plan.js');
+  // Naming them in the header is the point; CALLING them would be the defect.
+  // Strip the comments before looking, or this test fails on its own explanation.
+  const code_ = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/denyIdsFor|SPIKE_0B_RESIDUE|WALK_SPENT_IDS/.test(code_), 'no deny-list is consulted');
+  assert.ok(!/rcm-s10-targets/.test(code_), 'and the module holding them is not even imported');
+  assert.match(src, /IT CONSULTS NO DENY-LIST, AND THAT IS CORRECT/, 'and it says so where somebody will look');
+});

@@ -19,6 +19,20 @@
  * database's own CHECK refuses a withdrawal carrying money.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * IT CONSULTS NO DENY-LIST, AND THAT IS CORRECT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `SPIKE_0B_RESIDUE` and `WALK_SPENT_IDS` screen OPEN DENTAL ids — ClaimNums,
+ * ProcNums, ClaimProcNums, AdjNums — because the scripts that name them issue
+ * writes and DELETEs against a live chart, and a manifest naming a spent id did
+ * not come from a prep run.
+ *
+ * This script names a `queue_id`: a uuid in the tenant database, minted by the
+ * approval gate, referring to nothing in any chart. It issues no Open Dental
+ * call at all. Screening it against a list of ClaimNums would be a check that
+ * could never fire and would read, to the next person, as though it were doing
+ * something. The guard that matters here is the money guard below.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * A PREFIX, NOT A FULL ID
  * ─────────────────────────────────────────────────────────────────────────────
  * Queue ids are uuids and they reach an operator through a screenshot or a log
@@ -90,7 +104,8 @@ async function main() {
    * with a bound parameter, not string interpolation.
    */
   const matches = await pool.query(
-    `SELECT queue_id, status, remittance_key, intended_total_cents, od_claim_payment_num
+    `SELECT queue_id, status, remittance_key, intended_total_cents, od_claim_payment_num,
+            posted_total_cents, reconciled_at
        FROM rcm_posting_queue
       WHERE office_id = $1 AND queue_id::text LIKE $2
       ORDER BY queue_id`,
@@ -111,6 +126,39 @@ async function main() {
   }
 
   const plan = matches.rows[0];
+
+  /*
+   * ─── THE MONEY GUARD, HERE AS WELL AS IN THE DATABASE ─────────────────────
+   *
+   * `rcm_posting_queue_withdrawn_no_money_check` already refuses a withdrawal
+   * carrying a check number, a reconciliation or a posted total, and
+   * `withdrawRow`'s own `WHERE status = ANY(...)` already excludes `posted` and
+   * `partially_posted`. This is a third check on the same fact, and it is here
+   * on purpose.
+   *
+   * A CHECK VIOLATION IS A STACK TRACE. This is an operator on
+   * `az containerapp exec` at the end of a walk night, and the difference
+   * between "refused, here is why, nothing was written" and a Postgres error
+   * about a constraint they have never heard of is the difference between
+   * stopping and guessing.
+   *
+   * It also catches a shape the state list alone would not: a row somehow
+   * `approved` while carrying a ClaimPaymentNum. That should be impossible, and
+   * "should be impossible" is exactly what a belt is for.
+   */
+  const paymentNum = plan.od_claim_payment_num == null ? null : Number(plan.od_claim_payment_num);
+  const postedCents = Number(plan.posted_total_cents || 0);
+  if (paymentNum || postedCents > 0) {
+    console.error(
+      `REFUSED: this plan has already put money in a chart.\n` +
+        `  od_claim_payment_num  ${paymentNum ?? '(none)'}\n` +
+        `  posted_total_cents    ${postedCents}\n` +
+        '  Retiring it would make the queue disagree with Open Dental. Reverse it in Open\n' +
+        '  Dental instead. Nothing was written.'
+    );
+    process.exit(1);
+  }
+
   console.log('PLAN');
   console.log(`   queue_id            ${plan.queue_id}`);
   console.log(`   office              ${args.office}`);

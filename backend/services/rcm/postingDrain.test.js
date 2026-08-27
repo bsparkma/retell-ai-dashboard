@@ -26,6 +26,8 @@
  */
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const postingDrain = require('./postingDrain');
@@ -2600,4 +2602,122 @@ test('withdrawing does not delete the plan or its lines', async () => {
   assert.equal(db.table('rcm_posting_queue').length, 1, 'the plan is still there');
   assert.equal(db.table('rcm_posting_queue_line').length, lineCount, 'and so are its lines');
   assert.equal(row.approved_by, 'biller@example.invalid', 'and who approved it');
+});
+
+// ─── The auto-withdraw is provably PRE-WRITE ─────────────────────────────────
+
+test('every claim is READ before the first Open Dental write', () => {
+  /*
+   * The ordering the auto-withdraw rests on, pinned against the source rather
+   * than inferred. `read_od_truth` loops over every group reading its claim and
+   * its claimprocs; `claimproc_writes` is a later step entirely. So on a first
+   * attempt a 404 is always discovered with nothing written — which is what
+   * makes withdrawing safe there, and what `rcm_posting_queue_withdrawn_no_money_check`
+   * would otherwise have to catch after the fact.
+   */
+  const src = fs.readFileSync(
+    path.join(__dirname, 'postingDrain.js'),
+    'utf8'
+  );
+  const readStep = src.indexOf("step = 'read_od_truth'");
+  const writeStep = src.indexOf("step = 'claimproc_writes'");
+  const firstWrite = src.indexOf('odPostingWrites.writeClaimProc');
+  assert.ok(readStep > 0 && writeStep > 0, 'both steps are findable');
+  assert.ok(readStep < writeStep, 'the truth read precedes the write step');
+  assert.ok(
+    firstWrite === -1 || writeStep < firstWrite,
+    'and no claimproc write is issued before that step begins'
+  );
+});
+
+test('a claim 404 on a FRESH plan withdraws, with zero Open Dental writes', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  od.rows.claims = [];
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'withdrawn');
+  assert.deepEqual(od.writesIssued(), [], 'nothing was written, so nothing can be half-done');
+  assert.equal(db.table('rcm_posting_queue')[0].withdrawn_reason, 'target_removed');
+});
+
+test('a claim 404 on a plan that ALREADY wrote is FAILED, never withdrawn', async () => {
+  /*
+   * THE RESUME CASE, and the one the constraint would not have caught.
+   *
+   * `read_od_truth` runs on EVERY attempt, so a plan whose first run wrote a
+   * claimproc and died reaches this same 404 branch on its second. Retiring it
+   * would put "this never happened" on a plan that partly did — and
+   * `rcm_posting_queue_withdrawn_no_money_check` guards the CHECK NUMBER, which
+   * such a plan does not have yet, so the database would have accepted it.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const line = db.table('rcm_posting_queue_line')[0];
+  line.status = 'claimproc_written';
+  line.claimproc_written_at = new Date();
+
+  const od = odFixture();
+  od.rows.claims = [];
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'failed', JSON.stringify(result.outcomes[0]));
+  assert.match(result.outcomes[0].detail, /already written to a chart/);
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'failed');
+  assert.equal(row.withdrawn_reason, null, 'NOT withdrawn');
+  assert.equal(row.withdrawn_at, null);
+  assert.match(row.last_error, /already written to a chart/);
+});
+
+test('the withdrawal CHECK is never asked to catch this — the code refuses first', () => {
+  /*
+   * A thrown CHECK inside the drain is a wedged `posting` row: the exception
+   * escapes mid-sequence with the plan claimed. The guard is in the code path so
+   * the database is never the thing that says no.
+   */
+  const src = fs.readFileSync(path.join(__dirname, 'postingDrain.js'), 'utf8');
+  const guard = src.indexOf('if (chartTouchedBy(plan.lines))');
+  const withdraw = src.indexOf('reason: WITHDRAW_REASONS.TARGET_REMOVED');
+  assert.ok(guard > 0 && withdraw > 0);
+  assert.ok(guard < withdraw, 'the refusal comes before the withdrawal, not after it');
+});
+
+test('chartTouchedBy reads a write, not merely a status', async () => {
+  /*
+   * Four different marks mean the same thing, and any one of them is enough:
+   * a line status past `pending`, a check number, a takeback adjustment, or a
+   * supplemental. `skipped_already_posted` is NOT one of them — it means Open
+   * Dental already showed the line Received with our amounts, so this module
+   * wrote nothing.
+   */
+  assert.equal(postingDrain.chartTouchedBy([]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'pending' }]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'skipped_already_posted' }]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'skipped' }]), false);
+
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'claimproc_written' }]), true);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'paid' }]), true);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'recouped' }]), true);
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odClaimPaymentNum: 21399 }]),
+    true,
+    'a check number on a `pending` line is still a write that landed'
+  );
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odAdjustmentNum: 19110 }]),
+    true,
+    'and so is a takeback adjustment'
+  );
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odSupplementalClaimProcNum: 533931 }]),
+    true,
+    'and a supplemental most of all — that one is irreversible'
+  );
 });

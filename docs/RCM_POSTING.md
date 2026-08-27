@@ -115,9 +115,17 @@ other non-ok status still yields `failed`**, because a timeout or a 500 means
 nobody knows yet, and retiring a good plan over a bad minute has no undo.
 
 **What it does NOT do.** It does not touch Open Dental — nothing is written,
-nothing is reversed, and a chart that already carries money keeps it. If money
-still has to go in for a retired plan, it goes in from a new claim, which is
-§15.1's limitation unchanged. It does not un-spend any Open Dental id either.
+nothing is reversed, and a chart that already carries money keeps it. It does not
+un-spend any Open Dental id either.
+
+**AND IT DOES NOT FREE THE REMITTANCE.** The unique index is on
+`(office_id, remittance_key)` and a withdrawn plan is still a plan, so
+**a remittance whose plan has been retired can never be posted through CareIN
+again.** A biller who retires a mis-approval intending to redo it correctly finds
+that out when the second approve is refused — by which time the first is gone.
+The dialog says so in those words before the confirm, and the retired row repeats
+it for whoever finds it later. §15.1's **6d.2** lifts the restriction and has
+been rescheduled to land BEFORE the first real drain at Roland.
 
 #### Retiring a plan from inside a container
 
@@ -2320,6 +2328,32 @@ The design, as ruled:
 - the follow-on's check is a **separate OD check**, with `-2` suffixed to the
   check number so the practice's deposit can tell the two apart.
 
+##### ⚠ RESCHEDULED 2026-08-27: **6d.2 MOVES BEFORE THE FIRST REAL DRAIN**
+
+`withdrawn` made this urgent rather than merely desirable, and the reason is
+worth stating plainly because it is not obvious from either feature on its own.
+
+Retiring a plan does **not** free its remittance. The unique index is on
+`(office_id, remittance_key)` and a withdrawn plan is still a plan, so a biller
+who retires a mis-approval intending to redo it correctly discovers the trap
+only when the second approve is refused — by which time the first is gone and
+the money has no route through CareIN at all. That is a worse failure than the
+one `withdrawn` was built to fix, and it is reachable by an ordinary,
+well-intentioned sequence of clicks.
+
+Two things follow, and only the first is in the `withdrawn` PR:
+
+1. **The withdraw dialog says it before the confirm**, in these words: *"This
+   remittance can never be posted through CareIN after this. If the money still
+   needs to reach the chart, post it by hand in Open Dental."* The retired row's
+   own copy says the same, for the person who finds it later rather than the
+   person who did it. A consequence a screen cannot recover from has to be on
+   the screen that causes it.
+2. **6d.2 lands before the first real drain at Roland.** Not before the walk —
+   the walk is on a disposable patient and a hand-posted correction there costs
+   nothing — but before a live remittance is ever approved, because from that
+   point on the trap is set on real money.
+
 Until then the two 409s below are the honest answer, and `QUEUE_ALREADY_RAN`
 means *"post this claim by hand"* rather than *"wait"*.
 
@@ -2373,7 +2407,9 @@ attach (§3.8) · the `RCM_DRAIN_STEP_DELAY_MS` pause hook (§10.3).
 
 **Still out of scope:** patient portion / PaySplits / `/payments` (PRD-deferred,
 and `ApiPayments` is not enabled on the key at all, G11) · auto-drain on approve
-(a later decision) · the 6d.2 follow-on plan (**decided and scheduled**, §15.1) ·
+(a later decision) · the 6d.2 follow-on plan (**decided, and rescheduled 2026-08-27
+to land BEFORE the first real drain at Roland** — `withdrawn` makes the
+one-plan-per-remittance rule reachable by an ordinary sequence of clicks, §15.1) ·
 rendering an 835 as a PDF (§3.8) · reconciliation, VCC, Stedi, OCR · entitlement
 changes · prod.
 
