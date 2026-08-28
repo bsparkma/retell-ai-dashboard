@@ -145,11 +145,17 @@ describe("homeForRole", () => {
   it("sends every role somewhere it is actually allowed to be", () => {
     const PERMS: Record<string, string[]> = {
       admin: [...ACTIONS],
-      office: ACTIONS.filter((a) => a !== "admin.all"),
+      // TWO actions an office user does not hold. `rcm.settings` joined
+      // `admin.all` with the shadow gate: running the day and deciding what the
+      // day is allowed to do are different authorities.
+      office: ACTIONS.filter((a) => a !== "admin.all" && a !== "rcm.settings"),
       tc: ["voice.read", "tc.full", "tc.hygiene"],
       hygiene: ["tc.hygiene"],
       // The RCM reviewer tier (D-9): the workbench and nothing else.
       reviewer: ["rcm.read", "rcm.queue"],
+      // The biller tier: everything the reviewer holds, plus the write tier —
+      // and NOT rcm.post or rcm.settings.
+      rcm_biller: ["rcm.read", "rcm.queue", "rcm.write"],
     };
     for (const role of Object.keys(ROLE_HOME) as (keyof typeof ROLE_HOME)[]) {
       // Otherwise the redirect would bounce forever between "not allowed here"

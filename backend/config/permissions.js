@@ -17,6 +17,9 @@
  *   reviewer RCM review workbench: read it and WORK it, but commit nothing
  *            (added by RCM Slice 6a, decision D-9 — see the rcm block below).
  *            Named for what it DOES: it cannot perform the billing act.
+ *   rcm_biller RCM end to end EXCEPT the two acts that reach a chart or retire
+ *            money, and except the shadow-gate switch (added by the RCM shadow
+ *            gate — see the rcm block below).
  *
  * Above them sits the PLATFORM tier: a super_admin (platform_admin row) acts as
  * tenant 'admin' everywhere and short-circuits every check below.
@@ -26,7 +29,7 @@
  * inheriting a permission set that was never chosen for it.
  */
 
-/** @typedef {'admin'|'office'|'tc'|'hygiene'|'reviewer'} TenantRole */
+/** @typedef {'admin'|'office'|'tc'|'hygiene'|'reviewer'|'rcm_biller'} TenantRole */
 
 /**
  * Action → roles that hold it. Frozen: this is configuration, and a route that
@@ -73,7 +76,7 @@ const PERMISSIONS = Object.freeze({
    */
 
   /** Read the RCM surface: claim/batch/queue counts, the claims list, the workbench. */
-  'rcm.read': Object.freeze(['admin', 'office', 'reviewer']),
+  'rcm.read': Object.freeze(['admin', 'office', 'reviewer', 'rcm_biller']),
   /**
    * Work the queue: run a match, mark a claim reviewed.
    *
@@ -83,20 +86,53 @@ const PERMISSIONS = Object.freeze({
    * "the carrier owes a corrected EOB, there is nothing here to post" has no way
    * to clear their queue except by confirming matches they do not believe in.
    */
-  'rcm.queue': Object.freeze(['admin', 'office', 'reviewer']),
+  'rcm.queue': Object.freeze(['admin', 'office', 'reviewer', 'rcm_biller']),
   /**
    * Any OTHER RCM mutation: uploading an EOB or an 835, confirming a match, and
-   * (from 6b) approving, enqueueing and posting.
+   * (from 6b) approving and enqueueing. POSTING is `rcm.post` below — the
+   * shadow gate split it out so a biller can reach `approved` and no further.
    *
    * The mount is requireReadWrite('rcm.read','rcm.write'), so this is what a
    * new POST inherits by omission — the strong action, not the queue one. The
    * two queue routes are the deliberate, enumerated exceptions and each carries
    * its own requirePermission('rcm.queue'); rcmGuard.test.js pins that list.
    *
-   * `tc` and `hygiene` hold none of the three: a treatment coordinator and a
+   * `tc` and `hygiene` hold none of these: a treatment coordinator and a
    * hygienist have no business in claims, denials, or AR.
    */
-  'rcm.write': Object.freeze(['admin', 'office']),
+  'rcm.write': Object.freeze(['admin', 'office', 'rcm_biller']),
+  /**
+   * THE THREE ACTS `rcm.write` NO LONGER COVERS: posting to a chart, filing a
+   * document into one, and retiring a plan so it never posts.
+   *
+   * `POST /posting/drain` writes insurance payments onto real patients'
+   * ledgers; `POST /posting/queue/:id/withdraw` permanently retires a
+   * remittance (a plan is unique on `(office_id, remittance_key)`, so a
+   * withdrawal is the end of that money's road through CareIN); and
+   * `POST /posting/queue/:id/attach-document` files a PDF into a patient's
+   * images. All three are Open Dental territory or its irreversible mirror, and
+   * all three are exactly what the `rcm_biller` tier exists to stop short of.
+   *
+   * Split out rather than expressed by withholding `rcm.write`, because a
+   * biller must be able to upload, match, confirm and APPROVE — which is most
+   * of the write surface. Enumerating the three exceptions is smaller and more
+   * legible than enumerating everything else, and a new POST under /api/rcm
+   * still inherits `rcm.write` by omission rather than silently inheriting the
+   * posting tier.
+   */
+  'rcm.post': Object.freeze(['admin', 'office']),
+  /**
+   * The shadow gate's switch (`PUT /api/rcm/office-settings/:office`), and
+   * reading its current state.
+   *
+   * ADMIN ONLY, and deliberately narrower than `rcm.post`. Deciding that a
+   * practice may post at all is a different authority from pressing Drain once
+   * it may — an `office` user runs the day, an `admin` decides what the day is
+   * allowed to do. Read is gated with it too: a switch whose state only an
+   * admin may change should not present a control the rest of the practice can
+   * see and not use.
+   */
+  'rcm.settings': Object.freeze(['admin']),
 
   // --- admin ---------------------------------------------------------------
   /** /api/admin/* — scheduler start/stop, costs, queues, config, connection tests. */
@@ -104,7 +140,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 /** Every role that appears anywhere in the map, for validation and PR C's UI. */
-const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'reviewer']);
+const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'reviewer', 'rcm_biller']);
 
 /**
  * Does `role` hold `action`?
