@@ -1717,47 +1717,243 @@ chart: **kill-mid-write**, **the takeback**, and **the EOB attach**.
 > Roland" exits.**
 >
 > ✅ **The gate blocker is resolved.** The D-11 amendment
-> (`TAKEBACK_ACKNOWLEDGED`, RCM_APPROVAL_GATE §3.1) makes step 6 reachable —
+> (`TAKEBACK_ACKNOWLEDGED`, RCM_APPROVAL_GATE §3.1) makes the takeback approve
+> (step 7) reachable —
 > see §10.6.1 for what was found and how it was ruled.
+
+#### What this night proves — and the one thing it cannot
+
+| | Proven by | Never yet run against a real chart |
+| --- | --- | --- |
+| **The takeback** — an 835 that takes money back, approved through the typed confirmation and written as an adjustment | steps 5–8 | ✅ never |
+| **Kill-mid-write** — the process dies with a claim Received and no check, and the sweep re-homes it without double-paying | step 9 | ✅ never (two attempts, both missed the window) |
+| **The reversal** — undoing an adjustment that cannot be deleted | step 12 | ✅ never |
+| The EOB attach | — | ⛔ **not on this night.** §10.6.2 |
+
+Everything else here has run before and is present to get the chart into the
+state the three new things need.
 
 #### Before the night
 
-| | |
-| --- | --- |
-| Assert the reversal AdjType exists **and is a `+`** in Roland | The unwind resolves it at RUN TIME through `pickAdjType(config, 'recoupment_reversal')` — by NAME, with the sign checked — and prints `resolved AdjType: "<name>" DefNum=<n>` before it writes. **No DefNum is stored anywhere in this repo**; a number written down is right until somebody edits a definitions list. Confirm `Insurance adjustment` is still on Roland's Category-1 list and still reads `+` before the night, not during it. (It read **260** in Roland and **402** in Riley on 2026-08-13 — a note about one day, not a value to use.) |
-| Prep | `PROBE_OFFICE=roland node scripts/rcm-s10-prep.js --execute` |
-| The two payment 835s **and** the recoupment | `node scripts/rcm-s10-835.js --recoupment` |
-| Set the pause hook | `RCM_DRAIN_STEP_DELAY_MS=15000` on staging only (§10.3) |
+Do these on a different day. Every one of them is a thing that has stopped a
+walk at 10pm, and none of them needs the walk to be happening.
+
+**1. Confirm the two adjustment types by hand, in Roland.**
+
+Two different types are involved and they pull in opposite directions:
+
+| Purpose | Resolved by name | Sign | Used by |
+| --- | --- | --- | --- |
+| `recoupment` | `insurance deductions from previous payments` | `−` | the drain, step 7 |
+| `recoupment_reversal` | `insurance adjustment` | `+` | the unwind, step 12 |
+
+Both are resolved at run time by `pickAdjType(config, purpose)`, which matches on
+**name and checks the sign**, and the unwind prints what it resolved before it
+writes anything:
+
+```
+resolved AdjType: "Insurance adjustment" DefNum=<n> (by name, sign +)
+```
+
+**No DefNum is written down anywhere in this repo, and none belongs in this
+runbook.** A number recorded here is correct until somebody edits a definitions
+list, and then it is a wrong write into a chart that nothing would catch. Open
+Roland's adjustment types and confirm both names are still there with those
+signs. If either has been renamed, that is a config change before the night, not
+a discovery during it.
+
+**2. Baseline, then prep.** The prep refuses to run without the inventory's
+number — there is no default, because a default would make the "nothing else
+appeared on this patient" check pass on a patient nobody looked at.
+
+```bash
+PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js
+# read the claim count it prints, then:
+PROBE_OFFICE=roland S10_EXPECTED_CLAIMS=<that number> node scripts/rcm-s10-prep.js
+```
+
+**3. Generate all three 835s**, including the takeback:
+
+```bash
+node scripts/rcm-s10-835.js --recoupment
+```
+
+`/data/rcm-s10/rcm-s10-835-A.txt`, `-B.txt`, and `-R-recoupment.txt`. They are
+also printed to stdout, because the container's filesystem is not where the
+files get uploaded from. **`--recoupment` prints a warning about the EOB attach**
+(§10.6.2) — that is expected, not a problem with the file.
+
+**4. Set the pause hook, staging only:**
+
+```
+RCM_DRAIN_STEP_DELAY_MS=15000
+```
+
+It sleeps after each write's **read-back**, so the kill in step 9 lands in a
+state the resume logic actually has to handle. It is fail-closed: it refuses
+unless `AZURE_KEY_VAULT_NAME` positively names staging or dev, so an environment
+that forgot to say who it is is treated as production. Setting it makes a new
+revision — do that before the night, and confirm the new revision is the one
+taking traffic.
+
+**5. Confirm `maxReplicas` is still 1.** The drain mutex is one process, not a
+distributed lock, and the startup sweep in step 9 only runs at boot.
 
 #### The night
 
-| # | Do | Expect |
-| --- | --- | --- |
-| 1 | Upload **835-A**, run the match | one strong candidate; **do not** confirm yet |
-| 2 | Confirm the match, review, approve | plan `approved`, one line |
-| 3 | Press **Drain** | `posted`, one ClaimPayment, reconciled by read-back |
-| 4 | Read the ledger | +$1.00 on 12827 |
-| 5 | Upload **835-R-recoupment.txt** | parses as `reversal_of_previous_payment`, `−$1.00` |
-| 6 | Open the takeback panel, **type `-1.00`**, approve | the checklist shows **`TAKEBACK_ACKNOWLEDGED`** — *This is a takeback — confirmed by typing -1.00* — and `NO_BLOCKING_REASON` green (§10.6.1) |
-| 7 | Press **Drain** on the takeback plan | one `POST /adjustments`, DefNum **12**, `−1.00`, read back |
-| 8 | Read the ledger | back to $0.00 net on the walk's money |
-| 9 | Upload **835-B**, approve, Drain — and **restart the container while it is paused** | the startup sweep re-homes it to `approved`; press Drain again → `posted`, **exactly one** ClaimPayment |
-| 10 | Look at the EOB panel | `none` — *"Nothing to file (835 only)"*. **Not a failure.** §10.6.2 |
-| 11 | `node scripts/rcm-s10-capture.js` then `--write` | records `odAdjustmentNum` and any `odDocNums` into the manifest |
-| 12 | `node scripts/rcm-s11-unwind.js` (dry run), then `--execute` | six steps; `reversal` **first** |
-| 13 | `node scripts/rcm-s10-inventory.js` | 12827 back to **0 claims, −$0.20** |
+Each step says where you are, what to do, what must be true, and what to do if
+it is not. **Stop at the first "must see" that does not hold** — the unwind at
+step 12 will return the patient either way, and a walk that stops with a clean
+record is worth more than one that is pushed through.
 
-**Step 9 is the one that has never worked.** Both previous attempts missed the
-window — the drain takes ~9 s and a restart takes ~3 s to bite. The pause hook
-exists precisely so the kill lands somewhere real.
+---
 
-**Step 12's `reversal` step is new.** `DELETE /adjustments` does not exist (G6),
-so the unwind posts an **offsetting** adjustment under the `+` type and proves
-itself by reading both rows back and adding them: `origAmt + backAmt === 0`. A
-200 is not proof (G2), and here the proof is not "a row exists" but "the pair
-nets to nothing". **The ledger returns to zero; the chart does not return to a
-state where the takeback never happened.** Two adjustment rows remain. Nothing
-can remove them.
+**Step 1 — upload 835-A.**
+*Where:* `/rcm/remittances`, office **roland**.
+*Do:* **Upload 835**, choose `rcm-s10-835-A.txt`.
+*Must see:* it parses; one claim; **+$1.00**; the remittance balances.
+*If not:* the file was generated against a different prep run. Regenerate;
+do not hand-edit an 835.
+
+**Step 2 — match it.**
+*Where:* the remittance, then the claim.
+*Do:* run the match. Read the candidate before confirming it.
+*Must see:* one strong candidate, PatNum **12827**, and the claim the prep
+created. **Do not confirm a candidate you did not read** — this is the step that
+decides whose chart gets written.
+
+**Step 3 — approve.**
+*Must see:* the checklist all green, and **`TAKEBACK_ACKNOWLEDGED` absent** —
+this is an ordinary approve and the check exists only on the takeback path. Plan
+lands `approved` with one line.
+
+**Step 4 — drain it.**
+*Where:* `/rcm/posting`.
+*Do:* **Drain**. It will take ~9 s plus the pause hook.
+*Must see:* `posted`; **exactly one** ClaimPayment; reconciled by read-back, not
+by a 200 (G2).
+*If not:* stop and read the plan's `last_error`. Do not press Drain twice to see
+if it takes — that is the question step 9 exists to answer under control.
+
+**Step 5 — read the Roland ledger.**
+*Must see:* **+$1.00** on 12827. This is the money the takeback is about to take
+back; if it is not there, steps 6–8 prove nothing.
+
+**Step 6 — upload the takeback.**
+*Do:* upload `rcm-s10-835-R-recoupment.txt`.
+*Must see:* it parses as **`reversal_of_previous_payment`**, total **−$1.00**,
+against **the same claim** step 4 just paid. The remittance is flagged
+`negative_total_payment` and the claim `reversal_not_postable` — **both are
+expected**, and §10.6.1 is why they no longer block this path.
+
+**Step 7 — approve the takeback.**
+*Where:* the takeback panel on that remittance.
+*Do:* choose **"As an adjustment (can be undone)"** — *not* the negative
+supplemental. Type the amount exactly as the panel shows it, then **Approve the
+takeback**.
+*Must see:*
+* the checklist shows **`TAKEBACK_ACKNOWLEDGED`** — *"This is a takeback —
+  confirmed by typing -1.00"*;
+* **`NO_BLOCKING_REASON` green**, with the two reversal flags accounted for by
+  the check above rather than silently dropped;
+* the path radio on **adjustment**.
+
+> **The negative supplemental is not on the menu for this walk.** It is
+> irreversible by every means this integration has (G10), it pins the claim and
+> the procedure permanently, and the unwind cannot undo it. The panel says so in
+> red. On a disposable patient it would still be a permanent row nobody can
+> remove.
+
+**Step 8 — drain the takeback, then read the ledger.**
+*Must see:* one `POST /adjustments`, **−1.00**, written under the `−` type
+resolved by name (step "Before the night" 1) and **read back**; the Roland ledger
+shows a **−$1.00 adjustment** on 12827, and the walk's money nets to zero.
+*Note what the ledger does not say:* it does not go back to looking like the
+payment never happened. A payment and an adjustment both sit there. That is the
+honest shape of a takeback and it is what a biller will see.
+
+**Step 9 — kill-mid-write, on target B.**
+*Do:* upload `835-B`, match, approve, press **Drain**, and **restart the
+container while the pause hook is holding it** — the pause makes this a test
+rather than a race against a nine-second drain.
+*Must see, in order:*
+1. the plan is left `posting` with a `drain_step` naming where it stopped;
+2. on boot, `sweepInterruptedPostings` re-homes it to `approved`;
+3. press **Drain** again → `posted`, **exactly one** ClaimPayment, and the lines
+   it had already written are recognised rather than written twice.
+
+> **The sweep only runs at boot.** On 2026-08-26 a wedged plan sat for 26 minutes
+> and was rescued only because a restart happened for another reason. If the
+> restart in this step does not actually restart the container, nothing will
+> re-home the plan and it will still be sitting in `posting`.
+
+**Step 10 — look at the EOB panel.**
+*Must see:* *"Nothing to file — this remittance arrived without a document."*
+**This is the correct answer and not a failure** (§10.6.2). There is deliberately
+no retry button; there is nothing behind it.
+
+**Step 11 — capture what was written.**
+```bash
+RCM_TENANT=carein PROBE_OFFICE=roland node scripts/rcm-s10-capture.js
+# read it, then:
+RCM_TENANT=carein PROBE_OFFICE=roland node scripts/rcm-s10-capture.js --write
+```
+It records `odAdjustmentNum` (and any `odDocNums`) into the manifest so the
+unwind can find them. It reads the tenant database only and copies **no DefNum**.
+*If the adjustment number is missing here, stop* — the unwind cannot reverse
+what it cannot name, and an adjustment left in a chart with nothing recording it
+is exactly the residue this walk is supposed to avoid.
+
+**Step 12 — the unwind.**
+```bash
+PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js             # dry run first
+PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute
+```
+*Must see:* six steps, **`reversal` first**, and before it writes anything:
+
+```
+resolved AdjType: "<name>" DefNum=<n> (by name, sign +)
+```
+
+then a read-back that adds the two rows and gets zero:
+
+```
+read-back: /adjustments/<new> AdjAmt=1  net -1 + 1 = 0
+steps.reversal = done
+```
+
+*If the AdjType does not resolve, the unwind refuses rather than guessing* —
+that is correct, and the fix is the definitions list, not the script.
+
+**Step 13 — the inventory.**
+```bash
+PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js
+```
+*Must see:* **0 claims, −$0.20** on 12827 — the baseline it has held since
+2026-08-26.
+
+**Step 14 — put the pause hook back.** Remove `RCM_DRAIN_STEP_DELAY_MS` from
+staging. It is refused on production, but a staging environment that holds a
+chart half-written for fifteen seconds per step is not a staging environment
+anybody should be demoing from.
+
+#### What the walk leaves behind, whatever happens
+
+* **Two adjustment rows** on 12827 — the takeback and its reversal. `DELETE
+  /adjustments` does not exist (G6). The ledger returns to zero; the chart does
+  not return to a state where the takeback never happened.
+* **Spent Open Dental ids.** Every ClaimNum, ProcNum, ClaimProcNum and AdjNum the
+  night touches goes into `WALK_SPENT_IDS` in `rcm-s10-targets.js` afterwards, so
+  a later run can never be handed a manifest naming a row that is already gone.
+* **Any posting plan whose target no longer exists** must be retired with
+  `scripts/rcm-withdraw-plan.js` rather than left `approved` — §11.5.
+
+#### Recording it
+
+Paste back, into a new §10.6.3: the three uploads' parse results, the two ledger reads
+(step 5 and step 8), the drain outcome of each of the three plans, **the
+`resolved AdjType` line verbatim**, the step-9 sequence with the times, and the
+closing inventory. A walk with no transcript proves nothing a month later.
 
 #### 10.6.1 ✅ The gate used to refuse a real reversal 835 — D-11 amendment, 2026-08-27
 
@@ -2221,6 +2417,40 @@ Pressing Drain on it would read a `404` from Open Dental. That is a state the
 drain had no word for, and a plan that can be pressed forever against a claim
 that will never exist again is not `blocked` in the sense §2.2.1 means — there
 is no way out of it.
+
+So `withdrawn` was built (§2.2.0), and the drain now GETs the claim on its
+pre-check and refuses a `404` rather than discovering it three writes in.
+
+#### ✅ Retired on staging, 2026-08-28 19:12Z
+
+`scripts/rcm-withdraw-plan.js`, dry run first, then `--execute`:
+
+```
+PLAN
+   queue_id            9ad950ad-1b45-40c5-b85a-bcb1ad34ffa1
+   office              roland
+   status              approved
+   remittance_key      S10A-53805|CAREIN SYNTHETIC PAYER|2026-08-26|100|S10A-53805
+   intended            1
+   od_claim_payment    (none)
+   note                the claim was deleted by the s11 unwind on 2026-08-26; there is nothing left to post
+
+RETIRED, read back:
+   status              withdrawn
+   withdrawn_reason    manual
+   withdrawn_at        Fri Aug 28 2026 19:12:23 GMT+0000 (Coordinated Universal Time)
+   withdrawn_note      the claim was deleted by the s11 unwind on 2026-08-26; there is nothing left to post
+```
+
+The money guard passed on its own terms — `od_claim_payment_num` was `(none)`
+and `posted_total_cents` was `0`, which is what makes retiring this plan a
+bookkeeping correction rather than a chart disagreeing with a queue.
+
+**The read-back is also the proof the migration landed.** A `withdrawn` status
+and a populated `withdrawn_at` cannot be read out of a database that does not
+have `1787300000000_rcm_posting_withdraw.js` applied — the status CHECK would
+have refused the write. Nothing else was needed to confirm the deploy.
+
 
 ## 11a. Migration rehearsal (PostgreSQL 17)
 
