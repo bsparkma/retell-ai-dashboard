@@ -66,6 +66,25 @@ const { num, iso, isoDate } = require('./helpers');
  * reviewed), then the facts about the file, then the arithmetic. A biller
  * reading top to bottom meets the cheapest fix first.
  */
+/**
+ * The two blocking reasons a typed takeback confirmation answers, and the ONLY
+ * two (D-11 amendment, 2026-08-27).
+ *
+ * Both are what an honest parser says about a reversal 835: the claim is a
+ * reversal, and the remittance nets negative. On the recoupment approve they are
+ * exactly what the approver typed a number to confirm, so
+ * `TAKEBACK_ACKNOWLEDGED` claims them by name. Everything else in the blocking
+ * vocabulary still blocks, on both paths.
+ *
+ * ADDING TO THIS LIST IS A RULING, not a fix. It is the one place in the module
+ * where a blocking reason can be answered by something other than removing its
+ * cause.
+ */
+const TAKEBACK_FLAGS = Object.freeze([
+  rcmVocabulary.ERA_REVIEW_REASONS.REVERSAL,
+  'negative_total_payment',
+]);
+
 const CHECKS = Object.freeze({
   OFFICE_CONSISTENT: {
     label: 'Belongs to this office',
@@ -99,6 +118,10 @@ const CHECKS = Object.freeze({
   RECOUPMENT_CONFIRMED: {
     label: 'A takeback, confirmed by typing its amount',
     fix: 'This claim is not a takeback, so it cannot be approved on a recoupment confirmation. Approve it normally.',
+  },
+  TAKEBACK_ACKNOWLEDGED: {
+    label: 'The takeback flags are what the typed amount confirmed',
+    fix: 'This claim is not a takeback, so the reversal flags on it are not explained by a takeback confirmation. Dispose of it manually.',
   },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     label: 'The carrier actually paid something',
@@ -417,11 +440,63 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
    * be honest at one level and decorative at the others.
    */
   const lineFlags = lines.flatMap((l) => l.flags || []);
-  const blocking = rcmVocabulary.blockingReasonsIn([
+  const allBlocking = rcmVocabulary.blockingReasonsIn([
     ...claim.needsReviewReasons,
     ...batchFlags,
     ...lineFlags,
   ]);
+
+  /*
+   * ─── D-11 AMENDMENT (2026-08-27): THE TWO TAKEBACK FLAGS ARE PARTITIONED,
+   *     NOT FILTERED ────────────────────────────────────────────────────────────────
+   *
+   * A reversal 835 the PARSER produced carries `reversal_not_postable` on the
+   * claim and `negative_total_payment` on the remittance. Both are `blocking`,
+   * and until this amendment `NO_BLOCKING_REASON` was computed over every reason
+   * unconditionally — so D-6's typed-confirmation path was unreachable for any
+   * 835 a real carrier would send. 6d never noticed because its recoupment tests
+   * build the claim BY HAND, with a negative amount and no review reasons.
+   *
+   * EVERY REASON IS STILL ACCOUNTED FOR BY EXACTLY ONE CHECK. On the recoupment
+   * path the two takeback flags are claimed by `TAKEBACK_ACKNOWLEDGED`, which
+   * appears in the checklist and can FAIL; the rest go to `NO_BLOCKING_REASON`
+   * as before. That is a partition, and it is the reason this is not written as
+   * `blocking.filter(...)`: a filter makes a reason vanish from the screen, and
+   * D-11's whole point is that no code path gets to decide a flag does not apply
+   * to it. Here the flag still applies — it is answered, by name, in public.
+   *
+   * ON THE ORDINARY PATH NOTHING CHANGES. `TAKEBACK_ACKNOWLEDGED` is never added,
+   * the partition never runs, and both flags block exactly as they did in 6b.
+   * A takeback cannot reach a chart through the ordinary button, ever.
+   *
+   * Only these two, and only these two: a truncated envelope or an unreadable
+   * line amount still blocks a recoupment approve, because neither is a fact
+   * about the money moving backwards — they are facts about not being able to
+   * read the file at all, and no typed amount confirms those.
+   */
+  const takebackClaimed = recoupmentAllowed
+    ? allBlocking.filter((r) => TAKEBACK_FLAGS.includes(r))
+    : [];
+  const blocking = allBlocking.filter((r) => !takebackClaimed.includes(r));
+
+  if (recoupmentAllowed) {
+    /*
+     * It passes when the claim really is a takeback — the same `recoup` that
+     * `RECOUPMENT_CONFIRMED` turns on, so the two cannot disagree. A claim
+     * carrying reversal flags that is NOT a takeback is a contradiction the
+     * screen should show rather than absorb.
+     */
+    add(
+      'TAKEBACK_ACKNOWLEDGED',
+      recoup,
+      recoup
+        ? `This is a takeback — confirmed by typing ${formatRecoupmentTotal(
+            payment ? payment.paidCents : claim.totalPaidCents
+          )}`
+        : `carries ${takebackClaimed.join(', ') || 'reversal flags'} but is not a takeback`
+    );
+  }
+
   add('NO_BLOCKING_REASON', blocking.length === 0, blocking.length ? blocking.join(', ') : null);
 
   /*
@@ -1878,6 +1953,7 @@ module.exports = {
   ApprovalError,
   isPatientResponsibilityOnly,
   isRecoupment,
+  TAKEBACK_FLAGS,
   asClaimprocConflict,
   recordApprovalAttempt,
   evaluateClaim,
