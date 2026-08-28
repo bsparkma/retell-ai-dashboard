@@ -30,6 +30,8 @@ import {
   blockedCopy,
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
+  SHADOW_MODE_COPY,
+  SHADOW_REFUSAL_SLUG,
 } from "../client/src/features/rcm/posting";
 import { QUEUE_COLLISION_COPY } from "../client/src/features/rcm/api";
 // The RCM UX slice — the approval checklist's biller-language copy.
@@ -343,6 +345,83 @@ describe("the drain's vocabularies", () => {
     expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
     expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);
     expect(stored.length).toBe(serverLabels.size);
+  });
+});
+
+/**
+ * The shadow gate — the refusal a biller reads most, in the weeks before posting
+ * is switched on.
+ *
+ * The gate's slug is NOT a `blocked_reason`: no plan moves to `blocked` when
+ * the switch is off, the refusal belongs to the route, and the plans stay
+ * `approved`. That disjointness is the thing worth pinning — a slug that leaked
+ * into `BLOCK_REASONS` would put a reason describing a PRACTICE into a map
+ * whose every other member describes a ROW.
+ */
+describe("the shadow gate's words", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "services", "rcm", "postingGate.js"),
+    "utf8",
+  );
+  const DRAIN_SRC = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "services", "rcm", "postingDrain.js"),
+    "utf8",
+  );
+
+  it("uses the slug the backend actually sends", () => {
+    const m = GATE.match(/const DRAIN_DISABLED = '([a-z_]+)';/);
+    expect(m, "postingGate.js must declare DRAIN_DISABLED").not.toBeNull();
+    expect(SHADOW_REFUSAL_SLUG).toBe(m![1]);
+  });
+
+  it("is not, and must never become, a per-plan block reason", () => {
+    const reasonBlock = DRAIN_SRC.match(/const BLOCK_REASONS = Object\.freeze\(\{([\s\S]+?)^\}\);/m);
+    expect(reasonBlock).not.toBeNull();
+    const slugs = [...reasonBlock![1].matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
+    expect(slugs.length).toBeGreaterThan(5);
+    expect(slugs).not.toContain(SHADOW_REFUSAL_SLUG);
+    // And the client has written no BLOCKED copy for it either — a chip for it
+    // would render over a plan that is not blocked.
+    expect(blockedCopy(SHADOW_REFUSAL_SLUG)!.label).toBe(SHADOW_REFUSAL_SLUG.replace(/_/g, " "));
+  });
+
+  it("says the same thing everywhere it is said", () => {
+    /*
+     * THREE SCREENS, ONE STRING. The Posting page's badge, its Drain button's
+     * adjacent reason, and the RCM inbox's badge all read from this one object,
+     * so a copy edit cannot land on two of them and miss the third.
+     */
+    expect(SHADOW_MODE_COPY.badge).toBe("Shadow");
+    expect(SHADOW_MODE_COPY.reason("Roland")).toBe(
+      "Posting is switched off for Roland (shadow mode). Approved plans wait here.",
+    );
+    expect(SHADOW_MODE_COPY.hint).toContain("Approved plans wait here");
+  });
+
+  it("never calls a switched-off practice an error", () => {
+    /*
+     * Nothing is wrong. The biller did her job, the plan is approved, and it is
+     * SUPPOSED to sit there. Copy that said "failed" or "error" would send her
+     * looking for a mistake she did not make.
+     */
+    const all = [
+      SHADOW_MODE_COPY.badge,
+      SHADOW_MODE_COPY.hint,
+      SHADOW_MODE_COPY.fix,
+      SHADOW_MODE_COPY.reason("Roland"),
+    ].join(" ");
+    for (const word of ["error", "failed", "failure", "problem", "wrong", "broken"]) {
+      expect(all.toLowerCase(), `the shadow copy must not say "${word}"`).not.toContain(word);
+    }
+  });
+
+  it("tells the biller what happens to the work she already did", () => {
+    // The one thing the sentence has to do: stop her wondering whether the
+    // approvals she just made are lost.
+    expect(SHADOW_MODE_COPY.reason("Roland")).toMatch(/wait/i);
+    expect(SHADOW_MODE_COPY.hint).toMatch(/wait/i);
+    // And the banner says who can end it.
+    expect(SHADOW_MODE_COPY.fix).toMatch(/administrator/i);
   });
 });
 

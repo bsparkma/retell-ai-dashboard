@@ -60,7 +60,7 @@ import {
   type Remittance,
 } from "@/features/rcm/api";
 import { money, withinLastDays } from "@/features/rcm/format";
-import { blockedCopy } from "@/features/rcm/posting";
+import { blockedCopy, SHADOW_MODE_COPY } from "@/features/rcm/posting";
 import { countByFilter, FILTER_COPY, type WorklistFilter } from "@/features/rcm/worklist";
 
 /** How deep the client-side work-state count reads. The server's own cap. */
@@ -79,6 +79,15 @@ interface Inbox {
   blockedPlans: number;
   /** The commonest blocking reason among blocked plans, in biller words. */
   topBlocker: string | null;
+  /**
+   * THE SHADOW GATE, carried through from the posting queue so the inbox can
+   * say the same thing the Posting page does.
+   *
+   * A biller lives on this screen. If the only place that said "nothing you
+   * approve is going to post yet" were the Posting page, she would find out by
+   * going to look — which is the same as not being told.
+   */
+  shadowMode: boolean;
 }
 
 type LoadState =
@@ -271,11 +280,30 @@ function OfficeInbox({ office }: { office: RcmOfficeId }) {
       data-testid={`rcm-summary-${office}`}
     >
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
+          {/* The same badge, the same words, the same quiet tone as the Posting
+              page's. Nothing is wrong here — the work just waits. */}
+          {state.kind === "loaded" && state.inbox.shadowMode && (
+            <span
+              className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              data-testid={`rcm-shadow-badge-${office}`}
+              title={SHADOW_MODE_COPY.hint}
+            >
+              {SHADOW_MODE_COPY.badge}
+            </span>
+          )}
+        </div>
         {state.kind === "loading" && (
           <Loader2 size={14} className="animate-spin text-muted-foreground" />
         )}
       </div>
+
+      {state.kind === "loaded" && state.inbox.shadowMode && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid={`rcm-shadow-hint-${office}`}>
+          {SHADOW_MODE_COPY.hint}
+        </p>
+      )}
 
       {state.kind === "failed" ? (
         <div
@@ -483,6 +511,15 @@ export function summarise(
     postedCents: postedRecently.reduce((sum, r) => sum + r.postedTotalCents, 0),
     blockedPlans: queue.byStatus.blocked,
     topBlocker: topReason ? (blockedCopy(topReason)?.label ?? null) : null,
+    /*
+     * SHADOW ONLY WHEN THE PRACTICE IS OTHERWISE READY.
+     *
+     * A practice D-7 has never validated is not "in shadow mode" — it is not
+     * set up, and its plans say so per row. Showing both would offer two
+     * explanations for one silence, and the biller would have to guess which
+     * one an admin can act on.
+     */
+    shadowMode: queue.postingEnabled && !queue.drainEnabled,
   };
 }
 

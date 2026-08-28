@@ -269,7 +269,8 @@ const REQUEST_TIMEOUT_MS = 120_000;
  */
 const BATCH_TIMEOUT_MS = 150_000;
 
-async function post<T>(
+async function mutate<T>(
+  method: "POST" | "PUT",
   path: string,
   params: Record<string, string | number>,
   body: unknown = {},
@@ -285,7 +286,7 @@ async function post<T>(
   let res: Response;
   try {
     res = await fetch(`${BASE}/rcm${path}?${qs}`, {
-      method: "POST",
+      method,
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -309,6 +310,32 @@ async function post<T>(
   }
   if (!res.ok) throw await toError(res);
   return (await res.json()) as T;
+}
+
+/**
+ * The two mutating verbs this module uses, over one implementation.
+ *
+ * PUT exists for exactly one route — the shadow gate's switch — and it shares
+ * `mutate` rather than getting its own copy of the abort/401/error handling,
+ * because a second copy is a second place for "not signed in" to be handled
+ * differently.
+ */
+function post<T>(
+  path: string,
+  params: Record<string, string | number>,
+  body: unknown = {},
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
+  return mutate<T>("POST", path, params, body, opts);
+}
+
+function put<T>(
+  path: string,
+  params: Record<string, string | number>,
+  body: unknown = {},
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
+  return mutate<T>("PUT", path, params, body, opts);
 }
 
 async function get<T>(
@@ -1466,6 +1493,17 @@ export interface PostingQueuePage {
   drainRequires: string;
   /** D-7: whether this practice may be posted to at all yet. */
   postingEnabled: boolean;
+  /**
+   * THE SHADOW GATE. Whether an administrator has switched posting ON for this
+   * practice — deliberately a separate field from `postingEnabled`.
+   *
+   * They are different facts with different remedies. `postingEnabled: false`
+   * means the practice has never been validated and the fix is a code change
+   * with evidence; `drainEnabled: false` means nobody has flipped the switch
+   * yet and the fix is one toggle on the Admin page. One sentence for both
+   * would send a biller to the wrong person.
+   */
+  drainEnabled: boolean;
 }
 
 export interface PostingQueueDetail {
@@ -1481,6 +1519,8 @@ export interface PostingQueueDetail {
   canDrain: boolean;
   drainRequires: string;
   postingEnabled: boolean;
+  /** The shadow gate — see `PostingQueuePage.drainEnabled`. */
+  drainEnabled: boolean;
   /**
    * The EOB filing, on its OWN axis — never folded into `plan.status`. A plan
    * whose money is correct and proven stays `posted` whether or not a PDF
@@ -1698,6 +1738,53 @@ export function withdrawPostingPlan(
   note: string,
 ): Promise<{ queueId: string; status: "withdrawn"; withdrawnReason: "manual" }> {
   return post(`/posting/queue/${encodeURIComponent(queueId)}/withdraw`, { office }, { note });
+}
+
+/**
+ * The shadow gate, as an administrator sees it.
+ *
+ * Both conditions in one shape, because an admin flipping the switch on a
+ * practice the code ceiling still refuses would otherwise be left looking at a
+ * toggle that does nothing.
+ */
+export interface RcmOfficeSettings {
+  office: RcmOfficeId;
+  /** The switch an admin owns. */
+  drainEnabled: boolean;
+  /** When it was last moved. Null means nobody ever has. */
+  updatedAt: string | null;
+  /** The crosswalk key of whoever last moved it. Null likewise. */
+  updatedBy: string | null;
+  /** D-7's code ceiling — NOT flippable from here, and the screen says so. */
+  postingEnabled: boolean;
+  /** No settings row at all: migrations have not run. The switch reads off. */
+  rowMissing: boolean;
+}
+
+/** Admin only (`rcm.settings`). A non-admin gets 403 and renders nothing. */
+export function getRcmOfficeSettings(office: RcmOfficeId): Promise<RcmOfficeSettings> {
+  return get<{ settings: RcmOfficeSettings }>(
+    `/office-settings/${encodeURIComponent(office)}`,
+    { office },
+  ).then((r) => r.settings);
+}
+
+/**
+ * Flip the shadow gate. Admin only.
+ *
+ * The office is in the path AND in the query, and the server refuses if they
+ * disagree — an assertion that can only cause a refusal, never redirect the
+ * write to the other practice.
+ */
+export function setRcmOfficeSettings(
+  office: RcmOfficeId,
+  drainEnabled: boolean,
+): Promise<RcmOfficeSettings> {
+  return put<{ settings: RcmOfficeSettings }>(
+    `/office-settings/${encodeURIComponent(office)}`,
+    { office },
+    { drainEnabled },
+  ).then((r) => r.settings);
 }
 
 export function drainPostingQueue(

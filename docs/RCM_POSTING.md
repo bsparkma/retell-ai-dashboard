@@ -8,14 +8,15 @@ through the forced call sequence `docs/RCM_OD_WRITES.md` proved live on
 | | |
 | --- | --- |
 | Routes (UI) | `/rcm/posting` |
-| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain`, **`GET /api/rcm/remittances/:id/recoupment`**, **`POST /api/rcm/remittances/:id/approve-recoupment`**, **`POST /api/rcm/posting/queue/:id/attach-document`** |
+| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain`, `GET /api/rcm/remittances/:id/recoupment`, `POST /api/rcm/remittances/:id/approve-recoupment`, `POST /api/rcm/posting/queue/:id/attach-document`, **`GET/PUT /api/rcm/office-settings/:office`** |
 | Entitlement | `requireModule('rcm')` — ships dark; no tenant is entitled yet |
-| Permission | `rcm.read` for the queue, `rcm.write` for the drain (D-9) |
+| Permission | `rcm.read` for the queue, **`rcm.post` for the drain, the withdrawal and the document retry**, **`rcm.settings` (admin only) for the shadow-gate switch** (D-9 + §2.5) |
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Offices enabled | **roland only.** valley is fail-closed (D-7, §9) |
-| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) — both additive only |
-| Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx) |
-| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (17), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), `rcm-labels.test.ts` (20) |
+| Shadow gate | **Both offices ship switched OFF** (`rcm_office_settings.drain_enabled`). Roland clears the code ceiling and still cannot write to a chart until an admin flips it — §2.5 |
+| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) — all additive only |
+| Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`services/rcm/postingGate.js`](../backend/services/rcm/postingGate.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`routes/rcm/officeSettings.js`](../backend/routes/rcm/officeSettings.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx), [`pages/admin/RcmPostingSettingsCard.tsx`](../new-dashboard/client/src/pages/admin/RcmPostingSettingsCard.tsx) |
+| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)** |
 
 ---
 
@@ -276,6 +277,120 @@ backend gains one the client has no copy for.
 A `blocked` row carries its reason by CHECK constraint — `blocked` implies a
 reason and a reason implies `blocked` — so a refusal nobody can act on, and a
 stale refusal rendered over a run that has since moved on, are both unstorable.
+
+---
+
+### 2.5 The shadow gate
+
+**Roland goes to production switched OFF.** A real biller works real EOBs end to
+end — upload, match, confirm, review, approve — and a chart write stays
+impossible until a human flips a switch. *"Everyone remembers not to press
+Drain"* is not a gate; this is.
+
+Go-live plan reference: `rcm-go-live-plan.md` §2, delivered to Beau 2026-08-26.
+(That plan is a delivered document, not a file in this repo.)
+
+#### The two conditions
+
+Every Open Dental write in the drain needs **both**, and neither substitutes for
+the other:
+
+| # | Condition | Where | Changed by |
+| --- | --- | --- | --- |
+| 1 | office ∈ `OFFICES_ENABLED_FOR_POSTING` | code (`postingDrain.js:336`) | a code change, with the evidence in the same commit (§9) |
+| 2 | `rcm_office_settings.drain_enabled` | the tenant database | an **admin**, from Admin → Offices |
+
+They answer different questions. The ceiling says *this practice has been
+validated* — its DefNums read from its own Open Dental, its key's write groups
+proven, its end-to-end run. The switch says *and today it may*. Roland clears the
+ceiling and still ships off.
+
+**Read at drain time, never cached.** `odOfficeConfig` caches a practice's
+DefNums for an hour, which is right for a value that changes once a year and
+costs a paced Open Dental call to read. This is the opposite: a human flips it
+precisely so the NEXT press behaves differently, and an answer up to an hour old
+would mean the flip silently did not take. One local Postgres SELECT per press.
+
+**Fails closed.** A missing settings row reads as `false` and logs once per
+office per process. The migration seeds both offices, so an absent row means
+either a database migrations have not reached or a row somebody removed —
+neither is a licence to write to a chart.
+
+#### The refusal is the ROUTE's, and the plans do not move
+
+`POST /posting/drain` answers **409** with the ordinary refusal shape plus a
+`blocked` slug:
+
+```json
+{ "success": false, "code": "DRAIN_DISABLED_FOR_OFFICE",
+  "blocked": "drain_disabled_for_office", "office": "roland",
+  "error": "Posting is switched off for this practice (shadow mode). …" }
+```
+
+**No plan moves to `blocked`.** That is the difference from D-7, and it is
+deliberate. A valley plan is blocked per row because *"this practice has never
+been validated"* is a fact about that plan that a biller must see on it. Shadow
+mode is a switch somebody will flip this week, and marking twenty approved plans
+`blocked` on the way would make her re-press every one afterwards to clear a
+state that was never about them. `drain_disabled_for_office` is therefore **not**
+in `BLOCK_REASONS`, and `rcm-labels.test.ts` pins that the two vocabularies stay
+disjoint.
+
+Nothing else moves either: no row is claimed, no `attempt_count` advances, no
+`rcm_user_map` crosswalk row is minted for a press that was refused. **One audit
+row per press** (`READ rcm_posting_drain`, `result: ERROR`), not one per plan —
+what happened is that a person pressed a button and was refused.
+
+`POST /posting/queue/:id/attach-document` carries the same gate, for the same
+reason: *"no Open Dental write while posting is switched off"* is a claim about
+the chart, not about money.
+
+#### What the screens say
+
+| Where | Copy |
+| --- | --- |
+| Posting page, beside the office name | badge **`Shadow`** |
+| Posting page, beside the disabled Drain button | *"Posting is switched off for Roland (shadow mode). Approved plans wait here."* |
+| Posting page, banner | the same sentence, plus *"An administrator switches posting on for a practice under Admin → Offices. Until then nothing here reaches Open Dental."* |
+| RCM inbox, beside the office name | badge **`Shadow`**, with *"Posting is switched off for this practice. Approved plans wait here."* |
+
+Rendered, **never a tooltip** — §15.2, finding 4: the practice reads these
+screens on a tablet. The quietest available tone, not amber: nothing is wrong,
+and painting it as a warning would put it in the same visual family as
+`blocked`, which is a plan somebody has to go fix. The banner shows only when
+the practice otherwise clears the ceiling — one silence, one explanation.
+
+#### The switch
+
+`GET | PUT /api/rcm/office-settings/:office`, `rcm.settings` (**admin only** —
+narrower than the `rcm.post` that presses Drain: an `office` user runs the day,
+an `admin` decides what the day is allowed to do). The read is gated too, so the
+card is *absent* rather than greyed for everybody else; the Posting page already
+tells every role what they need to know.
+
+- **Never an env var.** §9 refuses one for the ceiling because a typo in an app
+  setting would open a practice nobody validated. This refuses one for a second
+  reason: an app setting is invisible to the people who work in the practice, it
+  cannot record who turned it on, and a redeploy can lose it.
+- `{ "drainEnabled": boolean }`, and a non-boolean is a **400**, never a
+  coercion — `"false"` is a truthy string.
+- An **UPDATE**, never an upsert. A missing row is a 409 naming the migration.
+- The office is asserted, never taken: `:office` and any `office` in the body may
+  agree with the validated `?office=` or the request is refused
+  (`OFFICE_MISMATCH`). Neither can redirect the write to the other practice.
+- One `UPDATE rcm_office_settings <office>` audit row per flip, on or off. The
+  before and after live in the row itself (`drain_updated_by` / `drain_updated_at`
+  and the boolean), so `audit_log` gains no columns.
+- The toggle is **disabled with the reason rendered** for an office the code
+  ceiling refuses. A switch you can flip that changes nothing is worse than one
+  you cannot.
+
+The columns are additive on Slice 1's existing `rcm_office_settings` table (which
+already means "one row per office, what this practice runs under" and carries the
+VCC merchant fee). `drain_updated_at` is distinct from the table's own
+`updated_at` on purpose: *"when was posting last switched"* is not *"when did
+this row last change"*, and answering the first with the second would date the
+gate to whenever somebody last edited a merchant fee.
 
 ---
 
@@ -2306,26 +2421,66 @@ construction and a `reviewer` never reaches either handler. Their GET
 counterparts run on `rcm.read`, so the person who did the reviewing can see what
 a takeback would do without being able to authorise it.
 
-The document retry is `rcm.write` too, even though it cannot move a cent: D-9's
+The document retry is a chart write too, even though it cannot move a cent: D-9's
 split is about what a role may put **in a patient's chart**, not about how much
 money is involved.
 
+### The shadow gate split the posting acts out (`rcm.post`)
 
-| Tier | `GET /posting/queue[/:id]` | `POST /posting/drain` |
-| --- | --- | --- |
-| `admin`, `office` | ✅ | ✅ |
-| `reviewer` | ✅ | ❌ 403 |
-| anything else | ❌ | ❌ |
+6d's ruling above stands — no *finer* tier for takebacks — but shipping a shadow
+practice needed a role that does **everything except reach a chart**, and
+`rcm.write` covered too much: uploading an 835 and pressing Drain were the same
+permission.
 
-`POST /posting/drain` is deliberately **not** in `routes/rcm/index.js`
-`QUEUE_PATHS`, so the mount's `requireReadWrite('rcm.read','rcm.write')` demands
-`rcm.write` by construction and a `reviewer` never reaches the handler. The
-in-handler `DRAIN_REQUIRES_WRITE` check behind it is defence in depth for a future
-remount.
+So `rcm.post` was split out, and it names exactly three routes:
+
+| Route | Why it is not `rcm.write` |
+| --- | --- |
+| `POST /posting/drain` | writes insurance payments onto a real patient's ledger |
+| `POST /posting/queue/:id/withdraw` | permanently retires a remittance — `withdrawn` is terminal, and a plan is unique on `(office_id, remittance_key)`, so there is no second plan for that money |
+| `POST /posting/queue/:id/attach-document` | files a PDF into a patient's images |
+
+Enumerating the three exceptions is smaller and more legible than enumerating
+everything else, and it leaves the safe default intact: a new POST under
+`/api/rcm` still inherits `rcm.write` by omission rather than silently
+inheriting the posting tier. Each of the three carries an explicit
+`requirePermission('rcm.post')` on the route — named as middleware, not only
+checked in the handler, so `rcmGuard.test.js` can walk the assembled router and
+SEE which tier each one carries.
+
+`rcm.settings` is narrower still, and admin-only: see §2.5.
+
+### The `rcm_biller` role
+
+A biller works a remittance end to end and stops at the chart. She holds
+`rcm.read`, `rcm.queue` and `rcm.write` — upload an EOB or an 835, run a match,
+confirm one, mark a claim reviewed, approve — and holds neither `rcm.post` nor
+`rcm.settings`. The three acts she cannot do are somebody else's decision, and
+she escalates.
+
+| Tier | `GET /posting/queue[/:id]` | upload · match · confirm · review · approve | `POST /posting/drain`, withdraw, attach-document | `PUT /office-settings` |
+| --- | --- | --- | --- | --- |
+| `admin` | ✅ | ✅ | ✅ | ✅ |
+| `office` | ✅ | ✅ | ✅ | ❌ 403 `rcm.settings` |
+| `rcm_biller` | ✅ | ✅ | ❌ 403 `rcm.post` | ❌ 403 `rcm.settings` |
+| `reviewer` | ✅ | match + review only | ❌ 403 (at the mount) | ❌ 403 (at the mount) |
+| anything else | ❌ | ❌ | ❌ | ❌ |
+
+Note the two shapes of refusal, and that they are not the same event. A
+`reviewer` is stopped **at the mount** — `POST /posting/drain` is deliberately
+not in `routes/rcm/index.js` `QUEUE_PATHS`, so `requireReadWrite('rcm.read',
+'rcm.write')` demands `rcm.write` by construction and she never reaches the
+handler. An `rcm_biller` clears the mount and is stopped by the **route's own**
+narrower gate. The in-handler `DRAIN_REQUIRES_WRITE` check behind both is
+defence in depth for a future remount.
+
+`rcm_biller` holds nothing outside RCM: it is not a voice user and not a
+coordinator. It appears in `TENANT_ROLES`, so the Users page offers it in the
+role picker with no further wiring.
 
 The GETs run on `rcm.read`: watching a plan post, and reading why one is blocked,
-is not a posting act. The response says `canDrain` / `drainRequires` so the screen
-renders the server's answer rather than inspecting a role name.
+is not a posting act. The response says `canDrain` / `drainRequires` / `drainEnabled`
+so the screen renders the server's answer rather than inspecting a role name.
 
 ---
 
@@ -2369,6 +2524,16 @@ this build at all, and **`DELETE /adjustments` does not exist either** (G6) —
 which is why 6d's reversible path is reversed by an *offsetting* adjustment
 rather than by removal. `OPENDENTAL_WRITE_DISABLED` is enforced **inside the
 transport**, so it cannot be routed around by anything writing through the class.
+
+**The shadow gate added NO Open Dental verb, and no file to the allow-list.**
+`services/rcm/postingGate.js` reads one row from `rcm_office_settings` and can
+reach no Open Dental module at all; `routes/rcm/officeSettings.js` writes one
+boolean. The gate's whole effect is to stop the drain **before** the transport is
+resolved, which is why `shadowGate.test.js` asserts a call count of **zero** on a
+counting fake rather than merely an absence of writes: a refusal that had already
+read a practice's definitions would be a refusal that had already spoken to Open
+Dental. §13's claim is therefore unchanged in every particular — exactly one file
+may write, and it still names the same three 6c verbs plus 6d's three.
 
 ---
 

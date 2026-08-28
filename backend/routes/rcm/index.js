@@ -57,6 +57,14 @@
  * CHECKLIST beside it is a GET and therefore runs on `rcm.read`, which the
  * `reviewer` tier holds: seeing why a claim is withheld is not a posting act.
  *
+ * The shadow gate added the module's narrowest tier on top of all of this.
+ * `POST /posting/drain`, `POST /posting/queue/:id/withdraw` and
+ * `POST /posting/queue/:id/attach-document` each carry an explicit
+ * `requirePermission('rcm.post')`, and `GET|PUT /office-settings/:office` carry
+ * `requirePermission('rcm.settings')`. `rcm_biller` holds `rcm.read`,
+ * `rcm.queue` and `rcm.write` and neither of those two — a biller uploads,
+ * matches, confirms, reviews and APPROVES, and stops at the chart.
+ *
  * The same is true of 6d's two additions. `POST /remittances/:id/approve-
  * recoupment` and `POST /posting/queue/:id/attach-document` are BOTH absent from
  * QUEUE_PATHS, so both demand `rcm.write` by construction — a `reviewer` never
@@ -168,6 +176,25 @@ router.use('/uploads', require('./documents'));
  * verbs, in order, and nothing else.
  */
 router.use('/posting', require('./posting'));
+/*
+ * THE SHADOW GATE'S SWITCH.
+ *
+ *   GET  /office-settings/:office   the state, who last changed it, when
+ *   PUT  /office-settings/:office   flip it
+ *
+ * Both carry their own `requirePermission('rcm.settings')` — `admin` and
+ * nothing else, narrower than the `rcm.post` that presses Drain. NOT in
+ * QUEUE_PATHS: the PUT is a mutation and must clear the mount's `rcm.write`
+ * before the narrower gate even runs, and the GET is a GET.
+ *
+ * Two conditions gate an Open Dental write in this module and neither replaces
+ * the other: `OFFICES_ENABLED_FOR_POSTING` says a practice has been VALIDATED
+ * (a code change, with the evidence in the same commit — §9), and this row says
+ * an administrator has switched it ON. Roland clears the first and ships to
+ * production with the second off, so a biller can work real EOBs to `approved`
+ * while a chart write stays impossible.
+ */
+router.use('/office-settings', require('./officeSettings'));
 
 module.exports = router;
 module.exports.QUEUE_PATHS = QUEUE_PATHS;

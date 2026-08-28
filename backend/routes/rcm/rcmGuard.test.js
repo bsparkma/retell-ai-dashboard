@@ -148,6 +148,132 @@ test('confirm-match is NOT exempt — it stays on rcm.write', () => {
   );
 });
 
+// --- the posting tier (the shadow gate) -------------------------------------
+
+test('every route that reaches a chart carries the rcm.post gate, by name', () => {
+  /*
+   * THE STRUCTURAL HALF OF THE `rcm_biller` TIER.
+   *
+   * A biller holds `rcm.write`, so the mount lets them through — the mount is
+   * no longer what keeps them out of the drain. These three explicit gates are,
+   * and a test that only sent requests would pass with one of them deleted and
+   * an in-handler check left behind that a future remount could bypass.
+   *
+   * Walked off the assembled router, so a fourth chart-reaching route added
+   * without a gate shows up here as a missing entry rather than as nothing.
+   */
+  const routes = routeTable(require('./index'));
+  const CHART_REACHING = [
+    'POST /posting/drain',
+    'POST /posting/queue/:id/withdraw',
+    'POST /posting/queue/:id/attach-document',
+  ];
+  for (const wanted of CHART_REACHING) {
+    const [method, path] = wanted.split(' ');
+    const found = routes.find((r) => r.method === method && r.path === path);
+    assert.ok(found, `${wanted} is not mounted — this list has gone stale`);
+    assert.ok(
+      found.actions.includes('rcm.post'),
+      `${wanted} carries no rcm.post gate (actions: ${found.actions.join(', ') || 'none'})`
+    );
+  }
+});
+
+test('the shadow-gate switch is gated on rcm.settings, both verbs', () => {
+  const routes = routeTable(require('./index')).filter((r) =>
+    r.path.startsWith('/office-settings')
+  );
+  assert.ok(routes.length >= 2, `expected a GET and a PUT, got ${routes.length}`);
+  for (const r of routes) {
+    assert.ok(
+      r.actions.includes('rcm.settings'),
+      `${r.method} ${r.path} must be admin-only (actions: ${r.actions.join(', ') || 'none'})`
+    );
+  }
+});
+
+test('rcm_biller: 403 on the drain, the withdrawal and the switch', async () => {
+  /*
+   * THE WHOLE POINT OF THE ROLE, as three requests.
+   *
+   * A biller works a remittance end to end and stops at the chart. The drain
+   * writes insurance payments onto a patient's ledger; the withdrawal
+   * permanently retires a remittance (`withdrawn` is terminal, and a plan is
+   * unique on `(office_id, remittance_key)`, so there is no second plan for that
+   * money); the switch decides whether posting may happen at all. Each of the
+   * three is somebody else's decision, and a biller escalates.
+   */
+  const { baseUrl, close } = await bootRcmApp({ role: 'rcm_biller' });
+  const id = '11111111-2222-4333-8444-555555555555';
+  try {
+    const drain = await api(baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(drain.status, 403, JSON.stringify(drain.body));
+    assert.equal(drain.body.action, 'rcm.post');
+
+    const withdraw = await api(
+      baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'the claim is gone' }), json: true }
+    );
+    assert.equal(withdraw.status, 403, JSON.stringify(withdraw.body));
+    assert.equal(withdraw.body.action, 'rcm.post');
+
+    const attach = await api(
+      baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${id}/attach-document?office=roland`,
+      { body: JSON.stringify({}), json: true }
+    );
+    assert.equal(attach.status, 403, JSON.stringify(attach.body));
+    assert.equal(attach.body.action, 'rcm.post');
+
+    const settings = await api(baseUrl, 'PUT', '/api/rcm/office-settings/roland?office=roland', {
+      body: JSON.stringify({ drainEnabled: true }),
+      json: true,
+    });
+    assert.equal(settings.status, 403, JSON.stringify(settings.body));
+    assert.equal(settings.body.action, 'rcm.settings');
+  } finally {
+    await close();
+  }
+});
+
+test('rcm_biller: the queue is READABLE — a biller watches what she approved', async () => {
+  // The refusals above are about acting, not about seeing. A biller who could
+  // not watch her own approved plans sit in shadow mode would have no way to
+  // tell "waiting for an admin" from "something is broken".
+  const { baseUrl, close } = await bootRcmApp({ role: 'rcm_biller' });
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.canDrain, false, 'and the server says so, rather than a role name');
+    assert.equal(res.body.drainRequires, 'rcm.post');
+  } finally {
+    await close();
+  }
+});
+
+test('rcm_biller: the workbench tiers a biller DOES hold', async () => {
+  /*
+   * The other half of the role, asserted as permissions rather than as a tour of
+   * every route: a biller holds read, the queue tier and the write tier, and
+   * neither of the two the shadow gate added.
+   */
+  const { PERMISSIONS, permissionsForRole } = require('../../config/permissions');
+  const held = permissionsForRole('rcm_biller');
+  assert.deepEqual(held, ['rcm.queue', 'rcm.read', 'rcm.write']);
+  for (const action of ['rcm.post', 'rcm.settings', 'admin.all']) {
+    assert.ok(!held.includes(action), `rcm_biller must not hold ${action}`);
+    assert.ok(Object.prototype.hasOwnProperty.call(PERMISSIONS, action));
+  }
+  // And nothing outside RCM. A biller is not a voice user or a coordinator.
+  assert.deepEqual(held.filter((a) => !a.startsWith('rcm.')), []);
+});
+
 test('a role holding neither tier is refused the batch match at runtime', async () => {
   // The guard above is structural. This is the same claim made by a request:
   // `tc` holds no rcm action at all, and POST /remittances/:id/match is

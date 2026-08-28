@@ -30,10 +30,13 @@
 const { Client } = require('pg');
 
 const postingDrain = require('../services/rcm/postingDrain');
+const postingGate = require('../services/rcm/postingGate');
 
 /** A uuid that will never be a real key. Valid syntax; matches nothing. */
 const NO_SUCH_UUID = '00000000-0000-4000-8000-000000000000';
 const NO_SUCH_OFFICE = 'roland';
+/** An office key no seeded settings row holds. See the two statements below. */
+const NO_SUCH_SETTINGS_KEY = '__no_such_office__';
 
 /**
  * Statement + parameters, chosen so every one returns zero rows.
@@ -46,6 +49,26 @@ function statements() {
     { name: 'loadPlan.lines', text: q.lines, params: [NO_SUCH_UUID, NO_SUCH_OFFICE] },
     { name: 'loadPlan.claims', text: q.claims, params: [NO_SUCH_UUID] },
     { name: 'loadPlan.batch', text: q.batch, params: [NO_SUCH_UUID, NO_SUCH_OFFICE] },
+    /*
+     * The shadow gate. `read` runs on every press of Drain and every load of
+     * the Posting screen; `setDrainEnabled` is the toggle. Both are parsed
+     * here for the same reason the four above are — and the UPDATE matters
+     * more than most, because it is the one statement in this module that a
+     * biller can never reach and therefore the one least likely to be
+     * exercised before it is needed.
+     *
+     * KEYED ON AN OFFICE THAT DOES NOT EXIST. Unlike every other table here,
+     * `rcm_office_settings` is SEEDED — `roland` is a real row, and matching it
+     * would return one and trip this script's zero-rows rule. `office_id` is
+     * only CHECKed on the value written, so a WHERE against a key no row holds
+     * is a clean parse-and-plan that touches nothing.
+     */
+    { name: 'postingGate.read', text: postingGate.QUERIES.read, params: [NO_SUCH_SETTINGS_KEY] },
+    {
+      name: 'postingGate.setDrainEnabled',
+      text: postingGate.QUERIES.setDrainEnabled,
+      params: [false, null, NO_SUCH_SETTINGS_KEY],
+    },
   ];
 }
 

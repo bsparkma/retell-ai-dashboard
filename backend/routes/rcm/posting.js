@@ -8,7 +8,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  *   GET  /queue        the plans, their states, per-line progress   rcm.read
  *   GET  /queue/:id    one plan in full, with read-back evidence    rcm.read
- *   POST /drain        WRITE TO A PATIENT'S CHART                   rcm.write
+ *   POST /drain        WRITE TO A PATIENT'S CHART                   rcm.post
  *
  * `POST /drain` is deliberately NOT in `routes/rcm/index.js` QUEUE_PATHS, so the
  * mount's `requireReadWrite('rcm.read','rcm.write')` demands `rcm.write` for it
@@ -16,11 +16,32 @@
  * ruling D-9 made for approve, and for a stronger reason: approving authorises
  * money to move, draining moves it.
  *
+ * ON TOP OF THAT, the three routes that reach a chart or retire a plan carry an
+ * explicit `requirePermission('rcm.post')` — the "a specific gate narrows the
+ * general one" idiom. `rcm_biller` holds `rcm.write` and NOT `rcm.post`, so a
+ * biller works a remittance all the way to `approved` and stops there.
+ *
  * The two GETs run on `rcm.read`, which `reviewer` holds. Watching a plan post,
  * and reading why one is blocked, is not a posting act — and the person who did
  * the reviewing is the one best placed to see what her review produced. The
  * response says who CAN press it (`canDrain` / `drainRequires`) rather than
  * leaving a screen to infer it from a role name.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SHADOW GATE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A press of Drain needs BOTH conditions (see services/rcm/postingGate.js): the
+ * office is in the code-level ceiling `OFFICES_ENABLED_FOR_POSTING`, AND its
+ * `rcm_office_settings` row says `drain_enabled`. The second is read HERE, per
+ * press, and never cached — a switch a human flips so the NEXT press behaves
+ * differently is worthless if the answer is an hour old.
+ *
+ * The refusal is the ROUTE's, and it leaves the plans exactly where they are.
+ * That is the difference from D-7, which blocks each row: valley is refused
+ * because posting there has never been validated, and a blocked row per plan is
+ * how the queue says so. Shadow mode is a switch somebody will flip this week,
+ * and marking twenty approved plans `blocked` on the way would make the biller
+ * re-press each one afterwards to clear a state that was never about them.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE TRIGGER IS A HUMAN, AND ONLY A HUMAN
@@ -53,8 +74,9 @@ const express = require('express');
 
 const tenantDb = require('../../platform/tenantDb');
 const { audit } = require('../../platform/audit');
-const { holdsPermission } = require('../../config/permissions');
+const { holdsPermission, requirePermission } = require('../../config/permissions');
 const postingDrain = require('../../services/rcm/postingDrain');
+const postingGate = require('../../services/rcm/postingGate');
 const { SNAPSHOT_VERSION } = require('./matchService');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const {
@@ -206,7 +228,7 @@ router.get(
      * page's shape depend on a second table's row existing. A plan whose batch
      * row is somehow missing must still list, unlabelled, rather than vanish.
      */
-    const { rows, labels, counts, total } = await tenantDb.withTenantDb(req, async (pool) => {
+    const { rows, labels, counts, total, settings } = await tenantDb.withTenantDb(req, async (pool) => {
       const page = await pool.query(
         `SELECT ${postingDrain.QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
           `WHERE office_id = $1 ORDER BY approved_at DESC LIMIT $2 OFFSET $3`,
@@ -229,6 +251,9 @@ router.get(
         labels: new Map(batches.rows.map((b) => [String(b.batch_id), b])),
         counts: tally.rows,
         total: tally.rows.reduce((a, r) => a + num(r.n), 0),
+        // The shadow gate, so the screen renders the SERVER's answer rather than
+        // discovering it by pressing a button and being refused.
+        settings: await postingGate.readOfficeSettings(pool, office),
       };
     });
 
@@ -252,14 +277,26 @@ router.get(
       total,
       limit,
       offset,
-      canDrain: holdsPermission(req, 'rcm.write'),
-      drainRequires: 'rcm.write',
+      canDrain: holdsPermission(req, 'rcm.post'),
+      drainRequires: 'rcm.post',
       /**
        * D-7, stated by the server rather than inferred by the client from an
        * office name. A screen that hardcoded "valley is off" would go stale the
        * day it is switched on.
        */
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
+      /**
+       * THE SHADOW GATE, on its own axis and deliberately not folded into
+       * `postingEnabled`.
+       *
+       * They are different facts with different remedies. `postingEnabled:
+       * false` means this practice has never been validated and the fix is a
+       * code change with the evidence in the same commit; `drainEnabled: false`
+       * means an admin has not switched it on yet and the fix is one toggle. A
+       * screen that showed one sentence for both would send a biller to the
+       * wrong person.
+       */
+      drainEnabled: settings.drainEnabled,
     });
   })
 );
@@ -318,6 +355,7 @@ router.get(
         lines: lines.rows,
         claims: claims.rows,
         documents: documents.rows,
+        settings: await postingGate.readOfficeSettings(pool, office),
       };
     });
 
@@ -339,9 +377,11 @@ router.get(
         patientName: c.patient_name == null ? null : String(c.patient_name),
         odClaimNum: c.od_claim_num == null ? null : num(c.od_claim_num),
       })),
-      canDrain: holdsPermission(req, 'rcm.write'),
-      drainRequires: 'rcm.write',
+      canDrain: holdsPermission(req, 'rcm.post'),
+      drainRequires: 'rcm.post',
       postingEnabled: postingDrain.OFFICES_ENABLED_FOR_POSTING.includes(office),
+      /** The shadow gate — see GET /queue for why it is on its own axis. */
+      drainEnabled: found.settings.drainEnabled,
       /**
        * THE EOB FILING — 6d FILLED THIS SEAM, so it no longer says "not yet".
        *
@@ -381,8 +421,8 @@ router.get(
           error: d.error == null ? null : String(d.error),
           attachedAt: iso(d.attached_at),
         })),
-        canRetry: holdsPermission(req, 'rcm.write'),
-        retryRequires: 'rcm.write',
+        canRetry: holdsPermission(req, 'rcm.post'),
+        retryRequires: 'rcm.post',
       },
     });
   })
@@ -408,23 +448,71 @@ router.get(
  */
 router.post(
   '/drain',
+  /*
+   * THE NARROWING GATE. The mount already demands `rcm.write` for this POST —
+   * it is not in QUEUE_PATHS — which keeps a `reviewer` out. `rcm.post` is the
+   * narrower tier on top, and it is what keeps an `rcm_biller` out: a biller
+   * works a remittance to `approved` and stops. Named here as middleware rather
+   * than only in the handler so `rcmGuard.test.js` can walk the router and SEE
+   * which tier each route carries.
+   */
+  requirePermission('rcm.post'),
   h(async (req, res) => {
     const office = req.rcmOffice;
 
     /*
-     * Defence in depth. The mount already demands `rcm.write` for this POST —
-     * it is not in QUEUE_PATHS — so a `reviewer` never arrives here. This check
-     * exists so a future remount, or this route copied to an exempt path, still
-     * refuses, and so the refusal carries a sentence about posting rather than
-     * the platform's generic one.
+     * Defence in depth, behind the gate above. This check exists so a future
+     * remount, or this route copied to an exempt path, still refuses, and so
+     * the refusal carries a sentence about posting rather than the platform's
+     * generic one.
      */
-    if (!holdsPermission(req, 'rcm.write')) {
+    if (!holdsPermission(req, 'rcm.post')) {
       await auditRcmDenial(req, 'rcm_posting_drain', null, { office, result: 'UNAUTHORIZED' });
       return res.status(403).json({
         success: false,
         error: 'Posting to Open Dental needs posting permission — ask an approver to press it',
         code: 'DRAIN_REQUIRES_WRITE',
-        action: 'rcm.write',
+        action: 'rcm.post',
+      });
+    }
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * THE SHADOW GATE — BEFORE ANY OPEN DENTAL CALL, AND BEFORE ANY WRITE OF
+     * OURS
+     * ─────────────────────────────────────────────────────────────────────────
+     * Read here, per press, never cached. It runs BEFORE `resolveRcmActor` on
+     * purpose: that call upserts a crosswalk row, and a refused press should
+     * leave nothing behind but its audit line.
+     *
+     * The plans are NOT touched. No row is claimed, no row is blocked, no
+     * `attempt_count` moves — a plan sitting at `approved` in shadow mode is
+     * exactly what it says it is, and the biller who approved it should find it
+     * unchanged tomorrow when an admin flips the switch.
+     *
+     * ONE AUDIT ROW PER PRESS, not per plan. What happened is that a person
+     * pressed a button and was refused; twenty rows would describe twenty
+     * refusals that never happened.
+     */
+    const settings = await tenantDb.withTenantDb(req, (pool) =>
+      postingGate.readOfficeSettings(pool, office)
+    );
+    if (!settings.drainEnabled) {
+      await auditRcmDenial(req, 'rcm_posting_drain', null, { office, result: 'ERROR' });
+      return res.status(409).json({
+        success: false,
+        error:
+          `Posting is switched off for this practice (shadow mode). Approved plans wait here ` +
+          `until an administrator switches posting on. Nothing was sent to Open Dental.`,
+        code: 'DRAIN_DISABLED_FOR_OFFICE',
+        /*
+         * The slug, in the field the queue's own refusals use. It is NOT a
+         * `blocked_reason`: no plan moved to `blocked`, and nothing in
+         * `BLOCK_REASONS` can hold it. The client renders copy from it exactly
+         * as it does for a blocked plan.
+         */
+        blocked: postingGate.DRAIN_DISABLED,
+        office,
       });
     }
 
@@ -575,17 +663,20 @@ router.post(
  * human in that path, and making the machine invent prose is the habit
  * `blocked_reason` exists to avoid.)
  *
- * `rcm.write`, and deliberately not a new permission. D-9 splits reading from
- * writing; retiring a plan does not write to a chart, but it does decide that
- * money will not be posted, which is the same authority as deciding it will.
+ * `rcm.post`, alongside the drain. D-9 splits reading from writing; retiring a
+ * plan does not write to a chart, but it does decide that money will NEVER be
+ * posted, which is the same authority as deciding it will — and it is the one
+ * decision here that cannot be taken back, since `withdrawn` is terminal. A
+ * biller who believes a plan must never run escalates rather than retiring it.
  */
 router.post(
   '/queue/:id/withdraw',
+  requirePermission('rcm.post'),
   h(async (req, res) => {
     const office = req.rcmOffice;
     const queueId = String(req.params.id);
 
-    if (!holdsPermission(req, 'rcm.write')) {
+    if (!holdsPermission(req, 'rcm.post')) {
       await auditRcmDenial(req, 'rcm_posting_withdrawal', queueId, {
         office,
         result: 'UNAUTHORIZED',
@@ -594,7 +685,7 @@ router.post(
         success: false,
         error: 'Retiring a posting plan needs posting permission — ask an approver',
         code: 'WITHDRAW_REQUIRES_WRITE',
-        action: 'rcm.write',
+        action: 'rcm.post',
       });
     }
 
@@ -700,9 +791,12 @@ router.post(
  * `retryDocumentAttach` refuses any plan that is not already `posted`, and the
  * only Open Dental verb it can reach is the document upload.
  *
- * It is `rcm.write` all the same. D-9's split is about what a role may put IN a
+ * It is `rcm.post` all the same. D-9's split is about what a role may put IN a
  * patient's chart, not about how much money is involved — and a PDF filed into
- * somebody's images is a chart write.
+ * somebody's images is a chart write. The shadow gate applies for the same
+ * reason: "no Open Dental write while posting is switched off" is a claim about
+ * the CHART, not about money, so a plan that posted before the switch was
+ * turned off cannot file its EOB afterwards either.
  *
  * Pressing it twice is safe by construction: the attach lists the patient's own
  * documents first and adopts one already carrying this plan's description,
@@ -710,17 +804,36 @@ router.post(
  */
 router.post(
   '/queue/:id/attach-document',
+  requirePermission('rcm.post'),
   h(async (req, res) => {
     const office = req.rcmOffice;
     const queueId = String(req.params.id);
 
-    if (!holdsPermission(req, 'rcm.write')) {
+    if (!holdsPermission(req, 'rcm.post')) {
       await auditRcmDenial(req, 'rcm_od_document', queueId, { office, result: 'UNAUTHORIZED' });
       return res.status(403).json({
         success: false,
         error: 'Filing a document into a patient chart needs posting permission',
         code: 'ATTACH_REQUIRES_WRITE',
-        action: 'rcm.write',
+        action: 'rcm.post',
+      });
+    }
+
+    // The shadow gate, before the transport is resolved — same refusal, same
+    // slug, same "nothing was touched" as the drain.
+    const settings = await tenantDb.withTenantDb(req, (pool) =>
+      postingGate.readOfficeSettings(pool, office)
+    );
+    if (!settings.drainEnabled) {
+      await auditRcmDenial(req, 'rcm_od_document', queueId, { office, result: 'ERROR' });
+      return res.status(409).json({
+        success: false,
+        error:
+          'Posting is switched off for this practice (shadow mode). Nothing was sent to ' +
+          'Open Dental.',
+        code: 'DRAIN_DISABLED_FOR_OFFICE',
+        blocked: postingGate.DRAIN_DISABLED,
+        office,
       });
     }
 
