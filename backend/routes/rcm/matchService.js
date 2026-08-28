@@ -491,6 +491,31 @@ async function runClaimMatch(
     lines: claim.lines,
   });
 
+  /*
+   * ─── WHICH LANE IS THIS MATCH ON? ────────────────────────────────────────
+   *
+   * A payment and a takeback ask OPPOSITE questions of the same chart, and the
+   * match is where the answer is gathered. A payment wants a line it can be put
+   * onto — not deleted, not transferred, not already on a check. A takeback
+   * wants the line it is coming OUT of, which is paid and, on a real reversal,
+   * on a check already, because the money it is reversing is money this module
+   * posted.
+   *
+   * Read off the money through `claimMatch.isTakeback`, the SAME predicate the
+   * approval gate uses. Until walk night 2 the match had no notion of the
+   * question at all and always asked the payment one, so a reversal 835 matched
+   * to the claim the drain had just posted produced a snapshot saying "no
+   * postable line on this claim" and two blocking pre-flight facts — and D-6's
+   * typed-confirmation path could not be reached for the one chart state a
+   * takeback can ever target.
+   *
+   * The lane is STORED on the snapshot, so the gate can tell a snapshot taken
+   * for the wrong question from one taken for this one rather than reading its
+   * evidence as though it answered both.
+   */
+  const takeback = claimMatch.isTakeback({ totalPaidCents: claim.totalPaidCents });
+  const takebackCents = takeback ? claim.totalPaidCents : null;
+
   const ranked = claimMatch.rankCandidates(
     {
       claimNumber: claim.claimNumber,
@@ -504,7 +529,11 @@ async function runClaimMatch(
     // STRANGERS when a name filter is ignored. On the linked-PatNum lane there
     // are no strangers to defend against, and a married-name change would
     // otherwise disqualify every claim on the right patient.
-    { patientResolvedByLink: found.patientResolvedByLink === true }
+    {
+      patientResolvedByLink: found.patientResolvedByLink === true,
+      takeback,
+      takebackCents,
+    }
   );
 
   // Line pairing is computed per candidate at match time so the screen can show
@@ -512,7 +541,7 @@ async function runClaimMatch(
   // confirming has nothing left to compute.
   const candidates = ranked.candidates.map((c) => ({
     ...c,
-    linePairs: claimMatch.pairLines(claim.lines, c.od.lines),
+    linePairs: claimMatch.pairLines(claim.lines, c.od.lines, { takeback }),
   }));
 
   const snapshot = {
@@ -539,6 +568,21 @@ async function runClaimMatch(
     minScore: ranked.minScore,
     /** False ⇒ the patient was already linked, so the name rule was off. */
     nameRuleApplied: ranked.nameRuleApplied,
+    /**
+     * WHICH QUESTION THIS SNAPSHOT ANSWERS.
+     *
+     * The blockers and the line pairing inside it were computed for a payment
+     * or for a takeback, and the two are inverses of each other. The approval
+     * gate refuses to judge a takeback on payment-lane evidence rather than
+     * reading it as though the lane made no difference — which is what it did
+     * before this field existed, and what made the walk's third takeback
+     * attempt refuse with two sentences about payments.
+     *
+     * Absent on a v2 snapshot written before this field, which reads as `false`
+     * — and that is correct rather than merely convenient: those snapshots
+     * really were taken for a payment.
+     */
+    takeback,
     candidates,
     /** A fresh run has confirmed nothing. A human confirming fills this in. */
     confirmed: null,

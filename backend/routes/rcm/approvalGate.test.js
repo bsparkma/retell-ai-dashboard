@@ -46,10 +46,24 @@ const json = (body) => ({ body: JSON.stringify(body), json: true });
  * things out of it and a test that hand-rolled one per case would drift into
  * asserting against a shape `confirmMatch` no longer writes.
  */
-function snapshot({ odClaimNum = 53648, blockers = [], version = 2, office = 'roland' } = {}) {
+function snapshot({
+  odClaimNum = 53648,
+  blockers = [],
+  version = 2,
+  office = 'roland',
+  takeback = false,
+} = {}) {
   return {
     version,
     office,
+    /*
+     * WHICH QUESTION THE MATCH ASKED. Walk night 2, finding 1: a payment and a
+     * takeback want opposite lines out of the same chart, so a snapshot taken
+     * for one is not evidence about the other. A recoupment fixture that leaves
+     * this false is a hand-built claim about an upstream stage — the exact shape
+     * of defect §3.1 was written for.
+     */
+    takeback,
     fetchedAt: '2026-03-02T11:00:00.000Z',
     candidates: [{ odClaimNum, blockers, linePairs: [] }],
     confirmed: {
@@ -1381,6 +1395,18 @@ function seedTakebackRemittance(db) {
   }
   for (const line of db.table('rcm_procedure_lines')) {
     line.paid_cents = -5408;
+  }
+  /*
+   * AND THE MATCH RECORD IS THE ONE A TAKEBACK WOULD HAVE.
+   *
+   * Walk night 2, finding 1. Flipping the money and leaving the snapshot alone
+   * describes a claim that cannot exist: a reversal whose match went looking
+   * for a line to PAY. `MATCH_TAKEN_FOR_A_TAKEBACK` refuses exactly that, and
+   * it refused this fixture the moment it was added — which is the same lesson
+   * §3.1 recorded one stage up, arriving one stage down.
+   */
+  for (const claim of db.table('rcm_claims')) {
+    if (claim.od_match_snapshot) claim.od_match_snapshot.takeback = true;
   }
   return db;
 }

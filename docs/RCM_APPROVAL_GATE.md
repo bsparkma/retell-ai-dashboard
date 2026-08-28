@@ -97,6 +97,12 @@ then the human decisions, then facts about the file, then the arithmetic.
 | `CLAIMPROC_NOT_ALREADY_PLANNED` | One of this claim's chart lines is already on a posting plan — another claim's, or another claim on this same remittance |
 | `CLAIM_TOTALS_AGREE` | The claim total, the sum of its lines, and what the batch says it moved do not all agree |
 
+**The recoupment approve swaps three of these and adds two.** `NOT_REVERSAL` and
+`NOT_RECOUPMENT` are replaced by `RECOUPMENT_CONFIRMED`, and the checklist gains
+`TAKEBACK_ACKNOWLEDGED` (§3.1) and `MATCH_TAKEN_FOR_A_TAKEBACK` (§3.2). It never
+has FEWER conditions than the ordinary one — it has different, harder ones, and
+every check in the table above still has to pass.
+
 Four of these deserve their own note:
 
 **`OFFICE_CONSISTENT` is reachable, and it was not at first.** `loadForApproval`
@@ -288,6 +294,88 @@ not being able to read the file at all, and no typed amount confirms those.
 Pinned by six tests in `approvalGate.test.js`, including that the same
 parser-produced claim **fails** the ordinary gate on those exact flags, and that
 `TAKEBACK_ACKNOWLEDGED` never appears in an ordinary checklist in any shape.
+
+### 3.2 WALK NIGHT 2 (2026-08-28) — the same lesson, one stage further down
+
+**§3.1 unblocked the takeback's REVIEW REASONS. This unblocks its EVIDENCE.**
+
+#### What was found
+
+With the reversal 835 matched to claim 53830 — Received, InsPayAmt $1.00, on
+check 21424, the state the drain had put it in twenty minutes earlier — the
+takeback approve refused with the correct total typed. The checklist named it:
+
+```
+The chart is ready for this payment   LINE_HAS_CLAIM_PAYMENT, NO_PAYABLE_LINES
+Every line matched to a chart line    1 of 1 lines have no ClaimProcNum
+                                      "no postable line on this claim"
+```
+
+Every one of those sentences is **true about a payment and says nothing about a
+reversal.** A payment needs a line Open Dental will let it PUT money onto: not
+deleted, not transferred, not already attached to a check. **A takeback needs the
+exact state that refusal describes** — its target line is paid, and on a real
+reversal it is on a check already, because the money it is reversing is money
+this module posted. The two lanes ask inverse questions and `claimMatch` only
+knew how to ask one of them.
+
+`§3.1`'s own test passed because the fake chart's claim was never in the
+post-drain state. **A hand-built fixture for one stage of a pipeline is a claim
+about the stage upstream of it** — recorded in §3.1, and true again one layer
+down.
+
+#### The ruling — the same partition, on the pre-flight facts
+
+The lane is carried by `claimMatch.isTakeback` (**one predicate**;
+`approvalGate.isRecoupment` now delegates to it, so the match and the gate
+cannot disagree about which question is being asked) and is **stored on the
+snapshot** as `takeback`.
+
+| Fact | Payment lane | Takeback lane |
+| --- | --- | --- |
+| a line is paid and attached to a check | `LINE_HAS_CLAIM_PAYMENT` — **blocking** (OD refuses `Cannot change InsPayAmt when Status is Received and attached to a ClaimPayment`) | `LINE_PAID_AND_ON_CHECK` — **reported, not blocking.** It is the precondition, and it stays on the list because it is the fact that makes the ordinary button refuse |
+| every line is already paid | `NO_PAYABLE_LINES` — **blocking** | not raised |
+| no line carries a payment | not raised | `NO_REVERSIBLE_LINES` — **blocking.** A takeback against a line the carrier never paid reverses nothing |
+| the takeback exceeds what the chart shows was paid | not applicable | `TAKEBACK_EXCEEDS_PAYMENT` — **blocking**, compared as magnitudes; skipped, never passed, when the amount is unknown |
+| deleted / `'unknown'` / transferred / blocked status | **blocking** | **blocking** — identical. These are reasons Open Dental cannot be trusted about a line at all, and no direction of money makes an unreadable procedure safe |
+| line pairing | eligible = not deleted, not transferred, not blocked, **no check attached** | eligible = not deleted, not transferred, not blocked, **`InsPayAmt ≠ 0`**. Unpaired reads *"no paid line on this claim to reverse"* |
+
+**A PARTITION AGAIN, NOT A RELAXATION.** The inversion is exactly two codes
+wide, the fact still prints under its own name with the opposite verdict, and
+the takeback lane gains **two refusals of its own** that the payment lane has no
+use for. Nothing was switched off: a takeback against an unpaid line, or one
+larger than the payment on the chart, is refused where before it was not
+expressible.
+
+**Being on a check is reported, not required.** A line paid but not yet attached
+to a ClaimPayment still has money to take back, and demanding the check would
+refuse a takeback against a payment posted by hand in Open Dental.
+
+#### And the evidence must have been gathered for the right question
+
+| | |
+| --- | --- |
+| Code | `MATCH_TAKEN_FOR_A_TAKEBACK` |
+| Path | **recoupment only**, like the two checks above it |
+| Passes when | `snapshot.takeback === true` |
+| Fix | *Run the match again on this claim.* |
+
+`NO_BLOCKING_PREFLIGHT` and `LINES_PAIRED` both read the snapshot, and the
+snapshot answers one of two opposite questions. Asserting the lane **before**
+either of them speaks means a biller reading three red checks is told the one
+thing that fixes all three, instead of two true-but-irrelevant sentences about
+payments. A v2 snapshot written before the field existed carries no lane and
+reads as `false` — correct rather than merely convenient: those snapshots really
+were taken for a payment.
+
+#### Pinned by `routes/rcm/takebackAgainstPostedChart.test.js`
+
+**The chart in that file is not written down.** Plan A is posted through the
+real `postingDrain.drainOffice` against `FakeOd`, and whatever state that leaves
+is what the reversal is evaluated against — including the assertion that the
+payment lane still produces the walk night refusal, and that the ordinary
+Approve button still refuses the claim outright. If the drain's output and the
+takeback's expectations ever drift apart again, that file is what notices.
 
 ### Blocking (24)
 

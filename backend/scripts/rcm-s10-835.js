@@ -414,11 +414,16 @@ function main() {
     console.log('\n  ! UPLOAD THIS ONE LAST, and only after target A has actually POSTED.');
     console.log('    A takeback acts on a claimproc that is already Received and already on a');
     console.log('    check. Before A drains there is nothing on the chart to take back from.');
-    console.log('\n  ! THE APPROVAL GATE REFUSES THIS FILE TODAY. A real reversal carries');
-    console.log('    `reversal_not_postable` on the claim and `negative_total_payment` on the');
-    console.log('    remittance, and BOTH are `blocking` in rcmVocabulary -- so');
-    console.log('    NO_BLOCKING_REASON fails even on the recoupment approve. See');
-    console.log('    docs/RCM_POSTING.md section 10.6. That is a ruling, not a change here.');
+    console.log('\n  ! RUN THE MATCH ON THIS FILE ONLY AFTER TARGET A HAS POSTED.');
+    console.log('    A takeback pairs to the PAID line, so the match has to see the chart the');
+    console.log('    drain left behind. Matched before A posts, it finds nothing to reverse and');
+    console.log('    the approve refuses NO_REVERSIBLE_LINES -- correctly. Re-match to fix it.');
+    console.log('\n    (This banner has been wrong twice, so it now says what is CLOSED. The');
+    console.log('     blocking review reasons -- reversal_not_postable, negative_total_payment');
+    console.log('     -- are answered by TAKEBACK_ACKNOWLEDGED since the D-11 amendment of');
+    console.log('     2026-08-27. The payment-lane pre-flight blockers and the line pairing');
+    console.log('     were inverted for takebacks after walk night 2. See');
+    console.log('     docs/RCM_APPROVAL_GATE.md sections 3.1 and 3.2.)');
   }
 
   console.log('\nDONE. Nothing was read from or written to Open Dental.');

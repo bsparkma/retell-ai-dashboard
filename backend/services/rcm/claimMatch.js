@@ -243,6 +243,66 @@ const OD_BLOCKERS = Object.freeze({
     label: 'No payable lines',
     detail: 'Every line on this claim is deleted, transferred, or in a blocked status.',
   },
+
+  /*
+   * ── THE TAKEBACK LANE ─────────────────────────────────────────────────────
+   *
+   * A takeback asks the OPPOSITE question of a payment, and until walk night 2
+   * this file only knew how to ask one of them.
+   *
+   * A payment needs a line Open Dental will let us PUT money onto: not deleted,
+   * not transferred, not a blocked status, and NOT already attached to a check
+   * (`LINE_HAS_CLAIM_PAYMENT` — OD refuses `Cannot change InsPayAmt when Status
+   * is Received and attached to a ClaimPayment`).
+   *
+   * A takeback needs the exact state that refusal describes. The line it
+   * reverses must ALREADY be paid, and on a real reversal it is also already on
+   * a check — because the money it is taking back is money this module posted.
+   * Reading `LINE_HAS_CLAIM_PAYMENT` and `NO_PAYABLE_LINES` as blocking on that
+   * lane made D-6's typed-confirmation path unreachable for the only chart state
+   * a takeback can ever target: the one the drain itself just wrote.
+   *
+   * So the two codes below REPLACE those two on the takeback lane. They are not
+   * a filter and nothing vanishes — the fact is still reported, by name, with
+   * the opposite verdict, and the takeback lane grows two refusals of its own
+   * that the payment lane has no use for.
+   */
+
+  /**
+   * The precondition, reported rather than refused.
+   *
+   * Non-blocking on purpose: this is the state a takeback REQUIRES. It stays on
+   * the list so the screen still shows a biller that the chart line carries a
+   * check — which is the fact that makes the ordinary Approve button refuse, and
+   * therefore the fact she needs in front of her when she reaches for the
+   * takeback panel instead.
+   */
+  LINE_PAID_AND_ON_CHECK: {
+    blocking: false,
+    label: 'The payment this takeback reverses is on the chart',
+    detail:
+      'A line carries an insurance payment attached to a check. That is what a takeback ' +
+      'reverses — and it is also why this claim cannot be approved through the ordinary ' +
+      'button, which would try to change InsPayAmt on a line Open Dental has locked.',
+  },
+  /** The inverse of NO_PAYABLE_LINES: nothing here has been paid. */
+  NO_REVERSIBLE_LINES: {
+    blocking: true,
+    label: 'No payment on this claim to take back',
+    detail:
+      'No live line on this claim carries an insurance payment. A takeback against a line ' +
+      'the carrier never paid is not a reversal of anything — it would put money on a ' +
+      'ledger nobody can account for.',
+  },
+  /** More coming back than ever went in. */
+  TAKEBACK_EXCEEDS_PAYMENT: {
+    blocking: true,
+    label: 'The takeback is larger than the payment on the chart',
+    detail:
+      'The carrier is asking for more than Open Dental shows was paid on this claim. Either ' +
+      'the remittance is not about these lines or part of the payment is somewhere else — ' +
+      'posting it would leave the ledger short by the difference.',
+  },
   DELETED_STATUS_UNKNOWN: {
     blocking: true,
     label: 'Cannot tell whether a line was deleted',
@@ -483,12 +543,66 @@ function summariseLines(claimProcs, proceduresByProcNum) {
 }
 
 /**
+ * Is the carrier taking money BACK?
+ *
+ * ONE definition, and `routes/rcm/approvalGate.js` calls this rather than
+ * keeping its own — the gate and the match must not be able to disagree about
+ * which lane a claim is on, because the match gathers the evidence the gate then
+ * judges. They disagreed for exactly one walk night and it cost the third
+ * takeback attempt.
+ *
+ * Read off the MONEY, never off a flag: the claim's own paid total, and what the
+ * batch says this claim moved. Either being negative is a takeback.
+ *
+ * @param {{ totalPaidCents?: unknown, paidCents?: unknown }} [amounts]
+ * @returns {boolean}
+ */
+function isTakeback({ totalPaidCents, paidCents } = {}) {
+  const claimTotal = Number(totalPaidCents);
+  if (Number.isFinite(claimTotal) && claimTotal < 0) return true;
+  const batchPaid = Number(paidCents);
+  return Number.isFinite(batchPaid) && batchPaid < 0;
+}
+
+/**
+ * Can this chart line be REVERSED — i.e. does it carry insurance money?
+ *
+ * Deliberately not "is it on a check". A line paid but not yet attached to a
+ * ClaimPayment still has money on it to take back, and demanding the check
+ * would refuse a takeback against a payment posted by hand in Open Dental. The
+ * check is REPORTED (`LINE_PAID_AND_ON_CHECK`), not required.
+ *
+ * `deleted === false` rather than `!deleted` for the same reason the payment
+ * lane uses it: `'unknown'` means the procedure row could not be read, and a
+ * soft-deleted procedure is indistinguishable from a live one without it.
+ *
+ * @param {OdLineFacts} l
+ * @returns {boolean}
+ */
+function isReversibleLine(l) {
+  return (
+    l.deleted === false && !l.isTransfer && !l.blockedStatus && Number(l.insPayAmtCents || 0) !== 0
+  );
+}
+
+/**
  * The pre-flight blockers on one candidate, in the order a biller reads them.
+ *
+ * `takeback` swaps two of them for their inverses — see the takeback lane in
+ * `OD_BLOCKERS`. Everything else (deleted, transferred, blocked status,
+ * unreadable) is the same fact and the same verdict on both lanes: they are
+ * reasons Open Dental cannot be trusted about a line at all, and no direction of
+ * money makes them safe.
+ *
  * @param {OdLineFacts[]} lines
  * @param {Record<string, unknown>} claim raw OD claim row
+ * @param {{ takeback?: boolean, takebackCents?: number|null }} [opts]
+ *   `takebackCents` is the remittance's own (negative) total for this claim,
+ *   when known. Omitted, the coverage check is simply not made — a missing
+ *   amount is not evidence that the chart covers it.
  * @returns {Array<{ code: string, blocking: boolean, label: string, detail: string, count?: number }>}
  */
-function findBlockers(lines, claim) {
+function findBlockers(lines, claim, { takeback = false, takebackCents = null } = {}) {
   /** @type {Array<{code:string, blocking:boolean, label:string, detail:string, count?:number}>} */
   const out = [];
   const add = (code, count) => out.push({ code, ...OD_BLOCKERS[code], ...(count ? { count } : {}) });
@@ -505,13 +619,41 @@ function findBlockers(lines, claim) {
 
   const live = lines.filter((l) => l.deleted === false);
   const withPayment = live.filter((l) => l.claimPaymentNum !== null).length;
-  if (withPayment) add('LINE_HAS_CLAIM_PAYMENT', withPayment);
+  // THE SWAP. On the takeback lane an attached check is the precondition, and
+  // saying so is not the same as saying nothing — the fact still prints.
+  if (withPayment) add(takeback ? 'LINE_PAID_AND_ON_CHECK' : 'LINE_HAS_CLAIM_PAYMENT', withPayment);
 
   const transfers = live.filter((l) => l.isTransfer).length;
   if (transfers) add('LINE_IS_TRANSFER', transfers);
 
   const blockedStatus = live.filter((l) => l.blockedStatus).length;
   if (blockedStatus) add('LINE_STATUS_BLOCKED', blockedStatus);
+
+  if (takeback) {
+    /*
+     * THE INVERSE, AND IT IS A REAL REFUSAL.
+     *
+     * "Every line is already paid" is what the payment lane calls
+     * NO_PAYABLE_LINES and refuses on. The takeback lane refuses on the
+     * opposite: nothing here was ever paid, so there is nothing to reverse.
+     */
+    const reversible = live.filter(isReversibleLine);
+    if (lines.length > 0 && reversible.length === 0) add('NO_REVERSIBLE_LINES');
+
+    /*
+     * AND IT MUST FIT. A carrier asking for $2.00 back off a $1.00 payment is
+     * either not talking about these lines or is taking part of it from
+     * somewhere else; posting it would leave the ledger short by the
+     * difference. Compared as magnitudes so the sign convention on either side
+     * cannot turn a refusal into a pass.
+     */
+    const asked = Math.abs(Number(takebackCents));
+    if (Number.isFinite(asked) && asked > 0 && reversible.length > 0) {
+      const paidOnChart = reversible.reduce((a, l) => a + Math.abs(Number(l.insPayAmtCents) || 0), 0);
+      if (asked > paidOnChart) add('TAKEBACK_EXCEEDS_PAYMENT');
+    }
+    return out;
+  }
 
   const payable = live.filter((l) => !l.isTransfer && !l.blockedStatus && l.claimPaymentNum === null);
   if (lines.length > 0 && payable.length === 0) add('NO_PAYABLE_LINES');
@@ -564,7 +706,7 @@ function bandFor(score) {
  *         lines: OdLineFacts[], deletedLineCount: number },
  * }}
  */
-function scoreCandidate(proposal, candidate) {
+function scoreCandidate(proposal, candidate, { takeback = false, takebackCents = null } = {}) {
   const claim = candidate.claim || {};
   const lines = summariseLines(candidate.claimProcs || [], candidate.procedures || new Map());
   /*
@@ -683,7 +825,7 @@ function scoreCandidate(proposal, candidate) {
     score,
     confidence: bandFor(score),
     evidence,
-    blockers: findBlockers(lines, claim),
+    blockers: findBlockers(lines, claim, { takeback, takebackCents }),
     od: {
       claimStatus: String(claim.ClaimStatus ?? ''),
       dateService: odDate,
@@ -729,9 +871,13 @@ function scoreCandidate(proposal, candidate) {
  *   DISQUALIFYING_TAGS for why that turns the name rule off.
  * @returns {{ candidates: ReturnType<typeof scoreCandidate>[], ambiguous: boolean, margin: number|null }}
  */
-function rankCandidates(proposal, candidates, { patientResolvedByLink = false } = {}) {
+function rankCandidates(
+  proposal,
+  candidates,
+  { patientResolvedByLink = false, takeback = false, takebackCents = null } = {}
+) {
   const scored = (candidates || [])
-    .map((c) => scoreCandidate(proposal, c))
+    .map((c) => scoreCandidate(proposal, c, { takeback, takebackCents }))
     // Highest first; ClaimNum ascending as the tie-break so the order is
     // deterministic across runs. A stable order is what makes a screenshot and
     // a re-run comparable.
@@ -779,22 +925,40 @@ function rankCandidates(proposal, candidates, { patientResolvedByLink = false } 
  * is a real answer, and 6c refusing to post one is better than 6c posting it
  * against whichever claimproc happened to be next.
  *
- * Deleted, transferred, blocked and already-paid lines are NOT eligible — every
- * one of them is a line Open Dental would refuse.
+ * On the PAYMENT lane, deleted, transferred, blocked and already-paid lines are
+ * NOT eligible — every one of them is a line Open Dental would refuse to PUT
+ * money onto.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ON THE TAKEBACK LANE THE PAID LINES ARE THE ONLY ELIGIBLE ONES
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A reversal does not pair to a line it could be paid into; it pairs to the line
+ * it is taking money OUT of. Walk night 2 found this the hard way: with the
+ * reversal 835 matched to the claim the drain had just posted, every line on the
+ * chart was paid and on a check, the eligible set was empty, and the match
+ * reported *"no postable line on this claim"* — a sentence that is true of a
+ * payment and meaningless about a reversal. `LINES_PAIRED` then failed at the
+ * gate and D-6's typed confirmation could never be reached.
+ *
+ * The rule inverts and nothing else changes: same greedy code-then-amount
+ * pairing, same refusal to guess, same one-claimproc-per-line.
  *
  * @param {ReadonlyArray<{ lineId?: string, position?: number, billedCode?: unknown,
  *                         paidCode?: unknown, code?: unknown, billedCents?: unknown }>} proposalLines
  * @param {ReadonlyArray<OdLineFacts>} odLines
+ * @param {{ takeback?: boolean }} [opts]
  * @returns {Array<{ lineId: string|null, position: number|null, code: string,
  *                   odClaimProcNum: number|null, odCode: string|null,
  *                   billedDeltaCents: number|null, reason: string|null }>}
  */
-function pairLines(proposalLines, odLines) {
+function pairLines(proposalLines, odLines, { takeback = false } = {}) {
   // `deleted === false` rather than `!deleted`: 'unknown' is truthy-adjacent
   // and must NOT be pairable — pairing writes a ClaimProcNum that Slice 6c PUTs
   // money against, and an unread procedure may be a soft-deleted one.
-  const eligible = (odLines || []).filter(
-    (l) => l.deleted === false && !l.isTransfer && !l.blockedStatus && l.claimPaymentNum === null
+  const eligible = (odLines || []).filter((l) =>
+    takeback
+      ? isReversibleLine(l)
+      : l.deleted === false && !l.isTransfer && !l.blockedStatus && l.claimPaymentNum === null
   );
   const taken = new Set();
 
@@ -830,7 +994,9 @@ function pairLines(proposalLines, odLines) {
       reason: chosen
         ? null
         : eligible.length === 0
-          ? 'no postable line on this claim'
+          ? takeback
+            ? 'no paid line on this claim to reverse'
+            : 'no postable line on this claim'
           : 'no line on this claim carries this code',
     };
   });
@@ -854,6 +1020,8 @@ module.exports = {
   scoreCandidate,
   rankCandidates,
   pairLines,
+  isTakeback,
+  isReversibleLine,
   // Exported for the shell and its tests; pure and individually meaningful.
   summariseLines,
   procCode,
