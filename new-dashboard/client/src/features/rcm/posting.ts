@@ -48,6 +48,12 @@ export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: 
     label: "Blocked",
     hint: "No Open Dental call was made. Somebody has to change something before this can post.",
   },
+  withdrawn: {
+    label: "Retired",
+    hint:
+      "This plan will never post. It is kept so the remittance still has a record, but " +
+      "it cannot be drained again.",
+  },
 };
 
 export function queueStateTone(label: PostingQueueLabel): string {
@@ -61,6 +67,12 @@ export function queueStateTone(label: PostingQueueLabel): string {
       return "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300";
     case "blocked":
       return "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+    // Deliberately the quietest tone in the set. A retired plan is not a
+    // problem to solve and not a success to celebrate; it is a closed file, and
+    // it should not compete for attention with the plans that still need a
+    // human.
+    case "withdrawn":
+      return "bg-muted text-muted-foreground line-through decoration-muted-foreground/40";
     default:
       return "bg-muted text-muted-foreground";
   }
@@ -155,6 +167,39 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
     fix: "This is a development safety setting. Nothing was sent.",
   },
 };
+
+/**
+ * Why a plan was retired. Two reasons, and they read very differently: one is
+ * something the machine found out, the other is something a person decided.
+ */
+const WITHDRAWN_COPY: Record<string, { label: string; fix: string }> = {
+  target_removed: {
+    label: "The claim this plan was for no longer exists",
+    fix:
+      "The drain asked Open Dental and got nothing back — the claim was deleted after this " +
+      "plan was approved. Open Dental never reuses a claim number, so this can never post, and " +
+      "this remittance can never be posted through CareIN. If the money still needs to reach the " +
+      "chart, post it by hand in Open Dental.",
+  },
+  manual: {
+    label: "Retired by hand",
+    fix:
+      "Somebody decided this plan should not post; their reason is below. This remittance can " +
+      "never be posted through CareIN — if the money still needs to reach the chart, post it by " +
+      "hand in Open Dental.",
+  },
+};
+
+/** @see WITHDRAWN_COPY — fails closed onto the slug, exactly as blockedCopy does. */
+export function withdrawnCopy(reason: string | null): { label: string; fix: string } | null {
+  if (!reason) return null;
+  return (
+    WITHDRAWN_COPY[reason] ?? {
+      label: reason.replace(/_/g, " "),
+      fix: "This plan was retired and will not post.",
+    }
+  );
+}
 
 export function blockedCopy(reason: string | null): { label: string; fix: string } | null {
   if (!reason) return null;

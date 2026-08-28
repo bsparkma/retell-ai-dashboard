@@ -65,12 +65,89 @@ partially_posted ─┘   ├─► partially_posted
 | `partially_posted` | Partly posted | Some of the sequence reached the chart and some did not. The lines say exactly where. |
 | `failed` | Failed | Nothing was written. |
 | `blocked` | Blocked | **No Open Dental call was made** and none will be until a human changes something. |
+| `withdrawn` | Retired | **TERMINAL.** This plan will never post. Not in `DRAINABLE_STATUSES`, so it cannot be pressed at all. |
 
 **`blocked` is not `failed`, and the distinction is load-bearing.** `failed`
 means something was attempted and did not work; `blocked` means nothing was
 attempted. Collapsing them would leave the queue unable to say which of two very
 different things happened — and the two need different actions from different
 people.
+
+### 2.2.0 `withdrawn` — the one state with no way out
+
+A plan can be approved for money that is never going to post through CareIN. Its
+Open Dental claim was deleted; the remittance was re-keyed by hand; the biller
+posted it in the desktop and only then found the queue. Until 6e the only honest
+thing the queue could do was keep offering to drain it.
+
+**Why this is a status and not another `blocked_reason`.** `blocked_reason`
+carries no CHECK, so a new reason would have needed no migration at all. It would
+also have been wrong. §2.2.1 defines `blocked` by a promise — *it has a way
+out* — and every reason in that vocabulary is something a human can act on.
+A deleted ClaimNum is not, because Open Dental never reissues one. Filing it
+under `blocked` would let a biller press Drain forever, one paced Open Dental
+read per press, and would make §2.2.1's promise false for a member of its own
+vocabulary.
+
+| Reason | Who decided | Note |
+| --- | --- | --- |
+| `target_removed` | the drain | none — there is no human in that path, and making the machine invent prose is the habit `blocked_reason` exists to avoid |
+| `manual` | a person with `rcm.write` | **required**, and the only account of the decision |
+
+**It is not a delete.** The plan, its lines, its approval and its audit trail all
+stay. `rcm_posting_queue` is unique on `(office_id, remittance_key)` — a
+remittance gets exactly ONE plan, ever (§15.1) — so deleting the row would
+silently make a second plan enqueueable for the same money.
+
+**It is unreachable from `posted`, `partially_posted` and `posting`.** Money that
+moved happened, and a withdrawal that could cover a posted plan would be a way to
+make the queue disagree with the chart. `posting` is excluded for the same reason
+the drain never picks it up: a run owns that row. Three guards say so —
+`WITHDRAWABLE_STATUSES` in the `UPDATE`'s own `WHERE`, the route's 409, and
+`rcm_posting_queue_withdrawn_no_money_check`, which refuses the *evidence* rather
+than the state and is the half a future code path cannot talk its way past.
+
+**The 404 pre-check costs nothing extra.** The drain's first Open Dental call is
+already `GET /claims/{n}` — rule 3, the chart's truth before any decision — so
+asking "does this claim still exist" is not a new call, it is a different reading
+of the answer. A 404 is not a failure to find out; it IS finding out. **Every
+other non-ok status still yields `failed`**, because a timeout or a 500 means
+nobody knows yet, and retiring a good plan over a bad minute has no undo.
+
+**What it does NOT do.** It does not touch Open Dental — nothing is written,
+nothing is reversed, and a chart that already carries money keeps it. It does not
+un-spend any Open Dental id either.
+
+**AND IT DOES NOT FREE THE REMITTANCE.** The unique index is on
+`(office_id, remittance_key)` and a withdrawn plan is still a plan, so
+**a remittance whose plan has been retired can never be posted through CareIN
+again.** A biller who retires a mis-approval intending to redo it correctly finds
+that out when the second approve is refused — by which time the first is gone.
+The dialog says so in those words before the confirm, and the retired row repeats
+it for whoever finds it later. §15.1's **6d.2** lifts the restriction and has
+been rescheduled to land BEFORE the first real drain at Roland.
+
+#### Retiring a plan from inside a container
+
+The button is the normal path. `scripts/rcm-withdraw-plan.js` is for the case it
+cannot reach — an operator on `az containerapp exec` rather than a browser. The
+first plan it was written for is the 2026-08-26 walk's orphan: queue
+`9ad950ad-…`, whose claim 53805 the §11 unwind deleted.
+
+```bash
+# Dry run FIRST — it prints the plan it would retire, and stops.
+RCM_TENANT=carein node scripts/rcm-withdraw-plan.js \
+  --office roland --queue 9ad950ad \
+  --note "claim 53805 was deleted by the s11 unwind on 2026-08-26"
+
+# Then, once the printed plan is the right one, the same command plus --execute.
+```
+
+The id is a **PREFIX** — queue ids reach an operator truncated, through a
+screenshot or a log line, and retyping 36 characters into a shell that splits on
+whitespace is how the wrong plan gets retired. Two matches is a refusal, never a
+coin flip. It goes through the same `withdrawRow` the button uses, so every guard
+applies, and it reads the row back before reporting success.
 
 ### 2.2.1 The recovery contract — `blocked` has a way out
 
@@ -2373,6 +2450,32 @@ The design, as ruled:
 - the follow-on's check is a **separate OD check**, with `-2` suffixed to the
   check number so the practice's deposit can tell the two apart.
 
+##### ⚠ RESCHEDULED 2026-08-27: **6d.2 MOVES BEFORE THE FIRST REAL DRAIN**
+
+`withdrawn` made this urgent rather than merely desirable, and the reason is
+worth stating plainly because it is not obvious from either feature on its own.
+
+Retiring a plan does **not** free its remittance. The unique index is on
+`(office_id, remittance_key)` and a withdrawn plan is still a plan, so a biller
+who retires a mis-approval intending to redo it correctly discovers the trap
+only when the second approve is refused — by which time the first is gone and
+the money has no route through CareIN at all. That is a worse failure than the
+one `withdrawn` was built to fix, and it is reachable by an ordinary,
+well-intentioned sequence of clicks.
+
+Two things follow, and only the first is in the `withdrawn` PR:
+
+1. **The withdraw dialog says it before the confirm**, in these words: *"This
+   remittance can never be posted through CareIN after this. If the money still
+   needs to reach the chart, post it by hand in Open Dental."* The retired row's
+   own copy says the same, for the person who finds it later rather than the
+   person who did it. A consequence a screen cannot recover from has to be on
+   the screen that causes it.
+2. **6d.2 lands before the first real drain at Roland.** Not before the walk —
+   the walk is on a disposable patient and a hand-posted correction there costs
+   nothing — but before a live remittance is ever approved, because from that
+   point on the trap is set on real money.
+
 Until then the two 409s below are the honest answer, and `QUEUE_ALREADY_RAN`
 means *"post this claim by hand"* rather than *"wait"*.
 
@@ -2426,7 +2529,9 @@ attach (§3.8) · the `RCM_DRAIN_STEP_DELAY_MS` pause hook (§10.3).
 
 **Still out of scope:** patient portion / PaySplits / `/payments` (PRD-deferred,
 and `ApiPayments` is not enabled on the key at all, G11) · auto-drain on approve
-(a later decision) · the 6d.2 follow-on plan (**decided and scheduled**, §15.1) ·
+(a later decision) · the 6d.2 follow-on plan (**decided, and rescheduled 2026-08-27
+to land BEFORE the first real drain at Roland** — `withdrawn` makes the
+one-plan-per-remittance rule reachable by an ordinary sequence of clicks, §15.1) ·
 rendering an 835 as a PDF (§3.8) · reconciliation, VCC, Stedi, OCR · entitlement
 changes · prod.
 

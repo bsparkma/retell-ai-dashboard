@@ -69,6 +69,7 @@ import {
   getPostingPlan,
   listPostingQueue,
   retryDocumentAttach,
+  withdrawPostingPlan,
   RcmApiError,
   RCM_OFFICE_LABELS,
   type DrainResult,
@@ -80,6 +81,7 @@ import {
 import { day, money, officeDay, OFFICE_TIME_NOTE } from "@/features/rcm/format";
 import {
   blockedCopy,
+  withdrawnCopy,
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
   queueStateTone,
@@ -307,6 +309,8 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
                 key={row.queueId}
                 office={office}
                 row={row}
+                canWrite={state.page.canDrain}
+                onWithdrawn={load}
                 // The explainer goes on the FIRST posted plan on the page and
                 // nowhere else. See PlanCard.
                 explainReadback={
@@ -457,6 +461,152 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
 }
 
 /**
+ * Retire a plan that must never post.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS BEHIND A DISCLOSURE AND NOT A BUTTON ON THE ROW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It is terminal. There is no un-withdraw, and a plan that leaves
+ * `DRAINABLE_STATUSES` never comes back to the queue. A one-click affordance
+ * beside Refresh — on a screen a biller scans fast, on rows that all look alike
+ * — is how the wrong plan gets retired.
+ *
+ * So: closed by default, opens into a note field, and the primary button stays
+ * disabled until there is something to record. The note is not politeness. For a
+ * `manual` withdrawal it is the ONLY account of why money that was approved is
+ * not going to post; the server refuses without it, and this form would be
+ * lying if it implied otherwise.
+ */
+function WithdrawPanel({
+  office,
+  row,
+  canWrite,
+  onWithdrawn,
+}: {
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+  canWrite: boolean;
+  onWithdrawn: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /*
+   * The states a plan may be retired FROM, mirroring the server's
+   * WITHDRAWABLE_STATUSES. `posted` and `partially_posted` are absent because
+   * money that moved happened — retiring those would be a way to make the queue
+   * disagree with Open Dental. `posting` is absent because a run owns the row.
+   *
+   * The client hides the control; the server refuses it anyway. Neither is
+   * sufficient alone: hiding it is how the screen stays honest, and refusing it
+   * is what makes the rule true.
+   */
+  const eligible = ["approved", "failed", "blocked"].includes(row.status);
+  if (!eligible) return null;
+
+  const submit = () => {
+    if (busy || note.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    withdrawPostingPlan(office, row.queueId, note.trim())
+      .then(() => onWithdrawn())
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "The plan was not retired. Nothing changed."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        disabled={!canWrite}
+        title={canWrite ? undefined : "Retiring a plan needs posting permission"}
+        className="mt-2 text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
+        data-testid={`posting-withdraw-open-${row.queueId}`}
+      >
+        This plan will never post — retire it
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="mt-2 rounded-md border border-border bg-muted/40 p-3"
+      data-testid={`posting-withdraw-panel-${row.queueId}`}
+    >
+      <p className="text-sm font-medium text-foreground">Retire this plan</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        It stays on the remittance so there is still a record, but it can never be drained again.
+        There is no undo. Nothing is written to Open Dental.
+      </p>
+      {/*
+        THE CONSEQUENCE A BILLER CANNOT DISCOVER FROM THE SCREEN.
+        `rcm_posting_queue` is unique on (office_id, remittance_key) — one plan
+        per remittance, ever — so retiring this one does not free the remittance
+        to be approved again. Somebody who retires a mis-approval intending to
+        redo it correctly would find that out only when the second approve was
+        refused, after the first was already gone. It has to be said BEFORE the
+        confirm, not in a tooltip. (6d.2 makes a follow-on plan possible; until
+        it lands, this is the truth.)
+      */}
+      <p
+        className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+        data-testid={`posting-withdraw-permanence-${row.queueId}`}
+      >
+        This remittance can never be posted through CareIN after this. If the money still needs to
+        reach the chart, post it by hand in Open Dental.
+      </p>
+      <label
+        htmlFor={`withdraw-note-${row.queueId}`}
+        className="mt-2 block text-xs font-medium text-foreground"
+      >
+        Why? This is the only place it will be recorded.
+      </label>
+      <textarea
+        id={`withdraw-note-${row.queueId}`}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={2}
+        className="mt-1 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground"
+        data-testid={`posting-withdraw-note-${row.queueId}`}
+      />
+      {error && (
+        <p
+          className="mt-1.5 text-xs text-rose-700 dark:text-rose-300"
+          data-testid={`posting-withdraw-error-${row.queueId}`}
+        >
+          {error}
+        </p>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={submit}
+          disabled={busy || note.trim().length < 3}
+          className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid={`posting-withdraw-submit-${row.queueId}`}
+        >
+          {busy ? "Retiring…" : "Retire this plan"}
+        </button>
+        <button
+          onClick={() => {
+            setOpen(false);
+            setNote("");
+            setError(null);
+          }}
+          className="text-xs text-muted-foreground underline underline-offset-2"
+          data-testid={`posting-withdraw-cancel-${row.queueId}`}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * One plan, with its lines behind a disclosure.
  *
  * `firstPosted` decides which card carries the read-back explainer: the phrase
@@ -468,10 +618,14 @@ function PlanCard({
   office,
   row,
   explainReadback,
+  canWrite,
+  onWithdrawn,
 }: {
   office: RcmOfficeId;
   row: PostingQueueRow;
   explainReadback: boolean;
+  canWrite: boolean;
+  onWithdrawn: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<PostingQueueDetail | null>(null);
@@ -479,6 +633,7 @@ function PlanCard({
   const [retrying, setRetrying] = useState(false);
   const copy = QUEUE_STATE_COPY[row.statusLabel];
   const blocked = blockedCopy(row.blockedReason);
+  const withdrawn = withdrawnCopy(row.withdrawnReason);
 
   /*
    * Re-file an EOB that did not file. It cannot move a cent — the server
@@ -602,6 +757,33 @@ function PlanCard({
               ignores, so the read is the proof and the status code is not.
             </p>
           )}
+
+          {withdrawn && (
+            <div
+              className="mt-2 rounded-md border border-border bg-muted/50 p-2 text-sm"
+              data-testid={`posting-withdrawn-${row.queueId}`}
+            >
+              <div className="font-medium text-foreground">{withdrawn.label}</div>
+              <p className="mt-0.5 text-muted-foreground">{withdrawn.fix}</p>
+              {/* The biller's own sentence, quoted rather than paraphrased. For
+                  a `manual` withdrawal it is the only account of the decision. */}
+              {row.withdrawnNote && (
+                <p
+                  className="mt-1 border-l-2 border-border pl-2 italic text-muted-foreground"
+                  data-testid={`posting-withdrawn-note-${row.queueId}`}
+                >
+                  {row.withdrawnNote}
+                </p>
+              )}
+            </div>
+          )}
+
+          <WithdrawPanel
+            office={office}
+            row={row}
+            canWrite={canWrite}
+            onWithdrawn={onWithdrawn}
+          />
 
           {blocked && (
             <div

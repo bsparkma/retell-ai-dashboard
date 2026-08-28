@@ -46,7 +46,7 @@ import type {
   WorkbenchClaim,
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
-import { blockedCopy } from "@/features/rcm/posting";
+import { blockedCopy, withdrawnCopy } from "@/features/rcm/posting";
 import { officeDay } from "@/features/rcm/time";
 
 export const RCM_STEPS = [
@@ -579,6 +579,22 @@ export function postStepFor(row: PostingQueueRow): StepView {
           "Nothing was written. Draining again re-reads Open Dental first and starts clean.",
         here,
       );
+    case "withdrawn": {
+      /*
+       * `unavailable`, not `blocked`. Every other unhappy state on this stepper
+       * is an instruction — fix the thing, press again. This one is a full stop:
+       * the plan will never post and there is nothing here for a biller to do.
+       * Rendering it as `blocked` would put a plan on her worklist forever.
+       */
+      const copy = withdrawnCopy(row.withdrawnReason);
+      const note = row.withdrawnNote ? ` “${row.withdrawnNote}”` : "";
+      return view(
+        "post",
+        "unavailable",
+        copy ? `${copy.label}. ${copy.fix}${note}` : "This plan was retired and will not post.",
+        here,
+      );
+    }
     case "blocked":
     default: {
       const copy = blockedCopy(row.blockedReason);

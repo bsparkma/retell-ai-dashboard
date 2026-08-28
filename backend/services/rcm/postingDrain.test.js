@@ -26,6 +26,8 @@
  */
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const postingDrain = require('./postingDrain');
@@ -129,6 +131,13 @@ function seedPlan(db, overrides = {}) {
       // 6d: the plan's SHAPE. NOT NULL DEFAULT true in the schema, so the
       // fixture carries the default rather than leaving it undefined.
       requires_check: true,
+      // The withdrawal columns. Seeded as null rather than omitted: an omitted
+      // column reads back `undefined`, a shape Postgres never produces, and a
+      // fixture that hands one out certifies code the real database would fail.
+      withdrawn_at: null,
+      withdrawn_by: null,
+      withdrawn_reason: null,
+      withdrawn_note: null,
       carrier_eob_date: '2026-03-01',
       intended_total_cents: 15000,
       posted_total_cents: 0,
@@ -614,7 +623,17 @@ test('a planned claimproc the chart does not have is a conflict, never a write',
 });
 
 test('the stored vocabulary and the screen vocabulary map one to one', () => {
-  const stored = require('../../migrations-tenant/1787120000000_rcm_posting_drain').QUEUE_STATUSES;
+  /*
+   * READ FROM THE MIGRATION THAT OWNS THE VOCABULARY *NOW*.
+   *
+   * This read 6c's list, which the withdraw migration has since re-keyed. A
+   * drift test pointed at a superseded CHECK stops drifting — it passes happily
+   * while the database accepts a word nothing here has a label for. Same trap
+   * `rcm-labels.test.ts` fell into once for the line vocabulary, and it is worth
+   * saying twice: when you re-key a CHECK, the tests that read it move with it.
+   */
+  const stored = require('../../migrations-tenant/1787300000000_rcm_posting_withdraw').QUEUE_STATUSES;
+  assert.ok(stored.includes('withdrawn'));
   for (const status of stored) {
     assert.ok(
       postingDrain.QUEUE_STATUS_LABEL[status],
@@ -2383,4 +2402,322 @@ test('releaseRow refuses to touch a row this run does not hold', async () => {
 
   assert.equal(row.status, 'blocked', 'left exactly as it was');
   assert.equal(row.blocked_reason, 'recoupment_unconfirmed');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 12. `withdrawn` — a plan whose target is gone, and which must never run
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The 2026-08-26 walk enqueued a plan for claim 53805 and the §11 unwind then
+ * deleted the claim out from under it. The unwind touches Open Dental and never
+ * the tenant database, so a plan outliving its target is not an accident — it is
+ * what the two halves of the walk do by design.
+ *
+ * Pressing Drain on such a plan reads a 404. That is not a failure to find out;
+ * it IS finding out, and since Open Dental never reissues a ClaimNum the answer
+ * will not change however many times it is asked.
+ */
+
+test('a plan whose claim has been deleted is WITHDRAWN, not failed', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  // The claim is gone from this practice's Open Dental. Everything else about
+  // the plan is exactly as it was approved.
+  od.rows.claims = [];
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'withdrawn', JSON.stringify(result.outcomes[0]));
+  assert.equal(result.outcomes[0].reason, 'target_removed');
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'withdrawn');
+  assert.equal(row.withdrawn_reason, 'target_removed');
+  assert.ok(row.withdrawn_at, 'the instant is stamped — the CHECK demands it');
+  assert.equal(row.withdrawn_note, null, 'no human in this path, so no invented prose');
+  assert.equal(row.blocked_reason, null, 'and it is not ALSO blocked');
+});
+
+test('a withdrawn plan cannot be drained again', async () => {
+  /*
+   * THE WHOLE POINT, and the difference from `blocked`.
+   *
+   * §2.2.1 defines `blocked` by a promise — it has a way out, and it is in
+   * DRAINABLE_STATUSES so a biller can fix the cause and press again. A deleted
+   * claim has no way out. Filing this under `blocked` would let her press
+   * forever, one paced Open Dental read each time, against a claim that will
+   * never exist again.
+   */
+  assert.ok(!postingDrain.DRAINABLE_STATUSES.includes('withdrawn'));
+
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  od.rows.claims = [];
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+
+  const callsBefore = od.pathsRead().length;
+  const again = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(again.ran, 0, 'the scan does not even pick it up');
+  assert.equal(
+    od.pathsRead().length,
+    callsBefore,
+    'and not one further Open Dental call was made'
+  );
+});
+
+test('exactly ONE Open Dental call is spent discovering the claim is gone', async () => {
+  /*
+   * The 404 pre-check is the read the forced order already makes first — rule 3,
+   * Open Dental's truth before any decision. Asking "does this claim still
+   * exist" is not a new call, it is a different reading of the answer. A test
+   * that let this grow into a second probe would be letting the drain pay twice
+   * for one fact.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  od.rows.claims = [];
+
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+
+  const claimReads = od.pathsRead().filter((p) => /^\/claims\//.test(p));
+  assert.equal(claimReads.length, 1, `expected one claim read, got ${claimReads.join(', ')}`);
+  assert.deepEqual(od.writesIssued(), [], 'and nothing was written');
+});
+
+test('a 500 on the claim read is still a failure, not a withdrawal', async () => {
+  /*
+   * THE DISTINCTION THAT MATTERS. Every other non-ok status means "we could not
+   * find out" — a timeout, a 500, a rate limit — and the honest response is to
+   * stop and let a human press again. Withdrawing on those would retire a
+   * perfectly good plan because Open Dental had a bad minute, and there is no
+   * un-withdraw.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  // The fake's own failure map, rather than a monkey-patch: a test that swaps a
+  // method out is testing the swap as much as the code.
+  od.fail = { '/claims/': { status: 500, error: 'upstream exploded' } };
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'failed');
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'failed');
+  assert.equal(row.withdrawn_reason, null);
+  assert.ok(
+    postingDrain.DRAINABLE_STATUSES.includes('failed'),
+    'and it stays pressable, because nobody knows yet whether the claim is there'
+  );
+});
+
+// ─── withdrawRow: what it will and will not touch ────────────────────────────
+
+test('withdrawRow refuses a plan that has already put money in a chart', async () => {
+  /*
+   * Money that moved happened. A withdrawal that could cover a `posted` plan
+   * would be a way to make the queue disagree with Open Dental, and every rule
+   * in this module points the other way.
+   */
+  for (const status of ['posted', 'partially_posted', 'posting']) {
+    const db = seedPlan(new FakeRcmDb());
+    const row = db.table('rcm_posting_queue')[0];
+    row.status = status;
+
+    const out = await postingDrain.withdrawRow(db, 'roland', row.queue_id, {
+      reason: 'manual',
+      note: 'no',
+      by: 'biller@example.invalid',
+    });
+
+    assert.equal(out.withdrawn, false, `${status} must not be withdrawable`);
+    assert.equal(out.status, status, 'and the caller is told which state it is in');
+    assert.equal(db.table('rcm_posting_queue')[0].status, status, 'the row is untouched');
+  }
+});
+
+test('withdrawRow works from approved, failed and blocked', async () => {
+  for (const status of postingDrain.WITHDRAWABLE_STATUSES) {
+    const db = seedPlan(new FakeRcmDb());
+    const row = db.table('rcm_posting_queue')[0];
+    row.status = status;
+    if (status === 'blocked') row.blocked_reason = 'no_pay_type';
+
+    const out = await postingDrain.withdrawRow(db, 'roland', row.queue_id, {
+      reason: 'manual',
+      note: 'Posted by hand in the desktop before this queue existed.',
+      by: 'biller@example.invalid',
+    });
+
+    assert.equal(out.withdrawn, true, `${status} should be withdrawable`);
+    assert.equal(row.status, 'withdrawn');
+    assert.equal(row.withdrawn_note, 'Posted by hand in the desktop before this queue existed.');
+    assert.equal(
+      row.blocked_reason,
+      null,
+      'a stale refusal must not survive onto a state that is not blocked — the CHECK forbids it'
+    );
+  }
+});
+
+test('withdrawRow cannot reach into another office', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const row = db.table('rcm_posting_queue')[0];
+
+  const out = await postingDrain.withdrawRow(db, 'valley', row.queue_id, {
+    reason: 'manual',
+    note: 'wrong office',
+    by: null,
+  });
+
+  assert.equal(out.withdrawn, false);
+  assert.equal(out.status, undefined, 'unreachable from the wrong office, not refused there');
+  assert.equal(row.status, 'approved');
+});
+
+test('withdrawing does not delete the plan or its lines', async () => {
+  /*
+   * `rcm_posting_queue` is unique on (office_id, remittance_key) — a remittance
+   * gets exactly ONE plan, ever (§15.1). Deleting the row would silently make a
+   * second plan enqueueable for the same money, which is the one thing that
+   * index exists to prevent.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const row = db.table('rcm_posting_queue')[0];
+  const lineCount = db.table('rcm_posting_queue_line').length;
+
+  await postingDrain.withdrawRow(db, 'roland', row.queue_id, {
+    reason: 'manual',
+    note: 'retiring this',
+    by: null,
+  });
+
+  assert.equal(db.table('rcm_posting_queue').length, 1, 'the plan is still there');
+  assert.equal(db.table('rcm_posting_queue_line').length, lineCount, 'and so are its lines');
+  assert.equal(row.approved_by, 'biller@example.invalid', 'and who approved it');
+});
+
+// ─── The auto-withdraw is provably PRE-WRITE ─────────────────────────────────
+
+test('every claim is READ before the first Open Dental write', () => {
+  /*
+   * The ordering the auto-withdraw rests on, pinned against the source rather
+   * than inferred. `read_od_truth` loops over every group reading its claim and
+   * its claimprocs; `claimproc_writes` is a later step entirely. So on a first
+   * attempt a 404 is always discovered with nothing written — which is what
+   * makes withdrawing safe there, and what `rcm_posting_queue_withdrawn_no_money_check`
+   * would otherwise have to catch after the fact.
+   */
+  const src = fs.readFileSync(
+    path.join(__dirname, 'postingDrain.js'),
+    'utf8'
+  );
+  const readStep = src.indexOf("step = 'read_od_truth'");
+  const writeStep = src.indexOf("step = 'claimproc_writes'");
+  const firstWrite = src.indexOf('odPostingWrites.writeClaimProc');
+  assert.ok(readStep > 0 && writeStep > 0, 'both steps are findable');
+  assert.ok(readStep < writeStep, 'the truth read precedes the write step');
+  assert.ok(
+    firstWrite === -1 || writeStep < firstWrite,
+    'and no claimproc write is issued before that step begins'
+  );
+});
+
+test('a claim 404 on a FRESH plan withdraws, with zero Open Dental writes', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const od = odFixture();
+  od.rows.claims = [];
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'withdrawn');
+  assert.deepEqual(od.writesIssued(), [], 'nothing was written, so nothing can be half-done');
+  assert.equal(db.table('rcm_posting_queue')[0].withdrawn_reason, 'target_removed');
+});
+
+test('a claim 404 on a plan that ALREADY wrote is FAILED, never withdrawn', async () => {
+  /*
+   * THE RESUME CASE, and the one the constraint would not have caught.
+   *
+   * `read_od_truth` runs on EVERY attempt, so a plan whose first run wrote a
+   * claimproc and died reaches this same 404 branch on its second. Retiring it
+   * would put "this never happened" on a plan that partly did — and
+   * `rcm_posting_queue_withdrawn_no_money_check` guards the CHECK NUMBER, which
+   * such a plan does not have yet, so the database would have accepted it.
+   */
+  const db = seedPlan(new FakeRcmDb());
+  const line = db.table('rcm_posting_queue_line')[0];
+  line.status = 'claimproc_written';
+  line.claimproc_written_at = new Date();
+
+  const od = odFixture();
+  od.rows.claims = [];
+
+  const result = await postingDrain.drainOffice(
+    ctxFor(db, od, { loadRemittancePdf: async () => null })
+  );
+
+  assert.equal(result.outcomes[0].status, 'failed', JSON.stringify(result.outcomes[0]));
+  assert.match(result.outcomes[0].detail, /already written to a chart/);
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'failed');
+  assert.equal(row.withdrawn_reason, null, 'NOT withdrawn');
+  assert.equal(row.withdrawn_at, null);
+  assert.match(row.last_error, /already written to a chart/);
+});
+
+test('the withdrawal CHECK is never asked to catch this — the code refuses first', () => {
+  /*
+   * A thrown CHECK inside the drain is a wedged `posting` row: the exception
+   * escapes mid-sequence with the plan claimed. The guard is in the code path so
+   * the database is never the thing that says no.
+   */
+  const src = fs.readFileSync(path.join(__dirname, 'postingDrain.js'), 'utf8');
+  const guard = src.indexOf('if (chartTouchedBy(plan.lines))');
+  const withdraw = src.indexOf('reason: WITHDRAW_REASONS.TARGET_REMOVED');
+  assert.ok(guard > 0 && withdraw > 0);
+  assert.ok(guard < withdraw, 'the refusal comes before the withdrawal, not after it');
+});
+
+test('chartTouchedBy reads a write, not merely a status', async () => {
+  /*
+   * Four different marks mean the same thing, and any one of them is enough:
+   * a line status past `pending`, a check number, a takeback adjustment, or a
+   * supplemental. `skipped_already_posted` is NOT one of them — it means Open
+   * Dental already showed the line Received with our amounts, so this module
+   * wrote nothing.
+   */
+  assert.equal(postingDrain.chartTouchedBy([]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'pending' }]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'skipped_already_posted' }]), false);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'skipped' }]), false);
+
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'claimproc_written' }]), true);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'paid' }]), true);
+  assert.equal(postingDrain.chartTouchedBy([{ status: 'recouped' }]), true);
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odClaimPaymentNum: 21399 }]),
+    true,
+    'a check number on a `pending` line is still a write that landed'
+  );
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odAdjustmentNum: 19110 }]),
+    true,
+    'and so is a takeback adjustment'
+  );
+  assert.equal(
+    postingDrain.chartTouchedBy([{ status: 'pending', odSupplementalClaimProcNum: 533931 }]),
+    true,
+    'and a supplemental most of all — that one is irreversible'
+  );
 });

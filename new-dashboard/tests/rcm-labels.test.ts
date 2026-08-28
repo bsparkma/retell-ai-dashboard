@@ -232,9 +232,24 @@ describe("the drain's vocabularies", () => {
      * fail-closed fallback in posting.ts exists to soften and this test exists to
      * stop happening at all.
      */
-    const slugs = [...DRAIN.matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
+    /*
+     * SCOPED TO `BLOCK_REASONS`, not to the whole file.
+     *
+     * This scraped every `NAME: 'slug',` line in postingDrain.js, which worked
+     * only while that file had exactly one such map. The withdraw slice added a
+     * second (`WITHDRAW_REASONS`) and this test immediately demanded BLOCKED
+     * copy for `target_removed` and `manual` — reasons a plan can never be
+     * blocked with. A drift test that reads a vocabulary by shape rather than by
+     * name drifts onto the next thing shaped like it.
+     */
+    const reasonBlock = DRAIN.match(/const BLOCK_REASONS = Object\.freeze\(\{([\s\S]+?)^\}\);/m);
+    expect(reasonBlock, "BLOCK_REASONS is no longer where this test looks").not.toBeNull();
+    const slugs = [...reasonBlock![1].matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
     const blockReasons = slugs.filter((s) => s !== "already_received_matching");
     expect(blockReasons.length).toBeGreaterThan(5);
+    // The withdrawal reasons live in their own map and are NOT block reasons.
+    expect(blockReasons).not.toContain("target_removed");
+    expect(blockReasons).not.toContain("manual");
 
     const missing = blockReasons.filter((r) => {
       const copy = blockedCopy(r);
@@ -286,6 +301,14 @@ describe("the drain's vocabularies", () => {
   });
 
   it("labels every plan state, and invents none the database cannot store", () => {
+    /*
+     * READ FROM THE MIGRATION THAT OWNS THE VOCABULARY *NOW*.
+     *
+     * The same trap the line-state test above already fell into once: this read
+     * 6c's `QUEUE_STATUSES` long after a later migration re-keyed the CHECK. A
+     * drift test pointed at a superseded constraint stops drifting — it passes
+     * happily while the client has no copy for a state a row can really hold.
+     */
     const MIGRATION = fs.readFileSync(
       path.join(
         __dirname,
@@ -293,13 +316,14 @@ describe("the drain's vocabularies", () => {
         "..",
         "backend",
         "migrations-tenant",
-        "1787120000000_rcm_posting_drain.js",
+        "1787300000000_rcm_posting_withdraw.js",
       ),
       "utf8",
     );
     const block = MIGRATION.match(/const QUEUE_STATUSES = \[([\s\S]+?)\];/);
     const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(stored).toContain("blocked");
+    expect(stored).toContain("withdrawn");
 
     /*
      * The client maps a LABEL to copy, never a stored word — the server ships
@@ -314,6 +338,7 @@ describe("the drain's vocabularies", () => {
       "partially_posted",
       "failed",
       "blocked",
+      "withdrawn",
     ]);
     expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
     expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);
