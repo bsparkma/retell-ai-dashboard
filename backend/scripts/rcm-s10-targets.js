@@ -355,8 +355,15 @@ function denyIdsFor(target) {
  * pointed at the wrong practice's ids by running in the wrong order. The same
  * reason office is in every database key in this module.
  *
+ * `eraRPath` is the RECOUPMENT file, and it is deliberately a separate name
+ * rather than a `-C` continuing the series. A, B and R are not three of a kind:
+ * A and B each pay a claim of their own, while R takes money BACK off the claim
+ * A already paid, and it is only uploaded once A has actually posted. A name
+ * that read as "the third one" would invite uploading all three together, which
+ * cannot work — there is nothing to recoup yet.
+ *
  * @param {string} office
- * @returns {{ outDir: string, manifestPath: string, eraAPath: string, eraBPath: string }}
+ * @returns {{ outDir: string, manifestPath: string, eraAPath: string, eraBPath: string, eraRPath: string }}
  */
 function pathsFor(office) {
   const outDir = path.join(OUT_DIR, office);
@@ -365,6 +372,7 @@ function pathsFor(office) {
     manifestPath: path.join(outDir, 'rcm-s10-manifest.json'),
     eraAPath: path.join(outDir, 'rcm-s10-835-A.txt'),
     eraBPath: path.join(outDir, 'rcm-s10-835-B.txt'),
+    eraRPath: path.join(outDir, 'rcm-s10-835-R-recoupment.txt'),
   };
 }
 

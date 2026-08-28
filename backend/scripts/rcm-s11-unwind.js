@@ -141,6 +141,7 @@
 const fs = require('node:fs');
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
+const odOfficeConfig = require('../services/rcm/odOfficeConfig');
 
 
 /*
@@ -271,10 +272,19 @@ function printBalance(label, b) {
  * assert against the same list the script runs, rather than a copy of it.
  * @type {ReadonlyArray<'payment'|'unreceive'|'line'|'claim'|'procedure'>}
  */
-const STEPS = Object.freeze(['payment', 'unreceive', 'line', 'claim', 'procedure']);
+/*
+ * `reversal` IS FIRST, and the order is the whole design.
+ *
+ * A takeback booked as an adjustment sits on the PATIENT's ledger, not on the
+ * claim — so deleting the claim would leave the adjustment behind with nothing
+ * to explain it, and the ledger would carry a deduction against a claim that no
+ * longer exists. Reverse it while its claim is still there to make sense of it.
+ */
+const STEPS = Object.freeze(['reversal', 'payment', 'unreceive', 'line', 'claim', 'procedure']);
 
 /** Human labels for the summary table. */
 const STEP_LABELS = Object.freeze({
+  reversal: 'POST offsetting adjustment',
   payment: 'DELETE claimpayment',
   unreceive: 'PUT claim -> W',
   line: 'PUT claimproc -> NotReceived',
@@ -375,6 +385,151 @@ async function unwindTarget(io, target) {
     );
     return { steps, aborted: false };
   }
+
+  /*
+   * ── 0. THE TAKEBACK'S ADJUSTMENT — REVERSED, NEVER DELETED ────────────────
+   *
+   * **`DELETE /adjustments` DOES NOT EXIST** (G6, documented-absence, verified).
+   * That is not an oversight in this script: the verb is absent from the Open
+   * Dental cloud API, so an adjustment once written cannot be removed by any
+   * caller. The only way back is an OFFSETTING adjustment of the opposite sign,
+   * which Spike 0b test 8 proved nets the ledger to zero (−1.00 under DefNum 12,
+   * reversed by +1.00 under DefNum 260).
+   *
+   * So the ledger ends where it started, and the patient's chart carries TWO
+   * adjustment rows rather than none. That is the honest outcome and it is worth
+   * being explicit about: this step returns the MONEY to zero. It does not
+   * return the chart to a state where the takeback never happened, because
+   * nothing can.
+   *
+   * The AdjType is resolved BY NAME with its SIGN CHECKED — `pickAdjType`
+   * refuses a type whose `ItemValue` says it deducts. A reversal booked under a
+   * minus type would double the deduction while reporting success, and the
+   * read-back below would be the only thing that noticed.
+   */
+  if (Number(target.odAdjustmentNum) > 0) {
+    const adjNum = Number(target.odAdjustmentNum);
+    if (denied(adjNum)) {
+      steps.reversal = 'skipped';
+      io.log(`   0. reversal     SKIPPED — adjustment ${adjNum} is on the deny-list`);
+    } else {
+      const orig = await io.get(`/adjustments/${adjNum}`);
+      if (!orig.ok) {
+        // A reversal we cannot price is a reversal we must not guess at.
+        steps.reversal = 'failed';
+        aborted = true;
+        io.log(`   0. reversal     FAILED — GET /adjustments/${adjNum} -> ${orig.status}`);
+      } else {
+        const origAmt = Number(orig.data?.AdjAmt);
+        const patNum = Number(orig.data?.PatNum);
+        io.log(`   read: /adjustments/${adjNum} AdjAmt=${origAmt} PatNum=${patNum} AdjType=${orig.data?.AdjType}`);
+
+        if (!Number.isFinite(origAmt) || origAmt === 0) {
+          steps.reversal = 'failed';
+          aborted = true;
+          io.log(`   0. reversal     FAILED — cannot read an amount to offset`);
+        } else if (Number(target.odReversalAdjNum) > 0) {
+          // A previous run already posted it. Reversing twice would move the
+          // ledger the wrong way by the same amount it moved the right way.
+          steps.reversal = 'already done';
+          io.log(`   0. reversal     already done — offsetting adjustment ${target.odReversalAdjNum}`);
+        } else {
+          /*
+           * THE ADJTYPE IS RESOLVED BY NAME, AT RUN TIME, WITH ITS SIGN CHECKED.
+           *
+           * Not a number in a table in this repo. `Insurance adjustment` is 260
+           * in Roland and 402 in Riley today, and a DefNum written down here is
+           * a number that is right until somebody edits a definitions list in
+           * one practice — at which point this script books a reversal under
+           * whatever that number now means, in a patient's ledger, silently.
+           * Same hard rule the CommLog DefNums and the PayType follow.
+           *
+           * Resolved ONCE per run in `main()` through the same
+           * `odOfficeConfig.pickAdjType(config, 'recoupment_reversal')` the
+           * drain uses, which requires the name AND a `+` sign. No handle here
+           * means no reversal here.
+           */
+          const adjType = io.reversalAdjType;
+          if (!adjType || !Number(adjType.defNum)) {
+            steps.reversal = 'failed';
+            aborted = true;
+            io.log(
+              '   0. reversal     FAILED — this office has no `+` "insurance adjustment" ' +
+                'AdjType. Nothing was written.'
+            );
+            return { steps, aborted };
+          }
+          io.log(
+            `   resolved AdjType: "${adjType.name}" DefNum=${adjType.defNum} (by name, sign +)`
+          );
+
+          const r = await write('POST', '/adjustments', {
+            PatNum: patNum,
+            AdjDate: String(target.serviceDate || '').slice(0, 10),
+            AdjAmt: -origAmt,
+            AdjType: Number(adjType.defNum),
+            AdjNote: 'CareIN S10 walk unwind: offsetting the takeback adjustment',
+          });
+          if (r.dryRun) {
+            steps.reversal = 'pending';
+          } else if (!r.ok) {
+            steps.reversal = 'failed';
+            aborted = true;
+            io.log(`   0. reversal     FAILED — POST /adjustments -> ${r.status}`);
+          } else {
+            /*
+             * READ BOTH BACK AND ADD THEM UP. A 200 is not proof (G2), and for
+             * this step the proof is not "a row exists" but "the two rows net to
+             * zero" — which is the only statement that means the ledger is where
+             * it started.
+             */
+            const newNum = Number(r.data?.AdjNum);
+            const back = await io.get(`/adjustments/${newNum}`);
+            const backAmt = Number(back.data?.AdjAmt);
+            const net = origAmt + backAmt;
+            io.log(
+              `   read-back: /adjustments/${newNum} AdjAmt=${backAmt}  ` +
+                `net ${origAmt} + ${backAmt} = ${net}`
+            );
+            /*
+             * THREE FACTS, NOT ONE (ruling F). "The amounts cancel" is necessary
+             * and not sufficient: a row that nets to zero under the WRONG
+             * AdjType is a number in the practice's books meaning something
+             * nobody chose, and one on the wrong PATIENT is money moved in a
+             * stranger's ledger. Both would read as success from the total
+             * alone.
+             */
+            const backType = Number(back.data?.AdjType);
+            const backPat = Number(back.data?.PatNum);
+            const typeOk = backType === Number(adjType.defNum);
+            const patOk = backPat === Number(patNum);
+            if (!typeOk || !patOk) {
+              io.log(
+                `   read-back MISMATCH: AdjType=${backType} (wanted ${adjType.defNum}), ` +
+                  `PatNum=${backPat} (wanted ${patNum})`
+              );
+            }
+            if (back.ok && net === 0 && typeOk && patOk) {
+              steps.reversal = 'done';
+              target.odReversalAdjNum = newNum;
+            } else {
+              steps.reversal = 'failed';
+              aborted = true;
+              io.log(
+                `   0. reversal     FAILED — the pair does not net to zero (${net}). The ` +
+                  `offsetting row ${newNum} is PERMANENT; there is no DELETE /adjustments.`
+              );
+            }
+          }
+        }
+      }
+    }
+  } else {
+    steps.reversal = 'already done';
+    io.log('   0. reversal     nothing to reverse — this target carries no takeback adjustment');
+  }
+
+  if (aborted) return { steps, aborted };
 
   // ── 1. The check ─────────────────────────────────────────────────────────
   let claimPaymentNum = 0;
@@ -693,10 +848,50 @@ async function main() {
   const before = await balanceOf(get);
   printBalance('BEFORE', before);
 
+  /*
+   * ─── THE REVERSAL ADJTYPE, RESOLVED ONCE, BY NAME ─────────────────────────
+   *
+   * Resolved here rather than per target, because five paced reads of a
+   * practice's definitions list is six seconds a two-target unwind should spend
+   * once. Resolved AT ALL only when a target actually carries a takeback
+   * adjustment — an ordinary unwind should cost no definitions read.
+   *
+   * A failure here is NOT fatal to the run: the reversal step reports `failed`
+   * for the targets that need it and the rest of the unwind is unaffected. What
+   * it must never do is proceed with a guess.
+   */
+  let reversalAdjType = null;
+  const needsReversal = (manifest.targets || []).some((t) => Number(t.odAdjustmentNum) > 0);
+  if (needsReversal) {
+    try {
+      const resolved = await odOfficeConfig.resolvePostingConfig(get, office);
+      reversalAdjType = odOfficeConfig.pickAdjType(resolved.config, 'recoupment_reversal');
+      console.log(
+        reversalAdjType
+          ? `    reversal AdjType: "${reversalAdjType.name}" DefNum=${reversalAdjType.defNum} ` +
+              `— resolved from ${office}'s OWN definitions, by name, sign +`
+          : `    reversal AdjType: NONE — ${office} has no '+' "insurance adjustment". ` +
+              'Any target needing a reversal will refuse.'
+      );
+    } catch (err) {
+      console.log(
+        `    reversal AdjType: UNRESOLVED — ${err && err.message ? err.message : err}. ` +
+          'Any target needing a reversal will refuse.'
+      );
+    }
+  }
+
   /**
    * Issue one write, or describe it. `--execute` is the only thing that makes
    * this touch the network.
-   * @param {'DELETE'|'PUT'} verb
+   * `POST` IS HERE FOR EXACTLY ONE CALLER: the reversal's offsetting adjustment.
+   * It was missing when that step was written, and `verb === 'DELETE' ? delete :
+   * put` would have sent it as a **PUT to `/adjustments`** — a different verb at
+   * a collection endpoint, which Open Dental answers with a 400 that reads like
+   * a permission problem. Enumerated rather than defaulted, so the next verb
+   * somebody adds has to be named too.
+   *
+   * @param {'DELETE'|'PUT'|'POST'} verb
    * @param {string} path
    * @param {Record<string, unknown>} [body]
    */
@@ -707,7 +902,12 @@ async function main() {
     }
     await sleep(T.PACE_MS);
     try {
-      const res = verb === 'DELETE' ? await axios.delete(path) : await axios.put(path, body);
+      const res =
+        verb === 'DELETE'
+          ? await axios.delete(path)
+          : verb === 'POST'
+            ? await axios.post(path, body)
+            : await axios.put(path, body);
       console.log(`   ${verb} ${path} -> ${res.status}`);
       return { ok: true, status: res.status, data: res.data, dryRun: false };
     } catch (err) {
@@ -727,7 +927,13 @@ async function main() {
     console.log(
       `\n-- TARGET ${label}: ProcNum=${target.procNum} ClaimNum=${target.claimNum} ClaimProcNum=${target.claimProcNum} --`
     );
-    const io = { get, write: issue, log: (line) => console.log(line), execute };
+    const io = {
+      get,
+      write: issue,
+      log: (line) => console.log(line),
+      execute,
+      reversalAdjType,
+    };
     const outcome = await unwindTarget(io, target);
     results.push({ label, target, ...outcome });
   }

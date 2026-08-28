@@ -231,6 +231,64 @@ it, so that default is a backstop rather than a routine path.
 `uncertain_line:<N>` is handled explicitly — a line the model was unsure about is
 money read with low confidence.
 
+### 3.1 D-11 AMENDMENT (2026-08-27) — the takeback confirmation answers two flags
+
+**Ruled after the finding below. It is the first and so far only exception to
+"one vocabulary, no exceptions", and it is written as a partition rather than an
+exemption.**
+
+#### What was found
+
+`evaluateClaim`, run with `recoupmentAllowed: true`:
+
+```
+6d hand-built fixture (no parser flags) => NO_BLOCKING_REASON passed: true
+a REAL reversal 835 from the parser     => NO_BLOCKING_REASON passed: false
+                                           reversal_not_postable, negative_total_payment
+```
+
+The ERA parser marks a reversal claim `reversal_not_postable` and flags its
+remittance `negative_total_payment`. Both are blocking. `NO_BLOCKING_REASON` was
+computed over every reason unconditionally — the D-6 swap replaces
+`NOT_REVERSAL` / `NOT_RECOUPMENT` with `RECOUPMENT_CONFIRMED` and never touched
+the blocking list — so **D-6's typed-confirmation path was unreachable for any
+835 a real carrier would send.** Every takeback test 6d shipped passed, because
+they build the claim by hand: a negative amount and an empty
+`needsReviewReasons`. *A hand-built fixture for one stage of a pipeline is a
+claim about the stage upstream of it, and nothing was checking that claim.*
+
+#### The ruling
+
+On the **recoupment approve only**, `reversal_not_postable` and
+`negative_total_payment` are answered by a single named check:
+
+| | |
+| --- | --- |
+| Code | `TAKEBACK_ACKNOWLEDGED` |
+| Passes when | the claim really is a takeback — the same `recoup` that `RECOUPMENT_CONFIRMED` turns on, so the two cannot disagree |
+| Pass detail | *This is a takeback — confirmed by typing -1.00* (the amount from `formatRecoupmentTotal`, so it is the string the approver actually typed) |
+| Ordinary approve | **never added to the checklist at all**, and both flags block exactly as they did in 6b |
+
+**A PARTITION, NOT A FILTER, and the distinction is the whole ruling.** Every
+reason is still accounted for by exactly one visible check: the two takeback
+flags go to `TAKEBACK_ACKNOWLEDGED`, everything else to `NO_BLOCKING_REASON`.
+Written as `blocking.filter(...)` a reason would simply vanish from the screen,
+and D-11's point is that no code path gets to decide a flag does not apply to
+it. Here the flag still applies — it is answered, by name, in public, and the
+check can **fail**: reversal flags on a claim whose money moves forwards is a
+contradiction the screen shows rather than absorbs.
+
+**Exactly two flags, and adding a third is a ruling, not a fix.**
+`TAKEBACK_FLAGS` in `approvalGate.js` is the one place in the module where a
+blocking reason can be answered by something other than removing its cause. A
+truncated envelope or an unreadable line amount still blocks a recoupment
+approve — neither is a fact about money moving backwards, they are facts about
+not being able to read the file at all, and no typed amount confirms those.
+
+Pinned by six tests in `approvalGate.test.js`, including that the same
+parser-produced claim **fails** the ordinary gate on those exact flags, and that
+`TAKEBACK_ACKNOWLEDGED` never appears in an ordinary checklist in any shape.
+
 ### Blocking (24)
 
 | Reason | Why it blocks |

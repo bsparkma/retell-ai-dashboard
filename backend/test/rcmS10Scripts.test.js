@@ -827,7 +827,7 @@ test('the unwind re-checks OPENDENTAL_WRITE_DISABLED, because it bypasses the tr
   );
 });
 
-test('the unwind runs the FIVE steps in the mandatory order', () => {
+test('the unwind runs the SIX steps in the mandatory order', () => {
   /*
    * DELETE claimpayment -> PUT claim to "W" -> PUT claimproc to NotReceived ->
    * DELETE claim -> DELETE procedurelog.
@@ -845,7 +845,15 @@ test('the unwind runs the FIVE steps in the mandatory order', () => {
     assert.ok(i > 0, `expected to find ${needle}`);
     return i;
   };
+  /*
+   * SIX since 2026-08-27. `reversal` goes FIRST: a takeback booked as an
+   * adjustment sits on the PATIENT's ledger rather than on the claim, so
+   * deleting the claim first would leave the deduction behind with nothing left
+   * to explain it.
+   */
+  const reversal = at("write('POST', '/adjustments'");
   const payment = at("write('DELETE', `/claimpayments/");
+  assert.ok(reversal < payment, 'the adjustment is offset while its claim still exists');
   const unreceive = at("write('PUT', `/claims/");
   const line = at("write('PUT', `/claimprocs/");
   const claim = at("write('DELETE', `/claims/");
@@ -858,7 +866,14 @@ test('the unwind runs the FIVE steps in the mandatory order', () => {
   // The STEPS constant the script iterates for its summary table must agree with
   // the order above, rather than being a second list that can drift from it.
   const { STEPS } = require(path.join(SCRIPTS, FILES.unwind));
-  assert.deepEqual([...STEPS], ['payment', 'unreceive', 'line', 'claim', 'procedure']);
+  assert.deepEqual([...STEPS], [
+    'reversal',
+    'payment',
+    'unreceive',
+    'line',
+    'claim',
+    'procedure',
+  ]);
 });
 
 test('the unwind reads every deletion back, and expects the procedure to survive as "D"', () => {
@@ -913,7 +928,11 @@ function fakeOd(seed) {
     claimProc: seed.claimProc === undefined ? null : seed.claimProc,
     procedure: seed.procedure === undefined ? null : seed.procedure,
     payment: seed.payment === undefined ? null : seed.payment,
+    // The takeback's adjustment, and the offsetting one the unwind posts.
+    adjustment: seed.adjustment === undefined ? null : seed.adjustment,
   };
+  /** Rows the fake MINTED, keyed by the AdjNum it handed back. */
+  const minted = new Map();
   /** @type {string[]} */
   const calls = [];
   /** @type {string[]} */
@@ -928,6 +947,7 @@ function fakeOd(seed) {
     if (/^\/claimprocs\//.test(p)) return 'claimProc';
     if (/^\/claims\//.test(p)) return 'claim';
     if (/^\/procedurelogs\//.test(p)) return 'procedure';
+    if (/^\/adjustments/.test(p)) return 'adjustment';
     return null;
   }
 
@@ -935,8 +955,11 @@ function fakeOd(seed) {
     rows,
     calls,
     writes,
+    minted,
     async get(p) {
       calls.push(`GET ${p}`);
+      const m = p.match(/^\/adjustments\/(\d+)$/);
+      if (m && minted.has(Number(m[1]))) return found(minted.get(Number(m[1])));
       const key = route(p);
       return key && rows[key] ? found(rows[key]) : missing;
     },
@@ -944,7 +967,18 @@ function fakeOd(seed) {
       calls.push(`${verb} ${p}`);
       writes.push(`${verb} ${p}`);
       const key = route(p);
-      if (!key || !rows[key]) return { ok: false, status: 404, error: 'not found' };
+      if (verb !== 'POST' && (!key || !rows[key])) {
+        return { ok: false, status: 404, error: 'not found' };
+      }
+
+      if (verb === 'POST') {
+        // `POST /adjustments` mints a row and hands back its AdjNum. Stored so
+        // the read-back sees what was actually written rather than an echo of
+        // the request — the difference G2 exists for.
+        const adjNum = 90001 + minted.size;
+        minted.set(adjNum, { AdjNum: adjNum, ...body });
+        return { ok: true, status: 200, data: { AdjNum: adjNum } };
+      }
 
       if (verb === 'DELETE') {
         if (key === 'claim' && String(rows.claim.ClaimStatus) === 'R') {
@@ -1029,6 +1063,7 @@ test('the unwind un-receives the claim BEFORE reverting the claimproc', async ()
 
   assert.equal(aborted, false, 'the whole target should complete');
   assert.deepEqual(steps, {
+    reversal: 'already done',
     payment: 'done',
     unreceive: 'done',
     line: 'done',
@@ -1406,4 +1441,504 @@ test('every spent id is distinct — a duplicate would mean two walks claimed on
     assert.equal(new Set(ids).size, ids.length, `${bucket} has a duplicate`);
     assert.deepEqual(ids, [...ids].sort((a, b) => a - b), `${bucket} is not in issue order`);
   }
+});
+
+// ─── The recoupment 835 ──────────────────────────────────────────────────────
+
+/**
+ * A third file, paying −$1.00 back off target A's claim, uploaded only after A
+ * has actually posted. It is the negated mirror of File A: same claim, same
+ * patient, same date, every money element flipped, and CLP02 = 22.
+ */
+
+const { parse835 } = require('../services/rcm/eraParser');
+
+function recoupmentEra() {
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { buildRecoupment } = require(path.join(SCRIPTS, FILES.era));
+  return buildRecoupment(
+    { procCode: T.PROC_CODE, feeCents: T.PROC_FEE_CENTS },
+    { claimNum: 53805, serviceDate: '2026-03-01' },
+    'TEST 2',
+    'STEDI'
+  );
+}
+
+test('the recoupment file parses as a reversal that takes money back', () => {
+  const parsed = parse835(recoupmentEra());
+  const remittance = parsed.remittances[0];
+  const claim = remittance.claims[0];
+
+  assert.equal(claim.claimStatusCode, '22');
+  assert.equal(claim.claimStatusLabel, 'reversal_of_previous_payment');
+  assert.equal(claim.isReversal, true);
+  assert.equal(claim.totalPaidCents, -100, 'a dollar comes back off the claim');
+  assert.equal(claim.totalBilledCents, -100, 'and the billed side is mirrored too, so it balances');
+  assert.deepEqual(claim.claimLevelAdjustments, [], 'no CAS: File A has none to reverse');
+});
+
+test('the recoupment file cannot dedupe against the payment it reverses', () => {
+  /*
+   * The office-scoped remittance key is built from the check number. If R
+   * carried A's, the second upload would be swallowed as a duplicate and the
+   * walk would silently have nothing to approve.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const spec = {
+    claimNum: 53805,
+    patLast: 'TEST 2',
+    patFirst: 'STEDI',
+    procCode: T.PROC_CODE,
+    feeCents: T.PROC_FEE_CENTS,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000001',
+  };
+  const paid = parse835(build835({ ...spec, label: 'A' })).remittances[0];
+  const back = parse835(recoupmentEra()).remittances[0];
+
+  assert.notEqual(paid.checkNumber, back.checkNumber);
+  assert.match(back.checkNumber, /^S10R-/);
+});
+
+test('x12Amount carries the sign below a dollar', () => {
+  /*
+   * `Math.trunc(-50 / 100)` is `-0`, which templates as `"0"` — so fifty cents
+   * taken back rendered as fifty cents PAID. Nothing exercised it while every
+   * amount in this file was +$1.00; the recoupment file is the first negative it
+   * has ever seen.
+   */
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'R',
+    sign: -1,
+    claimNum: 1,
+    patLast: 'A',
+    patFirst: 'B',
+    procCode: 'D0140',
+    feeCents: 50,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000009',
+  });
+  assert.match(era, /CLP\*1\*22\*-0\.50\*-0\.50\*/, 'minus fifty cents, not plus');
+  assert.equal(parse835(era).remittances[0].claims[0].totalPaidCents, -50);
+});
+
+test('the payment file is unchanged by the recoupment work', () => {
+  /*
+   * `sign` defaults to +1 and `adjustments` to empty, so File A must come out
+   * byte-identical to what the 2026-08-26 prep produced. A walk whose payment
+   * leg changed underneath it would be measuring two things at once.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'A',
+    claimNum: 53805,
+    patLast: 'TEST 2',
+    patFirst: 'STEDI',
+    procCode: T.PROC_CODE,
+    feeCents: T.PROC_FEE_CENTS,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000001',
+  });
+  assert.match(era, /CLP\*53805\*1\*1\.00\*1\.00\*0\*12\*S10A-53805/);
+  assert.match(era, /BPR\*I\*1\.00\*C\*CHK/, 'still a credit');
+  assert.ok(!era.includes('CAS*'), 'and still no CAS');
+});
+
+test('a reversal that DID have adjustments would negate them too', () => {
+  /*
+   * The negation is generic rather than special-cased for today's file. File A
+   * carries no CAS, so the reversal carries none — but the day it grows a CO-45
+   * the reversal will carry `CAS*CO*45*-…` without another line of code.
+   */
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const era = build835({
+    label: 'R',
+    sign: -1,
+    claimNum: 1,
+    patLast: 'A',
+    patFirst: 'B',
+    procCode: 'D0140',
+    feeCents: 100,
+    serviceDate: '2026-03-01',
+    controlNumber: '000000009',
+    adjustments: [{ group: 'CO', reason: '45', cents: 300 }],
+  });
+  assert.match(era, /CAS\*CO\*45\*-3\.00/);
+});
+
+// ─── The unwind's reversal step ──────────────────────────────────────────────
+
+test('the unwind reverses an adjustment rather than deleting it', () => {
+  /*
+   * `DELETE /adjustments` DOES NOT EXIST (G6, documented-absence). The only way
+   * back is an offsetting adjustment of the opposite sign. A script that reached
+   * for the delete would fail on the night with a 400 that reads like a
+   * permission problem.
+   */
+  const src = code(FILES.unwind);
+  assert.ok(
+    !/DELETE',\s*`?\/adjustments/.test(src),
+    'there is no DELETE /adjustments to reach for'
+  );
+  assert.match(src, /write\('POST', '\/adjustments'/);
+  assert.match(src, /AdjAmt: -origAmt/, 'the offset is the negation of what was read back');
+});
+
+test('the reversal proves itself by the pair netting to zero, not by a 200', () => {
+  /*
+   * G2. And for this step the proof is not "a row exists" but "the two rows add
+   * up to nothing" — the only statement that means the ledger is where it
+   * started.
+   */
+  const src = code(FILES.unwind);
+  assert.match(src, /const net = origAmt \+ backAmt;/);
+  assert.match(src, /net === 0/);
+});
+
+test('a reversal that has already run is not run again', () => {
+  /*
+   * Reversing twice moves the ledger the wrong way by exactly the amount it
+   * moved the right way, and there is no third adjustment that fixes it without
+   * leaving a fourth row.
+   */
+  assert.match(code(FILES.unwind), /Number\(target\.odReversalAdjNum\) > 0/);
+});
+
+// ─── rcm-s10-capture.js — what the WALK produced, written back ───────────────
+
+test('the capture script never touches Open Dental', () => {
+  /*
+   * Every number it needs was already written down by the drain, in the row that
+   * proves what it did. Asking Open Dental again would be a second, weaker
+   * source for a fact the queue already holds — and would put a chart read in a
+   * script whose whole job is bookkeeping.
+   */
+  const src = read('rcm-s10-capture.js');
+  for (const forbidden of ['odOffices', 'odPostingWrites', 'openDental', 'getOdOffice']) {
+    assert.ok(!src.includes(forbidden), `must not reach for ${forbidden}`);
+  }
+});
+
+test('the capture script is a dry run unless --write is given', () => {
+  const src = read('rcm-s10-capture.js');
+  assert.match(src, /const WRITE = process\.argv\.includes\('--write'\)/);
+  assert.match(src, /DRY RUN/);
+});
+
+test('no script ships a hardcoded reversal AdjType DefNum', () => {
+  /*
+   * HARD RULE: DefNums resolve BY NAME, never by number.
+   *
+   * An earlier draft of this slice shipped `{ roland: 260, valley: 402 }` and
+   * had the unwind POST `AdjType: <that number>`. Both are correct today and
+   * both are correct only until somebody edits a definitions list in one
+   * practice — after which a reversal is booked under whatever that number now
+   * means, in a patient's ledger, with a read-back that would happily confirm
+   * the amount. Same rule the CommLog DefNums follow, and for the same reason:
+   * `486` is not a CommLogType in Riley at all.
+   *
+   * (For the record: `Insurance adjustment (+)` read 260 in Roland and 402 in
+   * Riley on 2026-08-13. That is a note about one day, not a value to use.)
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.equal(T.REVERSAL_ADJ_TYPE_DEFNUM, undefined, 'the map is gone and must not come back');
+
+  for (const file of [FILES.unwind, 'rcm-s10-capture.js', FILES.targets]) {
+    const src = read(file);
+    assert.ok(
+      !/AdjType:\s*\d/.test(src),
+      `${file} must not write a literal AdjType number`
+    );
+  }
+});
+
+test('the unwind resolves the reversal AdjType by NAME, with its sign checked', () => {
+  const src = code(FILES.unwind);
+  assert.match(src, /pickAdjType\(resolved\.config, 'recoupment_reversal'\)/);
+  assert.match(src, /AdjType: Number\(adjType\.defNum\)/, 'from the resolved handle, not a constant');
+  // And it prints what it resolved, BEFORE writing.
+  const printedAt = src.indexOf('resolved AdjType:');
+  const wroteAt = src.indexOf("write('POST', '/adjustments'");
+  assert.ok(printedAt > 0 && printedAt < wroteAt, 'the transcript names the type before the write');
+});
+
+test('an office with no `+` insurance adjustment refuses the reversal', () => {
+  /*
+   * A refusal rather than a fallback to a plausible-looking neighbour. An
+   * adjustment booked under the wrong type is a number in the practice's books
+   * meaning something other than what happened.
+   */
+  const src = code(FILES.unwind);
+  assert.match(src, /if \(!adjType \|\| !Number\(adjType\.defNum\)\) \{/);
+  const guardAt = src.indexOf('if (!adjType || !Number(adjType.defNum))');
+  const writeAt = src.indexOf("write('POST', '/adjustments'");
+  assert.ok(guardAt < writeAt, 'the guard is BEFORE the write, not after it');
+  assert.match(src, /Nothing was written\./);
+});
+
+test('the reversal POSTs — it does not fall through to PUT', () => {
+  /*
+   * `issue` was `verb === 'DELETE' ? delete : put`, so the reversal would have
+   * gone out as a PUT to the `/adjustments` COLLECTION. Open Dental answers
+   * that with a 400 that reads like a permission problem, on the one night
+   * nobody wants to debug a verb.
+   */
+  const src = code(FILES.unwind);
+  assert.match(src, /verb === 'POST'\s*\?\s*await axios\.post\(path, body\)/);
+});
+
+test('the DocNum is captured to be NAMED, never to be deleted', () => {
+  /*
+   * `DELETE /documents/{n}` has never been probed, so a filed EOB is permanent
+   * residue on the test patient. Recording it means the next inventory can name
+   * it rather than rediscovering it as an unexplained row.
+   */
+  const capture = read('rcm-s10-capture.js');
+  assert.match(capture, /PERMANENT/);
+  assert.match(capture, /odDocNums/);
+
+  const unwind = code(FILES.unwind);
+  assert.ok(
+    !/\/documents\//.test(unwind),
+    'the unwind must not try to remove a document — there is no proven verb for it'
+  );
+});
+
+test('the recoupment 835 renders CLP04 and BPR02 as -1.00', () => {
+  /*
+   * Ruling E, asserted on the exact elements a human reads first: CLP04 is the
+   * claim's paid amount and BPR02 the check total. Both must carry the minus, and
+   * BPR03 must read `D` — an 835 reader looks at the credit/debit flag before it
+   * looks at a sign.
+   */
+  const era = recoupmentEra();
+  // The separator is a tilde followed by a newline, so every segment after the
+  // first carries a leading newline. Trim rather than split on the pair — an 835
+  // is legal with or without the newline, and a test that only reads the
+  // pretty-printed form is testing the formatting rather than the file.
+  const segs = era.split('~').map((x) => x.trim());
+  const clp = segs.find((x) => x.startsWith('CLP*'));
+  const bpr = segs.find((x) => x.startsWith('BPR*'));
+
+  assert.equal(clp.split('*')[4], '-1.00', 'CLP04, the amount paid');
+  assert.equal(clp.split('*')[2], '22', 'CLP02, reversal of previous payment');
+  assert.equal(bpr.split('*')[2], '-1.00', 'BPR02, the check total');
+  assert.equal(bpr.split('*')[3], 'D', 'BPR03, a debit');
+});
+
+test('x12Amount is sign-correct for every magnitude, not just whole dollars', () => {
+  /*
+   * `Math.trunc(-50 / 100)` is `-0`, which templates as `"0"`. Fifty cents taken
+   * back rendered as fifty cents PAID. It could never fire while every amount in
+   * this file was +$1.00.
+   */
+  const { build835 } = require(path.join(SCRIPTS, FILES.era));
+  const render = (cents) => {
+    const era = build835({
+      label: 'R',
+      sign: -1,
+      claimNum: 1,
+      patLast: 'A',
+      patFirst: 'B',
+      procCode: 'D0140',
+      feeCents: cents,
+      serviceDate: '2026-03-01',
+      controlNumber: '000000009',
+    });
+    return era
+      .split('~')
+      .map((x) => x.trim())
+      .find((x) => x.startsWith('CLP*'))
+      .split('*')[4];
+  };
+  assert.equal(render(1), '-0.01', 'one cent');
+  assert.equal(render(50), '-0.50', 'the case that was wrong');
+  assert.equal(render(99), '-0.99');
+  assert.equal(render(100), '-1.00');
+  assert.equal(render(12345), '-123.45');
+});
+
+
+// ─── The reversal step, DRIVEN ───────────────────────────────────────────────
+
+/** An office config carrying one `+` "insurance adjustment", as Roland's does. */
+function configWithReversalType(defNum = 260) {
+  return {
+    adjTypes: [
+      { defNum, name: 'Insurance adjustment', sign: '+' },
+      { defNum: 12, name: 'Insurance deductions from previous payments', sign: '-' },
+    ],
+  };
+}
+
+function reversalTarget(overrides = {}) {
+  return {
+    procNum: 900001,
+    claimNum: 900002,
+    claimProcNum: 900003,
+    serviceDate: '2026-03-01',
+    odAdjustmentNum: 88001,
+    ...overrides,
+  };
+}
+
+test('the reversal posts an OFFSETTING adjustment and proves the pair nets to zero', async () => {
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  const resolved = odOfficeConfig.pickAdjType(configWithReversalType(), 'recoupment_reversal');
+  assert.ok(resolved, 'sanity: the config resolves a + type');
+
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900003, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900002, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900001, ProcStatus: 'C' },
+    adjustment: { AdjNum: 88001, AdjAmt: -1, PatNum: 12827, AdjType: 12 },
+  });
+
+  const lines = [];
+  const target = reversalTarget();
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    {
+      get: od.get,
+      write: od.write,
+      log: (l) => lines.push(l),
+      execute: true,
+      reversalAdjType: resolved,
+    },
+    target
+  );
+
+  assert.equal(steps.reversal, 'done', lines.join('\n'));
+  assert.ok(od.writes.includes('POST /adjustments'), 'it POSTed, it did not PUT');
+
+  const posted = [...od.minted.values()][0];
+  assert.equal(posted.AdjAmt, 1, 'the exact negation of the -1.00 it read');
+  assert.equal(posted.AdjType, resolved.defNum, 'under the RESOLVED type');
+  assert.equal(posted.PatNum, 12827, 'on the patient the original was on');
+
+  // The transcript names the type BEFORE the write — this is the line the walk
+  // transcript is expected to carry.
+  const printed = lines.find((l) => l.includes('resolved AdjType:'));
+  assert.ok(printed, 'the transcript says what it resolved');
+  assert.match(printed, /"Insurance adjustment"/);
+  assert.match(printed, /DefNum=260/);
+});
+
+test('an office with no `+` insurance adjustment refuses, and writes NOTHING', async () => {
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  // Only the minus type. `pickAdjType` refuses on the sign, which is the point:
+  // a reversal booked under a deducting type would double the takeback while
+  // reporting success.
+  const resolved = odOfficeConfig.pickAdjType(
+    { adjTypes: [{ defNum: 12, name: 'Insurance deductions from previous payments', sign: '-' }] },
+    'recoupment_reversal'
+  );
+  assert.equal(resolved, null, 'sanity: nothing resolves');
+
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900003, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900002, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900001, ProcStatus: 'C' },
+    adjustment: { AdjNum: 88001, AdjAmt: -1, PatNum: 12827, AdjType: 12 },
+  });
+
+  const lines = [];
+  const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: (l) => lines.push(l), execute: true, reversalAdjType: resolved },
+    reversalTarget()
+  );
+
+  assert.equal(steps.reversal, 'failed');
+  assert.equal(aborted, true, 'and the target stops — nothing else is attempted either');
+  assert.deepEqual(od.writes, [], 'not one write went out');
+});
+
+test('a read-back under the WRONG AdjType is a failure, however well the amounts cancel', async () => {
+  /*
+   * Ruling F. "The amounts net to zero" is necessary and not sufficient: a row
+   * booked under a type nobody chose is a number in the practice's books meaning
+   * something else, and it would read as success from the total alone.
+   */
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  const resolved = odOfficeConfig.pickAdjType(configWithReversalType(), 'recoupment_reversal');
+
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900003, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900002, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900001, ProcStatus: 'C' },
+    adjustment: { AdjNum: 88001, AdjAmt: -1, PatNum: 12827, AdjType: 12 },
+  });
+  const realWrite = od.write;
+  od.write = async (verb, p, body) => {
+    const res = await realWrite(verb, p, body);
+    // Open Dental accepted the POST and stored a DIFFERENT type than we asked
+    // for. The amount is still right.
+    if (verb === 'POST' && res.ok) {
+      const n = res.data.AdjNum;
+      od.minted.set(n, { ...od.minted.get(n), AdjType: 999 });
+    }
+    return res;
+  };
+
+  const lines = [];
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: (l) => lines.push(l), execute: true, reversalAdjType: resolved },
+    reversalTarget()
+  );
+
+  assert.equal(steps.reversal, 'failed', 'the amounts cancelled and it still refused');
+  assert.ok(lines.some((l) => l.includes('read-back MISMATCH')), lines.join('\n'));
+});
+
+test('a read-back on the WRONG PATIENT is a failure too', async () => {
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  const resolved = odOfficeConfig.pickAdjType(configWithReversalType(), 'recoupment_reversal');
+
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900003, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900002, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900001, ProcStatus: 'C' },
+    adjustment: { AdjNum: 88001, AdjAmt: -1, PatNum: 12827, AdjType: 12 },
+  });
+  const realWrite = od.write;
+  od.write = async (verb, p, body) => {
+    const res = await realWrite(verb, p, body);
+    if (verb === 'POST' && res.ok) {
+      const n = res.data.AdjNum;
+      od.minted.set(n, { ...od.minted.get(n), PatNum: 999999 });
+    }
+    return res;
+  };
+
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: () => {}, execute: true, reversalAdjType: resolved },
+    reversalTarget()
+  );
+  assert.equal(steps.reversal, 'failed', 'money in a stranger ledger is not a success');
+});
+
+test('a target that already carries a reversal does not post a second one', async () => {
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  const resolved = odOfficeConfig.pickAdjType(configWithReversalType(), 'recoupment_reversal');
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900003, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900002, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900001, ProcStatus: 'C' },
+    adjustment: { AdjNum: 88001, AdjAmt: -1, PatNum: 12827, AdjType: 12 },
+  });
+
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: () => {}, execute: true, reversalAdjType: resolved },
+    reversalTarget({ odReversalAdjNum: 90001 })
+  );
+
+  assert.equal(steps.reversal, 'already done');
+  assert.ok(!od.writes.includes('POST /adjustments'), 'reversing twice moves the ledger the wrong way');
 });

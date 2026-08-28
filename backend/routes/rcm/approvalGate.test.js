@@ -1535,3 +1535,143 @@ test('an unrecognised path is refused before the phrase is even considered', asy
     assert.equal(db.table('rcm_posting_queue').length, 0);
   });
 });
+
+// ─── D-11 AMENDMENT: a real reversal 835 is APPROVABLE on the takeback path ──
+
+/**
+ * Found 2026-08-27, ruled the same day. Recorded here because the shape of the
+ * fix is the interesting part.
+ *
+ * The parser marks a reversal claim `reversal_not_postable` and its remittance
+ * `negative_total_payment`. Both are `blocking`, and `NO_BLOCKING_REASON` was
+ * computed over every reason unconditionally — so D-6's typed-confirmation path
+ * was unreachable for any 835 a real carrier would send. 6d never noticed
+ * because its recoupment tests build the claim BY HAND, with a negative amount
+ * and no review reasons.
+ *
+ * The amendment PARTITIONS rather than filters: on the recoupment path those two
+ * flags are claimed by `TAKEBACK_ACKNOWLEDGED`, which appears in the checklist
+ * and can fail. Every reason is still answered by exactly one check, in public.
+ */
+
+/** A claim shaped the way the ERA parser actually produces a reversal. */
+function parserReversalClaim(overrides = {}) {
+  return {
+    claimId: 'c-rev',
+    officeId: 'roland',
+    patientName: 'X',
+    claimNumber: '53805',
+    totalPaidCents: -100,
+    reviewedAt: new Date(),
+    odMatchStatus: 'confirmed',
+    needsReviewReasons: ['reversal_not_postable'],
+    ...overrides,
+  };
+}
+
+function gateFor(recoupmentAllowed, claim, batchFlags) {
+  return approvalGate.evaluateClaim({
+    office: 'roland',
+    claim,
+    lines: [{ flags: [] }],
+    payment: { paidCents: -100, batchClaimPaymentId: 'p1' },
+    batchFlags,
+    plannedClaimprocs: new Map(),
+    recoupmentAllowed,
+  });
+}
+
+test('a parser-produced reversal 835 PASSES the recoupment gate on both takeback checks', () => {
+  const result = gateFor(true, parserReversalClaim(), ['negative_total_payment']);
+
+  const ack = result.checks.find((c) => c.code === 'TAKEBACK_ACKNOWLEDGED');
+  assert.ok(ack, 'the check is on the recoupment checklist');
+  assert.equal(ack.passed, true);
+  assert.equal(ack.detail, 'This is a takeback — confirmed by typing -1.00');
+
+  const blocking = result.checks.find((c) => c.code === 'NO_BLOCKING_REASON');
+  assert.equal(blocking.passed, true, 'the two takeback flags are answered, not ignored');
+  assert.equal(blocking.detail, null);
+});
+
+test('the SAME claim fails the ORDINARY gate, on those exact flags', () => {
+  /*
+   * The other half of the ruling, and the one that would be quietly lost if the
+   * amendment had been written as a filter. A takeback cannot reach a chart
+   * through the ordinary button, ever.
+   */
+  const result = gateFor(false, parserReversalClaim(), ['negative_total_payment']);
+
+  const blocking = result.checks.find((c) => c.code === 'NO_BLOCKING_REASON');
+  assert.equal(blocking.passed, false);
+  assert.match(blocking.detail, /reversal_not_postable/);
+  assert.match(blocking.detail, /negative_total_payment/);
+  assert.equal(result.postable, false);
+});
+
+test('TAKEBACK_ACKNOWLEDGED never appears in an ordinary-approve checklist', () => {
+  /*
+   * "Only ever evaluated on the recoupment path" is a property of the CHECKLIST,
+   * not merely of the verdict — a check that showed up passing on an ordinary
+   * approve would tell a biller the flags had been dealt with when they had not.
+   */
+  for (const claim of [parserReversalClaim(), parserReversalClaim({ needsReviewReasons: [] })]) {
+    for (const flags of [[], ['negative_total_payment']]) {
+      const result = gateFor(false, claim, flags);
+      assert.ok(
+        !result.checks.some((c) => c.code === 'TAKEBACK_ACKNOWLEDGED'),
+        'not on an ordinary checklist, in any shape'
+      );
+    }
+  }
+});
+
+test('every OTHER blocking reason still blocks a recoupment approve', () => {
+  /*
+   * The amendment covers two flags and two only. A truncated envelope is not a
+   * fact about money moving backwards — it is a fact about not being able to
+   * read the file at all, and no typed amount confirms that.
+   */
+  const result = gateFor(
+    true,
+    parserReversalClaim({ needsReviewReasons: ['reversal_not_postable', 'truncated_envelope'] }),
+    ['negative_total_payment']
+  );
+
+  const blocking = result.checks.find((c) => c.code === 'NO_BLOCKING_REASON');
+  assert.equal(blocking.passed, false);
+  assert.equal(blocking.detail, 'truncated_envelope', 'only the unrelated one is left');
+  assert.equal(result.postable, false);
+
+  // And the takeback flags were still ANSWERED rather than swallowed.
+  assert.equal(result.checks.find((c) => c.code === 'TAKEBACK_ACKNOWLEDGED').passed, true);
+});
+
+test('reversal flags on a claim that is NOT a takeback fail the acknowledgement', () => {
+  /*
+   * A contradiction the screen shows rather than absorbs: flags saying "this was
+   * reversed" on a claim whose money moves forwards. The typed amount confirmed
+   * a takeback; there isn't one.
+   */
+  const result = approvalGate.evaluateClaim({
+    office: 'roland',
+    claim: parserReversalClaim({ totalPaidCents: 100 }),
+    lines: [{ flags: [] }],
+    payment: { paidCents: 100, batchClaimPaymentId: 'p1' },
+    batchFlags: ['negative_total_payment'],
+    plannedClaimprocs: new Map(),
+    recoupmentAllowed: true,
+  });
+
+  const ack = result.checks.find((c) => c.code === 'TAKEBACK_ACKNOWLEDGED');
+  assert.equal(ack.passed, false);
+  assert.match(ack.detail, /is not a takeback/);
+  assert.equal(result.postable, false);
+});
+
+test('the amendment covers exactly two flags, and adding a third is a ruling', () => {
+  assert.deepEqual([...approvalGate.TAKEBACK_FLAGS], [
+    'reversal_not_postable',
+    'negative_total_payment',
+  ]);
+});

@@ -102,6 +102,11 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     fail: "Approve this one normally — it is not a takeback, so it cannot ride on a takeback confirmation.",
     pass: "You typed the amount being taken back.",
   },
+  TAKEBACK_ACKNOWLEDGED: {
+    title: "The takeback flags are what the typed amount confirmed",
+    fail: "Dispose of this one manually — it carries the carrier's reversal flags but its money moves forwards, and the two disagree.",
+    pass: "Explained by the amount you typed.",
+  },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     title: "The carrier actually paid something",
     fail: "Bill the patient in Open Dental — every cent on this claim is theirs, so there is no insurance payment to post.",
