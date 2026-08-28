@@ -64,7 +64,13 @@ const T = require('./rcm-s10-targets');
  */
 const TARGET = T.resolveTarget();
 const PATHS = T.pathsFor(TARGET.office);
-const DENY = T.denyIdsFor(TARGET);
+/*
+ * NO `DENY` CONSTANT HERE, DELIBERATELY — it used to be computed and never read.
+ *
+ * This script only READS and prints; it acts on nothing and takes no manifest,
+ * so there is nothing here for a deny-list to screen. The screen lives in
+ * `T.screenManifestForSpentIds` (used by `rcm-s10-835.js`) and in the unwind.
+ */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

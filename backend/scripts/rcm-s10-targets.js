@@ -196,32 +196,54 @@ const SPIKE_0B_RESIDUE = Object.freeze({
  *   - and screening the manifest is the whole job of the deny-list, so the moment
  *     an id is spent is exactly the moment it belongs here.
  *
- * TWO WALKS ARE RECORDED HERE, and the list grows by a set per walk:
+ * THREE WALKS ARE RECORDED HERE, and the list grows by a set per walk:
  *
  * | Walk | Unwound | Claims | Procedures (now `"D"`, G12) | Lines |
  * | --- | --- | --- | --- | --- |
  * | 2026-08-25 | 2026-08-26 02:28Z | `53784`, `53785` | `406124`, `406125` | `535194`, `535195` |
  * | 2026-08-26 | 2026-08-26 01:25Z | `53805`, `53806` | `406272`, `406273` | `535348`, `535349` |
+ * | 2026-08-28 | 2026-08-28 (§11, 12827 back to −$0.20) | `53830`, `53831` | `406430`, `406431` | `535592`, `535593` |
  *
  * The 2026-08-26 walk never posted — it stopped at the first Drain on the
  * `od_patient_office` defect (§10.3) — but its targets were still CREATED, and
  * created is the only thing that matters to a deny-list. An id is spent the
  * moment it exists, not the moment it is used successfully.
  *
- * NOT included: ClaimPaymentNums `21399`/`21400`. The manifest has no field for a
- * check — its shape is `{procNum, claimNum, claimProcNum}` — so "a future
+ * NOT included: ClaimPaymentNums `21399`/`21400` (2026-08-25/26) and
+ * `21424`/`21425` (walk night 2 — checks A and B). The manifest has no field for
+ * a check — its shape is `{procNum, claimNum, claimProcNum}` — so "a future
  * manifest must never name them" cannot apply to a check. The unwind discovers a
- * ClaimPaymentNum from a live read of the claimproc, and both of those lines are
- * gone.
+ * ClaimPaymentNum from a live read of the claimproc, and every one of those
+ * lines is gone. They are SPENT and recorded here in prose so the numbers are
+ * not reused by hand; they are not deny-list members because there is nothing
+ * for the list to screen them against.
  * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
  */
 const WALK_SPENT_IDS = Object.freeze({
   // 2026-08-25 walk, unwound 2026-08-26 02:28Z (§11.2).
   // 2026-08-26 walk, unwound 2026-08-26 01:25Z (§11.4).
-  claims: Object.freeze([53784, 53785, 53805, 53806]),
-  procedures: Object.freeze([406124, 406125, 406272, 406273]),
-  claimProcs: Object.freeze([535194, 535195, 535348, 535349]),
+  // 2026-08-28 walk night 2, unwound the same night (§11.5).
+  claims: Object.freeze([53784, 53785, 53805, 53806, 53830, 53831]),
+  procedures: Object.freeze([406124, 406125, 406272, 406273, 406430, 406431]),
+  claimProcs: Object.freeze([535194, 535195, 535348, 535349, 535592, 535593]),
 });
+
+/**
+ * WHEN THIS LIST LAST GREW — the second half of the screen, and the half the
+ * ids alone cannot express.
+ *
+ * `rcm-s10-835.js` regenerated its files from the 2026-08-26 manifest on walk
+ * night 2, two days after those claims had been deleted, and said nothing. The
+ * id check catches a manifest naming a SPENT id. It does not catch a manifest
+ * written before a walk that has since been unwound but whose ids happen not to
+ * collide — and "this file is older than the last thing we retired" is a
+ * cheaper, blunter question that catches both.
+ *
+ * ISO 8601, UTC, and it MOVES every time a set is added above. `rcmS10Scripts`
+ * pins that: a walk added to `WALK_SPENT_IDS` without moving this date leaves
+ * the staleness screen certifying manifests it should refuse.
+ */
+const WALK_SPENT_RECORDED_AT = '2026-08-28T00:00:00.000Z';
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
@@ -458,12 +480,91 @@ const MAX_PAGES = 10;
 /** Open Dental per-call timeout for these scripts. */
 const OD_TIMEOUT_MS = 30000;
 
+/**
+ * Is this manifest safe to act on, or is it a stale file describing rows that
+ * no longer exist?
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS A FUNCTION AND NOT THREE COPIES OF AN `if`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `denyIdsFor` has been exported since 6c, and `rcm-s11-unwind.js` is the only
+ * script that ever consulted it. `rcm-s10-prep.js`, `rcm-s10-835.js` and
+ * `rcm-s10-inventory.js` each computed a `DENY` constant and then used it
+ * nowhere at all — which is why walk night 2 regenerated a pair of 835s from a
+ * manifest whose claims had been deleted two days earlier, without complaint.
+ *
+ * A deny-list that is computed and not consulted reads, to anyone auditing the
+ * file, exactly like one that is enforced.
+ *
+ * TWO REFUSALS, and they catch different failures:
+ *
+ *   1. A NAMED SPENT ID. Open Dental never reissues an id, so a manifest naming
+ *      one did not come from a prep run — it came from a stale file, a copy, or
+ *      a hand-edit, and acting on it means issuing writes at numbers whose
+ *      meaning nobody can vouch for.
+ *
+ *   2. A MANIFEST OLDER THAN THE LAST WALK WE RETIRED. The id check only fires
+ *      on a collision. A manifest written before an unwind that happens not to
+ *      collide is just as dead, and this is the blunt question that catches it.
+ *      A manifest with no `createdAt` at all is refused too: it did not come
+ *      from any prep this repo has shipped.
+ *
+ * Returns the refusal SENTENCE, or null when the manifest is clean — the same
+ * shape `checkOutDirWritable` uses, so a caller is one `if` away from a message.
+ *
+ * @param {{ createdAt?: unknown, targets?: ReadonlyArray<Record<string, unknown>> }} manifest
+ * @param {{ spike0bResidue: object, walkSpentIds: object }} target
+ * @returns {string|null}
+ */
+function screenManifestForSpentIds(manifest, target) {
+  const deny = denyIdsFor(target);
+  const named = [];
+  for (const t of (manifest && manifest.targets) || []) {
+    for (const field of ['procNum', 'claimNum', 'claimProcNum']) {
+      const id = Number(t && t[field]);
+      if (Number.isFinite(id) && id > 0 && deny.includes(id)) named.push(`${field}=${id}`);
+    }
+  }
+  if (named.length) {
+    return [
+      `this manifest names ${named.length} RETIRED id(s): ${named.join(', ')}.`,
+      '  Open Dental never reissues an id, so these rows are gone and cannot come back. This',
+      '  manifest did not come from a prep run against the current chart — it is a stale file,',
+      '  a copy, or a hand-edit. Move it aside and run the prep again:',
+      '      mv <manifest> <manifest>.spent.json',
+      '      PROBE_OFFICE=<office> node scripts/rcm-s10-prep.js',
+    ].join('\n');
+  }
+
+  const createdAt = Date.parse(String((manifest && manifest.createdAt) || ''));
+  if (!Number.isFinite(createdAt)) {
+    return [
+      'this manifest carries no usable `createdAt`, so its age cannot be checked.',
+      '  Every prep this repo has shipped writes one. Move it aside and run the prep again.',
+    ].join('\n');
+  }
+  const spentAt = Date.parse(WALK_SPENT_RECORDED_AT);
+  if (createdAt < spentAt) {
+    return [
+      `this manifest was written ${new Date(createdAt).toISOString()}, BEFORE the most recent`,
+      `  walk was retired (${WALK_SPENT_RECORDED_AT}). Its targets were unwound. Regenerating`,
+      '  files from it would name claims that no longer exist. Move it aside and run the prep:',
+      '      mv <manifest> <manifest>.spent.json',
+      '      PROBE_OFFICE=<office> node scripts/rcm-s10-prep.js',
+    ].join('\n');
+  }
+
+  return null;
+}
+
 module.exports = {
   OFFICE,
   PAT_NUM,
   OFFICES,
   resolveTarget,
   denyIdsFor,
+  screenManifestForSpentIds,
+  WALK_SPENT_RECORDED_AT,
   pathsFor,
   PROC_CODE,
   PROC_FEE,

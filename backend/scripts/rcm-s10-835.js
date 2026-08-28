@@ -113,6 +113,15 @@ const T = require('./rcm-s10-targets');
  */
 const TARGET = T.resolveTarget();
 const PATHS = T.pathsFor(TARGET.office);
+/*
+ * THE DENY-LIST, AND IT IS NOW CONSULTED.
+ *
+ * This constant existed here since 6c and was used NOWHERE, which is how walk
+ * night 2 regenerated both 835s from the 2026-08-26 manifest — two days after
+ * those claims were deleted — without a word. A deny-list that is computed and
+ * never read looks, to anyone auditing this file, exactly like one that is
+ * enforced. `T.screenManifestForSpentIds` is the screen; see its header.
+ */
 const DENY = T.denyIdsFor(TARGET);
 
 /** X12 segment terminator, matching every fixture in `test/fixtures/rcm`. */
@@ -299,6 +308,26 @@ function main() {
         `these scripts are '${TARGET.office}'/${TARGET.patNum} only.`
     );
     process.exitCode = 3;
+    return;
+  }
+
+  /*
+   * ── IS THIS MANIFEST STILL ABOUT ANYTHING? ───────────────────────────────
+   *
+   * Walk night 2: this script happily rebuilt file A and file B from a manifest
+   * whose claims had been unwound two days earlier. The 835s named ClaimNums
+   * that no longer exist, so the match found nothing and the night lost time to
+   * a file that was never going to work.
+   *
+   * Screened BEFORE the office/patient check reports success and before a byte
+   * is written, because the whole cost of the mistake is uploading a file that
+   * looks right. Refuses on a named retired id OR on a manifest older than the
+   * last walk we retired — see `screenManifestForSpentIds`.
+   */
+  const spent = T.screenManifestForSpentIds(manifest, TARGET);
+  if (spent) {
+    console.error(`REFUSED: ${spent}`);
+    process.exitCode = 8;
     return;
   }
 
