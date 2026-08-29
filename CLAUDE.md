@@ -789,6 +789,10 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 
 - Commit messages: imperative present tense — "Add endpoint", not "Added endpoint".
 - Branches: `feature/`, `fix/`, `docs/`.
+- **A held PR is a draft.** If a review holds a PR for an answer, `gh pr ready --undo <n>`
+  it at once and mark it ready only when the reviewer releases it. See
+  [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) §2 — #121 merged with its gating question
+  open, and only an already-merged gate kept that off a chart.
 - No `any` in TypeScript — use `unknown` and narrow.
 - No `SELECT *` — name columns explicitly.
 - All Open Dental queries scoped by office (and by `ClinicNum` where the OD API takes one).

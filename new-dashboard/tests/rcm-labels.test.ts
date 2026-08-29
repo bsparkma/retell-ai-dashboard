@@ -423,6 +423,45 @@ describe("the shadow gate's words", () => {
     // And the banner says who can end it.
     expect(SHADOW_MODE_COPY.fix).toMatch(/administrator/i);
   });
+
+  it("sends her to a page that is actually called that", () => {
+    /*
+     * THE DIRECTION IN THE COPY IS A CLAIM ABOUT TWO OTHER FILES.
+     *
+     * `fix` says "Admin → Office": the nav item in DashboardLayout.tsx and the
+     * tab in Admin.tsx. Neither is importable — the nav array and the tab array
+     * are both module-private literals — so this reads the source, the same way
+     * `takebackLaneAgreement.test.js` pins the isTakeback callers.
+     *
+     * It is not hypothetical. The string said "Offices" while the tab said
+     * "Office" from the day the card shipped, which is precisely the drift a
+     * rename would cause and nothing would have caught.
+     */
+    const read = (p: string) =>
+      fs.readFileSync(path.join(__dirname, "..", "client", "src", ...p.split("/")), "utf8");
+
+    const navLabel = read("components/DashboardLayout.tsx").match(
+      /path:\s*"\/admin",\s*label:\s*"([^"]+)"/,
+    );
+    expect(navLabel, "the /admin nav item moved — update this test and the copy").toBeTruthy();
+
+    const tabLabel = read("pages/Admin.tsx").match(
+      /\{\s*id:\s*"offices",\s*label:\s*"([^"]+)"/,
+    );
+    expect(tabLabel, "the offices tab moved — update this test and the copy").toBeTruthy();
+
+    /*
+     * A WORD BOUNDARY, not `toContain`. "Admin → Offices" CONTAINS
+     * "Admin → Office", so a substring assertion passes on exactly the drift
+     * this test exists to catch — which it did, on the first run.
+     */
+    const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const expected = new RegExp(`${escape(navLabel![1])} → ${escape(tabLabel![1])}\\b(?!s)`);
+    expect(
+      SHADOW_MODE_COPY.fix,
+      `the copy must send her to "${navLabel![1]} → ${tabLabel![1]}", exactly as those two are labelled`,
+    ).toMatch(expected);
+  });
 });
 
 /**

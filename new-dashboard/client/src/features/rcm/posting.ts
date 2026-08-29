@@ -235,9 +235,18 @@ export const SHADOW_MODE_COPY = {
    */
   reason: (officeName: string) =>
     `Posting is switched off for ${officeName} (shadow mode). Approved plans wait here.`,
-  /** The banner's body — what to do about it, for somebody who wants it on. */
+  /**
+   * The banner's body — what to do about it, for somebody who wants it on.
+   *
+   * "Admin → Office" NAMES TWO REAL LABELS: the nav item in
+   * `DashboardLayout.tsx` and the tab in `Admin.tsx`. It read "Offices" until
+   * 2026-08-29, when the tab was already labelled "Office" — a sentence sending
+   * a biller to a tab that does not exist under the name it gives.
+   * `rcm-labels.test.ts` now reads both files and fails if either label is
+   * renamed without this string.
+   */
   fix:
-    "An administrator switches posting on for a practice under Admin → Offices. " +
+    "An administrator switches posting on for a practice under Admin → Office. " +
     "Until then nothing here reaches Open Dental.",
 } as const;
 

@@ -91,6 +91,29 @@ git checkout -b feature/my-thing origin/develop
 Ship path: `feature/*` → PR → `develop` → staging auto-deploys → merge `develop` → `main`
 → prod deploys after approval.
 
+### A held PR is a DRAFT, not a remembered intention
+
+**Standing rule from 2026-08-29.** When a review holds a PR — approved-pending-an-answer,
+a question left open, "do not merge until X" — **convert it to a draft immediately**, and
+mark it ready only when the reviewer releases it:
+
+```bash
+gh pr ready --undo <n>      # hold it
+gh pr ready <n>             # the reviewer has released it
+```
+
+Why it is a rule and not a habit: **PR #121 was merged while its gating question was still
+open.** Nothing was lost, and the reason nothing was lost is worth reading — the shadow
+gate (#120) had merged an hour earlier, so the defect window physically could not reach a
+patient's chart. The safety came from a gate, not from anyone's care.
+
+*"Everyone remembers not to press Drain" is not a gate* is this module's founding
+sentence (`docs/RCM_POSTING.md` §2.5). It applies to the merge button too. GitHub already
+refuses to merge a draft; use that rather than a shared memory of what was agreed.
+
+The same applies to the branch prefix conventions above: they are enforced by nothing, so
+the draft flag is the only mechanical hold this repo has.
+
 ---
 
 ## 3. Local development

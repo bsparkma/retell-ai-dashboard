@@ -498,6 +498,18 @@ router.post(
       postingGate.readOfficeSettings(pool, office)
     );
     if (!settings.drainEnabled) {
+      /*
+       * `ERROR`, and there is no better member to reach for.
+       *
+       * `audit_log.result` is closed at three by a DB CHECK
+       * (`1780453117650_audit_log.js`): SUCCESS | UNAUTHORIZED | ERROR. This
+       * refusal is neither of the first two — the actor HELD `rcm.post`; the
+       * practice is switched off — so `UNAUTHORIZED` would libel the biller in
+       * the one record that outlives the screen. `ERROR` is the established
+       * shape for "refused, and not the actor's fault" (`claims.js` uses it the
+       * same way). If the vocabulary ever gains a REFUSED member, this line and
+       * that one move together.
+       */
       await auditRcmDenial(req, 'rcm_posting_drain', null, { office, result: 'ERROR' });
       return res.status(409).json({
         success: false,
