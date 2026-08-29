@@ -36,13 +36,15 @@ export interface TenantInfo {
  *   tc       TC module + read-only voice
  *   hygiene  hygiene intake/submissions/inbox only
  *   reviewer RCM review workbench — read it and work it, commit nothing (D-9)
+ *   rcm_biller RCM end to end EXCEPT posting to a chart, retiring a plan, and
+ *            the shadow-gate switch (the RCM shadow gate)
  *
  * `null` means no role resolved — a disabled account, or the control plane was
  * unreachable when /auth/me answered.
  */
-export type TenantRole = "admin" | "office" | "tc" | "hygiene" | "reviewer";
+export type TenantRole = "admin" | "office" | "tc" | "hygiene" | "reviewer" | "rcm_biller";
 
-const TENANT_ROLES: readonly string[] = ["admin", "office", "tc", "hygiene", "reviewer"];
+const TENANT_ROLES: readonly string[] = ["admin", "office", "tc", "hygiene", "reviewer", "rcm_biller"];
 
 export interface AuthUser {
   name: string;

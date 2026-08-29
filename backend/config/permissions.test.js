@@ -83,13 +83,22 @@ test('the map is frozen — authorization config cannot be mutated at runtime', 
   assert.ok(Object.isFrozen(PERMISSIONS['admin.all']));
 });
 
-test('admin holds every action; office holds everything except admin.all', () => {
+test('admin holds every action; office holds everything except the two admin ones', () => {
   for (const action of Object.keys(PERMISSIONS)) {
     assert.ok(roleHasPermission('admin', action), `admin should hold ${action}`);
   }
-  assert.equal(roleHasPermission('office', 'admin.all'), false);
+  /*
+   * `rcm.settings` joined `admin.all` here when the shadow gate landed. Running
+   * the day and deciding what the day is allowed to do are different
+   * authorities: an `office` user presses Drain (`rcm.post`), an `admin` decides
+   * whether pressing it may reach a chart at all.
+   */
+  const ADMIN_ONLY = ['admin.all', 'rcm.settings'];
+  for (const action of ADMIN_ONLY) {
+    assert.equal(roleHasPermission('office', action), false, `office must NOT hold ${action}`);
+  }
   for (const action of Object.keys(PERMISSIONS)) {
-    if (action === 'admin.all') continue;
+    if (ADMIN_ONLY.includes(action)) continue;
     assert.ok(roleHasPermission('office', action), `office should hold ${action}`);
   }
 });

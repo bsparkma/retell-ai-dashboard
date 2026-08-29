@@ -1165,6 +1165,32 @@ class FakeOd {
   }
 }
 
+/**
+ * The shadow gate's rows, exactly as the tenant migration seeds them.
+ *
+ * SEEDED OFF BY DEFAULT, because that is what production does. A test double
+ * that defaulted to ON would make every drain test pass without the gate ever
+ * being exercised — and would let a future change to the gate ship green.
+ *
+ * @param {FakeRcmDb} db
+ * @param {{ roland?: boolean, valley?: boolean }} [enabled]
+ * @returns {FakeRcmDb}
+ */
+function seedOfficeSettings(db, enabled = {}) {
+  db.seed(
+    'rcm_office_settings',
+    ['roland', 'valley'].map((office) => ({
+      office_id: office,
+      merchant_fee_bps: 250,
+      notes: '',
+      drain_enabled: enabled[office] === true,
+      drain_updated_at: null,
+      drain_updated_by: null,
+    }))
+  );
+  return db;
+}
+
 const REGISTRY_KEYS = [
   'getUserByEmail',
   'getTenantById',
@@ -1184,7 +1210,7 @@ const REGISTRY_KEYS = [
  * @param {{
  *   modules?: string[],
  *   user?: { email: string, name?: string, tenantId?: string } | null,
- *   role?: 'admin'|'office'|'tc'|'hygiene'|'reviewer',
+ *   role?: 'admin'|'office'|'tc'|'hygiene'|'reviewer'|'rcm_biller',
  *   superAdmin?: boolean,
  *   db?: FakeRcmDb,
  *   eraStore?: { isConfigured?: () => boolean, putEraFile?: Function } | null,
@@ -1441,6 +1467,7 @@ function fixture835(name) {
 
 module.exports = {
   FakeRcmDb,
+  seedOfficeSettings,
   FakeOd,
   bootRcmApp,
   api,

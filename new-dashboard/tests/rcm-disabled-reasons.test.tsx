@@ -245,8 +245,11 @@ const QUEUE_PAGE = {
   limit: 50,
   offset: 0,
   canDrain: false,
-  drainRequires: "rcm.write",
+  drainRequires: "rcm.post",
   postingEnabled: true,
+  // The shadow gate, OPEN in this fixture: this suite is about controls that
+  // grey for OTHER reasons, and a shut gate would explain every one of them.
+  drainEnabled: true,
 };
 
 const fixtures = vi.hoisted(() => ({
@@ -303,8 +306,9 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       lines: [],
       claims: [{ claimId: "c-1", claimNumber: "CLM-1", patientName: "Stedi Test 2", odClaimNum: 53784 }],
       canDrain: false,
-      drainRequires: "rcm.write",
+      drainRequires: "rcm.post",
       postingEnabled: true,
+      drainEnabled: true,
       documentAttach: {
         implemented: true,
         status: null,
@@ -430,7 +434,7 @@ describe("no RCM screen greys a control without saying why", () => {
     expect(drain.disabled).toBe(true);
     // PERMISSION FIRST, ahead of the empty queue: it is the thing that will
     // still be true when a plan arrives.
-    expect(screen.getByTestId("posting-drain-reason-roland").textContent).toContain("rcm.write");
+    expect(screen.getByTestId("posting-drain-reason-roland").textContent).toContain("rcm.post");
 
     expect(unexplainedDisabledControls()).toEqual([]);
   });

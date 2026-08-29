@@ -12,7 +12,15 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { FakeRcmDb, FakeOd, bootRcmApp, api } = require('./rcmTestUtils');
+const {
+  FakeRcmDb,
+  FakeOd,
+  bootRcmApp,
+  api,
+  auditRows,
+  seedOfficeSettings,
+} = require('./rcmTestUtils');
+const postingGate = require('../../services/rcm/postingGate');
 const postingDrain = require('../../services/rcm/postingDrain');
 
 const QUEUE_ID = '11111111-2222-4333-8444-555555555555';
@@ -20,8 +28,16 @@ const LINE_ID = '66666666-7777-4888-8999-000000000000';
 const BATCH_ID = '8acb0e32-35ae-5cd8-9692-7b5e318a31c2';
 const CLAIM_ID = 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d';
 
-/** A plan sitting at `approved` with one line, plus the rows that label it. */
+/**
+ * A plan sitting at `approved` with one line, plus the rows that label it.
+ *
+ * THE SHADOW GATE IS SEEDED OFF, exactly as the tenant migration seeds it and
+ * exactly as production ships. A test that wants the drain to actually run says
+ * so: `seedQueue(db, { drainEnabled: true })`. Defaulting it open would let a
+ * future drain test pass without the gate ever being consulted.
+ */
 function seedQueue(db, overrides = {}) {
+  seedOfficeSettings(db, { roland: overrides.drainEnabled === true, valley: overrides.drainEnabled === true });
   db.seed('rcm_user_map', [
     { user_key: 'user-1', platform_email: 'billing@carein.ai', display_name: 'Billing User', active: true },
   ]);
@@ -253,7 +269,7 @@ test('GET /posting/queue/:id carries the lines, the read-back evidence and the 6
     assert.equal(res.body.documentAttach.status, null);
     assert.equal(res.body.documentAttach.error, null);
     assert.deepEqual(res.body.documentAttach.documents, []);
-    assert.equal(res.body.documentAttach.retryRequires, 'rcm.write');
+    assert.equal(res.body.documentAttach.retryRequires, 'rcm.post');
   } finally {
     await app.close();
   }
@@ -299,7 +315,7 @@ test('a reviewer can WATCH the queue and cannot press Drain', async () => {
     const list = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
     assert.equal(list.status, 200, 'watching a plan post is not a posting act');
     assert.equal(list.body.canDrain, false);
-    assert.equal(list.body.drainRequires, 'rcm.write');
+    assert.equal(list.body.drainRequires, 'rcm.post');
 
     const detail = await api(app.baseUrl, 'GET', `/api/rcm/posting/queue/${QUEUE_ID}?office=roland`);
     assert.equal(detail.status, 200, 'and reading WHY one is blocked is not either');
@@ -312,6 +328,11 @@ test('a reviewer can WATCH the queue and cannot press Drain', async () => {
      * reaches the handler at all. Same structural guarantee approve has, and the
      * same consequence — the platform's FORBIDDEN rather than a prettier
      * in-handler message.
+     *
+     * `rcm.write` and not `rcm.post`, and the difference is the point: a
+     * reviewer is stopped one tier EARLIER than an `rcm_biller` is. The biller
+     * clears the mount and is refused by the route's own narrower gate; the
+     * reviewer never gets that far.
      */
     const drain = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
       body: JSON.stringify({}),
@@ -385,7 +406,7 @@ test('the server states whether posting is enabled for the office — the client
 // ─── The drain itself ────────────────────────────────────────────────────────
 
 test('a second concurrent drain is a 409, not a second run', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const app = await bootRcmApp({ db, od: readOnlyOd() });
   postingDrain.DRAIN_MUTEX.running = true;
   try {
@@ -402,7 +423,7 @@ test('a second concurrent drain is a 409, not a second run', async () => {
 });
 
 test('a valley drain blocks the plan and never resolves a client', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   // Re-stamp the plan as valley.
   for (const table of ['rcm_posting_queue', 'rcm_posting_queue_line', 'rcm_claims', 'rcm_payment_batches']) {
     for (const row of db.table(table)) row.office_id = 'valley';
@@ -436,7 +457,7 @@ test('a malformed queueId narrows to NOTHING rather than draining the whole offi
    * is null. Passing junk straight through would turn `{queueId: "../.."}` into
    * "drain everything", which is the opposite of what the caller asked for.
    */
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const od = readOnlyOd();
   const app = await bootRcmApp({ db, od });
   try {
@@ -454,7 +475,7 @@ test('a malformed queueId narrows to NOTHING rather than draining the whole offi
 });
 
 test('the drain run is audited as its own CREATE, on top of the per-call rows', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   // No drainable rows, so the run is a clean no-op and the only audit row is the
   // run itself — which is what makes this assertion about the run and not about
   // the calls.
@@ -490,7 +511,7 @@ test('the drain run is audited as its own CREATE, on top of the per-call rows', 
  * anything; it is the same fact, an hour earlier.
  */
 test('a drain defect returns its real message, not "Internal error"', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const DB_ERROR = 'column "od_patient_office" does not exist';
   const realQuery = db.query.bind(db);
   db.query = (text, params) => {
@@ -521,7 +542,7 @@ test('and the plan it was draining is back to approved, pressable again', async 
    * it; releasing it without the message would leave a biller with a plan that
    * silently reappeared and no idea why.
    */
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const realQuery = db.query.bind(db);
   db.query = (text, params) => {
     if (String(text).includes('FROM rcm_claims')) {
@@ -615,7 +636,7 @@ test('a withdrawal with a note retires the plan and records who and why', async 
 });
 
 test('a withdrawn plan is not offered for draining', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const app = await bootRcmApp({ db, od: readOnlyOd() });
   try {
     await api(

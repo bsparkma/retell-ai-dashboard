@@ -88,7 +88,7 @@ const test = require('node:test');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const { FakeRcmDb, FakeOd, bootRcmApp, api } = require('./rcmTestUtils');
+const { FakeRcmDb, FakeOd, bootRcmApp, api, seedOfficeSettings } = require('./rcmTestUtils');
 
 // ─── The Open Dental surface, split by what it is FOR ────────────────────────
 
@@ -656,6 +656,11 @@ test('APPROVING creates queue rows and calls NOTHING on Open Dental', async () =
  */
 function seedApprovedPlan(db) {
   seedProposal(db, { approvable: true });
+  // The shadow gate, OPEN. This suite's claim is about which Open Dental verbs
+  // a drain emits, so the gate that decides whether it drains at all has to be
+  // out of the way — and saying so here is what keeps "the drain wrote nothing"
+  // from silently becoming "the drain never ran".
+  seedOfficeSettings(db, { roland: true, valley: true });
   db.seed('rcm_posting_queue', [
     {
       queue_id: '11111111-2222-4333-8444-555555555555',

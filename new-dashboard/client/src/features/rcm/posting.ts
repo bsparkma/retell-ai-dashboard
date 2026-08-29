@@ -201,6 +201,56 @@ export function withdrawnCopy(reason: string | null): { label: string; fix: stri
   );
 }
 
+/**
+ * THE SHADOW GATE'S WORDS — the one string a biller reads most, in the weeks
+ * before posting is switched on.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE COPY LIVES HERE AND NOT INLINE IN THE PAGE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Three screens say it — the Posting page's header badge, its Drain button's
+ * adjacent reason, and the RCM inbox's own badge — and three copies would drift
+ * the moment one is edited. `rcm-labels.test.ts` holds these against the
+ * backend's refusal slug, so the sentence the screen shows and the sentence the
+ * server refuses with cannot come apart.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY IT SAYS "WAIT HERE" AND NOT "ERROR"
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Nothing is wrong. The biller did her job, the plan is approved, and it is
+ * SUPPOSED to sit there. The one thing the sentence has to do is stop her
+ * wondering whether she has broken something — so it names the state (shadow
+ * mode), says what happens to the work she already did (it waits), and does not
+ * pretend a refusal is a failure.
+ */
+export const SHADOW_MODE_COPY = {
+  /** The chip beside an office name, on both the Posting page and the inbox. */
+  badge: "Shadow",
+  /** What the badge means, for the person hovering or reading beneath it. */
+  hint: "Posting is switched off for this practice. Approved plans wait here.",
+  /**
+   * The Drain button's ADJACENT reason — rendered, never a tooltip (§15.2,
+   * finding 4: the practice reads this screen on a tablet, and a disabled
+   * control with no visible reason is indistinguishable from a broken one).
+   */
+  reason: (officeName: string) =>
+    `Posting is switched off for ${officeName} (shadow mode). Approved plans wait here.`,
+  /** The banner's body — what to do about it, for somebody who wants it on. */
+  fix:
+    "An administrator switches posting on for a practice under Admin → Offices. " +
+    "Until then nothing here reaches Open Dental.",
+} as const;
+
+/**
+ * The server's refusal slug for a press made while the switch is off.
+ *
+ * Deliberately NOT in `BLOCKED_COPY`: no plan is `blocked` by it. The refusal
+ * belongs to the route, the plans stay `approved`, and folding it into the
+ * blocked vocabulary would put a reason in a map whose every other member
+ * describes a row.
+ */
+export const SHADOW_REFUSAL_SLUG = "drain_disabled_for_office";
+
 export function blockedCopy(reason: string | null): { label: string; fix: string } | null {
   if (!reason) return null;
   return (

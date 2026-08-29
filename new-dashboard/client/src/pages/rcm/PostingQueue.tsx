@@ -36,6 +36,12 @@
  * button disabled and naming the permission a colleague holds. `canDrain` is the
  * SERVER'S answer, never a role name this component inspects.
  *
+ * THE SHADOW GATE is the server's answer as well. `drainEnabled` is false until
+ * an administrator switches posting on for this practice, and the office header
+ * carries a "Shadow" badge while it is. It is a SEPARATE field from
+ * `postingEnabled` on purpose — one means "never validated" and is fixed by a
+ * code change, the other means "not switched on yet" and is fixed by a toggle.
+ *
  * D-7 is the server's answer too: `postingEnabled` is false for a practice that
  * has not been validated yet, and the copy says so instead of the client
  * hardcoding a practice name that would go stale the day it is switched on.
@@ -85,6 +91,7 @@ import {
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
   queueStateTone,
+  SHADOW_MODE_COPY,
   stepCopy,
 } from "@/features/rcm/posting";
 import { planFlow } from "@/features/rcm/flow";
@@ -217,6 +224,19 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
+          {/*
+            SHADOW, beside the office name. Not a warning colour: nothing is
+            wrong, and painting it amber would put it in the same visual family
+            as `blocked`, which is a plan a human has to go fix.
+          */}
+          {page && !page.drainEnabled && page.postingEnabled && (
+            <span
+              className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              data-testid={`posting-shadow-badge-${office}`}
+            >
+              {SHADOW_MODE_COPY.badge}
+            </span>
+          )}
           {page && (
             /*
               "QUEUE:", ALWAYS — §15.2, finding 3.
@@ -264,6 +284,24 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
               key's write access proven, and a test-patient run completed first. Draining here marks
               each plan blocked and makes no Open Dental call at all.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* The shadow gate, in the server's words. Shown only when the practice
+          IS validated — otherwise the D-7 banner above is the honest headline
+          and two banners would argue about which problem to fix first. */}
+      {page && page.postingEnabled && !page.drainEnabled && (
+        <div
+          className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm"
+          data-testid={`posting-shadow-${office}`}
+        >
+          <ShieldAlert size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
+          <div>
+            <div className="font-medium text-foreground">
+              {SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])}
+            </div>
+            <p className="mt-0.5 text-muted-foreground">{SHADOW_MODE_COPY.fix}</p>
           </div>
         </div>
       )}
@@ -346,7 +384,10 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
  *
  * Permission comes FIRST in the order below, ahead of the empty queue: telling
  * a reviewer "nothing waiting to drain" would hide the thing that is still true
- * when a plan arrives.
+ * when a plan arrives. The SHADOW GATE comes second, ahead of the empty queue
+ * for the same reason and behind permission for another: a reviewer in a shadow
+ * practice has two reasons she cannot press this, and the one she can do
+ * something about (ask an approver) is not the one an admin has to fix.
  */
 function DrainButton({
   office,
@@ -360,15 +401,17 @@ function DrainButton({
   onDrain: () => void;
 }) {
   const waiting = page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted;
-  const disabled = draining || !page.canDrain || waiting === 0;
+  const disabled = draining || !page.canDrain || !page.drainEnabled || waiting === 0;
 
   const reason = !page.canDrain
     ? `Posting to Open Dental needs ${page.drainRequires}. An approver can press this.`
-    : draining
-      ? "A posting run is under way. It stops cleanly between plans."
-      : waiting === 0
-        ? "Nothing waiting to drain."
-        : null;
+    : !page.drainEnabled
+      ? SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
+      : draining
+        ? "A posting run is under way. It stops cleanly between plans."
+        : waiting === 0
+          ? "Nothing waiting to drain."
+          : null;
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -384,7 +427,7 @@ function DrainButton({
       >
         {draining ? (
           <Loader2 size={14} className="animate-spin" />
-        ) : page.canDrain ? (
+        ) : page.canDrain && page.drainEnabled ? (
           <PlayCircle size={14} />
         ) : (
           <Lock size={14} />
