@@ -48,6 +48,7 @@
 
 const tenantDb = require('../../platform/tenantDb');
 const rcmVocabulary = require('../../services/rcm/rcmVocabulary');
+const claimMatch = require('../../services/rcm/claimMatch');
 const { buildBatchRemittanceKey } = require('../../services/rcm/remittanceKey');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const { SNAPSHOT_VERSION, CLAIM_DETAIL_COLUMNS, LINE_COLUMNS } = require('./matchService');
@@ -122,6 +123,22 @@ const CHECKS = Object.freeze({
   TAKEBACK_ACKNOWLEDGED: {
     label: 'The takeback flags are what the typed amount confirmed',
     fix: 'This claim is not a takeback, so the reversal flags on it are not explained by a takeback confirmation. Dispose of it manually.',
+  },
+  /**
+   * Walk night 2, finding 1. Recoupment path ONLY, like the two above.
+   *
+   * The match gathers the evidence this gate judges, and a payment and a
+   * takeback ask OPPOSITE questions of the same chart. A snapshot taken for a
+   * payment reports the paid line as a blocker and pairs to nothing; judging a
+   * takeback on it produces two refusals that are both true sentences about a
+   * payment and say nothing about the reversal in front of the biller.
+   *
+   * So the lane is asserted rather than assumed, and the fix is one she can act
+   * on in a click.
+   */
+  MATCH_TAKEN_FOR_A_TAKEBACK: {
+    label: 'The match record was taken for a takeback',
+    fix: 'Run the match again on this claim. The stored record was taken for an ordinary payment, so it looked for a line to pay rather than the paid line this reverses.',
   },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     label: 'The carrier actually paid something',
@@ -239,16 +256,23 @@ function isPatientResponsibilityOnly(claim) {
  * Read off the money rather than off a flag, in two places at once: the claim's
  * own paid total and what the batch says this claim moved. Either being
  * negative is a takeback, and `rcm_posting_queue.is_recoupment` exists so 6d has
- * a column to gate on rather than re-deriving the sign — but 6b never sets it
- * true, because a recoupment cannot get through this gate at all.
+ * a column to gate on rather than re-deriving the sign.
+ *
+ * DELEGATES TO `claimMatch.isTakeback`, and that is the point of it. This
+ * function used to own the definition, and the MATCH had no notion of the
+ * question at all — so the match gathered payment-lane evidence about a
+ * takeback and this gate judged it as though the lane made no difference. One
+ * predicate, two callers, and `claimMatch.test.js` pins the agreement.
  *
  * @param {{ totalPaidCents: number }} claim
  * @param {{ paidCents: number }|null} payment the rcm_batch_claim_payments row
  * @returns {boolean}
  */
 function isRecoupment(claim, payment) {
-  if (claim.totalPaidCents < 0) return true;
-  return Boolean(payment && payment.paidCents < 0);
+  return claimMatch.isTakeback({
+    totalPaidCents: claim.totalPaidCents,
+    paidCents: payment ? payment.paidCents : null,
+  });
 }
 
 /**
@@ -494,6 +518,28 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
             payment ? payment.paidCents : claim.totalPaidCents
           )}`
         : `carries ${takebackClaimed.join(', ') || 'reversal flags'} but is not a takeback`
+    );
+
+    /*
+     * ── THE LANE THE EVIDENCE WAS GATHERED ON ────────────────────────────────
+     *
+     * `NO_BLOCKING_PREFLIGHT` and `LINES_PAIRED` below both read the snapshot,
+     * and the snapshot answers ONE of two opposite questions. Asserted here,
+     * before either of them speaks, so a biller reading three red checks is
+     * told the one thing that fixes all three.
+     *
+     * `snapshot.takeback !== true` rather than `=== false`: a v2 snapshot
+     * written before the field existed carries no lane, and it really was taken
+     * for a payment.
+     */
+    add(
+      'MATCH_TAKEN_FOR_A_TAKEBACK',
+      Boolean(snapshot) && snapshot.takeback === true,
+      !snapshot
+        ? 'no match record stored'
+        : snapshot.takeback === true
+          ? null
+          : 'the stored match looked for a line to pay, not the paid line this reverses'
     );
   }
 

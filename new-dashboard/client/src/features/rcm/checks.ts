@@ -107,6 +107,20 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     fail: "Dispose of this one manually — it carries the carrier's reversal flags but its money moves forwards, and the two disagree.",
     pass: "Explained by the amount you typed.",
   },
+  /*
+   * Walk night 2, finding 1. Recoupment path only, like the check above it.
+   *
+   * A payment and a takeback want OPPOSITE lines out of the same chart, and the
+   * match gathers the evidence the gate then judges. A record taken for a
+   * payment reports the paid line as a blocker and pairs to nothing — so the
+   * refusal names the lane, and the fix is one click rather than three red
+   * checks about payments on a screen showing a reversal.
+   */
+  MATCH_TAKEN_FOR_A_TAKEBACK: {
+    title: "The match looked for the paid line",
+    fail: "Run the match again on this claim — the stored record went looking for a line to pay, not the paid line this reverses.",
+    pass: "Matched as a takeback.",
+  },
   NOT_PATIENT_RESPONSIBILITY_ONLY: {
     title: "The carrier actually paid something",
     fail: "Bill the patient in Open Dental — every cent on this claim is theirs, so there is no insurance payment to post.",
