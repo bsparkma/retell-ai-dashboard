@@ -429,6 +429,56 @@ from "may this claim be posted", and changing what `ready` promises is a separat
 decision. The fidelity doc's implementation note proposed changing it; that half
 is **not** adopted here.
 
+### 3.3 PM REVIEW (2026-08-29) — one predicate is only one question if both callers ask it
+
+§3.2 gave the match a lane and gave the gate `MATCH_TAKEN_FOR_A_TAKEBACK` to
+refuse a snapshot taken for the wrong one. The PM review of that change found the
+same class of bug **one join further out**, and it is worth stating plainly
+because the fix looked complete:
+
+`claimMatch.isTakeback` reads **two** amounts and ORs them — the claim's own
+`total_paid_cents`, and what the batch says this claim moved
+(`rcm_batch_claim_payments.paid_cents`). Either being negative is a takeback.
+`approvalGate.isRecoupment` always passed both. **`matchService` passed only the
+first.**
+
+So a claim whose own total is not negative while the batch row is would be
+matched on the payment lane and judged on the takeback lane:
+
+| | |
+| --- | --- |
+| match | `snapshot.takeback = false` — it asked the payment question |
+| gate | `isRecoupment = true` — it saw the negative batch row |
+| gate | `MATCH_TAKEN_FOR_A_TAKEBACK` fails: *"re-run the match"* |
+| biller | re-runs the match, as instructed |
+| match | reads the same non-negative claim total → `false` again |
+
+**A refusal whose own remedy cannot clear it is a loop, not a gate.**
+
+Both answers the review offered were taken, because they close different holes:
+
+* **The amounts cannot diverge today.** `eraIngest.writeClaim` and
+  `eobExtractionWorker` each bind ONE in-memory `claim.totalPaidCents` into both
+  inserts, inside one transaction. That is now pinned by a test that ingests
+  **every 835 in the fixture corpus** and asserts `sign(total_paid_cents) ==
+  sign(paid_cents)` for every claim — including the reversal, so the pin covers
+  the negative case rather than only the happy one. This makes the loop
+  **unreachable**.
+* **The match now reads the batch row too**, so both callers hand the predicate
+  the same evidence. This makes the loop **impossible**, which is the stronger
+  property: the first can be broken by a future ingest change and nobody would
+  see it until a biller was stuck. It costs no round trip — the query joins a
+  `Promise.all` in `loadClaimBundle` that was already waiting on two others.
+
+The takeback MAGNITUDE follows the gate's precedence too (the batch row when
+there is one, the claim's own total otherwise), so `TAKEBACK_EXCEEDS_PAYMENT` is
+measured at match time against the number the gate measures against later.
+
+> **Why the source pin exists.** The behavioural tests only catch this when a
+> fixture happens to diverge, and today none does. A caller quietly dropping the
+> second amount again is exactly how the bug arrived, so a test asserts that both
+> `isTakeback` call sites name **both** amounts.
+
 ---
 
 ## 4. Idempotency, enforced by the database

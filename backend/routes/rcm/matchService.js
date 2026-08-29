@@ -302,7 +302,7 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
   if (claims.rows.length === 0) return null;
   const row = claims.rows[0];
 
-  const [lines, adjustments] = await Promise.all([
+  const [lines, adjustments, payments] = await Promise.all([
     pool.query(
       `SELECT ${LINE_COLUMNS} FROM rcm_procedure_lines WHERE office_id = $1 AND claim_id = $2 ` +
         `ORDER BY position ASC`,
@@ -313,7 +313,48 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
         `WHERE office_id = $1 AND claim_id = $2`,
       [office, claimId]
     ),
+    /*
+     * WHAT THE BATCH SAYS THIS CLAIM MOVED — the second half of the takeback
+     * question, and the reason this query exists at all.
+     *
+     * `claimMatch.isTakeback` reads TWO amounts: the claim's own paid total and
+     * the `rcm_batch_claim_payments` row's. The approval gate has always passed
+     * both. The match passed only the first, so a claim whose own total was not
+     * negative while the batch row was would be matched on the PAYMENT lane and
+     * then judged on the TAKEBACK lane — `MATCH_TAKEN_FOR_A_TAKEBACK` refuses,
+     * the biller re-matches as the refusal instructs, the re-match reads the
+     * same non-negative total and takes the payment lane again. A refusal whose
+     * own remedy cannot clear it is a loop, not a gate.
+     *
+     * Today the two amounts cannot disagree — `eraIngest.writeClaim` and
+     * `eobExtractionWorker` each write both from one in-memory
+     * `claim.totalPaidCents`, in one transaction (pinned by
+     * `rcmIngestSignAgreement.test.js`). This query means the loop is
+     * impossible even if that ever stops being true, rather than merely
+     * unreachable while it holds.
+     *
+     * It costs no round trip: it joins a `Promise.all` that was already waiting
+     * on two queries.
+     */
+    pool.query(
+      `SELECT paid_cents FROM rcm_batch_claim_payments WHERE office_id = $1 AND claim_id = $2`,
+      [office, claimId]
+    ),
   ]);
+
+  /*
+   * The MINIMUM, not the first row. One claim has exactly one payment row today
+   * (one claim belongs to one remittance), so min IS that row. Should a claim
+   * ever carry more, min is the only reduction that cannot under-report against
+   * the gate: `isTakeback` is an OR over negatives, so if ANY row is negative
+   * the gate says takeback, and min is negative exactly then.
+   *
+   * `null` when there is no row at all, kept distinct from `0` — `num()` maps
+   * both to 0, and "no batch row" is not "the batch moved nothing".
+   */
+  const batchPaidCents = payments.rows.length
+    ? Math.min(...payments.rows.map((r) => (r.paid_cents == null ? 0 : Number(r.paid_cents))))
+    : null;
 
   const adjByLine = new Map();
   for (const a of adjustments.rows) {
@@ -339,6 +380,13 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
 
   return {
     ...summary,
+    /**
+     * What the remittance batch says this claim moved, or `null` when no batch
+     * row exists. Deliberately NOT folded into `summary`: it belongs to
+     * `rcm_batch_claim_payments`, not to the claim, and the lane predicate is
+     * the only reader.
+     */
+    batchPaidCents,
     lines: lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || [])),
     ...(includeSnapshot
       ? {
@@ -513,8 +561,23 @@ async function runClaimMatch(
    * for the wrong question from one taken for this one rather than reading its
    * evidence as though it answered both.
    */
-  const takeback = claimMatch.isTakeback({ totalPaidCents: claim.totalPaidCents });
-  const takebackCents = takeback ? claim.totalPaidCents : null;
+  const takeback = claimMatch.isTakeback({
+    totalPaidCents: claim.totalPaidCents,
+    // BOTH amounts, exactly as `approvalGate.isRecoupment` passes them. One
+    // predicate is only one question if both callers hand it the same evidence.
+    paidCents: claim.batchPaidCents,
+  });
+  /*
+   * The magnitude follows the gate's precedence too (`approvalGate.js`: the
+   * batch row when there is one, the claim's own total otherwise), so
+   * `TAKEBACK_EXCEEDS_PAYMENT` is measured against the number the gate will
+   * later measure against.
+   */
+  const takebackCents = takeback
+    ? claim.batchPaidCents == null
+      ? claim.totalPaidCents
+      : claim.batchPaidCents
+    : null;
 
   const ranked = claimMatch.rankCandidates(
     {
