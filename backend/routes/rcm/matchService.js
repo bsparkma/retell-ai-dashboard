@@ -329,7 +329,7 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
      * Today the two amounts cannot disagree — `eraIngest.writeClaim` and
      * `eobExtractionWorker` each write both from one in-memory
      * `claim.totalPaidCents`, in one transaction (pinned by
-     * `rcmIngestSignAgreement.test.js`). This query means the loop is
+     * `routes/rcm/takebackLaneAgreement.test.js`). This query means the loop is
      * impossible even if that ever stops being true, rather than merely
      * unreachable while it holds.
      *
