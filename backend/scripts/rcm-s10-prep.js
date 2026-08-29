@@ -95,7 +95,16 @@ const T = require('./rcm-s10-targets');
  */
 const TARGET = T.resolveTarget();
 const PATHS = T.pathsFor(TARGET.office);
-const DENY = T.denyIdsFor(TARGET);
+/*
+ * NO `DENY` CONSTANT HERE, DELIBERATELY — it used to be computed and never read.
+ *
+ * This script CREATES targets; it never acts on ids a manifest names, because it
+ * refuses outright when a manifest already exists (see `main`). The screening of
+ * a manifest against retired ids lives in `T.screenManifestForSpentIds` and is
+ * consulted by `rcm-s10-835.js`; the unwind has its own, harder check.
+ *
+ * An unused constant here read like a guard for three slices and was not one.
+ */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

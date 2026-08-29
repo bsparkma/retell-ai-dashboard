@@ -1692,8 +1692,58 @@ result, no database needed) and `scripts/rcm-verify-queries.js` (sends the
 drain's real statements to the real migrated schema in CI, with parameters that
 match nothing). Both were proven red against the defect before being kept.
 
-**The kill test itself is still unrun.** The recipe below is unchanged and the
-pause hook is untouched by this fix.
+**The kill test itself is still unrun.** The pause hook is untouched by this fix.
+
+#### RUN 2026-08-28 (walk night 2) — **MISSED A THIRD TIME. `revision restart` IS NOT A KILL.**
+
+The hook was confirmed active — traffic on `0000134`, the drain visibly paced at
+~50 s. Drain pressed, Enter on the restart at ~8 s, *"Restart succeeded"* — and
+**the drain completed uninterrupted**: 1 posting attempt, `posted`.
+
+**The obvious diagnosis is wrong, and the right one changes the recipe.** The
+container did not survive because it ignores SIGTERM:
+
+```js
+// backend/server.js — this is what the handler actually does
+process.on('SIGTERM', async () => { … await unifiedCallStore.shutdown(); process.exit(0); });
+```
+
+**This app handles SIGTERM and exits immediately.** There is no `server.close()`
+and nothing waits for in-flight requests, so a held `POST /posting/drain` dies
+with the process. **A SIGTERM that ARRIVES mid-drain is a hard kill.**
+
+It survived because SIGTERM **never arrived**. `az containerapp revision restart`
+is a *graceful replacement*: a new replica is started, and the old one is only
+retired — SIGTERM, then a termination grace period — once the replacement is up.
+The old replica was still serving well past the drain's 50 s.
+
+So the miss is **too late, not too gentle**, and the fix is two-sided: make the
+drain outlive any replacement window, and stop depending on when ACA decides to
+send the signal.
+
+> Pinned by `backend/test/killMidDrainContract.test.js`. If somebody later makes
+> the shutdown graceful — closing the server, waiting for in-flight requests —
+> that is a defensible change and it silently un-arms this whole section. The
+> test makes it a conversation instead of a fourth near-miss.
+
+##### Why not the other two mechanisms — checked live, 2026-08-28
+
+| Candidate | Verdict |
+| --- | --- |
+| `revision deactivate` + `activate` | **Not available.** `ca-carein-backend` runs `activeRevisionsMode: Single`; ACA refuses to deactivate the only active revision. |
+| scale to zero and back | **Same failure again.** Scale settings are revision-scoped, so changing them issues a `containerapp update` — a NEW revision, and therefore the same graceful replacement that has now missed twice. (`minReplicas: 1, maxReplicas: 1` today, and §Staging-callstore-durability requires `maxReplicas` stay 1.) |
+| `az containerapp exec` + kill PID 1 | **This one.** It terminates the process at an instant the tester chooses, with no dependence on ACA's replacement timing. Verified live: `node` really is **PID 1** in the container (`CMD ["node", "server.js"]`, exec form). |
+
+##### ⚠ `kill -9 1` DOES NOTHING — use `kill 1`
+
+The kernel drops signals sent to a PID namespace's **init** (PID 1) *from inside
+that namespace* unless PID 1 has a handler installed for them. `SIGKILL` can
+never be caught, so **`kill -9 1` is silently ignored** and reads on the console
+exactly like a successful kill.
+
+`SIGTERM` is delivered, because this app installs a handler for it — and that
+handler calls `process.exit(0)`. So `kill 1` is the kill, and it works *because*
+of the shutdown handler rather than in spite of it.
 
 #### `RCM_DRAIN_STEP_DELAY_MS` — the re-run recipe
 
@@ -1720,37 +1770,79 @@ Unset resolving to *refused* is the load-bearing half: the default vault is
 `kv-carein-core`, so an environment that forgot to say who it is is treated as
 production, which is the only direction this may be wrong in.
 
-```bash
-# 1. Widen the window on STAGING (never prod).
-az containerapp update -n ca-carein-backend -g rg-carein-staging \
-  --set-env-vars RCM_DRAIN_STEP_DELAY_MS=15000
+**15 s was never enough and 90 s is the point.** Three steps × 90 s is over four
+minutes of drain, which is longer than any replacement or grace period this
+environment has shown — so the kill lands wherever the tester puts it rather than
+wherever ACA happens to allow. 90 000 is under the 120 000 cap
+(`killMidDrainContract.test.js` pins that it is accepted whole, not clamped).
+The run will exceed the drain's own 4-minute budget and the HTTP response may be
+cut: **that is expected and cosmetic** — every transition is committed before the
+Open Dental call it precedes (§8), which is the same property the kill is testing.
 
-# 2. Wait for the new revision, then confirm it took.
+```bash
+# 1. Widen the window on STAGING (never prod). 90s per step, three steps.
+az containerapp update -n ca-carein-backend -g rg-carein-staging \
+  --set-env-vars RCM_DRAIN_STEP_DELAY_MS=90000
+
+# 2. Wait for the new revision, then confirm it took. NOTE THE REPLICA NAME —
+#    step 4 kills a replica, not a revision.
 az containerapp revision list -n ca-carein-backend -g rg-carein-staging \
   --query "[?properties.active].{rev:name,created:properties.createdTime}" -o table
+az containerapp replica list -n ca-carein-backend -g rg-carein-staging \
+  --revision <rev> --query "[].{replica:name,state:properties.runningState}" -o table
 
 # 3. Press Drain on the second disposable target from /rcm/posting.
-#    The response carries "stepDelayMs": 15000.
+#    The response carries "stepDelayMs": 90000 — and will probably never arrive,
+#    because step 4 kills the process that would have sent it. Watch the LOGS
+#    instead: `[rcm/drain] pausing 90000ms after claimproc_write`.
+az containerapp logs show -n ca-carein-backend -g rg-carein-staging --follow
 
-# 4. WHILE it is paused — restart the container.
-az containerapp revision restart -n ca-carein-backend -g rg-carein-staging \
-  --revision <the active revision from step 2>
+# 4. WHILE it is paused — KILL THE PROCESS. Not `revision restart`: that is a
+#    graceful replacement and has now missed twice (see above).
+#
+#    `--command` splits on whitespace, so ${IFS} is load-bearing. `node` is PID 1.
+#    `kill 1` sends SIGTERM, which the app handles by exiting at once.
+#    `kill -9 1` is SILENTLY IGNORED — see the warning above.
+#
+#    Note the time. This is the teardown clock.
+date -u +%H:%M:%S
+az containerapp exec -n ca-carein-backend -g rg-carein-staging \
+  --command "kill${IFS}1"
 
-# 5. Expect: the startup sweep re-homes the plan to `approved` with a
-#    `last_error` mentioning the restart. Press Drain again → `posted`.
+# 5. Observe the teardown, and RECORD IT. The replica should go
+#    Running -> Terminated and a new one come up. Record how long that took —
+#    it is the number this section has never had.
+az containerapp replica list -n ca-carein-backend -g rg-carein-staging \
+  --revision <rev> --query "[].{replica:name,state:properties.runningState}" -o table
 
-# 6. Prove there is EXACTLY ONE check.
+# 6. Expect: the startup sweep re-homes the plan to `approved` with a
+#    `last_error` mentioning the interruption. Press Drain again -> `posted`.
+
+# 7. Prove there is EXACTLY ONE check.
 #    SELECT count(DISTINCT od_claim_payment_num) FROM rcm_posting_queue_line
 #     WHERE queue_id = '<plan>' AND od_claim_payment_num IS NOT NULL;   -- 1
 
-# 7. UNSET IT AFTERWARDS. This is not a setting to leave on.
+# 8. UNSET IT AFTERWARDS. This is not a setting to leave on.
 az containerapp update -n ca-carein-backend -g rg-carein-staging \
   --remove-env-vars RCM_DRAIN_STEP_DELAY_MS
 ```
 
+> **Observed teardown timing: ⏳ to be filled in on the next run.** Step 4 notes
+> the instant the kill is issued and step 5 watches the replica state; the gap
+> between them is the number. It is deliberately not guessed at here — three
+> walks have now been lost to assumptions about how long ACA takes to do
+> something.
+
 > `az containerapp exec`'s `--command` splits on whitespace and 429s for long
-> stretches — see the exec recipe note. Steps 1–7 use `update`/`restart`/`revision
-> list` only, none of which need `exec`.
+> stretches — see the exec recipe note. Verified working 2026-08-28 with the
+> `${IFS}` form: `--command "ps${IFS}-o${IFS}pid,comm"` returned `1 node`. A
+> nested single-quoted `sh -c '…'` fails with a websocket error that reads like
+> the container is down; it is the quoting, not the container.
+
+> **If `exec` is 429ing**, fall back to `revision restart` **with the 90 s delay
+> still set**. The SIGTERM will arrive 40–60 s in, which is inside a four-minute
+> drain — that combination has not been run either, but it fails for a reason we
+> now understand rather than one we did not.
 
 ### 10.4 Replay
 
@@ -1901,8 +1993,17 @@ files get uploaded from. **`--recoupment` prints a warning about the EOB attach*
 **4. Set the pause hook, staging only:**
 
 ```
-RCM_DRAIN_STEP_DELAY_MS=15000
+RCM_DRAIN_STEP_DELAY_MS=90000
 ```
+
+**90 000, not 15 000** (the cap is 120 000). Three forced-order steps at 15 s
+gave a ~50 s window, and the 2026-08-28 kill still arrived after the drain had
+finished — see §10.3. At 90 s the drain outlives any replacement or grace period,
+and the window stops depending on how long a cloud platform takes to do
+something. The run will exceed the drain's own four-minute budget and the HTTP
+response may be cut: **expected and cosmetic**, because every transition is
+committed before the OD call it precedes (§8) — which is the property step 9 is
+testing anyway. Watch the logs, not the response.
 
 It sleeps after each write's **read-back**, so the kill in step 9 lands in a
 state the resume logic actually has to handle. It is fail-closed: it refuses
@@ -1920,6 +2021,36 @@ Each step says where you are, what to do, what must be true, and what to do if
 it is not. **Stop at the first "must see" that does not hold** — the unwind at
 step 12 will return the patient either way, and a walk that stops with a clean
 record is worth more than one that is pushed through.
+
+#### RUN 2026-08-28 — staging rev `0000134`
+
+**Ten of thirteen steps passed. Two findings, both fixed; one deferred as
+designed.**
+
+| # | Step | Verdict |
+| --- | --- | --- |
+| 1–4 | 835-A: match, confirm, review, approve, **Drain** | ✅ claim **53830** → check **21424**, paced, read-back reconciled |
+| 5 | Upload the recoupment 835 | ✅ parsed as reversal, **−$1.00**, *"Held for review"*, takeback banner shown |
+| 6 | Type `-1.00`, approve the takeback | ❌ **FINDING 1** — refused. See §10.6.3 |
+| 7–8 | Drain the takeback, read the ledger | ⏭ not reached |
+| 9 | 835-B: approve, Drain, **kill mid-drain** | ⚠️ **FINDING 2** — B posted clean (claim **53831** → check **21425**), but the kill missed a third time. See §10.3 |
+| 10 | EOB panel | ✅ `none` — *"Nothing to file — this remittance arrived without a document"*. §10.6.2, as designed |
+| — | A withdrawn plan on the queue | ✅ rendered as **Retired** |
+| — | The typed gate | ✅ held — `-1.00` typed, the refusal audited |
+| 12–13 | Unwind, inventory | ✅ 12827 back to baseline: **0 claims, −$0.20** (§11.6) |
+
+**Step 9's near-miss is now understood rather than merely repeated.** The drain
+was visibly paced at ~50 s and the restart was issued at ~8 s; the drain finished
+anyway. `az containerapp revision restart` is a **graceful replacement** — the
+old replica is not retired until the new one is up — so SIGTERM never arrived
+inside the window. The app *does* handle SIGTERM and exits at once, so the miss
+is **too late, not too gentle**. §10.3 carries the revised recipe (90 s per step,
+`exec` + `kill 1`) and the `kill -9 1` trap.
+
+**Step 9 has now missed three times, for three different reasons** — too fast
+(2026-08-25), never started (2026-08-26), too late (2026-08-28). Each diagnosis
+was correct and each fix was insufficient, which is the argument for a recipe
+that does not depend on how long a cloud platform takes to do something.
 
 ---
 
@@ -1988,9 +2119,24 @@ payment never happened. A payment and an adjustment both sit there. That is the
 honest shape of a takeback and it is what a biller will see.
 
 **Step 9 — kill-mid-write, on target B.**
-*Do:* upload `835-B`, match, approve, press **Drain**, and **restart the
-container while the pause hook is holding it** — the pause makes this a test
-rather than a race against a nine-second drain.
+*Do:* upload `835-B`, match, approve, press **Drain**, and — while the pause
+hook is holding it — **kill the node process from a second shell.** Note the
+clock first; that is the teardown timing §10.3 still has a blank for.
+
+```bash
+date -u +%H:%M:%S
+az containerapp exec -n ca-carein-backend -g rg-carein-staging   --command "kill${IFS}1"
+```
+
+**Not `az containerapp revision restart`.** That is a *graceful replacement* —
+the old replica is retired only once the new one is up — so SIGTERM arrives long
+after the drain has finished. It is why this step missed on 2026-08-28, and the
+miss was **too late, not too gentle** (§10.3). And **`kill -9 1` is silently
+ignored**: the kernel drops signals sent to a PID-namespace init from inside that
+namespace unless init has a handler, and SIGKILL can never have one. `kill 1`
+(SIGTERM) *is* delivered, and `server.js` exits on it without draining in-flight
+requests — the kill works *because of* the shutdown handler, not in spite of it.
+`--command` splits on whitespace, so `${IFS}` is load-bearing.
 *Must see, in order:*
 1. the plan is left `posting` with a `drain_step` naming where it stopped;
 2. on boot, `sweepInterruptedPostings` re-homes it to `approved`;
@@ -1998,9 +2144,11 @@ rather than a race against a nine-second drain.
    it had already written are recognised rather than written twice.
 
 > **The sweep only runs at boot.** On 2026-08-26 a wedged plan sat for 26 minutes
-> and was rescued only because a restart happened for another reason. If the
-> restart in this step does not actually restart the container, nothing will
-> re-home the plan and it will still be sitting in `posting`.
+> and was rescued only because a restart happened for another reason. If the kill
+> in this step does not actually terminate the process — check the replica really
+> went `Running` → `Terminated` — nothing will re-home the plan and it will still
+> be sitting in `posting`. A console that *looks* like a successful kill is
+> exactly the `kill -9 1` trap above.
 
 **Step 10 — look at the EOB panel.**
 *Must see:* *"Nothing to file — this remittance arrived without a document."*
@@ -2065,10 +2213,18 @@ anybody should be demoing from.
 
 #### Recording it
 
-Paste back, into a new §10.6.3: the three uploads' parse results, the two ledger reads
-(step 5 and step 8), the drain outcome of each of the three plans, **the
-`resolved AdjType` line verbatim**, the step-9 sequence with the times, and the
-closing inventory. A walk with no transcript proves nothing a month later.
+**§10.6.3 is taken** — walk night 2 ran on 2026-08-28 and its record is above:
+the step-by-step verdicts in **RUN 2026-08-28**, finding 1 in **§10.6.3**,
+finding 2 in **§10.3**, and the targets in **§11.6**. Two slots from that night
+are still marked ⏳ for Beau's paste (the unwind's six steps and the closing
+inventory); fill those where they stand rather than opening a new section.
+
+The **next** walk records into a new **§10.6.4**: the three uploads' parse
+results, the two ledger reads (step 5 and step 8), the drain outcome of each of
+the three plans, **the `resolved AdjType` line verbatim**, the step-9 sequence
+with the times — **including the teardown gap, which is the ⏳ blank §10.3 has
+never been able to fill** — and the closing inventory. A walk with no transcript
+proves nothing a month later.
 
 #### 10.6.1 ✅ The gate used to refuse a real reversal 835 — D-11 amendment, 2026-08-27
 
@@ -2105,6 +2261,50 @@ for one stage of a pipeline is a claim about the stage upstream of it.* 6d's
 takeback tests built a claim that takes money back; they never built a claim the
 PARSER had produced, so every one of them passed against a gate that would have
 refused the real thing.
+
+#### 10.6.3 ✅ The takeback approve was unreachable for a REAL post-drain chart — fixed 2026-08-28
+
+**§10.6.1's lesson, one stage further down, and it is worth reading the two
+together.**
+
+With the reversal 835 matched to claim 53830 — Received, InsPayAmt $1.00, on
+check 21424, *the state step 3 had put it in twenty minutes earlier* — the
+takeback approve refused with the correct total typed. The ordinary checklist
+named it:
+
+```
+The chart is ready for this payment   LINE_HAS_CLAIM_PAYMENT, NO_PAYABLE_LINES
+Every line matched to a chart line    1 of 1 lines have no ClaimProcNum
+                                      "no postable line on this claim"
+```
+
+Every one of those sentences is **true about a payment**. A payment needs a line
+Open Dental will let it PUT money onto — not already on a check. **A takeback
+needs the exact state that refusal describes**, because the money it reverses is
+money the drain just posted. `claimMatch` only knew how to ask the payment
+question.
+
+§10.6.1's test passed because the fake chart's claim was never in the post-drain
+state. *A hand-built fixture for one stage of a pipeline is a claim about the
+stage upstream of it* — recorded four weeks ago, true again one layer down.
+
+**FIXED.** The pre-flight blockers and the line pairing invert on the takeback
+lane — the paid line becomes the eligible one, `LINE_PAID_AND_ON_CHECK` is
+reported rather than refused, and two new refusals appear that the payment lane
+has no use for (`NO_REVERSIBLE_LINES`, `TAKEBACK_EXCEEDS_PAYMENT`). The lane is
+one predicate (`claimMatch.isTakeback`) and is stored on the snapshot, so
+`MATCH_TAKEN_FOR_A_TAKEBACK` can refuse evidence gathered for the wrong
+question. Full partition table: **RCM_APPROVAL_GATE §3.2**.
+
+**And the test no longer writes the chart down.**
+`routes/rcm/takebackAgainstPostedChart.test.js` posts plan A through the real
+`postingDrain.drainOffice` and evaluates the reversal against whatever state that
+leaves.
+
+> **Re-run note for the next walk:** run the match on the recoupment file only
+> **after target A has posted**. Matched earlier it correctly refuses
+> `NO_REVERSIBLE_LINES` — there is nothing on the chart to reverse yet — and
+> re-matching fixes it. `rcm-s10-835.js` prints this.
 
 #### 10.6.2 ⚠ The EOB attach cannot be exercised on an 835 walk — accepted, deferred
 
@@ -2566,6 +2766,61 @@ and a populated `withdrawn_at` cannot be read out of a database that does not
 have `1787300000000_rcm_posting_withdraw.js` applied — the status CHECK would
 have refused the write. Nothing else was needed to confirm the deploy.
 
+### 11.6 The 2026-08-28 targets — unwound the same night
+
+Walk night 2's pair, retired with the rest.
+
+| | |
+| --- | --- |
+| Claims | `53830` (target A, posted → check **21424**), `53831` (target B, posted → check **21425**) |
+| Procedures | `406430`, `406431` — now `ProcStatus "D"` (G12: `DELETE /procedurelogs` is a SOFT delete) |
+| Lines | `535592`, `535593` |
+| Checks | `21424`, `21425` — **spent**, and not deny-list members: the manifest has no field for a check, so there is nothing for the list to screen them against (§`WALK_SPENT_IDS`) |
+| Inventory after | **0 claims, −$0.20** — 12827 back to baseline |
+
+All six ids are on the deny-list (`WALK_SPENT_IDS`, third row), and
+`WALK_SPENT_RECORDED_AT` moved to `2026-08-28`, which is what makes the staleness
+screen below refuse a manifest written before this night.
+
+> ⏳ **Transcripts to be pasted by Beau**: the unwind's six steps and the closing
+> inventory. The ids and the totals above are recorded now because they are what
+> the deny-list and the screen are keyed on, and neither should wait on a paste.
+
+#### The step the runbook was missing: retiring a spent manifest
+
+`rcm-s10-prep.js` refuses when a manifest already exists, and that refusal is
+right — it is what stops a second pair of targets being created while a first
+pair is still live. What it did not say is what to DO with a manifest whose
+targets have already been unwound:
+
+```bash
+# The manifest describes rows that no longer exist. Retire it, do not delete it —
+# it is the only record of what those ids were.
+mv /data/rcm-s10/roland/manifest.json /data/rcm-s10/roland/manifest.json.spent.json
+
+# Then, and only then:
+PROBE_OFFICE=roland node scripts/rcm-s10-prep.js --execute
+```
+
+**And the scripts now refuse rather than relying on anybody remembering.** On
+walk night 2 `rcm-s10-835.js` rebuilt both files from the 2026-08-26 manifest —
+two days after those claims were deleted — without a word, because it computed a
+deny-list and consulted it nowhere. `T.screenManifestForSpentIds` is now called
+before a byte is written, and refuses on either of two grounds:
+
+* the manifest **names a retired id** — Open Dental never reissues one, so the
+  file did not come from a prep run against the current chart; or
+* the manifest is **older than `WALK_SPENT_RECORDED_AT`** — the blunter question,
+  and the one that catches a stale file whose ids happen not to collide. This is
+  the one that would have caught walk night 2.
+
+Both refusals print the `mv … .spent.json` step above.
+
+`rcm-s10-prep.js` and `rcm-s10-inventory.js` had the same unused constant and no
+longer declare it: prep never reads a manifest (it refuses when one exists) and
+the inventory acts on nothing. **A deny-list that is computed and never read
+looks, to anyone auditing the file, exactly like one that is enforced** —
+`rcmS10Scripts.test.js` now fails the build on one.
 
 ## 11a. Migration rehearsal (PostgreSQL 17)
 

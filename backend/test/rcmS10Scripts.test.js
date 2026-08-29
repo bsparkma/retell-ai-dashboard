@@ -245,17 +245,24 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
    * them in would make the inventory print '*** SPIKE 0b RESIDUE' beside rows 0b
    * never touched, and a label that is wrong is worse than no label.
    *
-   * ClaimPaymentNums 21399/21400 are deliberately absent: the manifest has no
-   * field for a check, so "a future manifest must never name them" cannot apply.
+   * ClaimPaymentNums 21399/21400 (and walk night 2's 21424/21425) are
+   * deliberately absent: the manifest has no field for a check, so "a future
+   * manifest must never name them" cannot apply.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  // Two walks so far. The list GROWS by a set per walk; it is never rewritten,
+  // THREE walks so far. The list GROWS by a set per walk; it is never rewritten,
   // because an id Open Dental has issued is never reissued.
-  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785, 53805, 53806]);
-  assert.deepEqual([...T.WALK_SPENT_IDS.procedures], [406124, 406125, 406272, 406273]);
-  assert.deepEqual([...T.WALK_SPENT_IDS.claimProcs], [535194, 535195, 535348, 535349]);
+  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785, 53805, 53806, 53830, 53831]);
+  assert.deepEqual(
+    [...T.WALK_SPENT_IDS.procedures],
+    [406124, 406125, 406272, 406273, 406430, 406431]
+  );
+  assert.deepEqual(
+    [...T.WALK_SPENT_IDS.claimProcs],
+    [535194, 535195, 535348, 535349, 535592, 535593]
+  );
 
-  for (const id of [53784, 53785, 406124, 406125, 535194, 535195]) {
+  for (const id of [53784, 53785, 406124, 406125, 535194, 535195, 53830, 53831, 535592]) {
     assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
     for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
       assert.ok(!bucket.includes(id), `${id} must NOT be filed as Spike 0b residue`);
@@ -265,6 +272,130 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
   // One flat list, no duplicates — a repeated id means a bucket was merged rather
   // than added.
   assert.equal(new Set(DENY_ROLAND).size, DENY_ROLAND.length);
+});
+
+// ─── 1b. The deny-list is CONSULTED, not merely computed ────────────────────
+
+/**
+ * Walk night 2's small item, and the reason it is worth a section of its own.
+ *
+ * `denyIdsFor` had been exported since 6c and `rcm-s11-unwind.js` was the only
+ * script that ever called it. `prep`, `835` and `inventory` each computed a
+ * `DENY` constant and used it NOWHERE — so on the night, `rcm-s10-835.js`
+ * rebuilt both files from the 2026-08-26 manifest, two days after those claims
+ * had been deleted, and said nothing.
+ *
+ * A deny-list that is computed and never read looks, to anyone auditing the
+ * file, exactly like one that is enforced. These tests are about the reading.
+ */
+
+test('the spent-id screen refuses a manifest naming a retired id', () => {
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const target = T.OFFICES.roland;
+  const refusal = T.screenManifestForSpentIds(
+    {
+      createdAt: new Date().toISOString(),
+      // 53830 is walk night 2's target A. Deleted the same night.
+      targets: [{ procNum: 406430, claimNum: 53830, claimProcNum: 535592 }],
+    },
+    target
+  );
+  assert.ok(refusal, 'a manifest naming a retired id must be refused');
+  assert.match(refusal, /RETIRED id/);
+  assert.match(refusal, /claimNum=53830/);
+  // And it says what to DO, including the step the runbook was missing.
+  assert.match(refusal, /\.spent\.json/);
+  assert.match(refusal, /rcm-s10-prep\.js/);
+});
+
+test('the spent-id screen refuses a manifest older than the last walk retired', () => {
+  /*
+   * The id check only fires on a collision. A manifest written before an unwind
+   * whose ids happen not to collide is just as dead, and this is the blunter
+   * question that catches it — the one that would have caught walk night 2.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const refusal = T.screenManifestForSpentIds(
+    {
+      createdAt: '2026-08-26T00:10:00.000Z',
+      targets: [{ procNum: 999001, claimNum: 999002, claimProcNum: 999003 }],
+    },
+    T.OFFICES.roland
+  );
+  assert.ok(refusal, 'a stale manifest must be refused even when no id collides');
+  assert.match(refusal, /BEFORE the most recent/);
+  assert.match(refusal, /2026-08-28/);
+});
+
+test('the spent-id screen refuses a manifest with no createdAt at all', () => {
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const refusal = T.screenManifestForSpentIds(
+    { targets: [{ procNum: 999001, claimNum: 999002, claimProcNum: 999003 }] },
+    T.OFFICES.roland
+  );
+  assert.ok(refusal);
+  assert.match(refusal, /no usable `createdAt`/);
+});
+
+test('a fresh manifest naming live ids passes the screen', () => {
+  // The other direction: a screen that refused everything would be no screen.
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  assert.equal(
+    T.screenManifestForSpentIds(
+      {
+        createdAt: new Date().toISOString(),
+        targets: [{ procNum: 999001, claimNum: 999002, claimProcNum: 999003 }],
+      },
+      T.OFFICES.roland
+    ),
+    null
+  );
+});
+
+test('WALK_SPENT_RECORDED_AT moves whenever the spent list grows', () => {
+  /*
+   * The staleness screen is only as good as this date. A walk added to
+   * WALK_SPENT_IDS without moving it leaves the screen certifying manifests it
+   * should refuse — the exact failure mode the ids alone cannot express.
+   *
+   * Pinned as "on or after the newest walk in the table", which is checkable
+   * because the walks are dated in the header above.
+   */
+  const T = require(path.join(SCRIPTS, FILES.targets));
+  const at = Date.parse(T.WALK_SPENT_RECORDED_AT);
+  assert.ok(Number.isFinite(at), 'it must be a parseable ISO instant');
+  assert.ok(at >= Date.parse('2026-08-28T00:00:00.000Z'), 'walk night 2 is recorded');
+  assert.equal(T.WALK_SPENT_IDS.claims.length, 6, 'three walks, two claims each');
+});
+
+test('rcm-s10-835.js CONSULTS the screen before it writes anything', () => {
+  /*
+   * The structural half. The screen existing is not the fix — the fix is that
+   * the one script that regenerates files calls it, and calls it before the
+   * loop that emits them.
+   */
+  const src = fs.readFileSync(path.join(SCRIPTS, 'rcm-s10-835.js'), 'utf8');
+  assert.match(src, /T\.screenManifestForSpentIds\(manifest, TARGET\)/);
+  const screenAt = src.indexOf('screenManifestForSpentIds');
+  const writeAt = src.indexOf('fs.writeFileSync');
+  assert.ok(screenAt > -1 && writeAt > -1);
+  assert.ok(screenAt < writeAt, 'the screen must run before the first file is written');
+});
+
+test('no script computes a deny-list it never reads', () => {
+  /*
+   * THE DEFECT ITSELF, pinned. `prep`, `835` and `inventory` each had
+   * `const DENY = T.denyIdsFor(TARGET);` and no use of it. An unused constant
+   * reads like a guard and is not one.
+   */
+  for (const name of ['rcm-s10-prep.js', 'rcm-s10-835.js', 'rcm-s10-inventory.js', 'rcm-s11-unwind.js']) {
+    const src = fs.readFileSync(path.join(SCRIPTS, name), 'utf8');
+    const declares = /const DENY = T\.denyIdsFor\(TARGET\);/.test(src);
+    if (!declares) continue;
+    // Declared — so it must be read somewhere other than its own declaration.
+    const uses = (src.match(/\bDENY\b/g) || []).length;
+    assert.ok(uses > 1, `${name} computes DENY and never reads it`);
+  }
 });
 
 // ─── 2. The inventory reads and only reads ──────────────────────────────────
