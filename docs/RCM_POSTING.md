@@ -2963,6 +2963,15 @@ defence in depth for a future remount.
 coordinator. It appears in `TENANT_ROLES`, so the Users page offers it in the
 role picker with no further wiring.
 
+> ⚠ **OPEN QUESTION, to revisit before supervised live.** A biller can approve a
+> **recoupment** — `/remittances/:id/approve-recoupment` is `rcm.write`, and the
+> D-6 typed confirmation is the only extra step. Accepted **for shadow mode**
+> deliberately: §4.4 requires exercising a takeback approve, and an approved
+> takeback still cannot reach a chart without an `rcm.post` holder pressing
+> Drain *and* the office switched on. Whether reversing money should need
+> `rcm.post` at the approve step is a decision for the promotion out of shadow,
+> not for the gate that made shadow possible.
+
 The GETs run on `rcm.read`: watching a plan post, and reading why one is blocked,
 is not a posting act. The response says `canDrain` / `drainRequires` / `drainEnabled`
 so the screen renders the server's answer rather than inspecting a role name.
