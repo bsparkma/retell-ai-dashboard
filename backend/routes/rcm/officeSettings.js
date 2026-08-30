@@ -126,6 +126,20 @@ function toSettings(office, settings) {
      * screen can send an admin to the migration rather than to the toggle.
      */
     rowMissing: settings.rowMissing,
+    /**
+     * HOW THIS OFFICE BOOKS A WRITE-OFF IT CHOSE TO MAKE (Stage B1).
+     *
+     * Roland books a voluntary write-off into the claimproc's own WriteOff field
+     * plus a note and uses no adjustment type; other practices book the same
+     * decision as a ledger adjustment. Both are correct bookkeeping and they are
+     * not the same Open Dental call, so this is a fact about the practice and it
+     * lives beside the practice's other posting settings.
+     */
+    writeoffMode: settings.writeoffMode,
+    /** The AdjType NAME, never a DefNum (D-13). Null under `writeoff_field`. */
+    writeoffAdjTypeName: settings.writeoffAdjTypeName,
+    /** The list the PUT accepts, so a screen renders the server's own options. */
+    writeoffModes: postingGate.WRITEOFF_MODES,
   };
 }
 
@@ -238,13 +252,122 @@ router.put(
 
     return res.json({
       success: true,
-      settings: toSettings(office, {
-        drainEnabled: updated.drain_enabled === true,
-        updatedAt: updated.drain_updated_at,
-        updatedBy: updated.drain_updated_by == null ? null : String(updated.drain_updated_by),
-        rowMissing: false,
-      }),
+      settings: toSettings(office, fromRow(updated)),
     });
+  })
+);
+
+/**
+ * A RETURNING row from either UPDATE, in `readOfficeSettings`' shape.
+ *
+ * One mapper for both statements so a column added to the SELECT and to the
+ * RETURNING cannot arrive on the GET and go missing from the PUT — which is
+ * exactly what a screen that "did not save" looks like from the outside.
+ */
+function fromRow(row) {
+  return {
+    drainEnabled: row.drain_enabled === true,
+    updatedAt: row.drain_updated_at,
+    updatedBy: row.drain_updated_by == null ? null : String(row.drain_updated_by),
+    writeoffMode: postingGate.WRITEOFF_MODES.includes(row.writeoff_mode)
+      ? String(row.writeoff_mode)
+      : postingGate.DEFAULT_WRITEOFF_MODE,
+    writeoffAdjTypeName: row.writeoff_adjtype_name == null ? null : String(row.writeoff_adjtype_name),
+    rowMissing: false,
+  };
+}
+
+/**
+ * PUT /:office/writeoff-mode — how this practice books a write-off it chose.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A SECOND ROUTE, NOT A WIDER BODY ON THE FIRST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `PUT /:office` takes `{ drainEnabled }` and nothing else, deliberately: it is
+ * the switch that decides whether this practice may write to a chart at all, and
+ * a body that could also carry other settings is a body where a typo in one
+ * field arrives alongside a flip of the other. Two authorisations, two routes,
+ * two audit rows — and the switch's own timestamp keeps meaning "when was
+ * posting last switched" rather than "when did anybody last edit this row".
+ *
+ * Same `rcm.settings` tier (admin, and narrower than the `rcm.post` that presses
+ * the post button), same office assertion, same refusal to upsert.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ADJUSTMENT TYPE IS A NAME, AND IT IS REQUIRED WITH ITS MODE (D-13)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DefNums are per-database: 260 is one thing in Roland and something else in
+ * Riley, and a number copied between practices writes the wrong type into the
+ * wrong chart. So this stores the NAME, resolved live against that office's own
+ * definitions at post time — and a name that resolves to nothing there refuses
+ * the claim rather than falling back to a default.
+ *
+ * A blank name under `adjustment_by_name` is refused HERE as well as by the
+ * CHECK constraint, so the failure is a sentence at the moment of typing rather
+ * than a 23514 the drain discovers.
+ */
+router.put(
+  '/:office/writeoff-mode',
+  requirePermission('rcm.settings'),
+  h(async (req, res) => {
+    const refusal = officeAssertion(req);
+    if (refusal) return res.status(refusal.status).json(refusal.body);
+
+    const office = req.rcmOffice;
+    const mode = req.body && req.body.writeoffMode;
+    if (!postingGate.WRITEOFF_MODES.includes(mode)) {
+      return res.status(400).json({
+        success: false,
+        error: `writeoffMode must be one of: ${postingGate.WRITEOFF_MODES.join(', ')}`,
+        code: 'INVALID_SETTING',
+      });
+    }
+
+    const rawName = req.body && req.body.writeoffAdjTypeName;
+    const name = typeof rawName === 'string' ? rawName.trim() : '';
+    if (mode === 'adjustment_by_name' && name.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Name the adjustment type this practice books write-offs under, exactly as it is ' +
+          "spelled in that practice's Open Dental. A number will not do — definition numbers " +
+          'differ between practices.',
+        code: 'ADJTYPE_NAME_REQUIRED',
+      });
+    }
+
+    const updated = await tenantDb.withTenantDb(req, async (pool) => {
+      const { rows } = await pool.query(postingGate.QUERIES.setWriteoffMode, [
+        mode,
+        // Kept when switching back to `writeoff_field`, so a practice that flips
+        // to look at the other mode does not have to retype it.
+        name.length > 0 ? name : null,
+        office,
+      ]);
+      return rows[0] || null;
+    });
+
+    if (!updated) {
+      await auditRcmDenial(req, 'rcm_office_settings', office, { office, result: 'ERROR' });
+      return res.status(409).json({
+        success: false,
+        error:
+          `There is no posting-settings row for '${office}'. The tenant migration seeds one ` +
+          'per office — run migrations.',
+        code: 'OFFICE_SETTINGS_MISSING',
+      });
+    }
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_office_settings',
+      resourceId: office,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, settings: toSettings(office, fromRow(updated)) });
   })
 );
 

@@ -69,6 +69,21 @@ function statements() {
       text: postingGate.QUERIES.setDrainEnabled,
       params: [false, null, NO_SUCH_SETTINGS_KEY],
     },
+    /*
+     * STAGE B1's setting: how this practice books a write-off it CHOSE to make.
+     *
+     * A second statement rather than a wider first one, and it belongs here for
+     * the same reason `setDrainEnabled` does — it is admin-only, so it is the
+     * kind of statement that gets exercised for the first time on the day it
+     * matters. `writeoff_field` with a null name is the one combination the
+     * adjtype CHECK accepts unconditionally, so this parses AND satisfies the
+     * constraint against a key no row holds.
+     */
+    {
+      name: 'postingGate.setWriteoffMode',
+      text: postingGate.QUERIES.setWriteoffMode,
+      params: ['writeoff_field', null, NO_SUCH_SETTINGS_KEY],
+    },
   ];
 }
 

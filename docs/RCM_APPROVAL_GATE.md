@@ -12,7 +12,7 @@ The one thing the workbench's disabled **Approve** button has been waiting for.
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Migration | `backend/migrations-tenant/1787080000000_rcm_posting_approval.js` (additive only) |
 | Code | [`backend/routes/rcm/approvalGate.js`](../backend/routes/rcm/approvalGate.js), [`backend/services/rcm/rcmVocabulary.js`](../backend/services/rcm/rcmVocabulary.js), [`new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx`](../new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx) |
-| Tests | `approvalGate.test.js` (46), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (74), `rcmVocabulary.test.js` (17), `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` (11) |
+| Tests | `approvalGate.test.js` (46), `lineDecisions.test.js` (20), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (74), `rcmVocabulary.test.js` (17), `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` (11) |
 
 ---
 
@@ -95,6 +95,7 @@ then the human decisions, then facts about the file, then the arithmetic.
 | `NO_BLOCKING_PREFLIGHT` | The confirmed candidate's snapshot carries a blocking `OD_BLOCKERS` fact |
 | `LINES_PAIRED` | Any procedure line has no `od_claim_proc_num` |
 | `CLAIMPROC_NOT_ALREADY_PLANNED` | One of this claim's chart lines is already on a posting plan — another claim's, or another claim on this same remittance |
+| `PATIENT_RESPONSIBILITY_MATCHES` | What the patient will owe once this posts is not what the EOB says they owe (Stage B1 — see §3.5) |
 | `CLAIM_TOTALS_AGREE` | The claim total, the sum of its lines, and what the batch says it moved do not all agree |
 
 **The recoupment approve swaps three of these and adds two.** `NOT_REVERSAL` and
@@ -552,6 +553,120 @@ builds is a *copy* of what `loadForApproval` builds, and a copy can drift:
 > flags, §10.6.3 about the chart, and this says it about the plan table. A
 > fixture that drives one real component and hand-feeds the rest tests the seam
 > it hand-fed, not the one it drove.
+
+---
+
+### 3.5 STAGE B1 (2026-08-30) — the patient's number, at the gate and on the screen
+
+The rule the workbench is built on, expressed as the gate's thirteenth check.
+
+#### The money, defined once
+
+Per claim line the carrier gives **billed** (B), **allowed** (A) and **paid** (P):
+
+```
+contractual write-off   W = B − A     the CARRIER's figure
+patient remainder       R = A − P     what the EOB says the patient owes
+```
+
+W is always accepted. It is displayed as a fact, never offered as a choice, and
+nothing in this slice can change it. (A per-office "do not accept contractual
+write-offs" flag is a later slice and is deliberately not built.)
+
+R is the whole decision, and it is one enum per line — `rcm_procedure_lines
+.line_decision`:
+
+| Value | Effect | Reason |
+| --- | --- | --- |
+| `bill_patient` | the patient is billed R; their number matches the EOB | forbidden |
+| `office_writeoff` | the office absorbs R; their number is R below the EOB **on purpose** | **required** |
+
+`NULL` means nobody has said, and the money reads it as `bill_patient` — the
+outcome that does not quietly move anything. A line where R is zero has nothing
+to decide and renders without the control at all.
+
+Over a claim:
+
+```
+EOB patient responsibility        Σ R over every line
+decided office write-off total    Σ R over office_writeoff lines
+projected patient responsibility  Σ R over bill_patient lines
+```
+
+#### The three states
+
+| State | When | At the gate |
+| --- | --- | --- |
+| **GREEN** | projected == EOB | passes |
+| **AMBER** | projected == EOB − decided, and every contributing line has a reason | **passes**, and the detail lists line, amount, reason and who |
+| **RED** | anything else | **refuses** |
+
+AMBER passing is the point. A write-off somebody decided on, with a reason and a
+name against it, is the ordinary work; refusing it would refuse the day.
+
+RED has exactly three causes, and every one of them names a line:
+
+- `decision_missing_reason` — a write-off with nothing recorded about why;
+- `line_not_in_chart` — the line has no ClaimProcNum, so the projection has
+  nowhere to land;
+- `od_fee_disagrees` — Open Dental was billed a different amount for that
+  procedure, so the carrier's figures describe a different line and the
+  projection is arithmetic about the wrong number.
+
+The fee comparison is read from the confirmed match snapshot's `linePairs`
+(`billedDeltaCents`), which is where the two billed figures were already
+compared. **This file still makes no Open Dental call of any kind.**
+
+#### One function, two renderers
+
+`services/rcm/lineDecisions.js` `verdictFor()` is the only place any of this
+arithmetic happens. The workbench prints its `sentence`; this gate turns the same
+verdict into a pass or a refusal, and carries it out whole on each claim so the
+checklist prints the screen's own words rather than a second computation of them.
+
+A green line beside a red check is therefore not a bug that can be introduced —
+it is a shape the code cannot produce. `routes/rcm/lineDecisions.test.js` drives
+one remittance through both surfaces and asserts the state, the three figures and
+the sentence are identical for green, amber and red.
+
+#### The imbalance sentence is a BACKSTOP
+
+`projected + decided === eob` holds **by construction**: the three sums partition
+one set. So the "doesn't match the EOB — $X here, $Z on the EOB" wording is
+unreachable today, and the sentence a biller actually reads on a red claim names
+the problem instead. It is kept because the partition is a property of one loop
+rather than of the world — a later slice that let a line be written off in PART
+would break it, and the verdict would then say which two numbers disagree rather
+than failing quietly.
+
+#### And a takeback may not carry one
+
+The recoupment lane refuses a claim whose lines carry a decided write-off. The
+two are opposite operations on the same money, and the recoupment INSERT writes
+supplemental lines with nowhere to put a decided figure — so a claim carrying one
+would have its decision **silently dropped** at approve. Refused rather than
+dropped, naming which of the two to undo.
+
+#### What approving freezes
+
+On approve the decision is snapshotted onto the posting line, in three columns
+kept **separate** from the carrier's own figure:
+
+| Column | Holds |
+| --- | --- |
+| `intended_write_off_cents` | W — the carrier's contractual write-off |
+| `decided_write_off_cents` | R — what this office chose to absorb. `NULL`, not zero, when nothing was decided |
+| `decided_reason`, `decided_by` | frozen with the amount, all three or none |
+
+Adding the two together at approve time would destroy the one distinction the
+slice exists to keep. The drain sums them at the moment it writes.
+
+**D-14: an approved claim is frozen.** `rcm_claims.posting_queue_id` non-null
+refuses a decision edit with 409 `CLAIM_ON_POSTING_PLAN` — the same predicate
+`runClaimMatch` already refuses on. The copy says what is actually true about
+undoing it today: retiring the posting stops it, but a retired remittance can
+never be approved again (RCM_POSTING §2.2.0), so a wrong write-off on an approved
+claim is a correction in the desktop until 6d.2 lands.
 
 ---
 

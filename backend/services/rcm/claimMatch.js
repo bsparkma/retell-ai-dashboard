@@ -453,6 +453,36 @@ function odAmount(value) {
 // ─── Candidate summarisation ─────────────────────────────────────────────────
 
 /**
+ * Open Dental's own estimate of what insurance will pay on a line, in cents, or
+ * `null` when it has not calculated one.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * -1 IS A SENTINEL, NOT A DOLLAR AMOUNT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Open Dental writes **-1** into `InsEstTotal` to mean "not calculated"
+ * (`docs/TC_OD_READS.md` §"The -1 sentinel"), and `InsEstTotalOverride` wins
+ * whenever it is set. A `COALESCE(..., 0)` over that produces a confident
+ * "$-0.01 estimated", which is the class of quiet wrongness this module keeps
+ * finding on estimate columns. Null means "Open Dental has not said", and the
+ * screen prints that rather than a number.
+ *
+ * PROJECTION ONLY — NO NEW OPEN DENTAL CALL. `InsEstTotal` and its override
+ * arrive on the very `GET /claimprocs` rows `odClaimReads` already fetches for
+ * the match; this reads bytes that were being thrown away at the projection,
+ * exactly as Stage A did for the patient's birthdate and subscriber id. Adding
+ * it changes no score, no evidence tag and no blocker.
+ *
+ * @param {Record<string, unknown>} cp a claimproc row, verbatim from OD
+ * @returns {number|null}
+ */
+function odInsEstimate(cp) {
+  const override = Number(cp.InsEstTotalOverride);
+  if (Number.isFinite(override) && override >= 0) return dollarsToCents(override);
+  const value = Number(cp.InsEstTotal);
+  return Number.isFinite(value) && value >= 0 ? dollarsToCents(value) : null;
+}
+
+/**
  * @typedef {Object} OdLineFacts
  * @property {number} claimProcNum
  * @property {number|null} procNum
@@ -462,6 +492,8 @@ function odAmount(value) {
  * @property {number} insPayAmtCents
  * @property {number} writeOffCents
  * @property {number} dedAppliedCents
+ * @property {number|null} insEstCents  what OD ESTIMATES insurance will pay on
+ *   this line, or null when Open Dental has not calculated one. See `odInsEstimate`.
  * @property {boolean} isTransfer
  * @property {number|null} claimPaymentNum  non-null ⇒ InsPayAmt is locked
  * @property {boolean|'unknown'} deleted  true = ProcStatus 'D'; 'unknown' = the
@@ -534,6 +566,7 @@ function summariseLines(claimProcs, proceduresByProcNum) {
       insPayAmtCents: dollarsToCents(cp.InsPayAmt),
       writeOffCents: dollarsToCents(cp.WriteOff),
       dedAppliedCents: dollarsToCents(cp.DedApplied),
+      insEstCents: odInsEstimate(cp),
       isTransfer: cp.IsTransfer === true || cp.IsTransfer === 'true',
       claimPaymentNum: Number.isFinite(payNum) && payNum > 0 ? payNum : null,
       deleted,

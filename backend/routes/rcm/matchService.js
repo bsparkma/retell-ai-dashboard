@@ -31,10 +31,12 @@
 const odOffices = require('../../config/odOffices');
 const tenantDb = require('../../platform/tenantDb');
 const claimMatch = require('../../services/rcm/claimMatch');
+const claimWorkbench = require('../../services/rcm/claimWorkbench');
+const lineDecisions = require('../../services/rcm/lineDecisions');
 const odClaimReads = require('../../services/rcm/odClaimReads');
 const odPacer = require('../../services/rcm/odPacer');
 const { describeAdjustment } = require('../../services/rcm/adjustmentCodes');
-const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
+const { resolveRcmActor, describeActors } = require('../../services/rcm/rcmUserMap');
 const { num, iso, isoDate } = require('./helpers');
 
 /**
@@ -150,8 +152,25 @@ const CLAIM_LIST_COLUMNS = [
   "(od_match_snapshot->>'rejectedCandidates')::int AS od_match_rejected",
 ].join(', ');
 
-/** The detail view adds the snapshot; everything else is the same read. */
-const CLAIM_DETAIL_COLUMNS = `${CLAIM_LIST_COLUMNS}, od_match_snapshot`;
+/**
+ * The detail view adds the snapshot and the two identity fields the workbench
+ * compares against Open Dental.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY `patient_dob` AND `subscriber_id` ARE HERE AND NOT IN THE LIST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Both are PHI, and the list read deliberately omits them — a worklist row has
+ * no use for a date of birth and shipping one "just in case" widens the PHI
+ * surface for free.
+ *
+ * The workbench is the one screen where they earn their place: a claim posted
+ * onto the wrong patient's chart is the worst outcome this module has, and a
+ * NAME does not separate two people. Showing the remittance's date of birth
+ * beside Open Dental's is what turns a name comparison into an identity check,
+ * and that check BLOCKS an approval rather than warning about it. One claim, one
+ * audited read, two more fields.
+ */
+const CLAIM_DETAIL_COLUMNS = `${CLAIM_LIST_COLUMNS}, patient_dob, subscriber_id, od_match_snapshot`;
 
 const LINE_COLUMNS = [
   'line_id',
@@ -175,6 +194,17 @@ const LINE_COLUMNS = [
   'is_denied',
   'flags',
   'od_claim_proc_num',
+  /*
+   * THE BILLER'S DECISION ABOUT THIS LINE'S PATIENT REMAINDER (Stage B1).
+   *
+   * NULL reads as `bill_patient` — the default that needs no action — and the
+   * pair of nulls beside it is what separates "she decided to bill it" from
+   * "nobody has looked". Both bill the patient; only one has a name on it.
+   */
+  'line_decision',
+  'decision_reason',
+  'decided_by',
+  'decided_at',
 ].join(', ');
 
 const ADJUSTMENT_COLUMNS = [
@@ -269,6 +299,31 @@ function toLineWire(line, adjustments) {
     isDenied: line.is_denied === true,
     flags: Array.isArray(line.flags) ? line.flags : [],
     odClaimProcNum: line.od_claim_proc_num == null ? null : num(line.od_claim_proc_num),
+    /**
+     * The decision, verbatim. `null` means nobody has said — which the money
+     * reads as `bill_patient` and the SCREEN reads as "no decision recorded",
+     * because those are different things to a person even though they are the
+     * same number.
+     */
+    decision: line.line_decision || null,
+    decisionReason: line.decision_reason || null,
+    /** Raw crosswalk key; resolved to a display name one level up, like the others. */
+    decidedByKey: line.decided_by || null,
+    decidedAt: iso(line.decided_at),
+    /**
+     * THE CARRIER'S ARITHMETIC, COMPUTED IN ONE PLACE.
+     *
+     * W = billed − allowed and R = allowed − paid. Shipped rather than left to
+     * the client for the same reason the takeback's typed phrase is: two
+     * subtractions done in two languages are two places for a rounding habit or
+     * a null coercion to make one screen disagree with the gate about money.
+     * `services/rcm/lineDecisions.js` is the only file that does this sum.
+     */
+    ...lineDecisions.lineMoney({
+      billedCents: num(line.billed_cents),
+      allowedCents: num(line.allowed_cents),
+      paidCents: num(line.paid_cents),
+    }),
     adjustments: adjustments.map((a) => ({
       adjustmentId: a.adjustment_id,
       amountCents: num(a.amount_cents),
@@ -378,8 +433,37 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
   const stored = row.od_match_snapshot || null;
   const usable = stored && Number(stored.version) === SNAPSHOT_VERSION;
 
+  const rawLines = lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || []));
+
+  /*
+   * WHO DECIDED, BY NAME, RESOLVED HERE.
+   *
+   * One statement for the whole claim rather than one per line — the same
+   * batching the claim-level keys get one level up. It runs only when a line
+   * actually carries a decision, so an untouched claim costs no extra query.
+   *
+   * Resolved BEFORE the verdict is built, because the amber sentence and the
+   * gate's detail both list who wrote a line off. A verdict carrying crosswalk
+   * keys where a person's name belongs would be read as a bug by the one reader
+   * it exists for.
+   */
+  const decidedKeys = rawLines.map((l) => l.decidedByKey).filter(Boolean);
+  const decidedActors = decidedKeys.length ? await describeActors(pool, decidedKeys) : {};
+  const wireLines = rawLines.map(({ decidedByKey, ...line }) => ({
+    ...line,
+    decidedBy: decidedByKey
+      ? (decidedActors[decidedByKey] || {}).displayName || decidedByKey
+      : null,
+  }));
+
   return {
     ...summary,
+    /**
+     * The two identity fields, PHI, and detail-only. Null on the list read,
+     * which does not select them. See `CLAIM_DETAIL_COLUMNS`.
+     */
+    patientDob: includeSnapshot ? isoDate(row.patient_dob) : null,
+    subscriberId: includeSnapshot ? row.subscriber_id || null : null,
     /**
      * What the remittance batch says this claim moved, or `null` when no batch
      * row exists. Deliberately NOT folded into `summary`: it belongs to
@@ -387,12 +471,41 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
      * the only reader.
      */
     batchPaidCents,
-    lines: lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || [])),
+    lines: wireLines,
     ...(includeSnapshot
       ? {
           matchSnapshot: usable ? stored : null,
           /** True when there IS one and it predates the current shape. */
           matchSnapshotStale: Boolean(stored) && !usable,
+          /*
+           * THE WORKBENCH VIEW — identity, the chart as read, and the verdict.
+           *
+           * Assembled here rather than in the route so the approval gate can ask
+           * for exactly the same thing from exactly the same function. One
+           * arithmetic, two renderers: the screen prints `verdict.sentence` and
+           * the gate turns the same verdict into a pass or a refusal, so a green
+           * line beside a red check is not a state this code can reach.
+           *
+           * `register: 'projection'` is the only register a READ can be in. The
+           * confirmed register belongs to the drain's read-back, after money has
+           * moved, and a screen that has not posted anything must never word
+           * itself as though it had.
+           *
+           * A stale-shaped snapshot yields no chart and no identity comparison —
+           * `usable` is false, so `buildWorkbenchView` is handed null and says
+           * "unknown" rather than reading fields that version does not have.
+           */
+          ...claimWorkbench.buildWorkbenchView({
+            claim: {
+              odClaimNum: summary.odClaimNum,
+              patientName: summary.patientName,
+              patientDob: isoDate(row.patient_dob),
+              subscriberId: row.subscriber_id || null,
+            },
+            lines: wireLines,
+            snapshot: usable ? stored : null,
+            register: 'projection',
+          }),
         }
       : {}),
   };
@@ -1136,6 +1249,155 @@ async function markReviewed(req, office, claimId, note, actor) {
   });
 }
 
+/**
+ * Record a biller's decision about one line's patient remainder.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS WRITES, AND WHAT IT CANNOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Four columns on ONE `rcm_procedure_lines` row, in this office, on this claim.
+ * It reaches no chart, no plan and no other claim. It is the same tier of act as
+ * marking a claim reviewed: a human's sentence about work, recorded where the
+ * work is.
+ *
+ * `bill_patient` clears the reason and `office_writeoff` requires one — enforced
+ * here AND by `rcm_procedure_lines_decision_reason_check`, in both directions.
+ * The route validates that the reason is one of the canned five; the database
+ * only insists that there IS one, so the later per-office slice edits a list
+ * rather than a constraint.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * AN APPROVED CLAIM IS FROZEN (D-14)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `posting_queue_id` non-null means a person authorised these exact figures, and
+ * the posting carries its own snapshot of them. Letting the review row move
+ * afterwards would leave two records of one decision, disagreeing, with the one
+ * a biller can see being the one the drain does not read. So the claim is frozen
+ * from the moment it is approved, and the refusal says what is actually true
+ * about undoing that today — retiring the posting stops it, but a retired
+ * remittance cannot be approved again (RCM_POSTING §2.2.0), so a wrong write-off
+ * on an approved claim is a correction in the desktop until 6d.2 lands.
+ *
+ * The predicate is the CLAIM's own `posting_queue_id` and not the plan's status,
+ * deliberately: it is the same one `runClaimMatch` refuses on, single-valued,
+ * and set in the same statement that creates the plan — so there is no window in
+ * which a claim is on a posting and this route cannot see it.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} claimId
+ * @param {string} lineId
+ * @param {{ decision: string, reason: string|null }} choice
+ * @param {{ email: string, displayName?: string }} actor
+ * @returns {Promise<{ claimId: string, lineId: string, decision: string,
+ *                     reason: string|null, decidedBy: string }>}
+ */
+async function setLineDecision(req, office, claimId, lineId, choice, actor) {
+  const decision = choice && choice.decision;
+  if (!lineDecisions.LINE_DECISIONS.includes(decision)) {
+    const err = new Error(
+      `decision must be one of: ${lineDecisions.LINE_DECISIONS.join(', ')}`
+    );
+    err.httpStatus = 400;
+    err.code = 'INVALID_LINE_DECISION';
+    throw err;
+  }
+
+  /*
+   * THE REASON IS PART OF THE DECISION, not a field beside it. An office
+   * write-off with nothing recorded about why is money leaving the practice with
+   * nobody's account of it, and this is the last place a person is present to
+   * give one.
+   */
+  const reason = decision === 'office_writeoff' ? (choice && choice.reason) || null : null;
+  if (decision === 'office_writeoff' && !lineDecisions.isWriteoffReason(reason)) {
+    const err = new Error('Choose a reason for writing this line off');
+    err.httpStatus = 400;
+    err.code = 'WRITEOFF_REASON_REQUIRED';
+    throw err;
+  }
+
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      /*
+       * TWO STATEMENTS, NOT A JOIN — the same discipline `readProvenance`
+       * follows. `office_id` is a column on BOTH tables, so a join written on
+       * ids alone would be a cross-office read waiting for a uuid collision, and
+       * scoping every leg is the kind of thing that is right the day it is
+       * written and wrong the day somebody edits it.
+       *
+       * The CLAIM is read `FOR UPDATE`, and that lock is what makes the freeze
+       * check and the write one decision rather than two: a concurrent approve
+       * takes the same row lock, so this cannot read "not approved" and write
+       * after somebody else has approved.
+       */
+      const claim = await client.query(
+        `SELECT claim_id, posting_queue_id FROM rcm_claims ` +
+          `WHERE office_id = $1 AND claim_id = $2 FOR UPDATE`,
+        [office, claimId]
+      );
+      if (claim.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('No such claim for this office');
+        err.httpStatus = 404;
+        err.code = 'CLAIM_NOT_FOUND';
+        throw err;
+      }
+
+      const found = await client.query(
+        `SELECT line_id FROM rcm_procedure_lines ` +
+          `WHERE office_id = $1 AND claim_id = $2 AND line_id = $3`,
+        [office, claimId, lineId]
+      );
+      if (found.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('No such line on that claim for this office');
+        err.httpStatus = 404;
+        err.code = 'LINE_NOT_FOUND';
+        throw err;
+      }
+
+      if (claim.rows[0].posting_queue_id) {
+        await client.query('ROLLBACK');
+        const err = new Error(
+          'This claim has been approved for posting, and an approved posting cannot be ' +
+            'changed. Retiring it stops the posting, but this check could not then be ' +
+            'approved again — so a wrong write-off here is a correction in Open Dental.'
+        );
+        err.httpStatus = 409;
+        err.code = 'CLAIM_ON_POSTING_PLAN';
+        throw err;
+      }
+
+      // D-5: the acting user, created on first use, on THIS connection so the
+      // FK on `decided_by` is satisfiable by the statement that sets it.
+      const userKey = await resolveRcmActor(client, actor);
+
+      await client.query(
+        `UPDATE rcm_procedure_lines SET line_decision = $4, decision_reason = $5, ` +
+          `decided_by = $6, decided_at = now(), updated_at = now() ` +
+          `WHERE office_id = $1 AND claim_id = $2 AND line_id = $3`,
+        [office, claimId, lineId, decision, reason, userKey]
+      );
+
+      await client.query('COMMIT');
+      return { claimId, lineId, decision, reason, decidedBy: userKey };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* keep the original */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+}
+
 module.exports = {
   BATCH_PACING_MS,
   BATCH_MATCH_BUDGET_MS,
@@ -1153,4 +1415,5 @@ module.exports = {
   runBatchMatch,
   confirmMatch,
   markReviewed,
+  setLineDecision,
 };

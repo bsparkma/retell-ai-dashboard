@@ -738,6 +738,15 @@ export interface OdLineFacts {
   insPayAmtCents: number;
   writeOffCents: number;
   dedAppliedCents: number;
+  /**
+   * What Open Dental ESTIMATES insurance will pay on this line, or `null` when
+   * it has not calculated one.
+   *
+   * `null` IS NOT ZERO. Open Dental writes -1 into `InsEstTotal` to mean "not
+   * calculated", so a screen printing $0.00 for it would state a number nobody
+   * computed. Rendered as "not calculated".
+   */
+  insEstCents: number | null;
   isTransfer: boolean;
   /** Non-null ⇒ a check is attached and InsPayAmt is locked. */
   claimPaymentNum: number | null;
@@ -786,6 +795,22 @@ export interface MatchCandidate {
     insPaidCents: number;
     writeOffCents: number;
     patientName: string | null;
+    /**
+     * THE TWO IDENTITY FACTS, from the patient row the match already fetched.
+     *
+     * Both `null` when Open Dental did not send them, and that is load-bearing
+     * rather than defensive: a missing identity fact must read as "not recorded"
+     * and never as a value somebody could compare against an EOB. A fabricated
+     * subscriber id on a verification screen is the worst failure this module
+     * has.
+     *
+     * `patientBirthdate` is the DATE PART ONLY — Open Dental returns a birthdate
+     * as a day or as a midnight instant depending on the resource, and an
+     * instant would print the wrong day for anybody east of UTC, in the one
+     * place where being a day out means the wrong person.
+     */
+    patientBirthdate: string | null;
+    subscriberId: string | null;
     lines: OdLineFacts[];
     deletedLineCount: number;
     /** Lines whose procedure could not be read. Excluded from every total. */
@@ -889,7 +914,40 @@ export interface ClaimLine {
   flags: string[];
   odClaimProcNum: number | null;
   adjustments: ClaimAdjustment[];
+  /**
+   * THE CARRIER'S ARITHMETIC, computed once on the server.
+   *
+   * `contractualWriteOffCents` is billed − allowed: the carrier's own figure,
+   * always accepted, never a choice. `patientRemainderCents` is allowed − paid:
+   * what the EOB says the patient owes on this line, and the ONLY thing the
+   * decision below is about.
+   *
+   * Not derived here. Two subtractions done in two languages are two places for
+   * a rounding habit to make this screen disagree with the gate about money.
+   */
+  contractualWriteOffCents: number;
+  patientRemainderCents: number;
+  /** `null` = nobody has said. Reads as `bill_patient` for the money. */
+  decision: LineDecision | null;
+  /** A canned reason slug. Present exactly when the decision is a write-off. */
+  decisionReason: string | null;
+  /** Who decided, by name. Null when nobody has. */
+  decidedBy: string | null;
+  decidedAt: string | null;
 }
+
+/**
+ * What a biller can decide about one line's patient remainder.
+ *
+ * TWO stored values, not three. The screen renders the accepted contractual
+ * write-off beside them — which reads as three things — but the carrier's figure
+ * is a FACT this slice always accepts, never an option, so there is nothing to
+ * store about it.
+ *
+ * There is no amount anywhere: a line is written off whole or billed whole.
+ */
+export const LINE_DECISIONS = ["bill_patient", "office_writeoff"] as const;
+export type LineDecision = (typeof LINE_DECISIONS)[number];
 
 export interface WorkbenchClaim {
   claimId: string;
@@ -1143,6 +1201,19 @@ export interface Remittance {
   /** A SLUG the client renders copy from — see SET_ASIDE_COPY. */
   setAsideReason: SetAsideReason | string | null;
   setAsideNote: string | null;
+  /**
+   * WHEN SOMEBODY LAST DECIDED A WRITE-OFF ON THIS CHECK, AND WHO.
+   *
+   * §15.2's ninth finding — the per-user touch stamp "where you left off" never
+   * had. Parking and pressing Approve were the two facts it worked from, and
+   * neither is what a biller means by leaving off: that is the check she was
+   * reading when the phone rang, which she neither parked nor tried to approve.
+   *
+   * Null throughout means nobody has decided anything here — NOT "decided by
+   * nobody".
+   */
+  lastDecidedAt: string | null;
+  lastDecidedBy: string | null;
 
   upload: RemittanceUpload | null;
 }
@@ -1260,6 +1331,103 @@ export interface MatchRules {
   bands: { band: MatchConfidence; min: number }[];
 }
 
+/**
+ * The verdict on one claim's patient responsibility (Stage B1).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE CLIENT DOES NOT COMPUTE THIS AND MUST NOT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `sentence` arrives already written and already formatted, for exactly the
+ * reason the takeback's typed phrase does: a client that formats cents itself is
+ * a client that can display `$54.8` while the server means `$54.08`. The same
+ * server function produces the approval gate's "The patient's number matches the
+ * EOB" check, so this screen and that checklist cannot disagree.
+ *
+ * TWO REGISTERS, and the copy says which one it is. Before posting the verdict
+ * is a PROJECTION — *"will owe … once posted"*. After a real post it is
+ * recomputed from what Open Dental was read back as holding and says
+ * *"owes … — confirmed in Open Dental"*. A projection worded as a confirmation
+ * is the honest-states rule failing in the most expensive place there is.
+ */
+export type VerdictState = "green" | "amber" | "red";
+
+export interface ClaimVerdict {
+  state: VerdictState;
+  register: "projection" | "confirmed";
+  /** What the EOB says the patient owes — the sum of every line's remainder. */
+  eobPatientCents: number;
+  /** What they will owe once this posts: the lines the office is billing them for. */
+  projectedPatientCents: number;
+  /** What the office decided to absorb. Zero on a green verdict. */
+  decidedWriteOffCents: number;
+  /** The carrier's own write-off. A fact, shown, never decided about. */
+  contractualWriteOffCents: number;
+  decisions: {
+    lineId: string | null;
+    code: string;
+    amountCents: number;
+    reason: string | null;
+    reasonLabel: string | null;
+    decidedBy: string | null;
+    decidedAt: string | null;
+  }[];
+  /** Why it is red. Empty on green and amber. Every entry names a line. */
+  problems: { kind: string; code: string; lineId: string | null; detail: string }[];
+  /** The whole verdict as one sentence, in the biller's register. Rendered verbatim. */
+  sentence: string;
+}
+
+/**
+ * Is this the patient on the EOB?
+ *
+ * Name and date of birth BLOCK an approval when they disagree; a subscriber id
+ * is reported and does not, because carriers reformat member numbers constantly
+ * and the two names plus a birthday are what identify a person.
+ *
+ * `unknown` is a third state and never blocks. Open Dental sends no subscriber
+ * id on some rows, and comparing against a value nobody holds would manufacture
+ * a disagreement out of an absence.
+ */
+export interface ClaimIdentity {
+  matched: boolean;
+  blocking: boolean;
+  fields: {
+    field: "name" | "dob" | "subscriber";
+    label: string;
+    eob: string | null;
+    od: string | null;
+    status: "agrees" | "differs" | "unknown";
+    blocking: boolean;
+  }[];
+}
+
+/**
+ * What Open Dental held for the confirmed claim, AS READ at match time.
+ *
+ * Read out of the snapshot, so `fetchedAt` is on it and the screen says so. The
+ * drain re-verifies against the live chart at post time; this is what a biller
+ * compares by eye, and labelling it is the difference between a comparison and a
+ * claim about now.
+ */
+export interface ClaimChart {
+  odClaimNum: number | null;
+  claimStatus: string | null;
+  fetchedAt: string | null;
+  billedCents: number | null;
+  insPaidCents: number | null;
+  writeOffCents: number | null;
+  lines: {
+    odClaimProcNum: number;
+    code: string;
+    status: string;
+    feeBilledCents: number;
+    /** `null` = Open Dental has not calculated one. Never printed as $0. */
+    insEstCents: number | null;
+    insPayAmtCents: number;
+    writeOffCents: number;
+  }[];
+}
+
 export interface ClaimDetailResponse {
   office: RcmOfficeId;
   /**
@@ -1268,8 +1436,50 @@ export interface ClaimDetailResponse {
    * from the batch's own upload row. One fact, resolved once per screen, rather
    * than the same join repeated per claim in a table.
    */
-  claim: WorkbenchClaim & { provenance: DocumentProvenance | null };
+  claim: WorkbenchClaim & {
+    /**
+     * How this claim's numbers became text, and WHICH document they came from.
+     *
+     * `uploadId` is what the "Open the EOB" link addresses — the blob key is
+     * never in a response body (Slice 4: "a key in a response is a key in a
+     * browser cache"), so the id is the only handle a client ever holds.
+     */
+    provenance: (DocumentProvenance & { uploadId: string }) | null;
+    /** PHI, detail-read only — the list deliberately does not select them. */
+    patientDob: string | null;
+    subscriberId: string | null;
+    /** Stage B1. Absent on a stale-shaped snapshot, like `matchSnapshot`. */
+    verdict?: ClaimVerdict;
+    identity?: ClaimIdentity;
+    chart?: ClaimChart | null;
+  };
+  /**
+   * The reasons a line may be written off, FROM THE SERVER.
+   *
+   * Not a constant here, for the same reason `matchRules` is not: the screen
+   * explains itself with the list that actually governs, and the day this
+   * becomes per-office editable every screen already renders whatever comes
+   * back.
+   */
+  writeoffReasons: { slug: string; label: string }[];
   matchRules: MatchRules;
+}
+
+/** What `PUT /claims/:id/lines/:lineId/decision` sends back. */
+export interface LineDecisionResponse {
+  office: RcmOfficeId;
+  claimId: string;
+  lineId: string;
+  decision: LineDecision;
+  reason: string | null;
+  /**
+   * The RECOMPUTED verdict for the whole claim, and the lines behind it.
+   *
+   * Returned so the screen never has to do this arithmetic to update itself. One
+   * function on the server, and the client is not the second copy of it.
+   */
+  verdict: ClaimVerdict | null;
+  lines: ClaimLine[];
 }
 
 export interface MatchRunResponse {
@@ -1397,6 +1607,28 @@ export function reviewClaim(
   note: string,
 ): Promise<{ claimId: string }> {
   return post(`/claims/${encodeURIComponent(claimId)}/review`, { office }, { note });
+}
+
+/**
+ * Record the decision about one line's patient remainder (Stage B1).
+ *
+ * PUT because the decision is single-valued: pressing the same choice twice is
+ * the same state, and a retry after a dropped connection cannot produce two
+ * decisions. `reason` is required by the server for `office_writeoff` and
+ * refused for anything else.
+ */
+export function setLineDecision(
+  office: RcmOfficeId,
+  claimId: string,
+  lineId: string,
+  decision: LineDecision,
+  reason?: string | null,
+): Promise<LineDecisionResponse> {
+  return put<LineDecisionResponse>(
+    `/claims/${encodeURIComponent(claimId)}/lines/${encodeURIComponent(lineId)}/decision`,
+    { office },
+    { decision, reason: reason ?? null },
+  );
 }
 
 /** Match every claim on a remittance. Sequential and paced, server-side. */
@@ -1865,7 +2097,30 @@ export interface RcmOfficeSettings {
   postingEnabled: boolean;
   /** No settings row at all: migrations have not run. The switch reads off. */
   rowMissing: boolean;
+  /**
+   * HOW THIS PRACTICE BOOKS A WRITE-OFF IT CHOSE TO MAKE (Stage B1).
+   *
+   * Roland books one into the claimproc's own WriteOff field plus a note and
+   * uses no adjustment type; other practices book the same decision as a ledger
+   * adjustment. Both are correct bookkeeping and they are not the same Open
+   * Dental call, so it is a fact about the practice.
+   */
+  writeoffMode: WriteoffMode;
+  /**
+   * The adjustment type's NAME, never a definition number (D-13).
+   *
+   * Definition numbers differ between practices, so a number copied from one
+   * would write the wrong type into the other's chart. The name is resolved live
+   * against that office's own definitions when it posts, and a name that
+   * resolves to nothing there refuses the claim rather than falling back.
+   */
+  writeoffAdjTypeName: string | null;
+  /** The list the server accepts, so the screen renders its options and not ours. */
+  writeoffModes: WriteoffMode[];
 }
+
+export const WRITEOFF_MODES = ["writeoff_field", "adjustment_by_name"] as const;
+export type WriteoffMode = (typeof WRITEOFF_MODES)[number];
 
 /** Admin only (`rcm.settings`). A non-admin gets 403 and renders nothing. */
 export function getRcmOfficeSettings(office: RcmOfficeId): Promise<RcmOfficeSettings> {
@@ -1890,6 +2145,47 @@ export function setRcmOfficeSettings(
     `/office-settings/${encodeURIComponent(office)}`,
     { office },
     { drainEnabled },
+  ).then((r) => r.settings);
+}
+
+/**
+ * A direct link to the document a claim's numbers were read from.
+ *
+ * A URL rather than a fetch, deliberately: the browser opens a PDF or an image
+ * in its own viewer, and pulling the bytes through `fetch` only to hand them
+ * back as a blob URL would put the whole document in this tab's memory to
+ * achieve exactly that.
+ *
+ * It relies on the SESSION COOKIE, which a top-level navigation sends — the same
+ * credential every other call on this screen uses (`credentials: "include"`).
+ * The route audits the read before a byte is served and scopes the row by
+ * office, so the link is not the capability; the session is.
+ *
+ * Null when nothing is known about where the numbers came from, which is the
+ * case for an 835 that arrived as a parse rather than as a document.
+ */
+export function documentHref(office: RcmOfficeId, uploadId: string | null | undefined): string | null {
+  if (!uploadId) return null;
+  return `${BASE}/rcm/uploads/${encodeURIComponent(uploadId)}/document?office=${encodeURIComponent(office)}`;
+}
+
+/**
+ * Set how this practice books a write-off it chose to make. Admin only.
+ *
+ * A SEPARATE route from the shadow-gate flip above, deliberately: that body
+ * takes `{ drainEnabled }` and nothing else, so a typo in one setting cannot
+ * arrive alongside a flip of the other, and the switch's own timestamp keeps
+ * meaning "when was posting last switched".
+ */
+export function setRcmWriteoffMode(
+  office: RcmOfficeId,
+  writeoffMode: WriteoffMode,
+  writeoffAdjTypeName?: string | null,
+): Promise<RcmOfficeSettings> {
+  return put<{ settings: RcmOfficeSettings }>(
+    `/office-settings/${encodeURIComponent(office)}/writeoff-mode`,
+    { office },
+    { writeoffMode, writeoffAdjTypeName: writeoffAdjTypeName ?? null },
   ).then((r) => r.settings);
 }
 

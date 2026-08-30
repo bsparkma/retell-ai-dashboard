@@ -73,10 +73,46 @@ const warnedMissing = new Set();
  * change" and "when was posting last switched" — and Slice 1's merchant-fee
  * editor moves only the first, which is exactly why the switch needed its own.
  */
+/**
+ * The two ways an office books a write-off it CHOSE to make (Stage B1).
+ *
+ *   writeoff_field      into the claimproc's own WriteOff, beside the
+ *                       contractual figure. Roland's way, and the default.
+ *   adjustment_by_name  as a ledger adjustment of the named type.
+ *
+ * Declared here rather than imported from the migration — a service must not
+ * take a migration file as a runtime dependency. `officeSettings.test.js` reads
+ * the migration and fails if the two lists drift, which is the same shape
+ * `rcm-labels.test.ts` uses for the line statuses.
+ */
+const WRITEOFF_MODES = Object.freeze(['writeoff_field', 'adjustment_by_name']);
+
+/** Roland's way, and the behaviour the drain already has. */
+const DEFAULT_WRITEOFF_MODE = 'writeoff_field';
+
 const QUERIES = Object.freeze({
   read:
-    `SELECT office_id, drain_enabled, drain_updated_at, drain_updated_by FROM rcm_office_settings ` +
+    `SELECT office_id, drain_enabled, drain_updated_at, drain_updated_by, ` +
+    `writeoff_mode, writeoff_adjtype_name FROM rcm_office_settings ` +
     `WHERE office_id = $1 LIMIT 1`,
+  /*
+   * HOW THIS OFFICE BOOKS A WRITE-OFF IT CHOSE TO MAKE (Stage B1).
+   *
+   * A SEPARATE statement from `setDrainEnabled`, not a wider one. They are two
+   * different authorisations that happen to share a table: one decides whether a
+   * practice may write to a chart at all, the other decides the shape of one
+   * field when it does. Folding them into a single UPDATE would mean an edit to
+   * either could move the other, and `drain_updated_at` — the switch's own
+   * timestamp, which exists precisely so it is not the row's — would start
+   * dating the gate to whenever somebody last renamed an adjustment type.
+   *
+   * `updated_at` moves; `drain_updated_at` deliberately does not.
+   */
+  setWriteoffMode:
+    `UPDATE rcm_office_settings SET writeoff_mode = $1, writeoff_adjtype_name = $2, ` +
+    `updated_at = now() WHERE office_id = $3 ` +
+    `RETURNING office_id, drain_enabled, drain_updated_at, drain_updated_by, ` +
+    `writeoff_mode, writeoff_adjtype_name`,
   setDrainEnabled:
     `UPDATE rcm_office_settings SET drain_enabled = $1, drain_updated_at = now(), ` +
     `drain_updated_by = $2, updated_at = now() WHERE office_id = $3 ` +
@@ -102,7 +138,19 @@ async function readOfficeSettings(pool, office) {
           'The tenant migration seeds one row per office; run migrations.'
       );
     }
-    return { drainEnabled: false, updatedAt: null, updatedBy: null, rowMissing: true };
+    return {
+      drainEnabled: false,
+      updatedAt: null,
+      updatedBy: null,
+      /*
+       * The DEFAULT mode, not null — a missing row must not make the drain's
+       * write-off arithmetic undefined on top of everything else. It cannot
+       * post anyway: `drainEnabled` is false above.
+       */
+      writeoffMode: DEFAULT_WRITEOFF_MODE,
+      writeoffAdjTypeName: null,
+      rowMissing: true,
+    };
   }
 
   return {
@@ -111,6 +159,18 @@ async function readOfficeSettings(pool, office) {
     drainEnabled: row.drain_enabled === true,
     updatedAt: row.drain_updated_at == null ? null : row.drain_updated_at,
     updatedBy: row.drain_updated_by == null ? null : String(row.drain_updated_by),
+    /**
+     * How this office books a write-off it CHOSE to make (Stage B1). An
+     * unrecognised value reads as the default rather than throwing — the CHECK
+     * constraint is what makes one unstorable, and `writeoff_field` is the mode
+     * whose write the drain already makes.
+     */
+    writeoffMode: WRITEOFF_MODES.includes(row.writeoff_mode)
+      ? String(row.writeoff_mode)
+      : DEFAULT_WRITEOFF_MODE,
+    /** The AdjType NAME, never a DefNum (D-13). Null under `writeoff_field`. */
+    writeoffAdjTypeName:
+      row.writeoff_adjtype_name == null ? null : String(row.writeoff_adjtype_name),
     rowMissing: false,
   };
 }
@@ -135,6 +195,8 @@ function _resetForTests() {
 
 module.exports = {
   DRAIN_DISABLED,
+  WRITEOFF_MODES,
+  DEFAULT_WRITEOFF_MODE,
   QUERIES,
   readOfficeSettings,
   isDrainEnabled,

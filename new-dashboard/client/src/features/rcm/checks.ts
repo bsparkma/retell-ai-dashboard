@@ -146,6 +146,20 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     fail: "Release the other approved check first — another claim is already lined up to pay money against one of these chart lines.",
     pass: "No chart line is spoken for by another check.",
   },
+  /**
+   * Stage B1. The rule the workbench is built on, at the gate.
+   *
+   * `pass` reads as GREEN's sentence does, and the server's `detail` carries the
+   * write-offs on an AMBER pass — which is the one case where a passing check
+   * has something a biller needs to read. So `passUsesDetail` is on, and the
+   * server sends `null` on green so the row stays one short line there.
+   */
+  PATIENT_RESPONSIBILITY_MATCHES: {
+    title: "The patient's number matches the EOB",
+    fail: "Open the claim and look at the line the verdict names — either it is written off with no reason recorded, it has no match in Open Dental, or Open Dental was billed a different amount for that procedure.",
+    pass: "The patient will owe what the EOB says",
+    passUsesDetail: true,
+  },
   CLAIM_TOTALS_AGREE: {
     title: "The amounts add up",
     fail: "Check the remittance against its lines — what this claim was paid does not equal the sum of its procedures, and the difference is money nobody can account for.",

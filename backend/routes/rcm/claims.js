@@ -50,6 +50,7 @@ const { CLAIM_STATUSES } = require('./summary');
 const { describeActors } = require('../../services/rcm/rcmUserMap');
 const matchService = require('./matchService');
 const claimMatch = require('../../services/rcm/claimMatch');
+const lineDecisions = require('../../services/rcm/lineDecisions');
 const { OdReadError } = require('../../services/rcm/odClaimReads');
 
 const router = express.Router();
@@ -324,6 +325,16 @@ router.get(
        * explains itself with the numbers that actually ran rather than with
        * copy that can drift away from them.
        */
+      /**
+       * THE REASONS A LINE MAY BE WRITTEN OFF, from the server (Stage B1).
+       *
+       * Shipped rather than hardcoded in the client for the same reason
+       * `matchRules` is: the screen explains itself with the list that actually
+       * governs. It is also what makes the later per-office slice a change to
+       * one file — the day this list is read from `rcm_office_settings`, every
+       * screen already renders whatever comes back.
+       */
+      writeoffReasons: lineDecisions.WRITEOFF_REASONS,
       matchRules: {
         amountNearCents: claimMatch.AMOUNT_NEAR_CENTS,
         dateNearDays: claimMatch.DATE_NEAR_DAYS,
@@ -546,6 +557,111 @@ router.post(
     });
 
     return res.json({ success: true, office, ...result });
+  })
+);
+
+// ─── PUT /:id/lines/:lineId/decision ─────────────────────────────────────────
+
+/**
+ * The biller's decision about one line's patient remainder (Stage B1).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS THE QUEUE TIER AND NOT THE WRITE TIER
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It writes four columns on one of our own rows and reaches no chart, no
+ * posting and no other claim — the same shape as `POST /:id/review`, which has
+ * been on `rcm.queue` since 6a for exactly that argument. The person who reads a
+ * remittance against a chart and says "the office is absorbing the bitewings" is
+ * doing the reviewing; authorising the money to move is a separate act, on
+ * `rcm.write`, behind the gate, and this route cannot reach it.
+ *
+ * There is no `rcm.review` action in `config/permissions.js` and this slice does
+ * not invent one — a fourth tier for one route would be a role change dressed as
+ * a feature. `QUEUE_PATHS` in `routes/rcm/index.js` carries the matching pattern
+ * so the mount's `requireReadWrite` exempts it, and `rcmGuard.test.js` pins that
+ * list.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PUT, NOT POST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The decision is single-valued and this sets it to what the body says. Pressing
+ * the same choice twice is the same state, so the verb that promises that is the
+ * right one — and a retry after a dropped connection cannot produce two
+ * decisions.
+ *
+ * The response carries the RECOMPUTED verdict for the whole claim, so the screen
+ * never has to do this arithmetic to update its own line. One function, and the
+ * client is not the second copy of it.
+ */
+const MAX_DECISION_BODY = 200;
+
+router.put(
+  '/:id/lines/:lineId/decision',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const claimId = String(req.params.id);
+    const lineId = String(req.params.lineId);
+
+    const body = req.body || {};
+    const decision = typeof body.decision === 'string' ? body.decision.trim() : '';
+    const reasonRaw = typeof body.reason === 'string' ? body.reason.trim() : null;
+    // A slug, never prose. Anything longer is not one of the five and refusing
+    // it here keeps a mis-wired client out of the transaction entirely.
+    const reason = reasonRaw && reasonRaw.length <= MAX_DECISION_BODY ? reasonRaw : null;
+
+    let result;
+    try {
+      result = await matchService.setLineDecision(
+        req,
+        office,
+        claimId,
+        lineId,
+        { decision, reason },
+        actorOf(req)
+      );
+    } catch (err) {
+      if (respondToMatchError(res, office, err, { req, claimId })) return undefined;
+      throw err;
+    }
+
+    /*
+     * UPDATE, not READ. A decision about money was recorded, and `resourceId` is
+     * the claim — an id we minted, never PHI. Written AFTER the fact, like every
+     * other decision audit in this module: what is being recorded has already
+     * durably happened.
+     */
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_line_decision',
+      resourceId: claimId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    /*
+     * The claim is re-read so the verdict is computed from what is now stored
+     * rather than from what this handler believes it just wrote. It costs one
+     * bundle read per click, on a screen a person is looking at, and it is the
+     * difference between a screen showing the decision and a screen showing the
+     * RECORD of the decision. The audited PHI read is the ordinary one.
+     */
+    const bundle = await tenantDb.withTenantDb(req, (pool) =>
+      matchService.loadClaimBundle(pool, office, claimId)
+    );
+    await auditRcmRead(req, 'rcm_claim', { office });
+
+    return res.json({
+      success: true,
+      office,
+      claimId,
+      lineId: result.lineId,
+      decision: result.decision,
+      reason: result.reason,
+      verdict: bundle ? bundle.verdict : null,
+      lines: bundle ? bundle.lines : [],
+    });
   })
 );
 

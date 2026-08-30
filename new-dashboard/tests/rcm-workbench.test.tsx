@@ -75,6 +75,20 @@ function line(over: Record<string, unknown> = {}) {
     flags: [] as string[],
     odClaimProcNum: null,
     adjustments: [adjustment()],
+    /*
+     * Stage B1 — the carrier arithmetic the SERVER computes, and the decision.
+     *
+     * Written out rather than defaulted, because the whole point of shipping
+     * them is that the client never derives them: a fixture that omitted these
+     * would be testing a screen the server never feeds. Billed 210, allowed 150,
+     * paid 150 → W 60.00, R 0.00, so this default line has nothing to decide.
+     */
+    contractualWriteOffCents: 6000,
+    patientRemainderCents: 0,
+    decision: null,
+    decisionReason: null,
+    decidedBy: null,
+    decidedAt: null,
     ...over,
   };
 }
@@ -115,6 +129,44 @@ function claim(over: Record<string, unknown> = {}) {
     approvedAt: null,
     createdAt: "2026-03-02T10:00:00.000Z",
     lines: [line()],
+    // Stage B1 — assembled server-side from the claim, its lines and the match
+    // snapshot. Absent on a stale-shaped snapshot, which is why the types are
+    // optional and the screen has an honest state for it.
+    patientDob: "1990-01-01",
+    subscriberId: "ABC123456",
+    verdict: verdict(),
+    identity: identity(),
+    chart: null,
+    ...over,
+  };
+}
+
+/** The patient-responsibility verdict, exactly as the server ships it. */
+function verdict(over: Record<string, unknown> = {}) {
+  return {
+    state: "green",
+    register: "projection",
+    eobPatientCents: 0,
+    projectedPatientCents: 0,
+    decidedWriteOffCents: 0,
+    contractualWriteOffCents: 6000,
+    decisions: [] as unknown[],
+    problems: [] as unknown[],
+    sentence: "Patient will owe $0.00 once posted — matches the EOB.",
+    ...over,
+  };
+}
+
+/** The identity comparison — three fields, each with its own answer. */
+function identity(over: Record<string, unknown> = {}) {
+  return {
+    matched: true,
+    blocking: false,
+    fields: [
+      { field: "name", label: "Name", eob: "Fixture, Synthetic", od: "Fixture, Synthetic", status: "agrees", blocking: false },
+      { field: "dob", label: "Date of birth", eob: "1990-01-01", od: "1990-01-01", status: "agrees", blocking: false },
+      { field: "subscriber", label: "Subscriber ID", eob: "ABC123456", od: "ABC123456", status: "agrees", blocking: false },
+    ],
     ...over,
   };
 }
@@ -218,6 +270,10 @@ function candidate(over: Record<string, unknown> = {}) {
       insPaidCents: 0,
       writeOffCents: 0,
       patientName: "Fixture, Synthetic",
+      // Stage A projected these two out of the patient row the match already
+      // fetched; Stage B renders them as an identity check.
+      patientBirthdate: "1990-01-01",
+      subscriberId: "ABC123456",
       lines: [],
       deletedLineCount: 0,
       unknownDeletedLineCount: 0,
@@ -404,6 +460,15 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       return {
         office,
         claim: state.claim ?? claim(),
+        // Stage B1 — the canned reasons come FROM THE SERVER, so the screen
+        // renders whatever governs rather than a constant of its own.
+        writeoffReasons: [
+          { slug: "xrays_bitewings", label: "X-rays — bitewings" },
+          { slug: "xrays_panoramic", label: "X-rays — panoramic" },
+          { slug: "xrays_other", label: "X-rays — other films/images (OFIs)" },
+          { slug: "not_chargeable", label: "Not chargeable for this procedure" },
+          { slug: "build_up", label: "Build-up" },
+        ],
         matchRules: {
           amountNearCents: 100,
           dateNearDays: 7,

@@ -99,6 +99,14 @@
  *   `office_config_unresolved`  The office's own PayType could not be read. A
  *                               check posted under a guessed payment type is a
  *                               reconciliation failure discovered weeks later.
+ *   `office_writeoff_not_postable`
+ *                               STAGE B1 ONLY. A biller decided the office
+ *                               absorbs a line's patient remainder, and this
+ *                               build's writes still carry the carrier's
+ *                               verbatim figures — so posting would put a number
+ *                               in the chart the screen never showed. B2 makes
+ *                               the write carry the decided figure and removes
+ *                               this reason.
  *   `office_mismatch`, `plan_empty`, `claim_not_confirmed`,
  *   `claim_not_on_this_plan`, `negative_intent`, `plan_total_mismatch`,
  *   `snapshot_superseded`, `od_writes_disabled`
@@ -172,6 +180,21 @@ const BLOCK_REASONS = Object.freeze({
   CLAIM_NOT_CONFIRMED: 'claim_not_confirmed',
   CLAIM_NOT_ON_THIS_PLAN: 'claim_not_on_this_plan',
   NEGATIVE_INTENT: 'negative_intent',
+  /**
+   * STAGE B1 ONLY, AND B2 DELETES IT.
+   *
+   * A biller decided the office would absorb a line's patient remainder, and
+   * approving snapshotted that decision onto the posting. This build's writes
+   * still send the CARRIER's verbatim figures — so posting now would put a
+   * number in the chart that the screen never showed, and the patient would be
+   * billed money the office had decided to absorb.
+   *
+   * Refusing is the honest half: nothing is written, the check waits, and the
+   * message says the biller may bill the patient instead if she does not want
+   * to wait. It is a `blocked` reason rather than a failure because nothing was
+   * attempted and a human can act on it.
+   */
+  OFFICE_WRITEOFF_NOT_POSTABLE: 'office_writeoff_not_postable',
   PLAN_TOTAL_MISMATCH: 'plan_total_mismatch',
   SNAPSHOT_SUPERSEDED: 'snapshot_superseded',
   OD_WRITES_DISABLED: 'od_writes_disabled',
@@ -701,6 +724,31 @@ function checkPreconditions(ctx) {
     };
   }
 
+  /*
+   * -- STAGE B1: A DECIDED OFFICE WRITE-OFF CANNOT POST YET. ------------------
+   *
+   * `decided_write_off_cents` is what a biller decided the practice would
+   * absorb, frozen onto this posting when somebody approved it. THIS BUILD'S
+   * WRITES DO NOT CARRY IT — `odPostingWrites` still sends the carrier's
+   * verbatim WriteOff — so posting now would write a figure the screen never
+   * showed and leave the patient billed for money the office had written off.
+   *
+   * Nothing may reach a chart that the screen did not show, so this refuses
+   * before the first Open Dental call. B2 makes the write carry the decided
+   * figure and DELETES this block; its test flips from "refuses" to "posts the
+   * decided amount".
+   */
+  const decided = lines.find((l) => Number(l.decidedWriteOffCents) > 0);
+  if (decided) {
+    return {
+      reason: BLOCK_REASONS.OFFICE_WRITEOFF_NOT_POSTABLE,
+      detail:
+        `Line ${decided.position} is written off by the office, and office write-offs post ` +
+        'once the next update lands. This check can wait, or you can bill the patient for now. ' +
+        'Nothing was sent to Open Dental.',
+    };
+  }
+
   // -- Every line must name a claim. -----------------------------------------
   const orphan = lines.find((l) => !l.odClaimNum);
   if (orphan) {
@@ -1004,6 +1052,17 @@ const LINE_COLUMNS = [
   'recoupment_path',
   'od_adjustment_num',
   'od_supplemental_claim_proc_num',
+  /*
+   * STAGE B1: the office's own write-off, snapshotted at approve.
+   *
+   * Read but NOT YET WRITTEN. B1 refuses to post a plan that carries one (see
+   * `OFFICE_WRITEOFF_NOT_POSTABLE`); the write is B2's, and reading the column
+   * here is what makes the refusal possible rather than the drain quietly
+   * posting the carrier's figure over a decision a biller made.
+   */
+  'decided_write_off_cents',
+  'decided_reason',
+  'decided_by',
 ];
 
 /** Row → the camelCase shape the pure core takes. */
@@ -1048,6 +1107,20 @@ function toLine(row) {
     intendedInsPayAmtCents: Number(row.intended_ins_pay_amt_cents || 0),
     intendedWriteOffCents: Number(row.intended_write_off_cents || 0),
     intendedDedAppliedCents: Number(row.intended_ded_applied_cents || 0),
+    /*
+     * THE OFFICE'S OWN WRITE-OFF, snapshotted at approve (Stage B1).
+     *
+     * `null` — not 0 — when no office write-off was decided, and `|| 0` is
+     * deliberately NOT used here: the three columns move together under a CHECK,
+     * and "nobody decided" is a different fact from "decided nothing". The
+     * pre-flight tests `> 0`, so both read as "no decision" today; B2's
+     * arithmetic adds it to the contractual figure, where a null coerced to 0
+     * would be a silent write of the wrong number.
+     */
+    decidedWriteOffCents:
+      row.decided_write_off_cents == null ? null : Number(row.decided_write_off_cents),
+    decidedReason: row.decided_reason == null ? null : String(row.decided_reason),
+    decidedBy: row.decided_by == null ? null : String(row.decided_by),
     isSupplemental: row.is_supplemental === true,
     recoupmentPath: row.recoupment_path == null ? null : String(row.recoupment_path),
     odAdjustmentNum: row.od_adjustment_num == null ? null : Number(row.od_adjustment_num),

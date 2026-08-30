@@ -49,8 +49,10 @@
 const tenantDb = require('../../platform/tenantDb');
 const rcmVocabulary = require('../../services/rcm/rcmVocabulary');
 const claimMatch = require('../../services/rcm/claimMatch');
+const claimWorkbench = require('../../services/rcm/claimWorkbench');
+const lineDecisions = require('../../services/rcm/lineDecisions');
 const { buildBatchRemittanceKey } = require('../../services/rcm/remittanceKey');
-const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
+const { resolveRcmActor, describeActors } = require('../../services/rcm/rcmUserMap');
 const { SNAPSHOT_VERSION, CLAIM_DETAIL_COLUMNS, LINE_COLUMNS } = require('./matchService');
 const { num, iso, isoDate } = require('./helpers');
 
@@ -159,6 +161,27 @@ const CHECKS = Object.freeze({
   CLAIMPROC_NOT_ALREADY_PLANNED: {
     label: 'No chart line is already on another posting plan',
     fix: 'Another claim in this practice is already planned to post money against one of these Open Dental lines. Two proposals have been confirmed to the same chart claim — release one of them before approving.',
+  },
+  /**
+   * STAGE B1. The rule the workbench is built on, at the gate.
+   *
+   * What the remittance says the patient owes must equal what Open Dental will
+   * say the patient owes once this posts — with one legitimate exception, a
+   * write-off the office chose to make, which lowers the patient's number on
+   * purpose and carries a reason and a name.
+   *
+   * It reads `services/rcm/lineDecisions.js`, the same function the workbench's
+   * verdict line renders. ONE arithmetic, two renderers: a green line beside a
+   * refusal here is not a bug that can be introduced, and
+   * `approvalGate.test.js` pins that they agree over the same rows.
+   *
+   * AMBER PASSES. A write-off somebody decided on, with a reason, is the case
+   * this check exists to let through — refusing it would refuse the ordinary
+   * work. RED refuses.
+   */
+  PATIENT_RESPONSIBILITY_MATCHES: {
+    label: "The patient's number matches the EOB",
+    fix: 'What the patient will owe once this posts is not what the EOB says they owe. Either a line is written off with no reason recorded, a line has no match in Open Dental, or Open Dental was billed a different amount for a procedure. Fix the line the verdict names.',
   },
   CLAIM_TOTALS_AGREE: {
     label: 'The amounts reconcile',
@@ -405,6 +428,16 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
     snapshot && Array.isArray(snapshot.candidates)
       ? snapshot.candidates.find((c) => Number(c.odClaimNum) === Number(claim.odClaimNum)) || null
       : null;
+
+  /*
+   * OUR BILLED FIGURE MINUS OPEN DENTAL'S, PER LINE, FROM THE CONFIRMATION.
+   *
+   * `confirmMatch` wrote `linePairs` with `billedDeltaCents` on it — the only
+   * place the two billed figures have ever been compared — so Stage B1's
+   * patient-responsibility check reads a comparison that was already made
+   * rather than making an Open Dental call this file is not allowed to make.
+   */
+  const feeDeltas = claimWorkbench.feeDeltasByLine(snapshot);
 
   const snapshotUsable =
     Boolean(snapshot) &&
@@ -688,6 +721,75 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
   );
 
   /*
+   * ── STAGE B1: THE PATIENT'S NUMBER ────────────────────────────────────────
+   *
+   * The same verdict the workbench prints, from the same function, over the same
+   * rows. `register: 'projection'` because nothing has posted: this check runs
+   * BEFORE any Open Dental write, so it can only ever be holding a projection,
+   * and the confirmed register belongs to the drain's read-back.
+   *
+   * The Open Dental fee deltas come from the CONFIRMED match snapshot's
+   * `linePairs` — where our billed figure and the chart's were already compared
+   * — so this reads no chart and makes no call, exactly like every other
+   * condition in this file.
+   *
+   * AMBER passes and RED refuses. `verdict` is carried out on the result so the
+   * screen renders the gate's own numbers rather than a second computation of
+   * them.
+   */
+  const verdict = lineDecisions.verdictFor({
+    register: 'projection',
+    lines: lines.map((l) => ({
+      lineId: l.lineId,
+      code: l.code,
+      billedCents: l.billedCents,
+      allowedCents: l.allowedCents,
+      paidCents: l.paidCents,
+      decision: l.decision,
+      decisionReason: l.decisionReason,
+      // The display name the loader resolved; the raw key is still on the line
+      // for the INSERT, which stores a key and not a name.
+      decidedBy: l.decidedBy || null,
+      decidedAt: l.decidedAt,
+      odClaimProcNum: l.odClaimProcNum,
+      odFeeDeltaCents: feeDeltas.has(l.lineId) ? feeDeltas.get(l.lineId) : null,
+    })),
+  });
+  /*
+   * AND A TAKEBACK MAY NOT CARRY AN OFFICE WRITE-OFF.
+   *
+   * The two are opposite operations on the same money: an office write-off says
+   * "the practice absorbs what the patient would owe", and a takeback is the
+   * carrier removing what it already paid. The recoupment INSERT writes
+   * supplemental lines and has nowhere to put a decided write-off, so a claim
+   * carrying one would have its decision SILENTLY DROPPED at approve — a screen
+   * showing a write-off, a chart that never receives it, and nothing recording
+   * the difference.
+   *
+   * Refused rather than dropped, and the reason says which of the two to undo.
+   * On the ordinary lane this is false and the verdict decides alone.
+   */
+  const writeOffOnTakeback = reversalLane && verdict.decidedWriteOffCents !== 0;
+
+  add(
+    'PATIENT_RESPONSIBILITY_MATCHES',
+    verdict.state !== 'red' && !writeOffOnTakeback,
+    writeOffOnTakeback
+      ? 'this claim is a takeback and one of its lines is written off — a takeback cannot carry an office write-off; clear the write-off, or approve it as an ordinary payment'
+      : verdict.state === 'red'
+        ? verdict.sentence
+        : verdict.state === 'amber'
+          ? verdict.decisions
+              .map(
+                (d) =>
+                  `${d.code} ${lineDecisions.formatDollars(d.amountCents)} — ` +
+                  `${d.reasonLabel || d.reason} (${d.decidedBy || 'unattributed'})`
+              )
+              .join('; ')
+          : null
+  );
+
+  /*
    * THE ARITHMETIC, RE-DERIVED FROM THE ROWS.
    *
    * Three numbers about one claim: what the claim row says it was paid, what
@@ -717,6 +819,14 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
     postable: failed.length === 0 && claim.postingQueueId == null,
     checks,
     failed,
+    /**
+     * The verdict this claim's checklist was judged on, carried out whole.
+     *
+     * The panel renders `verdict.sentence` rather than re-deriving it, which is
+     * what makes the checklist row and the verdict line above it the same
+     * statement rather than two that agree today.
+     */
+    verdict,
     intent:
       failed.length === 0
         ? {
@@ -737,6 +847,23 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
               insPayAmtCents: l.paidCents,
               writeOffCents: l.writeOffCents,
               dedAppliedCents: l.deductibleCents,
+              /*
+               * THE SNAPSHOT OF THE DECISION (Stage B1, D-14).
+               *
+               * Frozen onto the posting at the instant of approval, SEPARATE
+               * from the contractual figure beside it. The drain reads THIS and
+               * never the review row: the review may have moved on, and posting
+               * figures nobody approved is the worst failure this module has.
+               *
+               * `null` — not zero — when no office write-off was decided. The
+               * database CHECK insists the three move together.
+               */
+              decidedWriteOffCents:
+                l.decision === 'office_writeoff'
+                  ? lineDecisions.lineMoney(l).patientRemainderCents
+                  : null,
+              decidedReason: l.decision === 'office_writeoff' ? l.decisionReason : null,
+              decidedByKey: l.decision === 'office_writeoff' ? l.decidedByKey : null,
             })),
           }
         : null,
@@ -972,11 +1099,26 @@ function toApprovalLine(row) {
   return {
     lineId: row.line_id,
     position: num(row.position),
+    /** The ADA code, for a verdict that names the line a biller can find. */
+    code: row.billed_code || row.code || '',
+    /*
+     * BILLED AND ALLOWED, for Stage B1's patient-responsibility check. The gate
+     * did not need them before: every earlier condition is about what was PAID.
+     * The patient's remainder is allowed − paid, and there is nowhere else to
+     * get it from.
+     */
+    billedCents: num(row.billed_cents),
+    allowedCents: num(row.allowed_cents),
     paidCents: num(row.paid_cents),
     writeOffCents: num(row.write_off_cents),
     deductibleCents: num(row.deductible_cents),
     flags: Array.isArray(row.flags) ? row.flags : [],
     odClaimProcNum: row.od_claim_proc_num == null ? null : num(row.od_claim_proc_num),
+    /** The biller's decision about this line's patient remainder (Stage B1). */
+    decision: row.line_decision || null,
+    decisionReason: row.decision_reason || null,
+    decidedByKey: row.decided_by || null,
+    decidedAt: iso(row.decided_at),
   };
 }
 
@@ -1060,9 +1202,31 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
   );
   /** @type {Map<string, object[]>} */
   const linesByClaim = new Map();
+  /*
+   * WHO DECIDED, BY NAME — resolved HERE, not left as a crosswalk key.
+   *
+   * The claim read resolves these before it builds a verdict, and the gate
+   * builds a verdict from the same function. If only one of them resolved,
+   * "one function, two renderers" would hold for the money and quietly fail for
+   * the attribution: the workbench would name a person and the checklist beside
+   * it would print `user-1`. A test asserts the two sentences match, and it
+   * caught exactly that.
+   *
+   * One statement for the whole remittance, and only when a line actually
+   * carries a decision.
+   */
+  const decidedKeys = lines.rows.map((r) => r.decided_by).filter(Boolean);
+  const decidedActors = decidedKeys.length ? await describeActors(client, decidedKeys) : {};
+
   for (const row of lines.rows) {
     if (!linesByClaim.has(row.claim_id)) linesByClaim.set(row.claim_id, []);
-    linesByClaim.get(row.claim_id).push(toApprovalLine(row));
+    const line = toApprovalLine(row);
+    linesByClaim.get(row.claim_id).push({
+      ...line,
+      decidedBy: line.decidedByKey
+        ? (decidedActors[line.decidedByKey] || {}).displayName || line.decidedByKey
+        : null,
+    });
   }
 
   /*
@@ -1551,8 +1715,9 @@ async function runApproval(req, office, batchId, actor) {
               `INSERT INTO rcm_posting_queue_line ` +
                 `(queue_id, office_id, position, od_claim_proc_num, od_claim_num, claim_id, ` +
                 `batch_claim_payment_id, intended_ins_pay_amt_cents, intended_write_off_cents, ` +
-                `intended_ded_applied_cents, is_supplemental, status) ` +
-                `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, 'pending')`,
+                `intended_ded_applied_cents, decided_write_off_cents, decided_reason, ` +
+                `decided_by, is_supplemental, status) ` +
+                `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, 'pending')`,
               [
                 queueId,
                 office,
@@ -1564,6 +1729,14 @@ async function runApproval(req, office, batchId, actor) {
                 line.insPayAmtCents,
                 line.writeOffCents,
                 line.dedAppliedCents,
+                /*
+                 * D-14, AS THREE COLUMNS. The office's own write-off, its
+                 * reason and who decided it, frozen at the instant of approval
+                 * and never read from the review row afterwards.
+                 */
+                line.decidedWriteOffCents,
+                line.decidedReason,
+                line.decidedByKey,
               ]
             );
           } catch (err) {
