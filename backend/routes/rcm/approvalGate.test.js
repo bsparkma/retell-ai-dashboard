@@ -1414,6 +1414,91 @@ function seedTakebackRemittance(db) {
 const approveRecoup = (app, body, batch = BATCH) =>
   api(app.baseUrl, 'POST', `/api/rcm/remittances/${batch}/approve-recoupment${Q}`, json(body));
 
+/**
+ * A FINISHED plan already holding the chart line this remittance would reverse.
+ *
+ * Walk 3's shape: plan A posted, its line row still names ClaimProcNum 99001,
+ * and the reversal that arrives later is a DIFFERENT `rcm_claims` row. On the
+ * night this made `CLAIMPROC_NOT_ALREADY_PLANNED` refuse the takeback, and its
+ * rendered fix - release the other plan - is impossible, because withdraw
+ * correctly refuses a posted plan.
+ *
+ * @param {string} status the holding plan's status
+ */
+function seedPlanHoldingTheLine(db, status) {
+  db.seed('rcm_posting_queue', [
+    {
+      queue_id: 'cccccccc-3333-4333-8333-333333333333',
+      office_id: 'roland',
+      batch_id: 'dddddddd-4444-4444-8444-444444444444',
+      remittance_key: 'THE-PAYMENT-BEING-REVERSED',
+      status,
+      approved_by: 'user-1',
+    },
+  ]);
+  db.seed('rcm_posting_queue_line', [
+    {
+      queue_line_id: 'eeeeeeee-5555-4555-8555-555555555555',
+      queue_id: 'cccccccc-3333-4333-8333-333333333333',
+      office_id: 'roland',
+      position: 1,
+      od_claim_proc_num: 99001,
+      // NOT one of this remittance's claims: the payment and its reversal are
+      // separate rows, which is what makes this a "conflict" at all.
+      claim_id: 'ffffffff-9999-4999-8999-999999999999',
+      intended_ins_pay_amt_cents: 5408,
+      is_supplemental: false,
+      status: 'paid',
+    },
+  ]);
+  return db;
+}
+
+test('THE WALK-3 REFUSAL, THROUGH THE REAL LOADER: a posted plan does not hold the line against its own reversal', async () => {
+  /*
+   * The layer that actually refused on staging.
+   *
+   * `takebackAgainstPostedChart.test.js` evaluates `evaluateClaim` directly; the
+   * map it judges comes from `loadForApproval`, which is a different function
+   * reading two different tables. This drives the HTTP route, so the map is
+   * built by the real loader from the real rows - the only way to prove the
+   * partition works where the biller met it.
+   */
+  const db = seedPlanHoldingTheLine(seedTakebackRemittance(new FakeRcmDb()), 'posted');
+  await withApp({ db }, async (app) => {
+    const res = await approveRecoup(app, { typedTotal: '-54.08', path: 'adjustment' });
+
+    assert.notEqual(
+      res.status,
+      409,
+      `a posted plan must not block its own reversal: ${JSON.stringify(res.body)}`
+    );
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+
+    // And it really authorised something, rather than passing by doing nothing.
+    assert.equal(db.table('rcm_posting_queue').length, 2, 'the takeback plan joins the posted one');
+  });
+});
+
+test('...but an ACTIVE plan holding that line still refuses the reversal, through the same route', async () => {
+  /*
+   * The partition's other half at the route layer. `approved` is a plan that has
+   * not run: reversing money that is still on its way in is the unsafe case, and
+   * releasing it here IS possible, so the rendered fix is honest.
+   */
+  const db = seedPlanHoldingTheLine(seedTakebackRemittance(new FakeRcmDb()), 'approved');
+  await withApp({ db }, async (app) => {
+    const res = await approveRecoup(app, { typedTotal: '-54.08', path: 'adjustment' });
+
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(
+      db.table('rcm_posting_queue').length,
+      1,
+      'only the pre-existing plan — no takeback was authorised'
+    );
+  });
+});
+
 test('the takeback checklist ships the phrase to type, formatted by the server', async () => {
   const db = seedTakebackRemittance(new FakeRcmDb());
   await withApp({ db }, async (app) => {
