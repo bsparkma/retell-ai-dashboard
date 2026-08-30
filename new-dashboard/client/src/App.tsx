@@ -26,7 +26,7 @@ import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
-import RcmOverview from "./pages/rcm/RcmOverview";
+import RcmToday from "./pages/rcm/RcmToday";
 import RemittanceList from "./pages/rcm/RemittanceList";
 import RemittanceDetail from "./pages/rcm/RemittanceDetail";
 import ClaimMatch from "./pages/rcm/ClaimMatch";
@@ -123,7 +123,10 @@ export function Router() {
             panel. All three inherit rcm.read from the /rcm prefix in
             ROUTE_PERMISSIONS; the mutations behind them demand rcm.write
             server-side, which no page needs to know to render. */}
-        <Route path="/rcm" component={RcmOverview} />
+        {/* `/rcm` IS TODAY, and it is the module's default landing route — the
+            first item in the nav and the first screen of a biller's morning.
+            Everything else in this module is reachable from it. */}
+        <Route path="/rcm" component={RcmToday} />
         <Route path="/rcm/remittances" component={RemittanceList} />
         <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
         <Route path="/rcm/claims/:id" component={ClaimMatch} />

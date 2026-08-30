@@ -439,10 +439,13 @@ describe("RCM landing page", () => {
   it("shows the RCM sidebar on /rcm even when Voice is the remembered module", async () => {
     localStorage.setItem("carein.module", "voice");
     renderWithProviders(<AppRouter />, "/rcm");
-    // "Overview" is the RCM nav item; "Revenue Cycle" is deliberately not used
-    // as the probe because the nav GROUP and the page heading share that text.
+    // "Checks" is an RCM nav item; "Revenue Cycle" is deliberately not used as
+    // the probe because the nav GROUP and the page heading share that text, and
+    // "Today" is not used either because it is now BOTH the nav item and the
+    // page's own <h1> — a probe that matches two elements proves nothing about
+    // which one rendered.
     await waitFor(() => {
-      expect(screen.getByText("Overview")).toBeTruthy();
+      expect(screen.getByText("Checks")).toBeTruthy();
     });
     // The Voice nav must not be showing — the ROUTE decides the sidebar.
     expect(screen.queryByText("Agent Builder")).toBeNull();

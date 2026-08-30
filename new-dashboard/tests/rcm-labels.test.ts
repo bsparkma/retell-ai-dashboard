@@ -393,9 +393,9 @@ describe("the shadow gate's words", () => {
      */
     expect(SHADOW_MODE_COPY.badge).toBe("Shadow");
     expect(SHADOW_MODE_COPY.reason("Roland")).toBe(
-      "Posting is switched off for Roland (shadow mode). Approved plans wait here.",
+      "Posting is switched off for Roland (shadow mode). Approved checks wait here.",
     );
-    expect(SHADOW_MODE_COPY.hint).toContain("Approved plans wait here");
+    expect(SHADOW_MODE_COPY.hint).toContain("Approved checks wait here");
   });
 
   it("never calls a switched-off practice an error", () => {
@@ -648,5 +648,93 @@ describe("the approval checklist speaks a biller's language", () => {
     };
     expect(checkTitle(future)).toBe("The server's own label");
     expect(checkDetail(future)).toBe("The server's own fix.");
+  });
+});
+
+// ─── Stage A's two vocabularies ──────────────────────────────────────────────
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SAME MIRROR RULE, EXTENDED TO THE TWO WORKLIST STATES
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Every vocabulary in this module has exactly one home and one copy of it in the
+ * client, and a test that fails when they disagree. Stage A adds two more:
+ *
+ *   `set_aside_reason`  a CHECK constraint in the migration; the client renders
+ *                       copy from the slug.
+ *   `view=`             the populations the list endpoint pages, split between
+ *                       what the SERVER filters and what the browser does.
+ *
+ * The second one is the sharper of the two. `worklist.ts` decides which tabs go
+ * to the server and which are applied to a page, and it PRINTS A CAVEAT for the
+ * ones it applies itself. If a view were server-backed in the client's opinion
+ * and unknown to the route, the list would silently show the unfiltered `all`
+ * page under that tab's name and drop the caveat that admits it — a filter
+ * lying about its own population, which is the Slice 6a defect this module has
+ * been careful about ever since.
+ */
+describe("the worklist states", () => {
+  const backend = (file: string) =>
+    fs.readFileSync(path.join(__dirname, "..", "..", "backend", ...file.split("/")), "utf8");
+
+  it("renders copy for every reason the database will store, and invents none", async () => {
+    const { SET_ASIDE_COPY, SET_ASIDE_REASONS } = await import("../client/src/features/rcm/api");
+
+    const MIGRATION = backend(
+      "migrations-tenant/1787500000000_rcm_remittance_worklist_state.js",
+    );
+    const block = MIGRATION.match(/const SET_ASIDE_REASONS = \[([\s\S]+?)\];/);
+    expect(block, "the reason vocabulary moved — update this test and the copy").not.toBeNull();
+    const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(stored).toContain("other");
+
+    expect([...SET_ASIDE_REASONS].sort()).toEqual([...stored].sort());
+    const unlabelled = stored.filter((s) => !(s in SET_ASIDE_COPY));
+    expect(unlabelled, `unlabelled set-aside reasons: ${unlabelled.join(", ")}`).toEqual([]);
+    // And nothing the database would refuse.
+    const invented = Object.keys(SET_ASIDE_COPY).filter((s) => !stored.includes(s));
+    expect(invented, `copy for reasons no row can hold: ${invented.join(", ")}`).toEqual([]);
+  });
+
+  it("agrees with the route about which views the SERVER pages", async () => {
+    const { SERVER_VIEWS, WORKLIST_FILTERS } = await import("../client/src/features/rcm/worklist");
+
+    const ROUTE = backend("routes/rcm/remittances.js");
+    const block = ROUTE.match(/const REMITTANCE_VIEWS = Object\.freeze\(\[([\s\S]+?)\]\);/);
+    expect(block, "the view vocabulary moved — update this test and worklist.ts").not.toBeNull();
+    const served = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+
+    // Every view the client believes is server-backed must be one the route pages.
+    for (const view of SERVER_VIEWS) {
+      expect(served, `the client sends view=${view}; the route does not know it`).toContain(view);
+    }
+    // …and the reverse: a view the route serves and the client never sends is a
+    // filter nobody can reach, which is dead weight rather than a defect — so it
+    // is asserted, not tolerated silently.
+    for (const view of served) {
+      expect(
+        (SERVER_VIEWS as ReadonlySet<string>).has(view),
+        `the route pages view=${view} and no tab asks for it`,
+      ).toBe(true);
+    }
+    // Every tab is either server-paged or applied in the browser; there is no
+    // third kind, and a tab in neither set would render an unfiltered page.
+    for (const filter of WORKLIST_FILTERS) {
+      expect(typeof filter).toBe("string");
+    }
+  });
+
+  it("says all four states in words, and never in a slug", async () => {
+    const { FILTER_COPY, WORKLIST_FILTERS } = await import("../client/src/features/rcm/worklist");
+    for (const filter of WORKLIST_FILTERS) {
+      const copy = FILTER_COPY[filter];
+      expect(copy, `no copy for the ${filter} tab`).toBeTruthy();
+      // A label, a hint, and — always — what an EMPTY result means. "No rows" is
+      // the one thing none of them may say.
+      expect(copy.label.length).toBeGreaterThan(0);
+      expect(copy.hint.length).toBeGreaterThan(0);
+      expect(copy.empty.length).toBeGreaterThan(0);
+      expect(copy.label).not.toContain("_");
+    }
   });
 });

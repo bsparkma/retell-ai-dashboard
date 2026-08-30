@@ -70,15 +70,24 @@ mkdirSync(tmpDir, { recursive: true });
  * reflows taller.
  */
 const HEIGHT = {
-  "ux-01-overview": [980, 1060],
-  "ux-02-remittance-fresh": [1240, 1540],
-  "ux-03-remittance-ready": [1200, 1500],
+  "ux-01-overview": [1080, 1320],
+  "ux-02-remittance-fresh": [1320, 1640],
+  "ux-03-remittance-ready": [1280, 1600],
   "ux-04-claim-confirmed": [1180, 1520],
   "ux-05-posting": [600, 620],
   "ux-06-posting-idle": [420, 440],
   "ux-07-list-filtered": [560, 640],
-  "ux-08-list-empty": [1000, 1220],
+  "ux-08-list-empty": [520, 600],
+  // ── Stage A ──
+  "shell-01-today": [1300, 1660],
+  "shell-02-checks-set-aside": [560, 660],
+  "shell-03-check-ready-to-post": [1060, 1340],
+  "shell-04-check-shadow": [1080, 1360],
+  "shell-05-set-aside-dialog": [1200, 1520],
 };
+
+/** A dump with no measured height still gets shot, generously. */
+const DEFAULT_HEIGHT = [1400, 1700];
 
 /** The two widths a practice actually uses, and the index into HEIGHT. */
 const WIDTHS = [
@@ -88,10 +97,10 @@ const WIDTHS = [
 const THEMES = ["light", "dark"];
 
 const dumps = readdirSync(shotsDir)
-  .filter((f) => f.startsWith("ux-") && f.endsWith(".html"))
+  .filter((f) => (f.startsWith("ux-") || f.startsWith("shell-")) && f.endsWith(".html"))
   .sort();
 if (dumps.length === 0) {
-  console.error("No ux-*.html dumps to shoot.");
+  console.error("No ux-*.html or shell-*.html dumps to shoot.");
   process.exit(1);
 }
 
@@ -137,7 +146,7 @@ for (const dump of dumps) {
           "--disable-gpu",
           "--hide-scrollbars",
           "--force-device-scale-factor=2",
-          `--window-size=${width},${(HEIGHT[name] ?? [1200, 1400])[heightIndex]}`,
+          `--window-size=${width},${(HEIGHT[name] ?? DEFAULT_HEIGHT)[heightIndex]}`,
           // Let the cascade and fonts settle before the shutter.
           "--virtual-time-budget=3000",
           "--screenshot=" + out,

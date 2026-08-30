@@ -451,7 +451,7 @@ describe("no RCM screen greys a control without saying why", () => {
 
     // §10.4's lost half hour, in one assertion.
     expect(screen.getByTestId("posting-drain-reason-roland").textContent).toContain(
-      "Nothing waiting to drain.",
+      "Nothing waiting to post.",
     );
     expect(unexplainedDisabledControls()).toEqual([]);
   });
