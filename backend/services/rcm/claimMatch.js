@@ -703,9 +703,56 @@ function bandFor(score) {
  *   blockers: Array<{ code: string, blocking: boolean, label: string, detail: string, count?: number }>,
  *   od: { claimStatus: string, dateService: string|null, claimFeeCents: number,
  *         insPaidCents: number, writeOffCents: number, patientName: string|null,
+ *         patientBirthdate: string|null, subscriberId: string|null,
  *         lines: OdLineFacts[], deletedLineCount: number },
  * }}
  */
+/**
+ * Open Dental's NULL DATE, which is a real date rather than a null.
+ * @see CLAUDE.md — "NULL DATES: stored as '0001-01-01', never as SQL NULL".
+ */
+const OD_NULL_DATE = '0001-01-01';
+
+/**
+ * A patient's birthdate as `yyyy-MM-dd`, or null.
+ *
+ * Date part only — see the note at the call site. Anything that is not a
+ * recognisable `yyyy-MM-dd` prefix comes back null: this feeds a screen a person
+ * checks an identity against, and half-parsing a date there is worse than
+ * admitting the field was not readable.
+ *
+ * @param {Record<string, unknown>|null} patient
+ * @returns {string|null}
+ */
+function odBirthdate(patient) {
+  if (!patient) return null;
+  const raw = patient.Birthdate ?? patient.birthdate ?? null;
+  if (typeof raw !== 'string') return null;
+  const day = /^(\d{4}-\d{2}-\d{2})/.exec(raw.trim());
+  if (!day) return null;
+  return day[1] === OD_NULL_DATE ? null : day[1];
+}
+
+/**
+ * The subscriber id Open Dental holds for this patient, or null.
+ *
+ * Read from whichever spelling the resource used, because this is documented as
+ * a request parameter rather than as a response field and the response's casing
+ * is therefore not something to rely on. An empty string is NOT an id: it is the
+ * absence of one, and it says so.
+ *
+ * @param {Record<string, unknown>|null} patient
+ * @returns {string|null}
+ */
+function odSubscriberId(patient) {
+  if (!patient) return null;
+  const raw = patient.SubscriberId ?? patient.SubscriberID ?? patient.subscriberId ?? null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function scoreCandidate(proposal, candidate, { takeback = false, takebackCents = null } = {}) {
   const claim = candidate.claim || {};
   const lines = summariseLines(candidate.claimProcs || [], candidate.procedures || new Map());
@@ -849,6 +896,40 @@ function scoreCandidate(proposal, candidate, { takeback = false, takebackCents =
       insPaidCents: live.reduce((s, l) => s + l.insPayAmtCents, 0),
       writeOffCents: live.reduce((s, l) => s + l.writeOffCents, 0),
       patientName: patient ? `${patient.LName || ''}, ${patient.FName || ''}`.trim().replace(/^,\s*/, '') : null,
+      /**
+       * TWO IDENTITY FACTS FOR STAGE B'S SIDE-BY-SIDE, AND NOT ONE OD CALL MORE.
+       *
+       * The candidate's patient row is ALREADY fetched — `odClaimReads` reads it
+       * whole, either by `/patients/{PatNum}` on the linked lane or out of the
+       * name search on the other. These two fields were being thrown away at
+       * this projection, so a screen wanting to show a biller the chart beside
+       * the EOB had nothing to show but a name.
+       *
+       * NO NEW VERB, no new request, no new pacing cost: this is a projection of
+       * bytes already in hand. `rcmNoOdWrites.test.js` is unaffected because
+       * nothing here reaches a transport at all.
+       *
+       * BOTH ARE `null` WHEN OPEN DENTAL DID NOT SEND THEM, and that is load
+       * bearing rather than defensive. `Birthdate` is a `/patients` field this
+       * platform reads elsewhere; `SubscriberId` is documented as a SEARCH
+       * PARAMETER on `/patients` (docs/OD_API_CONTRACT.md §7) and is not
+       * promised in the response body, so on some rows it will simply be absent.
+       * A missing identity fact must read as "not recorded" and never as a value
+       * somebody could compare against an EOB — a fabricated subscriber id on a
+       * verification screen is the worst failure this module has.
+       *
+       * `patientBirthdate` is the DATE PART ONLY. Open Dental returns a
+       * birthdate as `yyyy-MM-dd` or as a midnight instant depending on the
+       * resource, and a snapshot carrying an instant would print the wrong day
+       * for anybody east of UTC — the `format.day()` bug PR #112 found, in the
+       * one place where being a day out means the wrong person.
+       *
+       * OD's NULL DATE is `'0001-01-01'`, never SQL NULL, so it is screened here
+       * rather than shipped as a birthday in the year 1.
+       */
+      patientBirthdate: odBirthdate(patient),
+      /** As Open Dental spells it. `null` = not recorded, never an empty string. */
+      subscriberId: odSubscriberId(patient),
       lines,
       deletedLineCount: lines.filter((l) => l.deleted === true).length,
       /** Lines whose procedure could not be read — excluded from every total. */

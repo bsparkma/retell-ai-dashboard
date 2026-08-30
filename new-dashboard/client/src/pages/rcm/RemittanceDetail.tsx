@@ -47,6 +47,7 @@ import {
   getRemittance,
   matchRemittance,
   RcmApiError,
+  unparkRemittance,
   RCM_OFFICE_LABELS,
   type BatchMatchResponse,
   type RemittanceClaim,
@@ -76,6 +77,8 @@ import { describePlbAdjustment } from "@/features/rcm/plb";
 import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
 import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
+import PostThisCheck from "@/components/rcm/PostThisCheck";
+import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
 
@@ -154,6 +157,33 @@ export default function RemittanceDetailPage() {
   useEffect(load, [load]);
 
   /**
+   * OPENING A SAVED CHECK PUTS IT BACK ON THE ORDINARY PILE.
+   *
+   * "Save for tomorrow" is a note to yourself, and a note has done its job the
+   * moment you are reading it. Leaving the state set would make Today keep
+   * offering the check you are already looking at, and would quietly turn a
+   * one-press convenience into a two-press chore nobody would use twice.
+   *
+   * FIRE AND FORGET, on purpose. The server is idempotent over an un-saved check
+   * (200, `wasParked: false`), so this is safe on every visit; and if it fails
+   * there is nothing to tell anybody — a note that outlived its usefulness by an
+   * hour costs nothing, while an error banner over an ordinary page-open costs
+   * the reader's attention for something they never asked for.
+   *
+   * It does NOT re-load the page. The `parkedAt` on screen is a second old and
+   * about to be irrelevant; a reload here would restart the claim bundle and the
+   * Open Dental reads under it for a cosmetic field.
+   */
+  const parkedAt = state.kind === "loaded" ? state.data.remittance.parkedAt : null;
+  const loadedOffice = state.kind === "loaded" ? state.data.office : null;
+  useEffect(() => {
+    if (!parkedAt || !loadedOffice || !batchId) return;
+    void unparkRemittance(loadedOffice, batchId).catch(() => {
+      /* see above — a stale note is not worth a banner */
+    });
+  }, [parkedAt, loadedOffice, batchId]);
+
+  /**
    * Clear the batch-match summary when the page moves to a DIFFERENT
    * remittance — and only then.
    *
@@ -172,7 +202,7 @@ export default function RemittanceDetailPage() {
     return (
       <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground" data-testid="remittance-loading">
         <Loader2 size={16} className="animate-spin" />
-        Loading remittance…
+        Loading this check…
       </div>
     );
   }
@@ -182,7 +212,7 @@ export default function RemittanceDetailPage() {
       <div className="p-6" data-testid="remittance-error">
         <BackLink />
         <div className="mt-4 rounded-xl border border-dashed border-border bg-card p-8 text-center">
-          <div className="text-sm font-medium text-foreground">Could not open this remittance</div>
+          <div className="text-sm font-medium text-foreground">Could not open this check</div>
           <p className="mt-1 text-sm text-muted-foreground">{state.message}</p>
         </div>
       </div>
@@ -191,6 +221,16 @@ export default function RemittanceDetailPage() {
 
   const { remittance: r, claims, office } = state.data;
   const flow = remittanceFlow(r, claims);
+  /*
+   * THIS CHECK'S POSTING, if it has one.
+   *
+   * `plans` is an array because the table permits more than one; today the
+   * `(office_id, remittance_key)` unique index means at most one, so reading the
+   * first is exact rather than a guess. It is typed as an array so that the day
+   * 6d.2 relaxes that index (§15.1), this line is where the follow-on shows up
+   * rather than a silently-wrong screen.
+   */
+  const plan = r.plans?.[0] ?? null;
   const unmatchedCount = claims.filter((c) => c.odMatchStatus === "not_run").length;
 
   /**
@@ -204,6 +244,15 @@ export default function RemittanceDetailPage() {
     gate?.scrollIntoView({ behavior: "smooth", block: "start" });
     const button = gate?.querySelector<HTMLButtonElement>('[data-testid="approve-button"]');
     button?.focus({ preventScroll: true });
+  }
+
+  /** The same move, for the step after it. See `goToApprovalGate`. */
+  function goToPostPanel() {
+    const panel = document.querySelector<HTMLElement>('[data-testid="post-this-check"]');
+    panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    panel
+      ?.querySelector<HTMLButtonElement>('[data-testid="post-this-check-button"]')
+      ?.focus({ preventScroll: true });
   }
 
   async function runBatchMatch() {
@@ -292,24 +341,36 @@ export default function RemittanceDetailPage() {
 
       {/*
         ── WHERE THIS ONE IS ───────────────────────────────────────────────────
-        The same seven steps as the claim screen and the posting plan, computed
+        The same five steps as the claim screen and the Posting screen, computed
         once in `features/rcm/flow.ts`. The CTA below it is the next click — and
         the reason "approve is on a different page from review and match, with
         no link between them" (§15.2, finding 1) stops being navigation somebody
         has to already know.
+
+        NO `here`, deliberately. This page owns BOTH of the last two steps —
+        approving is the second half of "Check it over" and Post is the step
+        after it, one panel under the other — so a "you are here" marker would
+        have to name one of two steps the page really is. The rail's own current
+        dot and the CTA below it already answer "where am I" without picking.
       */}
       <RcmStepper
         flow={flow}
-        here="approve"
         onAction={{
           "run-match": runBatchMatch,
-          // Not a second Approve button. The real one is on this page already,
-          // below the checklist that explains it; this takes you to it and puts
-          // the focus there. Two controls that both approve a check would be
-          // exactly the confusion this slice exists to remove.
+          // NEITHER of these is a second button. Both real controls are on this
+          // page already, below the checklist that explains them; the rail takes
+          // you to whichever one is next and puts the focus there. Two controls
+          // that both approve — or both post — would be exactly the confusion
+          // this slice exists to remove.
           approve: goToApprovalGate,
+          drain: goToPostPanel,
         }}
       />
+
+      {/* SAVE FOR TOMORROW · SET ASIDE. Directly under the rail, because they
+          are answers to the same question it asks — "what is next on this one" —
+          and one honest answer is "not today". */}
+      <CheckWorklistActions office={office} remittance={r} onChanged={load} />
 
       {/*
         ── REMITTANCE-LEVEL FLAGS ──────────────────────────────────────────────
@@ -540,6 +601,18 @@ export default function RemittanceDetailPage() {
         </div>
       )}
 
+      {/*
+        ── POST THIS CHECK ─────────────────────────────────────────────────────
+        Rendered only once this check HAS a posting — that is, only once somebody
+        has approved it. Before then the next act is the approval, which is the
+        panel below, and a Post button beside a check nothing has authorised
+        would be a control whose precondition is invisible.
+
+        ONE code path with the office-wide press: the same server route, narrowed
+        by `queueId`. See the component's header.
+      */}
+      {plan && <PostThisCheck office={office} queueId={plan.queueId} onPosted={load} />}
+
       {/* ── The approval gate ──────────────────────────────────────────────── */}
       <ApprovalPanel
         office={office}
@@ -569,7 +642,7 @@ export default function RemittanceDetailPage() {
 
       {claims.length === 0 ? (
         <div className="mt-3 rounded-xl border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
-          This remittance carries no claims.
+          This check carries no claims.
         </div>
       ) : (
         <div className="mt-3 space-y-3">
@@ -602,7 +675,7 @@ function BackLink() {
       className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
     >
       <ArrowLeft size={14} />
-      All remittances
+      All checks
     </Link>
   );
 }
@@ -677,7 +750,7 @@ function ClaimCard({
                 title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
                 data-testid={`claim-queued-${claim.claimId}`}
               >
-                Queued for posting
+                Approved — ready to post
               </span>
             )}
           </div>
@@ -758,7 +831,7 @@ function ClaimCard({
             >
               <CircleSlash size={12} className="mt-0.5 shrink-0" />
               <span>
-                CareIN will not post this. A recoupment cannot be reversed in Open Dental once it is
+                CareIN will not post this. A takeback cannot be reversed in Open Dental once it is
                 written — handle it in Open Dental directly, following the practice's takeback
                 procedure.
               </span>

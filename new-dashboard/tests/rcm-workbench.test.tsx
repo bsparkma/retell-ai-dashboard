@@ -649,7 +649,7 @@ describe("the remittance list", () => {
       ),
     );
     expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
-      "1 remittance in this practice — switch to All to see them.",
+      "1 check in this practice — switch to All to see them.",
     );
     // And it does NOT offer the upload: that is the other empty.
     expect(screen.queryByTestId("remittances-empty-upload-roland")).toBeNull();
@@ -657,10 +657,14 @@ describe("the remittance list", () => {
 
   it("offers the upload from a practice that holds nothing at all", async () => {
     /*
-     * The OTHER empty, and §15.2's navigation problem in its first form:
-     * uploading lived on the overview only, so the first thing a biller saw on
-     * an empty workbench was an instruction to go somewhere else. The dropzone
-     * is now one click away, on the page where the work is.
+     * The OTHER empty, and §15.2 finding 6 in its settled form.
+     *
+     * Uploading used to be on Today AND inline here, which is how the practice
+     * owner got lost going round the loop live. There is now exactly ONE upload
+     * surface — Today's "Get work in" — so this empty state OFFERS THE WAY THERE
+     * rather than opening a second drawer of its own. That the link goes to
+     * `/rcm?add=1` and not to a local panel is the assertion; the
+     * one-surface invariant itself is pinned in `rcm-shell.test.tsx`.
      */
     state.remittances = [];
     state.needsAttentionCount = 0;
@@ -668,10 +672,12 @@ describe("the remittance list", () => {
     renderAt(<RemittanceList />, "/rcm/remittances");
 
     const empty = await screen.findByTestId("remittances-empty-roland");
-    expect(empty.textContent).toContain("Nothing has been uploaded for Roland yet");
+    expect(empty.textContent).toContain("Nothing has come in for Roland yet");
 
-    fireEvent.click(screen.getByTestId("remittances-empty-upload-roland"));
-    await waitFor(() => expect(screen.getByTestId("remittance-upload-panels")).toBeTruthy());
+    const cta = screen.getByTestId("remittances-empty-upload-roland");
+    expect(cta.getAttribute("href")).toBe("/rcm?add=1");
+    // And nothing on this page uploads anything itself.
+    expect(screen.queryByTestId("remittance-upload-panels")).toBeNull();
   });
 
   it("reports MODULE_NOT_ENTITLED in the server's own words", async () => {
@@ -846,11 +852,11 @@ describe("the remittance detail", () => {
 
     await screen.findByTestId("approval-panel");
     expect(screen.getByTestId("approval-counts").textContent).toContain("1 of 2 claims can be posted");
-    expect(screen.getByTestId("approval-counts").textContent).toContain("1 withheld");
+    expect(screen.getByTestId("approval-counts").textContent).toContain("1 not ready yet");
 
     // Mixed pass/fail, per claim, with the INSTRUCTION under the failure.
     expect(screen.getByTestId("approval-state-c-1").textContent).toContain("Ready to post");
-    expect(screen.getByTestId("approval-state-c-2").textContent).toContain("Withheld");
+    expect(screen.getByTestId("approval-state-c-2").textContent).toContain("Not ready yet");
     // The instruction is verb-first and comes from `features/rcm/checks.ts`;
     // the server's own `detail` survives as the quieter "why" line beneath it.
     expect(screen.getByTestId("check-detail-REVIEWED").textContent).toContain(
@@ -942,7 +948,7 @@ describe("the remittance detail", () => {
     fireEvent.click(screen.getByTestId("approve-button"));
 
     const withheld = await screen.findByTestId("approve-withheld");
-    expect(withheld.textContent).toContain("1 claim not queued");
+    expect(withheld.textContent).toContain("1 claim was left off");
     expect(withheld.textContent).toContain("Sample, Placeholder");
     expect(withheld.textContent).toContain("Not a reversal or takeback");
     // Partial success is REAL success — the queued half is stated too.

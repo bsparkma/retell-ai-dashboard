@@ -3247,6 +3247,126 @@ may write, and it still names the same three 6c verbs plus 6d's three.
 
 ## 14. The screens
 
+### 14.0 The shell, in the biller's language (Stage A)
+
+> The screens below §14.1 are the posting machinery. This section is the SHAPE
+> the module was rebuilt into on 2026-08-30, after the practice owner read the
+> finished product cold and could not parse it — *"the term drain, I don't
+> understand — that does not make any sense to me"* — with the Roland biller
+> about to start on it. §15.2 findings 5 and 6 are closed here.
+
+**The words.** Machine slugs, columns, types and route paths are UNCHANGED —
+`drain_step`, `canDrain`, `POST /posting/drain` and `withdrawn` all stay. Only
+rendered strings moved:
+
+| Was | Is |
+| --- | --- |
+| Drain / draining / drained | **Post to Open Dental** / posting / posted |
+| "Nothing waiting to drain" | "Nothing waiting to post" |
+| posting plan | **this check** / **posting** (never "plan" — at a dental office that means treatment plan or insurance plan) |
+| Queued | **Ready to post** |
+| Withheld | **Not ready yet** |
+| Blocked | **Stuck — needs you** |
+| verified by read-back | **Confirmed in Open Dental** |
+| This run / Queue | **Just now** / **All time** |
+| recoupment | **takeback** |
+| withdrawn (badge) | **Retired** |
+| batch | **check** / **remittance** |
+| "1 posting attempt" | "Posted on the 1st try" |
+| Remittances (nav) | **Checks** |
+
+`new-dashboard/tests/rcm-plain-language.test.ts` walks the TypeScript AST of
+every file under `pages/rcm`, `features/rcm` and `components/rcm` and fails on a
+banned word in any string a person can read. It skips module specifiers, object
+keys, machine-valued JSX attributes and slug-shaped strings (no space, no
+capital) — so the rule cannot be satisfied by renaming an identifier, and cannot
+be broken by adding a route path. **The allow-list is empty.**
+
+**The rail is five steps, not seven.**
+
+    Add the check → Match it up → Check it over → Post → Deposit
+
+`confirm` folded into `match` — picking between candidates IS matching — and
+`match` reads `done` only when a claim is CONFIRMED, so the fold cannot make an
+unfinished check look finished.
+
+`approve` folded into **Check it over**, which carries look-at-it *and* say-yes;
+`post` carries exactly one verb, the write to Open Dental. **PM ruling,
+2026-08-30**, reversing the first build, for three reasons:
+
+1. **Shadow mode is the next four weeks of this product's life** and posting is
+   switched off for all of it. With approving inside `post`, every check a
+   biller works would end parked mid-step on "Post — ready to post" and she
+   would never complete the flow once. With it inside "Check it over" she
+   finishes four of five steps every time and the fifth is visibly, honestly
+   switched off.
+2. **The state vocabulary already answers it.** "Ready to post" is the state
+   approving produces; a step cannot both produce it and be the step you are
+   standing on while ready to post.
+3. **Review-then-send is this module's founding sentence** (hard rule 1). Every
+   human judgment in one step, the machine write in the next, and the step names
+   say the invariant out loud.
+
+§4 puts both BUTTONS on one page and that is not a counter-argument: a page is
+not a step. The rail says where she is; the page says what she can reach from
+there. Both ACTIONS, their routes, their audit rows and their permission tiers
+are untouched.
+
+![Today](screenshots/rcm-ux/shell-01-today-1280-light.png)
+
+**Today** is `/rcm` and the first nav item. It answers the first three questions
+of the morning in order: *where did I leave off*, *what came in*, *get work in* —
+and only then how the week went. Stats are below the work because a number is
+something you look at once a day and a queue is something you work.
+
+![posting one check](screenshots/rcm-ux/shell-03-check-ready-to-post-1280-light.png)
+
+**Post to Open Dental, on the check's own page.** §15.2 finding 1, one level up:
+everything about a check happened here and then the last act happened on an
+office-wide monitor. It is NOT a second write path — `POST /posting/drain` has
+taken an optional `queueId` since 6c, and the narrowing is one extra
+`AND queue_id = $3` inside the same office-scoped, status-filtered query. The
+same `rcm.post` gate, the same shadow gate, the same D-7 ceiling, the same forced
+order, the same mutex, the same audit row.
+`routes/rcm/posting.test.js` proves both presses reach one function with one
+field of difference; `tests/rcm-shell.test.tsx` proves it from the client.
+
+![setting a dead check aside](screenshots/rcm-ux/shell-05-set-aside-dialog-1280-light.png)
+
+**Set aside** (§15.2 finding 5). Two checks have sat in "needs attention"
+permanently on staging — `S10R-53830` and `S10R-53832`, both matched, both
+reviewed, both pointing at claims a walk's unwind deleted — because nothing in
+the product could retire them. Now a person can, with a reason, reversibly. It
+takes a check out of the attention counts and out of nothing else: not the row,
+not the record, not a posting, not money.
+
+**Save for tomorrow** is its opposite and is deliberately weaker: the check stays
+in every queue it was in, and Today simply leads with it under *Where you left
+off*. Opening the check clears the note. A "save" that hid work would be a way to
+lose work that looks like a convenience.
+
+**One upload surface** (§15.2 finding 6). Today's *Get work in* is the only place
+in the module that uploads; the Checks page keeps a button that navigates there.
+`tests/rcm-shell.test.tsx` reads the source of every RCM page and fails if a
+second one imports an upload panel.
+
+Neither worklist state runs on `rcm.post`. Both are `rcm.queue` — the tier that
+marks a claim reviewed, which also takes a check out of the needs-attention view
+and has run on that tier since 6a. **PM ruling, 2026-08-30**: `rcm.queue` for all
+four routes, on the argument that set-aside is no wider than an authority the
+tier has always had, is reversible, is audited with an actor, and writes nothing.
+(The brief said `rcm.review`; there is no such action in `config/permissions.js`,
+and adding one would have been a permission tier invented to match a typo.)
+
+**With one condition, and it is pinned:** setting a check aside is allowed to be
+quiet and is not allowed to be invisible. `GET /remittances` is a plain GET under
+the mount's `rcm.read` with no gate on the view, and
+`worklistState.test.js` asserts that `reviewer`, `rcm_biller`, `office` and
+`admin` all see the `set_aside` view, its count, and the row under `all`. A state
+you can undo has to be a state you can find.
+
+### 14.1 The posting machinery
+
 ![the posting queue, waiting](screenshots/rcm-posting/posting-01-queued.png)
 
 Approved plans, labelled by their check and payer, with the honest sentence:
@@ -3421,15 +3541,18 @@ These came out of Beau driving the product himself rather than reading a
 transcript of it, and they are the difference between a system that works and one
 somebody can be handed.
 
-5. **A remittance that will never be worked cannot be dismissed or archived.**
+5. ✅ **CLOSED — Stage A.** **A remittance that will never be worked cannot be
+   dismissed or archived.**
    **Two** now sit in "needs attention" permanently: `S10R-53830` (walk night 2)
    and `S10R-53832` (mini-walk 3), both matched and reviewed, both pointing at
    claims the unwind deleted. Nothing in the product can retire them, so the
    queue's most important signal — *this needs a human* — decays with every walk.
    The evidence for this item **doubled in one night**, which is the argument for
    doing it in Stage A rather than logging it again.
-6. **The Upload button bounces between two pages.** Uploading is the first thing
-   a biller does each morning and it is not reliably in one place.
+6. ✅ **CLOSED — Stage A.** **The Upload button bounces between two pages.**
+   Uploading is the first thing a biller does each morning and it is not reliably
+   in one place. There is now exactly one upload surface — Today's *Get work in*
+   — and a source-reading test that fails if a second page grows one.
 7. **Terminal steps and UI steps are indistinguishable in the runbook.** To a
    non-engineer a walk script reads as one flow, so a step that requires a shell
    looks like a UI step that is broken. **The walk runbook should mark which
@@ -3439,6 +3562,25 @@ somebody can be handed.
    retired plans accumulate with no way to filter them out, so each walk starts
    harder to read than the last. Related to 5, but broader: it is about the
    default view, not about one row's lifecycle.
+
+   **PARTLY ADDRESSED by Stage A.** A dead REMITTANCE can now be set aside, which
+   takes it out of the default view and the counts, and a `set_aside` filter
+   collects them. What is still open is everything that is not a remittance: a
+   retired POSTING still shows on the Posting screen, and a spent walk target is
+   an Open Dental row this product has no view over at all.
+
+9. **Nothing records that a person had a check OPEN.** Today's *Where you left
+   off* card is built from the two attributable facts a remittance carries — it
+   was parked, or somebody pressed Approve on it and it still needs a human. A
+   third source, "you had this open yesterday and did not finish", would need a
+   per-user touch stamp that does not exist anywhere in this schema. The card
+   says what it knows rather than inferring the rest; the ask is a
+   `last_opened_by`/`last_opened_at` pair, or an equivalent read of the audit log.
+
+   **It closes for free in Stage B.** The Workbench writes `decided_by` /
+   `decided_at` per line, which IS the touch stamp this card wants. Left open
+   rather than built here, so the two land together rather than a stamp shipping
+   with nothing writing to it.
 
 ## 16. Out of scope
 

@@ -5,36 +5,40 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY THIS IS A FILE AND NOT THREE `filter` CALLS
  * ─────────────────────────────────────────────────────────────────────────────
- * The overview's cards and the remittance list's tabs answer the same question
- * — "which of these is waiting on a match?" — and the card is a LINK to the tab.
- * If they each computed it, the day one of them drifted a card would say 4 and
- * the page it opened would show 3, and nobody would be able to tell which was
- * lying. One predicate, used by both.
+ * Today's cards and the Checks page's tabs answer the same question — "which of
+ * these is waiting on a match?" — and the card is a LINK to the tab. If they
+ * each computed it, the day one of them drifted a card would say 4 and the page
+ * it opened would show 3, and nobody would be able to tell which was lying. One
+ * predicate, used by both.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * IT READS THE SERVER'S OWN VOCABULARY, NEVER ITS OWN IDEA OF ONE
  * ─────────────────────────────────────────────────────────────────────────────
  * `attentionReasons` (what a human owes) and `attentionObservations` (what is
  * merely true) are computed in `backend/routes/rcm/remittances.js` over the
- * remittance's whole claim set. Re-deriving "unreviewed" from a row's counters
+ * check's whole claim set. Re-deriving "not checked over" from a row's counters
  * here would be a second opinion about a question the server has already
  * answered — the exact drift `needsAttention` was made server-side to end.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THESE ARE CLIENT-SIDE FILTERS OVER A SERVER-PAGED SET — AND THEY SAY SO
+ * FOUR OF THESE ARE SERVER-PAGED. THE OTHER THREE SAY SO.
  * ─────────────────────────────────────────────────────────────────────────────
- * `/api/rcm/remittances` takes `view=attention|all` and nothing else, and this
- * slice is front-end only. So `attention` and `all` are the SERVER'S views,
- * paged and counted over the whole office; the four states below are applied in
- * the browser to whatever page came back.
+ * `/api/rcm/remittances` takes `view=attention|parked|set_aside|all`, applied
+ * over the WHOLE office and counted there. `match`, `review` and `approve` are
+ * still applied in the browser to whatever page came back, because the server
+ * has no work-state view — and the screens SAY the population: a filtered view
+ * prints "over the newest N of M". `view=match|review|approve|blocked` on the
+ * list endpoint is the backend ask that would retire the caveat.
  *
- * That is precisely the arrangement Slice 6a got wrong — filtering a page while
- * the header counted the office, so "12 needing attention · 640 total" was two
- * statements about two populations. It is only acceptable here because the
- * screens SAY the population: a filtered view prints "over the newest N of M",
- * and the two server-backed tabs are untouched. `view=match|review|approve|
- * blocked` on the list endpoint is the backend ask that would retire the
- * caveat.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `set_aside` IS A PARTITION, NOT A VIEW — AND IT IS THE ONLY ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Every other state here overlaps: a check with three unmatched claims and two
+ * unchecked ones is waiting on both, and hiding it from one queue because it
+ * appears in another is how work goes missing. A set-aside check is different
+ * in kind — a person has said on the record that nobody is coming back to it —
+ * so the server's own attention predicate returns early for it and it appears in
+ * exactly two places: `set_aside`, and `all`.
  */
 import type { Remittance } from "@/features/rcm/api";
 
@@ -44,13 +48,20 @@ export const WORKLIST_FILTERS = [
   "review",
   "approve",
   "blocked",
+  "parked",
+  "set_aside",
   "all",
 ] as const;
 export type WorklistFilter = (typeof WORKLIST_FILTERS)[number];
 
-/** The two the SERVER pages and counts. Everything else is filtered in-page. */
+/**
+ * The ones the SERVER pages and counts, over the whole office.
+ * Everything else is filtered in-page and says so.
+ */
 export const SERVER_VIEWS: ReadonlySet<WorklistFilter> = new Set<WorklistFilter>([
   "attention",
+  "parked",
+  "set_aside",
   "all",
 ]);
 
@@ -74,56 +85,75 @@ export const FILTER_COPY: Record<WorklistFilter, FilterCopy> = {
     empty: "Nothing needs attention here.",
   },
   match: {
-    label: "Waiting on match",
+    label: "Waiting to be matched",
     hint: "Claims nobody has looked for in Open Dental yet. Matching only reads the chart.",
-    empty: "Every claim has been searched against Open Dental.",
+    empty: "Every claim has been looked for in Open Dental.",
   },
   review: {
-    label: "Waiting on review",
-    hint: "Claims nobody has dispositioned. A note saying 'nothing to do' is finished work.",
-    empty: "Every claim has been reviewed.",
+    label: "Waiting for your review",
+    hint: "Claims nobody has finished with. A note saying 'nothing to do' is finished work.",
+    empty: "Every claim has been checked over.",
   },
   approve: {
     label: "Ready to post",
-    hint: "Matched and reviewed, and waiting for somebody to approve the check for posting.",
+    hint: "Matched and checked over, waiting for somebody to approve the check and post it.",
     empty: "Nothing is waiting to be approved.",
   },
   blocked: {
-    label: "Blocked",
-    hint: "A claim was withheld at approval, or a posting run did not finish.",
-    empty: "Nothing is blocked.",
+    label: "Stuck — needs you",
+    hint: "A claim was held back at approval, or a posting did not finish.",
+    empty: "Nothing is stuck.",
+  },
+  parked: {
+    label: "Saved for tomorrow",
+    hint: "Checks somebody put down meaning to come back. Opening one puts it back on the pile.",
+    empty: "Nothing is saved for tomorrow.",
+  },
+  set_aside: {
+    label: "Set aside",
+    hint: "Checks nobody is coming back to. They are out of the counts, not out of the records — put any of them back in one click.",
+    empty: "Nothing has been set aside.",
   },
   all: {
     label: "All",
-    hint: "Every remittance this practice has taken in.",
-    empty: "No remittances yet. Upload an 835 or an EOB above.",
+    hint: "Every check this practice has taken in, set-aside ones included.",
+    empty: "No checks yet. Add one from Today.",
   },
 };
 
 /**
- * Does this remittance belong in that state?
+ * Does this check belong in that state?
  *
- * A remittance can be in more than one — a check with three unmatched claims
- * and two unreviewed ones is waiting on both, and hiding it from one queue
- * because it appears in another is how work goes missing. The states are
- * views, not a partition.
+ * A check can be in more than one — see the header. The exception is
+ * `set_aside`, which the server's attention predicate has already partitioned
+ * out; the two clauses below just say so in the browser too, so a client-side
+ * tab applied to a page cannot disagree with the server-paged view of the same
+ * name.
  */
 export function matchesFilter(r: Remittance, filter: WorklistFilter): boolean {
+  const setAside = r.setAsideAt != null;
   switch (filter) {
     case "all":
       return true;
+    case "set_aside":
+      return setAside;
+    case "parked":
+      // A set-aside check is not "saved for tomorrow" even if somebody parked it
+      // first. The stronger, later decision is the one the screen reports.
+      return r.parkedAt != null && !setAside;
     case "attention":
       return r.needsAttention;
     case "match":
-      return r.attentionObservations.includes("claims_unmatched");
+      return !setAside && r.attentionObservations.includes("claims_unmatched");
     case "review":
-      return r.attentionReasons.includes("claims_unreviewed");
+      return !setAside && r.attentionReasons.includes("claims_unreviewed");
     case "approve":
-      return r.attentionReasons.includes("claims_awaiting_approval");
+      return !setAside && r.attentionReasons.includes("claims_awaiting_approval");
     case "blocked":
       return (
-        r.attentionReasons.includes("claims_withheld") ||
-        r.attentionReasons.includes("posting_failed")
+        !setAside &&
+        (r.attentionReasons.includes("claims_withheld") ||
+          r.attentionReasons.includes("posting_failed"))
       );
     default:
       return true;
@@ -152,7 +182,26 @@ export function oldestWaitingFirst(rows: Remittance[]): Remittance[] {
   });
 }
 
-/** How many rows fall in each state. One pass, for the inbox cards. */
+/**
+ * Most recently put down first.
+ *
+ * The opposite ordering from every other queue here, and for the opposite
+ * reason: "where did I leave off" means the LAST thing, and a card that led with
+ * the check somebody parked three weeks ago would answer a question nobody
+ * asked. A row with no stamp sorts last.
+ */
+export function newestParkedFirst(rows: Remittance[]): Remittance[] {
+  return [...rows].sort((a, b) => {
+    const at = a.parkedAt ? Date.parse(a.parkedAt) : Number.NEGATIVE_INFINITY;
+    const bt = b.parkedAt ? Date.parse(b.parkedAt) : Number.NEGATIVE_INFINITY;
+    if (Number.isNaN(at) && Number.isNaN(bt)) return 0;
+    if (Number.isNaN(at)) return 1;
+    if (Number.isNaN(bt)) return -1;
+    return bt - at;
+  });
+}
+
+/** How many rows fall in each state. One pass, for Today's cards. */
 export function countByFilter(rows: Remittance[]): Record<WorklistFilter, number> {
   const counts = {
     attention: 0,
@@ -160,6 +209,8 @@ export function countByFilter(rows: Remittance[]): Record<WorklistFilter, number
     review: 0,
     approve: 0,
     blocked: 0,
+    parked: 0,
+    set_aside: 0,
     all: rows.length,
   } as Record<WorklistFilter, number>;
   for (const r of rows) {

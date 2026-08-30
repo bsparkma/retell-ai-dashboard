@@ -85,7 +85,7 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     pass: "A payment, not a reversal.",
   },
   NOT_RECOUPMENT: {
-    title: "Not a recoupment",
+    title: "Not a takeback",
     fail: "Approve this one from the takeback panel instead — the carrier is taking money back, and that needs you to type the amount first.",
     pass: "The carrier is not taking money back.",
   },
@@ -143,8 +143,8 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
   },
   CLAIMPROC_NOT_ALREADY_PLANNED: {
     title: "No chart line is spoken for",
-    fail: "Release the other posting plan first — another claim is already lined up to pay money against one of these chart lines.",
-    pass: "No chart line is on another plan.",
+    fail: "Release the other approved check first — another claim is already lined up to pay money against one of these chart lines.",
+    pass: "No chart line is spoken for by another check.",
   },
   CLAIM_TOTALS_AGREE: {
     title: "The amounts add up",

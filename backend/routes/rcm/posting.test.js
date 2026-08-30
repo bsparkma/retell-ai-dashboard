@@ -474,6 +474,125 @@ test('a malformed queueId narrows to NOTHING rather than draining the whole offi
   }
 });
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ONE CHECK AND THE WHOLE OFFICE ARE THE SAME PRESS (Stage A §4)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The check's own page grew a Post to Open Dental button. The one thing that
+ * must never be true of it is that it is a SECOND write path — a second route, a
+ * second set of guards, or a second function that happens to do the same thing
+ * today and drifts apart next slice.
+ *
+ * It is not. `queueId` is an optional narrowing on the SAME route, resolved into
+ * one extra `AND queue_id = $3` inside the same office-scoped, status-filtered
+ * query. These three tests are what makes that reviewable rather than asserted:
+ *
+ *   · the narrowed press reaches the same handler and the same gates;
+ *   · it can only ever reach a SUBSET of what the office-wide press reaches —
+ *     it cannot name its way into a check the unfiltered run would have skipped;
+ *   · every refusal is identical, because there is only one place they live.
+ */
+test('a narrowed press and an office-wide press take the SAME path through the same guards', async () => {
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    /*
+     * The most direct evidence available from outside: the route hands BOTH
+     * presses to `postingDrain.drainOffice`, and the only difference in what it
+     * receives is `onlyQueueId`. Everything else — office, operator, drainedBy,
+     * snapshotVersion, and the pool the shadow gate was just read on — is
+     * produced by the same lines of the same handler.
+     */
+    const seen = [];
+    const real = postingDrain.drainOffice;
+    postingDrain.drainOffice = async (ctx) => {
+      seen.push(ctx);
+      return { ran: 0, outcomes: [], outOfTime: false, remaining: 0 };
+    };
+    try {
+      await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+        body: JSON.stringify({ queueId: QUEUE_ID }),
+        json: true,
+      });
+      await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+        body: JSON.stringify({}),
+        json: true,
+      });
+    } finally {
+      postingDrain.drainOffice = real;
+    }
+
+    assert.equal(seen.length, 2);
+    const [one, all] = seen;
+    assert.equal(one.onlyQueueId, QUEUE_ID);
+    assert.equal(all.onlyQueueId, null, 'null is the sentinel for "no narrowing"');
+
+    // Everything else is identical, field for field.
+    for (const key of ['office', 'operator', 'drainedBy', 'snapshotVersion']) {
+      assert.deepEqual(one[key], all[key], `${key} must not differ between the two presses`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('naming a check the office-wide press would NOT have posted reaches nothing', async () => {
+  /*
+   * The narrowing can only ever SUBTRACT. A check in a state the unfiltered run
+   * skips — here, one already posted — is not specially handled and not
+   * specially refused; it simply is not selected, exactly as it would not be
+   * without the parameter. That is what makes "a request cannot name its way in"
+   * a property of the query rather than of a check somebody remembered to write.
+   */
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const row = db.table('rcm_posting_queue')[0];
+  row.status = 'posted';
+  row.od_claim_payment_num = 21253;
+  row.reconciled_at = new Date();
+
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({ queueId: QUEUE_ID }),
+      json: true,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ran, 0);
+    assert.deepEqual(od.methodsUsed(), [], 'not one Open Dental call');
+    assert.equal(db.table('rcm_posting_queue')[0].status, 'posted', 'and it is untouched');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the shadow gate refuses a narrowed press in exactly the same words', async () => {
+  // Both refusals come from the same lines, ABOVE the point where `queueId` is
+  // read at all — so a check's own page cannot be a way around the switch.
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: false });
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const one = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({ queueId: QUEUE_ID }),
+      json: true,
+    });
+    const all = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(one.status, 409);
+    assert.equal(one.status, all.status);
+    assert.equal(one.body.code, 'DRAIN_DISABLED_FOR_OFFICE');
+    assert.equal(one.body.error, all.body.error, 'one sentence, not two');
+    assert.deepEqual(od.methodsUsed(), []);
+    assert.equal(db.table('rcm_posting_queue')[0].status, 'approved', 'no row moved');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the drain run is audited as its own CREATE, on top of the per-call rows', async () => {
   const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   // No drainable rows, so the run is a clean no-op and the only audit row is the

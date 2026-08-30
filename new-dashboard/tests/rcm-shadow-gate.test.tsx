@@ -165,7 +165,7 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
 });
 
 import PostingQueue from "@/pages/rcm/PostingQueue";
-import RcmOverview from "@/pages/rcm/RcmOverview";
+import RcmToday from "@/pages/rcm/RcmToday";
 import RcmPostingSettingsCard from "@/pages/admin/RcmPostingSettingsCard";
 import { SHADOW_MODE_COPY, SHADOW_REFUSAL_SLUG } from "@/features/rcm/posting";
 import { OfficeProvider } from "@/contexts/OfficeContext";
@@ -221,7 +221,7 @@ describe("the Posting page in shadow mode", () => {
      */
     const reason = screen.getByTestId("posting-drain-reason-roland");
     expect(reason.textContent).toContain("Posting is switched off for Roland (shadow mode)");
-    expect(reason.textContent).toContain("Approved plans wait here");
+    expect(reason.textContent).toContain("Approved checks wait here");
     expect(drain.getAttribute("title")).toBeNull();
   });
 
@@ -241,7 +241,7 @@ describe("the Posting page in shadow mode", () => {
     renderAt(<PostingQueue />, "/rcm/posting");
     await screen.findByTestId("posting-drain-roland");
     expect(screen.getByTestId("posting-counts-roland").textContent).toContain("1 waiting");
-    expect(screen.getByTestId("posting-counts-roland").textContent).toContain("0 blocked");
+    expect(screen.getByTestId("posting-counts-roland").textContent).toContain("0 stuck");
     expect(screen.queryByTestId("posting-disabled-roland")).toBeNull();
   });
 
@@ -283,7 +283,7 @@ describe("the Posting page in shadow mode", () => {
 
 describe("the RCM inbox in shadow mode", () => {
   it("carries the same badge — a biller should not have to go looking", async () => {
-    renderAt(<RcmOverview />, "/rcm");
+    renderAt(<RcmToday />, "/rcm");
     const badge = await screen.findByTestId("rcm-shadow-badge-roland");
     expect(badge.textContent).toBe(SHADOW_MODE_COPY.badge);
     // And the sentence is on the page, not only in a title attribute.
@@ -292,7 +292,7 @@ describe("the RCM inbox in shadow mode", () => {
 
   it("is gone once posting is switched on", async () => {
     state.drainEnabled = true;
-    renderAt(<RcmOverview />, "/rcm");
+    renderAt(<RcmToday />, "/rcm");
     await screen.findByTestId("rcm-summary-roland");
     await waitFor(() => expect(screen.queryByTestId("rcm-shadow-badge-roland")).toBeNull());
   });

@@ -9,9 +9,15 @@
  * So the test is exhaustive over the machine vocabularies rather than
  * illustrative:
  *
- *   · every `OdMatchStatus`      → the match and confirm steps
+ *   · every `OdMatchStatus`      → the match step (which CONFIRM folded into)
  *   · every `PostingQueueLabel`  → the post step
- *   · every claim shape a remittance can be in → the whole rail
+ *   · every claim shape a check can be in → the whole rail
+ *
+ * The two folds are the reason the vocabulary tables below are the whole of the
+ * safety here. `confirm` disappearing as a STEP must not make an unconfirmed
+ * claim read as matched, and `approve` folding into "Check it over" must not
+ * make an unapproved check read as checked over — so each table asserts the
+ * state a folded-in status produces, one status at a time.
  *
  * The CTA is asserted beside each, because "one primary button, and never two"
  * is the other half of the contract and the half that is easy to break by
@@ -23,7 +29,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claimFlow,
-  confirmStepFor,
+  matchStepFor,
   planFlow,
   postStepFor,
   RCM_STEPS,
@@ -162,7 +168,7 @@ const detailOf = (flow: RcmFlow, step: RcmStep): string | null =>
 // ─── The rail's shape ────────────────────────────────────────────────────────
 
 describe("the rail", () => {
-  it("is the same seven steps, in the same order, on all three screens", () => {
+  it("is the same five steps, in the same order, on all three screens", () => {
     const rails = [
       remittanceFlow(remittance(), [claim()]),
       claimFlow(workbenchClaim(), "b-1"),
@@ -199,7 +205,7 @@ describe("the rail", () => {
     expect(stateOf(fresh, "review")).toBe("todo");
     // The sentence survives the demotion — it is still true, and the notes
     // under the rail are where a biller reads what each step is waiting for.
-    expect(detailOf(fresh, "review")).toContain("note and a Mark reviewed");
+    expect(detailOf(fresh, "review")).toContain("note and a Mark checked over");
 
     for (const rail of [
       fresh,
@@ -212,8 +218,15 @@ describe("the rail", () => {
   });
 
   it("never demotes a blocked step, because it is work rather than a position", () => {
-    // A no-candidate claim on an unbalanced check is blocked twice, and hiding
-    // the second would hide a thing somebody has to fix.
+    /*
+     * A no-candidate claim on an unbalanced check is blocked TWICE, and hiding
+     * the second would hide a thing somebody has to fix. The two folds do not
+     * change that: `match` carries what used to be `confirm`'s block, and
+     * `review` carries what used to be `approve`'s.
+     *
+     * The claim is READ here, deliberately. While any claim is unread, the
+     * outstanding action at `review` is the reading — see the test below.
+     */
     const flow = remittanceFlow(
       remittance({
         balance: {
@@ -224,10 +237,39 @@ describe("the rail", () => {
           balanced: false,
         },
       }),
-      [claim({ odMatchStatus: "no_candidate" })],
+      [claim({ odMatchStatus: "no_candidate", reviewedAt: "2026-03-06T15:00:00.000Z" })],
     );
-    expect(stateOf(flow, "confirm")).toBe("blocked");
-    expect(stateOf(flow, "approve")).toBe("blocked");
+    expect(stateOf(flow, "match")).toBe("blocked");
+    expect(stateOf(flow, "review")).toBe("blocked");
+  });
+
+  it("names the READING before the imbalance, because that is the next action", () => {
+    /*
+     * The one precedence the fold had to settle. An unbalanced check whose
+     * claims nobody has read is not "blocked at approval" to the person holding
+     * it — she has not got there yet, and the next thing she does is read them.
+     * Leading with the imbalance would name a wall behind a door she has not
+     * opened, which is the crying-wolf failure `attentionFor` was rewritten to
+     * stop one level down.
+     *
+     * The imbalance is not hidden: it is a first-class stat on the check's page
+     * (the balance card), the approval gate refuses on it, and this step turns
+     * `blocked` the moment the reading is finished — which the test above pins.
+     */
+    const flow = remittanceFlow(
+      remittance({
+        balance: {
+          batchTotalCents: 12000,
+          claimTotalCents: 7000,
+          differenceCents: 5000,
+          plbTotalCents: 0,
+          balanced: false,
+        },
+      }),
+      [claim({ odMatchStatus: "confirmed", odClaimNum: 53784 })],
+    );
+    expect(stateOf(flow, "review")).toBe("current");
+    expect(detailOf(flow, "review")).toContain("Mark checked over");
   });
 
   it("never offers more than one call to action", () => {
@@ -251,9 +293,18 @@ describe("the rail", () => {
 
 // ─── Every match status ──────────────────────────────────────────────────────
 
-describe("confirm, one assertion per OdMatchStatus", () => {
+describe("match — one assertion per OdMatchStatus, now that confirm folded in", () => {
+  /*
+   * ONLY `confirmed` IS `done`, AND THAT IS THE WHOLE SAFETY OF THE FOLD.
+   *
+   * Searching and choosing are one step to a biller and two acts to the
+   * machinery. If `candidates` read `done` here, a claim Open Dental offered
+   * three possibilities for — and nobody chose between — would draw a green tick
+   * saying it was tied to a chart. That is the confident tick over work nobody
+   * did that this whole file exists to refuse.
+   */
   const EXPECTED: Record<OdMatchStatus, StepState> = {
-    not_run: "todo",
+    not_run: "current",
     candidates: "current",
     no_candidate: "blocked",
     confirmed: "done",
@@ -265,7 +316,7 @@ describe("confirm, one assertion per OdMatchStatus", () => {
 
   for (const status of OD_MATCH_STATUSES) {
     it(`maps ${status} → ${EXPECTED[status]}`, () => {
-      const step = confirmStepFor(status, status === "confirmed" ? 53784 : null, "/x");
+      const step = matchStepFor(status, status === "confirmed" ? 53784 : null, "/x");
       expect(step.state).toBe(EXPECTED[status]);
       // Every state says something. A dot with no sentence is the finding this
       // whole slice exists to close.
@@ -273,14 +324,27 @@ describe("confirm, one assertion per OdMatchStatus", () => {
     });
   }
 
-  it("names the linked claim rather than saying only 'matched'", () => {
-    expect(confirmStepFor("confirmed", 53784, "/x").detail).toContain("53784");
+  it("never reads DONE for a claim nobody confirmed", () => {
+    for (const status of OD_MATCH_STATUSES) {
+      if (status === "confirmed") continue;
+      expect(matchStepFor(status, null, "/x").state).not.toBe("done");
+    }
+  });
+
+  it("names the tied claim rather than saying only 'matched'", () => {
+    expect(matchStepFor("confirmed", 53784, "/x").detail).toContain("53784");
   });
 
   it("does not claim Open Dental is empty when it examined and rejected", () => {
     // `no_candidate` is one status covering two answers. The step says the
     // honest one: nothing can be OFFERED, which is not "nothing exists".
-    expect(confirmStepFor("no_candidate", null, "/x").detail).toContain("can be offered");
+    expect(matchStepFor("no_candidate", null, "/x").detail).toContain("can be offered");
+  });
+
+  it("treats an unreadable stored match as work to redo, whatever the status says", () => {
+    const step = matchStepFor("confirmed", 53784, "/x", { stale: true });
+    expect(step.state).toBe("current");
+    expect(step.detail).toContain("older format");
   });
 });
 
@@ -369,31 +433,32 @@ describe("a remittance, state by state", () => {
     const flow = remittanceFlow(remittance(), [claim()]);
     expect(stateOf(flow, "upload")).toBe("done");
     expect(stateOf(flow, "match")).toBe("current");
-    expect(stateOf(flow, "confirm")).toBe("todo");
-    expect(stateOf(flow, "approve")).toBe("todo");
+    expect(stateOf(flow, "review")).toBe("todo");
+    expect(stateOf(flow, "post")).toBe("todo");
     expect(flow.cta?.action).toBe("run-match");
     expect(flow.cta?.disabled).toBe(false);
   });
 
-  it("a matched check with candidates is waiting on a person, and links to them", () => {
+  it("a matched check with candidates is STILL at match, and links to the person", () => {
     const flow = remittanceFlow(remittance(), [
       claim({ odMatchStatus: "candidates", patientName: "Stedi Test 2" }),
     ]);
-    expect(stateOf(flow, "match")).toBe("done");
-    expect(stateOf(flow, "confirm")).toBe("current");
+    // NOT `done`. The search ran; nobody chose. See the fold's safety note above.
+    expect(stateOf(flow, "match")).toBe("current");
+    expect(flow.cta?.step).toBe("match");
     expect(flow.cta?.label).toContain("Stedi Test 2");
     // It CARRIES THE REMITTANCE with it, which is the only way the claim screen
     // can offer a way back — the claim endpoint has no batch id.
     expect(flow.cta?.href).toContain("from=b-1");
   });
 
-  it("a confirmed, unreviewed check is waiting on review", () => {
+  it("a confirmed, unchecked check is waiting to be checked over", () => {
     const flow = remittanceFlow(remittance(), [
       claim({ odMatchStatus: "confirmed", odClaimNum: 53784 }),
     ]);
-    expect(stateOf(flow, "confirm")).toBe("done");
+    expect(stateOf(flow, "match")).toBe("done");
     expect(stateOf(flow, "review")).toBe("current");
-    expect(flow.cta?.label).toContain("Review");
+    expect(flow.cta?.label).toContain("Check over");
   });
 
   it("a confirmed, reviewed check is waiting on approval — on this page", () => {
@@ -404,16 +469,32 @@ describe("a remittance, state by state", () => {
         reviewedAt: "2026-03-06T15:00:00.000Z",
       }),
     ]);
-    expect(stateOf(flow, "review")).toBe("done");
-    expect(stateOf(flow, "approve")).toBe("current");
+    /*
+     * PM RULING: approving is the SECOND HALF of "Check it over", not the first
+     * half of "Post". Read but unapproved is therefore `current` at `review` —
+     * the human judgment is not finished — and `post` has not started.
+     */
+    expect(stateOf(flow, "review")).toBe("current");
+    expect(detailOf(flow, "review")).toContain("Nothing has been approved yet");
+    expect(stateOf(flow, "post")).toBe("todo");
+    expect(flow.cta?.step).toBe("review");
     expect(flow.cta?.label).toBe("Approve 1 claim for posting");
     // A VERB this page owns, not a link: the real Approve button is already on
-    // the remittance screen and the CTA takes you to it.
+    // the check's screen and the CTA takes you to it.
     expect(flow.cta?.action).toBe("approve");
     expect(flow.cta?.href).toBeNull();
   });
 
-  it("an approved check is waiting on the drain, and points at Posting", () => {
+  it("SHADOW MODE: an approved check finishes four of five steps, honestly", () => {
+    /*
+     * THE REASON THE FOLD WENT THIS WAY.
+     *
+     * Roland ships to production with posting switched off, and a biller works
+     * real checks for weeks under it. With approving inside `post`, every check
+     * she finished would sit mid-step at "Post" and she would never complete the
+     * flow once. With approving inside "Check it over", everything a person can
+     * do is DONE and the one step that is switched off is the machine's.
+     */
     const flow = remittanceFlow(remittance({ attentionObservations: ["claims_queued"] }), [
       claim({
         odMatchStatus: "confirmed",
@@ -422,9 +503,38 @@ describe("a remittance, state by state", () => {
         postingQueueId: "q-1",
       }),
     ]);
-    expect(stateOf(flow, "approve")).toBe("done");
+    for (const step of ["upload", "match", "review"] as const) {
+      expect(stateOf(flow, step), `${step} should be done`).toBe("done");
+    }
     expect(stateOf(flow, "post")).toBe("current");
-    expect(flow.cta?.href).toBe("/rcm/posting");
+    // And `post` says only what it is: waiting, with nothing written.
+    expect(detailOf(flow, "post")).toContain("Nothing has been written to Open Dental");
+  });
+
+  it("an approved check is READY TO POST, and the CTA is the write itself", () => {
+    const flow = remittanceFlow(remittance({ attentionObservations: ["claims_queued"] }), [
+      claim({
+        odMatchStatus: "confirmed",
+        odClaimNum: 53784,
+        reviewedAt: "2026-03-06T15:00:00.000Z",
+        postingQueueId: "q-1",
+      }),
+    ]);
+    expect(stateOf(flow, "review")).toBe("done");
+    expect(stateOf(flow, "post")).toBe("current");
+    expect(detailOf(flow, "post")).toContain("Ready to post");
+    /*
+     * §4: the post happens HERE now, on the check's own page, so this is a verb
+     * the page owns rather than a link to the office-wide monitor. It is the
+     * SAME server route the monitor calls, narrowed by this check's plan id —
+     * see components/rcm/PostThisCheck.tsx.
+     *
+     * ONE VERB. `post` cannot fire an approve, because there is no state in
+     * which it should: everything a person decides happened one step earlier.
+     */
+    expect(flow.cta?.label).toBe("Post to Open Dental");
+    expect(flow.cta?.action).toBe("drain");
+    expect(flow.cta?.href).toBeNull();
   });
 
   it("a posted check has no next click at all", () => {
@@ -469,17 +579,19 @@ describe("a remittance, state by state", () => {
         }),
       ],
     );
-    expect(stateOf(flow, "approve")).toBe("blocked");
+    // An unbalanced check cannot be APPROVED, and approving is part of
+    // "Check it over" — so that is the step that blocks.
+    expect(stateOf(flow, "review")).toBe("blocked");
+    expect(stateOf(flow, "post")).toBe("todo");
     expect(flow.cta?.disabled).toBe(true);
     // §15.2, finding 4, at the model layer: a disabled control always carries
     // its reason, so no screen can render one without.
     expect(flow.cta?.reason).toContain("$50.00");
   });
 
-  it("a check whose claims Open Dental cannot offer is blocked at confirm", () => {
+  it("a check whose claims Open Dental cannot offer is blocked at match", () => {
     const flow = remittanceFlow(remittance(), [claim({ odMatchStatus: "no_candidate" })]);
-    expect(stateOf(flow, "match")).toBe("done");
-    expect(stateOf(flow, "confirm")).toBe("blocked");
+    expect(stateOf(flow, "match")).toBe("blocked");
     expect(flow.cta?.disabled).toBe(true);
     expect(flow.cta?.reason).toBeTruthy();
   });
@@ -516,8 +628,13 @@ describe("a remittance, state by state", () => {
         reviewedAt: "2026-03-06T15:00:00.000Z",
       }),
     ]);
-    expect(stateOf(flow, "approve")).toBe("current");
-    expect(detailOf(flow, "approve")).toContain("1 of 2 approved");
+    // Partly approved is NOT done: the human judgment on this check is
+    // unfinished, and the step that carries it says so with the numbers.
+    expect(stateOf(flow, "review")).toBe("current");
+    expect(detailOf(flow, "review")).toContain("1 approved");
+    // The un-approved remainder is named too — "not ready yet", never silence.
+    expect(detailOf(flow, "review")).toContain("not ready yet");
+    expect(stateOf(flow, "post")).toBe("todo");
   });
 
   it("a check with no claims on it is blocked at match rather than looking finished", () => {
@@ -547,10 +664,15 @@ describe("one claim", () => {
       "b-1",
     );
     expect(stateOf(flow, "post")).toBe("unknown");
-    expect(detailOf(flow, "post")).toContain("posting queue says");
+    expect(detailOf(flow, "post")).toContain("Posting screen says");
   });
 
-  it("sends approving back to the remittance, because that is where it happens", () => {
+  it("sends the approval back to the check, because that is where it happens", () => {
+    /*
+     * A claim that has been READ on a check nobody has approved. The reading is
+     * done and the step is not, because approving is per-CHECK — so the rail
+     * says `current` and points back rather than ticking a judgment nobody made.
+     */
     const flow = claimFlow(
       workbenchClaim({
         odMatchStatus: "confirmed",
@@ -559,9 +681,29 @@ describe("one claim", () => {
       }),
       "b-1",
     );
-    expect(stateOf(flow, "approve")).toBe("current");
+    expect(stateOf(flow, "review")).toBe("current");
+    expect(detailOf(flow, "review")).toContain("Approving happens on the check");
+    expect(stateOf(flow, "post")).toBe("todo");
+    expect(flow.cta?.step).toBe("review");
+    expect(flow.cta?.label).toBe("Approve for posting");
     expect(flow.cta?.href).toBe("/rcm/remittances/b-1");
+    // NEVER a verb on this screen: the claim page owns neither button, and a CTA
+    // firing an action the page does not handle is a button that does nothing.
     expect(flow.cta?.action).toBeNull();
+  });
+
+  it("reads DONE only once the claim is both read AND on an approved check", () => {
+    const flow = claimFlow(
+      workbenchClaim({
+        odMatchStatus: "confirmed",
+        odClaimNum: 53784,
+        reviewedAt: "2026-03-06T15:00:00.000Z",
+        postingQueueId: "q-1",
+      }),
+      "b-1",
+    );
+    expect(stateOf(flow, "review")).toBe("done");
+    expect(detailOf(flow, "review")).toContain("approved");
   });
 
   it("degrades honestly when it does not know which remittance it came from", () => {
@@ -588,7 +730,7 @@ describe("one claim", () => {
 describe("one posting plan", () => {
   it("treats everything before post as done, because a plan cannot exist otherwise", () => {
     const flow = planFlow(plan());
-    for (const step of ["upload", "match", "confirm", "review", "approve"] as const) {
+    for (const step of ["upload", "match", "review"] as const) {
       expect(stateOf(flow, step)).toBe("done");
     }
   });
@@ -596,6 +738,8 @@ describe("one posting plan", () => {
   it("stamps the approval in the PRACTICE'S day", () => {
     // 01:10Z on the 26th is the evening of the 25th in Roland. §15.2, finding 2.
     const flow = planFlow(plan({ approvedAt: "2026-08-26T01:10:00.000Z" }));
-    expect(detailOf(flow, "approve")).toContain("Aug 25, 2026");
+    // The approval now reads on `review`, which is where `approve` folded to on
+    // a posting: everything before `post` on this rail is done by construction.
+    expect(detailOf(flow, "review")).toContain("Aug 25, 2026");
   });
 });

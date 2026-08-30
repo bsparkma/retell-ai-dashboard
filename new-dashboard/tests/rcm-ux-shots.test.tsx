@@ -333,16 +333,37 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/rcm/api")>();
   return {
     ...real,
-    listRemittances: vi.fn(async (office: string) => ({
-      office,
-      view: "all",
-      remittances: shots.list,
-      total: shots.listTotal,
-      needsAttentionCount: shots.list.length,
-      matchingCount: shots.list.length,
-      limit: 200,
-      offset: 0,
-    })),
+    listRemittances: vi.fn(async (office: string, opts: { view?: string } = {}) => {
+      /*
+       * The mock applies the SERVER'S view rules, because a screenshot of a tab
+       * that ignored them would be a picture of a screen production never
+       * renders — and the whole point of these dumps is to review what a biller
+       * will actually see.
+       */
+      const all = shots.list as Record<string, unknown>[];
+      const live = all.filter((r) => r.setAsideAt == null);
+      const view = opts.view ?? "all";
+      const selected =
+        view === "attention"
+          ? live.filter((r) => r.needsAttention)
+          : view === "parked"
+            ? live.filter((r) => r.parkedAt != null)
+            : view === "set_aside"
+              ? all.filter((r) => r.setAsideAt != null)
+              : all;
+      return {
+        office,
+        view,
+        remittances: selected,
+        total: shots.listTotal,
+        needsAttentionCount: live.filter((r) => r.needsAttention !== false).length,
+        parkedCount: live.filter((r) => r.parkedAt != null).length,
+        setAsideCount: all.filter((r) => r.setAsideAt != null).length,
+        matchingCount: selected.length,
+        limit: 200,
+        offset: 0,
+      };
+    }),
     getRemittance: vi.fn(async (office: string) => ({
       office,
       remittance: shots.remittance,
@@ -365,6 +386,33 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     getApprovalPreview: vi.fn(async () => shots.preview),
     listPostingQueue: vi.fn(async () => shots.queue),
     getPostingPlan: vi.fn(async () => shots.queueDetail),
+    parkRemittance: vi.fn(async () => ({ batchId: "b-1", parked: true })),
+    unparkRemittance: vi.fn(async () => ({ batchId: "b-1", parked: false, wasParked: false })),
+    setAsideRemittance: vi.fn(async () => ({ batchId: "b-1", setAside: true, reason: "target_gone" })),
+    restoreRemittance: vi.fn(async () => ({ batchId: "b-1", setAside: false, wasSetAside: true })),
+    drainPostingQueue: vi.fn(async () => ({
+      office: "roland",
+      outcomes: [],
+      ran: 0,
+      outOfTime: false,
+      remaining: 0,
+      config: null,
+      postingEnabled: true,
+    })),
+    getRecoupmentChecklist: vi.fn(async () => ({
+      office: "roland",
+      batchId: "b-1",
+      claims: [],
+      recoupmentClaims: 0,
+      recoupmentTotalCents: 0,
+      typedTotalExpected: "0.00",
+      paths: [],
+      defaultPath: "adjustment",
+      balanced: true,
+      differenceCents: 0,
+      canApprove: true,
+      approveRequires: "rcm.write",
+    })),
     listEobUploads: vi.fn(() => new Promise(() => {})),
     listEraUploads: vi.fn(() => new Promise(() => {})),
   };
@@ -378,7 +426,7 @@ vi.mock("@/contexts/AuthContext", async (importOriginal) => {
   };
 });
 
-import RcmOverview from "@/pages/rcm/RcmOverview";
+import RcmToday from "@/pages/rcm/RcmToday";
 import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
@@ -466,7 +514,7 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     shots.listTotal = 4;
     shots.queue = queuePage(PLANS);
 
-    renderAt(<RcmOverview />, "/rcm");
+    renderAt(<RcmToday />, "/rcm");
     await screen.findByTestId("rcm-queue-count-match-roland");
     await waitFor(() =>
       expect(screen.getByTestId("rcm-blocked-roland").textContent).toContain("not switched on"),
@@ -606,13 +654,193 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     dump("ux-07-list-filtered");
   });
 
-  it("ux-08-list-empty — the upload is here, not on another page", async () => {
+  it("ux-08-list-empty — the empty state offers the ONE way in, rather than a second drawer", async () => {
+    // Stage A: the panels moved to Today and this page keeps a link. §15.2
+    // finding 6 — two doors to one room is worse than one door in the wrong
+    // place, because neither one is the place you learn.
     shots.list = [];
     shots.listTotal = 0;
     renderAt(<RemittanceList />, "/rcm/remittances");
     await screen.findByTestId("remittances-empty-upload-roland");
-    fireEvent.click(screen.getByTestId("remittance-upload-toggle"));
-    await screen.findByTestId("remittance-upload-panels");
     dump("ux-08-list-empty");
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // STAGE A — the shell, in the biller's language
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it("shell-01-today — the day, in order: where you left off, what came in, get work in", async () => {
+    shots.list = [
+      remit({
+        batchId: "b-1",
+        payer: "SYNTHETIC DENTAL",
+        parkedAt: "2026-08-29T22:55:00.000Z",
+        parkedBy: "Billing User",
+        parkedNote: "Waiting on the carrier to resend the corrected EOB",
+        attentionReasons: ["claims_unreviewed"],
+        attentionObservations: [],
+      }),
+      remit({
+        batchId: "b-2",
+        payer: "PLACEHOLDER DENTAL PLAN",
+        approvalAttemptedAt: "2026-08-29T19:10:00.000Z",
+        approvalAttemptedBy: "Billing User",
+        attentionReasons: ["claims_withheld"],
+        attentionObservations: [],
+      }),
+      remit({
+        batchId: "b-3",
+        payer: "EXAMPLE HEALTH",
+        attentionObservations: ["claims_unmatched"],
+        attentionReasons: [],
+      }),
+      remit({
+        batchId: "b-4",
+        payer: "FIXTURE MUTUAL",
+        attentionReasons: ["claims_awaiting_approval"],
+        attentionObservations: [],
+      }),
+      remit({
+        batchId: "b-5",
+        payer: "SAMPLE DENTAL",
+        needsAttention: false,
+        setAsideAt: "2026-08-30T01:00:00.000Z",
+        setAsideBy: "Billing User",
+        setAsideReason: "target_gone",
+        attentionReasons: [],
+        attentionObservations: ["set_aside"],
+      }),
+    ];
+    shots.listTotal = 5;
+    shots.queue = queuePage(PLANS);
+
+    renderAt(<RcmToday />, "/rcm");
+    await screen.findByTestId("rcm-left-off-roland");
+    await waitFor(() => expect(screen.getByTestId("rcm-get-work-in")).toBeTruthy());
+    dump("shell-01-today");
+  });
+
+  it("shell-02-checks-set-aside — a dead check, findable and one click from being back", async () => {
+    shots.list = [
+      remit({
+        batchId: "b-5",
+        payer: "SAMPLE DENTAL",
+        needsAttention: false,
+        setAsideAt: "2026-08-30T01:00:00.000Z",
+        setAsideBy: "Billing User",
+        setAsideReason: "target_gone",
+        attentionReasons: [],
+        attentionObservations: ["set_aside"],
+      }),
+    ];
+    shots.listTotal = 1;
+
+    renderAt(<RemittanceList />, "/rcm/remittances", "view=set_aside");
+    await waitFor(() => expect(screen.getByTestId("remittance-row-b-5")).toBeTruthy());
+    dump("shell-02-checks-set-aside");
+  });
+
+  /** One approved posting, for the two Post shots. `over` is the difference. */
+  const readyPlan = (over: Record<string, unknown> = {}) => ({
+    office: "roland",
+    plan: {
+      queueId: "q-1",
+      office: "roland",
+      batchId: "b-1",
+      status: "approved",
+      statusLabel: "queued",
+      blockedReason: null,
+      withdrawnReason: null,
+      withdrawnNote: null,
+      withdrawnAt: null,
+      step: null,
+      isRecoupment: false,
+      documentAttachStatus: null,
+      carrierEobDate: null,
+      intendedTotalCents: 15000,
+      postedTotalCents: 0,
+      odClaimPaymentNum: null,
+      reconciledAt: null,
+      approvedAt: "2026-08-29T20:30:00.000Z",
+      approvedBy: "Billing User",
+      startedAt: null,
+      finishedAt: null,
+      drainAttemptAt: null,
+      drainedBy: null,
+      attemptCount: 0,
+      lastError: null,
+      checkNumber: "830200001",
+      payer: "SYNTHETIC DENTAL",
+    },
+    lines: [],
+    claims: [],
+    canDrain: true,
+    drainRequires: "rcm.post",
+    postingEnabled: true,
+    drainEnabled: true,
+    ...over,
+  });
+
+  /** The gate, with the whole check already approved. */
+  const allApproved = {
+    office: "roland",
+    batchId: "b-1",
+    canApprove: true,
+    approveRequires: "rcm.write",
+    claims: [] as unknown[],
+    postableCount: 0,
+    withheldCount: 0,
+    queuedCount: 1,
+    balanced: true,
+    differenceCents: 0,
+  };
+
+  it("shell-03-check-ready-to-post — the last act, on the check's own page", async () => {
+    shots.remittance = remit({
+      batchId: "b-1",
+      queuedClaimCount: 1,
+      attentionReasons: [],
+      attentionObservations: ["claims_queued"],
+      plans: [{ queueId: "q-1", status: "approved" }],
+    });
+    shots.claims = [
+      claim({ odMatchStatus: "confirmed", odClaimNum: 53784, reviewedAt: "2026-08-29T20:00:00.000Z", postingQueueId: "q-1" }),
+    ];
+    shots.queueDetail = readyPlan();
+    shots.preview = allApproved;
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("post-this-check-button")).toBeTruthy());
+    dump("shell-03-check-ready-to-post");
+  });
+
+  it("shell-04-check-shadow — the same page with posting switched off, saying so beside the button", async () => {
+    shots.remittance = remit({
+      batchId: "b-1",
+      queuedClaimCount: 1,
+      attentionReasons: [],
+      attentionObservations: ["claims_queued"],
+      plans: [{ queueId: "q-1", status: "approved" }],
+    });
+    shots.claims = [
+      claim({ odMatchStatus: "confirmed", odClaimNum: 53784, reviewedAt: "2026-08-29T20:00:00.000Z", postingQueueId: "q-1" }),
+    ];
+    shots.queueDetail = readyPlan({ drainEnabled: false });
+    shots.preview = allApproved;
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("post-this-check-reason")).toBeTruthy());
+    dump("shell-04-check-shadow");
+  });
+
+  it("shell-05-set-aside-dialog — the reason it demands, and the promise that it is reversible", async () => {
+    shots.remittance = remit({ batchId: "b-1" });
+    shots.claims = [claim()];
+    shots.preview = { ...allApproved, queuedCount: 0 };
+
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    fireEvent.click(await screen.findByTestId("check-set-aside"));
+    await waitFor(() => expect(screen.getByTestId("check-set-aside-dialog")).toBeTruthy());
+    dump("shell-05-set-aside-dialog");
   });
 });

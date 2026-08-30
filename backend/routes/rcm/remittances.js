@@ -48,7 +48,7 @@ const express = require('express');
 // Namespace import — see the note in summary.js.
 const tenantDb = require('../../platform/tenantDb');
 const { h, actorEmail, auditRcmRead, auditRcmDenial, isUuid, num, iso, isoDate } = require('./helpers');
-const { describeActors } = require('../../services/rcm/rcmUserMap');
+const { describeActors, resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const { requirePermission, holdsPermission } = require('../../config/permissions');
 const { audit } = require('../../platform/audit');
 const { toClaimSummary, loadClaimBundle, runBatchMatch, CLAIM_LIST_COLUMNS } = require('./matchService');
@@ -58,6 +58,32 @@ const router = express.Router();
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
+
+/**
+ * The populations `GET /` will page. Anything else falls back to `all`.
+ *
+ * Server-side, over the whole office, for the same reason the attention view is:
+ * a filter applied to a page while the header counts the practice is two
+ * statements about two populations, which is the Slice 6a defect the whole-office
+ * scan exists to prevent.
+ */
+const REMITTANCE_VIEWS = Object.freeze(['attention', 'parked', 'set_aside', 'all']);
+
+/** @see migrations-tenant/1787500000000_rcm_remittance_worklist_state.js */
+const {
+  SET_ASIDE_REASONS,
+} = require('../../migrations-tenant/1787500000000_rcm_remittance_worklist_state');
+
+/**
+ * How long a biller's own sentence may be, on either action.
+ *
+ * Deliberately SHORTER than a review note's 2000 (`claims.js MAX_REVIEW_NOTE`).
+ * A review note is the record of a decision about a claim and may need to argue;
+ * these two are a line on a card — "waiting on the carrier to resend" — read at
+ * a glance among several. A column with no bound is one somebody eventually
+ * pastes a chart into, and a card that can hold a chart is a card nobody reads.
+ */
+const MAX_WORKLIST_NOTE = 500;
 
 /**
  * Batch columns the list and detail read. Named explicitly (no SELECT * in this
@@ -96,6 +122,24 @@ const BATCH_COLUMNS = [
   'approval_attempted_at',
   'approval_attempted_by',
   'notes',
+  /*
+   * THE TWO WAYS A CHECK LEAVES TODAY'S LIST (1787500000000).
+   *
+   * `parked_*` is a biller's note to herself — still work, still counted, and
+   * the whole of what "where did I leave off" reads. `set_aside_*` is the
+   * opposite: a check nobody is coming back to, out of the attention counts and
+   * findable only under its own filter.
+   *
+   * Both are selected on the LIST as well as the detail, because both change
+   * what a row says about itself rather than merely how it is filtered.
+   */
+  'parked_at',
+  'parked_by',
+  'parked_note',
+  'set_aside_at',
+  'set_aside_by',
+  'set_aside_reason',
+  'set_aside_reason_note',
   'created_by',
   'created_at',
 ].join(', ');
@@ -194,6 +238,32 @@ function attentionFor(batch, claims, approval = {}) {
   const reasons = [];
   /** FACTS worth showing. They never make a remittance need attention. */
   const observations = [];
+
+  /*
+   * ── SET ASIDE SHORT-CIRCUITS, AND IT IS THE ONLY THING HERE THAT DOES ─────
+   *
+   * A person has said, on the record and with a reason, that nobody is coming
+   * back to this check. That is a DISPOSITION, exactly like marking a claim
+   * reviewed, and it is the only disposition available for the case §15.2
+   * finding 5 describes: a remittance whose claims an unwind deleted is matched,
+   * reviewed and permanently unapprovable, so every other predicate below keeps
+   * finding real outstanding work on it forever.
+   *
+   * Returning EARLY rather than filtering the result is deliberate. The reasons
+   * a set-aside check would otherwise carry are not facts worth showing beside
+   * it — they are the obligations a human has explicitly discharged, and
+   * printing them under a "Set aside" heading would re-raise the alarm the
+   * action exists to silence. `set_aside` is the one observation, so a screen
+   * can still say WHY the row is quiet.
+   *
+   * It never hides money: `set_aside_at` is a stamp on the remittance and
+   * touches no plan, no claim and no chart. A set-aside check with a posting
+   * plan still appears on the Posting page exactly as before — this is about
+   * one worklist, not about the record.
+   */
+  if (batch.setAside) {
+    return { needsAttention: false, reasons: [], observations: ['set_aside'] };
+  }
 
   // ── The obligations ───────────────────────────────────────────────────────
 
@@ -314,10 +384,14 @@ function attentionFor(batch, claims, approval = {}) {
 /** Map a batch row + its claims to the list/detail wire shape. */
 function toBatchWire(batch, claims, source, actors, approval = {}) {
   const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
-  const attention = attentionFor({ status: batch.status, flags: batchFlags }, claims, {
-    ...approval,
-    attempted: batch.approval_attempted_at != null,
-  });
+  const attention = attentionFor(
+    { status: batch.status, flags: batchFlags, setAside: batch.set_aside_at != null },
+    claims,
+    {
+      ...approval,
+      attempted: batch.approval_attempted_at != null,
+    }
+  );
   const claimTotalCents = claims.reduce((sum, c) => sum + c.totalPaidCents, 0);
   const createdBy = batch.created_by ? actors[batch.created_by] : null;
 
@@ -383,6 +457,37 @@ function toBatchWire(batch, claims, source, actors, approval = {}) {
     approvalAttemptedBy: batch.approval_attempted_by
       ? (actors[batch.approval_attempted_by] || {}).displayName || batch.approval_attempted_by
       : null,
+
+    /**
+     * SAVED FOR TOMORROW — a biller's note to herself, and the whole of what
+     * Today's "where you left off" card reads.
+     *
+     * `parkedBy` is a display name rather than a key because the card names the
+     * person; it falls back to the raw key rather than to "somebody", since an
+     * un-crosswalked actor is a fact worth seeing rather than one worth hiding.
+     * Null throughout means NOT PARKED — never "parked by nobody".
+     */
+    parkedAt: iso(batch.parked_at),
+    parkedBy: batch.parked_by
+      ? (actors[batch.parked_by] || {}).displayName || batch.parked_by
+      : null,
+    /** Her own sentence. Optional by design; PHI-capable, so never audited. */
+    parkedNote: batch.parked_note || null,
+
+    /**
+     * SET ASIDE — out of the attention counts, and saying so out loud.
+     *
+     * `setAsideReason` is the SLUG the client renders copy from, on the same
+     * contract `blockedReason` and `withdrawnReason` have. The note is the
+     * person's own words and is required by the route only when the slug is
+     * `other`.
+     */
+    setAsideAt: iso(batch.set_aside_at),
+    setAsideBy: batch.set_aside_by
+      ? (actors[batch.set_aside_by] || {}).displayName || batch.set_aside_by
+      : null,
+    setAsideReason: batch.set_aside_reason || null,
+    setAsideNote: batch.set_aside_reason_note || null,
   };
 }
 
@@ -412,18 +517,49 @@ async function batchesWithQueue(pool, office, batchIds) {
    * grey "Queued for posting" chip, which is the honest-states rule failing on
    * the one screen a biller uses to decide what to do next.
    */
+  /*
+   * THE PLAN'S ID COMES BACK TOO, and it is the whole of what lets a check be
+   * posted from its own page.
+   *
+   * `POST /posting/drain` has taken an optional `queueId` since 6c — the
+   * narrowing is one extra `AND queue_id = $3` on the same office-scoped,
+   * same-status-filtered query, so a request cannot name its way into anything
+   * the office-wide run would not have drained. What was missing was any way for
+   * the remittance screen to KNOW that id: it could see that a plan existed and
+   * what state it was in, and nothing else. So the Post button lived on one page
+   * and the check lived on another.
+   *
+   * A plan id is not PHI and not money. The plan's CONTENTS are still never read
+   * here — a list has no use for a per-line record of money about to move.
+   */
   const rows = await pool.query(
-    `SELECT batch_id, status FROM rcm_posting_queue WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
+    `SELECT batch_id, queue_id, status FROM rcm_posting_queue ` +
+      `WHERE office_id = $1 AND batch_id = ANY($2::uuid[]) ORDER BY approved_at ASC`,
     [office, batchIds]
   );
-  /** @type {Map<string, string[]>} batch_id → the statuses of its plans */
+  /** @type {Map<string, Array<{ queueId: string, status: string }>>} */
   const byBatch = new Map();
   for (const row of rows.rows) {
     const key = String(row.batch_id);
     if (!byBatch.has(key)) byBatch.set(key, []);
-    byBatch.get(key).push(String(row.status));
+    byBatch.get(key).push({ queueId: String(row.queue_id), status: String(row.status) });
   }
   return byBatch;
+}
+
+/**
+ * The statuses alone, for the callers that only ever wanted those.
+ *
+ * `attentionFor` takes `queueStatuses` and always has. Keeping that signature
+ * rather than teaching the predicate about plan ids means the shape change above
+ * cannot alter a single attention answer — which is the property the list's two
+ * counts depend on.
+ *
+ * @param {ReadonlyArray<{ status: string }>|undefined} plans
+ * @returns {string[]}
+ */
+function statusesOf(plans) {
+  return Array.isArray(plans) ? plans.map((p) => p.status) : [];
 }
 
 /**
@@ -644,14 +780,20 @@ router.get(
      * the default rather than 400ing — refusing a whole list over a typo in a
      * display preference is the worse failure.
      */
-    const view = req.query.view === 'attention' ? 'attention' : 'all';
+    const view = REMITTANCE_VIEWS.includes(req.query.view) ? String(req.query.view) : 'all';
 
     const loaded = await tenantDb.withTenantDb(req, async (pool) => {
       // Every batch for the office, but only the columns the predicate and the
       // ordering need. The full BATCH_COLUMNS read happens for the page alone.
       const [all, scan] = await Promise.all([
         pool.query(
-          `SELECT batch_id, status, flags, approval_attempted_at FROM rcm_payment_batches ` +
+          // `set_aside_at` and `parked_at` join the predicate columns because
+          // both decide MEMBERSHIP of a view over the whole office, exactly as
+          // `approval_attempted_at` does. Reading them on the page alone would
+          // put the filter and the counts back on two populations — the Slice 6a
+          // defect the whole-office scan exists to prevent.
+          `SELECT batch_id, status, flags, approval_attempted_at, set_aside_at, parked_at ` +
+            `FROM rcm_payment_batches ` +
             `WHERE office_id = $1 ORDER BY deposit_date DESC NULLS LAST, created_at DESC`,
           [office]
         ),
@@ -668,22 +810,54 @@ router.get(
       // set of rows.
       const marked = all.rows.map((row) => ({
         batchId: row.batch_id,
+        setAside: row.set_aside_at != null,
+        parked: row.parked_at != null,
         needsAttention: attentionFor(
-          { status: row.status, flags: Array.isArray(row.flags) ? row.flags : [] },
+          {
+            status: row.status,
+            flags: Array.isArray(row.flags) ? row.flags : [],
+            setAside: row.set_aside_at != null,
+          },
           scan.get(row.batch_id) || [],
           {
             hasQueue: queued.has(row.batch_id),
             // Slice 6c: the plan's own state, so a FAILED drain reaches this
             // view as an obligation instead of resting under the same grey
             // "queued" chip as one that has not started.
-            queueStatuses: queued.get(row.batch_id) || [],
+            queueStatuses: statusesOf(queued.get(row.batch_id)),
             attempted: row.approval_attempted_at != null,
           }
         ).needsAttention,
       }));
 
       const attentionCount = marked.filter((m) => m.needsAttention).length;
-      const selected = view === 'attention' ? marked.filter((m) => m.needsAttention) : marked;
+      /*
+       * FOUR VIEWS, AND THE DEFAULT STILL SHOWS EVERYTHING.
+       *
+       *   attention  what a human still owes an action on. Set-aside rows are
+       *              already excluded by the predicate itself, not filtered out
+       *              here — one rule, one place.
+       *   parked     what somebody put down meaning to come back. Today's
+       *              "where you left off" card reads this and nothing else.
+       *   set_aside  the checks nobody is coming back to. Its own view because
+       *              set-aside is REVERSIBLE, and a state you can undo must have
+       *              somewhere you can find it.
+       *   all        everything, set-aside included. The default, because a list
+       *              endpoint that silently hides rows is a trap for the next
+       *              caller — the same reasoning that keeps `all` the default
+       *              while the screen opens on "Needs attention".
+       *
+       * An unrecognised value falls back to `all` rather than 400ing: refusing a
+       * whole list over a typo in a display preference is the worse failure.
+       */
+      const selected =
+        view === 'attention'
+          ? marked.filter((m) => m.needsAttention)
+          : view === 'parked'
+            ? marked.filter((m) => m.parked && !m.setAside)
+            : view === 'set_aside'
+              ? marked.filter((m) => m.setAside)
+              : marked;
       const pageIds = selected.slice(offset, offset + limit).map((m) => m.batchId);
 
       if (pageIds.length === 0) {
@@ -695,6 +869,8 @@ router.get(
           queued,
           total: marked.length,
           attentionCount,
+          parkedCount: marked.filter((m) => m.parked && !m.setAside).length,
+          setAsideCount: marked.filter((m) => m.setAside).length,
           matching: selected.length,
         };
       }
@@ -716,6 +892,11 @@ router.get(
       const actors = await describeActors(pool, [
         ...ordered.map((b) => b.created_by),
         ...ordered.map((b) => b.approval_attempted_by),
+        // The two worklist actors. A parked check names the person who parked
+        // it, on the card that exists to tell her where she left off — a row
+        // that could only print a crosswalk key would not do that job.
+        ...ordered.map((b) => b.parked_by),
+        ...ordered.map((b) => b.set_aside_by),
         ...[...uploads.values()].map((u) => u.uploadedByKey),
       ]);
 
@@ -727,6 +908,8 @@ router.get(
         queued,
         total: marked.length,
         attentionCount,
+        parkedCount: marked.filter((m) => m.parked && !m.setAside).length,
+        setAsideCount: marked.filter((m) => m.setAside).length,
         matching: selected.length,
       };
     });
@@ -741,7 +924,7 @@ router.get(
       const upload = loaded.uploads.get(batch.batch_id) || null;
       const wire = toBatchWire(batch, claims, upload ? upload.source : null, loaded.actors, {
         hasQueue: loaded.queued.has(batch.batch_id),
-        queueStatuses: loaded.queued.get(batch.batch_id) || [],
+        queueStatuses: statusesOf(loaded.queued.get(batch.batch_id)),
       });
       return {
         ...wire,
@@ -777,6 +960,14 @@ router.get(
        * total" is a statement about one population rather than two.
        */
       needsAttentionCount: loaded.attentionCount,
+      /**
+       * The same whole-office population, counted for the two views Today reads
+       * without paging them. A card that says "3 saved for tomorrow" and a tab
+       * that then shows 3 is the one-population property the attention count
+       * already has, extended to the states this slice adds.
+       */
+      parkedCount: loaded.parkedCount,
+      setAsideCount: loaded.setAsideCount,
       /** How many rows the CURRENT view holds — what `offset`/`limit` page. */
       matchingCount: loaded.matching,
       limit,
@@ -835,7 +1026,8 @@ router.get(
         upload,
         actors,
         hasQueue: queued.has(batchId),
-        queueStatuses: queued.get(batchId) || [],
+        queueStatuses: statusesOf(queued.get(batchId)),
+        queuePlans: queued.get(batchId) || [],
       };
     });
 
@@ -856,6 +1048,31 @@ router.get(
       office,
       remittance: {
         ...wire,
+        /**
+         * THIS CHECK'S POSTING PLANS — ids and states, nothing else.
+         *
+         * The one fact that lets the check be posted from its own page. Until
+         * now the detail could see THAT a plan existed and what state it was in,
+         * and not which plan — so the only screen that could press Post was the
+         * office-wide monitor, and a biller finishing a check had to leave it,
+         * find her row among everyone else's, and press there. §15.2 finding 1,
+         * one level up: the button was on a different page from the work.
+         *
+         * `POST /posting/drain` has taken an optional `queueId` since 6c and
+         * narrows on it inside the same office-scoped, status-filtered query, so
+         * naming a plan here cannot reach anything the office-wide run would not
+         * have drained. Nothing about the plan's CONTENTS ships — no line, no
+         * amount, no patient. An id and a status.
+         *
+         * An ARRAY because the table permits more than one plan per batch and
+         * this route must not assert otherwise; today `(office_id,
+         * remittance_key)` is unique so it holds at most one, and the screen
+         * reads `plans[0]`.
+         */
+        plans: (loaded.queuePlans || []).map((plan) => ({
+          queueId: plan.queueId,
+          status: plan.status,
+        })),
         /**
          * Provider Level Balance adjustments — money moved at the provider
          * level rather than on any claim, which is exactly why they make the
@@ -1374,7 +1591,379 @@ router.post(
   })
 );
 
+
+// ─── The worklist states: parked, and set aside ──────────────────────────────
+
+/**
+ * THE QUEUE TIER (D-9), AND WHY NEITHER OF THESE IS A WRITE ACT.
+ *
+ * `rcm.queue` is the tier `POST /claims/:id/review` runs on, and the brief's
+ * "rcm.review" is that tier under a name that does not exist — there is no
+ * `rcm.review` action in `config/permissions.js`, and adding one would split a
+ * tier that already means exactly this: worklist hygiene, no Open Dental effect
+ * at all.
+ *
+ * Marking a claim reviewed ALSO takes a remittance out of the needs-attention
+ * queue, and it has run on `rcm.queue` since 6a. Parking and setting aside are
+ * the same authority over the same queue, and both are reversible — a `reviewer`
+ * who can disposition every claim on a check must be able to say "I am coming
+ * back to this" about the check.
+ *
+ * The paths are registered in `routes/rcm/index.js` QUEUE_PATHS so the mount's
+ * `requireReadWrite` exempts them from `rcm.write`; each carries its own
+ * `requirePermission('rcm.queue')` below, which is what `rcmGuard.test.js` walks
+ * the router to see.
+ */
+const requireQueue = requirePermission('rcm.queue');
+
+/**
+ * Load a batch for a worklist write, or null.
+ *
+ * `office_id` is in the WHERE rather than checked afterwards, so a check
+ * belonging to the other practice is NOT FOUND rather than found-and-refused —
+ * the same property every other read in this file has, and the reason walking
+ * ids across offices tells a prober nothing.
+ *
+ * @param {{ query: Function }} client
+ * @param {string} office
+ * @param {string} batchId
+ */
+async function loadWorklistState(client, office, batchId) {
+  const found = await client.query(
+    `SELECT batch_id, parked_at, set_aside_at FROM rcm_payment_batches ` +
+      `WHERE office_id = $1 AND batch_id = $2`,
+    [office, batchId]
+  );
+  return found.rows[0] || null;
+}
+
+/**
+ * Run one worklist mutation inside its own transaction, resolving the actor on
+ * the SAME connection.
+ *
+ * D-5: `resolveRcmActor` upserts the crosswalk row whose key the FK checks at
+ * statement time, so it must run on this connection rather than on the pool —
+ * the same rule `markReviewed` follows, and the same one that makes the FK a
+ * RESTRICT rather than a hope.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} batchId
+ * @param {(client: any, userKey: string|null, row: any) => Promise<void>} write
+ * @param {{ needsActor?: boolean }} [opts]
+ */
+async function withWorklistWrite(req, office, batchId, write, { needsActor = true } = {}) {
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const row = await loadWorklistState(client, office, batchId);
+      if (!row) {
+        await client.query('ROLLBACK');
+        return { ok: false };
+      }
+      const userKey = needsActor
+        ? await resolveRcmActor(client, {
+            email: actorEmail(req),
+            displayName: (req.user && (req.user.name || req.user.displayName)) || '',
+          })
+        : null;
+      await write(client, userKey, row);
+      await client.query('COMMIT');
+      return { ok: true, userKey };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* keep the original */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+/**
+ * POST /:id/park — "save this for tomorrow".
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT DOES NOT TAKE THE CHECK OUT OF THE QUEUE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A parked remittance still needs attention, is still counted, and still appears
+ * everywhere it appeared before. The ONLY thing parking changes is that Today
+ * can lead with it: *this is what you were doing.* Making it hide the row would
+ * turn a note-to-self into a way to lose work, which is exactly the difference
+ * between this and `set-aside` below.
+ *
+ * IDEMPOTENT, and re-parking MOVES the stamp. Somebody who puts the same check
+ * down twice in a week is telling you about the second time; keeping the first
+ * instant would date "where you left off" to a session she has forgotten.
+ *
+ * The note is OPTIONAL. Demanding a sentence at 4:55pm is the friction that
+ * stops anybody parking anything, and an un-parked check re-derived from scratch
+ * is the cost this route exists to avoid.
+ */
+router.post(
+  '/:id/park',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const raw = req.body && req.body.note;
+    const note = typeof raw === 'string' ? raw.trim() : '';
+    if (note.length > MAX_WORKLIST_NOTE) {
+      return res.status(400).json({
+        success: false,
+        error: `That note is too long (max ${MAX_WORKLIST_NOTE} characters)`,
+        code: 'NOTE_TOO_LONG',
+      });
+    }
+
+    const done = await withWorklistWrite(req, office, batchId, (client, userKey) =>
+      client.query(
+        `UPDATE rcm_payment_batches SET parked_at = now(), parked_by = $3, parked_note = $4, ` +
+          `updated_at = now() WHERE office_id = $1 AND batch_id = $2`,
+        [office, batchId, userKey, note || null]
+      )
+    );
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    /*
+     * `UPDATE` ON THE REMITTANCE, AND THE NOTE IS NOT IN IT.
+     *
+     * `audit_log` has no detail column, and this platform never puts free text a
+     * person typed into one — a parked note is PHI-capable by nature (a biller
+     * may name a patient in it), and the trail's job is to record that somebody
+     * did this to this row, not to become a second copy of the prose.
+     */
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_remittance_park',
+      resourceId: batchId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, office, batchId, parked: true });
+  })
+);
+
+/**
+ * POST /:id/unpark — put it back on the ordinary pile.
+ *
+ * Fired by the SCREEN when somebody opens a parked check, as well as by an
+ * explicit press: a note saying "come back to this" has done its job the moment
+ * she is looking at it, and a card that still says "where you left off" about
+ * the page she is standing on is furniture.
+ *
+ * IDEMPOTENT over an un-parked check — 200, `parked: false`. It is not an error
+ * to un-park something nobody parked, and the screen fires this on open, so
+ * refusing would make every ordinary visit produce a 409 nobody can act on.
+ *
+ * `parked_by` and `parked_note` are cleared alongside the stamp because the
+ * schema's pairing CHECK demands it: an actor left behind on an un-parked row is
+ * a name a screen would print beside a check nobody is holding.
+ */
+router.post(
+  '/:id/unpark',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    let wasParked = false;
+    const done = await withWorklistWrite(
+      req,
+      office,
+      batchId,
+      async (client, _userKey, row) => {
+        wasParked = row.parked_at != null;
+        if (!wasParked) return;
+        await client.query(
+          `UPDATE rcm_payment_batches SET parked_at = NULL, parked_by = NULL, ` +
+            `parked_note = NULL, updated_at = now() WHERE office_id = $1 AND batch_id = $2`,
+          [office, batchId]
+        );
+      },
+      // No actor is resolved for an un-park: nothing records WHO un-parked, so
+      // upserting a crosswalk row would leave a durable side effect behind an
+      // action that leaves no trace of itself by design.
+      { needsActor: false }
+    );
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    // Audited only when something actually changed. A row per page-open would
+    // bury every real event under the ordinary act of looking at a check.
+    if (wasParked) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'rcm_remittance_park',
+        resourceId: batchId,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+    }
+
+    return res.json({ success: true, office, batchId, parked: false, wasParked });
+  })
+);
+
+/**
+ * POST /:id/set-aside — a check nobody is coming back to.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT IT IS NOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * **Not `withdrawn`.** That is a POSTING PLAN's terminal state (§2.2.0): it
+ * decides that money will never post through CareIN, it cannot be undone, and it
+ * lives on `rcm_posting_queue`. This decides that a REMITTANCE is not worth a
+ * biller's morning, it can be undone by anybody who can set it aside, and it
+ * touches no plan. A check with a live plan that somebody sets aside still
+ * appears on the Posting page, still drains, still posts.
+ *
+ * **Not a delete, and not a hide.** The row is untouched but for four stamps. It
+ * stays in `view=all`, gains its own `view=set_aside`, and says on its face who
+ * set it aside, when, and why.
+ *
+ * **Not a chart write.** No Open Dental call is made or possible from here.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE REASON IS REQUIRED, AND `other` DEMANDS THE SENTENCE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A check dropped out of the one queue that means "a human is needed here", with
+ * no account of why, is the queue quietly losing work nobody can later explain.
+ * The slug is a closed set (a CHECK constraint, migration 1787500000000) so a
+ * screen can render copy from it; `other` exists so that set can stay small, and
+ * it requires the note so that it can never be a silent shrug.
+ */
+router.post(
+  '/:id/set-aside',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const rawNote = req.body && req.body.note;
+    const note = typeof rawNote === 'string' ? rawNote.trim() : '';
+
+    if (!SET_ASIDE_REASONS.includes(reason)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Setting a check aside needs a reason',
+        code: 'SET_ASIDE_REASON_REQUIRED',
+        reasons: [...SET_ASIDE_REASONS],
+      });
+    }
+    if (note.length > MAX_WORKLIST_NOTE) {
+      return res.status(400).json({
+        success: false,
+        error: `That note is too long (max ${MAX_WORKLIST_NOTE} characters)`,
+        code: 'NOTE_TOO_LONG',
+      });
+    }
+    if (reason === 'other' && note.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Say in a line why this check is being set aside',
+        code: 'SET_ASIDE_NOTE_REQUIRED',
+      });
+    }
+
+    const done = await withWorklistWrite(req, office, batchId, (client, userKey) =>
+      client.query(
+        `UPDATE rcm_payment_batches SET set_aside_at = now(), set_aside_by = $3, ` +
+          `set_aside_reason = $4, set_aside_reason_note = $5, updated_at = now() ` +
+          `WHERE office_id = $1 AND batch_id = $2`,
+        [office, batchId, userKey, reason, note || null]
+      )
+    );
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_remittance_set_aside',
+      resourceId: batchId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, office, batchId, setAside: true, reason });
+  })
+);
+
+/**
+ * POST /:id/restore — put a set-aside check back in the queue.
+ *
+ * The half that makes set-aside safe to press. Every other way of taking
+ * something off this module's board is terminal by design, and each of those had
+ * to argue for it; this one has not, and does not need to. Somebody who sets
+ * aside the wrong check should be able to fix it in one click rather than
+ * escalating.
+ *
+ * The set-aside stamps are CLEARED rather than kept as history. The schema's
+ * pairing CHECK requires it, and it is right: a screen reading "set aside on
+ * Aug 30 — currently in the queue" is describing two states at once. The audit
+ * row is the history.
+ *
+ * IDEMPOTENT over a check nobody set aside, for the same reason `unpark` is.
+ */
+router.post(
+  '/:id/restore',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    let wasSetAside = false;
+    const done = await withWorklistWrite(
+      req,
+      office,
+      batchId,
+      async (client, _userKey, row) => {
+        wasSetAside = row.set_aside_at != null;
+        if (!wasSetAside) return;
+        await client.query(
+          `UPDATE rcm_payment_batches SET set_aside_at = NULL, set_aside_by = NULL, ` +
+            `set_aside_reason = NULL, set_aside_reason_note = NULL, updated_at = now() ` +
+            `WHERE office_id = $1 AND batch_id = $2`,
+          [office, batchId]
+        );
+      },
+      { needsActor: false }
+    );
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    if (wasSetAside) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'rcm_remittance_set_aside',
+        resourceId: batchId,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+    }
+
+    return res.json({ success: true, office, batchId, setAside: false, wasSetAside });
+  })
+);
+
+
 module.exports = router;
 module.exports.attentionFor = attentionFor;
 module.exports.BATCH_COLUMNS = BATCH_COLUMNS;
 module.exports.batchesWithQueue = batchesWithQueue;
+module.exports.statusesOf = statusesOf;
+module.exports.REMITTANCE_VIEWS = REMITTANCE_VIEWS;
+module.exports.MAX_WORKLIST_NOTE = MAX_WORKLIST_NOTE;
+module.exports.SET_ASIDE_REASONS = SET_ASIDE_REASONS;

@@ -49,7 +49,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "wouter";
 import {
   AlertCircle,
-  ChevronDown,
+  ArrowRight,
   ChevronRight,
   FileText,
   Inbox,
@@ -86,8 +86,6 @@ import {
   WORKLIST_FILTERS,
   type WorklistFilter,
 } from "@/features/rcm/worklist";
-import EobUploadPanel from "./EobUploadPanel";
-import EraUploadPanel from "./EraUploadPanel";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type Filter = WorklistFilter;
@@ -133,7 +131,6 @@ export default function RemittanceList() {
   useEffect(() => {
     if (isWorklistFilter(fromUrl)) setFilter(fromUrl);
   }, [fromUrl]);
-  const [showUpload, setShowUpload] = useState(false);
 
   if (scope.loading) {
     return (
@@ -172,36 +169,39 @@ export default function RemittanceList() {
             className="text-2xl font-bold tracking-tight text-foreground"
             style={{ fontFamily: "Sora, sans-serif" }}
           >
-            Remittances
+            Checks
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Every carrier payment this practice has taken in, and what it says. Nothing here has
-            been posted to a chart.
+            Every carrier payment this practice has taken in, and what each one is waiting for.
+            Nothing here has been posted to a chart on its own.
           </p>
         </div>
 
         <div className="flex flex-col items-start gap-2 sm:items-end">
           {/*
-            UPLOADING LIVES HERE TOO — §15.2's navigation problem in its first
-            form. The upload panels were only on the Revenue Cycle overview, so
-            a biller who had bookmarked the list (which is where the work is)
-            had to go somewhere else to add a file and then come back. Same
-            components, both places; the empty state below opens this drawer
-            rather than telling somebody to navigate.
+            ONE UPLOAD SURFACE, AND THIS IS NOT IT.
+            ─────────────────────────────────────────────────────────────────
+            §15.2 finding 6. The panels used to be on Today AND inline here, and
+            the practice owner got lost going round the loop live: he pressed
+            Upload on one page, was shown a drawer, went looking for it again
+            from the other, and found a different drawer. Two doors to one room
+            is worse than one door in the wrong place, because neither one is
+            the place you learn.
+
+            So the BUTTON stays — a biller standing on the list should not have
+            to know where uploading lives — and it NAVIGATES to Today's
+            "Get work in", which is the module's only upload surface.
+            `?add=1` scrolls it into view on arrival.
           */}
-          <button
-            onClick={() => setShowUpload((v) => !v)}
-            aria-expanded={showUpload}
+          <Link
+            href="/rcm?add=1"
             data-testid="remittance-upload-toggle"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
             <Upload size={14} />
-            Upload a remittance
-            <ChevronDown
-              size={13}
-              className={showUpload ? "rotate-180 transition-transform" : "transition-transform"}
-            />
-          </button>
+            Add a check
+            <ArrowRight size={13} />
+          </Link>
 
           <div
             className="flex flex-wrap justify-end gap-0.5 rounded-lg border border-border p-0.5"
@@ -241,27 +241,6 @@ export default function RemittanceList() {
         )}
       </p>
 
-      {showUpload && scope.offices.length > 0 && (
-        <div className="mt-4 space-y-6" data-testid="remittance-upload-panels">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">Remittance files (835)</h2>
-            <div className="mt-2 grid grid-cols-1 gap-4 xl:grid-cols-2">
-              {scope.offices.map((office) => (
-                <EraUploadPanel key={office} office={office} />
-              ))}
-            </div>
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">EOB PDFs</h2>
-            <div className="mt-2 grid grid-cols-1 gap-4 xl:grid-cols-2">
-              {scope.offices.map((office) => (
-                <EobUploadPanel key={office} office={office} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
       {scope.offices.length === 0 ? (
         <div
           className="mt-6 rounded-xl border border-dashed border-border bg-card p-8 text-center"
@@ -275,12 +254,7 @@ export default function RemittanceList() {
       ) : (
         <div className="mt-6 space-y-8">
           {scope.offices.map((office) => (
-            <OfficeRemittances
-              key={office}
-              office={office}
-              filter={filter}
-              onUpload={() => setShowUpload(true)}
-            />
+            <OfficeRemittances key={office} office={office} filter={filter} />
           ))}
         </div>
       )}
@@ -288,16 +262,7 @@ export default function RemittanceList() {
   );
 }
 
-function OfficeRemittances({
-  office,
-  filter,
-  onUpload,
-}: {
-  office: RcmOfficeId;
-  filter: Filter;
-  /** Open the upload drawer from an empty state, rather than pointing at it. */
-  onUpload: () => void;
-}) {
+function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Filter }) {
   const [state, setState] = useState<
     | { kind: "loading" }
     | {
@@ -396,7 +361,21 @@ function OfficeRemittances({
             <span data-testid={`remittance-counts-${office}`}>
               {serverBacked ? (
                 <>
-                  {state.attention} needing attention · {state.total} total
+                  {/* On a SERVER view both numbers are computed over the same
+                      whole-office population, so this is one statement rather
+                      than two. `matching` is what the current tab holds; the
+                      attention count is the one that never leaves the header,
+                      because it is the number a biller is actually managing. */}
+                  {filter === "attention" || filter === "all" ? (
+                    <>
+                      {state.attention} needing attention · {state.total} total
+                    </>
+                  ) : (
+                    <>
+                      {state.matching} {FILTER_COPY[filter].label.toLowerCase()} ·{" "}
+                      {state.attention} needing attention · {state.total} total
+                    </>
+                  )}
                 </>
               ) : (
                 <>
@@ -447,28 +426,28 @@ function OfficeRemittances({
           {state.total === 0 ? (
             <>
               <p className="mt-2 text-sm font-medium text-foreground">
-                Nothing has been uploaded for {RCM_OFFICE_LABELS[office]} yet
+                Nothing has come in for {RCM_OFFICE_LABELS[office]} yet
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Upload a carrier's 835 file or an EOB PDF and it is read into a proposal. Nothing is
+                Add a carrier's 835 file or an EOB PDF and it is read into a proposal. Nothing is
                 posted to a chart.
               </p>
-              <button
-                onClick={onUpload}
+              <Link
+                href="/rcm?add=1"
                 data-testid={`remittances-empty-upload-${office}`}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
               >
                 <Upload size={14} />
-                Upload a remittance
-              </button>
+                Add a check
+              </Link>
             </>
           ) : (
             <>
               <p className="mt-2 text-sm text-muted-foreground">{FILTER_COPY[filter].empty}</p>
               {filter !== "all" && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {state.total} remittance{state.total === 1 ? "" : "s"} in this practice — switch to
-                  All to see them.
+                  {state.total} check{state.total === 1 ? "" : "s"} in this practice — switch to All
+                  to see them.
                 </p>
               )}
             </>
