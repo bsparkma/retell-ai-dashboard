@@ -130,6 +130,24 @@ const QUEUE_PATHS = Object.freeze([
   /^\/claims\/[^/]+\/match$/,
   /^\/claims\/[^/]+\/review$/,
   /^\/remittances\/[^/]+\/match$/,
+  /*
+   * THE FOUR WORKLIST STATES (Stage A). Same tier, same argument.
+   *
+   * Parking a check and setting one aside change WHICH QUEUE a remittance
+   * appears in and nothing else — no Open Dental call, no chart, no plan, no
+   * money. `POST /claims/:id/review` has been exempted here since 6a for exactly
+   * that reason, and it ALSO takes a remittance out of the needs-attention view.
+   * A `reviewer` who can disposition every claim on a check must be able to say
+   * "I am coming back to this one" about the check.
+   *
+   * Both are REVERSIBLE, which is what separates them from every other way of
+   * taking something off this module's board: `withdrawn` is terminal, and it
+   * lives on `rcm.post` beside the drain.
+   */
+  /^\/remittances\/[^/]+\/park$/,
+  /^\/remittances\/[^/]+\/unpark$/,
+  /^\/remittances\/[^/]+\/set-aside$/,
+  /^\/remittances\/[^/]+\/restore$/,
 ]);
 
 router.use('/summary', require('./summary'));

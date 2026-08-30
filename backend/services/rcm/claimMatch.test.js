@@ -879,3 +879,108 @@ test('scoring is a pure function of its inputs — same in, same out', () => {
   const b = m.scoreCandidate(proposal(), candidate());
   assert.deepEqual(a, b);
 });
+
+// ─── Stage B's two identity facts, projected from a patient row already read ──
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * BIRTHDATE AND SUBSCRIBER ID — read-only, no new Open Dental verb
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Stage B's workbench puts the EOB beside the chart and asks a person to agree
+ * that they are the same patient. A name is not enough for that, and both facts
+ * were already in hand: `odClaimReads` fetches the whole patient row on either
+ * lane and this projection was throwing them away.
+ *
+ * What these tests pin is the honest half. A missing identity fact must read as
+ * NOT RECORDED and never as a value somebody could compare against a document —
+ * a fabricated subscriber id on a verification screen is the most expensive
+ * failure available in this module.
+ */
+test('the snapshot carries the birthdate and subscriber id it was given', () => {
+  const r = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 12828, LName: 'Fixture', FName: 'Synthetic', Birthdate: '1990-01-01', SubscriberId: 'SYN-4471' } })
+  );
+  assert.equal(r.od.patientBirthdate, '1990-01-01');
+  assert.equal(r.od.subscriberId, 'SYN-4471');
+});
+
+test('a birthdate arrives as a DAY, never as an instant', () => {
+  /*
+   * Open Dental returns a birthdate as `yyyy-MM-dd` on some resources and as a
+   * midnight instant on others. A snapshot carrying an instant would print the
+   * wrong day for anybody east of UTC — the timezone bug §15.2 finding 2 already
+   * caught once, in the one place where being a day out means the wrong person.
+   */
+  const r = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 12828, LName: 'F', FName: 'S', Birthdate: '1990-01-01T00:00:00Z' } })
+  );
+  assert.equal(r.od.patientBirthdate, '1990-01-01');
+});
+
+test("Open Dental's null date is not a birthday in the year 1", () => {
+  // NULL DATES are stored as '0001-01-01', never as SQL NULL. A screen that
+  // printed it would be showing a value nobody recorded.
+  const r = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 12828, LName: 'F', FName: 'S', Birthdate: '0001-01-01' } })
+  );
+  assert.equal(r.od.patientBirthdate, null);
+});
+
+test('an absent, blank or unparseable value is NULL rather than a guess', () => {
+  for (const patient of [
+    { PatNum: 1, LName: 'F', FName: 'S' },
+    { PatNum: 1, LName: 'F', FName: 'S', Birthdate: '', SubscriberId: '' },
+    { PatNum: 1, LName: 'F', FName: 'S', Birthdate: 'unknown', SubscriberId: '   ' },
+    { PatNum: 1, LName: 'F', FName: 'S', Birthdate: null, SubscriberId: null },
+  ]) {
+    const r = m.scoreCandidate(proposal(), candidate({ patient }));
+    assert.equal(r.od.patientBirthdate, null, JSON.stringify(patient));
+    assert.equal(r.od.subscriberId, null, JSON.stringify(patient));
+  }
+  // …and no patient at all is the same answer.
+  const none = m.scoreCandidate(proposal(), candidate({ patient: null }));
+  assert.equal(none.od.patientBirthdate, null);
+  assert.equal(none.od.subscriberId, null);
+});
+
+test('the subscriber id is read whichever way the resource spells it', () => {
+  // It is documented as a SEARCH PARAMETER on /patients (docs/OD_API_CONTRACT
+  // §7) rather than promised in a response body, so the casing is not something
+  // to rely on. Reading one spelling and calling the rest absent would report
+  // "not recorded" about a value Open Dental sent.
+  for (const key of ['SubscriberId', 'SubscriberID', 'subscriberId']) {
+    const r = m.scoreCandidate(
+      proposal(),
+      candidate({ patient: { PatNum: 1, LName: 'F', FName: 'S', [key]: 'SYN-4471' } })
+    );
+    assert.equal(r.od.subscriberId, 'SYN-4471', key);
+  }
+  // A numeric id is still an id.
+  const numeric = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 1, LName: 'F', FName: 'S', SubscriberId: 4471 } })
+  );
+  assert.equal(numeric.od.subscriberId, '4471');
+});
+
+test('neither field changes a single score or evidence tag', () => {
+  /*
+   * A PROJECTION, not a signal. These two are for a person to read; letting them
+   * touch the ranking would be a scoring change smuggled in as a display change,
+   * and the ranking is what decides which chart money goes into.
+   */
+  const withIds = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 12828, LName: 'Fixture', FName: 'Synthetic', Birthdate: '1990-01-01', SubscriberId: 'SYN-4471' } })
+  );
+  const without = m.scoreCandidate(
+    proposal(),
+    candidate({ patient: { PatNum: 12828, LName: 'Fixture', FName: 'Synthetic' } })
+  );
+  assert.equal(withIds.score, without.score);
+  assert.deepEqual(withIds.evidence, without.evidence);
+  assert.deepEqual(withIds.blockers, without.blockers);
+});
