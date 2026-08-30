@@ -84,7 +84,7 @@ import {
   type PostingQueueRow,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { day, money, officeDay, OFFICE_TIME_NOTE } from "@/features/rcm/format";
+import { day, money, officeDay, ordinal, OFFICE_TIME_NOTE } from "@/features/rcm/format";
 import {
   blockedCopy,
   withdrawnCopy,
@@ -142,9 +142,9 @@ export default function PostingQueue() {
           Posting
         </h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Approved remittances waiting to become insurance payments in Open Dental. Draining writes
-          each line's adjudication, marks the claim received, and creates the check — reading every
-          write back to prove it took.
+          Approved checks waiting to become insurance payments in Open Dental. Posting writes
+          each line's adjudication, marks the claim received, and creates the check — then asks
+          Open Dental for each write back again to confirm it took.
         </p>
       </div>
 
@@ -248,8 +248,8 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
               other.
             */
             <span className="text-sm text-muted-foreground" data-testid={`posting-counts-${office}`}>
-              Queue: {waiting} waiting · {page.byStatus.posted} posted · {page.byStatus.blocked}{" "}
-              blocked · {page.total} total
+              All time: {waiting} waiting · {page.byStatus.posted} posted ·{" "}
+              {page.byStatus.blocked} stuck · {page.total} total
             </span>
           )}
         </div>
@@ -281,8 +281,8 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
             </div>
             <p className="mt-0.5 text-amber-800 dark:text-amber-300">
               This practice's own payment-type numbers have to be read from its own Open Dental, its
-              key's write access proven, and a test-patient run completed first. Draining here marks
-              each plan blocked and makes no Open Dental call at all.
+              key's write access proven, and a test-patient run completed first. Pressing Post here
+              marks each check stuck and makes no Open Dental call at all.
             </p>
           </div>
         </div>
@@ -336,7 +336,7 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
           >
             <div className="text-sm font-medium text-foreground">Nothing waiting to post</div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Approve a remittance and its posting plan appears here.
+              Approve a check and it appears here, ready to post.
             </p>
           </div>
         )}
@@ -408,9 +408,9 @@ function DrainButton({
     : !page.drainEnabled
       ? SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
       : draining
-        ? "A posting run is under way. It stops cleanly between plans."
+        ? "A posting is under way. It stops cleanly between checks."
         : waiting === 0
-          ? "Nothing waiting to drain."
+          ? "Nothing waiting to post."
           : null;
 
   return (
@@ -432,13 +432,17 @@ function DrainButton({
         ) : (
           <Lock size={14} />
         )}
-        {draining ? "Posting…" : waiting > 0 ? `Drain ${waiting}` : "Drain"}
+        {draining
+          ? "Posting…"
+          : waiting > 0
+            ? `Post ${waiting} to Open Dental`
+            : "Post to Open Dental"}
       </button>
       {reason ? (
         <DisabledReason testId={`posting-drain-reason-${office}`}>{reason}</DisabledReason>
       ) : (
         <span className="text-xs text-muted-foreground">
-          Writes {waiting} plan{waiting === 1 ? "" : "s"} to Open Dental.
+          Writes {waiting} check{waiting === 1 ? "" : "s"} into patient charts.
         </span>
       )}
     </div>
@@ -474,19 +478,19 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
     >
       <div className="font-medium text-foreground">
         {result.ran === 0
-          ? "This run: nothing was waiting to post."
-          : `This run: ${posted} posted · ${blocked} blocked · ${trouble} needing attention`}
+          ? "Just now: nothing was waiting to post."
+          : `Just now: ${posted} posted · ${blocked} stuck · ${trouble} needing attention`}
       </div>
       <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`posting-run-scope-${office}`}>
-        Counts the {result.ran} plan{result.ran === 1 ? "" : "s"} this press of Drain touched. The
-        totals beside the practice name count every plan it holds.
+        Counts the {result.ran} check{result.ran === 1 ? "" : "s"} this press touched. The totals
+        beside the practice name count every check it holds, all time.
       </p>
 
       {result.outOfTime && (
         <p className="mt-1 flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
           <Clock size={14} />
-          The run reached its time limit and stopped cleanly between plans.{" "}
-          {result.remaining} still waiting — press Drain again.
+          It reached its time limit and stopped cleanly between checks.{" "}
+          {result.remaining} still waiting — press Post to Open Dental again.
         </p>
       )}
 
@@ -556,7 +560,7 @@ function WithdrawPanel({
     withdrawPostingPlan(office, row.queueId, note.trim())
       .then(() => onWithdrawn())
       .catch((e: unknown) =>
-        setError(e instanceof Error ? e.message : "The plan was not retired. Nothing changed."),
+        setError(e instanceof Error ? e.message : "It was not retired. Nothing changed."),
       )
       .finally(() => setBusy(false));
   };
@@ -566,11 +570,11 @@ function WithdrawPanel({
       <button
         onClick={() => setOpen(true)}
         disabled={!canWrite}
-        title={canWrite ? undefined : "Retiring a plan needs posting permission"}
+        title={canWrite ? undefined : "Retiring a check needs posting permission"}
         className="mt-2 text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
         data-testid={`posting-withdraw-open-${row.queueId}`}
       >
-        This plan will never post — retire it
+        This check will never post — retire it
       </button>
     );
   }
@@ -580,10 +584,10 @@ function WithdrawPanel({
       className="mt-2 rounded-md border border-border bg-muted/40 p-3"
       data-testid={`posting-withdraw-panel-${row.queueId}`}
     >
-      <p className="text-sm font-medium text-foreground">Retire this plan</p>
+      <p className="text-sm font-medium text-foreground">Retire this check</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        It stays on the remittance so there is still a record, but it can never be drained again.
-        There is no undo. Nothing is written to Open Dental.
+        It stays on the check so there is still a record, but it can never be posted from here
+        again. There is no undo. Nothing is written to Open Dental.
       </p>
       {/*
         THE CONSEQUENCE A BILLER CANNOT DISCOVER FROM THE SCREEN.
@@ -631,7 +635,7 @@ function WithdrawPanel({
           className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           data-testid={`posting-withdraw-submit-${row.queueId}`}
         >
-          {busy ? "Retiring…" : "Retire this plan"}
+          {busy ? "Retiring…" : "Retire this check"}
         </button>
         <button
           onClick={() => {
@@ -783,7 +787,7 @@ function PlanCard({
                 label={`#${row.odClaimPaymentNum}`}
                 testId={`posting-checknum-${row.queueId}`}
               />
-              <span>verified by read-back on {officeDay(row.reconciledAt, office)}</span>
+              <span>confirmed in Open Dental on {officeDay(row.reconciledAt, office)}</span>
             </div>
           )}
 
@@ -795,9 +799,9 @@ function PlanCard({
               className="mt-1 max-w-3xl text-xs text-muted-foreground"
               data-testid={`posting-readback-explainer-${row.queueId}`}
             >
-              Verified by read-back means CareIN asked Open Dental for the check after writing it
-              and got back exactly this plan's lines. Open Dental answers 200 to writes it quietly
-              ignores, so the read is the proof and the status code is not.
+              Confirmed in Open Dental means CareIN asked Open Dental for the check after writing
+              it and got back exactly these lines. Open Dental answers 200 to writes it quietly
+              ignores, so asking for it back is the proof and the status code is not.
             </p>
           )}
 
@@ -857,7 +861,18 @@ function PlanCard({
             </span>
             {row.attemptCount > 0 && (
               <span>
-                {row.attemptCount} posting attempt{row.attemptCount === 1 ? "" : "s"}
+                {/*
+                  §1. "3 posting attempts" is a count of failures dressed as a
+                  statistic; "Posted on the 3rd try" is the same fact told the
+                  way a person would say it out loud, and it makes the FIRST try
+                  read as ordinary rather than as an attempt that needed
+                  recording. The unfinished case keeps a plain count, because
+                  "tried 3 times" is exactly what is true there and calling it a
+                  "try" in the past tense would imply an outcome.
+                */}
+                {row.statusLabel === "posted"
+                  ? `Posted on the ${ordinal(row.attemptCount)} try`
+                  : `Tried ${row.attemptCount} time${row.attemptCount === 1 ? "" : "s"}`}
               </span>
             )}
             {row.status === "posting" && row.step && <span>{stepCopy(row.step)}</span>}
@@ -878,7 +893,7 @@ function PlanCard({
             </div>
           )}
           {!loading && !detail && (
-            <div className="text-sm text-muted-foreground">Could not load this plan.</div>
+            <div className="text-sm text-muted-foreground">Could not load this check.</div>
           )}
           {detail && (
             <PlanLines
@@ -980,7 +995,7 @@ function PlanLines({
                     line.readback.agreed ? (
                       <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
                         <CheckCircle2 size={14} />
-                        read back {officeDay(line.readbackAt, office)}
+                        asked for it back {officeDay(line.readbackAt, office)}
                       </span>
                     ) : (
                       <span className="text-rose-700 dark:text-rose-400">
@@ -1035,7 +1050,7 @@ function PlanLines({
             <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
               {detail.plan.statusLabel === "posted"
                 ? "Filing not attempted yet — the payment posted but the EOB was never filed."
-                : "The EOB is filed once this plan posts."}
+                : "The EOB is filed once this check posts."}
             </p>
             {detail.plan.statusLabel === "posted" &&
               (detail.documentAttach.canRetry ? (
@@ -1062,9 +1077,9 @@ function PlanLines({
               data-testid="posting-document-status"
             >
               {detail.documentAttach.status === "attached"
-                ? "Filed into every patient chart on this plan."
+                ? "Filed into every patient chart on this check."
                 : detail.documentAttach.status === "partial"
-                  ? "Filed into some of the charts on this plan, but not all of them."
+                  ? "Filed into some of the charts on this check, but not all of them."
                   : "Not filed. The payment itself posted correctly and is unaffected."}
             </p>
             {detail.documentAttach.documents.length > 0 && (

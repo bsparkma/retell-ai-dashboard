@@ -28,14 +28,14 @@ export default function TakebackSop() {
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft size={14} />
-        All remittances
+        All checks
       </Link>
 
       <h1
         className="mt-4 text-2xl font-bold tracking-tight text-foreground"
         style={{ fontFamily: "Sora, sans-serif" }}
       >
-        Reversals and recoupments — the manual procedure
+        Reversals and takebacks — the manual procedure
       </h1>
       <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
         CareIN will not post a takeback. This page says why, and what to do instead.
@@ -64,7 +64,7 @@ export default function TakebackSop() {
         <li>Read the takeback out of the carrier's file and stored it against the claim.</li>
         <li>Held the remittance, so the rest of the check is not posted around it silently.</li>
         <li>
-          Withheld the claim at the approval gate, with <em className="not-italic">Not a recoupment</em>{" "}
+          Held the claim back at the approval gate, with <em className="not-italic">Not a takeback</em>{" "}
           or <em className="not-italic">Not a reversal or takeback</em> as the reason.
         </li>
       </ul>

@@ -192,8 +192,8 @@ export default function ApprovalPanel({
           <p className="mt-1 text-sm text-muted-foreground" data-testid="approval-counts">
             {p.postableCount} of {p.claims.length} claim{p.claims.length === 1 ? "" : "s"} can be
             posted
-            {p.withheldCount > 0 ? ` · ${p.withheldCount} withheld` : ""}
-            {p.queuedCount > 0 ? ` · ${p.queuedCount} already queued` : ""}
+            {p.withheldCount > 0 ? ` · ${p.withheldCount} not ready yet` : ""}
+            {p.queuedCount > 0 ? ` · ${p.queuedCount} already approved` : ""}
           </p>
         </div>
 
@@ -237,17 +237,17 @@ export default function ApprovalPanel({
             </DisabledReason>
           ) : p.postableCount === 0 ? (
             <DisabledReason testId="approve-nothing-postable">
-              Nothing on this remittance can be approved yet — the checklist below says what each
+              Nothing on this check can be approved yet — the checklist below says what each
               claim is waiting for.
             </DisabledReason>
           ) : approving ? (
             <DisabledReason testId="approve-in-flight">
-              Approving — this writes a posting plan, not a chart note.
+              Approving — this lines the check up to post; it writes no chart note.
             </DisabledReason>
           ) : (
             <span className="text-xs text-muted-foreground">
-              Writes a posting plan. Nothing reaches Open Dental until somebody drains it on the
-              Posting screen.
+              Lines this check up to post. Nothing reaches Open Dental until somebody presses
+              Post to Open Dental.
             </span>
           )}
         </div>
@@ -305,8 +305,8 @@ export default function ApprovalPanel({
           {result.withheld.length > 0 && (
             <div className="mt-3" data-testid="approve-withheld">
               <div className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                Withheld — {result.withheld.length} claim
-                {result.withheld.length === 1 ? "" : "s"} not queued
+                Not ready yet — {result.withheld.length} claim
+                {result.withheld.length === 1 ? " was" : "s were"} left off
               </div>
               <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
                 {result.withheld.map((w) => (
@@ -403,10 +403,10 @@ function ClaimChecklist({ claim }: { claim: ApprovalClaim }) {
           data-testid={`approval-state-${claim.claimId}`}
         >
           {claim.alreadyQueued
-            ? "Queued for posting"
+            ? "Approved"
             : claim.postable
               ? "Ready to post"
-              : `Withheld · ${failed.length} check${failed.length === 1 ? "" : "s"} failed`}
+              : `Not ready yet · ${failed.length} check${failed.length === 1 ? "" : "s"} failed`}
         </span>
       </button>
 

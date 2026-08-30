@@ -159,7 +159,7 @@ export default function ClaimMatchPage() {
           href="/rcm/remittances"
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft size={14} /> All remittances
+          <ArrowLeft size={14} /> All checks
         </Link>
         <div className="mt-4 rounded-xl border border-dashed border-border bg-card p-8 text-center">
           <div className="text-sm font-medium text-foreground">Could not open this claim</div>
@@ -275,7 +275,7 @@ export default function ClaimMatchPage() {
           data-testid="back-to-remittances"
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <ArrowLeft size={14} /> All remittances
+          <ArrowLeft size={14} /> All checks
         </Link>
       )}
 
@@ -301,12 +301,12 @@ export default function ClaimMatchPage() {
         </span>
       </div>
 
-      {/* The same seven steps as the remittance and the posting plan, scoped to
-          this one claim. `post` reads `unknown` rather than "no": this screen
-          can see that a plan exists and cannot see whether it drained. */}
+      {/* The same five steps as the check and the Posting screen, scoped to
+          this one claim. `post` reads `unknown` rather than "no": this screen can
+          see that the check was approved and cannot see whether it was posted. */}
       <RcmStepper
         flow={claimFlow(claim, fromBatchId)}
-        here="confirm"
+        here="match"
         onAction={{
           "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
           review: markReviewed,
@@ -331,6 +331,88 @@ export default function ClaimMatchPage() {
         </div>
       )}
 
+      {/*
+        THE BODY. Everything above is the shell — see `ClaimWorkbenchBody`.
+        Stage B replaces this one component and touches nothing else on the page.
+      */}
+      <ClaimWorkbenchBody
+        data={data}
+        claim={claim}
+        snapshot={snapshot}
+        note={note}
+        setNote={setNote}
+        busy={busy}
+        mayRerun={mayRerun}
+        fromBatchId={fromBatchId}
+        onRunMatch={runMatch}
+        onReview={markReviewed}
+        onConfirm={confirm}
+      />
+    </div>
+  );
+}
+
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════════
+ * THE BODY — the seam Stage B replaces.
+ * ══════════════════════════════════════════════════════════════════════════════
+ * Everything above this in `ClaimMatchPage` is the SHELL: the breadcrumb, the
+ * patient header, the match-status chip, the five-step rail and the notice line.
+ * Everything a person needs to know WHERE they are and what the next click is
+ * lives there, and none of it is about how the evidence is laid out.
+ *
+ * This component is the evidence. Today it is two columns — what the carrier
+ * said on the left, what Open Dental holds on the right — with the confirm
+ * decision made from the candidate cards.
+ *
+ * Stage B replaces it with a split workbench: the EOB on the left, the chart on
+ * the right, per-line write-off decisions between them, and a
+ * patient-responsibility verdict line. It can do that by replacing THIS
+ * function and nothing else. The shell, the rail, the notice, the routing, the
+ * `from=` breadcrumb and every state hook stay exactly where they are, which is
+ * what stops a layout change from becoming a navigation change.
+ *
+ * EVERY INPUT IS A PROP AND NOTHING IS FETCHED HERE. The page owns loading,
+ * error handling, the three verbs and the notice; this draws. That split is the
+ * other half of what makes the swap cheap — a body that fetched would have to be
+ * re-implemented rather than replaced.
+ *
+ * Stage B also has two facts waiting for it that this slice put into the match
+ * snapshot and does not yet render: `candidate.od.patientBirthdate` and
+ * `candidate.od.subscriberId`. They are projections of a patient row the match
+ * already fetched — no new Open Dental call — and they are what a side-by-side
+ * needs in order to be an identity check rather than a name comparison.
+ */
+function ClaimWorkbenchBody({
+  data,
+  claim,
+  snapshot,
+  note,
+  setNote,
+  busy,
+  mayRerun,
+  fromBatchId,
+  onRunMatch,
+  onReview,
+  onConfirm,
+}: {
+  data: ClaimDetailResponse;
+  claim: WorkbenchClaim;
+  snapshot: MatchSnapshot | null;
+  note: string;
+  setNote: (value: string) => void;
+  /** Which verb is in flight, if any. Every control reads it; none sets it. */
+  busy: "match" | "confirm" | "review" | null;
+  /** May this person release a confirmed match? The server's answer. */
+  mayRerun: boolean;
+  /** Where this claim was opened from, for the "approving lives there" link. */
+  fromBatchId: string | null;
+  onRunMatch: (force: boolean) => void;
+  onReview: () => void;
+  onConfirm: (odClaimNum: number) => void;
+}) {
+  return (
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
         {/* ── LEFT: what the carrier said ──────────────────────────────────── */}
         <section data-testid="claim-parsed">
@@ -385,7 +467,7 @@ export default function ClaimMatchPage() {
                 {claim.needsReviewReasons.some((r) => NO_ACTION_REASONS.has(r)) && (
                   <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
                     <CircleSlash size={12} className="mt-0.5 shrink-0" />
-                    CareIN will not post this one. Handle it in Open Dental directly — a recoupment
+                    CareIN will not post this one. Handle it in Open Dental directly — a takeback
                     cannot be reversed once written.
                   </p>
                 )}
@@ -446,7 +528,7 @@ export default function ClaimMatchPage() {
             note={note}
             setNote={setNote}
             busy={busy === "review"}
-            onSave={markReviewed}
+            onSave={onReview}
           />
         </section>
 
@@ -464,7 +546,7 @@ export default function ClaimMatchPage() {
             <div className="flex flex-wrap items-start justify-end gap-x-2 gap-y-1">
               <div className="flex flex-col items-start gap-1">
                 <button
-                  onClick={() => runMatch(claim.odMatchStatus === "confirmed")}
+                  onClick={() => onRunMatch(claim.odMatchStatus === "confirmed")}
                   disabled={busy !== null || !mayRerun}
                   data-testid="run-match"
                   className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
@@ -616,7 +698,7 @@ export default function ClaimMatchPage() {
                       candidate={c}
                       confirmedClaimNum={claim.odClaimNum}
                       disabled={busy !== null || claim.odMatchStatus === "confirmed"}
-                      onConfirm={() => confirm(c.odClaimNum)}
+                      onConfirm={() => onConfirm(c.odClaimNum)}
                     />
                   ))}
                 </div>
@@ -625,7 +707,6 @@ export default function ClaimMatchPage() {
           )}
         </section>
       </div>
-    </div>
   );
 }
 

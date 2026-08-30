@@ -150,7 +150,7 @@ export const QUEUE_COLLISION_COPY: Record<string, string> = {
   QUEUE_ALREADY_RUNNING:
     "A posting run for this remittance is under way. Wait for it to finish, then look at what it left.",
   QUEUE_ALREADY_RAN:
-    "This remittance's posting plan has already been through the drain, so this claim cannot join it. Post this one by hand in Open Dental — CareIN cannot start a second run for the same check yet.",
+    "This check has already been posted, so this claim cannot join it. Post this one by hand in Open Dental — CareIN cannot start a second run for the same check yet.",
 };
 
 /** Counts keyed by the status vocabulary of one rcm_* table. */
@@ -1112,8 +1112,87 @@ export interface Remittance {
    */
   approvalAttemptedAt: string | null;
   approvalAttemptedBy: string | null;
+
+  /**
+   * SAVED FOR TOMORROW — a biller's own note to herself.
+   *
+   * Parking changes NOTHING about whether this check needs attention; it is
+   * still counted, still in every queue it was in. The only thing it does is let
+   * Today lead with "where you left off". Null means not parked, never "parked
+   * by nobody".
+   */
+  parkedAt: string | null;
+  parkedBy: string | null;
+  /** Her own line, optional by design. PHI-capable — never logged, never audited. */
+  parkedNote: string | null;
+
+  /**
+   * SET ASIDE — a check nobody is coming back to.
+   *
+   * The server's attention predicate returns early for one of these, so it is
+   * out of `needsAttention` and out of every work-state count. It is NOT out of
+   * the data: it stays under `view=all`, has its own `view=set_aside`, and can
+   * be put back in one click.
+   *
+   * Not the same as a RETIRED posting (`withdrawnReason` on a posting row),
+   * which is terminal, irreversible, and about money rather than about a
+   * worklist.
+   */
+  setAsideAt: string | null;
+  setAsideBy: string | null;
+  /** A SLUG the client renders copy from — see SET_ASIDE_COPY. */
+  setAsideReason: SetAsideReason | string | null;
+  setAsideNote: string | null;
+
   upload: RemittanceUpload | null;
 }
+
+/**
+ * Why a check was set aside. A closed set, enforced by a CHECK constraint
+ * (`migrations-tenant/1787500000000_rcm_remittance_worklist_state.js`).
+ *
+ * The wire type is widened to `string` on `Remittance.setAsideReason` on
+ * purpose: a slug added server-side must render as an ugly string rather than
+ * crash a screen, exactly as every other vocabulary in this module fails.
+ */
+export const SET_ASIDE_REASONS = [
+  "target_gone",
+  "duplicate",
+  "posted_by_hand",
+  "not_ours",
+  "other",
+] as const;
+export type SetAsideReason = (typeof SET_ASIDE_REASONS)[number];
+
+/**
+ * What each reason means, in the words a biller would use to say it out loud.
+ *
+ * `note` on `other` is REQUIRED by the server (400 SET_ASIDE_NOTE_REQUIRED), so
+ * the dialog demands it too rather than letting somebody discover the rule by
+ * being refused.
+ */
+export const SET_ASIDE_COPY: Record<SetAsideReason, { label: string; hint: string }> = {
+  target_gone: {
+    label: "The claims are gone from Open Dental",
+    hint: "Nothing here can ever be tied to a chart claim, so nothing can be posted.",
+  },
+  duplicate: {
+    label: "The same money arrived twice",
+    hint: "Another copy of this check is the one being worked.",
+  },
+  posted_by_hand: {
+    label: "Already posted by hand in Open Dental",
+    hint: "The money is on the chart; CareIN had no part in it.",
+  },
+  not_ours: {
+    label: "Not this practice's money",
+    hint: "It belongs to another practice or another payer.",
+  },
+  other: {
+    label: "Something else",
+    hint: "Say in a line what it is — this one needs your own words.",
+  },
+};
 
 export interface RemittanceListPage {
   office: RcmOfficeId;
@@ -1128,20 +1207,47 @@ export interface RemittanceListPage {
    * one population; in Slice 6a it was two statements about two.
    */
   needsAttentionCount: number;
+  /**
+   * The same whole-office population, counted for the two states this slice
+   * adds — so Today's "3 saved for tomorrow" and the tab that then shows 3 are
+   * one statement about one population.
+   */
+  parkedCount: number;
+  setAsideCount: number;
   /** How many rows the current view holds — what limit/offset page. */
   matchingCount: number;
   limit: number;
   offset: number;
 }
 
-/** Which population the list endpoint pages. */
-export type RemittanceView = "attention" | "all";
+/**
+ * Which population the list endpoint pages, server-side, over the WHOLE office.
+ *
+ * The three work-state tabs (`match`, `review`, `approve`) are NOT here: they
+ * are applied in the browser to whatever page came back, and the screens say so.
+ * See `features/rcm/worklist.ts`.
+ */
+export type RemittanceView = "attention" | "parked" | "set_aside" | "all";
 
 export interface RemittanceDetail {
   office: RcmOfficeId;
   remittance: Remittance & {
     /** Provider-level money, belonging to no single claim. Detect-and-flag only. */
     plbAdjustments: unknown[];
+    /**
+     * THIS CHECK'S OWN POSTINGS — ids and states, nothing else.
+     *
+     * The one fact that lets Post to Open Dental live on the check's page: the
+     * server's posting route has taken an optional `queueId` since 6c and
+     * narrows on it inside the same office-scoped, status-filtered query, so
+     * naming one here can never reach anything the office-wide press would not
+     * have posted.
+     *
+     * An ARRAY because the table permits more than one; today the
+     * `(office_id, remittance_key)` unique index means at most one, and the
+     * screen reads the first.
+     */
+    plans: { queueId: string; status: PostingQueueStatus }[];
   };
   claims: RemittanceClaim[];
 }
@@ -1787,6 +1893,83 @@ export function setRcmOfficeSettings(
   ).then((r) => r.settings);
 }
 
+/**
+ * ── THE TWO WORKLIST STATES ──────────────────────────────────────────────────
+ *
+ * All four run on `rcm.queue` — the tier that marks a claim reviewed. None of
+ * them touches Open Dental, a posting, or money; they decide which queue a check
+ * shows up in and nothing else. All four are reversible.
+ */
+
+/**
+ * "Save this for tomorrow." Optionally with a line about why.
+ *
+ * Re-parking MOVES the stamp rather than refusing: somebody who puts the same
+ * check down twice is telling you about the second time.
+ */
+export function parkRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+  note?: string,
+): Promise<{ batchId: string; parked: boolean }> {
+  return post(
+    `/remittances/${encodeURIComponent(batchId)}/park`,
+    { office },
+    note ? { note } : {},
+  );
+}
+
+/**
+ * Put it back on the ordinary pile.
+ *
+ * Fired by the check's own page ON OPEN as well as by a press — a note saying
+ * "come back to this" has done its job the moment she is looking at it. The
+ * server is idempotent over an un-parked check for exactly that reason, so an
+ * ordinary visit is a 200 rather than a refusal nobody can act on.
+ */
+export function unparkRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<{ batchId: string; parked: boolean; wasParked: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/unpark`, { office }, {});
+}
+
+/**
+ * "Nobody is coming back to this." Reason required; `other` requires the note.
+ *
+ * NOT the same act as retiring a posting. This takes a CHECK out of one
+ * worklist and can be undone by anybody who could do it; retiring decides that
+ * money will never post through CareIN and cannot be undone at all.
+ */
+export function setAsideRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+  reason: SetAsideReason,
+  note?: string,
+): Promise<{ batchId: string; setAside: boolean; reason: string }> {
+  return post(
+    `/remittances/${encodeURIComponent(batchId)}/set-aside`,
+    { office },
+    note ? { reason, note } : { reason },
+  );
+}
+
+/** Put a set-aside check back in the queue. The half that makes it safe to press. */
+export function restoreRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<{ batchId: string; setAside: boolean; wasSetAside: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/restore`, { office }, {});
+}
+
+/**
+ * POST TO OPEN DENTAL.
+ *
+ * `queueId` narrows the run to ONE check — the same server function, the same
+ * office scope, the same status filter, the same two-condition gate. It is an
+ * extra `AND queue_id = $3`, so it can only ever reach a subset of what the
+ * office-wide press would have reached. There is no second write path.
+ */
 export function drainPostingQueue(
   office: RcmOfficeId,
   opts: { queueId?: string } = {},
