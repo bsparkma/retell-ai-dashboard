@@ -1827,6 +1827,12 @@ az containerapp update -n ca-carein-backend -g rg-carein-staging \
   --remove-env-vars RCM_DRAIN_STEP_DELAY_MS
 ```
 
+> **⚠️ STILL NOT RUN as of 2026-08-30.** Mini-walk 3 was tabled before step 9
+> (§10.6.4), so this recipe — 90 000 ms and `exec` + `kill 1` — has never been
+> exercised. That is now four walks without the kill: too fast (08-25), never
+> started (08-26), too late (08-28), not reached (08-30). **The combined walk in
+> §10.7 owes this section its number.**
+
 > **Observed teardown timing: ⏳ to be filled in on the next run.** Step 4 notes
 > the instant the kill is issued and step 5 watches the replica state; the gap
 > between them is the number. It is deliberately not guessed at here — three
@@ -1835,6 +1841,14 @@ az containerapp update -n ca-carein-backend -g rg-carein-staging \
 
 > `az containerapp exec`'s `--command` splits on whitespace and 429s for long
 > stretches — see the exec recipe note. Verified working 2026-08-28 with the
+> **Two more exec notes from 2026-08-30.** `az containerapp exec` failed twice
+> with `ClusterExecFailure` / websocket `1011` before connecting on the third
+> attempt; it also returns **HTTP 429 for roughly ten minutes at a time** and a
+> *connectivity probe spends the same quota as real work*, so retry the actual
+> command rather than testing the channel first. `env${IFS}VAR=value${IFS}node${IFS}/app/scripts/x.js`
+> runs a script with an environment variable and **needs no shell at all**, which
+> avoids the nested-quoting failure below entirely.
+>
 > `${IFS}` form: `--command "ps${IFS}-o${IFS}pid,comm"` returned `1 node`. A
 > nested single-quoted `sh -c '…'` fails with a websocket error that reads like
 > the container is down; it is the quoting, not the container.
@@ -2226,6 +2240,70 @@ with the times — **including the teardown gap, which is the ⏳ blank §10.3 h
 never been able to fill** — and the closing inventory. A walk with no transcript
 proves nothing a month later.
 
+#### 10.6.4 MINI-WALK 3 — RUN 2026-08-30, staging rev `0000139` (post-#123). **TABLED.**
+
+**Six objectives, three proven, one finding, two not reached.** Beau tabled the
+walk partway through and the remaining objectives fold into one combined walk on
+the rebuilt UI (§10.7).
+
+| # | Objective | Verdict |
+| --- | --- | --- |
+| 1 | Fresh prep **under the spent-manifest guard** | ✅ **The guard worked as built.** It refused the 2026-08-28 manifest until it was moved aside — the #122 screen doing exactly its job on its first live run. New targets: A `406432`/`53832`/`535598`, B `406433`/`53833`/`535599` |
+| 2 | A posted clean, end to end | ✅ plan `d1435a5d…` → **ClaimPaymentNum 21436**, read-back reconciled |
+| 3 | **The shadow switch's first live flips** | ✅ ON before the drain, OFF after. Both audited; the *"Never switched"* → attributed transition rendered. See §2.5 |
+| 4 | Takeback approve on the posted chart | ❌ **REFUSED — finding 1.** Nothing written |
+| 5 | Kill-mid-write + teardown timing (§10.3) | ⏭ **NOT RUN** — walk tabled before it. B was prepped for this and never approved |
+| 6 | Unwind to baseline | ✅ §11.7 |
+
+##### Finding 1 — the line-reservation check judged a takeback like a payment
+
+With A posted, the recoupment 835 uploaded, matched, confirmed and reviewed and
+`-1.00` typed, the approve refused:
+
+```
+No chart line is spoken for   ClaimProcNum 535598 already on a posting plan
+                              fix: "Release the other posting plan first"
+```
+
+535598 is A's line, and it is on A's plan **because A's plan is where the payment
+came from.** For a takeback that is the precondition, not a conflict. The
+rendered fix is impossible by design — withdraw correctly refuses a posted plan —
+and a refusal whose remedy cannot exist is the defect class §3.3 of
+`RCM_APPROVAL_GATE` records.
+
+**The third instance of one lesson**, after §10.6.1 (the parser's flags) and
+§10.6.3 (the chart). Fixed by partitioning the reservation on the reversal lane:
+a **`posted`** or **`withdrawn`** plan releases the line; an **active** one still
+holds it on both lanes. Full record: **`RCM_APPROVAL_GATE` §3.4**.
+
+> **And the test built to prevent this passed.**
+> `takebackAgainstPostedChart.test.js` drives the real drain and evaluates the
+> reversal, and it went green while staging refused — for **two** independent
+> reasons: it handed `evaluateClaim` an empty `plannedClaimprocs` map, and it
+> used one claim id for both the payment and its reversal. Fixing either alone
+> would have left the other. The general lesson is recorded at **§15.1a**.
+
+##### What the walk did NOT establish
+
+* **§10.3's kill has still never run** — a fourth missed opportunity, though this
+  one by choice rather than by mechanism. **The teardown blank stays ⏳ and the
+  next walk owes it.** The revised recipe (90 000 ms, `exec` + `kill 1`) is
+  therefore still unexercised.
+* The takeback **end to end** — approve → drain → ledger −$1.00 → the first live
+  `pickAdjType` reversal in the unwind — is untested past the approve.
+
+> ⏳ **Screenshots to be pasted by Beau when asked**: both switch states
+> (including *"Never switched"* → attributed), the takeback checklist showing the
+> refusal, and A's ledger.
+
+##### The combined follow-up walk needs a FRESH A-and-R pair
+
+The §11.7 unwind deleted claim `53832`, so **the R remittance on staging
+(`S10R-53832`) now points at a claim that no longer exists.** It cannot be reused,
+however tempting *"the state is already right"* looks in the notes above. The
+combined walk (§10.7) begins with `rcm-s10-prep` for a new pair, under the
+spent-manifest guard, exactly as mini-walk 3 did.
+
 #### 10.6.1 ✅ The gate used to refuse a real reversal 835 — D-11 amendment, 2026-08-27
 
 Run against `evaluateClaim` with `recoupmentAllowed: true`:
@@ -2336,6 +2414,28 @@ prints a warning saying so**, so nobody discovers it at 10pm.
 When that run happens, the DocNum it produces is **permanent residue**:
 `DELETE /documents/{n}` has never been probed. `rcm-s10-capture.js` records it as
 `odDocNums` so the next inventory can name the row rather than rediscover it.
+
+### 10.7 THE COMBINED WALK — what is left, and when it runs
+
+**Mini-walk 3's remaining objectives fold into ONE walk (~25 min) run on the
+REBUILT UI**, rather than being re-run piecemeal on the old one. Beau's call,
+PM-backed, 2026-08-30.
+
+| | |
+| --- | --- |
+| **Runs after** | finding 1's fix ships **and** Stage A (the UI shell) lands |
+| **Proves** | kill-mid-write + the teardown number (§10.3) · the takeback END TO END: approve → drain → ledger −$1.00 → the first live `pickAdjType` reversal in the unwind |
+| **Also** | doubles as the **UI-shell validation** — the same steps a biller will actually take |
+| **Gate** | it stays a **gate before the promote train**; shadow mode follows |
+| **Prep** | a **FRESH A-and-R pair** — mini-walk 3's was consumed by §11.7 (see §10.6.4) |
+
+**Sequencing:** finding-1 fix → Stage A UI shell → combined walk → promote →
+shadow mode.
+
+> **The runbook should mark which steps are TERMINAL and which are UI.** Tonight's
+> session made the case: to a non-engineer the two are indistinguishable, and a
+> walk script that mixes them without saying so reads as one flow that keeps
+> failing. See §15.2.
 
 ## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 
@@ -2822,6 +2922,120 @@ the inventory acts on nothing. **A deny-list that is computed and never read
 looks, to anyone auditing the file, exactly like one that is enforced** —
 `rcmS10Scripts.test.js` now fails the build on one.
 
+### 11.7 Mini-walk 3's targets — unwound 2026-08-30, by Claude Code
+
+**The first unwind run by the agent rather than by Beau**, on his instruction
+after the walk was tabled. Dry run first, then `--execute`, then the inventory.
+
+| | |
+| --- | --- |
+| Claims | `53832` (target A, posted → check **21436**), `53833` (target B, **never approved**) |
+| Procedures | `406432`, `406433` — now `ProcStatus "D"` (G12) |
+| Lines | `535598`, `535599` |
+| Check | `21436` — **spent.** Recorded here in prose and deliberately NOT a `WALK_SPENT_IDS` member: the manifest has no field for a check, so a `checks` bucket would be a deny-list nothing reads — the defect #122 removed from three scripts. Same call as `21399`/`21400` and `21424`/`21425` |
+| Inventory after | **0 claims, −$0.20**, 10 soft-deleted procedures — 12827 back to baseline |
+| Manifest | retired to `rcm-s10-manifest.2026-08-30.spent.json` |
+
+#### What target B tells you about where the walk stopped
+
+B was **never approved into a plan** — `posting_queue_id` and `approved_at` were
+both null when the cleanup began. B exists to be killed mid-drain in §10.3, and
+§10.3 was never reached, so the unwind found its line already `NotReceived` with
+no ClaimPaymentNum and had only the two deletes left to do. The step table below
+shows that asymmetry directly, and it is the clearest single record of how far
+mini-walk 3 got.
+
+#### The transcript (verbatim, `--execute`, 2026-08-30)
+
+```
+-- BALANCE BEFORE (ProcStatus "D" excluded) ------------------------
+   charges  (ProcStatus "C")          $3.00
+   insurance paid                    -$1.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                    $0.80
+   claims: 2   soft-deleted procedures excluded: 8
+
+-- TARGET A: ProcNum=406432 ClaimNum=53832 ClaimProcNum=535598 --
+   0. reversal     nothing to reverse - this target carries no takeback adjustment
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21436
+   DELETE /claimpayments/21436
+   PUT /claims/53832 {"ClaimStatus":"W"}
+   PUT /claimprocs/535598 {"Status":"NotReceived","InsPayAmt":0,"WriteOff":0,"DedApplied":0}
+   DELETE /claims/53832
+   DELETE /procedurelogs/406432
+
+-- TARGET B: ProcNum=406433 ClaimNum=53833 ClaimProcNum=535599 --
+   0. reversal     nothing to reverse - this target carries no takeback adjustment
+   read: Status="NotReceived" InsPayAmt=0 WriteOff=0 ClaimPaymentNum=0
+   1. payment      already done - no ClaimPaymentNum on this line
+   2. unreceive    already done - ClaimStatus is "W", not "R"
+   3. line         already done - Status="NotReceived" and every amount is 0
+   DELETE /claims/53833
+   DELETE /procedurelogs/406433
+
+-- BALANCE AFTER (ProcStatus "D" excluded) ------------------------
+   charges  (ProcStatus "C")          $1.00
+   insurance paid                     $0.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                   -$0.20
+   claims: 0   soft-deleted procedures excluded: 10
+
+-- STEPS ------------------------------------------------------------
+   step                            A             B
+   ------------------------------------------------------------
+   POST offsetting adjustment      already done  already done
+   DELETE claimpayment             done          already done
+   PUT claim -> W                  done          already done
+   PUT claimproc -> NotReceived    done          already done
+   DELETE claim                    done          done
+   DELETE procedurelog             done          done
+
+-- VERDICT ----------------------------------------------------------
+   before $0.80   after -$0.20   delta -$1.00
+   claim count is back to the prep baseline (0).
+DONE 2026-08-30T03:30:57.839Z
+```
+
+#### The closing inventory
+
+```
+-- COMPUTED BALANCE (ProcStatus "D" excluded) -----------------------
+   charges  (ProcStatus "C")          $1.00
+   insurance paid                     $0.00
+   write-offs                         $0.00
+   adjustments                       -$1.20
+   ----------------------------------------
+   PATIENT BALANCE                   -$0.20
+   (10 soft-deleted procedure row(s) excluded)
+
+-- BASELINE VERDICT -------------------------------------------------
+   Spike 0b residue claims present : NONE
+   Other claims on this patient    : none
+   CLAIM COUNT FOR THE PREP PRE-CHECK : 0
+DONE 2026-08-30T03:31:27.293Z - nothing was created, updated or deleted.
+```
+
+The only adjustments left on 12827 are the four **Spike 0b residue** rows
+(`19109`–`19112`), which is what the −$0.20 baseline is made of.
+
+#### Two orphans, and neither is retired
+
+The unwind deletes claims; it does not tidy up what pointed at them.
+
+* **Target B's plan does not exist**, so there was nothing to withdraw. The
+  cleanup brief expected an approved plan here; B was prepped for §10.3 and the
+  walk stopped first. `rcm-withdraw-plan.js` was **not run** — there was no
+  `queue_id` to give it.
+* **The R remittance (`S10R-53832`) is now dead**: matched, confirmed, reviewed,
+  no plan, and its claim `53832` is deleted. It joins **`S10R-53830`** from walk
+  night 2. **Two dead remittances now sit in "needs attention" permanently**,
+  and nothing in the product can dismiss them — see §15.2's backlog item, whose
+  evidence this doubles.
+
 ## 11a. Migration rehearsal (PostgreSQL 17)
 
 `up` (all) → objects present → the constraints exercised → `down 1` → `up` again
@@ -3180,6 +3394,31 @@ time anyone uses these screens in anger.
    indistinguishable from a broken one, and the replay step reads as untestable
    rather than as already-guaranteed. The honest-states rule that governs the
    backend applies here too — say *"nothing waiting to drain"*.
+
+#### From mini-walk 3 (2026-08-30) — for Stage A
+
+These came out of Beau driving the product himself rather than reading a
+transcript of it, and they are the difference between a system that works and one
+somebody can be handed.
+
+5. **A remittance that will never be worked cannot be dismissed or archived.**
+   **Two** now sit in "needs attention" permanently: `S10R-53830` (walk night 2)
+   and `S10R-53832` (mini-walk 3), both matched and reviewed, both pointing at
+   claims the unwind deleted. Nothing in the product can retire them, so the
+   queue's most important signal — *this needs a human* — decays with every walk.
+   The evidence for this item **doubled in one night**, which is the argument for
+   doing it in Stage A rather than logging it again.
+6. **The Upload button bounces between two pages.** Uploading is the first thing
+   a biller does each morning and it is not reliably in one place.
+7. **Terminal steps and UI steps are indistinguishable in the runbook.** To a
+   non-engineer a walk script reads as one flow, so a step that requires a shell
+   looks like a UI step that is broken. **The walk runbook should mark which
+   steps are whose** — and §10.7's combined walk is the first one that will be
+   driven by somebody who is not the person who wrote it.
+8. **Old walk debris fills every list.** Spent targets, dead remittances and
+   retired plans accumulate with no way to filter them out, so each walk starts
+   harder to read than the last. Related to 5, but broader: it is about the
+   default view, not about one row's lifecycle.
 
 ## 16. Out of scope
 
