@@ -187,6 +187,37 @@ const TERMINAL_QUEUE_STATUSES = Object.freeze([
 ]);
 
 /**
+ * Plan statuses that DO NOT hold a chart line against a REVERSAL (walk 3).
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS NOT `TERMINAL_QUEUE_STATUSES`, AND THE DIFFERENCE IS THE WHOLE POINT
+ * ---------------------------------------------------------------------------
+ * That list answers "has a drain already had this plan" and includes
+ * `partially_posted`, `failed` and `blocked`. Reusing it here would release a
+ * line held by a plan that may still write to it: a `partially_posted` plan has
+ * unfinished lines, and a `failed` or `blocked` one is waiting to be re-drained.
+ * Taking money back out from under a payment that is still arriving is the
+ * genuinely unsafe case, so those keep holding the line on BOTH lanes.
+ *
+ * What is left is the pair that can never write again:
+ *   `posted`    - the plan finished. Its payment is ON the chart, which is
+ *                 precisely what makes the line REVERSIBLE. Being on this plan
+ *                 is the takeback's PRECONDITION, not a conflict with it.
+ *   `withdrawn` - the plan was retired and can never run (see 2.2.0).
+ *
+ * Walk 3, 2026-08-30: the reversal of plan A refused with "ClaimProcNum 535598
+ * already on a posting plan", and its rendered fix - release the other posting
+ * plan first - is IMPOSSIBLE by design, because withdraw correctly refuses a
+ * posted plan. A refusal whose remedy cannot exist is the same defect class as
+ * the re-match loop PR #123 fixed.
+ *
+ * The ORDINARY PAYMENT LANE IS UNTOUCHED: a posted plan's line already cannot
+ * take a second payment (`LINE_HAS_CLAIM_PAYMENT`), and two plans paying one
+ * line stays refused everywhere.
+ */
+const PLAN_STATUSES_RELEASED_FOR_REVERSAL = Object.freeze(['posted', 'withdrawn']);
+
+/**
  * What to tell a biller whose claim cannot join an already-run plan.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -611,13 +642,43 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
    * 23505 it loses a race to (see there). This is what makes the common case
    * legible rather than what makes it safe.
    */
+  /*
+   * ...AND THE THIRD PLACE THIS LESSON LANDED (walk 3, 2026-08-30).
+   *
+   * On the REVERSAL lane the question inverts, exactly as the pre-flight
+   * blockers and the line pairing did in #121. A line on a POSTED plan is not
+   * spoken for against a takeback - that plan is where the money being reversed
+   * CAME FROM. See `PLAN_STATUSES_RELEASED_FOR_REVERSAL`.
+   *
+   * Gated on `recoupmentAllowed && recoup`, not on either alone: this relaxes
+   * only when the recoupment approve is being evaluated AND the claim really is
+   * a takeback. A claim that is not one already fails `TAKEBACK_ACKNOWLEDGED`,
+   * so it can never reach a chart through this door.
+   */
+  const reversalLane = recoupmentAllowed && recoup;
   const conflicts = [];
   if (claim.postingQueueId == null) {
     for (const line of lines) {
       const planned = line.odClaimProcNum == null ? null : plannedClaimprocs.get(Number(line.odClaimProcNum));
-      if (planned && planned.claimId !== claim.claimId) {
-        conflicts.push(`ClaimProcNum ${line.odClaimProcNum}`);
+      if (!planned || planned.claimId === claim.claimId) continue;
+      /*
+       * The status is consulted ONLY on the reversal lane. On the payment lane
+       * any other plan holding the line is a conflict, which is the rule this
+       * check has always enforced and still does.
+       */
+      if (reversalLane && PLAN_STATUSES_RELEASED_FOR_REVERSAL.includes(String(planned.status))) {
+        continue;
       }
+      /*
+       * The status is NAMED in the refusal. "Already on a posting plan" sent a
+       * biller looking for a plan she could release; "already on a posting plan
+       * (approved)" tells her which one, and that releasing it is possible.
+       */
+      conflicts.push(
+        planned.status
+          ? `ClaimProcNum ${line.odClaimProcNum} (${planned.status})`
+          : `ClaimProcNum ${line.odClaimProcNum}`
+      );
     }
   }
   add(
@@ -1019,7 +1080,7 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
         .filter((n) => n != null)
     ),
   ];
-  /** @type {Map<number, { claimId: string, queueId: string }>} */
+  /** @type {Map<number, { claimId: string, queueId: string, status: string|null }>} */
   const plannedClaimprocs = new Map();
   if (claimProcNums.length > 0) {
     const planned = await client.query(
@@ -1027,10 +1088,36 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
         `WHERE office_id = $1 AND is_supplemental = false AND od_claim_proc_num = ANY($2::bigint[])`,
       [office, claimProcNums]
     );
+
+    /*
+     * THE HOLDING PLAN'S STATUS, in a SECOND query rather than a join.
+     *
+     * The reversal partition needs to know whether the plan holding a line has
+     * finished. Two office-scoped reads rather than one join: every other read
+     * in this loader is shaped that way, and a join would be the only one in the
+     * module.
+     */
+    const queueIds = [...new Set(planned.rows.map((r) => String(r.queue_id)).filter(Boolean))];
+    const statusByQueueId = new Map();
+    if (queueIds.length > 0) {
+      const plans = await client.query(
+        `SELECT queue_id, status FROM rcm_posting_queue ` +
+          `WHERE office_id = $1 AND queue_id = ANY($2::uuid[])`,
+        [office, queueIds]
+      );
+      for (const row of plans.rows) statusByQueueId.set(String(row.queue_id), String(row.status));
+    }
+
     for (const row of planned.rows) {
       plannedClaimprocs.set(num(row.od_claim_proc_num), {
         claimId: row.claim_id,
         queueId: row.queue_id,
+        /*
+         * `null` when the plan row cannot be read - and `null` is NOT in
+         * `PLAN_STATUSES_RELEASED_FOR_REVERSAL`, so an unreadable plan keeps
+         * holding its line on both lanes. Fail closed.
+         */
+        status: statusByQueueId.get(String(row.queue_id)) || null,
       });
     }
   }
@@ -1993,6 +2080,7 @@ module.exports = {
   CHECKS,
   CHECK_ORDER,
   TERMINAL_QUEUE_STATUSES,
+  PLAN_STATUSES_RELEASED_FOR_REVERSAL,
   alreadyRanMessage,
   APPROVAL_BATCH_COLUMNS,
   APPROVAL_CLAIM_COLUMNS,

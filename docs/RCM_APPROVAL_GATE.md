@@ -339,6 +339,7 @@ snapshot** as `takeback`.
 | the takeback exceeds what the chart shows was paid | not applicable | `TAKEBACK_EXCEEDS_PAYMENT` — **blocking**, compared as magnitudes; skipped, never passed, when the amount is unknown |
 | deleted / `'unknown'` / transferred / blocked status | **blocking** | **blocking** — identical. These are reasons Open Dental cannot be trusted about a line at all, and no direction of money makes an unreadable procedure safe |
 | line pairing | eligible = not deleted, not transferred, not blocked, **no check attached** | eligible = not deleted, not transferred, not blocked, **`InsPayAmt ≠ 0`**. Unpaired reads *"no paid line on this claim to reverse"* |
+| **a chart line is held by another plan** (walk 3) | `CLAIMPROC_NOT_ALREADY_PLANNED` — **blocking for any holding plan.** Two plans must never pay one line | **blocking only for an ACTIVE plan** (`approved`, `posting`, `failed`, `partially_posted`, `blocked`, or a plan whose status cannot be read). A **`posted`** or **`withdrawn`** plan releases the line: a posted plan is *where the reversed money came from*, so holding the line is the takeback's precondition |
 
 **A PARTITION AGAIN, NOT A RELAXATION.** The inversion is exactly two codes
 wide, the fact still prints under its own name with the opposite verdict, and
@@ -478,6 +479,79 @@ measured at match time against the number the gate measures against later.
 > fixture happens to diverge, and today none does. A caller quietly dropping the
 > second amount again is exactly how the bug arrived, so a test asserts that both
 > `isTakeback` call sites name **both** amounts.
+
+### 3.4 WALK 3 (2026-08-30) — the third instance, and the fixture that should have caught it
+
+**Same lesson, one layer further down, and this time a test built to prevent it
+passed while staging refused.**
+
+With plan A posted — the exact chart state §3.2 exists to reach — the recoupment
+approve refused:
+
+```
+No chart line is spoken for    ClaimProcNum 535598 already on a posting plan
+                               fix: "Release the other posting plan first"
+```
+
+535598 is A's line. It is on A's plan **because A's plan is where the payment came
+from.** The rule was written for the payment lane — two plans must never pay one
+line, still right — and it fires on the one chart state a takeback can ever
+target. Worse, **its rendered fix cannot be performed**: withdraw refuses a
+posted plan, correctly. A refusal whose remedy cannot exist is the same defect
+class as the re-match loop in §3.3.
+
+**The partition** is in the table above, and it is narrower than it first looks.
+`PLAN_STATUSES_RELEASED_FOR_REVERSAL` is **`posted`** and **`withdrawn`** only.
+
+> ⚠️ **It is deliberately NOT `TERMINAL_QUEUE_STATUSES`**, which sits ten lines
+> away in the same file and looks like exactly the right constant. That list
+> answers *"has a drain already had this plan"* and also contains
+> `partially_posted`, `failed` and `blocked`. Reusing it would release a line
+> held by a plan that may still write to it — and taking money back out from
+> under a payment that is still arriving is the genuinely unsafe case. A plan
+> whose status cannot be read holds its line too: `null` is not in the released
+> set, so it fails closed.
+
+The payment lane is untouched, and needs no protection from this change: a posted
+plan's line already cannot take a second payment (`LINE_HAS_CLAIM_PAYMENT`).
+
+The refusal now **names the status** — `ClaimProcNum 99001 (approved)` — so the
+biller knows which plan and that releasing it is possible.
+
+#### Why `takebackAgainstPostedChart.test.js` passed while staging refused
+
+That file drives the **real** `postingDrain.drainOffice` and evaluates the
+reversal against whatever state it leaves. It was written after walk night 2
+precisely so this class of miss could not recur. It passed. **Two independent
+reasons, and fixing either alone would have left the other:**
+
+1. **The map was thrown away.** Every `evaluateClaim` call passed
+   `plannedClaimprocs: new Map()`. The drain had written
+   `rcm_posting_queue_line` into that very db, so the chart state was faithful
+   and the **plan** state was discarded — `CLAIMPROC_NOT_ALREADY_PLANNED` was
+   satisfied *vacuously*, with nothing in the map to conflict with.
+2. **The reversal was not its own claim.** The fixture used one `CLAIM_ID` for
+   both the plan line and the reversal. The check only fires when
+   `planned.claimId !== claim.claimId`, so even a fully populated map would not
+   have conflicted. In production a reversal 835 ingests its **own** `rcm_claims`
+   row — on staging, plan A's claim was `262063fb…` and the recoupment's was
+   `22533a81…`, two rows against one Open Dental claim.
+
+Both are fixed: the fixture now builds the map from its own db (including the
+holding plan's status) and gives the reversal its own row. `THE WALK NIGHT
+REFUSAL, FIXED` is red-before against `develop` as a result — the test finally
+fails where staging failed.
+
+A **sibling at the route layer** was added too, because the map the fixture
+builds is a *copy* of what `loadForApproval` builds, and a copy can drift:
+`THE WALK-3 REFUSAL, THROUGH THE REAL LOADER` drives the HTTP
+`approve-recoupment` so the map comes from the real loader reading real rows.
+
+> **The general lesson, third time recorded:** *a hand-built input for one layer
+> is a claim about the layer beside it.* §10.6.1 said it about the parser's
+> flags, §10.6.3 about the chart, and this says it about the plan table. A
+> fixture that drives one real component and hand-feeds the rest tests the seam
+> it hand-fed, not the one it drove.
 
 ---
 

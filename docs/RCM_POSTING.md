@@ -3372,6 +3372,26 @@ finished hours earlier. The limitation was real either way; the sentence hid it.
 
 ---
 
+### 15.1a A fixture that drives one real component still hand-feeds the rest
+
+**Walk 3, 2026-08-30.** `takebackAgainstPostedChart.test.js` was built after walk
+night 2 to make one class of miss impossible: it drives the REAL
+`postingDrain.drainOffice` and evaluates the reversal against the state that
+leaves. Thirteen tests passed while staging refused the same operation.
+
+It drove the drain and then handed `evaluateClaim` an empty
+`plannedClaimprocs` map and a reversal sharing the payment's claim id — so the
+one check that refused in production could not fail in the test, for two
+independent reasons. See **RCM_APPROVAL_GATE §3.4**.
+
+**The rule this leaves behind:** when a fixture drives a real component in order
+to prove something about a later stage, every input to that later stage must come
+from what the component actually produced. An argument written by hand beside a
+driven one is a *claim about the driven output*, and it is the place a real
+refusal will hide. Where a hand-built value is unavoidable, assert that it is
+non-empty and of the shape production produces — `the fixture EARNS its pass` in
+that file is the guard, and it exists because nothing else would have noticed.
+
 ### 15.2 UX findings from the 2026-08-25 walk — for the RCM UX slice
 
 Not defects in the posting machinery; every one of them is a thing that made the

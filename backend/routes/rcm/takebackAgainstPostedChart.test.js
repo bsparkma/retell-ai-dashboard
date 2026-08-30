@@ -102,6 +102,24 @@ const LINE_ID = '66666666-7777-4888-8999-000000000000';
 const BATCH_ID = '8acb0e32-35ae-5cd8-9692-7b5e318a31c2';
 const CLAIM_ID = 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d';
 
+/**
+ * THE REVERSAL IS ITS OWN CLAIM ROW, and that is not a detail.
+ *
+ * A reversal 835 is a separate remittance: it ingests its own batch, its own
+ * `rcm_claims` row and its own lines. On staging, walk 3, plan A's claim was
+ * `262063fb-...` and the recoupment's claim was `22533a81-...` - two rows, one
+ * Open Dental claim.
+ *
+ * This file used ONE id for both, and `CLAIMPROC_NOT_ALREADY_PLANNED` only fires
+ * when `planned.claimId !== claim.claimId`. So even after the empty
+ * `plannedClaimprocs` was fixed, the fixture STILL could not reproduce walk 3:
+ * the payment and its reversal were the same row, so nothing ever conflicted.
+ *
+ * Two separate reasons this file passed while staging refused, and the second
+ * one would have survived fixing the first.
+ */
+const REVERSAL_CLAIM_ID = '22533a81-bece-4e9c-a0e6-282292308908';
+
 /** The chart BEFORE anything posts: a sent claim, one unpaid line. */
 function chartBeforeTheDrain() {
   return new FakeOd({
@@ -464,10 +482,52 @@ test('deleted, transferred and blocked-status lines are refused on BOTH lanes', 
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * THE MAP THIS FIXTURE USED TO THROW AWAY.
+ *
+ * Walk 3, 2026-08-30. This file drives the REAL drain and then evaluates the
+ * reversal, and it was built so a refusal that only appears against a genuinely
+ * posted chart could not hide. It passed anyway, while staging refused - because
+ * every `evaluateClaim` call below handed in `plannedClaimprocs: new Map()`.
+ *
+ * The drain had written `rcm_posting_queue_line` into this very db. The chart
+ * state was faithful and the PLAN state was discarded, so
+ * `CLAIMPROC_NOT_ALREADY_PLANNED` was satisfied VACUOUSLY: there was nothing in
+ * the map to conflict with. That is the same lesson as 10.6.1 and 10.6.3 - a
+ * hand-built input for one layer is a claim about the layer beside it - and this
+ * is its third appearance.
+ *
+ * Built the way `loadForApproval` builds it, including the plan status the
+ * reversal partition reads.
+ *
+ * @param {import('./rcmTestUtils').FakeRcmDb} db
+ * @returns {Map<number, { claimId: string, queueId: string, status: string|null }>}
+ */
+function plannedFromDb(db, office = 'roland') {
+  const statusByQueueId = new Map(
+    db
+      .table('rcm_posting_queue')
+      .filter((q) => q.office_id === office)
+      .map((q) => [String(q.queue_id), String(q.status)])
+  );
+  const map = new Map();
+  for (const line of db.table('rcm_posting_queue_line')) {
+    if (line.office_id !== office) continue;
+    if (line.is_supplemental) continue;
+    if (line.od_claim_proc_num == null) continue;
+    map.set(Number(line.od_claim_proc_num), {
+      claimId: line.claim_id,
+      queueId: line.queue_id,
+      status: statusByQueueId.get(String(line.queue_id)) || null,
+    });
+  }
+  return map;
+}
+
+/**
  * Assemble the snapshot `matchService` would store for this chart, on the given
  * lane, and run the real gate over it.
  */
-function gateOverChart(od, { takeback }) {
+function gateOverChart(od, { takeback, db }) {
   const scored = claimMatch.scoreCandidate(REVERSAL_PROPOSAL, candidateFrom(od), {
     takeback,
     takebackCents: -PAID_CENTS,
@@ -499,7 +559,9 @@ function gateOverChart(od, { takeback }) {
   return approvalGate.evaluateClaim({
     office: 'roland',
     claim: {
-      claimId: CLAIM_ID,
+      // The REVERSAL's own row, distinct from the claim plan A paid. See
+      // `REVERSAL_CLAIM_ID`.
+      claimId: REVERSAL_CLAIM_ID,
       officeId: 'roland',
       patientName: 'Test 2, Stedi',
       claimNumber: String(OD_CLAIM_NUM),
@@ -527,7 +589,13 @@ function gateOverChart(od, { takeback }) {
     ],
     payment: { paidCents: -PAID_CENTS, batchClaimPaymentId: 'p1' },
     batchFlags: ['negative_total_payment'],
-    plannedClaimprocs: new Map(),
+    /*
+     * THE REAL PLAN STATE, not an empty map. `plan A` is `posted` by the time
+     * this runs, and a posted plan does not hold its line against the reversal
+     * OF that plan - which is exactly what walk 3 found and what
+     * `PLAN_STATUSES_RELEASED_FOR_REVERSAL` now encodes.
+     */
+    plannedClaimprocs: plannedFromDb(db),
     recoupmentAllowed: true,
   });
 }
@@ -539,8 +607,8 @@ test('THE WALK NIGHT REFUSAL, FIXED: the takeback is approvable against the post
    * including the two that refused on the night, and including every one that
    * was already passing and must keep passing.
    */
-  const { od } = await chartAfterPostingPlanA();
-  const verdict = gateOverChart(od, { takeback: true });
+  const { od, db } = await chartAfterPostingPlanA();
+  const verdict = gateOverChart(od, { takeback: true, db });
 
   assert.deepEqual(verdict.failed, [], JSON.stringify(verdict.checks, null, 2));
   assert.equal(verdict.postable, true);
@@ -563,8 +631,8 @@ test('a snapshot taken for a PAYMENT cannot be used to approve a takeback', asyn
    * than being read as though the lane made no difference, which is precisely
    * what produced two true-but-irrelevant sentences on the night.
    */
-  const { od } = await chartAfterPostingPlanA();
-  const verdict = gateOverChart(od, { takeback: false });
+  const { od, db } = await chartAfterPostingPlanA();
+  const verdict = gateOverChart(od, { takeback: false, db });
 
   assert.equal(verdict.postable, false);
   assert.ok(verdict.failed.includes('MATCH_TAKEN_FOR_A_TAKEBACK'));
@@ -581,7 +649,7 @@ test('the ORDINARY approve is untouched — it still refuses this chart', async 
    * lane, and the payment lane still reads a paid, checked line as unpostable —
    * because for a payment it is.
    */
-  const { od } = await chartAfterPostingPlanA();
+  const { od, db } = await chartAfterPostingPlanA();
   const scored = claimMatch.scoreCandidate(REVERSAL_PROPOSAL, candidateFrom(od));
   assert.deepEqual(blockingCodes(scored.blockers).sort(), [
     'LINE_HAS_CLAIM_PAYMENT',
@@ -591,7 +659,7 @@ test('the ORDINARY approve is untouched — it still refuses this chart', async 
   const verdict = approvalGate.evaluateClaim({
     office: 'roland',
     claim: {
-      claimId: CLAIM_ID,
+      claimId: REVERSAL_CLAIM_ID,
       officeId: 'roland',
       patientName: 'Test 2, Stedi',
       claimNumber: String(OD_CLAIM_NUM),
@@ -607,7 +675,9 @@ test('the ORDINARY approve is untouched — it still refuses this chart', async 
     lines: [{ lineId: LINE_ID, position: 1, odClaimProcNum: OD_CLAIM_PROC_NUM, paidCents: -PAID_CENTS, flags: [] }],
     payment: { paidCents: -PAID_CENTS, batchClaimPaymentId: 'p1' },
     batchFlags: ['negative_total_payment'],
-    plannedClaimprocs: new Map(),
+    // The real plan state here too: on the PAYMENT lane a posted plan still
+    // holds its line, and this fixture is now the thing that proves it.
+    plannedClaimprocs: plannedFromDb(db),
     recoupmentAllowed: false,
   });
 
@@ -617,5 +687,75 @@ test('the ORDINARY approve is untouched — it still refuses this chart', async 
   assert.ok(
     !verdict.checks.some((c) => c.code === 'MATCH_TAKEN_FOR_A_TAKEBACK'),
     'and the lane check never appears on an ordinary checklist'
+  );
+});
+
+// ===========================================================================
+// 5. THE GAP THAT LET THIS FILE PASS WHILE STAGING REFUSED
+// ===========================================================================
+
+test('the fixture EARNS its pass: the plan map it evaluates against is not empty', async () => {
+  /*
+   * The guard on the gap itself.
+   *
+   * Every `evaluateClaim` above used to receive `plannedClaimprocs: new Map()`.
+   * With an empty map `CLAIMPROC_NOT_ALREADY_PLANNED` cannot fail, so 13 tests
+   * asserted a verdict that no chart state could have changed. If somebody
+   * reaches for `new Map()` again to make a test go green, this fails.
+   */
+  const { db } = await chartAfterPostingPlanA();
+  const planned = plannedFromDb(db);
+
+  assert.ok(planned.size > 0, 'the drain wrote a plan line and the fixture must see it');
+  const held = planned.get(OD_CLAIM_PROC_NUM);
+  assert.ok(held, `ClaimProcNum ${OD_CLAIM_PROC_NUM} must be in the map the gate reads`);
+  assert.equal(held.claimId, CLAIM_ID, 'and it is held by plan A, whose claim it is');
+  /*
+   * AND THE STATUS IS THE POINT. `posted` is what makes the partition release
+   * it; the map carrying `undefined` here would let the reversal through for
+   * the wrong reason and this file would be lying again.
+   */
+  assert.equal(held.status, 'posted', 'plan A really finished, and the map says so');
+});
+
+test('an ACTIVE plan still holds the line against a reversal — only a finished one lets go', async () => {
+  /*
+   * The other half of the partition, on the same driven chart. Taking money
+   * back out from under a payment that is still arriving is the genuinely
+   * unsafe case, and it stays refused on BOTH lanes.
+   */
+  const { od, db } = await chartAfterPostingPlanA();
+
+  // The same chart, but the plan holding the line is mid-flight rather than done.
+  db.table('rcm_posting_queue')[0].status = 'posting';
+
+  const verdict = gateOverChart(od, { takeback: true, db });
+  assert.equal(verdict.postable, false, 'a reversal must not slip past an in-flight plan');
+  assert.ok(verdict.failed.includes('CLAIMPROC_NOT_ALREADY_PLANNED'));
+  const check = verdict.checks.find((c) => c.code === 'CLAIMPROC_NOT_ALREADY_PLANNED');
+  // And the refusal NAMES the status, so the rendered fix is possible to act on.
+  assert.match(check.detail, /posting/);
+});
+
+test('a POSTED plan belonging to ANOTHER claim releases the line — the walk-3 refusal itself', async () => {
+  /*
+   * Staging, reproduced exactly. On the night, plan A held ClaimProcNum 535598
+   * and the reversal was a DIFFERENT claim, so `planned.claimId !== claim.claimId`
+   * and the conflict fired. Being on that posted plan is the takeback's
+   * precondition, so it must not.
+   */
+  const { od, db } = await chartAfterPostingPlanA();
+  // No hand-editing needed: the reversal is its own claim row (REVERSAL_CLAIM_ID)
+  // and plan A's line belongs to the claim it paid, which is the staging shape.
+  assert.notEqual(
+    db.table('rcm_posting_queue_line')[0].claim_id,
+    REVERSAL_CLAIM_ID,
+    'the plan line and the reversal must be different claims, as they are in production'
+  );
+
+  const verdict = gateOverChart(od, { takeback: true, db });
+  assert.ok(
+    !verdict.failed.includes('CLAIMPROC_NOT_ALREADY_PLANNED'),
+    'the plan the payment came FROM cannot be the reason its reversal is refused'
   );
 });
