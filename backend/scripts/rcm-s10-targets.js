@@ -223,9 +223,14 @@ const WALK_SPENT_IDS = Object.freeze({
   // 2026-08-25 walk, unwound 2026-08-26 02:28Z (§11.2).
   // 2026-08-26 walk, unwound 2026-08-26 01:25Z (§11.4).
   // 2026-08-28 walk night 2, unwound the same night (§11.5).
-  claims: Object.freeze([53784, 53785, 53805, 53806, 53830, 53831]),
-  procedures: Object.freeze([406124, 406125, 406272, 406273, 406430, 406431]),
-  claimProcs: Object.freeze([535194, 535195, 535348, 535349, 535592, 535593]),
+  // 2026-08-30 mini-walk 3, TABLED at the takeback; unwound 2026-08-30 (§11.7).
+  claims: Object.freeze([53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833]),
+  procedures: Object.freeze([
+    406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433,
+  ]),
+  claimProcs: Object.freeze([
+    535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599,
+  ]),
 });
 
 /**
@@ -243,7 +248,7 @@ const WALK_SPENT_IDS = Object.freeze({
  * pins that: a walk added to `WALK_SPENT_IDS` without moving this date leaves
  * the staleness screen certifying manifests it should refuse.
  */
-const WALK_SPENT_RECORDED_AT = '2026-08-28T00:00:00.000Z';
+const WALK_SPENT_RECORDED_AT = '2026-08-30T00:00:00.000Z';
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════

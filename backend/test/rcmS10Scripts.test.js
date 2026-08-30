@@ -245,24 +245,33 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
    * them in would make the inventory print '*** SPIKE 0b RESIDUE' beside rows 0b
    * never touched, and a label that is wrong is worse than no label.
    *
-   * ClaimPaymentNums 21399/21400 (and walk night 2's 21424/21425) are
-   * deliberately absent: the manifest has no field for a check, so "a future
-   * manifest must never name them" cannot apply.
+   * ClaimPaymentNums 21399/21400, walk night 2's 21424/21425 and mini-walk 3's
+   * 21436 are deliberately absent: the manifest has no field for a check, so "a
+   * future manifest must never name them" cannot apply. A `checks` bucket here
+   * would be a deny-list nothing reads — the exact defect PR #122 removed from
+   * three scripts, and the one `no script computes a deny-list it never reads`
+   * below exists to prevent.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  // THREE walks so far. The list GROWS by a set per walk; it is never rewritten,
+  // FOUR walks so far. The list GROWS by a set per walk; it is never rewritten,
   // because an id Open Dental has issued is never reissued.
-  assert.deepEqual([...T.WALK_SPENT_IDS.claims], [53784, 53785, 53805, 53806, 53830, 53831]);
+  assert.deepEqual(
+    [...T.WALK_SPENT_IDS.claims],
+    [53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833]
+  );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.procedures],
-    [406124, 406125, 406272, 406273, 406430, 406431]
+    [406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433]
   );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.claimProcs],
-    [535194, 535195, 535348, 535349, 535592, 535593]
+    [535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599]
   );
 
-  for (const id of [53784, 53785, 406124, 406125, 535194, 535195, 53830, 53831, 535592]) {
+  for (const id of [
+    53784, 53785, 406124, 406125, 535194, 535195, 53830, 53831, 535592,
+    53832, 53833, 406432, 406433, 535598, 535599,
+  ]) {
     assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
     for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
       assert.ok(!bucket.includes(id), `${id} must NOT be filed as Spike 0b residue`);
@@ -324,7 +333,7 @@ test('the spent-id screen refuses a manifest older than the last walk retired', 
   );
   assert.ok(refusal, 'a stale manifest must be refused even when no id collides');
   assert.match(refusal, /BEFORE the most recent/);
-  assert.match(refusal, /2026-08-28/);
+  assert.match(refusal, /2026-08-30/);
 });
 
 test('the spent-id screen refuses a manifest with no createdAt at all', () => {
@@ -364,8 +373,8 @@ test('WALK_SPENT_RECORDED_AT moves whenever the spent list grows', () => {
   const T = require(path.join(SCRIPTS, FILES.targets));
   const at = Date.parse(T.WALK_SPENT_RECORDED_AT);
   assert.ok(Number.isFinite(at), 'it must be a parseable ISO instant');
-  assert.ok(at >= Date.parse('2026-08-28T00:00:00.000Z'), 'walk night 2 is recorded');
-  assert.equal(T.WALK_SPENT_IDS.claims.length, 6, 'three walks, two claims each');
+  assert.ok(at >= Date.parse('2026-08-30T00:00:00.000Z'), 'mini-walk 3 is recorded');
+  assert.equal(T.WALK_SPENT_IDS.claims.length, 8, 'four walks, two claims each');
 });
 
 test('rcm-s10-835.js CONSULTS the screen before it writes anything', () => {
