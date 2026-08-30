@@ -45,8 +45,29 @@ import {
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `absent` IS NOT `failed`, AND THAT IS THE WHOLE POINT OF THIS UNION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This panel used to render a red failure line for ANY error the checklist read
+ * returned — a 404 included. A 404 from `GET /:id/recoupment` means the check is
+ * not there for this office (a stale id, a check retired underneath an open tab,
+ * a link followed after an office switch). It does not mean anything went wrong,
+ * and it certainly does not mean anything went wrong WITH A TAKEBACK.
+ *
+ * A false red on the one surface whose subject is money moving BACKWARDS is a
+ * trust defect, not a cosmetic one: a biller who has learned that this panel
+ * cries wolf is a biller who will scroll past the day it does not. So an absence
+ * renders nothing, exactly as `recoupmentClaims === 0` already does, and the
+ * failure line is reserved for real errors — a 500, a timeout, a refusal.
+ *
+ * Handed to Stage B by Stage A's review, which found it while rebuilding this
+ * screen's neighbour.
+ */
 type State =
   | { kind: "loading" }
+  /** There is no such check here. Render nothing — see above. */
+  | { kind: "absent" }
   | { kind: "loaded"; checklist: RecoupmentChecklist }
   | { kind: "failed"; message: string };
 
@@ -99,15 +120,22 @@ export function RecoupmentPanel({
         // irreversible path by omission.
         setPath(checklist.defaultPath);
       })
-      .catch((err) =>
-        live
-          ? setState({
-              kind: "failed",
-              message:
-                err instanceof RcmApiError ? err.message : "The takeback panel could not load.",
-            })
-          : undefined,
-      );
+      .catch((err) => {
+        if (!live) return;
+        /*
+         * 404 = there is no such check for this office. An ABSENCE, not a
+         * failure, and the panel says nothing about it.
+         */
+        if (err instanceof RcmApiError && err.status === 404) {
+          setState({ kind: "absent" });
+          return;
+        }
+        setState({
+          kind: "failed",
+          message:
+            err instanceof RcmApiError ? err.message : "The takeback panel could not load.",
+        });
+      });
     return () => {
       live = false;
     };
@@ -120,6 +148,13 @@ export function RecoupmentPanel({
       </div>
     );
   }
+  /*
+   * Nothing at all — the same silence a check with no takeback on it gets. A
+   * panel that appears to say "there is no takeback here" would be an invitation
+   * to go looking for one.
+   */
+  if (state.kind === "absent") return null;
+
   if (state.kind === "failed") {
     return (
       <p className="p-4 text-sm text-rose-700 dark:text-rose-400" data-testid="recoupment-failed">

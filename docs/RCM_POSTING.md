@@ -3365,6 +3365,118 @@ the mount's `rcm.read` with no gate on the view, and
 `admin` all see the `set_aside` view, its count, and the row under `all`. A state
 you can undo has to be a state you can find.
 
+### 14.0b The workbench, and the decided figures (Stage B1)
+
+> `/rcm/claims/:id`. The screen a biller spends her day on: the EOB beside the
+> chart, the write-off decision between them, and one line across the top saying
+> where the patient's number lands.
+
+#### The money, defined once — copied verbatim from the source
+
+Per claim line the carrier gives **billed** (B), **allowed** (A) and **paid** (P):
+
+```
+contractual write-off   W = B − A     the CARRIER's figure
+patient remainder       R = A − P     what the EOB says the patient owes
+```
+
+W is always accepted by this slice: displayed as a fact, never offered as a
+choice. (A per-office "do not accept contractual write-offs" flag is a later
+slice and is deliberately not built.)
+
+R is the whole decision, and it is one enum per line:
+
+| `line_decision` | Effect | Reason |
+| --- | --- | --- |
+| `bill_patient` | the patient is billed R; their number matches the EOB | forbidden |
+| `office_writeoff` | the office absorbs R; their number is R below the EOB **on purpose** | **required**, from the canned five |
+
+`NULL` means nobody has said, and the money reads it as `bill_patient`. A line
+where R is zero has nothing to decide and renders without the control.
+
+**There is no amount field anywhere on this screen.** A line is written off whole
+or billed whole — the Roland biller has never split one, and an amount box would
+invite a shape nothing downstream can express.
+
+Over a claim:
+
+```
+EOB patient responsibility        Σ R over every line
+decided office write-off total    Σ R over office_writeoff lines
+projected patient responsibility  Σ R over bill_patient lines
+```
+
+The five canned reasons, shipped **from the server** so the later per-office
+slice changes one file: X-rays — bitewings · X-rays — panoramic · X-rays — other
+films/images (OFIs) · Not chargeable for this procedure · Build-up.
+
+#### The verdict line, and its two registers
+
+Three states — GREEN (projected == EOB), AMBER (below the EOB on purpose, every
+contributing line explained), RED (anything else; cannot approve). The full rules
+and the gate's mirror of them are `docs/RCM_APPROVAL_GATE.md` §3.5.
+
+**The register is a required argument with no default.** Before posting — all of
+shadow mode — the verdict is a PROJECTION and says *"will owe … once posted"*.
+After a real post it is recomputed from the read-back and says *"owes … —
+confirmed in Open Dental"*. A projection worded as a confirmation is the
+honest-states rule failing in the most expensive place there is, so a caller that
+has not decided which one it holds cannot get a sentence out of the module at
+all.
+
+#### The per-office mode: how a write-off it CHOSE is booked
+
+`rcm_office_settings.writeoff_mode`, admin-only, read-only on the Admin → RCM
+posting card in B1.
+
+| Mode | What the drain will write (B2) | Notes |
+| --- | --- | --- |
+| `writeoff_field` **(default — Roland)** | claimproc `WriteOff` = W + decided; `InsPayAmt` unchanged | the verb the drain writes today; no adjustment type is used |
+| `adjustment_by_name` | `WriteOff` = W as today, **plus** 6d's adjustment verb for the decided amount | AdjType resolved live **by name** from `writeoff_adjtype_name` |
+
+**D-13 applies in full.** The setting stores a NAME, never a DefNum: definition
+numbers are per-database, and a number copied between practices writes the wrong
+type into the wrong chart. A name that is empty is refused by the route AND by
+`rcm_office_settings_writeoff_adjtype_check`; a name that does not resolve in
+that office's own definitions refuses the whole claim at post time — never a
+default, never a number.
+
+#### THE REASON DOES NOT GO TO OPEN DENTAL IN THIS SLICE
+
+It lives in CareIN: on the review line, on the posting line's snapshot, in the
+audit trail, and on the screen. Carrying it into Open Dental's claim note is
+**S6** — append-only, probe first — and until then the Finished screen says
+*"Reason recorded in CareIN"* rather than implying the chart knows.
+
+#### B1 refuses to post a decided write-off
+
+`office_writeoff_not_postable`, a `blocked` reason with nothing sent. This
+build's writes still carry the carrier's verbatim figures, so posting a claim
+whose posting says the office absorbs $30 would put a number in the chart the
+screen never showed and bill the patient money the office had written off.
+**Nothing may reach a chart that the screen did not show.** B2 makes the write
+carry the decided figure and removes the reason; its test flips from "refuses" to
+"posts the decided amount".
+
+#### Identity is a gate check, not a warning
+
+The workbench renders the EOB's patient name, date of birth and subscriber id
+against Open Dental's. Name or date of birth disagreeing **blocks** — the remedy
+is to match the claim up again, never an override. A subscriber id disagreeing is
+reported and does not block: carriers reformat member numbers constantly, and
+refusing on one would refuse most of a normal day for no safety gained. A field
+Open Dental did not send reads as *not recorded* and never as a mismatch.
+
+#### Found, not built
+
+A slice of the patient's **ledger** belongs on the right-hand side and is not
+there. Every Open Dental read this module makes is about a CLAIM
+(`/claims`, `/claimprocs`, `/procedurelogs`); a ledger needs the patient's
+payments and adjustments, which is a new verb, and B1 adds none. The slot is
+labelled on screen rather than mocked up.
+
+---
+
 ### 14.1 The posting machinery
 
 ![the posting queue, waiting](screenshots/rcm-posting/posting-01-queued.png)
@@ -3581,6 +3693,14 @@ somebody can be handed.
    `decided_at` per line, which IS the touch stamp this card wants. Left open
    rather than built here, so the two land together rather than a stamp shipping
    with nothing writing to it.
+
+   ✅ **CLOSED by Stage B1 (2026-08-30).** `rcm_procedure_lines.decided_at` /
+   `decided_by` are the touch stamp, and the list read carries the newest one per
+   check as `lastDecidedAt` / `lastDecidedBy`. Today's card ORs it with the
+   approve attempt and reads whichever is newer: a check somebody decided a line
+   on this morning and approved last week is a check she last touched this
+   morning. No new state, no new endpoint — the existing list read got two more
+   fields and one more statement per page.
 
 ## 16. Out of scope
 

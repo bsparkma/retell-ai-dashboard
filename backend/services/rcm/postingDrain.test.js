@@ -504,6 +504,44 @@ test('a negative write-off is caught even though it is not a recoupment', () => 
   );
 });
 
+test('STAGE B1: a decided office write-off REFUSES the post, with nothing sent', () => {
+  /*
+   * RED BEFORE GREEN, THE OTHER WAY ROUND.
+   *
+   * A biller decided the office absorbs a line's patient remainder, and
+   * approving froze that onto the posting. This build's Open Dental writes still
+   * carry the CARRIER's verbatim figures — `odPostingWrites` sends
+   * `intended_write_off_cents` and nothing else — so posting now would put a
+   * number in the chart that the screen never showed, and leave the patient
+   * billed for money the office had written off.
+   *
+   * Nothing may reach a chart that the screen did not show. B2 makes the write
+   * carry the decided figure and DELETES the refusal; this test flips to prove
+   * the decided amount posts.
+   */
+  const base = goodCtx();
+  const blocked = postingDrain.checkPreconditions({
+    ...base,
+    lines: [{ ...base.lines[0], decidedWriteOffCents: 3000 }],
+  });
+  assert.equal(blocked.reason, postingDrain.BLOCK_REASONS.OFFICE_WRITEOFF_NOT_POSTABLE);
+  assert.match(blocked.detail, /office write-offs post once the next update lands/i);
+  assert.match(blocked.detail, /Nothing was sent to Open Dental/);
+});
+
+test('…and a line with NO office write-off is untouched by that refusal', () => {
+  const base = goodCtx();
+  // null is the shape a line with no decision carries; the CHECK constraint
+  // keeps the three columns moving together, so 0 is not a state that exists.
+  assert.equal(
+    postingDrain.checkPreconditions({
+      ...base,
+      lines: [{ ...base.lines[0], decidedWriteOffCents: null }],
+    }),
+    null
+  );
+});
+
 test('a plan with no lines, or a line naming no claim, cannot be drained', () => {
   const base = goodCtx();
   assert.equal(

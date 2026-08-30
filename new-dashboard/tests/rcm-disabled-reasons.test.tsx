@@ -415,7 +415,9 @@ describe("no RCM screen greys a control without saying why", () => {
     const other = screen.getByTestId("confirm-53785") as HTMLButtonElement;
     expect(other.disabled).toBe(true);
     expect(screen.getByTestId("confirm-reason-53785").textContent).toContain(
-      "One claim per remittance — 53784 is linked",
+      // Stage B: one of OUR claims links to ONE chart claim, and the sentence now
+      // says that rather than talking about the remittance, which has many.
+      "This claim is already linked to 53784",
     );
 
     // And the dead Approve button now names where approving lives.

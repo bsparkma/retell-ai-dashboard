@@ -84,6 +84,12 @@ const HEIGHT = {
   "shell-03-check-ready-to-post": [1060, 1340],
   "shell-04-check-shadow": [1080, 1360],
   "shell-05-set-aside-dialog": [1200, 1520],
+  // ── Stage B1: the workbench ──
+  "bench-01-verdict-green": [1140, 1460],
+  "bench-02-verdict-amber": [1260, 1600],
+  "bench-03-verdict-red": [1220, 1560],
+  "bench-04-identity-mismatch": [1200, 1520],
+  "bench-05-reason-picker": [1260, 1600],
 };
 
 /** A dump with no measured height still gets shot, generously. */
@@ -97,10 +103,14 @@ const WIDTHS = [
 const THEMES = ["light", "dark"];
 
 const dumps = readdirSync(shotsDir)
-  .filter((f) => (f.startsWith("ux-") || f.startsWith("shell-")) && f.endsWith(".html"))
+  .filter(
+    (f) =>
+      (f.startsWith("ux-") || f.startsWith("shell-") || f.startsWith("bench-")) &&
+      f.endsWith(".html"),
+  )
   .sort();
 if (dumps.length === 0) {
-  console.error("No ux-*.html or shell-*.html dumps to shoot.");
+  console.error("No ux-*.html, shell-*.html or bench-*.html dumps to shoot.");
   process.exit(1);
 }
 

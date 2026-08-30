@@ -221,6 +221,12 @@ class FakeRcmDb {
           const [, col] = m;
           return (r) => r[col] == null;
         }
+        // …and its opposite, which the fake could not express until Stage B's
+        // "where you left off" read asked for the lines somebody has decided.
+        if ((m = term.match(/^(\w+) IS NOT NULL$/))) {
+          const [, col] = m;
+          return (r) => r[col] != null;
+        }
         // `col <> 'literal'` — runClaimMatch re-asserts the match status inside
         // its own WHERE so the check and the write are ONE statement. Without
         // this the fake could not express the guard, and the lost-confirmation
@@ -1186,6 +1192,13 @@ function seedOfficeSettings(db, enabled = {}) {
       drain_enabled: enabled[office] === true,
       drain_updated_at: null,
       drain_updated_by: null,
+      /*
+       * Stage B1. Seeded EXPLICITLY rather than omitted: an omitted key reads
+       * as `undefined` out of the fake, which is a shape pg never produces —
+       * the same lesson 6d's FakeRcmDb note records.
+       */
+      writeoff_mode: 'writeoff_field',
+      writeoff_adjtype_name: null,
     }))
   );
   return db;

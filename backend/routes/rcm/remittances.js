@@ -382,7 +382,7 @@ function attentionFor(batch, claims, approval = {}) {
 }
 
 /** Map a batch row + its claims to the list/detail wire shape. */
-function toBatchWire(batch, claims, source, actors, approval = {}) {
+function toBatchWire(batch, claims, source, actors, approval = {}, decided = null) {
   const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
   const attention = attentionFor(
     { status: batch.status, flags: batchFlags, setAside: batch.set_aside_at != null },
@@ -488,7 +488,98 @@ function toBatchWire(batch, claims, source, actors, approval = {}) {
       : null,
     setAsideReason: batch.set_aside_reason || null,
     setAsideNote: batch.set_aside_reason_note || null,
+
+    /**
+     * WHEN SOMEBODY LAST DECIDED A WRITE-OFF HERE — §15.2's finding 9 (Stage B).
+     *
+     * The per-user touch stamp "where you left off" never had. Parking and
+     * pressing Approve are the two facts it worked from, and neither is what a
+     * biller means by leaving off: that is the check she was reading when the
+     * phone rang, which she neither parked nor tried to approve.
+     *
+     * Null throughout means nobody has decided anything on this check — NOT
+     * "decided by nobody". The name falls back to the raw crosswalk key rather
+     * than to "somebody", on the same contract `parkedBy` has: an un-crosswalked
+     * actor is a fact worth seeing.
+     */
+    lastDecidedAt: iso(decided ? decided.at : null),
+    lastDecidedBy: decided && decided.byKey
+      ? (actors[decided.byKey] || {}).displayName || decided.byKey
+      : null,
   };
+}
+
+/**
+ * WHEN SOMEBODY LAST DECIDED A WRITE-OFF ON THIS CHECK, AND WHO — §15.2's ninth
+ * finding, closed.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT WAS MISSING
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Today's "where you left off" card had two attributable facts to work from:
+ * a check somebody PARKED, and a check somebody pressed Approve on. Both are
+ * real, and neither is what a biller means by "where I left off" on a Tuesday
+ * afternoon — that is the check she was reading when the phone rang, which she
+ * neither parked nor tried to approve.
+ *
+ * Stage B gives it one. A write-off decision is a per-user, per-instant act on a
+ * specific check, recorded because it has to be recorded anyway. There is no new
+ * state and no new endpoint: this widens a read the list already makes.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TWO STATEMENTS, NOT A JOIN — the same discipline `readProvenance` follows
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `office_id` is a column on the batch links, on the claims AND on the lines.
+ * A join written on ids alone would be a cross-office read waiting for a uuid
+ * collision, and scoping every leg of a three-table join is the kind of thing
+ * that is right the day it is written and wrong the day somebody edits it.
+ *
+ * So: the page's claim ids out of the links, then the decided lines for those
+ * claims, both office-scoped in their own WHERE, and the reduction in JS. Two
+ * round trips for a whole page, not per row.
+ *
+ * @param {{ query: Function }} pool
+ * @param {string} office
+ * @param {ReadonlyArray<string>} batchIds
+ * @returns {Promise<Map<string, { at: Date, byKey: string|null }>>}
+ */
+async function lastDecidedByBatch(pool, office, batchIds) {
+  if (batchIds.length === 0) return new Map();
+
+  const links = await pool.query(
+    `SELECT batch_id, claim_id FROM rcm_batch_claim_payments ` +
+      `WHERE office_id = $1 AND batch_id = ANY($2::uuid[])`,
+    [office, batchIds]
+  );
+  /** @type {Map<string, string>} claim → the batch it arrived on */
+  const batchOfClaim = new Map();
+  for (const row of links.rows) {
+    if (row.claim_id) batchOfClaim.set(String(row.claim_id), String(row.batch_id));
+  }
+  if (batchOfClaim.size === 0) return new Map();
+
+  const lines = await pool.query(
+    `SELECT claim_id, decided_at, decided_by FROM rcm_procedure_lines ` +
+      `WHERE office_id = $1 AND claim_id = ANY($2::uuid[]) AND decided_at IS NOT NULL`,
+    [office, [...batchOfClaim.keys()]]
+  );
+
+  /** @type {Map<string, { at: Date, byKey: string|null }>} */
+  const out = new Map();
+  for (const row of lines.rows) {
+    const batchId = batchOfClaim.get(String(row.claim_id));
+    if (!batchId || row.decided_at == null) continue;
+    const current = out.get(batchId);
+    // NEWEST WINS. "Where you left off" is about the last time she touched it,
+    // so an older decision on the same check must not overwrite a newer one.
+    if (!current || Date.parse(row.decided_at) > Date.parse(current.at)) {
+      out.set(batchId, {
+        at: row.decided_at,
+        byKey: row.decided_by == null ? null : String(row.decided_by),
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -865,6 +956,7 @@ router.get(
           batches: [],
           claims: new Map(),
           uploads: new Map(),
+          decided: new Map(),
           actors: {},
           queued,
           total: marked.length,
@@ -885,9 +977,12 @@ router.get(
       const byId = new Map(page.rows.map((r) => [r.batch_id, r]));
       const ordered = pageIds.map((id) => byId.get(id)).filter(Boolean);
 
-      const [claims, uploads] = await Promise.all([
+      const [claims, uploads, decided] = await Promise.all([
         claimsByBatch(pool, office, pageIds),
         uploadsByBatch(pool, office, ordered),
+        // §15.2 finding 9. One statement for the page, joined to the id set that
+        // is already in hand — it costs a round trip, not a round trip per row.
+        lastDecidedByBatch(pool, office, pageIds),
       ]);
       const actors = await describeActors(pool, [
         ...ordered.map((b) => b.created_by),
@@ -897,6 +992,9 @@ router.get(
         // that could only print a crosswalk key would not do that job.
         ...ordered.map((b) => b.parked_by),
         ...ordered.map((b) => b.set_aside_by),
+        // …and whoever last decided a write-off on each check, for the same
+        // reason: the card names the person.
+        ...[...decided.values()].map((d) => d.byKey),
         ...[...uploads.values()].map((u) => u.uploadedByKey),
       ]);
 
@@ -904,6 +1002,7 @@ router.get(
         batches: ordered,
         claims,
         uploads,
+        decided,
         actors,
         queued,
         total: marked.length,
@@ -922,10 +1021,17 @@ router.get(
     const remittances = loaded.batches.map((batch) => {
       const claims = loaded.claims.get(batch.batch_id) || [];
       const upload = loaded.uploads.get(batch.batch_id) || null;
-      const wire = toBatchWire(batch, claims, upload ? upload.source : null, loaded.actors, {
-        hasQueue: loaded.queued.has(batch.batch_id),
-        queueStatuses: statusesOf(loaded.queued.get(batch.batch_id)),
-      });
+      const wire = toBatchWire(
+        batch,
+        claims,
+        upload ? upload.source : null,
+        loaded.actors,
+        {
+          hasQueue: loaded.queued.has(batch.batch_id),
+          queueStatuses: statusesOf(loaded.queued.get(batch.batch_id)),
+        },
+        loaded.decided.get(batch.batch_id) || null
+      );
       return {
         ...wire,
         upload: upload
@@ -1008,10 +1114,15 @@ router.get(
         claims.map((c) => loadClaimBundle(pool, office, c.claimId, { includeSnapshot: false }))
       );
 
+      // §15.2 finding 9 — the per-user touch stamp, on the detail read too, so
+      // the check's own page and Today's card say the same thing about it.
+      const decided = (await lastDecidedByBatch(pool, office, [batchId])).get(batchId) || null;
+
       const actors = await describeActors(pool, [
         batch.created_by,
         batch.approval_attempted_by,
         upload && upload.uploadedByKey,
+        decided && decided.byKey,
         ...claims.map((c) => c.odMatchedByKey),
         ...claims.map((c) => c.reviewedByKey),
         ...claims.map((c) => c.approvedByKey),
@@ -1024,6 +1135,7 @@ router.get(
         claims,
         details,
         upload,
+        decided,
         actors,
         hasQueue: queued.has(batchId),
         queueStatuses: statusesOf(queued.get(batchId)),
@@ -1040,7 +1152,8 @@ router.get(
       loaded.claims,
       loaded.upload ? loaded.upload.source : null,
       loaded.actors,
-      { hasQueue: loaded.hasQueue, queueStatuses: loaded.queueStatuses }
+      { hasQueue: loaded.hasQueue, queueStatuses: loaded.queueStatuses },
+      loaded.decided
     );
 
     return res.json({
@@ -1288,6 +1401,16 @@ router.get(
         alreadyQueued: c.alreadyQueued,
         checks: c.checks,
         failed: c.failed,
+        /**
+         * THE PATIENT-RESPONSIBILITY VERDICT THIS CLAIM WAS JUDGED ON (Stage B1).
+         *
+         * Carried out whole so the panel prints the gate's own numbers rather
+         * than a second computation of them. It is the same object the claim
+         * read returns, from the same function — which is what makes the
+         * checklist row and the workbench's verdict line one statement rather
+         * than two that agree today.
+         */
+        verdict: c.verdict,
       })),
       postableCount: preview.postable.length,
       withheldCount: preview.withheld.length,

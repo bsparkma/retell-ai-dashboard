@@ -129,6 +129,16 @@ router.use(requireOffice);
 const QUEUE_PATHS = Object.freeze([
   /^\/claims\/[^/]+\/match$/,
   /^\/claims\/[^/]+\/review$/,
+  /*
+   * THE PER-LINE WRITE-OFF DECISION (Stage B1). Same tier, same argument as the
+   * review marker above it.
+   *
+   * It writes four columns on one of OUR rows and reaches no chart, no posting
+   * and no other claim. Deciding that the office absorbs a line is the reviewing
+   * act; authorising money to move is `rcm.write`, at the gate, and this route
+   * cannot reach it.
+   */
+  /^\/claims\/[^/]+\/lines\/[^/]+\/decision$/,
   /^\/remittances\/[^/]+\/match$/,
   /*
    * THE FOUR WORKLIST STATES (Stage A). Same tier, same argument.

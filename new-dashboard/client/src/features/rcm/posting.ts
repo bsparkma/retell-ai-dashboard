@@ -168,6 +168,21 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
     label: "Open Dental writes are switched off in this environment",
     fix: "This is a development safety setting. Nothing was sent.",
   },
+  /*
+   * STAGE B1 ONLY, AND B2 REMOVES IT.
+   *
+   * A biller decided the office absorbs a line, and this build still sends the
+   * carrier's own figures — so posting would put a number in the chart she never
+   * saw and bill the patient money the office had written off. The fix line
+   * offers the thing she can do TODAY rather than only naming a release.
+   */
+  office_writeoff_not_postable: {
+    label: "A line here is written off by the office",
+    fix:
+      "Office write-offs post once the next update lands. Nothing was sent to Open Dental. " +
+      "This check can wait, or you can change the line back to billing the patient and post " +
+      "it now.",
+  },
 };
 
 /**

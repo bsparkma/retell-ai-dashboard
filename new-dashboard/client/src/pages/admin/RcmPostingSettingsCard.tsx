@@ -178,6 +178,25 @@ function OfficeRow({ office }: { office: RcmOfficeId }) {
             stays switched off until it exists.
           </p>
         )}
+
+        {/*
+          ── HOW THIS PRACTICE BOOKS A WRITE-OFF IT CHOSE — READ-ONLY (Stage B1)
+          ────────────────────────────────────────────────────────────────────
+          Shown here because it belongs beside the other posting settings and an
+          admin needs to be able to READ it: it decides which Open Dental call a
+          write-off becomes, and under the adjustment mode a missing type name
+          refuses the claim outright.
+
+          It is NOT editable from this card, deliberately. The endpoint exists
+          and is admin-only; the control for it is a later slice's, alongside
+          per-office editing of the reasons themselves. A half-built editor here
+          would be a second place to change this, disagreeing with the first.
+        */}
+        <p className="mt-1 text-xs text-muted-foreground" data-testid={`rcm-writeoff-mode-${office}`}>
+          {settings.writeoffMode === "writeoff_field"
+            ? "A write-off this practice chooses goes into the claim line's own write-off field, with a note. No adjustment type is used."
+            : `A write-off this practice chooses is booked as an adjustment of type “${settings.writeoffAdjTypeName ?? "— none named —"}”, looked up by name in this practice's own Open Dental.`}
+        </p>
       </div>
 
       <button

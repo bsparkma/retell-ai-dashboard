@@ -60,6 +60,11 @@ test('GET: an admin sees the switch, the ceiling, and no change evidence yet', a
       // or the toggle reads as broken.
       postingEnabled: true,
       rowMissing: false,
+      // Stage B1. Roland books a voluntary write-off into the claimproc's own
+      // WriteOff field, which is the default every office arrives with.
+      writeoffMode: 'writeoff_field',
+      writeoffAdjTypeName: null,
+      writeoffModes: ['writeoff_field', 'adjustment_by_name'],
     });
   } finally {
     await app.close();
@@ -337,6 +342,153 @@ test('a super_admin may flip it — the platform tier passes every check', async
     const res = await put(app, { drainEnabled: true });
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(res.body.settings.drainEnabled, true);
+  } finally {
+    await app.close();
+  }
+});
+
+// ─── How this practice books a write-off it chose (Stage B1) ────────────────
+
+/**
+ * The write-off mode is a SECOND route, not a wider body on the switch.
+ *
+ * The claims worth pinning are the two that decide what reaches a chart: the
+ * mode names an Open Dental call, and `adjustment_by_name` without a name is a
+ * refusal rather than a default (D-13 — definition numbers differ between
+ * practices, so a fallback would write the wrong type into the wrong chart).
+ */
+const putMode = (app, body, office = 'roland') =>
+  api(app.baseUrl, 'PUT', `/api/rcm/office-settings/${office}/writeoff-mode?office=${office}`, {
+    body: JSON.stringify(body),
+    json: true,
+  });
+
+test('the two modes are the two the migration CHECK holds', () => {
+  const migration = require('../../migrations-tenant/1787600000000_rcm_line_decisions');
+  const postingGate = require('../../services/rcm/postingGate');
+  // Declared in the service rather than imported from the migration — a service
+  // must not take a migration as a runtime dependency — so the agreement is a
+  // test rather than a shared constant.
+  assert.deepEqual([...postingGate.WRITEOFF_MODES], [...migration.WRITEOFF_MODES]);
+  assert.equal(postingGate.DEFAULT_WRITEOFF_MODE, 'writeoff_field');
+});
+
+test('every office arrives on the default — Roland\'s way, which the drain already writes', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    const res = await get(app);
+    assert.equal(res.body.settings.writeoffMode, 'writeoff_field');
+    assert.equal(res.body.settings.writeoffAdjTypeName, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test('switching to the adjustment mode stores the NAME, never a number', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    const res = await putMode(app, {
+      writeoffMode: 'adjustment_by_name',
+      writeoffAdjTypeName: '  Courtesy write-off  ',
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.settings.writeoffMode, 'adjustment_by_name');
+    assert.equal(res.body.settings.writeoffAdjTypeName, 'Courtesy write-off', 'trimmed');
+    // And the switch's own timestamp did NOT move — that answers a different
+    // question, and dating the shadow gate to a write-off edit would be wrong.
+    assert.equal(res.body.settings.updatedAt, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test('the adjustment mode with NO name is refused before it can be stored (D-13)', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    for (const name of [undefined, null, '', '   ']) {
+      const res = await putMode(app, { writeoffMode: 'adjustment_by_name', writeoffAdjTypeName: name });
+      assert.equal(res.status, 400, JSON.stringify(name));
+      assert.equal(res.body.code, 'ADJTYPE_NAME_REQUIRED');
+      assert.match(res.body.error, /A number will not do/);
+    }
+    // Nothing moved.
+    assert.equal((await get(app)).body.settings.writeoffMode, 'writeoff_field');
+  } finally {
+    await app.close();
+  }
+});
+
+test('an unrecognised mode is refused rather than coerced', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    for (const mode of ['adjustment', '', null, 'WRITEOFF_FIELD']) {
+      const res = await putMode(app, { writeoffMode: mode });
+      assert.equal(res.status, 400, JSON.stringify(mode));
+      assert.equal(res.body.code, 'INVALID_SETTING');
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('the name is KEPT when switching back, so a practice need not retype it', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    await putMode(app, { writeoffMode: 'adjustment_by_name', writeoffAdjTypeName: 'Courtesy' });
+    const back = await putMode(app, {
+      writeoffMode: 'writeoff_field',
+      writeoffAdjTypeName: 'Courtesy',
+    });
+    assert.equal(back.body.settings.writeoffMode, 'writeoff_field');
+    assert.equal(back.body.settings.writeoffAdjTypeName, 'Courtesy');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the write-off mode is `rcm.settings` too — not the tier that presses Post', async () => {
+  for (const role of ['office', 'rcm_biller', 'reviewer']) {
+    const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+    const app = await bootRcmApp({ db, role });
+    try {
+      const res = await putMode(app, { writeoffMode: 'writeoff_field' });
+      assert.equal(res.status, 403, role);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('the path office is an assertion that can only refuse, never redirect', async () => {
+  const db = seedActor(seedOfficeSettings(new FakeRcmDb()));
+  const app = await bootRcmApp({ db });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'PUT',
+      '/api/rcm/office-settings/valley/writeoff-mode?office=roland',
+      { body: JSON.stringify({ writeoffMode: 'writeoff_field' }), json: true }
+    );
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'OFFICE_MISMATCH');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a missing settings row is a 409 that names the fix, not a row this route mints', async () => {
+  const db = seedActor(new FakeRcmDb());
+  const app = await bootRcmApp({ db });
+  try {
+    const res = await putMode(app, { writeoffMode: 'writeoff_field' });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'OFFICE_SETTINGS_MISSING');
+    assert.equal(db.table('rcm_office_settings').length, 0, 'and it did NOT create one');
   } finally {
     await app.close();
   }

@@ -57,7 +57,70 @@ const LINE = {
   flags: [] as string[],
   odClaimProcNum: 533930,
   adjustments: [] as unknown[],
+  // Stage B1 — the carrier arithmetic the SERVER computes. Billed 1200, allowed
+  // 900, paid 450, so the contract took 300 and the patient is left 450.
+  contractualWriteOffCents: 30000,
+  patientRemainderCents: 45000,
+  decision: null as string | null,
+  decisionReason: null as string | null,
+  decidedBy: null as string | null,
+  decidedAt: null as string | null,
 };
+
+/** A second, smaller line — the one the office writes off in the amber shot. */
+const XRAY_LINE = {
+  ...LINE,
+  lineId: "pl-2",
+  position: 2,
+  billedCode: "D0274",
+  code: "D0274",
+  description: "Bitewings - four radiographic images",
+  billedCents: 8900,
+  allowedCents: 6000,
+  paidCents: 3000,
+  adjustmentCents: 2900,
+  patientRespCents: 3000,
+  writeOffCents: 2900,
+  odClaimProcNum: 533931,
+  contractualWriteOffCents: 2900,
+  patientRemainderCents: 3000,
+};
+
+/** The five canned reasons, exactly as the server ships them. */
+const WRITEOFF_REASONS = [
+  { slug: "xrays_bitewings", label: "X-rays — bitewings" },
+  { slug: "xrays_panoramic", label: "X-rays — panoramic" },
+  { slug: "xrays_other", label: "X-rays — other films/images (OFIs)" },
+  { slug: "not_chargeable", label: "Not chargeable for this procedure" },
+  { slug: "build_up", label: "Build-up" },
+];
+
+/** The identity comparison, agreeing unless a shot says otherwise. */
+const identity = (over: Record<string, unknown> = {}) => ({
+  matched: true,
+  blocking: false,
+  fields: [
+    { field: "name", label: "Name", eob: "Stedi Test 2", od: "Test 2, Stedi", status: "agrees", blocking: false },
+    { field: "dob", label: "Date of birth", eob: "1988-07-14", od: "1988-07-14", status: "agrees", blocking: false },
+    { field: "subscriber", label: "Subscriber ID", eob: "SY-4471902", od: "SY4471902", status: "agrees", blocking: false },
+  ],
+  ...over,
+});
+
+/** What Open Dental holds for the confirmed claim, as read at match time. */
+const chart = (over: Record<string, unknown> = {}) => ({
+  odClaimNum: 53784,
+  claimStatus: "S",
+  fetchedAt: "2026-08-26T01:00:00.000Z",
+  billedCents: 128900,
+  insPaidCents: 0,
+  writeOffCents: 0,
+  lines: [
+    { odClaimProcNum: 533930, code: "D2740", status: "NotReceived", feeBilledCents: 120000, insEstCents: 60000, insPayAmtCents: 0, writeOffCents: 0 },
+    { odClaimProcNum: 533931, code: "D0274", status: "NotReceived", feeBilledCents: 8900, insEstCents: null, insPayAmtCents: 0, writeOffCents: 0 },
+  ],
+  ...over,
+});
 
 const baseClaim = {
   claimId: "c-1",
@@ -91,9 +154,15 @@ const baseClaim = {
   postingQueueId: null as string | null,
   approvedAt: null as string | null,
   createdAt: "2026-03-05T12:00:00.000Z",
-  lines: [LINE],
+  lines: [LINE, XRAY_LINE],
   provenance: null as unknown,
   matchSnapshotStale: false,
+  // Stage B1 — assembled server-side; absent on a stale-shaped snapshot.
+  patientDob: "1988-07-14",
+  subscriberId: "SY-4471902",
+  verdict: null as unknown,
+  identity: null as unknown,
+  chart: null as unknown,
 };
 
 const claim = (over: Partial<typeof baseClaim> = {}) => ({ ...baseClaim, ...over });
@@ -372,6 +441,7 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     getClaim: vi.fn(async (office: string) => ({
       office,
       claim: shots.claim,
+      writeoffReasons: WRITEOFF_REASONS,
       matchRules: {
         amountNearCents: 500,
         dateNearDays: 3,
@@ -842,5 +912,161 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     fireEvent.click(await screen.findByTestId("check-set-aside"));
     await waitFor(() => expect(screen.getByTestId("check-set-aside-dialog")).toBeTruthy());
     dump("shell-05-set-aside-dialog");
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Stage B1 — the workbench: the verdict, the identity check, the decision
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** A confirmed claim, so the workbench shows the chart beside the EOB. */
+  const confirmedClaim = (over: Record<string, unknown> = {}) =>
+    claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53784,
+      odMatchAt: "2026-08-26T01:00:00.000Z",
+      odMatchConfirmedAt: "2026-08-26T01:00:00.000Z",
+      odMatchedBy: "Billing User",
+      reviewedAt: "2026-08-26T01:05:00.000Z",
+      reviewedBy: "Billing User",
+      reviewNote: "Crown and bitewings, nothing unusual.",
+      identity: identity(),
+      chart: chart(),
+      ...over,
+    });
+
+  it("bench-01-verdict-green — the patient's number matches the EOB", async () => {
+    shots.claim = confirmedClaim({
+      verdict: {
+        state: "green",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 0,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [],
+        sentence: "Patient will owe $480.00 once posted — matches the EOB.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() => expect(screen.getByTestId("verdict-line")).toBeTruthy());
+    dump("bench-01-verdict-green");
+  });
+
+  it("bench-02-verdict-amber — below the EOB on purpose, and it says whose purpose", async () => {
+    shots.claim = confirmedClaim({
+      lines: [
+        LINE,
+        {
+          ...XRAY_LINE,
+          decision: "office_writeoff",
+          decisionReason: "xrays_bitewings",
+          decidedBy: "Billing User",
+          decidedAt: "2026-08-30T14:20:00.000Z",
+        },
+      ],
+      verdict: {
+        state: "amber",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 45000,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [
+          {
+            lineId: "pl-2",
+            code: "D0274",
+            amountCents: 3000,
+            reason: "xrays_bitewings",
+            reasonLabel: "X-rays — bitewings",
+            decidedBy: "Billing User",
+            decidedAt: "2026-08-30T14:20:00.000Z",
+          },
+        ],
+        problems: [],
+        sentence:
+          "Patient will owe $450.00 — $30.00 below the EOB because you wrote off D0274.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() => expect(screen.getByTestId("verdict-decisions")).toBeTruthy());
+    dump("bench-02-verdict-amber");
+  });
+
+  it("bench-03-verdict-red — the numbers disagree, and this cannot be approved", async () => {
+    shots.claim = confirmedClaim({
+      verdict: {
+        state: "red",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 0,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [
+          {
+            kind: "od_fee_disagrees",
+            code: "D2740",
+            lineId: "pl-1",
+            detail: "D2740 was billed $1200.00 on the remittance and $1150.00 in Open Dental",
+          },
+        ],
+        sentence:
+          "Patient's number can't be trusted yet — something on this claim does not line up with Open Dental. Look at D2740.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() => expect(screen.getByTestId("verdict-problems")).toBeTruthy());
+    dump("bench-03-verdict-red");
+  });
+
+  it("bench-04-identity-mismatch — a date of birth that disagrees is a wall", async () => {
+    shots.claim = confirmedClaim({
+      identity: identity({
+        matched: false,
+        blocking: true,
+        fields: [
+          { field: "name", label: "Name", eob: "Stedi Test 2", od: "Test 2, Stedi", status: "agrees", blocking: false },
+          { field: "dob", label: "Date of birth", eob: "1988-07-14", od: "1991-02-03", status: "differs", blocking: true },
+          { field: "subscriber", label: "Subscriber ID", eob: "SY-4471902", od: null, status: "unknown", blocking: false },
+        ],
+      }),
+      verdict: {
+        state: "green",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 0,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [],
+        sentence: "Patient will owe $480.00 once posted — matches the EOB.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() =>
+      expect(screen.getByTestId("identity-panel").getAttribute("data-identity")).toBe("blocking"),
+    );
+    dump("bench-04-identity-mismatch");
+  });
+
+  it("bench-05-reason-picker — writing a line off asks why, and will not take silence", async () => {
+    shots.claim = confirmedClaim({
+      verdict: {
+        state: "green",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 0,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [],
+        sentence: "Patient will owe $480.00 once posted — matches the EOB.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    fireEvent.click(await screen.findByTestId("write-off-pl-2"));
+    await waitFor(() => expect(screen.getByTestId("reasons-pl-2")).toBeTruthy());
+    dump("bench-05-reason-picker");
   });
 });

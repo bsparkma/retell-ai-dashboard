@@ -542,6 +542,34 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
 }
 
 /**
+ * What a STARTED row says about itself.
+ *
+ * Two facts can put a check here, and they are different sentences. The newer
+ * one wins, because the question the card answers is "what was I last doing".
+ *
+ * A decision names the person and the day and stops there — the check is
+ * unfinished by definition or it would not be in this list, and adding "and it
+ * still needs somebody" to a row she was working on ten minutes ago reads as a
+ * reprimand. The approve sentence keeps it, because pressing Approve is a thing
+ * somebody expected to FINISH the check.
+ */
+function startedNote(r: Remittance, office: RcmOfficeId): string {
+  const approved = r.approvalAttemptedAt ? Date.parse(r.approvalAttemptedAt) : 0;
+  const decided = r.lastDecidedAt ? Date.parse(r.lastDecidedAt) : 0;
+
+  if (decided > 0 && decided >= approved) {
+    return `Write-offs decided${r.lastDecidedBy ? ` by ${r.lastDecidedBy}` : ""}${
+      r.lastDecidedAt ? ` on ${officeDay(r.lastDecidedAt, office)}` : ""
+    }.`;
+  }
+  return `Approve was pressed${
+    r.approvalAttemptedBy ? ` by ${r.approvalAttemptedBy}` : ""
+  }${
+    r.approvalAttemptedAt ? ` on ${officeDay(r.approvalAttemptedAt, office)}` : ""
+  } and this check still needs somebody.`;
+}
+
+/**
  * "Where did I leave off?" — the card that opens the day.
  *
  * It renders NOTHING when there is nothing unfinished, rather than an empty
@@ -602,11 +630,7 @@ function LeftOff({ office, today }: { office: RcmOfficeId; today: Today | null }
                     `Saved${r.parkedBy ? ` by ${r.parkedBy}` : ""}${
                       r.parkedAt ? ` on ${officeDay(r.parkedAt, office)}` : ""
                     }`)
-                  : `Approve was pressed${
-                      r.approvalAttemptedBy ? ` by ${r.approvalAttemptedBy}` : ""
-                    }${
-                      r.approvalAttemptedAt ? ` on ${officeDay(r.approvalAttemptedAt, office)}` : ""
-                    } and this check still needs somebody.`}
+                  : startedNote(r, office)}
               </span>
               <ArrowRight
                 size={13}
@@ -735,15 +759,33 @@ export function summarise(
   const parked = newestParkedFirst(rows.filter((r) => r.parkedAt != null && r.setAsideAt == null))
     .slice(0, LEFT_OFF_LIMIT);
   const parkedIds = new Set(parked.map((r) => r.batchId));
+  /*
+   * "STARTED" NOW HAS A THIRD, BETTER FACT — §15.2's finding 9, closed.
+   *
+   * It had two: somebody pressed Approve, and somebody parked the check. Both
+   * are real and neither is what a biller means by leaving off — that is the
+   * check she was READING when the phone rang, which she neither parked nor
+   * tried to approve. A write-off decision is exactly that: per user, per
+   * instant, on one check, recorded because it has to be recorded anyway.
+   *
+   * The two facts are ORed rather than one replacing the other, and the row
+   * reads whichever is NEWER — a check she decided a line on this morning and
+   * approved last week is a check she last touched this morning.
+   */
+  const touchedAt = (r: Remittance): number => {
+    const approved = r.approvalAttemptedAt ? Date.parse(r.approvalAttemptedAt) : 0;
+    const decided = r.lastDecidedAt ? Date.parse(r.lastDecidedAt) : 0;
+    return Math.max(approved, decided);
+  };
   const started = rows
     .filter(
       (r) =>
         r.setAsideAt == null &&
-        r.approvalAttemptedAt != null &&
+        (r.approvalAttemptedAt != null || r.lastDecidedAt != null) &&
         r.needsAttention &&
         !parkedIds.has(r.batchId),
     )
-    .sort((a, b) => Date.parse(b.approvalAttemptedAt!) - Date.parse(a.approvalAttemptedAt!))
+    .sort((a, b) => touchedAt(b) - touchedAt(a))
     .slice(0, LEFT_OFF_LIMIT);
 
   return {
