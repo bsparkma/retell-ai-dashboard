@@ -760,9 +760,12 @@ There is **no lint script and no eslint dependency** anywhere in this repo.
 `node --test`'s IPC reader: a per-message size decoded with a signed shift, which
 surfaces as `Unable to deserialize cloned data due to invalid or unsupported
 version` against an arbitrary file, with no assertion in it and a test count that
-DROPS — that dropped count is how you tell it from a real failure. Upstream fixed
-it in `nodejs/node#64706`, released in **v24.20.0 / v26.7.0 and in no Node 22**;
-the runtime image is `node:22-alpine`, so CI stays on 22 on purpose. Sharding
+DROPS — that dropped count is how you tell it from a real failure. It is tracked
+as `nodejs/node#64061` and fixed by `nodejs/node#64706` — which, **as of
+2026-08-30 per that PR's release notes and labels**, shipped in **v24.20.0 /
+v26.7.0 and in no Node 22** (nothing in `CHANGELOG_V22.md` through 22.23.2, no
+v22 backport label). **Re-check that before bumping Node** — it is a fact about
+one date. The runtime image is `node:22-alpine`, so CI stays on 22 on purpose. Sharding
 means no single parent decodes the whole stream — a smaller target, **not a
 fix**. `backend/scripts/shard-runner.mjs` has the whole story. `node --test`
 locally is still fine and still the fastest way to run one file.
