@@ -746,6 +746,7 @@ parallel work.
 cd backend && npm ci
 node --check server.js         # syntax gate
 node --test                    # unit tests, invoked directly (there is no npm test script)
+node scripts/shard-runner.mjs  # the SAME suite, split across 4 `node --test` runs — CI runs this
 
 # dashboard — pnpm, not npm
 cd new-dashboard && pnpm install --frozen-lockfile
@@ -754,6 +755,17 @@ pnpm run test                  # vitest run
 ```
 
 There is **no lint script and no eslint dependency** anywhere in this repo.
+
+**Why CI shards the backend suite.** Every Node 22 carries a parent-side bug in
+`node --test`'s IPC reader: a per-message size decoded with a signed shift, which
+surfaces as `Unable to deserialize cloned data due to invalid or unsupported
+version` against an arbitrary file, with no assertion in it and a test count that
+DROPS — that dropped count is how you tell it from a real failure. Upstream fixed
+it in `nodejs/node#64706`, released in **v24.20.0 / v26.7.0 and in no Node 22**;
+the runtime image is `node:22-alpine`, so CI stays on 22 on purpose. Sharding
+means no single parent decodes the whole stream — a smaller target, **not a
+fix**. `backend/scripts/shard-runner.mjs` has the whole story. `node --test`
+locally is still fine and still the fastest way to run one file.
 
 `--frozen-lockfile` matters. `new-dashboard/tests/tc-contract-bundle.test.ts` re-runs
 esbuild over `backend/tc/contract.entry.ts` and **byte-compares** the result against the
