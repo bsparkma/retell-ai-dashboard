@@ -21,12 +21,26 @@
  * and taking the rest of that file's tests down with it (the reported test count
  * DROPS, which is how you tell it from a real red).
  *
- * Upstream fixed it in `nodejs/node#64706` by making that decode unsigned. The
- * fix is in **v24.20.0 and v26.7.0**. It is in **no** release of Node 22 —
- * 22.23.2 is the newest and does not carry it, and the PR has no v22 backport
- * label. This repo's runtime image is `node:22-alpine`, so CI runs 22 on
- * purpose: testing on a Node the container does not ship would be a worse trade
- * than the flake.
+ * The bug is tracked upstream as `nodejs/node#64061` and was fixed by
+ * `nodejs/node#64706`, which makes that decode unsigned.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ONE CLAIM IN THIS FILE YOU CANNOT CHECK FROM THE REPO — SO CHECK IT AGAIN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * **As of 2026-08-30**, per the release notes for the fix commit and the labels
+ * on `nodejs/node#64706`: the fix shipped in **v24.20.0 and v26.7.0**, and in
+ * **no** release of Node 22 — `doc/changelogs/CHANGELOG_V22.md` does not mention
+ * it through **22.23.2** (2026-07-29, the newest at the time of writing), and the
+ * PR carries no v22 backport label.
+ *
+ * That is a fact about the world on one date, not a property of this repo, and
+ * it is the sentence somebody will act on when deciding whether to bump Node.
+ * **Re-check it before you rely on it** — a later 22.x may well carry the
+ * backport, and if it does, this whole script can go.
+ *
+ * This repo's runtime image is `node:22-alpine`, so CI runs 22 on purpose:
+ * testing on a Node the container does not ship would be a worse trade than the
+ * flake.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHAT SHARDING ACTUALLY BUYS, STATED HONESTLY
