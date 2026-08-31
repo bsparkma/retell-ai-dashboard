@@ -679,3 +679,104 @@ it("an ordinary green verdict carries no caveat", async () => {
   await screen.findByTestId("verdict-line");
   expect(screen.queryByTestId("verdict-identity-caveat")).toBeNull();
 });
+
+// ─── B2: the confirmed register on the screen ────────────────────────────────
+
+describe("after it has posted, the verdict stops forecasting", () => {
+  it("says what Open Dental HOLDS, and stamps when that was read", async () => {
+    state.claim = claim({
+      postingQueueId: "q-1",
+      approvedAt: "2026-03-03T17:00:00.000Z",
+      confirmedAt: "2026-03-03T18:30:00.000Z",
+      verdict: verdict({
+        state: "amber",
+        register: "confirmed",
+        eobPatientCents: 5000,
+        projectedPatientCents: 2000,
+        decidedWriteOffCents: 3000,
+        decisions: [
+          {
+            lineId: "pl-2",
+            code: "D0274",
+            amountCents: 3000,
+            reason: "xrays_bitewings",
+            reasonLabel: "X-rays — bitewings",
+            decidedBy: "Billing User",
+            decidedAt: "2026-03-03T16:00:00.000Z",
+          },
+        ],
+        sentence:
+          "Patient owes $20.00 — $30.00 below the EOB because you wrote off D0274. " +
+          "Confirmed in Open Dental.",
+      }),
+    });
+    renderClaim();
+
+    // The server's sentence, verbatim, in the tense the server chose.
+    const sentence = (await screen.findByTestId("verdict-sentence")).textContent ?? "";
+    expect(sentence).toContain("Confirmed in Open Dental");
+    expect(sentence).not.toContain("will owe");
+
+    // …and the figure beside it stops being a forecast too. A label reading
+    // "Patient will be billed" over money already in the chart is the same lie
+    // one word smaller.
+    const figures = screen.getByTestId("verdict-figures").textContent ?? "";
+    expect(figures).toContain("Open Dental says the patient owes");
+    expect(figures).not.toContain("Patient will be billed");
+    /*
+     * And the left-hand figure is the PROMISE, not the EOB's raw total. With
+     * the raw total there the strip printed the same number twice under a
+     * banner naming a third — the shot caught it. $50.00 owed on the EOB less
+     * the $30.00 the office absorbed is the $20.00 this check said.
+     */
+    expect(figures).toContain("This check said the patient would owe");
+    expect(figures).toContain("$20.00");
+    expect(figures).not.toContain("EOB says the patient owes");
+
+    expect(screen.getByTestId("verdict-confirmed-at").textContent).toMatch(/As Open Dental had it/);
+  });
+
+  it("a RED confirmation says the money already moved — not that it cannot be approved", async () => {
+    state.claim = claim({
+      postingQueueId: "q-1",
+      approvedAt: "2026-03-03T17:00:00.000Z",
+      confirmedAt: "2026-03-03T18:30:00.000Z",
+      verdict: verdict({
+        state: "red",
+        register: "confirmed",
+        eobPatientCents: 2000,
+        projectedPatientCents: 2000,
+        decidedWriteOffCents: 2000,
+        problems: [
+          {
+            kind: "chart_differs_from_decision",
+            code: "D0120",
+            lineId: "pl-1",
+            detail: "D0120 was posted to leave the patient $0.00 and Open Dental says $20.00",
+          },
+        ],
+        sentence:
+          "Open Dental says the patient owes $20.00 — this check said $0.00. " +
+          "This needs you before anything else posts. Look at D0120.",
+      }),
+    });
+    renderClaim();
+
+    const why = (await screen.findByTestId("verdict-cannot-approve")).textContent ?? "";
+    // Approving is behind her. What she needs to know is that money is in the
+    // chart and the rest of the check is waiting on her.
+    expect(why).toContain("already in the chart");
+    expect(why).not.toContain("cannot be approved");
+    expect(screen.getByTestId("verdict-problems").textContent).toContain("Open Dental says $20.00");
+  });
+
+  it("a claim that has NOT posted still says 'will owe', with no stamp", async () => {
+    renderClaim();
+    const sentence = (await screen.findByTestId("verdict-sentence")).textContent ?? "";
+    expect(sentence).toContain("will owe");
+    expect(screen.queryByTestId("verdict-confirmed-at")).toBeNull();
+    expect((screen.getByTestId("verdict-figures").textContent ?? "")).toContain(
+      "Patient will be billed",
+    );
+  });
+});

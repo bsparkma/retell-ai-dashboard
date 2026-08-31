@@ -1069,4 +1069,86 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     await waitFor(() => expect(screen.getByTestId("reasons-pl-2")).toBeTruthy());
     dump("bench-05-reason-picker");
   });
+
+  it("bench-06-confirmed-amber — posted, and the tense changed with it", async () => {
+    /*
+     * The same claim as bench-02, after the money went in. Every number is the
+     * same; what changed is that they are now MEASURED rather than projected,
+     * and the sentence, the figure label and the stamp all say so.
+     */
+    shots.claim = confirmedClaim({
+      postingQueueId: "q-1",
+      approvedAt: "2026-08-30T15:00:00.000Z",
+      approvedBy: "Billing User",
+      confirmedAt: "2026-08-30T15:04:00.000Z",
+      lines: [
+        LINE,
+        {
+          ...XRAY_LINE,
+          decision: "office_writeoff",
+          decisionReason: "xrays_bitewings",
+          decidedBy: "Billing User",
+          decidedAt: "2026-08-30T14:20:00.000Z",
+        },
+      ],
+      verdict: {
+        state: "amber",
+        register: "confirmed",
+        eobPatientCents: 48000,
+        projectedPatientCents: 45000,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [
+          {
+            lineId: "pl-2",
+            code: "D0274",
+            amountCents: 3000,
+            reason: "xrays_bitewings",
+            reasonLabel: "X-rays — bitewings",
+            decidedBy: "Billing User",
+            decidedAt: "2026-08-30T14:20:00.000Z",
+          },
+        ],
+        problems: [],
+        sentence:
+          "Patient owes $450.00 — $30.00 below the EOB because you wrote off D0274. " +
+          "Confirmed in Open Dental.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() => expect(screen.getByTestId("verdict-confirmed-at")).toBeTruthy());
+    dump("bench-06-confirmed-amber");
+  });
+
+  it("bench-07-confirmed-stuck — the chart does not say what the check said", async () => {
+    shots.claim = confirmedClaim({
+      postingQueueId: "q-1",
+      approvedAt: "2026-08-30T15:00:00.000Z",
+      approvedBy: "Billing User",
+      confirmedAt: "2026-08-30T15:04:00.000Z",
+      verdict: {
+        state: "red",
+        register: "confirmed",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [
+          {
+            kind: "chart_differs_from_decision",
+            code: "D0274",
+            lineId: "pl-2",
+            detail: "D0274 was posted to leave the patient $0.00 and Open Dental says $30.00",
+          },
+        ],
+        sentence:
+          "Open Dental says the patient owes $480.00 — this check said $450.00. " +
+          "This needs you before anything else posts. Look at D0274.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await waitFor(() => expect(screen.getByTestId("verdict-problems")).toBeTruthy());
+    dump("bench-07-confirmed-stuck");
+  });
 });

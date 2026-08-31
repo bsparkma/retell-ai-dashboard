@@ -864,6 +864,22 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
                   : null,
               decidedReason: l.decision === 'office_writeoff' ? l.decisionReason : null,
               decidedByKey: l.decision === 'office_writeoff' ? l.decidedByKey : null,
+              /*
+               * THE PROMISE, FROZEN (Stage B2).
+               *
+               * R = allowed − paid: what this remittance says the patient owes
+               * on this line, BEFORE the office's own decision. It is the number
+               * the screen showed and the gate passed on, and after the post the
+               * drain compares the chart against it.
+               *
+               * It has to be frozen because it cannot be recovered later. The
+               * drain can derive R from the chart's `FeeBilled`, and a fee a
+               * person edits between the approve and the press moves that
+               * derivation with it — so a promise checked that way would quietly
+               * re-write itself to whatever the chart now says and always agree.
+               * The whole value of a confirmation is that it can disagree.
+               */
+              patientCents: lineDecisions.lineMoney(l).patientRemainderCents,
             })),
           }
         : null,
@@ -1716,8 +1732,8 @@ async function runApproval(req, office, batchId, actor) {
                 `(queue_id, office_id, position, od_claim_proc_num, od_claim_num, claim_id, ` +
                 `batch_claim_payment_id, intended_ins_pay_amt_cents, intended_write_off_cents, ` +
                 `intended_ded_applied_cents, decided_write_off_cents, decided_reason, ` +
-                `decided_by, is_supplemental, status) ` +
-                `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, 'pending')`,
+                `decided_by, intended_patient_cents, is_supplemental, status) ` +
+                `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, false, 'pending')`,
               [
                 queueId,
                 office,
@@ -1737,6 +1753,9 @@ async function runApproval(req, office, batchId, actor) {
                 line.decidedWriteOffCents,
                 line.decidedReason,
                 line.decidedByKey,
+                // B2: what this line promised the patient would owe. See the
+                // intent builder for why it is frozen rather than re-derived.
+                line.patientCents,
               ]
             );
           } catch (err) {

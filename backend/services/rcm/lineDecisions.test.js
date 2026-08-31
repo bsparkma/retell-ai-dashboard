@@ -355,12 +355,73 @@ test('a line the patient owes nothing on carries no decision and no problem', ()
 test('a projection says "will owe … once posted"; a confirmation says "owes"', () => {
   const lines = [line({ billedCents: 15000, allowedCents: 10000, paidCents: 8000 })];
   const projected = verdictFor({ register: 'projection', lines });
-  const confirmed = verdictFor({ register: 'confirmed', lines });
+  /*
+   * B2: a confirmation is a MEASUREMENT. The same line, plus what Open Dental
+   * came back holding — `FeeBilled 150 − InsPayAmt 80 − WriteOff 50 = 20`,
+   * which is the projection landing exactly.
+   */
+  const confirmed = verdictFor({
+    register: 'confirmed',
+    lines: [{ ...lines[0], confirmedRemainderCents: 2000 }],
+  });
 
   assert.match(projected.sentence, /will owe .* once posted — matches the EOB\.$/);
   assert.match(confirmed.sentence, /^Patient owes \$20\.00 — confirmed in Open Dental\.$/);
-  // The numbers are identical; only the claim about them changes.
+  // The numbers agree — but one was derived and the other was read back, and
+  // that is the entire difference between the two sentences.
   assert.equal(projected.projectedPatientCents, confirmed.projectedPatientCents);
+});
+
+test('a confirmation over a line nobody read back is RED, not a confirmation', () => {
+  /*
+   * The trap this closes: a caller that flips the register to 'confirmed'
+   * without gathering anything would have printed "confirmed in Open Dental"
+   * over pure arithmetic — a projection wearing a confirmation's words, which
+   * is the honest-states rule failing in the most expensive place there is.
+   */
+  const v = verdictFor({
+    register: 'confirmed',
+    lines: [line({ code: 'D0120', billedCents: 15000, allowedCents: 10000, paidCents: 8000 })],
+  });
+  assert.equal(v.state, 'red');
+  assert.deepEqual(
+    v.problems.map((p) => p.kind),
+    ['line_not_confirmed']
+  );
+  assert.doesNotMatch(v.sentence, /confirmed in Open Dental/i);
+});
+
+test('a read-back that differs from what was promised names BOTH numbers', () => {
+  /*
+   * THE BACKSTOP SENTENCE, FINALLY REACHABLE.
+   *
+   * In the projection register `projected + decided === eob` holds by
+   * construction — the three sums partition one set — so the imbalance wording
+   * cannot print. Here the projected figure is MEASURED rather than derived, so
+   * it can genuinely disagree: Open Dental came back saying the patient owes
+   * $35.00 where the EOB says $20.00 (a write-off that did not land, say).
+   *
+   * This is B2's "Stuck — needs you": money has already moved, so the sentence
+   * says what happens next rather than pretending nothing did.
+   */
+  const v = verdictFor({
+    register: 'confirmed',
+    lines: [
+      line({
+        code: 'D0120',
+        billedCents: 15000,
+        allowedCents: 10000,
+        paidCents: 8000,
+        confirmedRemainderCents: 3500,
+      }),
+    ],
+  });
+  assert.equal(v.state, 'red');
+  assert.equal(
+    v.sentence,
+    'Open Dental says the patient owes $35.00 — this check said $20.00. ' +
+      'This needs you before anything else posts. Look at D0120.'
+  );
 });
 
 test('a projection can NEVER be worded as a confirmation', () => {
@@ -399,7 +460,18 @@ test('an amber confirmation reads as a fact, not a forecast', () => {
   const v = verdictFor({
     register: 'confirmed',
     lines: [
-      line({ lineId: 'a', code: 'D0120', billedCents: 15000, allowedCents: 10000, paidCents: 8000 }),
+      line({
+        lineId: 'a',
+        code: 'D0120',
+        billedCents: 15000,
+        allowedCents: 10000,
+        paidCents: 8000,
+        confirmedRemainderCents: 2000,
+      }),
+      /*
+       * The written-off line reads ZERO out of the chart — the office's $30.00
+       * landed — and that is the fact the confirmed amber sentence is asserting.
+       */
       line({
         lineId: 'b',
         code: 'D0274',
@@ -408,6 +480,7 @@ test('an amber confirmation reads as a fact, not a forecast', () => {
         paidCents: 1000,
         decision: 'office_writeoff',
         decisionReason: 'xrays_bitewings',
+        confirmedRemainderCents: 0,
       }),
     ],
   });
@@ -442,4 +515,132 @@ test('formatDollars is NOT formatRecoupmentTotal — two jobs, two strings', () 
   const { formatRecoupmentTotal } = require('../../routes/rcm/approvalGate');
   assert.equal(formatRecoupmentTotal(-5408), '-54.08');
   assert.equal(formatDollars(-5408), '-$54.08');
+});
+
+// ─── B2: the decided figures, and where each mode books them ─────────────────
+
+const { postedFigures, chartRemainderCents, WRITEOFF_MODES } = lineDecisions;
+
+/** An approved posting line: the carrier's snapshot plus what was decided. */
+function posted(over = {}) {
+  return {
+    intendedInsPayAmtCents: 8000,
+    intendedWriteOffCents: 5000,
+    intendedDedAppliedCents: 0,
+    decidedWriteOffCents: null,
+    ...over,
+  };
+}
+
+test('the mode list agrees with the migration that constrains it', () => {
+  assert.deepEqual([...WRITEOFF_MODES], [...migration.WRITEOFF_MODES]);
+});
+
+test('writeoff_field folds the decided amount into the claimproc write-off', () => {
+  const f = postedFigures(posted({ decidedWriteOffCents: 2000 }), 'writeoff_field');
+  assert.equal(f.insPayAmtCents, 8000);
+  assert.equal(f.writeOffCents, 7000); // the carrier's $50 plus the office's $20
+  assert.equal(f.adjustmentCents, 0);
+});
+
+test('adjustment_by_name leaves the carrier figure alone and books the rest separately', () => {
+  const f = postedFigures(posted({ decidedWriteOffCents: 2000 }), 'adjustment_by_name');
+  assert.equal(f.writeOffCents, 5000); // untouched: this is the CARRIER's number
+  assert.equal(f.adjustmentCents, 2000);
+});
+
+test('a line nobody decided on posts identically under both modes', () => {
+  for (const mode of WRITEOFF_MODES) {
+    const f = postedFigures(posted(), mode);
+    assert.equal(f.writeOffCents, 5000);
+    assert.equal(f.adjustmentCents, 0);
+  }
+  // NULL is not zero in the column and does not become one here either.
+  assert.equal(posted().decidedWriteOffCents, null);
+});
+
+test('THE INVARIANT: the mode chooses WHERE, never HOW MUCH', () => {
+  /*
+   * Written over the modes rather than over one worked example on purpose. A
+   * third mode added later that quietly drops the decided amount is money
+   * vanishing between a screen that promised it and a chart that never got it,
+   * and this is the test that would go red.
+   */
+  for (const mode of WRITEOFF_MODES) {
+    for (const decided of [null, 0, 1, 2000, 999999]) {
+      const line = posted({ decidedWriteOffCents: decided });
+      const f = postedFigures(line, mode);
+      assert.equal(
+        f.writeOffCents + f.adjustmentCents,
+        line.intendedWriteOffCents + (decided || 0),
+        `${mode} with ${decided} decided`
+      );
+      // And the carrier's payment is never touched by a decision about the
+      // patient's remainder.
+      assert.equal(f.insPayAmtCents, line.intendedInsPayAmtCents);
+    }
+  }
+});
+
+test('the mode is REQUIRED — there is no safe default', () => {
+  assert.throws(() => postedFigures(posted(), undefined), /mode/);
+  assert.throws(() => postedFigures(posted(), 'writeoff'), /mode/);
+});
+
+test("chartRemainderCents is Open Dental's own arithmetic, off the read-back", () => {
+  // $150 billed, $80 paid, $50 written off → the patient owes $20.
+  assert.equal(
+    chartRemainderCents({ feeBilledCents: 15000, insPayAmtCents: 8000, writeOffCents: 5000 }),
+    2000
+  );
+  // The same line under adjustment_by_name: the write-off field still holds the
+  // carrier's $50, and the office's $20 came off the ledger instead.
+  assert.equal(
+    chartRemainderCents({
+      feeBilledCents: 15000,
+      insPayAmtCents: 8000,
+      writeOffCents: 5000,
+      adjustmentCents: 2000,
+    }),
+    0
+  );
+  // A deductible is part of what the patient owes, not a reduction of it, so
+  // DedApplied is deliberately not an argument here at all.
+});
+
+test('two lines wrong in opposite directions do NOT pass on the total', () => {
+  /*
+   * The reason each line is checked as well as the sum. One line reads $10 high
+   * and the other $10 low; the claim's total is exactly right, and nothing about
+   * this claim is.
+   */
+  const v = verdictFor({
+    register: 'confirmed',
+    lines: [
+      line({
+        lineId: 'a',
+        code: 'D0120',
+        billedCents: 15000,
+        allowedCents: 10000,
+        paidCents: 8000,
+        confirmedRemainderCents: 3000,
+      }),
+      line({
+        lineId: 'b',
+        code: 'D0274',
+        billedCents: 6000,
+        allowedCents: 4000,
+        paidCents: 3000,
+        confirmedRemainderCents: 0,
+      }),
+    ],
+  });
+  assert.equal(v.state, 'red');
+  assert.equal(v.projectedPatientCents, 3000);
+  assert.equal(v.eobPatientCents, 3000); // the total agrees, and it is still red
+  assert.deepEqual(
+    v.problems.map((p) => p.kind),
+    ['chart_differs_from_decision', 'chart_differs_from_decision']
+  );
+  assert.match(v.sentence, /does not line up with Open Dental/);
 });

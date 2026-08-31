@@ -1452,6 +1452,15 @@ export interface ClaimDetailResponse {
     verdict?: ClaimVerdict;
     identity?: ClaimIdentity;
     chart?: ClaimChart | null;
+    /**
+     * When this claim's chart was read back after posting (B2), or null.
+     *
+     * Its presence is also what tells you which register `verdict` is in — the
+     * server sends the CONFIRMED verdict once there is one, and the projection
+     * until then. The screen reads `verdict.register` rather than inferring it
+     * from this, because a sentence's tense is the server's to decide.
+     */
+    confirmedAt?: string | null;
   };
   /**
    * The reasons a line may be written off, FROM THE SERVER.
@@ -1721,7 +1730,16 @@ export const POSTING_STEPS = [
   "claim_receipts",
   "check",
   "reconcile",
+  /*
+   * B2's two. `office_writeoffs` runs only where a practice books its own
+   * write-offs as a ledger adjustment; `confirm_patient` runs on every plan and
+   * is the last thing between a chart write and calling this finished — it
+   * reads each claim back and asks whether the patient owes what the screen
+   * promised.
+   */
+  "office_writeoffs",
   "recoupment",
+  "confirm_patient",
   "document_attach",
 ] as const;
 export type PostingStep = (typeof POSTING_STEPS)[number];

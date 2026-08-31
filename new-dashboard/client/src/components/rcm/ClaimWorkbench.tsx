@@ -148,6 +148,8 @@ export default function ClaimWorkbench({
 }: ClaimWorkbenchProps) {
   const verdict = claim.verdict ?? null;
   const identity = claim.identity ?? null;
+  // B2. Null until this claim has posted and its chart has been read back.
+  const confirmedAt = claim.confirmedAt ?? null;
   const chart = claim.chart ?? null;
 
   return (
@@ -158,7 +160,11 @@ export default function ClaimWorkbench({
         biller who reads nothing else on this screen should still be able to tell
         whether the patient's number is right.
       */}
-      <VerdictLine verdict={verdict} identityBlocking={identity?.blocking ?? false} />
+      <VerdictLine
+        verdict={verdict}
+        identityBlocking={identity?.blocking ?? false}
+        confirmedAt={confirmedAt}
+      />
 
       {siblings && siblings.total > 1 && (
         <ClaimPager siblings={siblings} fromBatchId={fromBatchId} />
@@ -222,6 +228,7 @@ export default function ClaimWorkbench({
 function VerdictLine({
   verdict,
   identityBlocking,
+  confirmedAt,
 }: {
   verdict: ClaimVerdict | null;
   /**
@@ -234,6 +241,12 @@ function VerdictLine({
    * trust anchor is the one line on this screen that must never do that.
    */
   identityBlocking: boolean;
+  /**
+   * When the chart was read back, on a claim that has posted (B2). Null before
+   * that, and the verdict's own register is what actually decides the wording —
+   * this only says WHEN the reading happened.
+   */
+  confirmedAt: string | null;
 }) {
   if (!verdict) {
     return (
@@ -304,9 +317,19 @@ function VerdictLine({
             </ul>
           )}
 
+          {/*
+            THE SAME RED, TWO DIFFERENT FACTS.
+ 
+            Before posting, red is a claim that cannot be approved and nothing
+            has happened. After posting, money is already in the chart — telling
+            her it "cannot be approved" would be describing a step that is behind
+            her, and would read as though nothing had moved.
+          */}
           {verdict.state === "red" && (
             <p className="mt-2 text-xs font-medium" data-testid="verdict-cannot-approve">
-              This claim cannot be approved until that is resolved.
+              {verdict.register === "confirmed"
+                ? "The payment is already in the chart. Nothing more posts on this check until this is sorted out."
+                : "This claim cannot be approved until that is resolved."}
             </p>
           )}
 
@@ -323,14 +346,56 @@ function VerdictLine({
         className="mt-3 grid grid-cols-3 gap-3 border-t border-current/20 pt-2 text-xs"
         data-testid="verdict-figures"
       >
-        <Figure label="EOB says the patient owes" value={money(verdict.eobPatientCents)} />
+        {/*
+          THE PAIR THAT HAS TO MATCH, AND IT IS NOT THE SAME PAIR IN BOTH
+          REGISTERS.
+
+          Before posting: the EOB's own figure beside what the patient will be
+          billed. After posting the EOB's raw total is the WRONG left-hand
+          number — the office's write-offs are meant to differ from it — so the
+          strip would print $480 beside $480 under a red banner whose sentence
+          names $450, and a biller reading the figures could not find the number
+          she was being told about. The shot caught exactly that.
+
+          So the confirmed register shows what this check SAID (the EOB less
+          what the office absorbed) beside what Open Dental now holds. Those two
+          are the ones that must agree, and the third column still says where
+          the difference from the EOB went.
+        */}
         <Figure
-          label="Patient will be billed"
+          label={
+            verdict.register === "confirmed"
+              ? "This check said the patient would owe"
+              : "EOB says the patient owes"
+          }
+          value={money(
+            verdict.register === "confirmed"
+              ? verdict.eobPatientCents - verdict.decidedWriteOffCents
+              : verdict.eobPatientCents,
+          )}
+        />
+        <Figure
+          /*
+            A tense, not a label. Before posting this figure is what the patient
+            WILL be billed; afterwards it is what Open Dental was read back as
+            holding, and the two must never be worded the same way.
+          */
+          label={
+            verdict.register === "confirmed"
+              ? "Open Dental says the patient owes"
+              : "Patient will be billed"
+          }
           value={money(verdict.projectedPatientCents)}
           strong
         />
         <Figure label="Office is absorbing" value={money(verdict.decidedWriteOffCents)} />
       </dl>
+
+      {verdict.register === "confirmed" && confirmedAt && (
+        <p className="mt-2 text-[11px] opacity-80" data-testid="verdict-confirmed-at">
+          As Open Dental had it {stamp(confirmedAt)}.
+        </p>
+      )}
     </div>
   );
 }

@@ -3448,15 +3448,19 @@ audit trail, and on the screen. Carrying it into Open Dental's claim note is
 **S6** — append-only, probe first — and until then the Finished screen says
 *"Reason recorded in CareIN"* rather than implying the chart knows.
 
-#### B1 refuses to post a decided write-off
+#### B1 refused to post a decided write-off — ✅ **B2 posts it** (§14.0c)
 
-`office_writeoff_not_postable`, a `blocked` reason with nothing sent. This
-build's writes still carry the carrier's verbatim figures, so posting a claim
-whose posting says the office absorbs $30 would put a number in the chart the
-screen never showed and bill the patient money the office had written off.
-**Nothing may reach a chart that the screen did not show.** B2 makes the write
-carry the decided figure and removes the reason; its test flips from "refuses" to
-"posts the decided amount".
+B1 shipped `office_writeoff_not_postable`: a `blocked` reason with nothing sent,
+because that build's writes carried the carrier's verbatim figures and posting a
+claim whose posting said the office absorbs $30 would have put a number in the
+chart the screen never showed. **Nothing may reach a chart that the screen did
+not show.**
+
+The write carries the decided figure now. The reason is gone from the vocabulary
+(its test flipped from "refuses" to "no longer refuses"), and what survives it is
+the arithmetic guard: a NEGATIVE office write-off is still `negative_intent`,
+because that is a charge added to a patient's balance by a screen that said it
+was taking one away.
 
 #### Identity is a gate check, not a warning
 
@@ -3474,6 +3478,133 @@ there. Every Open Dental read this module makes is about a CLAIM
 (`/claims`, `/claimprocs`, `/procedurelogs`); a ledger needs the patient's
 payments and adjustments, which is a new verb, and B1 adds none. The slot is
 labelled on screen rather than mocked up.
+
+---
+
+### 14.0c The decided figures — what actually posts (Stage B2)
+
+> B1 recorded the decision and refused to post it. B2 posts it, and then reads
+> the chart back to ask whether the patient owes what the screen promised.
+
+#### The money, defined once — copied verbatim from the source
+
+Per claim line the carrier gives **billed** (B), **allowed** (A) and **paid** (P):
+
+```
+contractual write-off   W = B − A     the CARRIER's figure
+patient remainder       R = A − P     what the EOB says the patient owes
+```
+
+W is always accepted by this slice: displayed as a fact, never offered as a
+choice. R is the whole decision, and it is one enum per line — `bill_patient`
+(the patient is billed R) or `office_writeoff` (the office absorbs R, reason
+required). **There is no amount field anywhere on this screen.**
+
+What the drain sends is `services/rcm/lineDecisions.js` `postedFigures(line,
+mode)`, and the identity it holds is the point of the function:
+
+```
+writeOffCents + adjustmentCents  ===  intendedWriteOffCents + decidedWriteOffCents
+```
+
+**for every mode.** The mode chooses WHERE the office's decision is booked; it
+can never change HOW MUCH of it is booked. `lineDecisions.test.js` asserts that
+over both modes and a range of amounts rather than over one worked example —
+a third mode added later that quietly dropped the decided amount would be money
+vanishing between a screen that promised it and a chart that never got it.
+
+#### The per-office mode
+
+`rcm_office_settings.writeoff_mode`, admin-only, one Postgres read per press of
+Drain and never cached longer — the same reasoning as the shadow gate beside it.
+
+| Mode | What the drain writes | Notes |
+| --- | --- | --- |
+| `writeoff_field` **(default — Roland)** | claimproc `WriteOff` = **W + decided**; `InsPayAmt` = the carrier's payment, untouched | One number, one write. The patient's balance falls out of the arithmetic Open Dental already does. No second object in the chart, and the existing per-field read-back proves the figure landed. |
+| `adjustment_by_name` | `WriteOff` = **W** alone, plus `POST /adjustments` for the decided amount, **negative**, under an AdjType resolved live **by name** | For a practice that reports insurance write-offs and its own concessions separately. Runs LAST among the money writes, after the check is reconciled. |
+
+**D-13 in full.** The setting stores a NAME. `pickAdjTypeByName` matches it
+case-insensitively against that office's own Category-1 list and requires the
+stated sign to be `-` (a concession takes money OFF what the patient owes; a `+`
+type wearing the right name is not the type the admin meant, and Open Dental
+would refuse it with `AdjAmt must be negative for this AdjType.`). Nothing found
+is `blocked` with **`writeoff_adjtype_unresolved`** — before the first write,
+never a fallback to a plausible neighbour, never a number. A plan carrying **no**
+decided write-off never asks the question at all, so a misconfigured name stops
+only the claims that need it.
+
+`od_writeoff_adjustment_num` on the posting line is where the AdjNum lands, and
+it is the idempotency key: a second press finds it, carries it forward and reads
+the ledger for it rather than booking a second concession. There is no
+`DELETE /adjustments`, so a double-post is not a mistake anybody can tidy up.
+
+#### The confirmation — `confirm_patient`, the last step before Finished
+
+Everything before it proves the CARRIER's side: the payment landed, the check
+carries these lines, every field read back as sent. **None of that is the same as
+the patient's balance being right**, and the patient's balance is the number a
+front desk reads out loud.
+
+So each claim is read once more and the patient's portion computed from Open
+Dental's own figures:
+
+```
+chart remainder = FeeBilled − InsPayAmt − WriteOff − (any concession this run booked)
+```
+
+`DedApplied` is not subtracted: a deductible is part of what the patient owes,
+not a reduction of it. The result goes through the same `verdictFor()` the screen
+and the gate read, in the **confirmed** register — which refuses a line nobody
+read back (`line_not_confirmed`), so a caller cannot flip the register and get a
+confirmation out of pure arithmetic.
+
+**It is compared against the frozen promise, not against the chart's own fee.**
+`intended_patient_cents` is R as it was approved, written onto the posting line at
+approve time. The drain *could* derive R from `FeeBilled` — and a fee somebody
+edits between the approve and the press moves that derivation with it, so the
+"promise" would silently become whatever the chart now says and could never
+disagree. **A confirmation that cannot disagree is not a confirmation.** Plans
+approved before B2 carry NULL there and fall back to the derivation, with the
+weaker guarantee stated rather than hidden.
+
+Each line is checked as well as the total: two lines wrong by the same amount in
+opposite directions sum to a total that agrees, and a reconciliation that only
+looked at the total would call that finished.
+
+The verdict is written to `rcm_claims.confirmed_verdict` **whichever way it
+comes out** — the claim whose balance came out wrong needs the record more than
+the one that came out right — and the claim screen renders it in place of the
+projection from then on. That is what stops a posted claim's screen going on
+saying *"will owe … once posted"* about money already in the chart.
+
+#### Read-back ≠ promised → **Stuck, needs you**. Not Finished, and not failed
+
+`partially_posted`, carrying the check number and the verdict's own sentence:
+
+> *Open Dental says the patient owes $20.00 — this check said $0.00. This needs
+> you before anything else posts.*
+
+Measured against the **promise**, never against the raw EOB total — the office's
+own write-offs are allowed to differ from that on purpose, and quoting it here
+would print two numbers under a sentence claiming they should match.
+
+Not `failed`, because money moved and every carrier-side proof passed. Not
+`posted`, because it is not what was promised. The state stays drainable, so the
+way out is the same button once a person has sorted out whatever the sentence
+names (**D-15**). The EOB is deliberately **not** filed on that path: a plan that
+needs a person to look at it should not also be quietly finishing its paperwork.
+
+**This is where the imbalance sentence stops being a backstop.** In the
+projection register `projected + decided === EOB` holds by construction, so it
+cannot print (§14.0b). Here the projected figure is measured rather than derived,
+and this is the path that finally needs it.
+
+#### The reason still does not reach Open Dental
+
+Unchanged from B1, and deliberately: the reason lives in CareIN — on the review
+line, on the posting line's snapshot, in the audit trail and on the screen. The
+chart gets the money, and the operator's name in the posting note. **Carrying the
+reason into Open Dental's claim note is S6**, append-only and probe-first.
 
 ---
 
