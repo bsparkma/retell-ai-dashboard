@@ -384,7 +384,7 @@ git commit --allow-empty -m "ci: retrigger" && git push
 
 If a merge genuinely cannot wait, run the gate locally first — `pnpm run check` and
 `pnpm run test` in `new-dashboard/`, then `node --check server.js` and
-`node --test --test-concurrency=1` in `backend/` — so the merge is at least not blind, and
+`node scripts/shard-runner.mjs` in `backend/` (what CI runs) — so the merge is at least not blind, and
 say plainly in the PR that it merged without CI, so the next promotion runs `build-test`
 in staging-cd first.
 

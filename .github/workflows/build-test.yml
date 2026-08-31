@@ -48,6 +48,10 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      # FLOATING ON PURPOSE, and worth knowing it floats: this resolved to
+      # 22.15 when the job was written and runs 22.23.2 today. Pinning a patch
+      # version would freeze the security updates that come with the line and
+      # would not help the test-runner bug below — every 22.x has it.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -71,14 +75,31 @@ jobs:
       - name: backend syntax check
         working-directory: backend
         run: node --check server.js
-      # Serial on purpose. Node 22.15's parallel test runner intermittently dies with
-      # "Unable to deserialize cloned data due to invalid or unsupported version"
-      # (ERR_TEST_FAILURE) and blames an arbitrary file — it is a function of the test
-      # FILE COUNT, not of any one test. --test-concurrency=1 removes the flake at the
-      # cost of a longer run. Do not drop this to "speed CI up".
-      - name: backend unit tests
+      # SPLIT INTO SHARDS, AND STILL SERIAL WITHIN EACH.
+      #
+      # `node --test` streams results from a child process per file back to a
+      # parent that deserializes them, and EVERY Node 22 has a bug in that
+      # parent-side reader: the per-message size is decoded with a signed shift,
+      # so a size whose top byte has the high bit set reads as negative. It
+      # surfaces as `Unable to deserialize cloned data due to invalid or
+      # unsupported version` against an arbitrary file, with no assertion in it
+      # and a test count that DROPS.
+      #
+      # Upstream fixed it in nodejs/node#64706 — shipped in v24.20.0 and
+      # v26.7.0, in NO release of Node 22 (22.23.2 is the newest and does not
+      # carry it; the PR has no v22 backport label). The runtime image is
+      # node:22-alpine, so this job stays on 22 deliberately: testing on a Node
+      # the container does not ship would be the worse trade.
+      #
+      # Each shard is its own parent reading its own stream, so no single
+      # process decodes the whole suite. That REDUCES exposure; it does not fix
+      # the bug. There is deliberately no retry — see backend/scripts/shard-runner.mjs.
+      #
+      # `--test-concurrency=1` stays INSIDE each shard. Both together were the
+      # earlier mitigation and neither has been shown to be the load-bearing one.
+      - name: backend unit tests (sharded)
         working-directory: backend
-        run: node --test --test-concurrency=1
+        run: node scripts/shard-runner.mjs
 
       # --- spine smoke test (12/12) against an ephemeral Postgres ---
       - name: prepare ephemeral DB (carein_app role + tenant DB)
