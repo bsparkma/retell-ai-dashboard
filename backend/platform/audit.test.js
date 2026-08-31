@@ -50,7 +50,7 @@ test('writes one audit row with the expected column order and values', async () 
 
   assert.match(captured.text, /INSERT INTO audit_log/);
   // [user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint,
-  //  office, origin_office, source_ref]
+  //  office, origin_office, source_ref, prior_state]
   assert.deepEqual(captured.params, [
     'staff@carein.ai',
     'T1',
@@ -63,7 +63,33 @@ test('writes one audit row with the expected column order and values', async () 
     null, // office omitted → NULL ("not an office-scoped action"), never a guess
     null, // origin_office omitted → NULL ("no origin distinct from the target")
     null, // source_ref omitted → NULL ("no recorded external cause"), same rule
+    null, // prior_state omitted → NULL ("this action replaced nothing"), same rule
   ]);
+});
+
+test('records what an action REPLACED, when it replaced a decision', async () => {
+  const captured = captureQuery();
+  const req = {
+    user: { email: 'staff@carein.ai' },
+    tenant: { id: 'T1' },
+    ip: '203.0.113.7',
+    originalUrl: '/api/rcm/remittances/b-1/comparison',
+  };
+
+  await audit.audit(req, {
+    action: 'UPDATE',
+    resourceType: 'rcm_remittance_comparison',
+    resourceId: 'b-1',
+    office: 'roland',
+    priorState: 'differed:write_off',
+    result: 'SUCCESS',
+  });
+
+  // A revision counter says an answer CHANGED; only this says which way. The
+  // column is slug-shaped by CHECK constraint (1788000000000), so it cannot
+  // become a copy of the sentence a person typed — which is the rule that keeps
+  // free text out of this table at all.
+  assert.equal(captured.params[11], 'differed:write_off');
 });
 
 test('records the external cause when one is given', async () => {
