@@ -36,13 +36,15 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT IS DELIBERATELY NOT HERE — C-2
  * ─────────────────────────────────────────────────────────────────────────────
- * The yes/no capture — *did the chart end up agreeing with what this app would
- * have done?* — is a separate PR in a separate session. It needs somewhere to
- * PUT the answer, which is a table this schema does not have, and half of it
- * built here would be a control that records nothing.
+ * The yes/no capture — *did the app get this check right?* — SHIPPED in C-2, as
+ * `components/rcm/CheckComparison.tsx`. It is a sibling section rendered
+ * directly beneath this one by `pages/rcm/RemittanceDetail.tsx`, which is the
+ * room this note was reserving.
  *
- * The room for it is the space under this table, and this comment is the note
- * saying so.
+ * It is deliberately NOT nested inside this component. The worksheet below
+ * renders only when the roll-up has rows, and the question is asked of every
+ * approved check in shadow mode — nesting it would have let an unrelated
+ * condition decide whether the record gets captured at all.
  *
  * NO REAL PATIENT DATA anywhere in this file.
  */
@@ -208,10 +210,9 @@ export default function ShadowModeBanner({
           </div>
 
           {/*
-            ROOM FOR C-2. The yes/no capture — "did the chart end up agreeing?" —
-            lands under this table, in its own PR, once there is somewhere to put
-            the answer. Left as a note rather than a disabled control, because a
-            control that records nothing is worse than an absence.
+            C-2's yes/no capture lands directly BELOW this whole section, as its
+            own component. See this file's header for why it is a sibling rather
+            than a child.
           */}
         </div>
       )}

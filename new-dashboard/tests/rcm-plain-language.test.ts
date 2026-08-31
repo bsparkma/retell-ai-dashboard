@@ -218,6 +218,86 @@ function scan(): Hit[] {
   return hits;
 }
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A SECOND, TIGHTER LIST — the shadow-mode comparison (Stage C-2)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The list above is about a biller not understanding the words. This one is
+ * about a biller understanding them perfectly and answering less honestly
+ * because of it.
+ *
+ * C-2 asks her, on every approved check while posting is switched off, whether
+ * what the app worked out came out the same as what she put into Open Dental by
+ * hand. **She is checking the software. She is not being graded.** The moment
+ * that copy reads as a measurement of her — a proportion, a rating, a run she is
+ * keeping up — the honest answer starts to carry a cost, and an honest answer is
+ * the entire product of the shadow period. There is no second source for it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS SCOPED TO FILES RATHER THAN ADDED TO `BANNED`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Because three of these words are RIGHT elsewhere in this module, and banning
+ * them everywhere would either break working screens or need an allow-list that
+ * hollows the rule out:
+ *
+ *   · `score` is what the Open Dental matcher produces — "A score, not a
+ *     decision. Read the evidence below." is the candidate card telling the
+ *     truth about a ranking.
+ *   · `correct` appears in "The payment itself posted correctly and is
+ *     unaffected" and "Nothing here can post until that is corrected" — both
+ *     about a payment and a claim, neither about a person.
+ *
+ * The rule being enforced is not "this module never says score". It is "the
+ * comparison never grades the biller", and its scope is the surface that asks
+ * her. So: an explicit file list, and a test below that fails if one of those
+ * files is renamed or moved — a guard pointed at a path that no longer exists
+ * passes forever.
+ */
+const COMPARISON_FILES = [
+  "client/src/components/rcm/CheckComparison.tsx",
+  "client/src/features/rcm/comparison.ts",
+  "client/src/pages/admin/RcmShadowComparisonCard.tsx",
+];
+
+/**
+ * Banned on the comparison surface, and why each one is out.
+ *
+ * `correct` is here in every form — it is the most tempting and the worst. "Did
+ * the app get this correct" invites "and how often are YOU correct", and the
+ * shipped copy asks "did the app get this check right?" precisely to keep the
+ * subject the software.
+ */
+const COMPARISON_BANNED: { pattern: RegExp; instead: string }[] = [
+  { pattern: /\baccura(cy|te)\b/i, instead: "say what happened — 'came out the same'" },
+  { pattern: /\bscores?\b|\bscoring\b|\bscored\b/i, instead: "nothing — do not keep a score here" },
+  { pattern: /\bgrades?\b|\bgraded\b|\bgrading\b/i, instead: "nothing — she is not being graded" },
+  {
+    pattern: /\bcorrect(ly|ed|ion|ness)?\b|\bincorrect(ly)?\b/i,
+    instead: "'right' about the app, or 'the same' about the two figures",
+  },
+  { pattern: /\bstreaks?\b/i, instead: "nothing — a run is the admin's number, not hers" },
+  { pattern: /\b\d+\s*%|\bpercent(age)?\b/i, instead: "counts — a proportion cannot answer this" },
+  { pattern: /\berror rate\b|\bhit rate\b|\bpass rate\b/i, instead: "counts" },
+];
+
+function scanComparison(): Hit[] {
+  const hits: Hit[] = [];
+  for (const rel of COMPARISON_FILES) {
+    const file = join(ROOT, rel);
+    const source = readFileSync(file, "utf8");
+    for (const { text, line } of renderedStrings(file, source)) {
+      if (SLUG.test(text)) continue;
+      for (const { pattern, instead } of COMPARISON_BANNED) {
+        if (pattern.test(text)) {
+          hits.push({ file: rel, line, text, instead });
+          break;
+        }
+      }
+    }
+  }
+  return hits;
+}
+
 describe("the RCM screens speak a biller's language", () => {
   it("scans something — a scanner that found no files would pass forever", () => {
     let n = 0;
@@ -260,6 +340,71 @@ describe("the RCM screens speak a biller's language", () => {
         ? ""
         : `\n${hits.length} string(s) still speak the implementation's language:\n\n${report}\n\n` +
             `Machine slugs, columns, types and route paths do NOT change — only what a person reads.\n`,
+    ).toEqual([]);
+  });
+});
+
+describe("the shadow-mode comparison never grades the biller", () => {
+  it("points at files that exist — a guard aimed at a moved file passes forever", () => {
+    for (const rel of COMPARISON_FILES) {
+      expect(statSync(join(ROOT, rel)).isFile(), `${rel} — did this file move?`).toBe(true);
+    }
+  });
+
+  it("finds the copy it is supposed to be guarding", () => {
+    // The scan must be reading real sentences off these files, or every
+    // assertion below is vacuous.
+    const strings = COMPARISON_FILES.flatMap((rel) =>
+      renderedStrings(join(ROOT, rel), readFileSync(join(ROOT, rel), "utf8"))
+        .map((s) => s.text)
+        .filter((t) => !SLUG.test(t)),
+    );
+    expect(strings).toContain("Did the app get this check right?");
+    expect(strings.some((s) => s.includes("same as I did by hand"))).toBe(true);
+  });
+
+  it("catches the words it bans", () => {
+    // The patterns, asserted directly, so a typo in one cannot make the rule
+    // silently vacuous.
+    const offenders = [
+      "94% accuracy this month",
+      "Your score so far",
+      "How the app graded out",
+      "Did the app get this correct?",
+      "17 in a row — keep the streak going",
+    ];
+    for (const text of offenders) {
+      expect(
+        COMPARISON_BANNED.some((b) => b.pattern.test(text)),
+        `"${text}" should have been caught`,
+      ).toBe(true);
+    }
+    // …and does not fire on the copy that actually shipped.
+    for (const text of [
+      "Did the app get this check right?",
+      "Yes — same as I did by hand",
+      "No — something was off",
+      "So far: 18 checks compared, you marked 17 the same and 1 off.",
+    ]) {
+      expect(
+        COMPARISON_BANNED.some((b) => b.pattern.test(text)),
+        `"${text}" is the shipped copy and must pass`,
+      ).toBe(false);
+    }
+  });
+
+  it("has no scoring, rating or grading language anywhere on the comparison surface", () => {
+    const hits = scanComparison();
+    const report = hits
+      .map((h) => `  ${h.file}:${h.line}\n    "${h.text}"\n    → instead: ${h.instead}`)
+      .join("\n");
+    expect(
+      hits,
+      hits.length === 0
+        ? ""
+        : `\n${hits.length} string(s) read as though the BILLER were the thing being measured:\n\n` +
+            `${report}\n\nShe is checking the software. If the copy grades her, she stops ` +
+            `answering honestly — and the honest answer is the only product of the shadow period.\n`,
     ).toEqual([]);
   });
 });

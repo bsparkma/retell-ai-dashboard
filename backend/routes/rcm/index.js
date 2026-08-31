@@ -159,6 +159,21 @@ const QUEUE_PATHS = Object.freeze([
   /^\/remittances\/[^/]+\/set-aside$/,
   /^\/remittances\/[^/]+\/restore$/,
   /*
+   * THE SHADOW-MODE COMPARISON (Stage C-2). Same tier, same argument again.
+   *
+   * "Did the app get this check right?" writes six columns on one of OUR rows
+   * and reaches no chart, no posting, no plan and no money. It cannot be asked
+   * at all until somebody has approved the check, and it is refused once the
+   * check has posted — so at no point is it a decision about where money goes.
+   *
+   * `rcm.queue` is the tier that marks a claim reviewed. The person who checked
+   * every claim on this check and then put the money into Open Dental by hand is
+   * exactly the person who knows the answer, and gating her behind `rcm.write`
+   * would make the one record that decides whether posting gets switched on
+   * depend on a permission she needs for nothing else.
+   */
+  /^\/remittances\/[^/]+\/comparison$/,
+  /*
    * THE READ-ONLY RE-CONFIRMATION (Stage C, §7).
    *
    * `POST /posting/:id/recheck` re-runs the confirmation against a plan that has
@@ -254,6 +269,21 @@ router.use('/posting', require('./posting'));
  * while a chart write stays impossible.
  */
 router.use('/office-settings', require('./officeSettings'));
+/*
+ * THE SHADOW-MODE COMPARISON'S TWO READS (Stage C-2).
+ *
+ *   GET /comparison/tally     the running count under the ask, on `rcm.queue`
+ *   GET /comparison/summary   the evidence behind the switch, on `rcm.settings`
+ *
+ * Both are GETs, so both clear the mount's read gate before their own explicit
+ * `requirePermission` runs; the summary's is NARROWER than the mount, on the
+ * `office-settings` idiom directly above — an exit criterion read beside the
+ * switch it justifies, absent rather than greyed for everybody else.
+ *
+ * The WRITE lives on `/remittances/:id/comparison`, beside park and set-aside,
+ * because it is an act on one check rather than a question about the practice.
+ */
+router.use('/comparison', require('./comparison'));
 
 module.exports = router;
 module.exports.QUEUE_PATHS = QUEUE_PATHS;

@@ -84,6 +84,20 @@ const {
 } = require('../../migrations-tenant/1787800000000_rcm_set_aside_sent_in_error');
 
 /**
+ * The shadow-mode comparison's two vocabularies (Stage C-2).
+ *
+ * Same contract as `SET_ASIDE_REASONS` above: they live on the migration that
+ * wrote the CHECK, so a database migrated only that far and this route can never
+ * disagree about what is storable.
+ *
+ * @see migrations-tenant/1787900000000_rcm_shadow_comparison.js
+ */
+const {
+  COMPARISON_VERDICTS,
+  COMPARISON_REASONS,
+} = require('../../migrations-tenant/1787900000000_rcm_shadow_comparison');
+
+/**
  * How long a biller's own sentence may be, on either action.
  *
  * Deliberately SHORTER than a review note's 2000 (`claims.js MAX_REVIEW_NOTE`).
@@ -149,6 +163,22 @@ const BATCH_COLUMNS = [
   'set_aside_by',
   'set_aside_reason',
   'set_aside_reason_note',
+  /*
+   * DID THE APP GET THIS CHECK RIGHT? (1787900000000, Stage C-2).
+   *
+   * The shadow-mode comparison. Selected on the DETAIL and on the list, for the
+   * same reason both worklist states are: it changes what a row says about
+   * itself — a check somebody has already answered must not go on asking.
+   *
+   * `comparison_note` is PHI-capable and ships only on the detail's own wire,
+   * to the person who wrote it; nothing in the list rendering reads it.
+   */
+  'comparison_verdict',
+  'comparison_reason',
+  'comparison_note',
+  'comparison_by',
+  'comparison_at',
+  'comparison_revision',
   'created_by',
   'created_at',
 ].join(', ');
@@ -497,6 +527,28 @@ function toBatchWire(batch, claims, source, actors, approval = {}, decided = nul
       : null,
     setAsideReason: batch.set_aside_reason || null,
     setAsideNote: batch.set_aside_reason_note || null,
+
+    /**
+     * DID THE APP GET THIS CHECK RIGHT? — the shadow-mode comparison (C-2).
+     *
+     * `comparisonVerdict` null means NOBODY HAS ANSWERED, never "no difference
+     * found": the screen renders the ask, not a result. `comparisonReason` is
+     * the SLUG the client renders copy from, on the same contract
+     * `setAsideReason` has, and the note is the biller's own words.
+     *
+     * `comparisonRevision` is how many times this check has been answered. It is
+     * what lets the screen say "you changed this" rather than pretending the
+     * newest answer was the only one — an answer is changeable until the check
+     * posts, and a change that left no trace would be a silent overwrite.
+     */
+    comparisonVerdict: batch.comparison_verdict || null,
+    comparisonReason: batch.comparison_reason || null,
+    comparisonNote: batch.comparison_note || null,
+    comparisonAt: iso(batch.comparison_at),
+    comparisonBy: batch.comparison_by
+      ? (actors[batch.comparison_by] || {}).displayName || batch.comparison_by
+      : null,
+    comparisonRevision: num(batch.comparison_revision),
 
     /**
      * WHEN SOMEBODY LAST DECIDED A WRITE-OFF HERE — §15.2's finding 9 (Stage B).
@@ -1001,6 +1053,10 @@ router.get(
         // that could only print a crosswalk key would not do that job.
         ...ordered.map((b) => b.parked_by),
         ...ordered.map((b) => b.set_aside_by),
+        // …whoever answered the shadow-mode comparison on each check (C-2), on
+        // the same argument again: a panel reading "answered by u-7" is a panel
+        // that has forgotten who works here.
+        ...ordered.map((b) => b.comparison_by),
         // …and whoever last decided a write-off on each check, for the same
         // reason: the card names the person.
         ...[...decided.values()].map((d) => d.byKey),
@@ -1130,6 +1186,8 @@ router.get(
       const actors = await describeActors(pool, [
         batch.created_by,
         batch.approval_attempted_by,
+        // Who answered the shadow-mode comparison (C-2). The panel names her.
+        batch.comparison_by,
         upload && upload.uploadedByKey,
         decided && decided.byKey,
         ...claims.map((c) => c.odMatchedByKey),
@@ -1762,8 +1820,19 @@ const requireQueue = requirePermission('rcm.queue');
  */
 async function loadWorklistState(client, office, batchId) {
   const found = await client.query(
-    `SELECT batch_id, parked_at, set_aside_at FROM rcm_payment_batches ` +
-      `WHERE office_id = $1 AND batch_id = $2`,
+    /*
+     * The comparison columns ride along (C-2) because the comparison write needs
+     * to know whether the answer it was handed is actually a CHANGE: re-sending
+     * the same answer must not advance `comparison_revision`, or a double-click
+     * would make the summary say a check was answered twice.
+     *
+     * Widened here rather than read in a second statement, so the current answer
+     * is loaded inside the same transaction — and under the same row read — that
+     * the write then acts on.
+     */
+    `SELECT batch_id, parked_at, set_aside_at, ` +
+      `comparison_verdict, comparison_reason, comparison_note, comparison_revision ` +
+      `FROM rcm_payment_batches WHERE office_id = $1 AND batch_id = $2`,
     [office, batchId]
   );
   return found.rows[0] || null;
@@ -2090,6 +2159,237 @@ router.post(
   })
 );
 
+// ─── The shadow-mode comparison: did the app get this check right? ───────────
+
+/**
+ * Plan statuses that CLOSE the question, because money has reached the chart.
+ *
+ * An answer is changeable *until the check posts*, and this is what "posts"
+ * means: `posted` is the whole check on the ledger, `partially_posted` is some
+ * of it. Either way the hand-posting the comparison is a comparison AGAINST is
+ * over, and an answer changed afterwards would be describing a different world
+ * from the one it is filed under.
+ *
+ * `failed`, `blocked` and `withdrawn` are deliberately NOT here. Nothing reached
+ * a chart in any of them, so the question is still live — and `withdrawn` in
+ * particular is a check that will be posted BY HAND, which is precisely the case
+ * this whole exercise is about.
+ */
+const COMPARISON_CLOSED_STATUSES = Object.freeze(['posted', 'partially_posted']);
+
+/**
+ * POST /:id/comparison — "did the app get this check right?"
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS AT ALL
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Shadow mode (RCM_POSTING §2.5) is several weeks of a real biller working real
+ * remittances with posting switched off, putting the same money into Open Dental
+ * by hand. The only question that period exists to answer is whether what this
+ * app worked out matches what she would have done — and the go-live plan
+ * answered it with a hand-maintained CSV, which asks a tired person at 9pm to do
+ * bookkeeping about her own work. The record is the first thing that gets
+ * dropped, and then the decision to switch posting on rests on an impression.
+ *
+ * One click, at the moment she already knows the answer.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT CANNOT AFFECT POSTING, AND THAT IS THE LOAD-BEARING PROPERTY
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It writes six columns on `rcm_payment_batches` and reads two from
+ * `rcm_posting_queue`. It touches no plan, no line, no status, no gate, no
+ * `drain_enabled`, and no Open Dental client — there is none reachable from this
+ * file. `shadowComparison.test.js` proves the claim rather than asserting it, by
+ * driving the REAL posting run twice, once with an answer recorded and once
+ * without, and comparing the Open Dental call transcript and the resulting rows.
+ *
+ * That is also why it sits on `rcm.queue` (D-9) beside marking a claim reviewed
+ * and parking a check, rather than on the `rcm.post` that presses Post: saying
+ * what happened is worklist hygiene, not a posting act.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ANSWER IS CHANGEABLE, AND A CHANGE IS RECORDED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * She may have said `same` and then found the difference an hour later. Refusing
+ * the second answer would leave the record saying the opposite of what she now
+ * knows, which is the one outcome that makes the whole exercise worthless.
+ *
+ * So a change is accepted and `comparison_revision` advances, and one audit row
+ * is filed per answer. A resubmission of the SAME answer is a no-op — 200,
+ * revision unchanged, no audit row — because the screen may re-send and a
+ * counter that could be inflated by a double-click would make "this one was
+ * answered twice" a lie in the summary.
+ */
+router.post(
+  '/:id/comparison',
+  requireQueue,
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const verdict = typeof req.body?.verdict === 'string' ? req.body.verdict.trim() : '';
+    const rawReason = req.body && req.body.reason;
+    const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
+    const rawNote = req.body && req.body.note;
+    const note = typeof rawNote === 'string' ? rawNote.trim() : '';
+
+    if (!COMPARISON_VERDICTS.includes(verdict)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Say whether this check came out the same or not',
+        code: 'COMPARISON_VERDICT_REQUIRED',
+        verdicts: [...COMPARISON_VERDICTS],
+      });
+    }
+    /*
+     * A `same` CARRYING A REASON IS REFUSED, not quietly stripped.
+     *
+     * The CHECK constraint would refuse the row anyway, so the choice here is
+     * between a named 400 and an INTERNAL_ERROR — and a body saying "the same,
+     * because the payment amount was off" is a client that has a bug, which a
+     * route that silently dropped the field would hide until somebody read the
+     * database.
+     */
+    if (verdict === 'same' && (reason || note)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A check marked the same carries no reason and no note',
+        code: 'COMPARISON_SAME_TAKES_NO_REASON',
+      });
+    }
+    if (verdict === 'differed' && !COMPARISON_REASONS.includes(reason)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Say which part was off',
+        code: 'COMPARISON_REASON_REQUIRED',
+        reasons: [...COMPARISON_REASONS],
+      });
+    }
+    if (note.length > MAX_WORKLIST_NOTE) {
+      return res.status(400).json({
+        success: false,
+        error: `That note is too long (max ${MAX_WORKLIST_NOTE} characters)`,
+        code: 'NOTE_TOO_LONG',
+      });
+    }
+    /*
+     * THE NOTE IS REQUIRED FOR EVERY `differed`, not only for `other`.
+     *
+     * `set_aside_reason` demands its sentence only on `other`, because there the
+     * slug is usually the whole story. Here it never is: "the payment amount"
+     * without the two figures is a defect report nobody can act on, and the
+     * person reading this in three weeks to decide whether to switch posting on
+     * is not the person who typed it.
+     */
+    if (verdict === 'differed' && note.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Say in a line what was off',
+        code: 'COMPARISON_NOTE_REQUIRED',
+      });
+    }
+
+    const storedReason = verdict === 'differed' ? reason : null;
+    const storedNote = verdict === 'differed' ? note : null;
+
+    /** @type {{ code: string, message: string }|null} */
+    let refusal = null;
+    let unchanged = false;
+    let revision = 0;
+
+    const done = await withWorklistWrite(req, office, batchId, async (client, userKey, row) => {
+      /*
+       * THE PRECONDITIONS, READ INSIDE THE TRANSACTION.
+       *
+       * Both are facts about the posting, so both are read from
+       * `rcm_posting_queue` on this connection rather than from anything the
+       * screen sent — a body cannot assert a check into being answerable.
+       */
+      const plans = await client.query(
+        `SELECT queue_id, status FROM rcm_posting_queue WHERE office_id = $1 AND batch_id = $2`,
+        [office, batchId]
+      );
+      if (plans.rows.length === 0) {
+        /*
+         * NOTHING TO COMPARE AGAINST. The question is "did the app get this
+         * check right", and until somebody has approved it the app has not said
+         * what it would do. A 409 rather than a 400: the body is fine, the
+         * check is not ready to be asked about yet.
+         */
+        refusal = {
+          code: 'COMPARISON_NOT_APPROVED',
+          message: 'This check has not been approved yet, so there is nothing to compare.',
+        };
+        return;
+      }
+      if (plans.rows.some((p) => COMPARISON_CLOSED_STATUSES.includes(String(p.status)))) {
+        refusal = {
+          code: 'COMPARISON_CLOSED',
+          message: 'This check has posted. The answer recorded before it posted stands.',
+        };
+        return;
+      }
+
+      unchanged =
+        (row.comparison_verdict || null) === verdict &&
+        (row.comparison_reason || null) === storedReason &&
+        (row.comparison_note || null) === storedNote;
+      if (unchanged) {
+        revision = Number(row.comparison_revision) || 0;
+        return;
+      }
+
+      const written = await client.query(
+        `UPDATE rcm_payment_batches SET comparison_verdict = $3, comparison_reason = $4, ` +
+          `comparison_note = $5, comparison_by = $6, comparison_at = now(), ` +
+          `comparison_revision = comparison_revision + 1, updated_at = now() ` +
+          `WHERE office_id = $1 AND batch_id = $2 RETURNING comparison_revision`,
+        [office, batchId, verdict, storedReason, storedNote, userKey]
+      );
+      revision = Number((written.rows[0] || {}).comparison_revision) || 0;
+    });
+    if (!done.ok) return notFound(req, res, office, batchId);
+    if (refusal) {
+      await auditRcmDenial(req, 'rcm_remittance_comparison', batchId, { office });
+      return res.status(409).json({ success: false, error: refusal.message, code: refusal.code });
+    }
+
+    /*
+     * ONE AUDIT ROW PER ANSWER, AND THE NOTE IS NOT IN IT.
+     *
+     * The row records that this person answered this check at this instant,
+     * which is what makes a changed answer a recorded change rather than a
+     * silent overwrite. `audit_log` has no detail column and this platform never
+     * puts free text a person typed into one — a comparison note is PHI-capable
+     * by nature, on exactly the reasoning `parked_note` carries.
+     *
+     * Nothing is filed for a no-op resubmission, on `unpark`'s rule: a row per
+     * re-render would bury every real answer under the ordinary act of looking.
+     */
+    if (!unchanged) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'rcm_remittance_comparison',
+        resourceId: batchId,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+    }
+
+    return res.json({
+      success: true,
+      office,
+      batchId,
+      verdict,
+      reason: storedReason,
+      revision,
+      /** False when the same answer was sent twice — nothing was written. */
+      recorded: !unchanged,
+    });
+  })
+);
 
 module.exports = router;
 module.exports.attentionFor = attentionFor;
@@ -2099,3 +2399,6 @@ module.exports.statusesOf = statusesOf;
 module.exports.REMITTANCE_VIEWS = REMITTANCE_VIEWS;
 module.exports.MAX_WORKLIST_NOTE = MAX_WORKLIST_NOTE;
 module.exports.SET_ASIDE_REASONS = SET_ASIDE_REASONS;
+module.exports.COMPARISON_VERDICTS = COMPARISON_VERDICTS;
+module.exports.COMPARISON_REASONS = COMPARISON_REASONS;
+module.exports.COMPARISON_CLOSED_STATUSES = COMPARISON_CLOSED_STATUSES;
