@@ -99,14 +99,12 @@
  *   `office_config_unresolved`  The office's own PayType could not be read. A
  *                               check posted under a guessed payment type is a
  *                               reconciliation failure discovered weeks later.
- *   `office_writeoff_not_postable`
- *                               STAGE B1 ONLY. A biller decided the office
- *                               absorbs a line's patient remainder, and this
- *                               build's writes still carry the carrier's
- *                               verbatim figures — so posting would put a number
- *                               in the chart the screen never showed. B2 makes
- *                               the write carry the decided figure and removes
- *                               this reason.
+ *   `writeoff_adjtype_unresolved`
+ *                               This office books its own write-offs as a named
+ *                               ledger adjustment (D-13) and its Open Dental has
+ *                               no adjustment type by that name it can use.
+ *                               Refused before the first write, and cleared by
+ *                               the same press once the name is fixed.
  *   `office_mismatch`, `plan_empty`, `claim_not_confirmed`,
  *   `claim_not_on_this_plan`, `negative_intent`, `plan_total_mismatch`,
  *   `snapshot_superseded`, `od_writes_disabled`
@@ -135,6 +133,8 @@
 
 const odPostingWrites = require('./odPostingWrites');
 const odOfficeConfig = require('./odOfficeConfig');
+const postingGate = require('./postingGate');
+const lineDecisions = require('./lineDecisions');
 /*
  * NAMESPACE IMPORT, NOT A DESTRUCTURE.
  *
@@ -181,20 +181,19 @@ const BLOCK_REASONS = Object.freeze({
   CLAIM_NOT_ON_THIS_PLAN: 'claim_not_on_this_plan',
   NEGATIVE_INTENT: 'negative_intent',
   /**
-   * STAGE B1 ONLY, AND B2 DELETES IT.
+   * STAGE B2 REPLACED B1's `office_writeoff_not_postable` WITH THIS.
    *
-   * A biller decided the office would absorb a line's patient remainder, and
-   * approving snapshotted that decision onto the posting. This build's writes
-   * still send the CARRIER's verbatim figures — so posting now would put a
-   * number in the chart that the screen never showed, and the patient would be
-   * billed money the office had decided to absorb.
+   * B1 refused every decided write-off because the write could not carry one.
+   * The write carries it now — so the only refusal left is the one D-13 demands:
+   * this office books its write-offs as a named ledger adjustment, and its own
+   * definitions carry nothing by that name.
    *
-   * Refusing is the honest half: nothing is written, the check waits, and the
-   * message says the biller may bill the patient instead if she does not want
-   * to wait. It is a `blocked` reason rather than a failure because nothing was
-   * attempted and a human can act on it.
+   * Never a fallback to a plausible neighbour and never a number: a concession
+   * booked under the wrong adjustment type is a figure in the practice's books
+   * meaning something other than what happened, and there is no
+   * `DELETE /adjustments` to take it back with.
    */
-  OFFICE_WRITEOFF_NOT_POSTABLE: 'office_writeoff_not_postable',
+  WRITEOFF_ADJTYPE_UNRESOLVED: 'writeoff_adjtype_unresolved',
   PLAN_TOTAL_MISMATCH: 'plan_total_mismatch',
   SNAPSHOT_SUPERSEDED: 'snapshot_superseded',
   OD_WRITES_DISABLED: 'od_writes_disabled',
@@ -294,7 +293,15 @@ function chartTouchedBy(lines) {
       CHART_TOUCHED_LINE_STATUSES.includes(String(l.status)) ||
       l.odClaimPaymentNum != null ||
       l.odAdjustmentNum != null ||
-      l.odSupplementalClaimProcNum != null
+      l.odSupplementalClaimProcNum != null ||
+      /*
+       * B2: the office's own write-off, when this office books it as a ledger
+       * adjustment. A concession sitting in a patient's ledger is money that
+       * moved as surely as a payment is, it cannot be deleted, and a plan
+       * retired around it would leave that row in the chart with nothing in
+       * CareIN pointing at it.
+       */
+      l.odWriteoffAdjustmentNum != null
   );
 }
 
@@ -725,27 +732,23 @@ function checkPreconditions(ctx) {
   }
 
   /*
-   * -- STAGE B1: A DECIDED OFFICE WRITE-OFF CANNOT POST YET. ------------------
+   * -- A DECIDED WRITE-OFF IS NEGATIVE MONEY IF IT IS NEGATIVE. ---------------
    *
-   * `decided_write_off_cents` is what a biller decided the practice would
-   * absorb, frozen onto this posting when somebody approved it. THIS BUILD'S
-   * WRITES DO NOT CARRY IT — `odPostingWrites` still sends the carrier's
-   * verbatim WriteOff — so posting now would write a figure the screen never
-   * showed and leave the patient billed for money the office had written off.
+   * The carrier's figures are checked above; the office's own decision gets the
+   * same treatment for the same reason. A negative concession is not a smaller
+   * write-off, it is a charge added to a patient's balance by a screen that said
+   * it was taking one away, and Open Dental would accept it without complaint.
    *
-   * Nothing may reach a chart that the screen did not show, so this refuses
-   * before the first Open Dental call. B2 makes the write carry the decided
-   * figure and DELETES this block; its test flips from "refuses" to "posts the
-   * decided amount".
+   * B1's blanket refusal of every decided write-off lived here and is GONE: the
+   * write carries the decided figure now. What remains is the arithmetic guard,
+   * plus the office's own mode, resolved live below because it needs Open Dental
+   * to answer and every refusal in this function must not.
    */
-  const decided = lines.find((l) => Number(l.decidedWriteOffCents) > 0);
-  if (decided) {
+  const negativeDecision = lines.find((l) => Number(l.decidedWriteOffCents) < 0);
+  if (negativeDecision) {
     return {
-      reason: BLOCK_REASONS.OFFICE_WRITEOFF_NOT_POSTABLE,
-      detail:
-        `Line ${decided.position} is written off by the office, and office write-offs post ` +
-        'once the next update lands. This check can wait, or you can bill the patient for now. ' +
-        'Nothing was sent to Open Dental.',
+      reason: BLOCK_REASONS.NEGATIVE_INTENT,
+      detail: `Line ${negativeDecision.position} carries a negative office write-off.`,
     };
   }
 
@@ -1053,14 +1056,23 @@ const LINE_COLUMNS = [
   'od_adjustment_num',
   'od_supplemental_claim_proc_num',
   /*
-   * STAGE B1: the office's own write-off, snapshotted at approve.
+   * STAGE B1's SNAPSHOT, AND B2 POSTS IT.
    *
-   * Read but NOT YET WRITTEN. B1 refuses to post a plan that carries one (see
-   * `OFFICE_WRITEOFF_NOT_POSTABLE`); the write is B2's, and reading the column
-   * here is what makes the refusal possible rather than the drain quietly
-   * posting the carrier's figure over a decision a biller made.
+   * The office's own write-off, frozen onto this posting when somebody approved
+   * it. The drain reads THIS and never the review row: the review may have moved
+   * on, and a plan that posted figures nobody approved would be the worst failure
+   * this module has.
+   *
+   * `od_writeoff_adjustment_num` is where it lands under `adjustment_by_name` —
+   * and is the idempotency key that stops a second press booking a second
+   * concession against a patient, which no `DELETE /adjustments` could take back.
    */
   'decided_write_off_cents',
+  'od_writeoff_adjustment_num',
+  // B2: what the approve PROMISED the patient would owe on this line, before
+  // the office's own decision. The confirmation compares the chart against this
+  // rather than against a figure re-derived from a fee that can move.
+  'intended_patient_cents',
   'decided_reason',
   'decided_by',
 ];
@@ -1121,6 +1133,16 @@ function toLine(row) {
       row.decided_write_off_cents == null ? null : Number(row.decided_write_off_cents),
     decidedReason: row.decided_reason == null ? null : String(row.decided_reason),
     decidedBy: row.decided_by == null ? null : String(row.decided_by),
+    /** The ledger adjustment this office's own write-off landed as (B2). */
+    odWriteoffAdjustmentNum:
+      row.od_writeoff_adjustment_num == null ? null : Number(row.od_writeoff_adjustment_num),
+    /**
+     * The frozen promise (B2). `null` on a plan approved before the column
+     * existed — NOT 0, because "nobody recorded it" and "the patient owes
+     * nothing" are opposite facts and one of them would silently pass.
+     */
+    intendedPatientCents:
+      row.intended_patient_cents == null ? null : Number(row.intended_patient_cents),
     isSupplemental: row.is_supplemental === true,
     recoupmentPath: row.recoupment_path == null ? null : String(row.recoupment_path),
     odAdjustmentNum: row.od_adjustment_num == null ? null : Number(row.od_adjustment_num),
@@ -1158,6 +1180,27 @@ const PLAN_QUERIES = {
     `SELECT batch_id, payer, check_number, eft_number, payment_method, deposit_date ` +
     `FROM rcm_payment_batches WHERE batch_id = $1 AND office_id = $2`,
 };
+
+/**
+ * What the patient owes once this claim has posted, recorded on the claim (B2).
+ *
+ * Hoisted for the reason `PLAN_QUERIES` is: `scripts/rcm-verify-queries.js`
+ * sends it to a real migrated schema in CI, so a column that does not exist is a
+ * parse error in the pipeline rather than a 500 on a walk night.
+ *
+ * OFFICE-SCOPED, like every other statement in this module. A claim id is a
+ * uuid and would be unique on its own; scoping by office anyway is what makes a
+ * cross-office write impossible rather than merely unlikely.
+ *
+ * Written on EVERY confirmation, green or red. A claim whose patient balance
+ * came out wrong needs the record more than one that came out right, and a
+ * screen that could only show the good ones would be the worst kind of honest.
+ */
+const CONFIRM_QUERIES = Object.freeze({
+  recordVerdict:
+    `UPDATE rcm_claims SET confirmed_verdict = $3, confirmed_at = now(), updated_at = now() ` +
+    `WHERE office_id = $1 AND claim_id = $2`,
+});
 
 /**
  * Load a plan and everything needed to judge it: the queue row, its lines, the
@@ -1432,6 +1475,12 @@ async function persistLine(pool, queueLineId, patch) {
   if (patch.odAdjustmentNum !== undefined) put('od_adjustment_num', patch.odAdjustmentNum);
   if (patch.odSupplementalClaimProcNum !== undefined) {
     put('od_supplemental_claim_proc_num', patch.odSupplementalClaimProcNum);
+  }
+  // B2: the office's own write-off, when this office books it as a ledger
+  // adjustment. Same rule as the two above — assigned only when this run
+  // produced one, because a null would erase which write landed.
+  if (patch.odWriteoffAdjustmentNum !== undefined) {
+    put('od_writeoff_adjustment_num', patch.odWriteoffAdjustmentNum);
   }
   if (patch.claimprocWrittenAt) sets.push('claimproc_written_at = now()');
   if (patch.claimReceivedAt) sets.push('claim_received_at = now()');
@@ -2255,6 +2304,51 @@ async function drainRow(ctx, queueId) {
        * order: adjudication, claim receipts, the check for the POSITIVE side, its
        * reconciliation, then the takebacks.
        */
+      /*
+       * ── STAGE B2: HOW THIS OFFICE BOOKS A WRITE-OFF IT CHOSE TO MAKE ──────
+       *
+       * Read here — after the configuration and before any write — because the
+       * `adjustment_by_name` mode needs BOTH: the office's setting says which
+       * name, and this practice's own definitions say whether it exists.
+       *
+       * The refusal is a `blocked` and it happens before the first write, so a
+       * misconfigured office costs nothing and clears on the press after
+       * somebody fixes the name (D-15: a blocked row has a way out, and the way
+       * out is the same button).
+       *
+       * A plan with no decided write-off on it never asks: an office in
+       * `adjustment_by_name` with a name that resolves to nothing can still post
+       * every ordinary check it has, and only the claims carrying a concession
+       * wait.
+       */
+      const settings = ctx.ensureOfficeSettings
+        ? await ctx.ensureOfficeSettings()
+        : await postingGate.readOfficeSettings(pool, office);
+      const writeoffMode = lineDecisions.WRITEOFF_MODES.includes(settings.writeoffMode)
+        ? settings.writeoffMode
+        : lineDecisions.DEFAULT_WRITEOFF_MODE;
+      const decidesAnything = plan.lines.some((l) => Number(l.decidedWriteOffCents) > 0);
+      let writeoffAdjType = null;
+      if (decidesAnything && writeoffMode === 'adjustment_by_name') {
+        writeoffAdjType = odOfficeConfig.pickAdjTypeByName(config, settings.writeoffAdjTypeName);
+        if (!writeoffAdjType) {
+          const named = settings.writeoffAdjTypeName
+            ? `'${settings.writeoffAdjTypeName}'`
+            : 'nothing at all';
+          const detail =
+            `This office books its own write-offs as an adjustment named ${named}, and ` +
+            `${office}'s Open Dental has no adjustment type by that name it can use. ` +
+            'Fix the name in Admin, then post again. Nothing was sent to Open Dental.';
+          await blockRow(pool, queueId, BLOCK_REASONS.WRITEOFF_ADJTYPE_UNRESOLVED, detail, step);
+          return DONE({
+            queueId,
+            status: 'blocked',
+            reason: BLOCK_REASONS.WRITEOFF_ADJTYPE_UNRESOLVED,
+            detail,
+          });
+        }
+      }
+
       const takebackLines = plan.lines.filter((l) => l.isSupplemental === true);
       const ordinaryLines = plan.lines.filter((l) => l.isSupplemental !== true);
       /**
@@ -2302,6 +2396,8 @@ async function drainRow(ctx, queueId) {
         ordinaryTotalCents,
         claimById,
         requiresCheck,
+        writeoffMode,
+        writeoffAdjType,
       };
     })();
   } catch (err) {
@@ -2311,8 +2407,17 @@ async function drainRow(ctx, queueId) {
     throw err;
   }
   if (pre.__done) return pre.result;
-  const { plan, config, takebackLines, ordinaryLines, ordinaryTotalCents, claimById, requiresCheck } =
-    pre;
+  const {
+    plan,
+    config,
+    takebackLines,
+    ordinaryLines,
+    ordinaryTotalCents,
+    claimById,
+    requiresCheck,
+    writeoffMode,
+    writeoffAdjType,
+  } = pre;
 
   const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
@@ -2447,12 +2552,37 @@ async function drainRow(ctx, queueId) {
       adoptable.add(plan.queue.odClaimPaymentNum);
     }
 
+    /*
+     * WHAT THIS RUN WILL SEND, PER LINE, WORKED OUT ONCE.
+     *
+     * `postedFigures` is the only place the office's decision is turned into
+     * numbers, and both readers of those numbers are below: the comparison
+     * against the chart, and the write itself. Computing it twice is how the two
+     * come to disagree.
+     *
+     * @type {Map<string, ReturnType<typeof lineDecisions.postedFigures>>}
+     */
+    const figuresByLine = new Map();
+    for (const line of ordinaryLines) {
+      figuresByLine.set(line.queueLineId, lineDecisions.postedFigures(line, writeoffMode));
+    }
+
     // Decide, per line, from the chart.
     for (const group of grouped) {
       const procs = claimProcsByClaim.get(group.odClaimNum) || [];
       for (const line of group.lines) {
         const row = procs.find((p) => Number(p.ClaimProcNum) === line.odClaimProcNum);
-        const decision = decideLineAction(line, row);
+        /*
+         * COMPARED AGAINST WHAT WILL BE SENT, not against the carrier's
+         * snapshot. A line this run already wrote under `writeoff_field` holds
+         * `W + decided` in the chart, and comparing it to `W` alone would read
+         * as a CONFLICT — a plan refusing to finish work it did itself.
+         */
+        const figures = figuresByLine.get(line.queueLineId);
+        const decision = decideLineAction(
+          { ...line, intendedWriteOffCents: figures.writeOffCents },
+          row
+        );
         decisions.set(line.queueLineId, decision);
         if (decision.action === 'attached' && decision.checkNum) adoptable.add(decision.checkNum);
       }
@@ -2575,12 +2705,23 @@ async function drainRow(ctx, queueId) {
           continue;
         }
 
+        /*
+         * THE DECIDED FIGURE GOES INTO THE CHART HERE (Stage B2).
+         *
+         * Under `writeoff_field` this `writeOffCents` is the carrier's W plus
+         * what the office decided to absorb, which is what makes the patient's
+         * balance come out at the number the screen promised. Under
+         * `adjustment_by_name` it is W alone and the concession is booked
+         * separately below. Either way the sum of the two is the same, and
+         * `lineDecisions.test.js` pins that as an identity over both modes.
+         */
+        const figures = figuresByLine.get(line.queueLineId);
         const { verdict } = await odPostingWrites.writeClaimProcReceived(od, {
           claimNum: group.odClaimNum,
           claimProcNum: line.odClaimProcNum,
-          insPayAmtCents: line.intendedInsPayAmtCents,
-          writeOffCents: line.intendedWriteOffCents,
-          dedAppliedCents: line.intendedDedAppliedCents,
+          insPayAmtCents: figures.insPayAmtCents,
+          writeOffCents: figures.writeOffCents,
+          dedAppliedCents: figures.dedAppliedCents,
         });
         await auditOd(req, {
           action: 'UPDATE',
@@ -2925,6 +3066,109 @@ async function drainRow(ctx, queueId) {
     }
 
     /*
+     * ── STEP: the write-offs this office DECIDED on (Stage B2) ───────────────
+     *
+     * Only under `adjustment_by_name`. Under `writeoff_field` the decision is
+     * already in the chart — it went into the claimproc's `WriteOff` with the
+     * carrier's own figure, was read back there, and there is no second object
+     * to write.
+     *
+     * AFTER the check and its reconciliation, for the reason the takebacks are:
+     * the insurance side is complete and proven by this point, so a concession
+     * that fails leaves a legible chart rather than a half-finished claim.
+     *
+     * @type {Map<string, number>} queue line → the AdjNum it landed as
+     */
+    const writeoffAdjByLine = new Map();
+    if (writeoffAdjType) {
+      step = 'office_writeoffs';
+      await persistStep(pool, queueId, step);
+
+      for (const line of ordinaryLines) {
+        const figures = figuresByLine.get(line.queueLineId);
+        if (!figures || figures.adjustmentCents <= 0) continue;
+
+        /*
+         * ALREADY BOOKED BY AN EARLIER PRESS. Not re-posted, and not trusted
+         * either: the id is carried forward and the confirmation below reads the
+         * patient's ledger for it. A ledger row cannot be deleted, so a
+         * double-post is not something anybody can tidy up afterwards.
+         */
+        if (line.odWriteoffAdjustmentNum) {
+          writeoffAdjByLine.set(line.queueLineId, Number(line.odWriteoffAdjustmentNum));
+          continue;
+        }
+
+        const claim = claimById.get(line.claimId);
+        if (!claim || !claim.odPatientId) {
+          // An adjustment posts to a PATIENT ledger, so a claim with no linked
+          // patient cannot carry one. Refused rather than folded into the
+          // write-off field, which is a different office's booking convention
+          // and nobody chose it here.
+          await persistLine(pool, line.queueLineId, {
+            status: 'failed',
+            lastError:
+              'This office books its own write-offs against the patient ledger, and this ' +
+              'claim carries no linked Open Dental patient. Nothing was written for it.',
+          });
+          throw new OdWriteError(
+            `line ${line.position} has no PatNum for an office write-off`,
+            'OD_ADJUSTMENT_NO_PATIENT',
+            { status: 0, retryable: false }
+          );
+        }
+
+        /*
+         * NEGATIVE, because the practice is taking money OFF what the patient
+         * owes. `pickAdjTypeByName` already refused a `+` type wearing this
+         * name, so Open Dental's own sign rule cannot surprise the sequence here.
+         */
+        const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
+          odPatientId: claim.odPatientId,
+          adjTypeDefNum: writeoffAdjType.defNum,
+          amountCents: -figures.adjustmentCents,
+          adjDate: plan.queue.carrierEobDate || officeToday(),
+          note,
+          odProcNum: null,
+        });
+        await auditOd(req, {
+          action: 'CREATE',
+          resourceType: 'rcm_od_adjustment',
+          resourceId: adjNum,
+          office,
+          result: verdict.agreed ? 'SUCCESS' : 'ERROR',
+        });
+        await auditOd(req, {
+          action: 'READ',
+          resourceType: 'rcm_od_adjustment',
+          resourceId: claim.odPatientId,
+          office,
+        });
+
+        // Recorded WHATEVER the verdict, for 6d's reason: the adjustment exists
+        // in a ledger nothing can delete, and a row that could not name it would
+        // leave nobody able to find it.
+        await persistLine(pool, line.queueLineId, {
+          odWriteoffAdjustmentNum: adjNum,
+          readback: { step: 'office_writeoff_adjustment', ...verdict },
+          lastError: verdict.agreed
+            ? null
+            : 'Open Dental accepted the write-off adjustment and read it back differently.',
+        });
+        writeoffAdjByLine.set(line.queueLineId, adjNum);
+
+        if (!verdict.agreed) {
+          throw new OdWriteError(
+            `write-off adjustment ${adjNum} read back different values`,
+            'OD_READBACK_MISMATCH',
+            { status: 200, retryable: false }
+          );
+        }
+        await stepPause(ctx, 'office_writeoffs');
+      }
+    }
+
+    /*
      * ── STEP: the takebacks (6d) ─────────────────────────────────────────────
      *
      * LAST among the money writes, and after the check on purpose. The ordinary
@@ -2939,6 +3183,172 @@ async function drainRow(ctx, queueId) {
       await persistStep(pool, queueId, step);
       const takeback = await drainTakebacks(ctx, plan, takebackLines, config, claimById, note);
       recoupedCents = takeback.recoupedCents;
+    }
+
+    /*
+     * ── STEP: what does the patient owe NOW? (Stage B2) ──────────────────────
+     *
+     * The rule this whole stage is built on: what the carrier's remittance says
+     * the patient owes must equal what Open Dental says they owe once this
+     * posts, less exactly the write-offs the office decided on.
+     *
+     * Everything above proved the CARRIER's side — the payment landed, the check
+     * carries these lines, each field read back as sent. None of that is the
+     * same as the patient's balance being right, and the patient's balance is
+     * the number a front desk reads out loud.
+     *
+     * MEASURED, NEVER RE-DERIVED. Each claim is read once more and the patient's
+     * portion computed from Open Dental's own figures — `FeeBilled − InsPayAmt −
+     * WriteOff`, less any ledger concession this run booked. A confirmation
+     * computed from what we MEANT to write would confirm nothing at all, which
+     * is why `verdictFor`'s confirmed register refuses a line nobody read back.
+     */
+    step = 'confirm_patient';
+    await persistStep(pool, queueId, step);
+
+    /*
+     * The ledger concessions, read back by AdjNum rather than assumed from what
+     * was sent. One list read per patient, and only when this office books
+     * write-offs that way at all.
+     * @type {Map<string, number>} queue line → cents actually taken off, positive
+     */
+    const concessionByLine = new Map();
+    if (writeoffAdjByLine.size > 0) {
+      /** @type {Map<number, Record<string, unknown>[]>} */
+      const ledgerByPatient = new Map();
+      for (const line of ordinaryLines) {
+        const adjNum = writeoffAdjByLine.get(line.queueLineId);
+        if (!adjNum) continue;
+        const claim = claimById.get(line.claimId);
+        const patNum = claim && claim.odPatientId;
+        if (!patNum) continue;
+        if (!ledgerByPatient.has(patNum)) {
+          ledgerByPatient.set(patNum, await odPostingWrites.readAdjustmentsForPatient(od, patNum));
+          await auditOd(req, {
+            action: 'READ',
+            resourceType: 'rcm_od_adjustment',
+            resourceId: patNum,
+            office,
+          });
+        }
+        const found = (ledgerByPatient.get(patNum) || []).find(
+          (r) => Number(r.AdjNum) === Number(adjNum)
+        );
+        // A concession is stored NEGATIVE in the ledger and subtracted as a
+        // positive here. An adjustment we cannot find is left unset, so the line
+        // reads as still owing the whole remainder — which is what the chart
+        // would tell the patient, and the disagreement is the point.
+        if (found) concessionByLine.set(line.queueLineId, -odPostingWrites.dollarsToCents(found.AdjAmt));
+      }
+    }
+
+    /** @type {Array<{claimId: string|null, verdict: object}>} */
+    const confirmations = [];
+    for (const group of grouped) {
+      const rows = await odPostingWrites.readClaimProcsForClaim(od, group.odClaimNum);
+      await auditOd(req, {
+        action: 'READ',
+        resourceType: 'rcm_od_claimproc',
+        resourceId: group.odClaimNum,
+        office,
+      });
+
+      const confirmLines = group.lines.map((line) => {
+        const row = rows.find((r) => Number(r.ClaimProcNum) === line.odClaimProcNum);
+        /*
+         * THE CARRIER'S THREE NUMBERS, RECOVERED FROM THE CHART'S FEE.
+         *
+         * `billed` is Open Dental's own `FeeBilled` — and it is the carrier's
+         * billed amount too, because the gate refuses any claim where the two
+         * disagree (`od_fee_disagrees`). From it: allowed = billed − W and paid
+         * = the carrier's payment, both snapshotted at approve. So R comes out
+         * exactly as the remittance stated it, without this file holding a
+         * second copy of the remittance.
+         */
+        const feeCents = row == null ? null : odPostingWrites.dollarsToCents(row.FeeBilled);
+        const decided = Number(line.decidedWriteOffCents) > 0;
+        const measured =
+          row == null
+            ? null
+            : lineDecisions.chartRemainderCents({
+                feeBilledCents: feeCents,
+                insPayAmtCents: odPostingWrites.dollarsToCents(row.InsPayAmt),
+                writeOffCents: odPostingWrites.dollarsToCents(row.WriteOff),
+                adjustmentCents: concessionByLine.get(line.queueLineId) || 0,
+              });
+        return {
+          lineId: line.queueLineId,
+          // The code the chart itself sent to the carrier, so the sentence names
+          // a line the biller can find. A row we could not read names its
+          // position instead of inventing a code.
+          code: row && row.CodeSent ? String(row.CodeSent) : `line ${line.position}`,
+          /*
+           * THE PROMISE COMES FROM THE APPROVE, NOT FROM THE CHART.
+           *
+           * `intended_patient_cents` is R as it was approved. The three carrier
+           * numbers below are only the fallback for a plan approved before that
+           * column existed — and they are derived from the chart's own
+           * `FeeBilled`, which is exactly the figure a person can edit between
+           * the approve and this press. Where the frozen value exists it wins,
+           * so a moved fee shows up as a disagreement instead of quietly
+           * redefining what was promised.
+           */
+          eobRemainderCents: line.intendedPatientCents,
+          billedCents: feeCents == null ? 0 : feeCents,
+          allowedCents: feeCents == null ? 0 : feeCents - Number(line.intendedWriteOffCents || 0),
+          paidCents: Number(line.intendedInsPayAmtCents || 0),
+          decision: decided ? 'office_writeoff' : 'bill_patient',
+          // The amount frozen at approve, not re-derived: this is what the
+          // office agreed to absorb, whatever the chart has done since.
+          decidedWriteOffCents: line.decidedWriteOffCents,
+          decisionReason: line.decidedReason,
+          decidedBy: line.decidedBy,
+          odClaimProcNum: line.odClaimProcNum,
+          odFeeDeltaCents: 0,
+          confirmedRemainderCents: measured,
+        };
+      });
+
+      const verdict = lineDecisions.verdictFor({ register: 'confirmed', lines: confirmLines });
+      confirmations.push({ claimId: group.lines[0] ? group.lines[0].claimId : null, verdict });
+      if (group.lines[0] && group.lines[0].claimId) {
+        await pool.query(CONFIRM_QUERIES.recordVerdict, [
+          office,
+          group.lines[0].claimId,
+          JSON.stringify(verdict),
+        ]);
+      }
+    }
+
+    const unconfirmed = confirmations.find((c) => c.verdict.state === 'red');
+    if (unconfirmed) {
+      /*
+       * STUCK — NEEDS YOU, AND DELIBERATELY NOT `failed`.
+       *
+       * Money moved and every carrier-side proof passed; what did not come out
+       * right is the patient's own number. `partially_posted` is the state that
+       * says both halves of that, it keeps the check number, and it stays
+       * drainable — so the way out is the same button once somebody has fixed
+       * whatever the sentence names (D-15).
+       *
+       * The EOB is deliberately not filed: a plan that needs a person to look at
+       * it should not also be quietly finishing its paperwork.
+       */
+      await finalizeRow(pool, queueId, {
+        status: 'partially_posted',
+        odClaimPaymentNum: claimPaymentNum,
+        reconciled: false,
+        postedTotalCents: reconciliation.attachedTotalCents + recoupedCents,
+        lastError: unconfirmed.verdict.sentence,
+        step,
+      });
+      return {
+        queueId,
+        status: 'partially_posted',
+        odClaimPaymentNum: claimPaymentNum,
+        reason: 'patient_total_unconfirmed',
+        detail: unconfirmed.verdict.sentence,
+      };
     }
 
     /*
@@ -3144,6 +3554,23 @@ async function drainOffice(ctx) {
      * caches for an hour on top of that; this is about the FIRST call, not the
      * twentieth.
      */
+    /*
+     * THE OFFICE'S WRITE-OFF MODE, READ ONCE PER PRESS AND NEVER CACHED LONGER.
+     *
+     * Same reasoning as the shadow gate it sits beside (`postingGate`): this is
+     * a switch a human flips BECAUSE they want the next press to behave
+     * differently, so an hour-old answer would mean the flip did not take with
+     * nothing on screen saying so. One local Postgres SELECT per press.
+     *
+     * Memoised across the rows of a single run only, which is what makes twenty
+     * plans read it once and a second press read it again.
+     */
+    let officeSettings = null;
+    const ensureOfficeSettings = async () => {
+      if (!officeSettings) officeSettings = await postingGate.readOfficeSettings(ctx.pool, ctx.office);
+      return officeSettings;
+    };
+
     let config = null;
     let configError = null;
     const ensureConfig = async () => {
@@ -3195,6 +3622,7 @@ async function drainOffice(ctx) {
             ...ctx,
             od,
             ensureConfig,
+            ensureOfficeSettings,
             stepDelayMs: stepDelay.delayMs,
             /*
              * The document seam, injectable so the suite can drive the attach
@@ -3369,6 +3797,7 @@ module.exports = {
   CLAIM_COLUMNS,
   PLAN_QUERIES,
   STEPS,
+  CONFIRM_QUERIES,
   DRAIN_MUTEX,
   DRAIN_STEP_DELAY_ENV,
   MAX_STEP_DELAY_MS,

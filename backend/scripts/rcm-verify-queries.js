@@ -79,6 +79,20 @@ function statements() {
      * adjtype CHECK accepts unconditionally, so this parses AND satisfies the
      * constraint against a key no row holds.
      */
+    /*
+     * STAGE B2: the confirmed verdict, written onto the claim after a post.
+     *
+     * An UPDATE that touches no row (the office and the claim id are both
+     * impossible), so it parses and plans against the real schema without
+     * leaving a mark — and a `confirmed_verdict` column that does not exist is a
+     * failure here rather than at the end of a real posting sequence, which is
+     * the worst possible moment to discover one.
+     */
+    {
+      name: 'postingDrain.recordVerdict',
+      text: postingDrain.CONFIRM_QUERIES.recordVerdict,
+      params: [NO_SUCH_OFFICE, NO_SUCH_UUID, JSON.stringify({ state: 'green' })],
+    },
     {
       name: 'postingGate.setWriteoffMode',
       text: postingGate.QUERIES.setWriteoffMode,

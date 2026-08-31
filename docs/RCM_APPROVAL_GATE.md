@@ -671,9 +671,18 @@ kept **separate** from the carrier's own figure:
 | `intended_write_off_cents` | W — the carrier's contractual write-off |
 | `decided_write_off_cents` | R — what this office chose to absorb. `NULL`, not zero, when nothing was decided |
 | `decided_reason`, `decided_by` | frozen with the amount, all three or none |
+| `intended_patient_cents` **(B2)** | R as approved — what this claim PROMISED the patient would owe, before the office's decision |
 
 Adding the two together at approve time would destroy the one distinction the
 slice exists to keep. The drain sums them at the moment it writes.
+
+**And the promise is frozen with them (B2).** After the post, the drain reads the
+chart back and asks whether the patient owes what this check said they would —
+against `intended_patient_cents`, never against a figure re-derived from the
+chart's own `FeeBilled`. A fee somebody edits between the approve and the press
+would move that derivation with it, so the promise would silently become whatever
+the chart now says and could never disagree. A confirmation that cannot disagree
+is not a confirmation. See RCM_POSTING §14.0c.
 
 **D-14: an approved claim is frozen.** `rcm_claims.posting_queue_id` non-null
 refuses a decision edit with 409 `CLAIM_ON_POSTING_PLAN` — the same predicate

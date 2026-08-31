@@ -90,6 +90,9 @@ const HEIGHT = {
   "bench-03-verdict-red": [1220, 1560],
   "bench-04-identity-mismatch": [1200, 1520],
   "bench-05-reason-picker": [1260, 1600],
+  // B2: the same screen after the money went in.
+  "bench-06-confirmed-amber": [1300, 1640],
+  "bench-07-confirmed-stuck": [1240, 1580],
 };
 
 /** A dump with no measured height still gets shot, generously. */

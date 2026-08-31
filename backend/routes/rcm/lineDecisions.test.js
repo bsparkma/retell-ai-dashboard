@@ -586,5 +586,17 @@ test('approving FREEZES the decision onto the posting line, beside the contractu
     assert.equal(b.decided_write_off_cents, 3000, "and the office's own, kept apart from it");
     assert.equal(b.decided_reason, 'xrays_panoramic');
     assert.equal(b.decided_by, 'user-1');
+
+    /*
+     * STAGE B2: AND IT FREEZES THE PROMISE.
+     *
+     * R as approved, before the office's decision — what this claim said the
+     * patient would owe. After the post the drain compares Open Dental against
+     * THIS, because the only other way to recover R later is to derive it from
+     * the chart's own fee, which moves if somebody edits the fee and takes the
+     * promise with it. A confirmation that cannot disagree is not one.
+     */
+    assert.equal(a.intended_patient_cents, 2000, 'the line being billed: allowed − paid');
+    assert.equal(b.intended_patient_cents, 3000, 'the written-off line, BEFORE the write-off');
   });
 });

@@ -92,6 +92,11 @@ const JSONB_COLUMNS = new Set([
   // as verified-with-no-evidence, which is the exact failure the column exists
   // to make impossible.
   'readback',
+  // Stage B2: the verdict read back out of the chart after a post, stored on
+  // the claim. Same reason as `readback` above — the screen reads
+  // `verdict.sentence` and `verdict.state` off it, so a fake that kept the
+  // string would render "undefined" where a patient's balance goes.
+  'confirmed_verdict',
 ]);
 
 /**
@@ -1178,11 +1183,16 @@ class FakeOd {
  * that defaulted to ON would make every drain test pass without the gate ever
  * being exercised — and would let a future change to the gate ship green.
  *
+ * `over` sets the B2 write-off booking on BOTH offices — the one thing a drain
+ * test routinely needs to vary, and varying it per office would invite a test
+ * that proves roland's behaviour while asserting valley's row.
+ *
  * @param {FakeRcmDb} db
  * @param {{ roland?: boolean, valley?: boolean }} [enabled]
+ * @param {{ writeoff_mode?: string, writeoff_adjtype_name?: string|null }} [over]
  * @returns {FakeRcmDb}
  */
-function seedOfficeSettings(db, enabled = {}) {
+function seedOfficeSettings(db, enabled = {}, over = {}) {
   db.seed(
     'rcm_office_settings',
     ['roland', 'valley'].map((office) => ({
@@ -1199,6 +1209,7 @@ function seedOfficeSettings(db, enabled = {}) {
        */
       writeoff_mode: 'writeoff_field',
       writeoff_adjtype_name: null,
+      ...over,
     }))
   );
   return db;

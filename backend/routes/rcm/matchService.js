@@ -170,7 +170,11 @@ const CLAIM_LIST_COLUMNS = [
  * and that check BLOCKS an approval rather than warning about it. One claim, one
  * audited read, two more fields.
  */
-const CLAIM_DETAIL_COLUMNS = `${CLAIM_LIST_COLUMNS}, patient_dob, subscriber_id, od_match_snapshot`;
+const CLAIM_DETAIL_COLUMNS =
+  `${CLAIM_LIST_COLUMNS}, patient_dob, subscriber_id, od_match_snapshot, ` +
+  // B2: the verdict read back out of the chart after this claim posted. Null
+  // until then, and the reason the screen can stop saying "will owe".
+  `confirmed_verdict, confirmed_at`;
 
 const LINE_COLUMNS = [
   'line_id',
@@ -506,6 +510,24 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
             snapshot: usable ? stored : null,
             register: 'projection',
           }),
+          /*
+           * …AND THE CONFIRMED VERDICT REPLACES IT ONCE THERE IS ONE (B2).
+           *
+           * Written by the drain from what Open Dental was read back as
+           * holding, and spread AFTER the projection so it wins on a claim that
+           * has posted. Without this the screen would go on saying "will owe …
+           * once posted" about a claim whose money is already in the chart —
+           * true arithmetic in a tense that stopped being true.
+           *
+           * It is READ here and never computed here: this route makes no Open
+           * Dental call, so it has nothing to confirm anything with.
+           */
+          ...(row.confirmed_verdict
+            ? {
+                verdict: row.confirmed_verdict,
+                confirmedAt: iso(row.confirmed_at),
+              }
+            : { confirmedAt: null }),
         }
       : {}),
   };

@@ -169,19 +169,19 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
     fix: "This is a development safety setting. Nothing was sent.",
   },
   /*
-   * STAGE B1 ONLY, AND B2 REMOVES IT.
+   * STAGE B2 REPLACED B1's `office_writeoff_not_postable`.
    *
-   * A biller decided the office absorbs a line, and this build still sends the
-   * carrier's own figures — so posting would put a number in the chart she never
-   * saw and bill the patient money the office had written off. The fix line
-   * offers the thing she can do TODAY rather than only naming a release.
+   * B1 refused every office write-off because the write could not carry one.
+   * This is what is left: the practice books its own write-offs as a named
+   * adjustment, and Open Dental has nothing by that name. The fix is a setting,
+   * so the sentence says where the setting is.
    */
-  office_writeoff_not_postable: {
-    label: "A line here is written off by the office",
+  writeoff_adjtype_unresolved: {
+    label: "This office's write-off type is not set up in Open Dental",
     fix:
-      "Office write-offs post once the next update lands. Nothing was sent to Open Dental. " +
-      "This check can wait, or you can change the line back to billing the patient and post " +
-      "it now.",
+      "Nothing was sent to Open Dental. Check the adjustment type named in Admin against " +
+      "the list in this practice's Open Dental, then post again. Checks with no office " +
+      "write-off on them are unaffected.",
   },
 };
 
@@ -312,7 +312,9 @@ export const STEP_COPY: Record<PostingStep, string> = {
   claim_receipts: "Marking the claims received",
   check: "Creating the insurance check",
   reconcile: "Reading the check back",
+  office_writeoffs: "Writing the write-offs this office decided on",
   recoupment: "Writing the takeback",
+  confirm_patient: "Checking what the patient owes now",
   document_attach: "Filing the EOB into the patient chart",
 };
 

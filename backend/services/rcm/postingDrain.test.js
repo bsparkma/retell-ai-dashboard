@@ -186,6 +186,14 @@ function seedPlan(db, overrides = {}) {
       recoupment_path: null,
       od_adjustment_num: null,
       od_supplemental_claim_proc_num: null,
+      // B1/B2 columns, seeded explicitly for the reason the 6d ones above are:
+      // an omitted key reads `undefined`, which pg never produces. The promise
+      // is $210 billed − $60 written off − $150 paid = the patient owes nothing.
+      decided_write_off_cents: null,
+      decided_reason: null,
+      decided_by: null,
+      od_writeoff_adjustment_num: null,
+      intended_patient_cents: 0,
       ...(overrides.line || {}),
     },
   ]);
@@ -504,32 +512,45 @@ test('a negative write-off is caught even though it is not a recoupment', () => 
   );
 });
 
-test('STAGE B1: a decided office write-off REFUSES the post, with nothing sent', () => {
+test('STAGE B2: a decided office write-off no longer refuses the post', () => {
   /*
-   * RED BEFORE GREEN, THE OTHER WAY ROUND.
+   * THE FLIP. B1 shipped this test asserting a refusal — `blocked` with
+   * `office_writeoff_not_postable` — because its writes carried the CARRIER's
+   * verbatim figures and posting a decision the write could not express would
+   * have put a number in the chart the screen never showed.
    *
-   * A biller decided the office absorbs a line's patient remainder, and
-   * approving froze that onto the posting. This build's Open Dental writes still
-   * carry the CARRIER's verbatim figures — `odPostingWrites` sends
-   * `intended_write_off_cents` and nothing else — so posting now would put a
-   * number in the chart that the screen never showed, and leave the patient
-   * billed for money the office had written off.
-   *
-   * Nothing may reach a chart that the screen did not show. B2 makes the write
-   * carry the decided figure and DELETES the refusal; this test flips to prove
-   * the decided amount posts.
+   * The write carries it now, so the refusal is gone and the same input is
+   * simply a plan that may post. `postedFigures` decides where the amount goes;
+   * `lineDecisions.test.js` holds the identity that it always goes SOMEWHERE.
+   */
+  const base = goodCtx();
+  assert.equal(
+    postingDrain.checkPreconditions({
+      ...base,
+      lines: [{ ...base.lines[0], decidedWriteOffCents: 3000 }],
+    }),
+    null
+  );
+  // And the reason itself is gone from the vocabulary, not merely unused.
+  assert.equal(postingDrain.BLOCK_REASONS.OFFICE_WRITEOFF_NOT_POSTABLE, undefined);
+});
+
+test('a NEGATIVE office write-off is still refused — that is a charge, not a concession', () => {
+  /*
+   * What survives the flip. A negative decided amount would ADD to what the
+   * patient owes, under a screen that said the office was taking money off, and
+   * Open Dental would accept it without complaint.
    */
   const base = goodCtx();
   const blocked = postingDrain.checkPreconditions({
     ...base,
-    lines: [{ ...base.lines[0], decidedWriteOffCents: 3000 }],
+    lines: [{ ...base.lines[0], decidedWriteOffCents: -1 }],
   });
-  assert.equal(blocked.reason, postingDrain.BLOCK_REASONS.OFFICE_WRITEOFF_NOT_POSTABLE);
-  assert.match(blocked.detail, /office write-offs post once the next update lands/i);
-  assert.match(blocked.detail, /Nothing was sent to Open Dental/);
+  assert.equal(blocked.reason, postingDrain.BLOCK_REASONS.NEGATIVE_INTENT);
+  assert.match(blocked.detail, /negative office write-off/i);
 });
 
-test('…and a line with NO office write-off is untouched by that refusal', () => {
+test('…and a line with NO office write-off is untouched by any of that', () => {
   const base = goodCtx();
   // null is the shape a line with no decision carries; the CHECK constraint
   // keeps the three columns moving together, so 0 is not a state that exists.
@@ -2757,5 +2778,335 @@ test('chartTouchedBy reads a write, not merely a status', async () => {
     postingDrain.chartTouchedBy([{ status: 'pending', odSupplementalClaimProcNum: 533931 }]),
     true,
     'and a supplemental most of all — that one is irreversible'
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE B2 — the decided figures actually post
+// ═══════════════════════════════════════════════════════════════════════════
+
+const { seedOfficeSettings } = require('../../routes/rcm/rcmTestUtils');
+
+/**
+ * A plan with an office write-off on it, and the arithmetic that makes one
+ * possible.
+ *
+ * The default fixture pays $150 against a $210 fee with a $60 contractual
+ * write-off, which leaves the patient owing NOTHING — so there is nothing to
+ * decide about. Here the carrier pays $130 of the same $150 allowed, leaving the
+ * patient $20, and the office absorbs it.
+ *
+ *     billed   $210.00   (the chart's FeeBilled)
+ *     allowed  $150.00   = billed − the carrier's $60 write-off
+ *     paid     $130.00
+ *     R         $20.00   ← decided: the office absorbs it
+ */
+function seedDecidedPlan(db, overrides = {}) {
+  return seedPlan(db, {
+    queue: { intended_total_cents: 13000, ...(overrides.queue || {}) },
+    line: {
+      intended_ins_pay_amt_cents: 13000,
+      intended_write_off_cents: 6000,
+      decided_write_off_cents: 2000,
+      decided_reason: 'build_up',
+      decided_by: 'biller@example.invalid',
+      od_writeoff_adjustment_num: null,
+      // The promise, frozen at approve: $210 − $60 − $130 = $20, which is
+      // exactly what the office then decided to absorb.
+      intended_patient_cents: 2000,
+      ...(overrides.line || {}),
+    },
+    claim: { od_patient_id: 12827, ...(overrides.claim || {}) },
+  });
+}
+
+test('B2 writeoff_field: the office write-off goes into the claimproc, beside the carrier figure', async () => {
+  const db = seedOfficeSettings(seedDecidedPlan(new FakeRcmDb()), { roland: true });
+  const od = odFixture();
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+
+  // No new verb, and no adjustment: this mode has one number to write and it
+  // writes it in the field Open Dental already has for it.
+  assert.deepEqual(od.writesIssued(), [
+    'PUT /claimprocs/533930',
+    'PUT /claims/53648',
+    'POST /claimpayments',
+  ]);
+
+  // $60 contractual + $20 the office absorbed. The screen said the patient would
+  // owe nothing, and this is the write that makes that true.
+  assert.equal(od.rows.claimProcs[0].WriteOff, 80.0);
+  assert.equal(od.rows.claimProcs[0].InsPayAmt, 130.0);
+});
+
+test('B2: the patient owes what the screen promised, CONFIRMED from the chart', async () => {
+  const db = seedOfficeSettings(seedDecidedPlan(new FakeRcmDb()), { roland: true });
+  const od = odFixture();
+  await postingDrain.drainOffice(ctxFor(db, od));
+
+  const claim = db.table('rcm_claims')[0];
+  assert.ok(claim.confirmed_at, 'a confirmed verdict must carry when it was read');
+  const verdict = claim.confirmed_verdict;
+  assert.equal(verdict.register, 'confirmed');
+  assert.equal(verdict.state, 'amber');
+  // Below the EOB on purpose, and the sentence says so in the FACT tense.
+  assert.equal(verdict.projectedPatientCents, 0);
+  assert.equal(verdict.decidedWriteOffCents, 2000);
+  assert.match(verdict.sentence, /Confirmed in Open Dental\.$/);
+  assert.doesNotMatch(verdict.sentence, /will owe/);
+});
+
+test('B2 adjustment_by_name: the carrier figure is left alone and the office books its own', async () => {
+  const db = seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb()),
+    { roland: true },
+    {
+      writeoff_mode: 'adjustment_by_name',
+      // Roland's own Category-1 list carries this one, signed '-'.
+      writeoff_adjtype_name: 'Insurance Write-off',
+    }
+  );
+  const od = odFixture();
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+  assert.deepEqual(od.writesIssued(), [
+    'PUT /claimprocs/533930',
+    'PUT /claims/53648',
+    'POST /claimpayments',
+    // LAST among the money writes, after the check is reconciled.
+    'POST /adjustments',
+  ]);
+
+  // The claimproc keeps the CARRIER's $60 — this office reports the two apart.
+  assert.equal(od.rows.claimProcs[0].WriteOff, 60.0);
+  // …and the $20 the office absorbed is a ledger row, negative, under the
+  // DefNum that practice's own database gave the name.
+  const adj = od.rows.adjustments[0];
+  assert.equal(adj.AdjAmt, -20.0);
+  assert.equal(Number(adj.AdjType), 12);
+  assert.equal(Number(adj.PatNum), 12827);
+
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(Number(line.od_writeoff_adjustment_num), Number(adj.AdjNum));
+
+  // Same patient balance, booked differently: the confirmed verdict does not
+  // care which mode got it there.
+  assert.equal(db.table('rcm_claims')[0].confirmed_verdict.state, 'amber');
+  assert.equal(db.table('rcm_claims')[0].confirmed_verdict.projectedPatientCents, 0);
+});
+
+test('B2 D-13: an adjustment type this practice does not have REFUSES, before any write', async () => {
+  const db = seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb()),
+    { roland: true },
+    { writeoff_mode: 'adjustment_by_name', writeoff_adjtype_name: 'Courtesy Discount' }
+  );
+  const od = odFixture();
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'blocked');
+  assert.equal(result.outcomes[0].reason, postingDrain.BLOCK_REASONS.WRITEOFF_ADJTYPE_UNRESOLVED);
+  assert.match(result.outcomes[0].detail, /Courtesy Discount/);
+  assert.match(result.outcomes[0].detail, /Nothing was sent to Open Dental/);
+  // Never a fallback to a plausible neighbour, and never a number.
+  assert.deepEqual(od.writesIssued(), []);
+});
+
+test('B2 D-13: a `+` type wearing the right name is not the type the admin meant', async () => {
+  const db = seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb()),
+    { roland: true },
+    {
+      writeoff_mode: 'adjustment_by_name',
+      /*
+       * Real, and real in the WRONG direction: 'Insurance Adjustment' is a '+'
+       * type in Roland's list, so booking a concession under it would be refused
+       * by Open Dental with `AdjAmt must be negative for this AdjType.` —
+       * discovering that mid-sequence is what resolving it up front avoids.
+       */
+      writeoff_adjtype_name: 'Insurance Adjustment',
+    }
+  );
+  const od = odFixture();
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].reason, postingDrain.BLOCK_REASONS.WRITEOFF_ADJTYPE_UNRESOLVED);
+  assert.deepEqual(od.writesIssued(), []);
+});
+
+test('B2: a plan with NO decided write-off never asks about the adjustment type', async () => {
+  /*
+   * A misconfigured name must not stop the ordinary work. Only the claims
+   * carrying a concession wait for somebody to fix it.
+   */
+  const db = seedOfficeSettings(
+    seedPlan(new FakeRcmDb()),
+    { roland: true },
+    { writeoff_mode: 'adjustment_by_name', writeoff_adjtype_name: 'Courtesy Discount' }
+  );
+  const od = odFixture();
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+});
+
+test('B2: a second press does not book a SECOND concession', async () => {
+  /*
+   * There is no `DELETE /adjustments`, so a double-post is not a mistake
+   * anybody can tidy up afterwards. The stored AdjNum is the idempotency key,
+   * and the confirmation reads the ledger for it rather than assuming.
+   */
+  const db = seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb(), { line: { od_writeoff_adjustment_num: 19110 } }),
+    { roland: true },
+    { writeoff_mode: 'adjustment_by_name', writeoff_adjtype_name: 'Insurance Write-off' }
+  );
+  const od = odFixture({
+    adjustments: [
+      { AdjNum: 19110, PatNum: 12827, AdjAmt: -20.0, AdjType: 12, AdjDate: '2026-03-01' },
+    ],
+  });
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+  assert.equal(
+    od.writesIssued().filter((w) => w === 'POST /adjustments').length,
+    0,
+    'the concession was already booked; posting it again would take $20 twice'
+  );
+  // And it still confirms, because the ledger was READ rather than assumed.
+  assert.equal(db.table('rcm_claims')[0].confirmed_verdict.state, 'amber');
+});
+
+test('B2: a chart that does not say what was promised leaves the plan STUCK, not finished', async () => {
+  /*
+   * THE CASE THE PER-FIELD READ-BACK CANNOT SEE.
+   *
+   * Every field this run sent read back exactly as sent — the payment, the
+   * write-off, the deductible, the check. What moved is the chart's OWN fee:
+   * somebody edited the procedure between the approve and the press, so the
+   * patient's portion is no longer the number the screen promised.
+   *
+   * `partially_posted`, deliberately not `failed`: money moved and every
+   * carrier-side proof passed. It stays drainable, so the way out is the same
+   * button once a person has sorted out the fee (D-15).
+   */
+  const db = seedOfficeSettings(seedDecidedPlan(new FakeRcmDb()), { roland: true });
+  const od = odFixture();
+  od.rows.claimProcs[0].FeeBilled = 230.0;
+  const result = await postingDrain.drainOffice(ctxFor(db, od));
+
+  assert.equal(result.outcomes[0].status, 'partially_posted', JSON.stringify(result.outcomes[0]));
+  assert.equal(result.outcomes[0].reason, 'patient_total_unconfirmed');
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'partially_posted');
+  assert.ok(row.od_claim_payment_num, 'the check happened and the row must still name it');
+  /*
+   * TWO DIFFERENT NUMBERS, WHICH IS THE POINT. The chart says $20 and this
+   * check said $0 — measured against the PROMISE, never against the raw EOB
+   * total, which the office's write-off is allowed to differ from on purpose.
+   */
+  assert.match(row.last_error, /Open Dental says the patient owes \$20\.00 — this check said \$0\.00/);
+  assert.match(row.last_error, /This needs you before anything else posts/);
+
+  // The verdict is recorded on the RED claim too — the one that needs it most.
+  const verdict = db.table('rcm_claims')[0].confirmed_verdict;
+  assert.equal(verdict.state, 'red');
+  assert.deepEqual(
+    verdict.problems.map((p) => p.kind),
+    ['chart_differs_from_decision']
+  );
+  // The frozen promise is what makes this detectable at all: derived from the
+  // chart's own (edited) fee, the two would have agreed and the plan would have
+  // finished quietly.
+  assert.equal(verdict.eobPatientCents, 2000);
+
+  // And the EOB is NOT filed: a plan that needs a person to look at it does not
+  // quietly finish its paperwork.
+  assert.equal(od.writesIssued().filter((w) => w.startsWith('POST /documents')).length, 0);
+});
+
+test('B2: a re-press of a written-off line reads as ALREADY DONE, not as a conflict', () => {
+  /*
+   * The comparison against the chart has to use what THIS run will send. A line
+   * already carrying `W + decided` compared against `W` alone would read as
+   * somebody else's posting and refuse the whole row — a plan refusing to
+   * finish work it did itself.
+   */
+  const line = {
+    intendedInsPayAmtCents: 13000,
+    intendedWriteOffCents: 6000,
+    intendedDedAppliedCents: 0,
+    decidedWriteOffCents: 2000,
+  };
+  const figures = require('./lineDecisions').postedFigures(line, 'writeoff_field');
+  const decision = postingDrain.decideLineAction(
+    { ...line, intendedWriteOffCents: figures.writeOffCents },
+    {
+      ClaimProcNum: 533930,
+      Status: 'Received',
+      InsPayAmt: 130.0,
+      WriteOff: 80.0,
+      DedApplied: 0,
+      ClaimPaymentNum: 0,
+    }
+  );
+  assert.equal(decision.action, 'skip');
+});
+
+
+test('B2: a plan approved BEFORE the promise column falls back, and says nothing it cannot', () => {
+  /*
+   * `intended_patient_cents` is NULL on any plan approved before B2. The
+   * confirmation still runs — it derives R from the chart's own `FeeBilled`,
+   * which is what B1's screen showed anyway because the gate refuses a claim
+   * whose fee disagrees with the carrier.
+   *
+   * The weaker guarantee is stated rather than hidden: derived that way, a fee
+   * edited between the approve and the press moves the promise along with it,
+   * so THAT case cannot be caught for those rows. It is caught for every plan
+   * approved since.
+   */
+  const lineDecisions = require('./lineDecisions');
+  const derived = lineDecisions.verdictFor({
+    register: 'confirmed',
+    lines: [
+      {
+        code: 'D0120',
+        odClaimProcNum: 533930,
+        // No `eobRemainderCents`: the pre-B2 shape.
+        billedCents: 21000,
+        allowedCents: 15000,
+        paidCents: 13000,
+        confirmedRemainderCents: 2000,
+      },
+    ],
+  });
+  assert.equal(derived.state, 'green');
+  assert.equal(derived.eobPatientCents, 2000);
+
+  // …and with the frozen figure present it is the frozen one that counts.
+  const frozen = lineDecisions.verdictFor({
+    register: 'confirmed',
+    lines: [
+      {
+        code: 'D0120',
+        odClaimProcNum: 533930,
+        eobRemainderCents: 2000,
+        billedCents: 23000, // the fee moved after the approve
+        allowedCents: 17000,
+        paidCents: 13000,
+        confirmedRemainderCents: 4000,
+      },
+    ],
+  });
+  assert.equal(frozen.eobPatientCents, 2000, 'the promise, not the chart');
+  assert.equal(frozen.state, 'red');
+  assert.deepEqual(
+    frozen.problems.map((p) => p.kind),
+    ['chart_differs_from_decision']
   );
 });

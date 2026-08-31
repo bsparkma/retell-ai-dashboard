@@ -445,6 +445,44 @@ function pickAdjType(config, purpose) {
 }
 
 /**
+ * Resolve the AdjType this office books its OWN write-offs under, by the name
+ * an admin typed into `rcm_office_settings.writeoff_adjtype_name` (Stage B2).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS TAKES A NAME FROM A SETTING AND NOT A PURPOSE FROM A LIST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `pickAdjType` above holds a fixed list per purpose, because a takeback means
+ * one thing everywhere and this module chose the words. An office write-off does
+ * not: one practice books "Courtesy adjustment", another "Professional
+ * discount", and neither is more correct. So the NAME is configuration and the
+ * NUMBER is still never configuration — D-13 in the shape it was written for.
+ *
+ * The sign rule is `pickAdjType`'s, for the same reason: this posts a NEGATIVE
+ * amount (the practice is taking money off what the patient owes), so a `+` type
+ * would be refused by Open Dental with `400 "AdjAmt must be negative for this
+ * AdjType."` — and a `+` type wearing the right name is not the type the admin
+ * meant however right the name looks. An UNSIGNED row is accepted; only a stated
+ * disagreement refuses.
+ *
+ * Returns null when the office's own list carries nothing by that name. That is
+ * a REFUSAL upstream (`writeoff_adjtype_unresolved`), never a fallback: an
+ * adjustment booked under a plausible neighbour is a number in the practice's
+ * books meaning something other than what happened, and there is no
+ * `DELETE /adjustments` to take it back with.
+ *
+ * @param {PostingConfig} config
+ * @param {string|null|undefined} name as configured, matched case-insensitively
+ * @returns {OdDefinition|null}
+ */
+function pickAdjTypeByName(config, name) {
+  const wanted = String(name == null ? '' : name).trim().toLowerCase();
+  if (!wanted) return null;
+  const hit = (config.adjTypes || []).find((a) => a.name.trim().toLowerCase() === wanted);
+  if (!hit) return null;
+  return hit.sign === null || hit.sign === '-' ? hit : null;
+}
+
+/**
  * Choose the office's DocCategory for an EOB, by NAME (6d).
  *
  * @param {PostingConfig} config
@@ -497,6 +535,7 @@ module.exports = {
   resolvePostingConfig,
   pickPayType,
   pickAdjType,
+  pickAdjTypeByName,
   pickDocCategory,
   resolveCheckEndpoint,
   isHiddenRow,
