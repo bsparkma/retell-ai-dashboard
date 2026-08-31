@@ -803,6 +803,39 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 
 ## 6. Where to look next
 
+### What you can actually read — start here, every session
+
+**Everything a coding agent is expected to know is in this repo.** Read these
+before touching the slice they cover; they are the sources of truth, and they are
+reachable from the working tree with no tool but `cat`:
+
+| Before you touch | Read |
+| --- | --- |
+| Anything at all | this file |
+| The RCM posting machinery, the drain, the takeback, the workbench | [docs/RCM_POSTING.md](docs/RCM_POSTING.md) — including **§1a, the canon**, and **§15, the known limits** |
+| Anything that approves or refuses a claim | [docs/RCM_APPROVAL_GATE.md](docs/RCM_APPROVAL_GATE.md) |
+| Any dashboard screen | [new-dashboard/HANDOFF.md](new-dashboard/HANDOFF.md) |
+| Branching, worktrees, the deploy pipeline | [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) |
+
+**Project memory is NOT one of them.** The PM works in a desktop app with its own
+memory store; that store is not in this repo, not under `.claude/`, and not
+anywhere a session running here can open. It reaches a coding agent **only by
+being quoted into the prompt**. So:
+
+- A prompt that says *"read the project memory first"* is asking for something
+  that cannot be done from here. Say so, and work from the docs above.
+- A prompt that cites a decision by number (D-7, D-11, D-13, D-15…) without
+  stating it is citing something invisible. **Ask for the text, or find it in
+  `docs/RCM_POSTING.md` §1a** — never guess what a decision number means, and
+  never assume a number that is not there does not exist.
+- Anything ruled in a review that a later slice will need has to be **written
+  into a doc in this repo** in the same PR. A ruling that lives only in the PM's
+  memory is a ruling the next session will break.
+
+### The rest
+
+
+
 | Topic | Doc |
 | --- | --- |
 | Call lifecycle diagram, environments table, office model | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
