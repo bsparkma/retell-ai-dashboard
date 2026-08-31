@@ -1043,6 +1043,21 @@ export interface ApprovalClaim {
   checks: ApprovalCheck[];
   /** The codes that failed, in the order they were evaluated. */
   failed: string[];
+  /**
+   * THE PATIENT-RESPONSIBILITY VERDICT THIS CLAIM WAS JUDGED ON (Stage B1).
+   *
+   * The gate carries `verdictFor()`'s whole result out per claim
+   * (`routes/rcm/approvalGate.js`), so every screen reading this list prints the
+   * gate's own numbers rather than a second computation of them. The check's
+   * triage table (§4) and the approve page's roll-up (§6) both read it from
+   * here, which is what makes them one statement rather than three that agree
+   * today.
+   *
+   * OPTIONAL, because a claim judged from a snapshot in an older shape carries
+   * none — exactly as `matchSnapshot` can be absent. A screen must render that
+   * as "not judged", never as zero: see `features/rcm/rollup.ts`.
+   */
+  verdict?: ClaimVerdict;
 }
 
 /** What WOULD happen, computed by the same function the button runs. */
@@ -1219,8 +1234,13 @@ export interface Remittance {
 }
 
 /**
- * Why a check was set aside. A closed set, enforced by a CHECK constraint
- * (`migrations-tenant/1787500000000_rcm_remittance_worklist_state.js`).
+ * Why a check was set aside. A closed set, enforced by a CHECK constraint —
+ * currently `migrations-tenant/1787800000000_rcm_set_aside_sent_in_error.js`,
+ * which widened the one `1787500000000` created.
+ *
+ * `sent_in_error` is Stage C's addition and the only change to the vocabulary:
+ * the other five slugs are exactly what they were, `target_gone` included. Their
+ * LABELS were reworded; a stored slug is a machine name and Stage C changes none.
  *
  * The wire type is widened to `string` on `Remittance.setAsideReason` on
  * purpose: a slug added server-side must render as an ugly string rather than
@@ -1231,6 +1251,7 @@ export const SET_ASIDE_REASONS = [
   "duplicate",
   "posted_by_hand",
   "not_ours",
+  "sent_in_error",
   "other",
 ] as const;
 export type SetAsideReason = (typeof SET_ASIDE_REASONS)[number];
@@ -1243,25 +1264,37 @@ export type SetAsideReason = (typeof SET_ASIDE_REASONS)[number];
  * being refused.
  */
 export const SET_ASIDE_COPY: Record<SetAsideReason, { label: string; hint: string }> = {
+  /*
+   * THE CASE THE WHOLE FEATURE WAS BUILT FOR, and the label now says so.
+   *
+   * Two checks sat in staging's attention queue permanently — both matched, both
+   * checked over, both pointing at claims a walk's unwind deleted — because
+   * nothing in the product could retire them (RCM_POSTING §15.2 finding 5). The
+   * slug is untouched; only the words a person reads changed.
+   */
   target_gone: {
-    label: "The claims are gone from Open Dental",
-    hint: "Nothing here can ever be tied to a chart claim, so nothing can be posted.",
+    label: "The claims aren't in Open Dental any more",
+    hint: "Nothing on this check can ever be tied to a chart claim, so nothing on it can be posted.",
   },
   duplicate: {
-    label: "The same money arrived twice",
-    hint: "Another copy of this check is the one being worked.",
+    label: "The same money came in twice",
+    hint: "There is another copy of this check, and that is the one being worked.",
   },
   posted_by_hand: {
-    label: "Already posted by hand in Open Dental",
-    hint: "The money is on the chart; CareIN had no part in it.",
+    label: "Somebody already posted it in Open Dental",
+    hint: "The money is on the chart. CareIN had no part in putting it there and must not add it again.",
   },
   not_ours: {
-    label: "Not this practice's money",
-    hint: "It belongs to another practice or another payer.",
+    label: "It isn't this practice's money",
+    hint: "It belongs to another practice, or to a payer this practice does not bill.",
+  },
+  sent_in_error: {
+    label: "The carrier sent it in error",
+    hint: "It should never have arrived — the wrong practice's file, a run they reversed, a test. There is no other copy to work.",
   },
   other: {
     label: "Something else",
-    hint: "Say in a line what it is — this one needs your own words.",
+    hint: "Say in a line what it is. This one needs your own words, because the slug alone would tell the next person nothing.",
   },
 };
 
@@ -1834,6 +1867,31 @@ export interface PostingQueueLine {
   readback: PostingReadback | null;
   readbackAt: string | null;
   lastError: string | null;
+  /**
+   * WHAT THE OFFICE ITSELF DECIDED TO ABSORB on this line, frozen at approve.
+   *
+   * `null` — never 0 — when nobody decided anything. The three decision fields
+   * are frozen together or not at all, so a reason without an amount is a shape
+   * the database refuses.
+   *
+   * Kept SEPARATE from `intendedWriteOffCents`, which is the CARRIER's
+   * contractual figure. Adding them together is what the drain does at the
+   * moment it writes; a screen that showed only the sum would be showing a
+   * number nobody decided.
+   */
+  decidedWriteOffCents: number | null;
+  decidedReason: string | null;
+  decidedBy: string | null;
+  /**
+   * What the approve PROMISED the patient would owe on this line (B2).
+   *
+   * The confirmation measures the chart against this rather than against a
+   * figure re-derived from a fee somebody can edit. `null` on a plan approved
+   * before B2 — the screen states the weaker guarantee rather than hiding it.
+   */
+  intendedPatientCents: number | null;
+  /** Where a ledger concession landed, under `adjustment_by_name`. */
+  odWriteoffAdjustmentNum: number | null;
 }
 
 export interface PostingQueuePage {
@@ -2054,6 +2112,59 @@ export function approveRecoupment(
     { office },
     body,
   );
+}
+
+/**
+ * ASK OPEN DENTAL AGAIN WHETHER THE PATIENT OWES WHAT THIS CHECK PROMISED.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * READ-ONLY, AND STRUCTURALLY SO
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `POST /api/rcm/posting/:id/recheck` re-runs the confirmation against the
+ * plan's existing lines and writes NOTHING — not to a chart, not to the plan's
+ * status, not to CareIN's own record of the verdict. The two Open Dental calls
+ * behind it are both GETs and both audited as reads.
+ *
+ * It exists so a biller who has corrected something in Open Dental can ask
+ * whether it is right now, WITHOUT pressing the one button in this product that
+ * writes to a chart. "Press Post again to find out whether it posted" is the
+ * kind of sentence this project keeps deleting.
+ *
+ * A POST rather than a GET because it spends real calls against a rate-limited
+ * credential the voice side shares, and a GET is a thing browsers and link
+ * previews fire without being asked.
+ *
+ * Refuses with 409 `NOTHING_POSTED_YET` on a plan that has not posted: there is
+ * nothing in the chart to read back, and a confirmation over that would be a
+ * projection wearing a confirmation's words.
+ */
+export function recheckPosting(
+  office: RcmOfficeId,
+  queueId: string,
+): Promise<PostingRecheck> {
+  return post<PostingRecheck>(`/posting/${encodeURIComponent(queueId)}/recheck`, { office }, {});
+}
+
+export interface PostingRecheck {
+  office: RcmOfficeId;
+  queueId: string;
+  /** The plan's status, UNCHANGED by this call. */
+  status: PostingQueueStatus;
+  claims: {
+    claimId: string | null;
+    odClaimNum: number;
+    /** `verdictFor`'s CONFIRMED register — measured, never re-derived. */
+    verdict: ClaimVerdict;
+  }[];
+  /**
+   * True when every claim now reads back as promised.
+   *
+   * It does NOT move the plan. A person who has corrected the chart still
+   * presses Post to Open Dental to finish it off; this only says whether that
+   * press will land.
+   */
+  agreed: boolean;
+  checkedAt: string;
 }
 
 /**

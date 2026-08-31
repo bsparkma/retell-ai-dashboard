@@ -135,16 +135,39 @@ export default function PostingQueue() {
   return (
     <div className="p-6" data-testid="rcm-posting">
       <div>
+        {/*
+          ── "POSTING HISTORY", NOT "POSTING" (Stage C, §11) ───────────────────
+          The design dropped this screen entirely, on the grounds that everything
+          about a check now happens on the check's own page. The PM ruling is to
+          KEEP it, demote it below the working screens in the nav, and rename it
+          honestly.
+
+          It earns its place three times over and none of them is a biller's
+          ordinary evening:
+            · an office-wide post lives here, and nowhere else;
+            · a stuck run is retried from here across every check at once;
+            · it is where anybody debugging at 9pm looks.
+
+          Deleting a debugging surface to tidy a nav is not a trade this module
+          makes. What it is NOT is the place a biller posts one check — that is
+          the check's own page, through the same route narrowed by `queueId`.
+        */}
         <h1
           className="text-2xl font-bold tracking-tight text-foreground"
           style={{ fontFamily: "Sora, sans-serif" }}
         >
-          Posting
+          Posting history
         </h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Approved checks waiting to become insurance payments in Open Dental. Posting writes
-          each line's adjudication, marks the claim received, and creates the check — then asks
-          Open Dental for each write back again to confirm it took.
+          Every check this practice has approved, and what happened to each one — line by line,
+          with what it wrote and what Open Dental said back. Posting writes each line&rsquo;s
+          adjudication, marks the claim received and creates the check, then asks Open Dental for
+          each write again to confirm it took.
+        </p>
+        <p className="mt-1 max-w-3xl text-sm text-muted-foreground" data-testid="posting-history-note">
+          You do not have to come here to post one check — that is on the check&rsquo;s own page,
+          and it is the same act. This screen is for posting a practice&rsquo;s whole waiting set at
+          once, and for looking at what already happened.
         </p>
       </div>
 

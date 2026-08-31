@@ -252,3 +252,37 @@
     50% { box-shadow: 0 0 0 5px oklch(0.52 0.12 186 / 0.1); }
   }
 }
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE SHADOW-MODE WORKSHEET, PRINTED (RCM Stage C, §10)
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A practice in shadow mode posts BY HAND while this app watches, and the most
+ * useful thing on its screen is the table saying what the app would have done.
+ * "Print this or keep it open on the second monitor" is only true if File →
+ * Print produces the WORKSHEET rather than a screenshot of an application.
+ *
+ * ONE RULE, IN ONE PLACE, rather than `print:hidden` sprinkled across every
+ * layout: while the page contains a `.rcm-print-worksheet`, printing hides
+ * everything that is not inside one. A page with no worksheet on it prints
+ * exactly as it always did — the `:has()` guard is what keeps this from being a
+ * global change to how the whole product prints.
+ *
+ * `visibility` rather than `display`, so the worksheet keeps its position in the
+ * flow and does not have to be re-laid-out on the printed page.
+ */
+@media print {
+  body:has(.rcm-print-worksheet) * {
+    visibility: hidden;
+  }
+  body:has(.rcm-print-worksheet) .rcm-print-worksheet,
+  body:has(.rcm-print-worksheet) .rcm-print-worksheet * {
+    visibility: visible;
+  }
+  body:has(.rcm-print-worksheet) .rcm-print-worksheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}

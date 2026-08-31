@@ -333,6 +333,98 @@ test('a set-aside check keeps every one of its facts, and gains four', async () 
   });
 });
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * STAGE C — THE SIXTH REASON, AND THE FIVE THAT DID NOT CHANGE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `sent_in_error` is ADDITIVE (`1787800000000_rcm_set_aside_sent_in_error.js`):
+ * the carrier sent a remittance that should never have been sent at all — the
+ * wrong practice's file, a run they reversed, a test transmission. It is not a
+ * duplicate (there is no other copy being worked) and it is not `not_ours` (it
+ * IS addressed to this practice), and filing it under `other` cost a typed
+ * sentence every time for a thing that happens on a schedule.
+ *
+ * Nothing was retired. `target_gone` in particular is untouched: it is the exact
+ * case this whole feature was built for — two checks sat in staging's attention
+ * queue permanently, both pointing at claims a walk's unwind deleted — and only
+ * its LABEL was reworded on the screen.
+ */
+test('the new reason is accepted, stored, and lives the whole lifecycle', async () => {
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const set = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/remittances/${BATCH}/set-aside${Q}`,
+      json({ reason: 'sent_in_error' })
+    );
+    assert.equal(set.status, 200);
+    assert.equal(set.body.reason, 'sent_in_error');
+
+    // Out of the attention counts, exactly as the other five are.
+    const attention = await listing(app, 'attention');
+    assert.equal(attention.body.needsAttentionCount, 0);
+    assert.equal(attention.body.setAsideCount, 1);
+
+    // Findable under its own view, carrying its reason.
+    const aside = await listing(app, 'set_aside');
+    assert.equal(aside.body.remittances.length, 1);
+    assert.equal(aside.body.remittances[0].setAsideReason, 'sent_in_error');
+
+    // And REVERSIBLE, like every other reason — it is quiet, not terminal.
+    const back = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/remittances/${BATCH}/restore${Q}`,
+      json({})
+    );
+    assert.equal(back.status, 200);
+    assert.equal(back.body.wasSetAside, true);
+
+    const after = await listing(app, 'attention');
+    assert.equal(after.body.needsAttentionCount, 1);
+    assert.equal(after.body.setAsideCount, 0);
+  });
+});
+
+test('every one of the five that shipped before is still accepted', async () => {
+  // Stage C ADDED a reason. A slug that stopped working would be a check
+  // somebody set aside last month whose row no screen can now explain.
+  const reasons = ['target_gone', 'duplicate', 'posted_by_hand', 'not_ours'];
+  for (const reason of reasons) {
+    const db = seed(new FakeRcmDb());
+    await withApp({ db }, async (app) => {
+      const res = await api(
+        app.baseUrl,
+        'POST',
+        `/api/rcm/remittances/${BATCH}/set-aside${Q}`,
+        json({ reason })
+      );
+      assert.equal(res.status, 200, `${reason} was refused`);
+      assert.equal(res.body.reason, reason);
+    });
+  }
+});
+
+test('the offered set is the CURRENT vocabulary, and a slug outside it is still refused', async () => {
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/remittances/${BATCH}/set-aside${Q}`,
+      json({ reason: 'because_i_said_so' })
+    );
+    assert.equal(res.status, 400);
+    // It OFFERS the set rather than leaving somebody to guess — and the set is
+    // the one the CHECK constraint actually holds, read from the migration that
+    // last widened it.
+    assert.ok(res.body.reasons.includes('sent_in_error'));
+    assert.ok(res.body.reasons.includes('target_gone'));
+    assert.equal(res.body.reasons.length, 6);
+  });
+});
+
 test('it is findable under its own view', async () => {
   const db = seed(new FakeRcmDb());
   seed(db, { batchId: OTHER_BATCH, claimId: '2c3d4e5f-6071-4829-93a4-b5c6d7e8f901' });

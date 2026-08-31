@@ -680,8 +680,18 @@ describe("the worklist states", () => {
   it("renders copy for every reason the database will store, and invents none", async () => {
     const { SET_ASIDE_COPY, SET_ASIDE_REASONS } = await import("../client/src/features/rcm/api");
 
+    /*
+     * THE MIGRATION THAT LAST WIDENED THE VOCABULARY, not the one that created
+     * the column.
+     *
+     * Stage C added `sent_in_error` in `1787800000000`, and `1787500000000` goes
+     * on exporting the five IT wrote — a database migrated only that far holds a
+     * five-value CHECK, so a constant there claiming six would be a claim about
+     * a schema that does not exist. The route and this test both read the
+     * current one.
+     */
     const MIGRATION = backend(
-      "migrations-tenant/1787500000000_rcm_remittance_worklist_state.js",
+      "migrations-tenant/1787800000000_rcm_set_aside_sent_in_error.js",
     );
     const block = MIGRATION.match(/const SET_ASIDE_REASONS = \[([\s\S]+?)\];/);
     expect(block, "the reason vocabulary moved — update this test and the copy").not.toBeNull();

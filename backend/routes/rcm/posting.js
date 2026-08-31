@@ -77,6 +77,17 @@ const { audit } = require('../../platform/audit');
 const { holdsPermission, requirePermission } = require('../../config/permissions');
 const postingDrain = require('../../services/rcm/postingDrain');
 const postingGate = require('../../services/rcm/postingGate');
+/*
+ * READ-ONLY USES, both of them, for `POST /:id/recheck`.
+ *
+ * `odPostingWrites` is the one file allowed to reach an Open Dental write verb
+ * (§13). What is named here are its two GET helpers — `readClaimProcsForClaim`
+ * and `readAdjustmentsForPatient` — plus the transport factory. The static scan
+ * in `rcmNoOdWrites.test.js` forbids naming a WRITE verb anywhere outside that
+ * file, and this route names none.
+ */
+const odPostingWrites = require('../../services/rcm/odPostingWrites');
+const lineDecisions = require('../../services/rcm/lineDecisions');
 const { SNAPSHOT_VERSION } = require('./matchService');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
 const {
@@ -199,6 +210,29 @@ function toLineRow(row) {
     readback: row.readback || null,
     readbackAt: iso(row.readback_at),
     lastError: row.last_error == null ? null : String(row.last_error),
+    /*
+     * ── WHAT THE OFFICE ITSELF DECIDED, AND WHAT THE CHECK PROMISED ──────────
+     *
+     * Already selected by `LINE_COLUMNS` and, until Stage C, never rendered.
+     * The finished screen has to be able to say what LANDED in Open Dental —
+     * the carrier's contractual write-off is one number and the office's own
+     * concession is another, and a screen that showed only their sum would be
+     * showing a figure nobody decided.
+     *
+     * `decidedWriteOffCents` is NULL — never 0 — when nobody decided anything,
+     * and the three decision fields are frozen together or not at all.
+     * `intendedPatientCents` is what the approve PROMISED, which is the figure
+     * the confirmation measures against; NULL on a plan approved before B2, and
+     * the screen states the weaker guarantee rather than hiding it.
+     */
+    decidedWriteOffCents:
+      row.decided_write_off_cents == null ? null : num(row.decided_write_off_cents),
+    decidedReason: row.decided_reason == null ? null : String(row.decided_reason),
+    decidedBy: row.decided_by == null ? null : String(row.decided_by),
+    intendedPatientCents:
+      row.intended_patient_cents == null ? null : num(row.intended_patient_cents),
+    odWriteoffAdjustmentNum:
+      row.od_writeoff_adjustment_num == null ? null : num(row.od_writeoff_adjustment_num),
   };
 }
 
@@ -892,6 +926,231 @@ router.post(
     }
 
     return res.json({ success: true, office, queueId, documentAttach: outcome.result });
+  })
+);
+
+/**
+ * POST /:id/recheck — ASK OPEN DENTAL AGAIN, AND WRITE NOTHING.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS ROUTE EXISTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A plan that came back `partially_posted` is stuck on ONE thing: Open Dental
+ * does not say about the patient's balance what the check promised. Money moved,
+ * every carrier-side proof passed, and the patient's own number is wrong.
+ *
+ * The remedy is a person going into Open Dental and correcting whatever the
+ * sentence names. Then she wants to ask one question — *is it right now?* —
+ * and until this route existed the only way to ask it was to press Post again,
+ * because the confirmation ran inside the post.
+ *
+ * "Press Post again to find out whether it posted" is the kind of sentence this
+ * project keeps deleting. Pressing the one button that writes to a chart, in
+ * order to READ, is a shape nobody should have to reason about at 6pm.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT CANNOT WRITE. THAT IS THE WHOLE POINT, AND IT IS STRUCTURAL.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   · It calls exactly two Open Dental verbs, both GETs:
+ *     `readClaimProcsForClaim` and `readAdjustmentsForPatient`.
+ *   · It reaches no write verb — `rcmNoOdWrites.test.js`'s static scan already
+ *     forbids naming one outside `odPostingWrites.js`, and the drive-it test
+ *     asserts a recheck yields no write.
+ *   · It writes nothing to CareIN's own database either — not the plan's status,
+ *     not `rcm_claims.confirmed_verdict`, not an attempt stamp. It ANSWERS a
+ *     question; the answer is not a state change, and persisting one from a read
+ *     would make a look identical to a post in the record.
+ *   · Every Open Dental read it makes is audited as a READ, per claim and per
+ *     patient, exactly as the drain audits the same two calls.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT IS THE SAME ARITHMETIC, FROM THE SAME FUNCTION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `postingDrain.confirmLineFor` assembles each line and `verdictFor`'s CONFIRMED
+ * register judges it — the identical pair the drain's `confirm_patient` step
+ * uses. A second implementation would drift, and the drift would be invisible:
+ * both screens would print a confident sentence and one would be measuring the
+ * wrong thing.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS A POST AND NOT A GET
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It spends real Open Dental calls against a rate-limited credential the voice
+ * side shares. A GET is a thing browsers, prefetchers and link previews fire
+ * without being asked; this is a thing a person presses. The method says which.
+ * It is still a READ in every sense the audit log cares about, and it is audited
+ * as one.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHICH PLANS IT WILL ANSWER FOR
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Only ones that have actually posted — `posted` and `partially_posted`. On
+ * anything else there is no check in Open Dental to read back, and a
+ * "confirmation" over a plan that never wrote would be a projection wearing a
+ * confirmation's words. `NOTHING_POSTED_YET` says so.
+ */
+router.post(
+  '/:id/recheck',
+  /*
+   * `rcm.queue` — THE REVIEWING TIER, and an EXPLICIT gate rather than the
+   * mount's default.
+   *
+   * The mount demands `rcm.write` for every POST not enumerated in
+   * `QUEUE_PATHS`. This one is enumerated, because what it does is READ —
+   * demanding write authority to look would put the person best placed to
+   * notice a wrong balance behind a permission she does not need.
+   *
+   * But `rcmGuard.test.js` holds a rule that is worth more than the
+   * convenience: EVERY path the write exemption opens must carry a gate of its
+   * own, or a route added at one of those paths later is reachable by anyone the
+   * module guard let through. So this names its tier out loud.
+   *
+   * `rcm.queue` is the tier that marks a claim reviewed and that parks and sets
+   * aside a check — reviewer, rcm_biller, office and admin all hold it. Asking
+   * Open Dental a question about a check somebody already posted is the same
+   * class of act, and it is strictly narrower: it writes nothing at all.
+   */
+  requirePermission('rcm.queue'),
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const queueId = String(req.params.id);
+    if (!isUuid(queueId)) {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+
+    const plan = await tenantDb.withTenantDb(req, (pool) =>
+      postingDrain.loadPlan(pool, office, queueId)
+    );
+    if (!plan) {
+      await auditRcmDenial(req, 'rcm_posting_queue', queueId, { office });
+      return res
+        .status(404)
+        .json({ success: false, error: 'No such posting plan', code: 'QUEUE_NOT_FOUND' });
+    }
+
+    const status = String(plan.queue.status);
+    if (status !== 'posted' && status !== 'partially_posted') {
+      return res.status(409).json({
+        success: false,
+        error:
+          'Nothing has been posted for this check yet, so there is nothing in Open Dental to read back.',
+        code: 'NOTHING_POSTED_YET',
+        status,
+      });
+    }
+
+    /*
+     * ORDINARY LINES ONLY. A takeback line writes a supplemental or an
+     * adjustment and has no patient remainder to confirm — the drain's own
+     * confirmation skips them for the same reason.
+     */
+    const lines = plan.lines.filter((l) => !l.isSupplemental && l.odClaimProcNum != null);
+    if (lines.length === 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'This check has no ordinary claim lines to read back.',
+        code: 'NOTHING_TO_CONFIRM',
+      });
+    }
+
+    const claimById = new Map(plan.claims.map((c) => [c.claimId, c]));
+    const grouped = postingDrain.groupByClaim(lines);
+    const od = odPostingWrites.postingTransportFor(office);
+
+    /*
+     * THE LEDGER CONCESSIONS, read back by AdjNum rather than assumed. One list
+     * read per patient, and only for lines that actually booked one — a plan
+     * that booked none never asks the question at all.
+     */
+    const concessionByLine = new Map();
+    const ledgerByPatient = new Map();
+    for (const line of lines) {
+      const adjNum = line.odWriteoffAdjustmentNum;
+      if (!adjNum) continue;
+      const claim = claimById.get(line.claimId);
+      const patNum = claim && claim.odPatientId;
+      if (!patNum) continue;
+      if (!ledgerByPatient.has(patNum)) {
+        ledgerByPatient.set(patNum, await odPostingWrites.readAdjustmentsForPatient(od, patNum));
+        await audit(req, {
+          action: 'READ',
+          resourceType: 'rcm_od_adjustment',
+          resourceId: String(patNum),
+          office,
+        });
+      }
+      const found = (ledgerByPatient.get(patNum) || []).find(
+        (r) => Number(r.AdjNum) === Number(adjNum)
+      );
+      // Stored NEGATIVE in the ledger, subtracted as a positive here. One we
+      // cannot find is left unset, so the line reads as still owing the whole
+      // remainder — which is what the chart would tell the patient, and the
+      // disagreement is the point.
+      if (found) {
+        concessionByLine.set(line.queueLineId, -odPostingWrites.dollarsToCents(found.AdjAmt));
+      }
+    }
+
+    const claims = [];
+    for (const group of grouped) {
+      const rows = await odPostingWrites.readClaimProcsForClaim(od, group.odClaimNum);
+      await audit(req, {
+        action: 'READ',
+        resourceType: 'rcm_od_claimproc',
+        resourceId: String(group.odClaimNum),
+        office,
+      });
+
+      const verdict = lineDecisions.verdictFor({
+        register: 'confirmed',
+        lines: group.lines.map((line) =>
+          postingDrain.confirmLineFor(
+            line,
+            rows.find((r) => Number(r.ClaimProcNum) === line.odClaimProcNum) || null,
+            concessionByLine.get(line.queueLineId) || 0
+          )
+        ),
+      });
+
+      /*
+       * NO PATIENT NAME IN THIS RESPONSE, deliberately.
+       *
+       * `loadPlan`'s claim rows do not carry one, and the screen that reads this
+       * already has every name from `GET /queue/:id`. Adding a second PHI-
+       * carrying payload to join on an id the client already holds would be
+       * spending a patient's name to save a `Map` lookup.
+       */
+      claims.push({
+        claimId: group.lines[0] ? group.lines[0].claimId : null,
+        odClaimNum: num(group.odClaimNum),
+        verdict,
+      });
+    }
+
+    await auditRcmRead(req, 'rcm_posting_queue', { office, resourceId: queueId });
+
+    const agreed = claims.every((c) => c.verdict.state !== 'red');
+    return res.json({
+      success: true,
+      office,
+      queueId,
+      /** The plan's status is UNCHANGED by this call — see the header. */
+      status,
+      claims,
+      /**
+       * True when every claim's read-back now matches what this check promised.
+       *
+       * It does NOT move the plan. A person who has corrected the chart still
+       * presses Post to Open Dental to finish the plan off; this only tells her
+       * whether that press will land, without spending a chart write to find
+       * out.
+       */
+      agreed,
+      checkedAt: new Date().toISOString(),
+    });
   })
 );
 

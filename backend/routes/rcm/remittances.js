@@ -69,10 +69,19 @@ const DEFAULT_LIMIT = 50;
  */
 const REMITTANCE_VIEWS = Object.freeze(['attention', 'parked', 'set_aside', 'all']);
 
-/** @see migrations-tenant/1787500000000_rcm_remittance_worklist_state.js */
+/**
+ * The CURRENT set-aside vocabulary.
+ *
+ * It lives on the migration that last widened it, not on the one that created
+ * the column: `1787500000000` exports the five it wrote and must go on doing so,
+ * because a database migrated only that far holds a five-value CHECK. Stage C
+ * added `sent_in_error` and this is where the six now live.
+ *
+ * @see migrations-tenant/1787800000000_rcm_set_aside_sent_in_error.js
+ */
 const {
   SET_ASIDE_REASONS,
-} = require('../../migrations-tenant/1787500000000_rcm_remittance_worklist_state');
+} = require('../../migrations-tenant/1787800000000_rcm_set_aside_sent_in_error');
 
 /**
  * How long a biller's own sentence may be, on either action.

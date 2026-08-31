@@ -45,6 +45,7 @@ import {
   Receipt,
   ScrollText,
   Banknote,
+  Upload,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -143,7 +144,15 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       items: [
         { path: "/rcm", label: "Today", icon: Receipt },
         { path: "/rcm/remittances", label: "Checks", icon: ScrollText },
-        { path: "/rcm/posting", label: "Posting", icon: Banknote },
+        /* THE ONE UPLOAD DOOR, first-class and after Checks (ruling D-16). */
+        { path: "/rcm/bring-in", label: "Bring in", icon: Upload },
+        /* "Posting history", not "Posting": this screen reports what HAS
+           happened across the practice. The working screens are above it — the
+           PM ruling is to keep it and demote it, because it is where an
+           office-wide post lives, where a stuck run is retried, and where
+           anybody debugging at 9pm looks. Deleting a debugging surface to tidy
+           a nav is not a trade this module makes. */
+        { path: "/rcm/posting", label: "Posting history", icon: Banknote },
         { path: "/rcm/sop/takeback", label: "Takeback SOP", icon: BookOpen },
       ],
     },

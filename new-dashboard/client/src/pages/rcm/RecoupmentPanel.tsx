@@ -31,6 +31,27 @@
  *   2. The path radio defaults to the server's `defaultPath`, not to a constant
  *      here. The adjustment is the default and the supplemental is the opt-in,
  *      and that ordering must not be a thing a client can quietly get wrong.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * STAGE C (§9, ruling D-17): THE EXPLANATION CAME FIRST, THE TYPING DID NOT MOVE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The panel opened with a total and a radio group. Everything it said was true
+ * and none of it explained the thing. A biller reading *"Total being taken back:
+ * $54.00"* still had to work out what was being reversed, which payment it came
+ * off, and — the part nobody was told at all — what it does to a patient who is
+ * about to get a statement.
+ *
+ * So there is now an explanation block ABOVE the mechanism, and the last line of
+ * it is the one this app cannot act on: somebody should ring the patient, and
+ * this app will not.
+ *
+ * **THE TYPED CONFIRMATION IS UNCHANGED.** D-6 stands, and the design's tick
+ * boxes were considered and refused: a takeback moves money in the direction
+ * nobody expects, and a tick box is a click you can make without reading. The
+ * typed value keeps its CURRENT SIGNED FORM — existing behaviour wins — and the
+ * field's own label now states the form, so the sign is never something to
+ * guess at. `typedTotalExpected` is still rendered verbatim from the server, for
+ * the reason in (1) above.
  */
 import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2, Undo2 } from "lucide-react";
@@ -43,7 +64,9 @@ import {
   type RecoupmentPath,
   type RcmOfficeId,
 } from "@/features/rcm/api";
+import type { RemittanceClaim } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
+import { NO_ACTION_REASONS } from "@/features/rcm/format";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -94,14 +117,38 @@ const PATH_COPY: Record<RecoupmentPath, { label: string; detail: string }> = {
   },
 };
 
+/** First-seen order, no duplicates, no empties. */
+function uniq(values: (string | null | undefined)[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
 export function RecoupmentPanel({
   office,
   batchId,
   onApproved,
+  claims = [],
 }: {
   office: RcmOfficeId;
   batchId: string;
   onApproved?: () => void;
+  /**
+   * The check's own claims, for the explanation block (§9).
+   *
+   * The takeback checklist carries the money and the permission; it does not
+   * carry Open Dental claim numbers or the carrier's adjustment codes, and both
+   * are needed to say WHICH payment this comes off and WHY the carrier says it
+   * is coming. The check's page already holds them, so it passes them rather
+   * than a second endpoint being invented for facts already on screen.
+   *
+   * DEFAULTS TO EMPTY, and every clause built from it degrades to a general
+   * phrase rather than to a blank — a caller that does not have them (a test, a
+   * future screen) still gets an honest explanation, just a less specific one.
+   */
+  claims?: RemittanceClaim[];
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [typed, setTyped] = useState("");
@@ -187,6 +234,39 @@ export function RecoupmentPanel({
     );
   }
 
+  /*
+   * ── WHAT THIS TAKEBACK IS, FROM THE CHECK'S OWN CLAIMS (§9) ───────────────
+   *
+   * `NO_ACTION_REASONS` is the module's existing predicate for "this claim is a
+   * reversal or a takeback" — the same set the claim rows render their
+   * dead-end sentence from. Reusing it is what stops this panel growing a
+   * second opinion about which claims it is talking about.
+   */
+  const takebackClaims = claims.filter((c) =>
+    c.needsReviewReasons.some((r) => NO_ACTION_REASONS.has(r)),
+  );
+  /** PHI — rendered, never logged. The panel that shows them is audited. */
+  const patients = uniq(takebackClaims.map((c) => c.patientName).filter(Boolean));
+  const odClaims = uniq(
+    takebackClaims.map((c) => (c.odClaimNum == null ? "" : String(c.odClaimNum))).filter(Boolean),
+  );
+  /*
+   * THE CARRIER'S OWN CODES AND ITS OWN WORDS. A code the published list does
+   * not carry renders bare — a gloss this app invented would be worse than the
+   * code, because a biller can look a code up and cannot un-read a wrong gloss.
+   */
+  const carrierReasons = uniq(
+    takebackClaims.flatMap((c) =>
+      c.lines.flatMap((l) =>
+        l.adjustments.map((a) =>
+          a.reasonDescription
+            ? `${a.groupCode}-${a.reasonCode} ${a.reasonDescription}`
+            : `${a.groupCode}-${a.reasonCode}`,
+        ),
+      ),
+    ),
+  );
+
   const phraseMatches = typed.trim() === checklist.typedTotalExpected;
   const canSubmit = checklist.canApprove && checklist.balanced && phraseMatches && !submitting;
 
@@ -238,6 +318,75 @@ export function RecoupmentPanel({
         </div>
       </div>
 
+      {/*
+        ══════════════════════════════════════════════════════════════════════
+        WHAT IS ACTUALLY HAPPENING (Stage C, §9 — ruling D-17)
+        ══════════════════════════════════════════════════════════════════════
+        The panel used to open with a total and a radio group. Everything it said
+        was true and none of it explained the thing: a biller reading "Total being
+        taken back: $54.00" still had to work out what was being reversed, which
+        payment it came off, and — the part nobody was told at all — what it does
+        to a patient who is about to get a statement.
+
+        So the explanation comes FIRST, in her words, and the mechanism follows.
+        The typed confirmation below is untouched (D-6): see the note above it.
+      */}
+      <div className="border-b border-amber-300 px-4 py-3 dark:border-amber-900" data-testid="recoupment-explainer">
+        <h3 className="text-sm font-semibold text-foreground">What this is</h3>
+        <ul className="mt-1.5 space-y-1 text-sm text-foreground">
+          <li>
+            <span className="text-muted-foreground">What is being reversed:</span>{" "}
+            {checklist.recoupmentClaims === 1
+              ? "one claim on this check"
+              : `${checklist.recoupmentClaims} claims on this check`}
+            , <span className="font-mono">{money(checklist.recoupmentTotalCents)}</span> in total.
+          </li>
+          <li>
+            <span className="text-muted-foreground">Where it comes off:</span> the payment already
+            posted against{" "}
+            {odClaims.length === 0
+              ? "the claim in Open Dental"
+              : odClaims.length === 1
+                ? `Open Dental claim ${odClaims[0]}`
+                : `Open Dental claims ${odClaims.join(", ")}`}
+            . Nothing new is created for the money to come out of.
+          </li>
+          <li>
+            <span className="text-muted-foreground">The carrier's reason:</span>{" "}
+            {/* THE CARRIER'S OWN CODES, from the claim rows. A reason the
+                published list does not carry renders as the bare code — a
+                gloss this app invented would be worse than the code itself. */}
+            {carrierReasons.length > 0 ? carrierReasons.join(" · ") : "none was sent with the file"}
+            .
+          </li>
+          <li>
+            <span className="text-muted-foreground">What it does to the patient:</span>{" "}
+            {patients.length === 1 ? "This patient" : "These patients"} owe
+            {patients.length === 1 ? "s" : ""} more once this posts — by{" "}
+            <span className="font-mono">{money(Math.abs(checklist.recoupmentTotalCents))}</span>{" "}
+            across the {checklist.recoupmentClaims === 1 ? "claim" : "claims"} above.
+          </li>
+        </ul>
+
+        {/*
+          THE ONE THING THIS APP WILL NOT DO, said out loud.
+          A takeback moves money in the direction nobody expects, and the person
+          it lands on finds out from a statement unless somebody rings them. That
+          is a human act this product does not perform and must not imply it
+          will.
+        */}
+        <p className="mt-2 text-sm font-medium text-foreground" data-testid="recoupment-call-them">
+          Somebody should call{" "}
+          {patients.length === 0
+            ? "the patient"
+            : patients.length === 1
+              ? patients[0]
+              : `${patients.slice(0, -1).join(", ")} and ${patients[patients.length - 1]}`}{" "}
+          before {patients.length === 1 ? "he or she gets a statement they aren't" : "they get statements they aren't"}{" "}
+          expecting. This app won&rsquo;t send {patients.length === 1 ? "them" : "them"} anything.
+        </p>
+      </div>
+
       <div className="px-4 py-3">
         <p className="text-sm">
           Total being taken back:{" "}
@@ -280,9 +429,18 @@ export function RecoupmentPanel({
           </p>
         )}
 
+        {/*
+          THE TYPED CONFIRMATION — UNCHANGED (D-6), AND THE SIGN IS NOW STATED.
+          Stage C's design proposed tick boxes and they were refused: a takeback
+          moves money in the direction nobody expects, and a tick box is a click
+          you can make without reading. What DID change is that the label says
+          the form the field wants, so the leading minus is never a thing to
+          guess at — the value itself is still rendered verbatim from the server,
+          because a client that formats cents is a client that can show `-54.8`
+          while the server means `-54.08`.
+        */}
         <label className="mt-3 block text-xs font-medium" htmlFor="recoupment-confirm">
-          To confirm, type{" "}
-          {/* VERBATIM from the server. Never formatted here — see the header. */}
+          To confirm, type the amount exactly as shown, minus sign and all:{" "}
           <span className="font-mono" data-testid="recoupment-expected">
             {checklist.typedTotalExpected}
           </span>

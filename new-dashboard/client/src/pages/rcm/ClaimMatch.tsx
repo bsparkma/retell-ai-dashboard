@@ -54,6 +54,7 @@ import { day, MATCH_STATUS_TONE, matchStatusLabel } from "@/features/rcm/format"
 import { claimFlow, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
+import MatchGuidance from "@/components/rcm/MatchGuidance";
 
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
@@ -423,6 +424,34 @@ export default function ClaimMatchPage() {
           <span>{notice.text}</span>
         </div>
       )}
+
+      {/*
+        ── MATCH IT UP, IN WORDS (Stage C, §5) ─────────────────────────────────
+        Above the workbench and NOT inside it: the candidate cards below are
+        unchanged (§12 — the workbench body is a separate PR), and they are the
+        audit trail of a ranking. This block is what a person reads first —
+        which of the two cases she is in, and what actually differs between the
+        candidates, said the way she would say it.
+
+        It confirms through the SAME `confirm` this page already owns, so there
+        is one route, one audit row and no second write path.
+      */}
+      <MatchGuidance
+        snapshot={snapshot}
+        eob={{
+          serviceDate: claim.serviceDate,
+          billedCents: claim.totalBilledCents,
+          patientName: claim.patientName,
+        }}
+        confirmedClaimNum={claim.odClaimNum}
+        busy={busy !== null || claim.odMatchStatus === "confirmed"}
+        onConfirm={confirm}
+        onShowOthers={() => {
+          document
+            .querySelector('[data-testid^="candidate-"]')
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+      />
 
       <ClaimWorkbench
         data={data}

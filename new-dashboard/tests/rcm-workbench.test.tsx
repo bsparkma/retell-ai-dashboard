@@ -518,6 +518,9 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
 
 import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
+// Stage C: approving is a page of its own (§6). See the note above the approve
+// group — the act is unchanged, the room it happens in is not.
+import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
 import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
@@ -644,14 +647,25 @@ describe("the remittance list", () => {
     // …and everything it showed is still there under All.
     fireEvent.click(screen.getByTestId("remittance-filter-all"));
     await waitFor(() => expect(screen.getByTestId("remittance-row-b-1")).toBeTruthy());
-    expect(screen.getByTestId("attention-observation-batch_open")).toBeTruthy();
-    expect(screen.getByTestId("attention-observation-claims_flagged").textContent).toBe("2 flagged");
-    expect(screen.getByTestId("attention-observation-claims_unmatched").textContent).toBe(
-      "2 unmatched",
-    );
-    // And none of them is rendered as work.
-    expect(screen.queryByTestId("attention-reason-claims_flagged")).toBeNull();
-    expect(screen.queryByTestId("attention-reason-batch_open")).toBeNull();
+    /*
+     * CHANGED BY STAGE C — the CHIPS became a SENTENCE (§3).
+     *
+     * The row used to carry a strip of chips naming the server's predicates in
+     * a shorter form of the server's own vocabulary: `2 unmatched`, `Held`,
+     * `Claims not yet reviewed`. A biller reading them still had to work out
+     * whose move it was, which is the question she actually had.
+     *
+     * The *Waiting on* cell answers it (`features/rcm/waitingOn.ts`), and the
+     * SUBSTANCE of this assertion is unchanged: a check that owes nobody an
+     * action must not read as work. It said that by the absence of an amber
+     * chip; it says it now by the sentence itself and by its weight.
+     */
+    const waiting = screen.getByTestId("remittance-waiting-b-1");
+    expect(waiting.textContent).toContain("You — 2 claims to match up");
+    // Still nothing rendered as an outstanding OBLIGATION on the check itself:
+    // matching is an observation, and the row says so by naming the work
+    // rather than by flagging the file.
+    expect(waiting.textContent).not.toContain("check over");
   });
 
   it("tells an outstanding action apart from a fact about the file", async () => {
@@ -666,13 +680,19 @@ describe("the remittance list", () => {
 
     renderAt(<RemittanceList />, "/rcm/remittances");
 
-    const owed = await screen.findByTestId("attention-reason-claims_unreviewed");
-    const fact = screen.getByTestId("attention-observation-batch_open");
-    expect(owed.textContent).toBe("Claims not yet reviewed");
-    expect(fact.textContent).toContain("Held");
-    // Weight is the distinction a biller reads at a glance: amber is owed.
-    expect(owed.className).toContain("amber");
-    expect(fact.className).not.toContain("amber");
+    /*
+     * CHANGED BY STAGE C — the DISTINCTION SURVIVED, the chips did not (§3).
+     *
+     * Two chips told an obligation apart from a fact by weight. One sentence
+     * does it by leading with the obligation and carrying the weight itself:
+     * `waitingFor` reads `attentionReasons` before `attentionObservations`, so
+     * a check that owes a review says so and does not lead with a fact about
+     * the file. That ordering IS the old amber/grey rule, one level up.
+     */
+    const waiting = await screen.findByTestId("remittance-waiting-b-1");
+    expect(waiting.textContent).toContain("You — 1 claim to check over");
+    // Amber is still what "somebody owes this" looks like.
+    expect(waiting.className).toContain("amber");
   });
 
   it("shows the DIFFERENCE on an unbalanced remittance, not just a flag", async () => {
@@ -713,9 +733,18 @@ describe("the remittance list", () => {
         "Nothing needs attention here.",
       ),
     );
+    /*
+     * CHANGED BY STAGE C — the sentence became a sentence AND A BUTTON (§11).
+     *
+     * "switch to All to see them" is an instruction, and an instruction on an
+     * empty screen at 6pm is one more thing to do rather than a way out. The
+     * copy still says how much the practice holds; the way out is now a control
+     * beside it.
+     */
     expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
-      "1 check in this practice — switch to All to see them.",
+      "1 check in this practice.",
     );
+    expect(screen.getByTestId("remittances-empty-see-all-roland")).toBeTruthy();
     // And it does NOT offer the upload: that is the other empty.
     expect(screen.queryByTestId("remittances-empty-upload-roland")).toBeNull();
   });
@@ -726,10 +755,13 @@ describe("the remittance list", () => {
      *
      * Uploading used to be on Today AND inline here, which is how the practice
      * owner got lost going round the loop live. There is now exactly ONE upload
-     * surface — Today's "Get work in" — so this empty state OFFERS THE WAY THERE
-     * rather than opening a second drawer of its own. That the link goes to
-     * `/rcm?add=1` and not to a local panel is the assertion; the
-     * one-surface invariant itself is pinned in `rcm-shell.test.tsx`.
+     * surface, so this empty state OFFERS THE WAY THERE rather than opening a
+     * second drawer of its own. That the link goes to the one surface and not to
+     * a local panel is the assertion; the one-surface invariant itself is
+     * pinned in `rcm-shell.test.tsx`.
+     *
+     * CHANGED BY STAGE C: that surface is `/rcm/bring-in`, a page of its own
+     * (ruling D-16), rather than a section on Today reached by `?add=1`.
      */
     state.remittances = [];
     state.needsAttentionCount = 0;
@@ -740,7 +772,7 @@ describe("the remittance list", () => {
     expect(empty.textContent).toContain("Nothing has come in for Roland yet");
 
     const cta = screen.getByTestId("remittances-empty-upload-roland");
-    expect(cta.getAttribute("href")).toBe("/rcm?add=1");
+    expect(cta.getAttribute("href")).toBe("/rcm/bring-in");
     // And nothing on this page uploads anything itself.
     expect(screen.queryByTestId("remittance-upload-panels")).toBeNull();
   });
@@ -880,6 +912,22 @@ describe("the remittance detail", () => {
     expect(lines.textContent).toContain("Downcoded");
   });
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * CHANGED BY STAGE C — APPROVING IS A PAGE, SO THESE RENDER THE PAGE
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Every assertion below is unchanged in substance. What changed is WHERE the
+   * gate lives: it was a panel on the check's own screen, competing for
+   * attention with a balance check, a document link, a match button and thirty
+   * claim rows, and it is now `/rcm/remittances/:id/approve` — a page where
+   * nothing else is on screen at the moment somebody freezes a set of decisions
+   * (§6).
+   *
+   * The ACT is untouched: same route, same `rcm.write` tier, same gate, same
+   * audit row, same partial approve, same idempotency. So these tests render
+   * `ApproveCheck` at the approve route instead of `RemittanceDetail`, and the
+   * container id they wait on is the page's rather than the panel's.
+   */
   it("renders the approval CHECKLIST before anything is pressed (Slice 6b)", async () => {
     /*
      * The whole point of the checklist: a biller can see which claims will be
@@ -913,15 +961,24 @@ describe("the remittance detail", () => {
       differenceCents: 0,
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
 
-    await screen.findByTestId("approval-panel");
-    expect(screen.getByTestId("approval-counts").textContent).toContain("1 of 2 claims can be posted");
-    expect(screen.getByTestId("approval-counts").textContent).toContain("1 not ready yet");
+    await screen.findByTestId("rcm-approve-check");
+    // CHANGED BY STAGE C: "can be approved" rather than "can be posted".
+    // Approving is not posting, and the step names now say the invariant out
+    // loud — a count that said "posted" on the approve screen was the one place
+    // the copy still blurred it.
+    expect(screen.getByTestId("approve-counts").textContent).toContain(
+      "1 of 2 claims can be approved",
+    );
+    expect(screen.getByTestId("approve-counts").textContent).toContain("1 not ready yet");
 
     // Mixed pass/fail, per claim, with the INSTRUCTION under the failure.
     expect(screen.getByTestId("approval-state-c-1").textContent).toContain("Ready to post");
     expect(screen.getByTestId("approval-state-c-2").textContent).toContain("Not ready yet");
+    // CHANGED BY STAGE C: "did not pass" rather than "failed" — the gate
+    // refusing is the gate working, and a claim is not a failure.
+    expect(screen.getByTestId("approval-state-c-2").textContent).toContain("did not pass");
     // The instruction is verb-first and comes from `features/rcm/checks.ts`;
     // the server's own `detail` survives as the quieter "why" line beneath it.
     expect(screen.getByTestId("check-detail-REVIEWED").textContent).toContain(
@@ -934,7 +991,9 @@ describe("the remittance detail", () => {
     // The button is LIVE, and it says what it will do.
     const approve = screen.getByTestId("approve-button") as HTMLButtonElement;
     expect(approve.disabled).toBe(false);
-    expect(approve.textContent).toContain("Approve 1 claim for posting");
+    // CHANGED BY STAGE C: the button answers the page's own question
+    // ("Before you say yes.") rather than restating the step it is in.
+    expect(approve.textContent).toContain("Yes — approve 1 claim");
   });
 
   it("a reviewer sees the same checklist and a disabled button naming the tier", async () => {
@@ -955,9 +1014,9 @@ describe("the remittance detail", () => {
       differenceCents: 0,
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
 
-    await screen.findByTestId("approval-panel");
+    await screen.findByTestId("rcm-approve-check");
     expect((screen.getByTestId("approve-button") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("approve-needs-permission").textContent).toContain("rcm.write");
     // The checklist itself is unchanged — the tier decides the button, not the truth.
@@ -970,13 +1029,16 @@ describe("the remittance detail", () => {
      * posting" means a person authorised it and the money has not moved. The
      * sentence is the SERVER'S, so it changes on the day it stops being true.
      */
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
 
     fireEvent.click(screen.getByTestId("approve-button"));
 
     const result = await screen.findByTestId("approve-result");
-    expect(result.textContent).toContain("Queued 1 claim for posting");
+    // CHANGED BY STAGE C: "approved" rather than "queued for posting" on the
+    // result line. The SERVER's own honest-state sentence below it is
+    // untouched and is still asserted verbatim.
+    expect(result.textContent).toContain("1 claim approved");
     expect(screen.getByTestId("approve-honest-state").textContent).toBe(
       "Queued for posting — nothing has been written to Open Dental yet.",
     );
@@ -1008,8 +1070,8 @@ describe("the remittance detail", () => {
       note: "Queued for posting — nothing has been written to Open Dental yet.",
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
     fireEvent.click(screen.getByTestId("approve-button"));
 
     const withheld = await screen.findByTestId("approve-withheld");
@@ -1017,7 +1079,7 @@ describe("the remittance detail", () => {
     expect(withheld.textContent).toContain("Sample, Placeholder");
     expect(withheld.textContent).toContain("Not a reversal or takeback");
     // Partial success is REAL success — the queued half is stated too.
-    expect(screen.getByTestId("approve-result").textContent).toContain("Queued 1 claim");
+    expect(screen.getByTestId("approve-result").textContent).toContain("1 claim approved");
   });
 
   it("an honest refusal keeps the checklist on screen and lists the reasons", async () => {
@@ -1033,8 +1095,8 @@ describe("the remittance detail", () => {
       },
     );
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
     fireEvent.click(screen.getByTestId("approve-button"));
 
     const err = await screen.findByTestId("approve-error");
@@ -1042,7 +1104,7 @@ describe("the remittance detail", () => {
     expect(err.textContent).toContain("REVIEWED");
     // The data stays on screen — a refusal is the gate working, and the
     // checklist is precisely what explains it.
-    expect(screen.getByTestId("approval-panel")).toBeTruthy();
+    expect(screen.getByTestId("rcm-approve-check")).toBeTruthy();
   });
 
   it("renders remittance-level flags, coloured by the D-11 split", async () => {

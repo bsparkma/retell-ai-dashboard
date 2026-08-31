@@ -37,6 +37,26 @@
  * dependencies.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * ─────────────────────────────────────────────────────────────────────────────
+ * FOUR TABS, AND A COLUMN THAT SAYS WHOSE MOVE IT IS (Stage C, §3)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The strip used to carry eight tabs — one per predicate the module can express
+ * — so a biller looking for her check first had to decide whether it was
+ * "waiting to be matched" or "waiting for your review". That is a taxonomy
+ * question standing in front of the work.
+ *
+ * Now every ROW says whose move it is, in words, in a *Waiting on* cell
+ * (`features/rcm/waitingOn.ts` — the same computation Today's *What happens
+ * next* column reads, in the other register). So the tabs only answer the four
+ * questions that are about the LIST: what needs somebody, what I put down, what
+ * nobody is coming back to, and everything. See `CHECK_TABS`.
+ *
+ * The other four filters still work as `?view=` links — Today's *How it stands*
+ * cards use them and somebody may hold an old URL — and one arriving that way
+ * renders as a fifth chip with a way back out of it, rather than silently
+ * showing an unfiltered list.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * ONE LIST PER OFFICE, NEVER A MERGED ONE
  * ─────────────────────────────────────────────────────────────────────────────
  * Office is a correctness boundary in this module, not a filter. `/api/rcm` has
@@ -57,6 +77,7 @@ import {
   RefreshCw,
   ScrollText,
   Upload,
+  X,
 } from "lucide-react";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
@@ -78,17 +99,47 @@ import {
   SOURCE_TITLES,
 } from "@/features/rcm/format";
 import {
+  CHECK_TABS,
   FILTER_COPY,
   isWorklistFilter,
   matchesFilter,
   oldestWaitingFirst,
   SERVER_VIEWS,
-  WORKLIST_FILTERS,
   type WorklistFilter,
 } from "@/features/rcm/worklist";
+import { waitingFor } from "@/features/rcm/waitingOn";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type Filter = WorklistFilter;
+
+/**
+ * One practice's whole-office counts, as the route returns them.
+ *
+ * Every one of these is computed server-side over the WHOLE office
+ * (`REMITTANCE_VIEWS`), which is what makes a tab count a statement about the
+ * practice rather than about the page that happens to be loaded.
+ */
+interface TabCounts {
+  attention: number;
+  parked: number;
+  set_aside: number;
+  all: number;
+}
+
+/** The count for one tab, or `null` when this strip cannot honestly say. */
+function tabCount(
+  filter: WorklistFilter,
+  counts: Record<string, TabCounts>,
+  offices: readonly RcmOfficeId[],
+): number | null {
+  if (offices.length === 0) return null;
+  // EVERY office must have reported. See the note on `counts` in the component.
+  if (!offices.every((o) => counts[o])) return null;
+  if (filter !== "attention" && filter !== "parked" && filter !== "set_aside" && filter !== "all") {
+    return null;
+  }
+  return offices.reduce((sum, o) => sum + counts[o][filter], 0);
+}
 
 /** Rows per page. The server caps at 200; this is what a screen reads well. */
 const PAGE_SIZE = 50;
@@ -131,6 +182,25 @@ export default function RemittanceList() {
   useEffect(() => {
     if (isWorklistFilter(fromUrl)) setFilter(fromUrl);
   }, [fromUrl]);
+
+  /**
+   * THE TAB COUNTS, SUMMED ACROSS THE PRACTICES ON SCREEN.
+   *
+   * The tabs are one strip over what may be two lists, so a count taken from
+   * whichever office answered first would be a number about one practice
+   * wearing a label about both. Each section reports its own whole-office
+   * counts up; the strip sums them and shows a number only once EVERY office in
+   * scope has reported. An incomplete sum is rendered as nothing rather than as
+   * a smaller number — a tab reading "3" that means "3 so far" is the kind of
+   * quiet understatement this module keeps deleting.
+   */
+  const [counts, setCounts] = useState<Record<string, TabCounts>>({});
+  const report = useCallback((office: RcmOfficeId, next: TabCounts) => {
+    setCounts((prev) => ({ ...prev, [office]: next }));
+  }, []);
+  /* Offices change when the roster does; drop counts for ones no longer shown. */
+  const officeKey = scope.offices.join(",");
+  useEffect(() => setCounts({}), [officeKey]);
 
   if (scope.loading) {
     return (
@@ -194,7 +264,7 @@ export default function RemittanceList() {
             `?add=1` scrolls it into view on arrival.
           */}
           <Link
-            href="/rcm?add=1"
+            href="/rcm/bring-in"
             data-testid="remittance-upload-toggle"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
@@ -207,23 +277,56 @@ export default function RemittanceList() {
             className="flex flex-wrap justify-end gap-0.5 rounded-lg border border-border p-0.5"
             role="tablist"
           >
-            {WORKLIST_FILTERS.map((value) => (
+            {CHECK_TABS.map((value) => {
+              const n = tabCount(value, counts, scope.offices);
+              return (
+                <button
+                  key={value}
+                  role="tab"
+                  aria-selected={filter === value}
+                  data-testid={`remittance-filter-${value}`}
+                  onClick={() => setFilter(value)}
+                  title={FILTER_COPY[value].hint}
+                  className={`rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors ${
+                    filter === value
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {FILTER_COPY[value].label}
+                  {/* A COUNT ONLY WHEN IT IS THE WHOLE ANSWER — see `counts`. */}
+                  {n !== null && (
+                    <span
+                      className="ml-1.5 tabular-nums opacity-70"
+                      data-testid={`remittance-filter-count-${value}`}
+                    >
+                      {n}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+
+            {/*
+              A FILTER THAT IS NOT ONE OF THE FOUR, ARRIVING BY LINK.
+              Today's "How it stands" cards link into `?view=match` and friends,
+              and somebody may hold an older URL. Rendering it as a chip with a
+              way out beats both alternatives: silently showing an unfiltered
+              list, or dropping the link on the floor.
+            */}
+            {!CHECK_TABS.includes(filter) && (
               <button
-                key={value}
                 role="tab"
-                aria-selected={filter === value}
-                data-testid={`remittance-filter-${value}`}
-                onClick={() => setFilter(value)}
-                title={FILTER_COPY[value].hint}
-                className={`rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors ${
-                  filter === value
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
+                aria-selected
+                data-testid={`remittance-filter-${filter}`}
+                onClick={() => setFilter("attention")}
+                title="Press to go back to what needs attention."
+                className="rounded-md bg-foreground px-2.5 py-1.5 text-sm font-medium text-background"
               >
-                {FILTER_COPY[value].label}
+                {FILTER_COPY[filter].label}
+                <X size={12} className="ml-1.5 inline align-[-1px]" />
               </button>
-            ))}
+            )}
           </div>
         </div>
       </div>
@@ -252,17 +355,51 @@ export default function RemittanceList() {
           </p>
         </div>
       ) : (
-        <div className="mt-6 space-y-8">
-          {scope.offices.map((office) => (
-            <OfficeRemittances key={office} office={office} filter={filter} />
-          ))}
-        </div>
+        <>
+          <div className="mt-6 space-y-8">
+            {scope.offices.map((office) => (
+              <OfficeRemittances
+                key={office}
+                office={office}
+                filter={filter}
+                onCounts={report}
+                setFilter={setFilter}
+              />
+            ))}
+          </div>
+
+          {/*
+            WHAT THIS LIST IS, SAID ONCE AT THE BOTTOM.
+            The two questions a biller asks of any queue — how is it ordered, and
+            can something disappear out of it — answered where she is when she
+            asks them, rather than left to be learned by watching a row vanish.
+          */}
+          <p
+            className="mt-4 text-xs text-muted-foreground"
+            data-testid="remittance-list-footer"
+          >
+            Newest first. A check leaves this list only when it is posted or set aside, and both
+            stay findable under their own tab.
+          </p>
+        </>
       )}
     </div>
   );
 }
 
-function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Filter }) {
+function OfficeRemittances({
+  office,
+  filter,
+  onCounts,
+  setFilter,
+}: {
+  office: RcmOfficeId;
+  filter: Filter;
+  /** Report this practice's whole-office counts up to the tab strip. */
+  onCounts: (office: RcmOfficeId, counts: TabCounts) => void;
+  /** Change the tab — the empty state's way out of a filter that holds nothing. */
+  setFilter: (filter: Filter) => void;
+}) {
   const [state, setState] = useState<
     | { kind: "loading" }
     | {
@@ -301,6 +438,19 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
     request
       .then((page) => {
         if (cancelled) return;
+        /*
+         * THE TAB COUNTS, from whichever shape of load ran.
+         *
+         * All four are whole-office numbers the route computed, present on every
+         * response regardless of which `view` was asked for — so the strip is
+         * complete after one load rather than after four.
+         */
+        onCounts(office, {
+          attention: page.needsAttentionCount,
+          parked: page.parkedCount,
+          set_aside: page.setAsideCount,
+          all: page.total,
+        });
         if (serverBacked) {
           setState({
             kind: "loaded",
@@ -337,7 +487,7 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
     return () => {
       cancelled = true;
     };
-  }, [office, offset, filter, serverBacked]);
+  }, [office, offset, filter, serverBacked, onCounts]);
 
   useEffect(load, [load]);
 
@@ -433,7 +583,7 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
                 posted to a chart.
               </p>
               <Link
-                href="/rcm?add=1"
+                href="/rcm/bring-in"
                 data-testid={`remittances-empty-upload-${office}`}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
               >
@@ -444,11 +594,26 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
           ) : (
             <>
               <p className="mt-2 text-sm text-muted-foreground">{FILTER_COPY[filter].empty}</p>
+              {/*
+                AN EMPTY FILTER ALWAYS OFFERS A WAY OUT (§11).
+                A tab that says "nothing here" and stops is indistinguishable
+                from a broken screen at 6pm. It says how much the practice holds
+                and puts the door to it under the sentence.
+              */}
               {filter !== "all" && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {state.total} check{state.total === 1 ? "" : "s"} in this practice — switch to All
-                  to see them.
-                </p>
+                <>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {state.total} check{state.total === 1 ? "" : "s"} in this practice.
+                  </p>
+                  <button
+                    onClick={() => setFilter("all")}
+                    data-testid={`remittances-empty-see-all-${office}`}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                  >
+                    See all of them
+                    <ArrowRight size={13} />
+                  </button>
+                </>
               )}
             </>
           )}
@@ -464,11 +629,16 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
             <span className="text-right">Amount</span>
             <span className="text-right">Claims</span>
             <span>Status</span>
-            {/* Not "Needs attention": the column carries BOTH what is owed
-                (amber) and what was merely observed (grey), and a grey chip
-                under a "needs attention" heading would be the same small lie
-                the predicate itself used to tell. */}
-            <span>Outstanding · observed</span>
+            {/*
+              WHO OR WHAT, IN WORDS. It replaced a row of chips that named the
+              server's predicates — `claims_unreviewed`, `claims_unmatched` — in
+              a shorter form of the same vocabulary. A biller reading "2
+              unmatched · needs review" still had to work out whose move it was;
+              "You — 4 claims to check over" is the answer she was deriving.
+              `features/rcm/waitingOn.ts` decides it, and Today's arrivals table
+              reads the same function in the other register.
+            */}
+            <span>Waiting on</span>
             <span />
           </div>
           {rows.map((r) => (
@@ -533,6 +703,13 @@ function OfficeRemittances({ office, filter }: { office: RcmOfficeId; filter: Fi
 }
 
 function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remittance: Remittance }) {
+  /*
+   * `office` is passed so the predicate can say "belongs to another office" —
+   * the list fans out per practice, so it never fires here, and passing it keeps
+   * this row and Today's arrivals row reading the SAME call rather than two that
+   * differ by an argument.
+   */
+  const waiting = waitingFor(r, { office });
   return (
     <Link
       href={`/rcm/remittances/${r.batchId}`}
@@ -588,46 +765,23 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
       </span>
 
 {/*
-        WHAT IS OWED, AND WHAT IS MERELY TRUE — told apart by weight.
-        Amber chips are outstanding actions and are the only thing that put this
-        row in the queue. Grey chips are facts about the file: a biller reads
-        them to decide how hard to look, and none of them is work she can
-        discharge. Rendering both in amber is how "reviewed everything, still
-        flagged as needing attention" happened.
+        WHOSE MOVE IT IS — one sentence, and the tone follows it.
+        Amber weight means somebody owes an action; grey means nothing is
+        outstanding, or it is somebody else's. A takeback is the one that is
+        never grey, whatever else is true about the row.
       */}
-      <div className="flex flex-wrap gap-1">
-        {r.attentionReasons.length === 0 && r.attentionObservations.length === 0 ? (
-          <span className="text-xs text-muted-foreground">—</span>
-        ) : (
-          <>
-            {r.attentionReasons.map((reason) => (
-              <span
-                key={reason}
-                title={attentionLabel(reason)}
-                data-testid={`attention-reason-${reason}`}
-                className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-              >
-                {attentionLabel(reason)}
-              </span>
-            ))}
-            {r.attentionObservations.map((reason) => (
-              <span
-                key={reason}
-                title={attentionLabel(reason)}
-                data-testid={`attention-observation-${reason}`}
-                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-              >
-                {reason === "claims_flagged" && r.reviewReasonCount > 0
-                  ? `${r.reviewReasonCount} flagged`
-                  : reason === "claims_unmatched" && r.unmatchedClaimCount > 0
-                    ? `${r.unmatchedClaimCount} unmatched`
-                    : reason === "claims_queued" && r.queuedClaimCount > 0
-                      ? `${r.queuedClaimCount} queued`
-                      : attentionLabel(reason)}
-              </span>
-            ))}
-          </>
-        )}
+      <div className="min-w-0">
+        <span
+          className={`block truncate text-xs ${
+            waiting.urgent
+              ? "font-medium text-amber-800 dark:text-amber-300"
+              : "text-muted-foreground"
+          }`}
+          data-testid={`remittance-waiting-${r.batchId}`}
+          title={waiting.waitingOn}
+        >
+          {waiting.waitingOn}
+        </span>
       </div>
 
       <ChevronRight size={16} className="hidden justify-self-end text-muted-foreground md:block" />
