@@ -61,6 +61,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import {
+  COMPARISON_CLOSED_STATUSES,
   getApprovalPreview,
   getRemittance,
   listPostingQueue,
@@ -101,6 +102,7 @@ import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import PostThisCheck from "@/components/rcm/PostThisCheck";
 import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
+import CheckComparison from "@/components/rcm/CheckComparison";
 import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
@@ -747,6 +749,40 @@ export default function RemittanceDetailPage() {
       */}
       {shadowMode && preview && (
         <ShadowModeBanner office={office} claims={preview.claims} />
+      )}
+
+      {/*
+        ── DID THE APP GET THIS CHECK RIGHT? (C-2) ─────────────────────────────
+        Directly beneath the shadow panel, which is where C-1 left the room for
+        it, and where the worksheet she just posted from is still on screen.
+
+        THE THREE CONDITIONS, and each one is doing work:
+
+          shadowMode   posting is switched off for this practice, so there IS a
+                       hand-posting to compare against. With posting on, the
+                       confirmation after a post answers this question with the
+                       chart itself, and asking a person would be asking her to
+                       repeat a read the app already did.
+          plan         somebody has approved this check, so the app has said what
+                       it would do. Before that there is nothing to compare, and
+                       the server refuses with COMPARISON_NOT_APPROVED.
+          —            a posted check still shows its recorded answer, read-only.
+                       That is `closed` rather than an absence: a control that
+                       vanishes reads as a bug.
+      */}
+      {shadowMode && plan && (
+        <CheckComparison
+          office={office}
+          batchId={r.batchId}
+          verdict={r.comparisonVerdict}
+          reason={r.comparisonReason}
+          note={r.comparisonNote}
+          answeredAt={r.comparisonAt}
+          answeredBy={r.comparisonBy}
+          revision={r.comparisonRevision}
+          closed={COMPARISON_CLOSED_STATUSES.includes(plan.status)}
+          onRecorded={load}
+        />
       )}
 
       {/*

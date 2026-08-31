@@ -1216,6 +1216,26 @@ export interface Remittance {
   /** A SLUG the client renders copy from — see SET_ASIDE_COPY. */
   setAsideReason: SetAsideReason | string | null;
   setAsideNote: string | null;
+
+  /**
+   * DID THE APP GET THIS CHECK RIGHT? — the shadow-mode comparison (C-2).
+   *
+   * Null means NOBODY HAS ANSWERED, never "no difference found". The panel
+   * renders the question on a null and the recorded answer on anything else.
+   *
+   * `comparisonRevision` is how many times it has been answered: 0 never, 1
+   * once, 2+ changed. An answer is changeable until the check posts, and the
+   * count is what stops a change from being a silent overwrite.
+   */
+  comparisonVerdict: ComparisonVerdict | string | null;
+  /** A SLUG the client renders copy from — see COMPARISON_COPY. */
+  comparisonReason: ComparisonReason | string | null;
+  /** Her own line. Required by the server whenever the verdict is `differed`. */
+  comparisonNote: string | null;
+  comparisonAt: string | null;
+  comparisonBy: string | null;
+  comparisonRevision: number;
+
   /**
    * WHEN SOMEBODY LAST DECIDED A WRITE-OFF ON THIS CHECK, AND WHO.
    *
@@ -1295,6 +1315,90 @@ export const SET_ASIDE_COPY: Record<SetAsideReason, { label: string; hint: strin
   other: {
     label: "Something else",
     hint: "Say in a line what it is. This one needs your own words, because the slug alone would tell the next person nothing.",
+  },
+};
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SHADOW-MODE COMPARISON (Stage C-2)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * While posting is switched off, the practice puts the same money into Open
+ * Dental by hand. The one question that period exists to answer is whether what
+ * this app worked out matches what she would have done — and the answer used to
+ * live in a hand-kept spreadsheet, which is the first thing that gets dropped at
+ * 9pm.
+ *
+ * Two answers, and deliberately no third. A "not sure" is an answer nobody can
+ * count, and the thing this feeds is a run of checks that came out the same.
+ * Somebody genuinely unsure leaves it unanswered, which the null already says.
+ *
+ * Widened to `string` on the wire type for the same reason every other
+ * vocabulary here is: a slug added server-side must render as an ugly string
+ * rather than crash a screen.
+ */
+export const COMPARISON_VERDICTS = ["same", "differed"] as const;
+export type ComparisonVerdict = (typeof COMPARISON_VERDICTS)[number];
+
+/**
+ * The posting states that CLOSE the question, mirrored from the server's own
+ * `COMPARISON_CLOSED_STATUSES` (`routes/rcm/remittances.js`).
+ *
+ * Money has reached the chart, so the hand-posting this was a comparison against
+ * is over. `failed`, `blocked` and retired are deliberately absent: nothing
+ * reached a chart in any of them, so the question is still live.
+ *
+ * Mirrored rather than fetched because it decides whether a BUTTON renders, and
+ * a screen that had to ask the server what its own control does would show the
+ * wrong thing for one round trip. The server is the authority — it refuses with
+ * COMPARISON_CLOSED regardless of what this list says.
+ */
+export const COMPARISON_CLOSED_STATUSES: readonly string[] = ["posted", "partially_posted"];
+
+/**
+ * What was off. A closed set, enforced by a CHECK constraint —
+ * `migrations-tenant/1787900000000_rcm_shadow_comparison.js`.
+ *
+ * Four of the five name a figure the app works out; the fifth is the case where
+ * it was looking at the wrong thing entirely. The note is required on ALL of
+ * them, not only on `other`: "the payment amount" without the two figures is a
+ * report nobody can act on three weeks later.
+ */
+export const COMPARISON_REASONS = [
+  "payment_amount",
+  "write_off",
+  "patient_portion",
+  "wrong_target",
+  "other",
+] as const;
+export type ComparisonReason = (typeof COMPARISON_REASONS)[number];
+
+/**
+ * What each one means, in the words a biller would use to say it out loud.
+ *
+ * No "error", no "mistake", no "inaccurate". She is reporting what the software
+ * did, and the software is the thing under examination here — copy that framed
+ * it as fault-finding would make the honest answer feel like a complaint.
+ */
+export const COMPARISON_COPY: Record<ComparisonReason, { label: string; hint: string }> = {
+  payment_amount: {
+    label: "The payment amount",
+    hint: "What the app had the insurance paying was not what you put in.",
+  },
+  write_off: {
+    label: "A write-off",
+    hint: "The amount the office absorbed, or whether there was one at all.",
+  },
+  patient_portion: {
+    label: "The patient's number",
+    hint: "What the app said the patient would end up owing.",
+  },
+  wrong_target: {
+    label: "The wrong claim or the wrong patient",
+    hint: "The figures may have been fine; they were going to the wrong place.",
+  },
+  other: {
+    label: "Something else",
+    hint: "Anything the four above do not cover.",
   },
 };
 
@@ -2385,6 +2489,101 @@ export function restoreRemittance(
   batchId: string,
 ): Promise<{ batchId: string; setAside: boolean; wasSetAside: boolean }> {
   return post(`/remittances/${encodeURIComponent(batchId)}/restore`, { office }, {});
+}
+
+/**
+ * "DID THE APP GET THIS CHECK RIGHT?" — the shadow-mode comparison (C-2).
+ *
+ * `differed` carries both a reason and a line in her own words; `same` carries
+ * neither, and the server refuses a `same` that arrives with either rather than
+ * quietly dropping them.
+ *
+ * Changeable until the check posts. Re-sending the SAME answer is a 200 that
+ * writes nothing (`recorded: false`), so a double-click cannot inflate the
+ * count of how many times a check was answered.
+ *
+ * It reaches no chart, moves no money and changes no posting state — it is on
+ * the `rcm.queue` tier, beside marking a claim checked over.
+ */
+export function recordComparison(
+  office: RcmOfficeId,
+  batchId: string,
+  answer:
+    | { verdict: "same" }
+    | { verdict: "differed"; reason: ComparisonReason; note: string },
+): Promise<{
+  batchId: string;
+  verdict: ComparisonVerdict;
+  reason: string | null;
+  revision: number;
+  recorded: boolean;
+}> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/comparison`, { office }, answer);
+}
+
+/**
+ * The running count under the ask.
+ *
+ * Counts and one date — no notes and no per-check rows. `matchedRun` is how many
+ * of the most recent answers in a row came out the same, which is the number the
+ * decision to switch posting on is actually made from.
+ */
+export interface ComparisonTally {
+  office: RcmOfficeId;
+  compared: number;
+  same: number;
+  differed: number;
+  matchedRun: number;
+  /** The newest check that did not match, or null when none has. */
+  latestDifference: { reason: ComparisonReason | string | null; at: string | null } | null;
+}
+
+export function getComparisonTally(office: RcmOfficeId): Promise<ComparisonTally> {
+  return get("/comparison/tally", { office });
+}
+
+/**
+ * The whole picture, for whoever is deciding to switch posting on.
+ *
+ * `rcm.settings` — admin only, the same tier as the switch itself, so the read
+ * is absent rather than greyed for everybody else.
+ *
+ * `from` and `to` are inclusive `YYYY-MM-DD` in the office's own timezone and
+ * bound `compared`/`same`/`differed`/`differences`. `matchedRun` and
+ * `comparedAllTime` deliberately do NOT respect them: a run of matching checks
+ * that a start date happens to cut in half is not a run.
+ */
+export interface ComparisonSummary {
+  office: RcmOfficeId;
+  from: string | null;
+  to: string | null;
+  compared: number;
+  same: number;
+  differed: number;
+  matchedRun: number;
+  comparedAllTime: number;
+  differences: {
+    batchId: string;
+    checkNumber: string | null;
+    payer: string | null;
+    depositDate: string | null;
+    reason: ComparisonReason | string | null;
+    note: string | null;
+    answeredAt: string | null;
+    answeredBy: string | null;
+    /** Above 1 means the answer on this check was changed after it was first given. */
+    revision: number;
+  }[];
+}
+
+export function getComparisonSummary(
+  office: RcmOfficeId,
+  range: { from?: string; to?: string } = {},
+): Promise<ComparisonSummary> {
+  const params: Record<string, string> = { office };
+  if (range.from) params.from = range.from;
+  if (range.to) params.to = range.to;
+  return get("/comparison/summary", params);
 }
 
 /**

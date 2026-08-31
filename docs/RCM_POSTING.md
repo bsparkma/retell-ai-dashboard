@@ -8,15 +8,15 @@ through the forced call sequence `docs/RCM_OD_WRITES.md` proved live on
 | | |
 | --- | --- |
 | Routes (UI) | `/rcm/posting` |
-| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain`, `GET /api/rcm/remittances/:id/recoupment`, `POST /api/rcm/remittances/:id/approve-recoupment`, `POST /api/rcm/posting/queue/:id/attach-document`, **`GET/PUT /api/rcm/office-settings/:office`** |
+| Routes (API) | `GET /api/rcm/posting/queue`, `GET /api/rcm/posting/queue/:id`, `POST /api/rcm/posting/drain`, `GET /api/rcm/remittances/:id/recoupment`, `POST /api/rcm/remittances/:id/approve-recoupment`, `POST /api/rcm/posting/queue/:id/attach-document`, **`GET/PUT /api/rcm/office-settings/:office`**, **`POST /api/rcm/remittances/:id/comparison`**, **`GET /api/rcm/comparison/tally`**, **`GET /api/rcm/comparison/summary`** |
 | Entitlement | `requireModule('rcm')` — ships dark; no tenant is entitled yet |
-| Permission | `rcm.read` for the queue, **`rcm.post` for the drain, the withdrawal and the document retry**, **`rcm.settings` (admin only) for the shadow-gate switch** (D-9 + §2.5) |
+| Permission | `rcm.read` for the queue, **`rcm.post` for the drain, the withdrawal and the document retry**, **`rcm.settings` (admin only) for the shadow-gate switch and the comparison summary**, **`rcm.queue` for recording a comparison** (D-9 + §2.5 + §2.6) |
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Offices enabled | **roland only.** valley is fail-closed (D-7, §9) |
 | Shadow gate | **Both offices ship switched OFF** (`rcm_office_settings.drain_enabled`). Roland clears the code ceiling and still cannot write to a chart until an admin flips it — §2.5 |
-| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) — all additive only |
-| Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`services/rcm/postingGate.js`](../backend/services/rcm/postingGate.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`routes/rcm/officeSettings.js`](../backend/routes/rcm/officeSettings.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx), [`pages/admin/RcmPostingSettingsCard.tsx`](../new-dashboard/client/src/pages/admin/RcmPostingSettingsCard.tsx) |
-| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)** |
+| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) + **`1787900000000_rcm_shadow_comparison.js`** (the comparison, C-2) — all additive only |
+| Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`services/rcm/postingGate.js`](../backend/services/rcm/postingGate.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`routes/rcm/officeSettings.js`](../backend/routes/rcm/officeSettings.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx), [`pages/admin/RcmPostingSettingsCard.tsx`](../new-dashboard/client/src/pages/admin/RcmPostingSettingsCard.tsx), [`routes/rcm/comparison.js`](../backend/routes/rcm/comparison.js), [`components/rcm/CheckComparison.tsx`](../new-dashboard/client/src/components/rcm/CheckComparison.tsx), [`pages/admin/RcmShadowComparisonCard.tsx`](../new-dashboard/client/src/pages/admin/RcmShadowComparisonCard.tsx) |
+| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)**, **`shadowComparison.test.js` (25)**, **`rcm-shadow-comparison.test.tsx` (18)**, `rcm-plain-language.test.ts` (7) |
 
 ---
 
@@ -456,6 +456,136 @@ VCC merchant fee). `drain_updated_at` is distinct from the table's own
 `updated_at` on purpose: *"when was posting last switched"* is not *"when did
 this row last change"*, and answering the first with the second would date the
 gate to whenever somebody last edited a merchant fee.
+
+### 2.6 The shadow-mode comparison — "did the app get this check right?" (C-2)
+
+**The shadow period exists to answer one question, and until now nothing in the
+product recorded the answer.**
+
+§2.5 buys several weeks in which a real biller works real remittances to
+`approved` while a chart write stays impossible, and posts the same money by hand
+in Open Dental. The point of that period is whether what this app worked out
+matches what she would have done. The go-live plan answered it with a
+**hand-maintained CSV** — which asks a tired person at 9pm to do bookkeeping
+about her own work, and the first thing that gets dropped is the record, not the
+work. The decision to switch posting on then rests on somebody's impression.
+
+C-2 replaces that with **one click at the moment she already knows the answer**,
+and turns the exit criterion from a conversation into a number.
+
+#### The capture
+
+Beneath the shadow panel on a check that has been **approved while posting is
+switched off** (`components/rcm/CheckComparison.tsx`):
+
+> **Did the app get this check right?**
+> You're the check on the app right now. Say so either way — it takes one click
+> and it's how posting eventually gets switched on.
+> **[ Yes — same as I did by hand ] [ No — something was off ]**
+
+*Yes* records and is done. *No* opens an **inline form, never a modal** — the
+figures she is comparing against are three inches up the same page — carrying a
+closed list of five and a **required** line in her own words:
+
+| Slug | What she reads |
+| --- | --- |
+| `payment_amount` | The payment amount |
+| `write_off` | A write-off |
+| `patient_portion` | The patient's number |
+| `wrong_target` | The wrong claim or the wrong patient |
+| `other` | Something else |
+
+The note is required for **every** slug, unlike `set_aside_reason` which demands
+it only on `other`: a set-aside's slug is usually the whole story, and *"the
+payment amount"* without the two figures is a defect report nobody can act on
+three weeks later.
+
+Beneath it, the running tally in her words — *"So far: 18 checks compared, you
+marked 17 the same and 1 off (the payment amount, Aug 22)."*
+
+#### The rules
+
+- **Changeable until the check posts.** She may have said *the same* and found the
+  difference an hour later; refusing the second answer would leave the record
+  saying the opposite of what she now knows. A change advances
+  `comparison_revision` and files a second `audit_log` row — it is **recorded,
+  never a silent overwrite**. Re-sending an identical answer is a 200 that writes
+  nothing (`recorded: false`), so a double-click cannot make the summary claim a
+  check was answered twice.
+- **`posted` and `partially_posted` close it** (`COMPARISON_CLOSED`, 409). Money
+  is on the chart, so there is no hand posting left to compare against. `failed`,
+  `blocked` and `withdrawn` do **not** close it — nothing reached a chart in any
+  of them, and a retired check in particular *will* be posted by hand.
+- **A check nobody has approved cannot be answered** (`COMPARISON_NOT_APPROVED`,
+  409): the app has not yet said what it would do.
+- **`rcm.queue`** (D-9) — the tier that marks a claim reviewed and parks a check.
+  Registered in `QUEUE_PATHS` with its own `requirePermission`, so a `reviewer`
+  reaches it.
+
+#### It cannot affect posting, and that is proved rather than promised
+
+Nothing `postingDrain` reads lives on these columns. `shadowComparison.test.js`
+drives the **real** posting run twice against two databases identical but for one
+thing — the first has an answer recorded **through the real HTTP route**, the
+second has none — and compares the Open Dental call transcript, in order, and the
+rows each run left. Recording the answer through the route rather than seeding it
+is §15.1a's rule: a hand-written fixture would be a claim about what the route
+stores, and the place a real coupling would hide.
+
+#### The summary — Admin → Offices, directly beneath the switch
+
+`GET /api/rcm/comparison/summary?office=&from=&to=`, **`rcm.settings` (admin
+only)** — the same tier as the switch it informs, so the card is *absent* rather
+than greyed for everybody else. No new nav item, no chart, no dashboard: an exit
+criterion kept on a page of its own is one nobody reads before pressing.
+
+**The number that matters is `matchedRun`** — how many of the most recent answers
+in a row came out the same — and it is deliberately **not a proportion**. Nine
+matching checks followed by one that differed averages the same as one that
+differed followed by nine matching, and they mean opposite things. `matchedRun`
+and `comparedAllTime` are computed over the whole practice and ignore `from`/`to`:
+a run that a start date happens to cut in half is not a run.
+
+The run is **not shown to the biller at all**. It is a streak, and a streak is a
+thing people protect rather than report against.
+
+#### What is deliberately not built
+
+No scoring, no percentage, no badge, no "accuracy" language, and no automatic
+comparison of the app's figures against Open Dental — that is the confirmation
+the posting run already does, and it does not run in shadow. **She is checking
+the software; she is not being graded.** If the copy ever reads as a measurement
+of her, the honest answer starts to carry a cost, and the honest answer is the
+only product of the shadow period.
+
+That rule is a **test**, not an intention: `rcm-plain-language.test.ts` carries a
+second, tighter banned list (`accuracy`, `score`, `grade`, `correct/incorrect`,
+`streak`, percentages) over `CheckComparison.tsx`, `features/rcm/comparison.ts`
+and `RcmShadowComparisonCard.tsx`. It is scoped to those files rather than added
+to the module-wide list because three of those words are **right** elsewhere here
+— `score` is what the Open Dental matcher produces, and *"the payment itself
+posted correctly"* is about a payment rather than a person. A test below fails if
+one of the three files is renamed, because a guard pointed at a path that no
+longer exists passes forever.
+
+#### Endpoints
+
+| | |
+| --- | --- |
+| `POST /api/rcm/remittances/:id/comparison` | `{ verdict: 'same' }` or `{ verdict: 'differed', reason, note }` — `rcm.queue` |
+| `GET /api/rcm/comparison/tally` | counts + `matchedRun` + the newest difference's slug and day — `rcm.queue` |
+| `GET /api/rcm/comparison/summary` | the above plus every difference with its note — **`rcm.settings`** |
+
+Refusals: `COMPARISON_VERDICT_REQUIRED` 400 · `COMPARISON_SAME_TAKES_NO_REASON`
+400 · `COMPARISON_REASON_REQUIRED` 400 · `COMPARISON_NOTE_REQUIRED` 400 ·
+`NOTE_TOO_LONG` 400 · `REMITTANCE_NOT_FOUND` 404 · `COMPARISON_NOT_APPROVED` 409
+· `COMPARISON_CLOSED` 409.
+
+Migration `1787900000000_rcm_shadow_comparison.js`, additive on
+`rcm_payment_batches`: `comparison_verdict`, `comparison_reason`,
+`comparison_note`, `comparison_by` (FK `rcm_user_map` RESTRICT, D-5),
+`comparison_at`, `comparison_revision` (`integer NOT NULL DEFAULT 0`), plus a
+partial index on `(office_id, comparison_at) WHERE comparison_at IS NOT NULL`.
 
 ---
 
@@ -3170,6 +3300,66 @@ into a column.
 `skipped_already_posted` line, because it restores the Slice 1 vocabularies.
 Silently rewriting a refusal to make a rollback succeed would erase the fact that
 a human still owes an action.
+
+### C-2 — `1787900000000_rcm_shadow_comparison.js`
+
+Rehearsed 2026-08-31 on a throwaway `postgres:17`. `up` (all) → objects present →
+**every CHECK exercised in both directions** → `down 1` over a row that HAD an
+answer → `up` again → `down` all the way, clean.
+
+Objects, as built:
+
+```
+comparison_at       timestamptz  null=YES
+comparison_by       text         null=YES   FK rcm_user_map ON DELETE RESTRICT (confdeltype 'r')
+comparison_note     text         null=YES
+comparison_reason   text         null=YES
+comparison_revision integer      null=NO    default 0
+comparison_verdict  text         null=YES
+CREATE INDEX rcm_payment_batches_comparison_idx ON rcm_payment_batches (office_id, comparison_at)
+  WHERE comparison_at IS NOT NULL
+```
+
+**Twelve refusals and nine allowances**, because a constraint that refuses
+everything is as wrong as one that refuses nothing:
+
+```
+REFUSED
+  a stamp + an actor with NO verdict   <- THE TRAP §15 is about   -> comparison_check
+  a verdict with no stamp and no actor                            -> comparison_check
+  differed with a reason but NO note                              -> comparison_check
+  differed with a note but NO reason                              -> comparison_check
+  same CARRYING a reason                                          -> comparison_check
+  same CARRYING a note                                            -> comparison_check
+  an answer with revision still 0                                 -> comparison_check
+  an unanswered row carrying a revision                           -> comparison_check
+  an unknown verdict ('mostly')                                   -> comparison_check
+  an unknown reason ('vibes')                                     -> comparison_reason_check
+  an answer with no actor                                         -> comparison_check
+  an actor key not in the crosswalk                               -> comparison_by_fkey
+
+ALLOWED
+  UNANSWERED — every column null, revision 0
+  same, with stamp + actor + revision 1
+  differed, with BOTH the reason and the note
+  a CHANGED answer — revision 3
+  each of the five reasons in turn
+```
+
+**The first refusal is the whole reason this step exists.** Written the short way
+— `comparison_verdict = 'same' AND …` with no leading `IS NOT NULL` — that row
+yields `FALSE OR NULL OR FALSE = NULL`, and **Postgres accepts a CHECK that
+evaluates to NULL**. It would have been a constraint over nothing, and the unit
+doubles could not have told anybody, because a fake accepts what it is handed.
+Second time §15's rehearsal has caught exactly this. Do not shorten it.
+
+`down` rolls back over live answered rows deliberately (1787500000000's
+reasoning): nothing here is a status, so dropping the columns returns every row
+to a state the schema already understood. Verified: 0 columns, 0 constraints and
+0 indexes left, the check row itself survives at `status: ready`, and the
+neighbouring `parked_at` / `set_aside_reason` columns are untouched. `up` again
+restores all six — with the answer gone, which is the honest cost the migration's
+`down` comment names rather than hides.
 
 ---
 
