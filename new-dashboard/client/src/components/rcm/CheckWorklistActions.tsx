@@ -38,6 +38,25 @@
  *
  * Saving for tomorrow asks for nothing. The friction of demanding a sentence at
  * 4:55pm is exactly the friction that would stop anybody saving anything.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * BOTH PANELS ARE ANCHORED, AND NEITHER IS A MODAL (Stage C, §8)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * They open in the normal flow, directly under the button that raised them, and
+ * they push the page down rather than sitting on top of it. That is the design's
+ * point and it is not a stylistic preference:
+ *
+ * **NEITHER MAY COVER THE CLAIM LIST UNDERNEATH.** Deciding to set a check aside
+ * is deciding about the claims on it — "the claims aren't in Open Dental any
+ * more" is a claim about rows a modal would have just hidden. A dialog that
+ * covers its own evidence asks somebody to decide from memory.
+ *
+ * So: no `position: fixed`, no `absolute`, no overlay, no portal. The claim list
+ * stays where it is, below, and stays readable while the panel is open.
+ * `tests/rcm-stage-c.test.tsx` asserts that STRUCTURALLY — the panel carries no
+ * out-of-flow positioning and the claim list follows it in document order —
+ * rather than by measuring pixels, which would pass on a layout that had gone
+ * wrong in a browser nobody ran the test in.
  */
 import { useState } from "react";
 import { AlertTriangle, Bookmark, BookmarkX, Loader2, Undo2, XCircle } from "lucide-react";
@@ -184,9 +203,10 @@ export default function CheckWorklistActions({
           data-testid="check-park-dialog"
         >
           <p className="text-sm text-muted-foreground">
-            This check stays in every queue it is in — saving it only puts it at the top of Today,
-            under <strong>Where you left off</strong>. Opening it again puts it back on the ordinary
-            pile.
+            Nothing is lost and nothing is hidden. This check stays in every queue it is in —
+            saving it only puts it at the top of Today, under{" "}
+            <strong>Where you left off</strong>, with your line on it. Opening it again puts it
+            back on the ordinary pile.
           </p>
           <label className="mt-2 block text-xs font-medium text-foreground" htmlFor="park-note">
             A line to yourself (optional)
@@ -230,8 +250,13 @@ export default function CheckWorklistActions({
           data-testid="check-set-aside-dialog"
         >
           <p className="text-sm text-muted-foreground">
-            This takes the check out of the attention counts and off Today. Nothing is deleted,
-            nothing is written to a chart, and you or anybody else can put it back in one click.
+            <strong className="font-medium text-foreground">
+              This says nobody is coming back to it.
+            </strong>{" "}
+            It goes out of the attention counts and off Today, and it stops being work anybody is
+            expected to finish. Nothing is deleted, nothing is written to a chart, and you or
+            anybody else can put it back in one click — it keeps its own tab so it is always
+            findable.
           </p>
           <fieldset className="mt-2">
             <legend className="text-xs font-medium text-foreground">Why?</legend>

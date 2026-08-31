@@ -334,6 +334,8 @@ vi.mock("@/contexts/AuthContext", async (importOriginal) => {
 
 import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
+// Stage C: approving is a page of its own (§6).
+import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
 import PostingQueue from "@/pages/rcm/PostingQueue";
 import { OfficeProvider } from "@/contexts/OfficeContext";
@@ -395,9 +397,21 @@ describe("no RCM screen greys a control without saying why", () => {
     expect(unexplainedDisabledControls()).toEqual([]);
   });
 
-  it("the remittance detail, for somebody who cannot approve", async () => {
+  it("the check itself, whatever is greyed on it", async () => {
+    /*
+     * CHANGED BY STAGE C: the approve BUTTON is on its own page now (§6), so
+     * this case split in two. The check still has to explain every control it
+     * greys — the match button while a match is in flight, the pager, whatever
+     * arrives next — and that is what this asserts.
+     */
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    await screen.findByTestId("rcm-remittance-detail");
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("the approve page, for somebody who cannot approve", async () => {
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
     // The gate's own answer, not a role name this test knows.
     const approve = screen.getByTestId("approve-button") as HTMLButtonElement;
     expect(approve.disabled).toBe(true);

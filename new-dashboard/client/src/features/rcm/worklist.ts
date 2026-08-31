@@ -65,6 +65,47 @@ export const SERVER_VIEWS: ReadonlySet<WorklistFilter> = new Set<WorklistFilter>
   "all",
 ]);
 
+/**
+ * THE TABS THE CHECKS PAGE DRAWS — Stage C, §3.
+ *
+ * Four, not eight. The eight-tab strip was a menu of every predicate the module
+ * can express, and a biller reading it had to decide which of *Waiting to be
+ * matched*, *Waiting for your review* and *Ready to post* her check was in
+ * before she could look for it — a taxonomy question standing in front of the
+ * work. Since Stage C every row carries a *Waiting on* cell that says which of
+ * those it is IN WORDS, so the tabs only have to answer the four questions that
+ * are about the LIST rather than about a row:
+ *
+ *   attention   what is waiting on somebody       (the default)
+ *   parked      what I put down on purpose
+ *   set_aside   what nobody is coming back to
+ *   all         everything, set-aside included
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE OTHER FOUR ARE NOT DELETED, AND THAT IS DELIBERATE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `match`, `review`, `approve` and `blocked` stay in `WORKLIST_FILTERS`: Today's
+ * *How it stands* cards link straight into them, `countByFilter` counts them,
+ * and somebody may hold a `?view=blocked` link from a fortnight ago. A URL that
+ * used to work and now silently shows everything is worse than one extra chip.
+ *
+ * So the page renders these four as TABS and, when the filter in hand is one of
+ * the other four, renders it as a fifth chip beside them with a way back — the
+ * "a filter with nothing in it always offers a way out" rule (§11), applied to
+ * the filter rather than to the empty result.
+ *
+ * These four are exactly `SERVER_VIEWS`, and not by coincidence: they are the
+ * populations the route pages and counts over the whole office
+ * (`REMITTANCE_VIEWS` in `routes/rcm/remittances.js`), so every tab count on
+ * this page is a whole-practice number rather than a number over a page.
+ */
+export const CHECK_TABS: readonly WorklistFilter[] = Object.freeze([
+  "attention",
+  "parked",
+  "set_aside",
+  "all",
+] as const);
+
 export function isWorklistFilter(value: string | null): value is WorklistFilter {
   return value !== null && (WORKLIST_FILTERS as readonly string[]).includes(value);
 }

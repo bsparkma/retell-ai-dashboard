@@ -56,6 +56,7 @@ import {
 import { money } from "@/features/rcm/format";
 import { QUEUE_STATE_COPY, SHADOW_MODE_COPY, queueStateTone } from "@/features/rcm/posting";
 import { officeStamp } from "@/features/rcm/time";
+import { PostedOutcome, StuckAfterPosting } from "@/components/rcm/PostedOutcome";
 
 /**
  * The states the server will actually accept a press for.
@@ -85,11 +86,25 @@ export default function PostThisCheck({
   office,
   queueId,
   onPosted,
+  batchId = null,
+  nextClaimId = null,
+  remaining = 0,
 }: {
   office: RcmOfficeId;
   queueId: string;
   /** Re-read the check, so its rail and its claims catch up with the chart. */
   onPosted: () => void;
+  /**
+   * The check this posting belongs to, and what is left on it (Stage C, §7).
+   *
+   * All three OPTIONAL and all three default to the reading that offers
+   * nothing: this component is rendered from the check's own page, which knows
+   * them, and `tests/rcm-shell.test.tsx` renders it bare, which does not. A
+   * "Next claim" button pointing at nothing would be worse than no button.
+   */
+  batchId?: string | null;
+  nextClaimId?: string | null;
+  remaining?: number;
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [posting, setPosting] = useState(false);
@@ -251,8 +266,19 @@ export default function PostThisCheck({
           : copy.hint}
       </p>
 
-      {/* ── WHAT ACTUALLY HAPPENED, in place ──────────────────────────────── */}
-      {plan.odClaimPaymentNum != null && (
+      {/*
+        ── WHAT ACTUALLY HAPPENED, in place ──────────────────────────────────
+        SUPPRESSED on the two ENDINGS below, which say it better and in the
+        right order. On a STUCK check in particular this block was appearing
+        ABOVE "the payment did reach Open Dental — do not enter it again", in a
+        calm green, repeating the same payment number. §7 puts that sentence
+        first and loudest for a reason: a biller who re-enters the payment has
+        paid a claim twice and nothing here can take it back, and a reassuring
+        green box above it is exactly what makes a warning skimmable.
+      */}
+      {plan.odClaimPaymentNum != null &&
+        plan.statusLabel !== "posted" &&
+        plan.status !== "partially_posted" && (
         <div
           className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/15"
           data-testid="post-this-check-proof"
@@ -272,23 +298,46 @@ export default function PostThisCheck({
         </div>
       )}
 
-      {/* THE EOB LINE — its own axis, and `none` is an answer rather than a
-          failure: an 835 is not a document anybody would open, so there was
-          nothing to file and the server says so. */}
-      {plan.documentAttachStatus && (
-        <p
-          className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"
-          data-testid="post-this-check-eob"
-        >
-          <FileCheck2 size={12} />
-          {plan.documentAttachStatus === "attached"
-            ? "The EOB was filed into each patient's chart."
-            : plan.documentAttachStatus === "partial"
-              ? "The EOB was filed into some patients' charts and not others. The Posting screen says which."
-              : plan.documentAttachStatus === "failed"
-                ? "The EOB could not be filed. The payment itself is unaffected."
-                : "No EOB to file — this check came in as an 835, which is not a document anybody would open."}
-        </p>
+      {/*
+        ── THE TWO ENDINGS (Stage C, §7) ─────────────────────────────────────
+        A finished check and a check whose patient balance came back wrong were
+        the same panel with different text in it, and the second one is the most
+        consequential screen in this product. `PostedOutcome.tsx` gives each its
+        own shape — and puts "the payment DID land, do not enter it again" first
+        and loudest on the second, because a biller who re-enters it has paid a
+        claim twice and nothing here can take that back.
+      */}
+      {plan.statusLabel === "posted" ? (
+        <PostedOutcome
+          detail={state.detail}
+          office={office}
+          batchId={batchId}
+          nextClaimId={nextClaimId}
+          remaining={remaining}
+        />
+      ) : plan.status === "partially_posted" ? (
+        <StuckAfterPosting detail={state.detail} office={office} batchId={batchId} />
+      ) : (
+        /* THE EOB LINE — its own axis, and `none` is an answer rather than a
+           failure: an 835 is not a document anybody would open, so there was
+           nothing to file and the server says so. On the two ENDINGS above it
+           is folded into their own copy, where it belongs beside the rest of
+           what did or did not land. */
+        plan.documentAttachStatus && (
+          <p
+            className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"
+            data-testid="post-this-check-eob"
+          >
+            <FileCheck2 size={12} />
+            {plan.documentAttachStatus === "attached"
+              ? "The EOB was filed into each patient's chart."
+              : plan.documentAttachStatus === "partial"
+                ? "The EOB was filed into some patients' charts and not others. The posting history says which."
+                : plan.documentAttachStatus === "failed"
+                  ? "The EOB could not be filed. The payment itself is unaffected."
+                  : "No EOB to file — this check came in as an 835, which is not a document anybody would open."}
+          </p>
+        )
       )}
 
       {pressError && (
@@ -301,7 +350,7 @@ export default function PostThisCheck({
         </div>
       )}
 
-      {plan.lastError && plan.statusLabel !== "posted" && (
+      {plan.lastError && plan.statusLabel !== "posted" && plan.status !== "partially_posted" && (
         <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="post-this-check-last-error">
           {plan.lastError}
         </p>

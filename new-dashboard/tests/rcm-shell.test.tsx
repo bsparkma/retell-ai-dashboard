@@ -335,10 +335,26 @@ describe("the module is ordered around the day", () => {
 
   it("puts Today first and lands /rcm on it", async () => {
     const items = await rcmNavItems();
-    // Today → Checks → Posting → History. A biller's morning, not the order the
-    // slices shipped in — which is what put the module's front door at the
-    // bottom of its own nav.
-    expect(items.map((i) => i.label)).toEqual(["Today", "Checks", "Posting", "Takeback SOP"]);
+    /*
+     * CHANGED BY STAGE C. Two things moved and the reasons are different:
+     *
+     *   BRING IN is new and first-class after Checks — the module's one upload
+     *   surface became a page of its own (ruling D-16), because Today is what a
+     *   biller reads to find out what is waiting on her and it opened with two
+     *   drop zones in front of that.
+     *
+     *   POSTING → POSTING HISTORY. The design dropped the screen; the PM ruling
+     *   is to keep it, demote it below the working screens, and rename it
+     *   honestly. It is where an office-wide post lives, where a stuck run is
+     *   retried, and where anybody debugging at 9pm looks.
+     */
+    expect(items.map((i) => i.label)).toEqual([
+      "Today",
+      "Checks",
+      "Bring in",
+      "Posting history",
+      "Takeback SOP",
+    ]);
     expect(items[0].path).toBe("/rcm");
   });
 
@@ -391,7 +407,15 @@ describe("there is exactly one place to add a check", () => {
       if (file === "EobUploadPanel.tsx" || file === "EraUploadPanel.tsx") continue;
       if (/from "\.\/(Eob|Era)UploadPanel"/.test(src)) importers.push(file);
     }
-    expect(importers).toEqual(["RcmToday.tsx"]);
+    /*
+     * CHANGED BY STAGE C — the ASSERTION MOVED, the RULE DID NOT.
+     *
+     * Stage A put the one door on Today. Stage C moved it to a page of its own
+     * (ruling D-16) and this test now points there. What it asserts is
+     * unchanged and is the whole point: exactly ONE page in this module may
+     * import an upload panel, so a third door cannot appear without a red test.
+     */
+    expect(importers).toEqual(["BringIn.tsx"]);
   });
 
   it("the Checks page's button navigates to that one surface rather than opening its own", async () => {
@@ -400,7 +424,13 @@ describe("there is exactly one place to add a check", () => {
     renderAt(<RemittanceList />, "/rcm/remittances");
 
     const button = await screen.findByTestId("remittance-upload-toggle");
-    expect(button.getAttribute("href")).toBe("/rcm?add=1");
+    /*
+     * CHANGED BY STAGE C. It pointed at `/rcm?add=1` — Today's upload section,
+     * scrolled to. The section is a page now, so the button points at the page.
+     * `/rcm?add=1` still works: Today redirects it here rather than silently
+     * doing nothing, which is what a stale bookmark deserves.
+     */
+    expect(button.getAttribute("href")).toBe("/rcm/bring-in");
     expect(screen.queryByTestId("remittance-upload-panels")).toBeNull();
   });
 });
@@ -517,7 +547,12 @@ describe("set aside", () => {
     });
     const banner = await screen.findByTestId("check-set-aside-banner");
     expect(banner.textContent).toContain("Set aside");
-    expect(banner.textContent).toContain("The claims are gone from Open Dental");
+    /*
+     * CHANGED BY STAGE C — the LABEL was reworded (§8), the SLUG was not.
+     * `target_gone` is still exactly what is stored and still the case the
+     * whole feature was built for; only the words a person reads changed.
+     */
+    expect(banner.textContent).toContain("The claims aren't in Open Dental any more");
     // It says out loud that nothing was destroyed — the reason it is safe to press.
     expect(banner.textContent).toContain("not out of the records");
   });
@@ -689,13 +724,36 @@ describe("posting one check", () => {
     renderBare(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
 
     expect((await screen.findByTestId("post-this-check-state")).textContent).toBe("Finished");
-    expect(screen.getByTestId("post-this-check-proof").textContent).toContain("21436");
-    expect(screen.getByTestId("post-this-check-readback").textContent).toContain(
-      "Confirmed in Open Dental",
+    /*
+     * CHANGED BY STAGE C — the PROOF moved into "What landed in Open Dental".
+     *
+     * The generic proof block is suppressed on the two ENDINGS (§7), which say
+     * it better and in the right order. On a FINISHED check the payment number
+     * is one row of the landed table; on a STUCK one it was appearing above
+     * "the payment did reach Open Dental — do not enter it again", in a calm
+     * green, repeating the same number — which is exactly what makes a warning
+     * skimmable.
+     *
+     * Both facts are still asserted: the number, and the confirmed register.
+     */
+    expect(screen.getByTestId("posted-payment-num").textContent).toContain("21436");
+    expect(screen.getByTestId("posted-verdict").textContent).toContain("Confirmed in Open Dental");
+    /*
+     * CHANGED BY STAGE C — the EOB line MOVED, its meaning did not.
+     *
+     * On a FINISHED check it is now one row of *What landed in Open Dental*
+     * (§7), beside the payment number, the write-offs and the balance, because
+     * that is the question it answers. On every other state it is still its own
+     * line under the panel.
+     *
+     * `none` is still an ANSWER — examined, nothing to file — and still never
+     * reads as a failure.
+     */
+    expect(screen.getByTestId("posted-landed").textContent).toContain("No EOB to file");
+    // And the register is named: this figure was measured, not calculated.
+    expect(screen.getByTestId("posted-register").textContent).toContain(
+      "Read out of the chart after posting",
     );
-    // The EOB axis. `none` is an ANSWER — examined, nothing to file — and never
-    // reads as a failure.
-    expect(screen.getByTestId("post-this-check-eob").textContent).toContain("No EOB to file");
     // And no button at all: there is nothing left to press on a finished check.
     expect(screen.queryByTestId("post-this-check-button")).toBeNull();
   });

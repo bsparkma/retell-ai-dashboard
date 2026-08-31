@@ -27,8 +27,10 @@ import AdminUsers from "./pages/AdminUsers";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmToday from "./pages/rcm/RcmToday";
+import BringIn from "./pages/rcm/BringIn";
 import RemittanceList from "./pages/rcm/RemittanceList";
 import RemittanceDetail from "./pages/rcm/RemittanceDetail";
+import ApproveCheck from "./pages/rcm/ApproveCheck";
 import ClaimMatch from "./pages/rcm/ClaimMatch";
 import PostingQueue from "./pages/rcm/PostingQueue";
 import TakebackSop from "./pages/rcm/TakebackSop";
@@ -127,7 +129,15 @@ export function Router() {
             first item in the nav and the first screen of a biller's morning.
             Everything else in this module is reachable from it. */}
         <Route path="/rcm" component={RcmToday} />
+        {/* BRING IN — the module's ONE upload surface (ruling D-16). Today's
+            card, the Checks page's button and every empty state navigate here,
+            and `tests/rcm-shell.test.tsx` fails if a second page grows one. */}
+        <Route path="/rcm/bring-in" component={BringIn} />
         <Route path="/rcm/remittances" component={RemittanceList} />
+        {/* APPROVING IS A PAGE (§6). More specific route FIRST — wouter
+            matches in order, and `/rcm/remittances/:id` would otherwise swallow
+            `/rcm/remittances/:id/approve` and render the check instead. */}
+        <Route path="/rcm/remittances/:id/approve" component={ApproveCheck} />
         <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
         <Route path="/rcm/claims/:id" component={ClaimMatch} />
         {/* Slice 6c — the posting queue and the one button in this product that

@@ -1196,6 +1196,89 @@ const PLAN_QUERIES = {
  * came out wrong needs the record more than one that came out right, and a
  * screen that could only show the good ones would be the worst kind of honest.
  */
+/**
+ * ONE POSTED LINE, AS `verdictFor`'s CONFIRMED REGISTER WANTS IT.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS A FUNCTION AND NOT AN INLINE MAP
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It was inline, in the drain's `confirm_patient` step, and it had exactly one
+ * caller. Stage C added a second: `POST /posting/:id/recheck`, the READ-ONLY
+ * re-confirmation a biller presses on a check that came back stuck.
+ *
+ * Two callers assembling the same shape by hand is how a chart-derived figure
+ * and a frozen one drift apart, and the drift would be invisible — both screens
+ * would print a confident sentence and one of them would be measuring the wrong
+ * thing. So the assembly is here, once, and the re-check reads it rather than
+ * copying it.
+ *
+ * **Nothing about the drain's behaviour changed when this moved.** It is the
+ * same expression, the same order, the same fields; `postingDrain.test.js` and
+ * the B2 confirmation tests pin it either way.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE PROMISE COMES FROM THE APPROVE, NOT FROM THE CHART
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `intended_patient_cents` is R exactly as it was approved. The three carrier
+ * numbers below are only the fallback for a plan approved before that column
+ * existed — and they are derived from the chart's own `FeeBilled`, which is
+ * precisely the figure a person can edit between the approve and the press.
+ * Where the frozen value exists it wins, so a moved fee shows up as a
+ * disagreement instead of quietly redefining what was promised. A confirmation
+ * that cannot disagree is not a confirmation.
+ *
+ * @param {object} line the posting line, as `loadPlan` returns it
+ * @param {object|null} row the claimproc read back from Open Dental, or null
+ *   when this line could not be read — which `verdictFor` reports as
+ *   `line_not_confirmed` rather than as a zero.
+ * @param {number} concessionCents any ledger concession THIS run booked against
+ *   the line, positive. Zero when the office books write-offs in the claimproc's
+ *   own field, or when nothing was decided.
+ * @returns {object} one entry for `verdictFor({ register: 'confirmed' })`
+ */
+function confirmLineFor(line, row, concessionCents) {
+  /*
+   * THE CARRIER'S THREE NUMBERS, RECOVERED FROM THE CHART'S FEE.
+   *
+   * `billed` is Open Dental's own `FeeBilled` — and it is the carrier's billed
+   * amount too, because the gate refuses any claim where the two disagree
+   * (`od_fee_disagrees`). From it: allowed = billed − W and paid = the carrier's
+   * payment, both snapshotted at approve. So R comes out exactly as the
+   * remittance stated it, without this file holding a second copy of it.
+   */
+  const feeCents = row == null ? null : odPostingWrites.dollarsToCents(row.FeeBilled);
+  const decided = Number(line.decidedWriteOffCents) > 0;
+  const measured =
+    row == null
+      ? null
+      : lineDecisions.chartRemainderCents({
+          feeBilledCents: feeCents,
+          insPayAmtCents: odPostingWrites.dollarsToCents(row.InsPayAmt),
+          writeOffCents: odPostingWrites.dollarsToCents(row.WriteOff),
+          adjustmentCents: concessionCents || 0,
+        });
+  return {
+    lineId: line.queueLineId,
+    // The code the chart itself sent to the carrier, so the sentence names a
+    // line the biller can find. A row we could not read names its position
+    // instead of inventing a code.
+    code: row && row.CodeSent ? String(row.CodeSent) : `line ${line.position}`,
+    eobRemainderCents: line.intendedPatientCents,
+    billedCents: feeCents == null ? 0 : feeCents,
+    allowedCents: feeCents == null ? 0 : feeCents - Number(line.intendedWriteOffCents || 0),
+    paidCents: Number(line.intendedInsPayAmtCents || 0),
+    decision: decided ? 'office_writeoff' : 'bill_patient',
+    // The amount frozen at approve, not re-derived: this is what the office
+    // agreed to absorb, whatever the chart has done since.
+    decidedWriteOffCents: line.decidedWriteOffCents,
+    decisionReason: line.decidedReason,
+    decidedBy: line.decidedBy,
+    odClaimProcNum: line.odClaimProcNum,
+    odFeeDeltaCents: 0,
+    confirmedRemainderCents: measured,
+  };
+}
+
 const CONFIRM_QUERIES = Object.freeze({
   recordVerdict:
     `UPDATE rcm_claims SET confirmed_verdict = $3, confirmed_at = now(), updated_at = now() ` +
@@ -3253,61 +3336,13 @@ async function drainRow(ctx, queueId) {
         office,
       });
 
-      const confirmLines = group.lines.map((line) => {
-        const row = rows.find((r) => Number(r.ClaimProcNum) === line.odClaimProcNum);
-        /*
-         * THE CARRIER'S THREE NUMBERS, RECOVERED FROM THE CHART'S FEE.
-         *
-         * `billed` is Open Dental's own `FeeBilled` — and it is the carrier's
-         * billed amount too, because the gate refuses any claim where the two
-         * disagree (`od_fee_disagrees`). From it: allowed = billed − W and paid
-         * = the carrier's payment, both snapshotted at approve. So R comes out
-         * exactly as the remittance stated it, without this file holding a
-         * second copy of the remittance.
-         */
-        const feeCents = row == null ? null : odPostingWrites.dollarsToCents(row.FeeBilled);
-        const decided = Number(line.decidedWriteOffCents) > 0;
-        const measured =
-          row == null
-            ? null
-            : lineDecisions.chartRemainderCents({
-                feeBilledCents: feeCents,
-                insPayAmtCents: odPostingWrites.dollarsToCents(row.InsPayAmt),
-                writeOffCents: odPostingWrites.dollarsToCents(row.WriteOff),
-                adjustmentCents: concessionByLine.get(line.queueLineId) || 0,
-              });
-        return {
-          lineId: line.queueLineId,
-          // The code the chart itself sent to the carrier, so the sentence names
-          // a line the biller can find. A row we could not read names its
-          // position instead of inventing a code.
-          code: row && row.CodeSent ? String(row.CodeSent) : `line ${line.position}`,
-          /*
-           * THE PROMISE COMES FROM THE APPROVE, NOT FROM THE CHART.
-           *
-           * `intended_patient_cents` is R as it was approved. The three carrier
-           * numbers below are only the fallback for a plan approved before that
-           * column existed — and they are derived from the chart's own
-           * `FeeBilled`, which is exactly the figure a person can edit between
-           * the approve and this press. Where the frozen value exists it wins,
-           * so a moved fee shows up as a disagreement instead of quietly
-           * redefining what was promised.
-           */
-          eobRemainderCents: line.intendedPatientCents,
-          billedCents: feeCents == null ? 0 : feeCents,
-          allowedCents: feeCents == null ? 0 : feeCents - Number(line.intendedWriteOffCents || 0),
-          paidCents: Number(line.intendedInsPayAmtCents || 0),
-          decision: decided ? 'office_writeoff' : 'bill_patient',
-          // The amount frozen at approve, not re-derived: this is what the
-          // office agreed to absorb, whatever the chart has done since.
-          decidedWriteOffCents: line.decidedWriteOffCents,
-          decisionReason: line.decidedReason,
-          decidedBy: line.decidedBy,
-          odClaimProcNum: line.odClaimProcNum,
-          odFeeDeltaCents: 0,
-          confirmedRemainderCents: measured,
-        };
-      });
+      const confirmLines = group.lines.map((line) =>
+        confirmLineFor(
+          line,
+          rows.find((r) => Number(r.ClaimProcNum) === line.odClaimProcNum) || null,
+          concessionByLine.get(line.queueLineId) || 0
+        )
+      );
 
       const verdict = lineDecisions.verdictFor({ register: 'confirmed', lines: confirmLines });
       confirmations.push({ claimId: group.lines[0] ? group.lines[0].claimId : null, verdict });
@@ -3798,6 +3833,7 @@ module.exports = {
   PLAN_QUERIES,
   STEPS,
   CONFIRM_QUERIES,
+  confirmLineFor,
   DRAIN_MUTEX,
   DRAIN_STEP_DELAY_ENV,
   MAX_STEP_DELAY_MS,

@@ -49,6 +49,8 @@ by number here, and state the number's text beside it.
 | **D-13** | **DefNums are resolved LIVE, per office, BY NAME — never a numeric constant, ever.** | below |
 | **D-14** | A plan is **immutable once approved**, and so are the decisions snapshotted onto it. | §14.0b, §15.1b |
 | **D-15** | **`blocked` must be drainable.** | below |
+| **D-16** | There is **exactly one upload surface** in the module, and it is a page of its own — `/rcm/bring-in`. Every other screen navigates to it. | §14.0d |
+| **D-17** | The takeback screen explains the reversal in full **before** the mechanism — including that somebody must ring the patient, and that this app will not. **The typed confirmation is unchanged** (D-6). | §14.0d |
 
 ### D-13 — by name, per office, every time
 
@@ -3688,6 +3690,164 @@ reason into Open Dental's claim note is S6**, append-only and probe-first.
 
 ---
 
+### 14.0d The arrangement (Stage C)
+
+> Stage A built the shell, B1 the workbench and the verdict, B2 the drain that
+> posts decided figures and reads the chart back. **None of that arithmetic
+> changed here.** What changed is how it is arranged and what it says.
+
+**Machine names are untouched.** Slugs, columns, enum values, route paths, type
+names — `drain_step`, `canDrain`, `POST /posting/drain`, `withdrawn`,
+`target_gone`, every `WorklistFilter` value. The plain-language guard
+(`tests/rcm-plain-language.test.ts`) still scans every rendered string and its
+**allow-list is still empty**.
+
+| | Was | Is |
+| --- | --- | --- |
+| §1 | Today answered three questions with three NUMBERS | …with three SENTENCES: the next claim by name, what happens next per arrival, one card to the door |
+| §2 | one upload surface, on Today | one upload surface, on **`/rcm/bring-in`** — first-class in the nav (D-16) |
+| §3 | eight tabs; a row of chips naming the server's predicates | four tabs with whole-office counts; a **Waiting on** sentence per row |
+| §4 | a stack of expandable claim cards | a **triage table**, last column *Where the patient stands* |
+| §6 | the gate as a panel among nine other things | **a page** — "Before you say yes." |
+| §7 | one panel, two texts | **two screens**, and the stuck one leads with *do not enter it again* |
+| §11 | "Posting" | **"Posting history"**, demoted below the working screens and kept |
+
+#### The two derivations, each in one place
+
+`features/rcm/nextAction.ts` and `features/rcm/waitingOn.ts`. Both are pure, both
+are driven directly by a test, and both exist for the same reason `flow.ts` does:
+Today's card and the Checks list ask the same question from two chairs, and two
+screens computing it would disagree the first time a state was added.
+
+#### The roll-up is the SUM of the claim verdicts, never a second computation
+
+`features/rcm/rollup.ts`. The approve page prints a row per claim and a totals
+row underneath, on the last screen before an irreversible press. It adds up the
+figures the per-claim verdicts already carry — the same `verdictFor()` result the
+gate judged on, carried out per claim on the approval preview
+(`routes/rcm/approvalGate.js`). Walking the lines again would be a second
+implementation of this module's money: it would agree on the day it was written
+and diverge the first time `verdictFor` learned something.
+`tests/rcm-rollup.test.ts` asserts the identity field by field, summed from the
+verdicts rather than against literals — a literal would be a third computation,
+and the one that quietly stopped tracking the other two.
+
+**A claim with no verdict contributes NOTHING and is counted as `unjudged`,**
+which the page prints. Treating it as zero would let the totals row understate
+what is about to post.
+
+#### §6's second block is load-bearing for a permission decision
+
+*The lines the office chose to absorb* names each write-off with its reason, its
+author and an instant. That is what makes the `rcm.queue` / `rcm.write` split
+honest: a reviewer PROPOSES a write-off and somebody with write authority
+ACCEPTS it, and the accepting screen has to show whose judgement it is. Reduce it
+to a total and the two tiers collapse into one. (PM ruling, 2026-08-30;
+`RCM_APPROVAL_GATE.md` §3.5.)
+
+#### The panels are anchored because they are about the rows underneath
+
+*Save for tomorrow* and *Set aside* open in the normal flow, under the button
+that raised them, and push the claim list down. Deciding to set a check aside is
+deciding ABOUT its claims — *"the claims aren't in Open Dental any more"* is a
+claim about rows a modal would have just hidden.
+
+`tests/rcm-stage-c.test.tsx` asserts it STRUCTURALLY: no out-of-flow positioning
+on the panel or any ancestor, no `role="dialog"`, no portal, and the claim list
+still FOLLOWS the panel in document order. jsdom computes no layout, so a pixel
+assertion would be meaningless — and an element in normal flow cannot cover a
+later sibling, which is the rule itself.
+
+#### The takeback: the explanation moved, the typing did not (D-17)
+
+The panel now leads with what is being reversed, which payment it comes off, the
+carrier's own codes, what it does to the patient's balance, and the one thing
+this app cannot do — *somebody should call them, and this app won't*.
+
+**The typed confirmation is unchanged.** D-6 stands and the design's tick boxes
+were refused: a takeback moves money in the direction nobody expects, and a tick
+box is a click you can make without reading. The typed value keeps its **signed**
+form (existing behaviour wins), and the field's own label now states the form so
+the sign is never something to guess at. `typedTotalExpected` is still rendered
+verbatim from the server.
+
+#### The set-aside vocabulary gained one value, additively
+
+`migrations-tenant/1787800000000_rcm_set_aside_sent_in_error.js` — `sent_in_error`,
+the carrier sent a remittance that should never have been sent at all. **Nothing
+was retired**; `target_gone` in particular is the case the whole feature was built
+for and only its LABEL was reworded.
+
+The CURRENT vocabulary lives on **that** migration and `1787500000000` goes on
+exporting the five IT wrote — a database migrated only that far holds a five-value
+CHECK, and a constant claiming six would be a claim about a schema that does not
+exist. The route and the client copy both read the new one.
+
+`down` **refuses while a row uses the new word**, the same property the
+`withdrawn` rollback has. Rehearsed up → down → up on PostgreSQL 17, with the
+refusal exercised and the constraint's own `pg_get_constraintdef` read at each
+step.
+
+#### §7's re-check: a READ, and structurally so
+
+`POST /api/rcm/posting/:id/recheck`. Before it existed, the only way to ask
+whether a stuck check's balance was right NOW was to press Post again, because
+the confirmation ran inside the post. *"Press the one button that writes to a
+chart, in order to read"* is a sentence this project keeps deleting.
+
+- Two Open Dental verbs, **both GETs**, both audited as READs.
+- **Writes nothing** — not a chart, not the plan's status, not
+  `rcm_claims.confirmed_verdict`. `postingRecheck.test.js` asserts the fake's
+  write transcript is empty AND the plan's row is unchanged after.
+- Refuses 409 `NOTHING_POSTED_YET` on a plan that has not posted: there is
+  nothing in the chart to read back, and a confirmation over that would be a
+  projection wearing a confirmation's words.
+- **The same arithmetic**: `postingDrain.confirmLineFor` + `verdictFor`'s
+  confirmed register — the identical pair the drain's own `confirm_patient` step
+  uses. That is the only change to `postingDrain.js` in this stage: the inline
+  line-assembly became an exported function with two callers, so a chart-derived
+  figure and a frozen one cannot drift apart in two places.
+- **`rcm.queue`, explicitly.** It is in `QUEUE_PATHS` because what it does is
+  read, and it names its own tier because `rcmGuard.test.js` holds a rule worth
+  more than the convenience: every path the write exemption opens must be gated
+  by the route itself.
+
+A re-check that AGREES does not finish the check and does not pretend to — the
+plan is still `partially_posted` until somebody presses Post, and the panel says
+exactly that.
+
+#### Shadow mode carries the worksheet
+
+A practice in shadow mode posts BY HAND while this app watches, so the most
+useful thing on its screen is the same roll-up the approve page shows: what each
+patient would owe, what the office decided to absorb. Printable for real — one
+`@media print` rule in `index.css`, guarded by `:has(.rcm-print-worksheet)` so a
+page without a worksheet prints exactly as it always did.
+
+**The yes/no comparison capture is NOT here — that is C-2.** It needs somewhere
+to put the answer, which is a table this schema does not have, and half of it
+built here would be a control that records nothing. The room for it is the space
+under that table.
+
+#### Found, not built
+
+- **Patient search on the match screen (§5).** There is no RCM patient-search
+  endpoint at all — the module's only Open Dental reads are about a CLAIM. Adding
+  one is a new OD read lane with its own audit and office seam, which is not a
+  layout pass. What Stage C added instead is `MatchGuidance` above the workbench:
+  the agreement stated in words, the candidates side by side with the differences
+  in words, and the honest dead-end. **Logged as a named limitation at §15.1c** —
+  tolerable in shadow mode, not before the first real drain.
+- **The workbench body is untouched** (§12). The candidate cards, the evidence
+  chips and the line pairing are exactly as B1 left them; `MatchGuidance` sits
+  above them in the page SHELL and confirms through the same `onConfirm` the card
+  calls, so there is one route and one audit row.
+- **The rail on a partially-posted check** still reads from the server's
+  `attentionReasons` and can say "Ready to post" beside a panel saying "partly
+  posted". The step-state table is out of scope for this stage; logged rather
+  than adjusted in passing.
+
+---
 ### 14.1 The posting machinery
 
 ![the posting queue, waiting](screenshots/rcm-posting/posting-01-queued.png)
@@ -3866,6 +4026,34 @@ it a finding for the shadow log, not a defect that holds a slice.
 **6d.2 owes the way back** — whatever un-approve looks like there has to release
 the decisions with the plan, or this limitation survives the slice that was
 supposed to end it.
+
+### 15.1c No way to point CareIN at a claim the candidates missed — 6d.2 owes it too
+
+**Stage C asked for a patient search on the match screen and it was not built,
+because there is nothing to build it on.** The module's only Open Dental reads
+are about a CLAIM — `readClaimProcsForClaim`, `readAdjustmentsForPatient`, the
+matcher's own candidate walk. There is no RCM patient-search endpoint, and adding
+one is a new Open Dental read lane with its own audit rows and its own per-office
+seam. That is not a layout change, and Stage C did not smuggle one in.
+
+**The consequence, plainly:** if the right claim exists in Open Dental but is not
+among the candidates the matcher returned, the biller has no way to say so. Her
+only exit is *save for tomorrow*. Every other refusal in this module leaves her a
+next move; this one leaves her the door.
+
+What Stage C did instead is make the dead end honest rather than silent —
+`MatchGuidance` states the agreement in words, sets the candidates beside the EOB
+with their differences named ("six weeks earlier", "$54.00 less billed"), and says
+outright that CareIN cannot look any further than the candidates it found.
+
+**The cost is bounded while the drain is off, and only while it is off.** In
+shadow mode a stalled match costs an evening's annoyance and nothing else, because
+posting is by hand anyway. **Before the first real drain it is not tolerable**: a
+check cannot be finished, and the claim it is stuck on is one somebody can see in
+Open Dental from the other window.
+
+**6d.2 owes it**, alongside §15.1b's way back from an approved decision — the two
+are the same shape, a screen that can refuse but cannot be argued with.
 
 ### 15.2 UX findings from the 2026-08-25 walk — for the RCM UX slice
 

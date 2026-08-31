@@ -158,6 +158,37 @@ const QUEUE_PATHS = Object.freeze([
   /^\/remittances\/[^/]+\/unpark$/,
   /^\/remittances\/[^/]+\/set-aside$/,
   /^\/remittances\/[^/]+\/restore$/,
+  /*
+   * THE READ-ONLY RE-CONFIRMATION (Stage C, §7).
+   *
+   * `POST /posting/:id/recheck` re-runs the confirmation against a plan that has
+   * already posted and WRITES NOTHING — not a chart, not the plan's status, not
+   * CareIN's own record of the verdict. Its two Open Dental calls are both GETs
+   * and both audited as reads.
+   *
+   * It is a POST because it spends real calls against a rate-limited credential
+   * the voice side shares, and a GET is a thing browsers and link previews fire
+   * without being asked. The METHOD says "a person pressed this"; the TIER has
+   * to say what it actually does, and what it does is read.
+   *
+   * So it belongs here, on `rcm.read`, beside the other reads — the same tier a
+   * `reviewer` uses to watch a posting and read why one is stuck. Demanding
+   * `rcm.write` to LOOK would put the person best placed to notice a wrong
+   * balance behind a permission she does not need, and would make the honest
+   * label on the button ("reads the chart and writes nothing to it") a thing the
+   * mount contradicted.
+   *
+   * It carries an EXPLICIT `rcm.queue` gate of its own rather than relying on
+   * the mount's read gate, because `rcmGuard.test.js` holds a rule worth more
+   * than the convenience: every path this exemption opens must be gated by the
+   * route itself, or a route added at one of these paths later is reachable by
+   * anyone the module guard let through. `rcm.queue` is the tier that marks a
+   * claim reviewed — reviewer, rcm_biller, office and admin all hold it.
+   *
+   * `postingRecheck.test.js` pins the no-write claim from both ends: the fake's
+   * write transcript is empty, and the plan's own row is byte-identical after.
+   */
+  /^\/posting\/[^/]+\/recheck$/,
 ]);
 
 router.use('/summary', require('./summary'));
