@@ -33,6 +33,69 @@ now carries an allow-list of exactly one file.
 
 ---
 
+## 1a. The canon — the numbered decisions, written where you can read them
+
+**Why this section exists.** These are cited by number in briefs and reviews, and
+until now several of them lived only in the PM's own notes — a store no session
+working in this repo can open (see `CLAUDE.md`, *What you can actually read*). A
+decision nobody can look up is a decision the next slice breaks by accident. Cite
+by number here, and state the number's text beside it.
+
+| | Decision | Where it lives |
+| --- | --- | --- |
+| **D-7** | valley is **fail-closed** for posting until three prerequisites are met, and being entitled is not one of them. | §9 |
+| **D-9** | The posting acts split out of `rcm.write` into **`rcm.post`**, and the shadow switch into **`rcm.settings`** (admin only). Reviewing is `rcm.queue`. | §12 |
+| **D-11** | The gate's checks are a **`REASON_GATE`**: a check absent from the map is **blocking**, never advisory. A new check refuses by default until somebody decides otherwise. | `RCM_APPROVAL_GATE.md` |
+| **D-13** | **DefNums are resolved LIVE, per office, BY NAME — never a numeric constant, ever.** | below |
+| **D-14** | A plan is **immutable once approved**, and so are the decisions snapshotted onto it. | §14.0b, §15.1b |
+| **D-15** | **`blocked` must be drainable.** | below |
+
+### D-13 — by name, per office, every time
+
+Definition numbers are per-database. The same word is a different number in each
+practice's Open Dental: the CareIN CommLog type is **486** at Roland and **451**
+at Riley; the document category the EOB files into is **473** and **429**. A
+number copied from one practice into the other does not fail — **it writes the
+wrong type into a real chart, quietly.**
+
+So nothing in this module may hold a DefNum as a constant. Every one is resolved
+at the moment of use, from that office's own definitions, by its **name**:
+
+- the name is what a setting stores (`writeoff_adjtype_name` — §14.0b);
+- an empty name is refused by the route *and* by a CHECK constraint;
+- a name that does not resolve **in that office's own database** refuses the
+  claim, at post time, with the name in the message. Never a default, never a
+  fallback to the other office's number, never a guess.
+
+The reverse also holds: a probe or a runbook that records "DefNum 473" has
+recorded a fact about **one** office and must say which.
+
+### D-15 — `blocked` must be drainable, and a Drain press is a human act
+
+**A blocked row with no exit is a roach motel.** If a status can be entered but
+not left, the screen ends up instructing a biller to do something the software
+cannot then accept — which is exactly the bug §2.2.1 describes, where `blocked`
+was excluded from `DRAINABLE_STATUSES` and every row that reached it was stuck
+forever.
+
+The two halves are one decision, and dropping either breaks it:
+
+1. **Every refusal state has a way out** — fix the named cause, press Drain
+   again. `approved`, `failed`, `partially_posted` and `blocked` are all
+   drainable; `posted` is the only terminal state.
+2. **Nothing retries on its own.** Pressing Drain is a person deciding to try
+   again. That is what makes (1) safe: a re-press with the cause unfixed blocks
+   again with the same reason and a higher `attempt_count`, and for a policy
+   block it costs zero Open Dental calls.
+
+**A new blocked reason must therefore ship with the press that clears it.** B1's
+`office_writeoff_not_postable` is the pattern: it refuses a decided write-off
+this build cannot honestly write, and the moment B2 teaches the write to carry
+the decided figure the same Drain press clears it — no migration, no rescue
+script, no support call.
+
+---
+
 ## 2. The state machine
 
 ### 2.1 The words
