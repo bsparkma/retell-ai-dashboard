@@ -758,11 +758,17 @@ function LineDecisionControl({
         she needs to know is what approving did, and what undoing it would cost
         today: a correction in Open Dental, because a retired check cannot be
         approved again (RCM_POSTING 2.2.0).
+
+        And it names the RULE, not just this instance: a decision can be changed
+        any number of times right up until Approve, and Approve is the step that
+        freezes it. That is the only part of this sentence she can act on -- next
+        time. A dead end with no rule attached teaches nothing.
       */}
       {decideBlockedBy === "approved" ? (
         <DisabledReason testId={`decision-reason-${line.lineId}`}>
-          This check has been approved, and what was approved cannot change. Fix a wrong write-off
-          in Open Dental.
+          This check has been approved, and approving is what freezes a decision — up until then
+          any of them can be changed. A wrong write-off on an approved check has to be fixed in
+          Open Dental.
         </DisabledReason>
       ) : decideBlockedBy === "permission" ? (
         <DisabledReason testId={`decision-reason-${line.lineId}`}>

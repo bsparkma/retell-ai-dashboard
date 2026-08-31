@@ -771,6 +771,19 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
    */
   const writeOffOnTakeback = reversalLane && verdict.decidedWriteOffCents !== 0;
 
+  /*
+   * THE AMBER DETAIL IS LOAD-BEARING FOR A PERMISSION DECISION, not just copy.
+   *
+   * A line decision runs on `rcm.queue` and approving runs on `rcm.write`, so a
+   * reviewer PROPOSES a write-off and somebody with write authority ACCEPTS it.
+   * That split is only honest while the accepting screen shows WHOSE decision it
+   * is and WHY — which is what naming each write-off with its reason label and
+   * its decided-by does here. Reduce this to a count or a total and the two
+   * tiers collapse into one: a write-off somebody else recorded would pass under
+   * an Approve press that never saw it. (PM ruling, 2026-08-30.)
+   *
+   * It is review-then-send, one level up from the chart.
+   */
   add(
     'PATIENT_RESPONSIBILITY_MATCHES',
     verdict.state !== 'red' && !writeOffOnTakeback,
