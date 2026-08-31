@@ -33,7 +33,8 @@ class AuditError extends Error {
  * @param {import('express').Request & { user?: any, tenant?: { id?: string } }} req
  * @param {{ action: AuditAction, resourceType: string, resourceId?: string|number|null,
  *           result: AuditResult, endpoint?: string, office?: string|null,
- *           originOffice?: string|null, sourceRef?: string|null }} entry
+ *           originOffice?: string|null, sourceRef?: string|null,
+ *           priorState?: string|null }} entry
  *   `office` is the frozen internal office key ('roland' | 'valley' | 'unknown')
  *   the action touched. Required in spirit on any Open Dental path once a tenant
  *   has more than one connected practice: PatNum numbering restarts per database,
@@ -51,6 +52,16 @@ class AuditError extends Error {
  *   lives outside the audited resource — today, the voice call id behind a TC
  *   handoff. An identifier, never a PHI value, same class as resource_id.
  *   Omitted → NULL, meaning "the action had no recorded external cause".
+ *
+ *   `priorState` is what the thing this action touched WAS immediately before
+ *   it — for actions that REPLACE a decision somebody already made. A SLUG from
+ *   that thing's own closed vocabulary, shaped `slug` or `slug:slug`, and the
+ *   database refuses anything else (`audit_log_prior_state_check`,
+ *   1788000000000). That CHECK is the safety argument, not a formality: this
+ *   platform never copies free text a person typed into the trail, and a column
+ *   that could hold a sentence would become that copy within two slices. Never
+ *   prose, never a person's words, never PHI. Omitted → NULL, meaning "this
+ *   action replaced nothing".
  * @returns {Promise<void>}
  */
 async function audit(req, entry) {
@@ -131,12 +142,18 @@ async function writeRow(req, tenantId, entry, run) {
   // External cause (e.g. a voice call id) — an identifier, not PHI.
   const sourceRef = entry.sourceRef != null ? String(entry.sourceRef) : null;
 
+  // What this action REPLACED, as a slug from the subject's own vocabulary.
+  // A CHECK constraint refuses anything that is not slug-shaped, so a caller
+  // that reached for a sentence gets a loud write failure rather than a trail
+  // that has quietly become a copy of somebody's prose. See the header.
+  const priorState = entry.priorState != null ? String(entry.priorState) : null;
+
   try {
     await run(
       `INSERT INTO audit_log
-          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, origin_office, source_ref)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, originOffice, sourceRef]
+          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, origin_office, source_ref, prior_state)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, originOffice, sourceRef, priorState]
     );
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);

@@ -14,9 +14,9 @@ through the forced call sequence `docs/RCM_OD_WRITES.md` proved live on
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Offices enabled | **roland only.** valley is fail-closed (D-7, §9) |
 | Shadow gate | **Both offices ship switched OFF** (`rcm_office_settings.drain_enabled`). Roland clears the code ceiling and still cannot write to a chart until an admin flips it — §2.5 |
-| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) + **`1787900000000_rcm_shadow_comparison.js`** (the comparison, C-2) — all additive only |
+| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) + **`1787900000000_rcm_shadow_comparison.js`** (the comparison, C-2) + **`1788000000000_audit_log_prior_state.js`** (what a revision replaced) — all additive only |
 | Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`services/rcm/postingGate.js`](../backend/services/rcm/postingGate.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`routes/rcm/officeSettings.js`](../backend/routes/rcm/officeSettings.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx), [`pages/admin/RcmPostingSettingsCard.tsx`](../new-dashboard/client/src/pages/admin/RcmPostingSettingsCard.tsx), [`routes/rcm/comparison.js`](../backend/routes/rcm/comparison.js), [`components/rcm/CheckComparison.tsx`](../new-dashboard/client/src/components/rcm/CheckComparison.tsx), [`pages/admin/RcmShadowComparisonCard.tsx`](../new-dashboard/client/src/pages/admin/RcmShadowComparisonCard.tsx) |
-| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)**, **`shadowComparison.test.js` (25)**, **`rcm-shadow-comparison.test.tsx` (18)**, `rcm-plain-language.test.ts` (7) |
+| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)**, **`shadowComparison.test.js` (28)**, `audit.test.js`, **`rcm-shadow-comparison.test.tsx` (22)**, `rcm-plain-language.test.ts` (7) |
 
 ---
 
@@ -531,6 +531,62 @@ second has none — and compares the Open Dental call transcript, in order, and 
 rows each run left. Recording the answer through the route rather than seeding it
 is §15.1a's rule: a hand-written fixture would be a claim about what the route
 stores, and the place a real coupling would hide.
+
+#### The revision says which way it went
+
+`comparison_revision` says an answer was CHANGED. It cannot say **which way**, and
+the two directions mean opposite things: a `same` corrected to `differed` is the
+app being caught, and a `differed` corrected to `same` is the biller catching
+herself. Somebody weighing whether to switch posting on needs to tell them apart.
+
+So a revision's audit row carries **`prior_state`** — what the answer was
+immediately before it, as `same` or `differed:<reason>`
+(`1788000000000_audit_log_prior_state.js`). The whole chain falls out of it: for
+one check ordered by `ts`, each row names its predecessor and the batch row names
+the answer that stands.
+
+```
+row 1  prior_state = NULL                  first answer — replaced nothing
+row 2  prior_state = 'same'                ⇒ answer 1 was `same`
+row 3  prior_state = 'differed:write_off'  ⇒ answer 2 was that
+the batch row's own columns                ⇒ answer 3, the one that stands
+```
+
+Recording the NEW state as well would be the same fact written twice, and two
+copies of one fact are two chances to disagree.
+
+**SLUGS ONLY, and the database enforces it.** The note never appears here, on the
+rule that keeps every biller's sentence out of the trail. `audit_log` has no
+detail column deliberately — a column called `detail` would become a copy of
+somebody's prose within two slices whatever its comment said — so
+`audit_log_prior_state_check` constrains the value to `^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$`.
+A sentence has a space, a capital or a punctuation mark; a patient's name has a
+capital. Neither is storable, by the database rather than by anybody remembering.
+
+`prior_state` is a platform column on the precedent `source_ref` and
+`origin_office` set: an audit DIMENSION one feature needs first, named for what
+it means rather than for the feature. Nothing about it is comparison-specific —
+"what did this action replace" is a question any revisable decision will raise.
+
+#### The summary cautions before it shows her words
+
+The differences table carries `comparison_note`, which is **PHI-capable by the
+migration's own comment** — a biller may name a patient in one. And this screen
+has exactly one reader: somebody writing up how the shadow period went. That is
+precisely the moment a patient's name gets copied out of a clinical system into a
+document that leaves it, and nothing downstream of the card would catch it.
+
+So, rendered directly above the notes — not in the card header, because a warning
+three paragraphs from the thing it is about is a warning people scroll past:
+
+> These lines are in the biller's own words, and one of them may name a patient.
+> Read them here — don't paste them into a report, a message or a ticket. Refer to
+> the check number instead.
+
+It names the safe alternative on purpose. *"Do not copy this"* with no way left to
+refer to the check is an instruction people work around rather than follow. It is
+absent when there are no differences: a caution over an empty table is noise, and
+noise is what trains people to skip the one that matters.
 
 #### The summary — Admin → Offices, directly beneath the switch
 
@@ -3360,6 +3416,54 @@ to a state the schema already understood. Verified: 0 columns, 0 constraints and
 neighbouring `parked_at` / `set_aside_reason` columns are untouched. `up` again
 restores all six — with the answer gone, which is the honest cost the migration's
 `down` comment names rather than hides.
+
+### C-2 — `1788000000000_audit_log_prior_state.js`
+
+Rehearsed 2026-08-31 the same way. `up` (all) → column + CHECK present, and the
+append-only grant still exactly `INSERT,SELECT` for `carein_app` → the CHECK
+exercised both ways → `down 1` over a row that HAD a `prior_state` → `up` → `down`
+all the way, clean.
+
+```
+CHECK (((prior_state IS NULL) OR (prior_state ~ '^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$')))
+carein_app grants: INSERT,SELECT          <- unchanged; append-only survives
+```
+
+**Four allowances, eight refusals** — and the refusals are the reason the column
+is safe to have at all:
+
+```
+ALLOWED
+  NULL — the pre-migration shape, and every first decision
+  'same'
+  'differed:payment_amount'
+  'differed:wrong_target'
+
+REFUSED
+  "The office absorbed $60 on Ms Fixture's crown"   <- THE POINT
+  'the app had nothing'          (any sentence)
+  'Differed'                     (a capital — and a name has one)
+  'differed: payment_amount'     (a space)
+  ''                             (empty)
+  'a:b:c'                        (three segments)
+  40 characters                  (over the ceiling)
+  'differed-payment'             (punctuation)
+```
+
+`audit_log` has no detail column on purpose: this platform never copies free text
+a person typed into the trail. A nullable text column with no CHECK would have
+become that copy within two slices whatever its comment said, so the grammar is
+the whole safety argument rather than a formality — and it is exercised here
+rather than asserted about.
+
+The constraint is written `prior_state IS NULL OR (…)` rather than as a bare
+regex, for §15's reason: `prior_state ~ '…'` against a NULL yields NULL, and
+Postgres accepts a CHECK that evaluates to NULL.
+
+`down` rolls back over live rows — `audit_log` is append-only and nothing reads
+this column to decide anything, so dropping it loses history rather than
+corrupting state. Verified: 0 columns, 0 constraints, the audit rows themselves
+survive, and `office` / `origin_office` / `source_ref` are untouched (3/3).
 
 ---
 

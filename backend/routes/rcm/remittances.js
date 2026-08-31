@@ -2297,6 +2297,21 @@ router.post(
     let refusal = null;
     let unchanged = false;
     let revision = 0;
+    /**
+     * WHAT THE ANSWER WAS BEFORE THIS ONE, as a slug — `same` or
+     * `differed:<reason>`. Null when this is the first answer on the check.
+     *
+     * The counter on the row says an answer was CHANGED; this says which way.
+     * A `same` corrected to `differed` is the app being caught, and a `differed`
+     * corrected to `same` is the biller catching herself — opposite facts about
+     * the software, and the counter cannot tell them apart.
+     *
+     * SLUGS ONLY. The note never appears here, on the same rule that keeps it
+     * out of every other audit row: it is the biller's own words and may name a
+     * patient. `audit_log_prior_state_check` refuses anything that is not
+     * slug-shaped, so that rule is the database's rather than this comment's.
+     */
+    let priorState = null;
 
     const done = await withWorklistWrite(req, office, batchId, async (client, userKey, row) => {
       /*
@@ -2340,6 +2355,19 @@ router.post(
         return;
       }
 
+      /*
+       * Read off the row loaded inside THIS transaction, before the update
+       * overwrites it — so the slug describes what was actually replaced rather
+       * than what a second read might have found after somebody else moved it.
+       */
+      if (row.comparison_verdict === 'same') {
+        priorState = 'same';
+      } else if (row.comparison_verdict === 'differed') {
+        priorState = row.comparison_reason
+          ? `differed:${row.comparison_reason}`
+          : 'differed';
+      }
+
       const written = await client.query(
         `UPDATE rcm_payment_batches SET comparison_verdict = $3, comparison_reason = $4, ` +
           `comparison_note = $5, comparison_by = $6, comparison_at = now(), ` +
@@ -2375,6 +2403,13 @@ router.post(
         result: 'SUCCESS',
         office,
         sourceRef: null,
+        /*
+         * Null on a first answer, which is what makes the chain readable: for
+         * one check ordered by `ts`, each row names its predecessor and the
+         * batch row names the last one, so the whole sequence and every
+         * direction of travel falls out of N rows. See 1788000000000.
+         */
+        priorState,
       });
     }
 

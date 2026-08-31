@@ -286,6 +286,86 @@ test('changing an answer is RECORDED — the revision advances and a second audi
   assert.equal(comparisonAudits(db).length, 2, 'one audit row per answer, not one per check');
 });
 
+test('a revision records WHICH WAY it went — the prior verdict and the prior slug', async () => {
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE COUNTER SAYS "CHANGED". THIS SAYS "FROM WHAT".
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A `same` corrected to `differed` is the app being caught; a `differed`
+   * corrected to `same` is the biller catching herself. Those mean OPPOSITE
+   * things about the software, and `comparison_revision` cannot tell them apart
+   * — so somebody weighing whether to switch posting on could not either.
+   *
+   * The whole chain falls out of these rows: each names its predecessor, and the
+   * batch row names the last answer.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    await answer(app, { verdict: 'same' });
+    await answer(app, {
+      verdict: 'differed',
+      reason: 'write_off',
+      note: 'The office absorbed 60.00; the app had nothing.',
+    });
+    await answer(app, { verdict: 'same' });
+  });
+
+  const rows = comparisonAudits(db);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].prior_state, null, 'a FIRST answer replaced nothing');
+  assert.equal(rows[1].prior_state, 'same', 'answer 1 was `same` — the app was caught');
+  assert.equal(
+    rows[2].prior_state,
+    'differed:write_off',
+    'answer 2 was a write-off difference — she caught herself'
+  );
+  // …and the row itself carries the answer that stands, which closes the chain.
+  assert.equal(db.table('rcm_payment_batches')[0].comparison_verdict, 'same');
+});
+
+test('the prior state is a SLUG — her sentence never reaches the audit row', async () => {
+  /*
+   * The note is the biller's own words and may name a patient, so it stays out
+   * of the trail on exactly the rule `parked_note` follows. The database refuses
+   * anything that is not slug-shaped (`audit_log_prior_state_check`), so this is
+   * enforced rather than merely intended — but the route must not be TRYING to
+   * put prose there in the first place, which is what this asserts.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    await answer(app, {
+      verdict: 'differed',
+      reason: 'wrong_target',
+      note: 'It went to Fixture, Synthetic instead',
+    });
+    await answer(app, { verdict: 'same' });
+  });
+
+  const rows = comparisonAudits(db);
+  assert.equal(rows[1].prior_state, 'differed:wrong_target');
+  for (const row of rows) {
+    assert.ok(
+      row.prior_state == null || /^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$/.test(row.prior_state),
+      `prior_state must be slug-shaped, got: ${row.prior_state}`
+    );
+  }
+  assert.ok(
+    !JSON.stringify(rows).includes('Fixture'),
+    'no part of her sentence reaches the trail, on any row'
+  );
+});
+
+test('a no-op resubmission files no row, so it cannot invent a revision that never happened', async () => {
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    await answer(app, { verdict: 'same' });
+    await answer(app, { verdict: 'same' });
+  });
+  const rows = comparisonAudits(db);
+  assert.equal(rows.length, 1, 'one answer, one row');
+  assert.equal(rows[0].prior_state, null);
+});
+
 test('re-sending the SAME answer writes nothing and does not inflate the count', async () => {
   /*
    * The screen may re-send, and a double-click must not make the summary say a
