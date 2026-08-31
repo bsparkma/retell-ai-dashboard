@@ -3836,7 +3836,8 @@ under that table.
   one is a new OD read lane with its own audit and office seam, which is not a
   layout pass. What Stage C added instead is `MatchGuidance` above the workbench:
   the agreement stated in words, the candidates side by side with the differences
-  in words, and the honest dead-end.
+  in words, and the honest dead-end. **Logged as a named limitation at §15.1c** —
+  tolerable in shadow mode, not before the first real drain.
 - **The workbench body is untouched** (§12). The candidate cards, the evidence
   chips and the line pairing are exactly as B1 left them; `MatchGuidance` sits
   above them in the page SHELL and confirms through the same `onConfirm` the card
@@ -4025,6 +4026,34 @@ it a finding for the shadow log, not a defect that holds a slice.
 **6d.2 owes the way back** — whatever un-approve looks like there has to release
 the decisions with the plan, or this limitation survives the slice that was
 supposed to end it.
+
+### 15.1c No way to point CareIN at a claim the candidates missed — 6d.2 owes it too
+
+**Stage C asked for a patient search on the match screen and it was not built,
+because there is nothing to build it on.** The module's only Open Dental reads
+are about a CLAIM — `readClaimProcsForClaim`, `readAdjustmentsForPatient`, the
+matcher's own candidate walk. There is no RCM patient-search endpoint, and adding
+one is a new Open Dental read lane with its own audit rows and its own per-office
+seam. That is not a layout change, and Stage C did not smuggle one in.
+
+**The consequence, plainly:** if the right claim exists in Open Dental but is not
+among the candidates the matcher returned, the biller has no way to say so. Her
+only exit is *save for tomorrow*. Every other refusal in this module leaves her a
+next move; this one leaves her the door.
+
+What Stage C did instead is make the dead end honest rather than silent —
+`MatchGuidance` states the agreement in words, sets the candidates beside the EOB
+with their differences named ("six weeks earlier", "$54.00 less billed"), and says
+outright that CareIN cannot look any further than the candidates it found.
+
+**The cost is bounded while the drain is off, and only while it is off.** In
+shadow mode a stalled match costs an evening's annoyance and nothing else, because
+posting is by hand anyway. **Before the first real drain it is not tolerable**: a
+check cannot be finished, and the claim it is stuck on is one somebody can see in
+Open Dental from the other window.
+
+**6d.2 owes it**, alongside §15.1b's way back from an approved decision — the two
+are the same shape, a screen that can refuse but cannot be argued with.
 
 ### 15.2 UX findings from the 2026-08-25 walk — for the RCM UX slice
 

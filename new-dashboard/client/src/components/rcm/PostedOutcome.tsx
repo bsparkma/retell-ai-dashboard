@@ -45,7 +45,7 @@
  *
  * NO REAL PATIENT DATA anywhere in this file.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
@@ -238,6 +238,15 @@ export function PostedOutcome({
 // STUCK AFTER POSTING
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * How long the re-check button rests after a press, in seconds.
+ *
+ * Short enough that somebody genuinely waiting on a correction is not
+ * obstructed; long enough that leaning on the button cannot turn one look into
+ * a queue of Open Dental reads. See the note beside `restingFor` below.
+ */
+const RECHECK_REST_SECONDS = 6;
+
 export function StuckAfterPosting({
   detail,
   office,
@@ -252,6 +261,25 @@ export function StuckAfterPosting({
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<PostingRecheck | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [restingFor, setRestingFor] = useState(0);
+
+  /*
+    THE BUTTON RESTS BETWEEN PRESSES.
+
+    Every press is two Open Dental reads, and RCM shares ONE Open Dental
+    credential with the voice side, paced at 1200ms per key (D-8). A check that
+    is stuck and a person who wants it unstuck is a realistic pairing, so a
+    double-click is four calls that a running drain then waits behind.
+
+    This is NOT a rate limit — the server has no opinion about how often you
+    look — and it is not a new state. It is a few seconds of rest, and the
+    button says why rather than going quietly grey.
+  */
+  useEffect(() => {
+    if (restingFor <= 0) return;
+    const t = setTimeout(() => setRestingFor((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [restingFor]);
 
   /** The claims whose read-back did not agree, from the last re-check. */
   const disagreeing = (checked?.claims ?? []).filter((c) => c.verdict.state === "red");
@@ -270,6 +298,7 @@ export function StuckAfterPosting({
       );
     } finally {
       setChecking(false);
+      setRestingFor(RECHECK_REST_SECONDS);
     }
   }
 
@@ -424,7 +453,7 @@ export function StuckAfterPosting({
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             onClick={recheck}
-            disabled={checking}
+            disabled={checking || restingFor > 0}
             data-testid="stuck-recheck"
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
@@ -433,10 +462,16 @@ export function StuckAfterPosting({
             ) : (
               <RefreshCw size={14} />
             )}
-            {checking ? "Asking Open Dental…" : "Check it again"}
+            {checking
+              ? "Asking Open Dental…"
+              : restingFor > 0
+                ? `Asked just now — ready again in ${restingFor}s`
+                : "Check it again"}
           </button>
           <span className="text-xs text-muted-foreground">
-            Reads the chart and writes nothing to it.
+            {restingFor > 0
+              ? "Each look asks Open Dental twice, over the one connection the rest of CareIN shares."
+              : "Reads the chart and writes nothing to it."}
           </span>
         </div>
 

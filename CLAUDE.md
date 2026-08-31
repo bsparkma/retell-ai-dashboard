@@ -801,6 +801,18 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 
 - Commit messages: imperative present tense — "Add endpoint", not "Added endpoint".
 - Branches: `feature/`, `fix/`, `docs/`.
+- **Writing a repo file from Python on Windows needs `newline=""`.** Without it,
+  `io.open(p, "w")` turns every line feed into a carriage-return pair, so a file spliced by
+  a helper script lands as CRLF while this repo holds LF — and the whole file then arrives
+  in the diff as churn. It has cost two PRs (#126, and #133: 83 files, 31k raw insertions
+  against 9k real ones), and the damage is that a reviewer cannot check a one-line claim
+  about a money file buried in 7,696 changed lines. Pass `newline=""` on **both** the read
+  and the write. `sed` and `cat -A` under Git Bash silently strip the carriage return, so
+  they will not show you the problem — compare `git diff --shortstat origin/develop...HEAD`
+  against the same command plus `--ignore-all-space --ignore-blank-lines`, and the two must
+  match within a handful. (`.gitattributes` is a main-line call, deliberately not taken.
+  `client/src/App.tsx`, `client/src/lib/api.ts` and `client/src/pages/AdminUsers.tsx` are
+  CRLF **in git** — normalising those three is its own churn, so leave them.)
 - **A held PR is a draft.** If a review holds a PR for an answer, `gh pr ready --undo <n>`
   it at once and mark it ready only when the reviewer releases it. See
   [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) §2 — #121 merged with its gating question
