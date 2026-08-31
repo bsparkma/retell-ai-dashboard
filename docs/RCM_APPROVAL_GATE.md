@@ -604,6 +604,14 @@ projected patient responsibility  Σ R over bill_patient lines
 AMBER passing is the point. A write-off somebody decided on, with a reason and a
 name against it, is the ordinary work; refusing it would refuse the day.
 
+**And the AMBER detail is load-bearing for a permission decision, not just copy.**
+A line decision runs on `rcm.queue`; approving runs on `rcm.write`. A reviewer
+PROPOSES a write-off and somebody with write authority ACCEPTS it — a split that
+is only honest while the accepting screen shows whose decision it is and why,
+which is what naming each write-off with its reason label and its decided-by
+does. Reduce it to a count or a total and the two tiers collapse into one.
+Review-then-send, one level up from the chart. (PM ruling, 2026-08-30.)
+
 RED has exactly three causes, and every one of them names a line:
 
 - `decision_missing_reason` — a write-off with nothing recorded about why;
@@ -639,6 +647,12 @@ rather than of the world — a later slice that let a line be written off in PAR
 would break it, and the verdict would then say which two numbers disagree rather
 than failing quietly.
 
+**It stops being unreachable in the CONFIRMED register.** After a real post the
+verdict is recomputed from the read-back, and a read-back that differs from what
+was projected is exactly the two-different-numbers case. That is B2's *"read-back
+≠ projected → Stuck, not Finished"* path, and this is the sentence it needs — so
+it is unused copy only until B2, and must not be deleted as dead.
+
 #### And a takeback may not carry one
 
 The recoupment lane refuses a claim whose lines carry a decided write-off. The
@@ -667,6 +681,12 @@ refuses a decision edit with 409 `CLAIM_ON_POSTING_PLAN` — the same predicate
 undoing it today: retiring the posting stops it, but a retired remittance can
 never be approved again (RCM_POSTING §2.2.0), so a wrong write-off on an approved
 claim is a correction in the desktop until 6d.2 lands.
+
+The sentence names the RULE as well as the wall — a decision is free to change
+right up until Approve, and Approve is the step that freezes it — because that is
+the only part of it she can act on. Logged as a named limitation in
+**RCM_POSTING §15.1b**, beside the follow-on-plan limitation it shares a shape
+and a fixing slice with.
 
 ---
 

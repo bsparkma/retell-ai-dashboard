@@ -593,8 +593,13 @@ describe("the per-line write-off decision", () => {
     // would be the most confusing thing this screen could say.
     const why = screen.getByTestId("decision-reason-pl-1").textContent ?? "";
     expect(why).toContain("has been approved");
-    expect(why).toContain("Fix a wrong write-off in Open Dental");
+    expect(why).toContain("fixed in Open Dental");
     expect(why).not.toContain("permission");
+    // And it states the RULE she can act on next time, not only this dead end:
+    // a decision is free to change until Approve, and Approve is what freezes
+    // it. Without that, the sentence teaches her nothing but that she is stuck.
+    expect(why).toContain("approving is what freezes a decision");
+    expect(why).toContain("any of them can be changed");
   });
 
   it("a tier that cannot decide is told so, rather than shown a dead button", async () => {

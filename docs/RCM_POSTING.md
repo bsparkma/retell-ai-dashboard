@@ -3416,6 +3416,15 @@ Three states — GREEN (projected == EOB), AMBER (below the EOB on purpose, ever
 contributing line explained), RED (anything else; cannot approve). The full rules
 and the gate's mirror of them are `docs/RCM_APPROVAL_GATE.md` §3.5.
 
+The RED sentence that names two different numbers is a **backstop, not dead
+copy.** In the projection register the three sums partition one set, so
+`projected + decided == EOB` holds by construction and it cannot print — the
+reachable RED cases name a problem family instead (a missing reason, a line not
+in the chart, a fee Open Dental disagrees with). **It stops being unreachable in
+the confirmed register**, where a read-back can genuinely differ from what was
+projected. That is B2's *"read-back ≠ projected"* path, and it is the sentence
+that path needs. Do not delete it as unused.
+
 **The register is a required argument with no default.** Before posting — all of
 shadow mode — the verdict is a PROJECTION and says *"will owe … once posted"*.
 After a real post it is recomputed from the read-back and says *"owes … —
@@ -3423,6 +3432,14 @@ confirmed in Open Dental"*. A projection worded as a confirmation is the
 honest-states rule failing in the most expensive place there is, so a caller that
 has not decided which one it holds cannot get a sentence out of the module at
 all.
+
+#### Approve freezes the decision
+
+D-14, and it is the one limitation of this screen a biller will hit: once her
+check is approved, its decisions cannot be changed, and there is no way back
+inside CareIN today. The control is disabled with the reason on it, and the
+reason names the rule as well as the wall — free to change right up until
+Approve. **§15.1b**, and 6d.2 owes the way back.
 
 #### The per-office mode: how a write-off it CHOSE is booked
 
@@ -3516,6 +3533,8 @@ The same queue. A disabled button, naming the permission an approver holds.
 | --- | --- | --- |
 | **A partially-approved remittance posts as more than one check** | ✅ **PM RULING: ACCEPTED AS DESIGNED.** Deposit reconciliation is 6e's job and matches at the **deposit** level, where two OD checks summing to one carrier EFT is a normal case. Revisit only if 6e's matcher cannot express it. | Inherent to 6b's partial approve, which is a deliberate feature. |
 | **A claim fixed after its remittance's plan has run cannot post through CareIN at all** | See §15.1 below — it now has its own refusal and its own sentence rather than hiding behind "already under way". | Needs a decision about whether a remittance may carry a second plan, which the `(office_id, remittance_key)` unique index currently forbids. |
+| **A write-off decision cannot be changed once its check is approved** | See §15.1b below. Same shape as the row above and fixed by the same slice: approving freezes the decision, and a retired plan can never be approved again, so there is no way back inside CareIN. Until 6d.2 the fix is a correction in Open Dental, and the screen says so. | The way back is an un-approve, which touches the plan state machine — 6d.2's scope by every earlier ruling. |
+| **A CHECK constraint can be a constraint over nothing** | ✅ **CLOSED 2026-08-30 — caught by the live rehearsal, on the way into B1.** Two of B1's five CHECKs let a reason be stored for a write-off that did not exist. `NULL > 0` and `NULL = 'office_writeoff'` are neither TRUE nor FALSE, and **Postgres accepts a CHECK that evaluates to NULL** — it only refuses FALSE. Written with `IS NOT DISTINCT FROM` (which never returns NULL) or led with an explicit `IS NOT NULL`, both refuse. | **A CHECK is only a constraint over the values it can see as FALSE.** No unit test can tell you which of yours are secretly NULL, because the fake accepts what it is handed; the rehearsal against real Postgres, with the NULL case actually in the table, is the only thing that can. Second time that step has earned its place — the first was #113's rollback ordering. **Do not shorten it.** |
 | **The drain is a held HTTP request** | Like the batch matcher. Bounded by a wall-clock budget and honest about running out. | A polled job needs run state; the queue row is close but the request/response shape is a separate change. |
 | **maxReplicas = 1 is a standing requirement, not a constraint the code enforces** | §8. | A lease + heartbeat on the queue row. Do it **before** raising maxReplicas. |
 | **A 429 replays the request, writes included** | The transport's backoff retries on 429 only. A 429 is a rate-limit rejection *before* processing, so a replay is safe in practice — and §5.1's adopt-before-create covers the residual case. | Noted rather than fixed; making writes non-retryable would trade a real safety margin for a theoretical one. |
@@ -3623,6 +3642,36 @@ driven one is a *claim about the driven output*, and it is the place a real
 refusal will hide. Where a hand-built value is unavoidable, assert that it is
 non-empty and of the shape production produces — `the fixture EARNS its pass` in
 that file is the guard, and it exists because nothing else would have noticed.
+
+### 15.1b A decision cannot be changed after approve — 6d.2 owes the way back
+
+**The same shape as §15.1, and the same slice fixes it.**
+
+D-14 freezes a claim's line decisions the moment its check is approved: the
+posting carries its own snapshot of the decided figures, so letting the review
+row move afterwards would leave two records of one decision with the visible one
+being the one the posting does not read. `PUT
+/claims/:id/lines/:lineId/decision` refuses with 409 `CLAIM_ON_POSTING_PLAN`
+and the workbench disables the control with the reason on screen.
+
+**The way back does not exist.** The obvious recovery — retire the plan,
+re-decide, approve again — is closed by §2.2.0: a remittance whose plan has
+been retired can never be posted through CareIN again. So the honest answer today
+is a correction in Open Dental, and the screen says exactly that rather than
+implying a route that is not there.
+
+What the screen does say, and why it is more than a dead end: **a decision is
+free to change any number of times right up until Approve, and Approve is the
+step that freezes it.** That is the part she can act on — next time. A refusal
+that names only the wall teaches nothing.
+
+The cost is bounded while the drain is off: in shadow mode a wrongly-approved
+decision is a bad record in CareIN and never a bad number in a chart. That makes
+it a finding for the shadow log, not a defect that holds a slice.
+
+**6d.2 owes the way back** — whatever un-approve looks like there has to release
+the decisions with the plan, or this limitation survives the slice that was
+supposed to end it.
 
 ### 15.2 UX findings from the 2026-08-25 walk — for the RCM UX slice
 
