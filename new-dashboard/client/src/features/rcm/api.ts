@@ -1098,6 +1098,19 @@ export interface ApprovalResult {
   office: RcmOfficeId;
   batchId: string;
   queueId: string;
+  /**
+   * WHO PRESSED IT, BY NAME.
+   *
+   * Off `POST /remittances/:id/approve` this is a DISPLAY NAME, resolved
+   * server-side through `describeActors` exactly as every other attributed
+   * field in this module is (C-3b item 2). It falls back to the crosswalk key
+   * — an email, for anyone the platform minted a row for — only when nobody has
+   * given that actor a display name, which is a fact worth showing rather than
+   * one worth hiding behind "somebody".
+   *
+   * `RecoupmentApprovalResult` overrides this: the takeback route has NOT been
+   * resolved yet and still sends the key. See its own doc.
+   */
   approvedBy: string;
   /** What this press enqueued. Partial success is real success. */
   queued: QueuedClaim[];
@@ -1137,6 +1150,20 @@ export interface Remittance {
   postedAmountCents: number;
   plbTotalCents: number;
   claimCount: number;
+  /**
+   * WHO IS ON THIS CHECK — at most two names, plus how many more PEOPLE.
+   *
+   * PHI, on a list that otherwise carries none, and a deliberate widening of
+   * the batch list's budget (see the server's BATCH_COLUMNS header). It exists
+   * because the question a biller arrives with is "is my patient on this
+   * check?", and answering it by opening rows one at a time costs a full,
+   * audited claim read per row.
+   *
+   * The cap is the SERVER'S — two names is what crosses the wire, so a screen
+   * cannot widen it by rendering more. `more` counts people, NOT the claims
+   * left over: never render it against `claimCount`.
+   */
+  patientNames: { shown: string[]; more: number };
   status: string;
   /** '835' = parsed, and can only be malformed. 'eob' = READ by a model, and can be WRONG. */
   source: "835" | "eob" | null;
@@ -2182,6 +2209,15 @@ export interface RecoupmentChecklist {
 }
 
 export interface RecoupmentApprovalResult extends ApprovalResult {
+  /**
+   * STILL THE CROSSWALK KEY, unlike the ordinary approve's.
+   *
+   * `POST /:id/approve-recoupment` was left out of C-3b's scope, so it returns
+   * `resolveRcmActor`'s key — an email address for most people. Nothing renders
+   * it today, which is why it is tolerable; if a screen ever prints it, resolve
+   * it server-side the way `/approve` does rather than patching it here.
+   */
+  approvedBy: string;
   recoupmentPath: RecoupmentPath;
   recoupmentTotalCents: number;
   note: string;

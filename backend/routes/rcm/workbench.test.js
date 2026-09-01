@@ -254,6 +254,126 @@ test('the list returns the office\'s remittances with a computed balance check',
   });
 });
 
+/* ── C-3b item 1: who is on this check ───────────────────────────────── */
+
+/**
+ * Another claim on the same remittance, with a name of its own.
+ *
+ * `addSecondClaim` is fixed at one; the name tests need three and four people
+ * on one check, which is the only shape that can tell "first two plus a count"
+ * from "all of them".
+ */
+function addClaimNamed(db, position, patientName, over = {}) {
+  const first = db.table('rcm_claims')[0];
+  const claimId = over.claimId || `00000000-0000-5000-8000-00000000000${position}`;
+  db.seed('rcm_claims', [
+    {
+      ...first,
+      claim_id: claimId,
+      claim_number: String(53700 + position),
+      patient_name: patientName,
+      od_match_status: 'not_run',
+      od_match_snapshot: null,
+      od_match_at: null,
+    },
+  ]);
+  db.seed('rcm_batch_claim_payments', [
+    {
+      batch_claim_payment_id: `10000000-0000-5000-8000-00000000000${position}`,
+      batch_id: '8acb0e32-35ae-5cd8-9692-7b5e318a31c2',
+      claim_id: claimId,
+      office_id: first.office_id,
+      position,
+      paid_cents: 0,
+    },
+  ]);
+  return db;
+}
+
+test('a check row names the first two patients on it, and counts the rest', async () => {
+  /*
+   * The question a biller arrives with is "is my patient on this check?", and
+   * before this the only way to answer it was to open every row — a full,
+   * audited claim read each time. The cap is the SERVER'S: a screen cannot
+   * widen the PHI budget by choosing to render more, because more never
+   * crosses the wire.
+   */
+  const db = seed(new FakeRcmDb());
+  addClaimNamed(db, 2, 'Sample, Placeholder');
+  addClaimNamed(db, 3, 'Placeholder, Third');
+  addClaimNamed(db, 4, 'Placeholder, Fourth');
+
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    const { patientNames } = body.remittances[0];
+    // In `position` order off the 835 — not alphabetical, and not arbitrary.
+    assert.deepEqual(patientNames.shown, ['Fixture, Synthetic', 'Sample, Placeholder']);
+    assert.equal(patientNames.more, 2);
+    // The budget is two. Everything past it is a NUMBER, never a name.
+    assert.equal(patientNames.shown.length, 2);
+    assert.equal(
+      JSON.stringify(body.remittances[0]).includes('Placeholder, Third'),
+      false,
+      'a name past the cap must not reach the wire by any other field'
+    );
+  });
+});
+
+test('two claims for the SAME person name them once, and `more` counts people', async () => {
+  /*
+   * A check paying two claims for one patient would otherwise print the name
+   * twice, which reads as a bug. And `more` is a count of PEOPLE: it is not
+   * `claimCount` minus two, so a screen must never render it against the claim
+   * count. Three claims, two people, nothing left over.
+   */
+  const db = seed(new FakeRcmDb());
+  addClaimNamed(db, 2, 'Fixture, Synthetic');
+  addClaimNamed(db, 3, 'Sample, Placeholder');
+
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    const r = body.remittances[0];
+    assert.deepEqual(r.patientNames.shown, ['Fixture, Synthetic', 'Sample, Placeholder']);
+    assert.equal(r.patientNames.more, 0);
+  });
+});
+
+test('a check whose claim rows cannot be resolved says so with an empty list', async () => {
+  /*
+   * `claim_id` is nullable on a link, so a batch can name a payment whose claim
+   * row was never created. That is "nothing to show", not "no patients" — the
+   * row simply prints no names rather than an assertion it cannot support.
+   */
+  const db = seed(new FakeRcmDb());
+  db.table('rcm_batch_claim_payments')[0].claim_id = null;
+
+  await withApp({ db }, async (app) => {
+    const { body } = await api(app.baseUrl, 'GET', `/api/rcm/remittances${Q}`);
+    assert.deepEqual(body.remittances[0].patientNames, { shown: [], more: 0 });
+  });
+});
+
+test('the DETAIL carries the same two names, from the same rule as the list', async () => {
+  // One `toBatchWire`, so the row and the screen it opens cannot disagree about
+  // who is on the check.
+  const db = seed(new FakeRcmDb());
+  addClaimNamed(db, 2, 'Sample, Placeholder');
+  addClaimNamed(db, 3, 'Placeholder, Third');
+
+  await withApp({ db }, async (app) => {
+    const { body } = await api(
+      app.baseUrl,
+      'GET',
+      `/api/rcm/remittances/8acb0e32-35ae-5cd8-9692-7b5e318a31c2${Q}`
+    );
+    assert.deepEqual(body.remittance.patientNames.shown, [
+      'Fixture, Synthetic',
+      'Sample, Placeholder',
+    ]);
+    assert.equal(body.remittance.patientNames.more, 1);
+  });
+});
+
 test('an unbalanced remittance reports the difference, not just a false flag', async () => {
   const db = seed(new FakeRcmDb());
   db.table('rcm_payment_batches')[0].total_amount_cents = 20000;

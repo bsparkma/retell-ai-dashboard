@@ -662,6 +662,63 @@ test('the office is required, and it comes from the query param alone', async ()
   });
 });
 
+// ─── C-3b item 2: who pressed it, by name ──────────────────────────────────
+
+test('the approve names the person who pressed it, not their email address', async () => {
+  /*
+   * `resolveRcmActor` returns the crosswalk KEY, which for anyone the platform
+   * minted a row for IS THEIR EMAIL. Stamping that on `approved_by` is right —
+   * it is the FK. Handing it to a SCREEN was not: every other attributed field
+   * in this module arrives already resolved through `describeActors`, so this
+   * route was the one that made the module's most consequential sentence read
+   * `Approved by billing@carein.ai`.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    const res = await approve(app);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.approvedBy, 'Billing User');
+    assert.equal(
+      JSON.stringify(res.body).includes('billing@carein.ai'),
+      false,
+      'no field on this response may carry the address'
+    );
+
+    // The COLUMN still holds the key — the FK did not move.
+    const plan = db.table('rcm_posting_queue')[0];
+    assert.equal(plan.approved_by, 'billing@carein.ai');
+  });
+});
+
+test('an actor with no display name falls back to the key, never to "somebody"', async () => {
+  /*
+   * An imported legacy actor can be a bare `u_7f3a` with nothing readable on
+   * the row. Rendering "somebody" would trade a real fact for a polite one; the
+   * key is at least something a person can recognise or look up. Same fallback
+   * the list uses for `parkedBy`.
+   */
+  const db = seed(new FakeRcmDb());
+  db.seed('rcm_user_map', [
+    {
+      user_key: 'u_7f3a',
+      platform_email: 'billing@carein.ai',
+      display_name: '',
+      legacy_role: '',
+      active: true,
+      created_at: new Date('2026-01-01T00:00:00Z'),
+    },
+  ]);
+  await withApp({ db }, async (app) => {
+    const res = await approve(app);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    // D-5 reuses the imported row BY EMAIL, so the key stamped on the plan is
+    // the legacy one — and with no display name on it, `describeActors` falls
+    // back to the row's email rather than inventing a person.
+    assert.equal(res.body.approvedBy, 'billing@carein.ai');
+    assert.equal(db.table('rcm_posting_queue')[0].approved_by, 'u_7f3a');
+  });
+});
+
 // ─── The pure evaluator, directly ────────────────────────────────────────────
 
 test('every check the gate can apply has copy that says what to do about it', () => {
