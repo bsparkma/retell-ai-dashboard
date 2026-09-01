@@ -104,7 +104,7 @@ import type {
   RemittanceClaim,
   WorkbenchClaim,
 } from "@/features/rcm/api";
-import { money } from "@/features/rcm/format";
+import { matchStatusLabel, money } from "@/features/rcm/format";
 import { blockedCopy, withdrawnCopy } from "@/features/rcm/posting";
 import { officeDay } from "@/features/rcm/time";
 
@@ -249,6 +249,120 @@ export function claimHref(claimId: string, batchId?: string | null): string {
 
 export function remittanceHref(batchId: string): string {
   return `/rcm/remittances/${encodeURIComponent(batchId)}`;
+}
+
+/**
+ * "Review and approve" — the ONE place approving happens.
+ *
+ * A helper rather than a template literal at each call site, because Stage C-3
+ * replaced the claim screen's permanently-disabled Approve button with a link to
+ * here, and two screens now form this URL. Two hand-rolled copies of a route are
+ * how one of them ends up pointing at a 404 the day the route moves.
+ */
+export function approveHref(batchId: string): string {
+  return `/rcm/remittances/${encodeURIComponent(batchId)}/approve`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ONE CLAIM'S STATE, IN ONE SENTENCE — Stage C-3, item 1
+   ─────────────────────────────────────────────────────────────────────────────
+   The claim screen's three states — candidates, linked, checked over — looked
+   95% alike, because each one was reported in five places at once and none of
+   them was the place. *"The page I click Mark checked over → Approve for posting
+   feels like the same page."*
+
+   So the state now lives in exactly TWO things at the top of the screen: the
+   step rail, and this line under it. The header chip that used to be a third is
+   folded INTO this line — same words, same tone, one place — and everything
+   below is evidence, which does not get to announce the state again.
+
+   It reads the SAME fields `claimFlow` reads, immediately beside it, so the rail
+   and the line cannot drift into disagreeing about one claim.
+   ────────────────────────────────────────────────────────────────────────────── */
+
+/** The four states a biller distinguishes, in her order. */
+export type ClaimStage = "candidates" | "linked" | "checked_over" | "approved";
+
+export interface ClaimStateLine {
+  stage: ClaimStage;
+  /**
+   * The chip's words — the match status, from the SAME helper the chip used.
+   *
+   * It is here rather than left on a separate element because `no_candidate` is
+   * one stored status covering two different answers, and losing that
+   * distinction to tidy the header would have been a real fact traded for a
+   * shorter page.
+   */
+  badge: string;
+  /** Where it is. Present tense, a fact. */
+  where: string;
+  /** What the next click is, or null when there is nothing left to do here. */
+  next: string | null;
+}
+
+/**
+ * @param claim the claim as the detail read returned it
+ */
+export function claimStateLine(claim: WorkbenchClaim): ClaimStateLine {
+  /*
+   * THE SNAPSHOT FIRST, the projection as the fallback.
+   *
+   * `claim.rejectedCandidates` exists so a LIST row can tell the two negatives
+   * apart without carrying a snapshot at all. Where a snapshot IS loaded — which
+   * is every detail read — it is the thing the panel below is rendering from, and
+   * a header that disagreed with the panel about how many claims were set aside
+   * would be the screen arguing with itself. This is the order the chip this
+   * replaced already read them in.
+   */
+  const rejected = claim.matchSnapshot?.rejectedCandidates ?? claim.rejectedCandidates ?? 0;
+  const badge = matchStatusLabel(claim.odMatchStatus, rejected);
+  /*
+   * BOTH HALVES, ALWAYS. `od_claim_num` is meaningful only when the status is
+   * `confirmed` — a DB CHECK enforces the pair — so reading either one alone
+   * would let a half-written row render as linked to nothing.
+   */
+  const linked = claim.odMatchStatus === "confirmed" && claim.odClaimNum !== null;
+
+  if (!linked) {
+    return {
+      stage: "candidates",
+      badge,
+      where: "Not linked to Open Dental yet.",
+      next: "Pick which Open Dental claim this is. Nothing can be approved until you do.",
+    };
+  }
+
+  const to = `Linked to Open Dental claim ${claim.odClaimNum}`;
+
+  if (claim.postingQueueId) {
+    return {
+      stage: "approved",
+      badge,
+      where: `${to}, checked over, and approved${
+        claim.approvedAt ? ` on ${officeDay(claim.approvedAt, claim.officeId)}` : ""
+      }.`,
+      next: null,
+    };
+  }
+
+  if (!claim.reviewedAt) {
+    return {
+      stage: "linked",
+      badge,
+      where: `${to}.`,
+      next: "Read the two sides below, decide any write-offs, then mark it checked over.",
+    };
+  }
+
+  return {
+    stage: "checked_over",
+    badge,
+    where: `${to} and checked over by ${claim.reviewedBy ?? "somebody"} on ${officeDay(
+      claim.reviewedAt,
+      claim.officeId,
+    )}.`,
+    next: "Approving happens on the check — the whole check is approved at once.",
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

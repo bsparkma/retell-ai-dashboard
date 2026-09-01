@@ -94,11 +94,12 @@ import {
   type RcmOfficeId,
   type RemittanceDetail,
 } from "@/features/rcm/api";
-import { money, stamp } from "@/features/rcm/format";
+import { money, personName, stamp } from "@/features/rcm/format";
 import { checkDetail, checkTitle, checkWhy } from "@/features/rcm/checks";
 import { decisionsWithClaim, rollUp, rollUpSentence } from "@/features/rcm/rollup";
 import { officeStamp } from "@/features/rcm/time";
 import { useOffice } from "@/contexts/OfficeContext";
+import { useAuth } from "@/contexts/AuthContext";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type State =
@@ -110,6 +111,7 @@ export default function ApproveCheck() {
   const [, params] = useRoute("/rcm/remittances/:id/approve");
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
+  const auth = useAuth();
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [approving, setApproving] = useState(false);
@@ -594,8 +596,21 @@ export default function ApproveCheck() {
               </div>
             )}
 
-            <p className="mt-1 text-xs text-muted-foreground">
-              Approved by {result.approvedBy} · {stamp(new Date().toISOString())}
+            {/*
+              A PERSON'S NAME, NOT AN ADDRESS — Stage C-3, item 8(b).
+
+              `approvedBy` off this route is the crosswalk KEY, which for anyone
+              the platform minted a row for is their email address. The press was
+              made by whoever is reading this, in this browser, a second ago — so
+              the signed-in person's own display name is not a guess, it is the
+              same fact spelled the way a person says it. `personName` resolves
+              that one case and returns anything else untouched.
+            */}
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-attribution">
+              Approved by{" "}
+              {personName(result.approvedBy, auth.status === "authenticated" ? auth.user : null) ??
+                result.approvedBy}{" "}
+              · {stamp(new Date().toISOString())}
             </p>
             <Link
               href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
@@ -699,10 +714,35 @@ function BackToCheck({ batchId }: { batchId: string }) {
  * Open by default when the claim is NOT postable — the whole point is that a
  * refusal is visible before the press rather than after it — and closed when it
  * is, so a clean check of twelve claims is a page rather than a scroll.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * OPEN SHOWS WHAT FAILED. IT DOES NOT SHOW THIRTEEN GREEN TICKS — C-3, item 5
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Three not-ready claims on one check rendered three near-identical thirteen-row
+ * lists, twelve of whose rows were green on all three. A twelve-patient Delta
+ * check would be a hundred and fifty lines of confirmation wrapped around the
+ * handful of sentences that are the reason anybody opened it.
+ *
+ * A refusal has to be visible; a pass does not have to be enumerated. So an open
+ * NOT-READY claim shows the failing conditions and one line saying how many
+ * passed — and that line opens the passing ones, because "what else did it
+ * check" is a fair question with an answer and the answer is right there.
+ *
+ * NOTHING IS FILTERED OUT. An `alreadyQueued` claim and a `postable` one still
+ * list every condition when opened: on those two there is no failure to lead
+ * with, and the full list IS the content.
  */
 function ClaimChecklist({ claim, batchId }: { claim: ApprovalClaim; batchId: string }) {
   const [open, setOpen] = useState(!claim.postable && !claim.alreadyQueued);
+  /** Has she asked to see the ones that passed? Only ever on a not-ready claim. */
+  const [showPassed, setShowPassed] = useState(false);
   const failed = claim.checks.filter((c) => !c.passed);
+  const passed = claim.checks.filter((c) => c.passed);
+  /*
+   * The only case with a failure worth leading with. A postable or already
+   * approved claim has none, so it keeps the full list exactly as it was.
+   */
+  const leadWithFailures = !claim.postable && !claim.alreadyQueued && failed.length > 0;
 
   return (
     <div className="px-4 py-3" data-testid={`approval-claim-${claim.claimId}`}>
@@ -740,10 +780,43 @@ function ClaimChecklist({ claim, batchId }: { claim: ApprovalClaim; batchId: str
       {open && (
         <>
           <ul className="mt-2 space-y-1.5" data-testid={`approval-checks-${claim.claimId}`}>
-            {claim.checks.map((check) => (
+            {(leadWithFailures ? failed : claim.checks).map((check) => (
               <CheckRow key={check.code} check={check} />
             ))}
           </ul>
+
+          {/*
+            THE ONE LINE THAT STANDS IN FOR THE GREEN ONES.
+            A button, not a sentence: the facts stay one click away rather than
+            being asserted and then hidden. Absent when nothing passed, because
+            "0 checks passed" is a sentence nobody needs under a list of the
+            failures that are all of them.
+          */}
+          {leadWithFailures && passed.length > 0 && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setShowPassed((v) => !v)}
+                data-testid={`approval-passed-toggle-${claim.claimId}`}
+                aria-expanded={showPassed}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+              >
+                <Check size={12} className="text-emerald-600 dark:text-emerald-400" />
+                {passed.length} check{passed.length === 1 ? "" : "s"} passed
+              </button>
+              {showPassed && (
+                <ul
+                  className="mt-1.5 space-y-1.5"
+                  data-testid={`approval-passed-${claim.claimId}`}
+                >
+                  {passed.map((check) => (
+                    <CheckRow key={check.code} check={check} />
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {!claim.postable && !claim.alreadyQueued && (
             <Link
               href={`/rcm/claims/${encodeURIComponent(claim.claimId)}?from=${encodeURIComponent(batchId)}`}

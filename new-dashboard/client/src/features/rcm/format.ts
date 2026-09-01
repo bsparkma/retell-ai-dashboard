@@ -302,3 +302,49 @@ export function ordinal(n: number): string {
       return `${i}th`;
   }
 }
+
+/**
+ * A PERSON, BY NAME — never by email address — Stage C-3, item 8(b).
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS FIXES, AND WHAT IT CANNOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Almost every attributed field in this module is already a DISPLAY NAME by the
+ * time it reaches a screen: the routes call `describeActors`, which reads
+ * `rcm_user_map.display_name`. One is not. `POST /remittances/:id/approve`
+ * returns `approvedBy` straight out of `resolveRcmActor`, and that function's
+ * return value is the crosswalk KEY — which for anyone the platform minted a row
+ * for is their email. So the sentence a biller reads at the single most
+ * consequential moment in the module was
+ *
+ *     Approved by admin@carein.ai
+ *
+ * That press was made by the person reading it, in this browser, one second ago.
+ * The app knows their name — `/auth/me` put it on the request. So this resolves
+ * the ONE case it can answer honestly: a value that is an email address AND is
+ * the signed-in person's own becomes their display name.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT NEVER INVENTS ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Somebody ELSE'S email address is returned unchanged. The client has no way to
+ * know their name, and rendering "a colleague" or "somebody" in place of an
+ * address a person could at least recognise would trade a real fact for a
+ * polite one. Where that happens, the fix is a display name on their
+ * `rcm_user_map` row, which is server-side and out of this slice's scope — see
+ * the PR's backend asks.
+ *
+ * @param value the attribution as it arrived — a display name, or a user key
+ * @param me the signed-in person, when there is one
+ */
+export function personName(
+  value: string | null | undefined,
+  me: { name?: string | null; email?: string | null } | null | undefined,
+): string | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return null;
+  const mine = typeof me?.email === "string" ? me.email.trim().toLowerCase() : "";
+  const name = typeof me?.name === "string" ? me.name.trim() : "";
+  if (mine && name && raw.toLowerCase() === mine) return name;
+  return raw;
+}

@@ -56,6 +56,7 @@ import {
   Ban,
   Check,
   CheckCircle2,
+  ChevronRight,
   CircleSlash,
   FileText,
   Info,
@@ -87,7 +88,7 @@ import {
   stamp,
 } from "@/features/rcm/format";
 import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
-import { remittanceHref } from "@/features/rcm/flow";
+import { approveHref } from "@/features/rcm/flow";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 /**
@@ -486,6 +487,21 @@ function CarrierPanel({
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
   onDecide: ClaimWorkbenchProps["onDecide"];
 }) {
+  /*
+   * IS THERE A CHART BEHIND THIS DECISION YET? — Stage C-3, item 4.
+   *
+   * Deciding a write-off is allowed on an unmatched claim and STAYS allowed: the
+   * decision is about the remittance's own line, it writes four columns on one of
+   * our rows, and the approval gate refuses to post an unmatched claim anyway. So
+   * this is not a lock. Nothing here disables anything.
+   *
+   * It is a caution, because on 2026-08-31 a $480 office write-off was recorded
+   * against a claim with no chart behind it and not one thing on the screen
+   * remarked on it. "The office absorbs this" is a sentence about a PATIENT, and
+   * until this claim is linked nobody has said which patient that is.
+   */
+  const notLinked = claim.odMatchStatus !== "confirmed";
+
   return (
     <section data-testid="claim-parsed">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -569,6 +585,7 @@ function CarrierPanel({
               busy={busy}
               mayDecide={mayDecide}
               decideBlockedBy={decideBlockedBy}
+              notLinked={notLinked}
               onDecide={onDecide}
             />
           ))}
@@ -592,6 +609,7 @@ function CarrierLine({
   busy,
   mayDecide,
   decideBlockedBy,
+  notLinked,
   onDecide,
 }: {
   line: ClaimLine;
@@ -599,6 +617,8 @@ function CarrierLine({
   busy: ClaimWorkbenchProps["busy"];
   mayDecide: boolean;
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
+  /** No Open Dental claim behind this one yet — a caution, never a lock. */
+  notLinked: boolean;
   onDecide: ClaimWorkbenchProps["onDecide"];
 }) {
   const remainder = line.patientRemainderCents;
@@ -683,6 +703,7 @@ function CarrierLine({
           busy={busy}
           mayDecide={mayDecide}
           decideBlockedBy={decideBlockedBy}
+          notLinked={notLinked}
           onDecide={onDecide}
         />
       )}
@@ -707,6 +728,7 @@ function LineDecisionControl({
   busy,
   mayDecide,
   decideBlockedBy,
+  notLinked,
   onDecide,
 }: {
   line: ClaimLine;
@@ -716,6 +738,7 @@ function LineDecisionControl({
   busy: ClaimWorkbenchProps["busy"];
   mayDecide: boolean;
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
+  notLinked: boolean;
   onDecide: ClaimWorkbenchProps["onDecide"];
 }) {
   const [picking, setPicking] = useState(false);
@@ -723,6 +746,29 @@ function LineDecisionControl({
 
   return (
     <div className="mt-2" data-testid={`decision-${line.lineId}`}>
+      {/*
+        THE CAUTION, ABOVE THE BUTTONS — Stage C-3, item 4.
+
+        Above and not below, because it is a thing to know BEFORE pressing. In
+        plain words, naming the consequence rather than the mechanism: absorbing
+        money is done on behalf of a patient, and an unlinked claim has not said
+        which one. It reads as amber, never rose — this is a caution about an
+        allowed act, not a refusal, and colouring it as a block would teach a
+        biller to expect a button that does not work.
+      */}
+      {notLinked && (
+        <p
+          className="mb-2 flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-300"
+          data-testid={`decision-unlinked-${line.lineId}`}
+        >
+          <Info size={12} className="mt-0.5 shrink-0" />
+          <span>
+            This claim isn&rsquo;t linked to an Open Dental claim yet — match it up first, so the
+            office is absorbing for the right patient.
+          </span>
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -1070,48 +1116,55 @@ function ChartPanel({
           </div>
 
           {/*
-            Approving is a WHOLE-CHECK act — the gate evaluates every claim on a
-            check and writes one posting. It has never happened here, and the
-            control stays visible and disabled rather than absent, so a biller
-            arriving from the approve step is told where approving lives instead
-            of finding nothing where she expected a button.
+            ── NO APPROVE BUTTON HERE, AND NOT A DISABLED ONE EITHER ───────────
+            Stage C-3, item 2. This was a control that could never be pressed on
+            any claim, in any state, by anybody — approving is a WHOLE-CHECK act
+            and always has been. A permanently disabled button is not an honest
+            "not yet": it is a promise the screen has no intention of keeping,
+            and a biller who tries it learns that controls here sometimes lie.
+
+            What she actually needed was the way to the one screen that approves.
+            So that is what this is: a link, with one target, that goes there.
+
+            Without `?from=` there is no batch id to link to, so the sentence
+            still names WHERE approving happens and points at the check list
+            rather than inventing an id.
           */}
-          <div className="flex flex-col items-start gap-1">
-            <button
-              disabled
-              data-testid="approve-disabled"
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-foreground/10 px-3 py-1.5 text-sm font-medium text-muted-foreground"
-            >
-              <ShieldCheck size={14} />
-              Approve
-            </button>
-            <DisabledReason testId="approve-disabled-reason">
-              <span className="block max-w-[15rem] text-right">
-                Approving happens on the remittance — the whole check is approved at once.
-                {fromBatchId ? (
-                  <>
-                    {" "}
-                    <Link
-                      href={remittanceHref(fromBatchId)}
-                      className="underline underline-offset-2 hover:text-foreground"
-                      data-testid="approve-disabled-link"
-                    >
-                      Go there
-                    </Link>
-                    .
-                  </>
-                ) : null}
-              </span>
-            </DisabledReason>
-          </div>
+          <p
+            className="max-w-[16rem] pt-1.5 text-right text-xs text-muted-foreground"
+            data-testid="approve-lives-elsewhere"
+          >
+            Approving happens on the check — the whole check at once.{" "}
+            {fromBatchId ? (
+              <Link
+                href={approveHref(fromBatchId)}
+                className="font-medium text-foreground underline underline-offset-2"
+                data-testid="approve-link"
+              >
+                Review and approve
+              </Link>
+            ) : (
+              <Link
+                href="/rcm/remittances"
+                className="font-medium text-foreground underline underline-offset-2"
+                data-testid="approve-link-list"
+              >
+                Find the check
+              </Link>
+            )}
+          </p>
         </div>
       </div>
 
       {claim.odMatchStatus === "confirmed" && (
         <p className="mt-2 text-xs text-muted-foreground" data-testid="reconfirm-warning">
+          {/* WHAT THE BUTTON BESIDE IT WOULD DO — not what state the claim is
+              in. The state is said once, at the top of the page, on
+              `claim-state-line`; a panel that repeats it is a panel a biller has
+              to read to learn nothing. */}
           {mayRerun
             ? "Matching it up again replaces this match and un-links the claim. The confirmation stays in the audit trail."
-            : "This claim is linked. Releasing it un-links the claim, which needs posting permission — ask an approver."}
+            : "Releasing this match un-links the claim, which needs posting permission — ask an approver."}
         </p>
       )}
 
@@ -1287,8 +1340,14 @@ function MatchPicker({
               <p className="mt-2 text-sm font-medium text-foreground">
                 Nothing here is safe to offer
               </p>
+              {/* The office at heading weight, for the same reason the panel
+                  above says it that way: the likeliest cause of this screen is
+                  that the wrong practice was searched. */}
+              <p className="mt-1 text-sm text-foreground" data-testid="no-candidate-office">
+                Searched <strong className="font-semibold">{snapshot.officeName}</strong>&rsquo;s
+                Open Dental.
+              </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}.{" "}
                 {snapshot.rejectedCandidates} Open Dental claim
                 {snapshot.rejectedCandidates === 1 ? " was" : "s were"} examined and set aside —{" "}
                 {rejectionSummary(snapshot)}.
@@ -1303,27 +1362,147 @@ function MatchPicker({
               <p className="mt-2 text-sm font-medium text-foreground">
                 No matching claim in Open Dental
               </p>
+              <p className="mt-1 text-sm text-foreground" data-testid="no-candidate-office">
+                Searched <strong className="font-semibold">{snapshot.officeName}</strong>&rsquo;s
+                Open Dental.
+              </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}. Nothing was
-                found and nothing was set aside. This is a recorded outcome, not a missing one.
+                Nothing was found and nothing was set aside. This is a recorded outcome, not a
+                missing one.
               </p>
             </>
           )}
         </div>
       ) : (
-        <div className="mt-3 space-y-3">
-          {snapshot.candidates.map((c) => (
-            <CandidateCard
-              key={c.odClaimNum}
-              candidate={c}
-              confirmedClaimNum={claim.odClaimNum}
-              disabled={busy !== null || claim.odMatchStatus === "confirmed"}
-              onConfirm={() => onConfirm(c.odClaimNum)}
-            />
-          ))}
-        </div>
+        <CandidateList
+          candidates={snapshot.candidates}
+          confirmedClaimNum={claim.odClaimNum}
+          disabled={busy !== null || claim.odMatchStatus === "confirmed"}
+          onConfirm={onConfirm}
+        />
       )}
     </>
+  );
+}
+
+/**
+ * THE CANDIDATE LIST, WITH ONE CARD OPEN AT A TIME — Stage C-3, item 1.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THE LIST COLLAPSES
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Every candidate carried its full evidence — chips with weights, blockers, line
+ * pairings, a confirm button and its disabled reason — whether or not anybody
+ * was still choosing. Four of those stacked under a claim that was ALREADY
+ * LINKED is four screens of an argument that has been settled, and it is most of
+ * why the three states of this page looked alike: the part that changed was
+ * three lines high and the part that did not was two thousand pixels of it.
+ *
+ * So exactly one card is open, and which one says what the page is for:
+ *
+ *   BEFORE LINKING   the leader is open — she is choosing, and the top of the
+ *                    ranking is where choosing starts. The rest are one line
+ *                    each and open on a click, because "why not that one" is a
+ *                    question with an answer and the answer must stay reachable.
+ *   AFTER LINKING    the LINKED one is open and everything else is one line.
+ *                    The record of the choice is still on this screen — hiding
+ *                    it would make "why did I pick this one", asked six weeks
+ *                    later, unanswerable from the screen where it was picked.
+ *
+ * NOTHING IS HIDDEN, and that is the whole design: a collapsed row still names
+ * the claim, its score and what Open Dental billed, and one click restores the
+ * card exactly as it was. This is a fold, not a filter.
+ */
+function CandidateList({
+  candidates,
+  confirmedClaimNum,
+  disabled,
+  onConfirm,
+}: {
+  candidates: MatchCandidate[];
+  confirmedClaimNum: number | null;
+  disabled: boolean;
+  onConfirm: (odClaimNum: number) => void;
+}) {
+  /*
+   * WHICH ONE IS OPEN, as an override of the default rather than as the state
+   * itself. Null means "whatever the claim's own state implies", so confirming a
+   * match moves the open card WITHOUT the component having to notice: the
+   * default recomputes from the new `confirmedClaimNum` on the next render. A
+   * `useState(defaultOpen)` would have frozen the pre-link answer and left the
+   * leader expanded under a claim that had just been linked to something else.
+   */
+  const [openOverride, setOpenOverride] = useState<number | null>(null);
+  const defaultOpen =
+    confirmedClaimNum !== null && candidates.some((c) => c.odClaimNum === confirmedClaimNum)
+      ? confirmedClaimNum
+      : (candidates[0]?.odClaimNum ?? null);
+  const open = openOverride ?? defaultOpen;
+
+  return (
+    <div className="mt-3 space-y-2" data-testid="candidate-list">
+      {candidates.map((c) =>
+        c.odClaimNum === open ? (
+          <CandidateCard
+            key={c.odClaimNum}
+            candidate={c}
+            confirmedClaimNum={confirmedClaimNum}
+            disabled={disabled}
+            onConfirm={() => onConfirm(c.odClaimNum)}
+            onCollapse={candidates.length > 1 ? () => setOpenOverride(-1) : undefined}
+          />
+        ) : (
+          <CandidateRow
+            key={c.odClaimNum}
+            candidate={c}
+            linked={confirmedClaimNum === c.odClaimNum}
+            onOpen={() => setOpenOverride(c.odClaimNum)}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
+/**
+ * A candidate folded to one line: which claim, how it scored, what it billed.
+ *
+ * Those three are the ones a biller scans a list by, so the fold costs her
+ * nothing at scanning distance and gives back the page. Everything else is one
+ * click away and identical to what it was.
+ */
+function CandidateRow({
+  candidate: c,
+  linked,
+  onOpen,
+}: {
+  candidate: MatchCandidate;
+  linked: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid={`candidate-row-${c.odClaimNum}`}
+      aria-expanded={false}
+      className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-border bg-card px-4 py-2 text-left transition-colors hover:bg-muted/50"
+    >
+      <ChevronRight size={13} className="shrink-0 text-muted-foreground" />
+      <span className="font-mono text-sm font-medium text-foreground">ClaimNum {c.odClaimNum}</span>
+      <span className="rounded-full border border-border px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+        {c.confidence} · {c.score}
+      </span>
+      {linked && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <CheckCircle2 size={11} /> Linked
+        </span>
+      )}
+      <span className="font-mono text-sm tabular-nums text-muted-foreground">
+        {money(c.od.billedCents)} billed
+      </span>
+      <span className="ml-auto text-xs text-muted-foreground">Open it</span>
+    </button>
   );
 }
 
@@ -1335,7 +1514,30 @@ function rejectionSummary(snapshot: MatchSnapshot): string {
   return parts.length > 0 ? parts.join(", ") : "no reason recorded";
 }
 
-/** What the search actually did, including everything it could NOT do. */
+/**
+ * HOW THE SEARCH RAN — the facts, folded away — Stage C-3, item 8(a).
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * NOTHING IS REMOVED. THE DEFAULT CHANGED.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * "9 Open Dental reads", "3 patients considered", "amounts match within $5.00",
+ * a prefix-match note, a search-limit warning — every one of these is TRUE and
+ * every one of them is worth having when a biller is asking why a match came out
+ * the way it did. None of them is worth reading on the way to *"is this the
+ * right patient"*, and they sat above the candidates in full, every time.
+ *
+ * So they are a `<details>`. The block is one line closed and byte-identical
+ * open, and it is the ONLY thing on this screen that hides anything by default.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TWO THINGS DO NOT FOLD, AND THAT IS THE POINT OF FOLDING THE REST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AMBIGUITY and a TRUNCATED SEARCH are not diagnostics. Ambiguity says the
+ * ranking below is not a recommendation; truncation says the right answer may
+ * not be on the screen at all. Both change what a biller should DO with the list
+ * she is about to read, so both stay outside the fold where they were. A summary
+ * that folded a warning away would be the noise-reduction that costs an answer.
+ */
 function MatchMeta({
   snapshot,
   rules,
@@ -1344,19 +1546,10 @@ function MatchMeta({
   rules: ClaimDetailResponse["matchRules"];
 }) {
   return (
-    <div
-      className="mt-2 rounded-xl border border-border bg-card px-4 py-3 text-xs"
-      data-testid="match-meta"
-    >
-      <div className="text-muted-foreground">
-        Searched {stamp(snapshot.fetchedAt)} · {snapshot.odCalls} Open Dental read
-        {snapshot.odCalls === 1 ? "" : "s"} · {snapshot.patientsConsidered.length} patient
-        {snapshot.patientsConsidered.length === 1 ? "" : "s"} considered
-      </div>
-
+    <div className="mt-2 space-y-2" data-testid="match-meta">
       {snapshot.ambiguous && (
         <div
-          className="mt-2 flex items-start gap-1.5 font-medium text-amber-800 dark:text-amber-300"
+          className="flex items-start gap-1.5 rounded-xl border border-amber-200 bg-amber-50/40 px-4 py-2.5 text-xs font-medium text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/15 dark:text-amber-300"
           data-testid="match-ambiguous"
         >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -1367,39 +1560,61 @@ function MatchMeta({
         </div>
       )}
 
-      {snapshot.rejectedCandidates > 0 && (
-        <div className="mt-2 text-muted-foreground" data-testid="match-rejected">
-          {snapshot.rejectedCandidates} Open Dental claim
-          {snapshot.rejectedCandidates === 1 ? "" : "s"} examined and not offered —{" "}
-          {rejectionSummary(snapshot)}.
-        </div>
-      )}
-
-      {!snapshot.nameRuleApplied && (
-        <div className="mt-2 text-muted-foreground" data-testid="match-name-rule-off">
-          This patient is already linked, so claims were read from their chart directly and a name
-          disagreement was shown as evidence rather than used to disqualify.
-        </div>
-      )}
-
       {snapshot.truncated && (
-        <div className="mt-2 flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
+        <div
+          className="flex items-start gap-1.5 rounded-xl border border-amber-200 bg-amber-50/40 px-4 py-2.5 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/15 dark:text-amber-300"
+          data-testid="match-truncated"
+        >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span>A search limit was reached — some Open Dental claims were not examined.</span>
         </div>
       )}
 
-      {snapshot.notes.length > 0 && (
-        <ul className="mt-2 space-y-0.5 text-muted-foreground" data-testid="match-notes">
-          {snapshot.notes.map((n, i) => (
-            <li key={i}>· {n}</li>
-          ))}
-        </ul>
-      )}
+      <details className="rounded-xl border border-border bg-card" data-testid="match-how-it-ran">
+        <summary className="cursor-pointer list-none px-4 py-2 text-xs text-muted-foreground marker:content-none hover:text-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <ChevronRight size={12} className="shrink-0 transition-transform" />
+            How the search ran — searched {stamp(snapshot.fetchedAt)} against{" "}
+            {snapshot.officeName}
+          </span>
+        </summary>
 
-      <div className="mt-2 text-muted-foreground/80">
-        Amounts match within {money(rules.amountNearCents)}; dates within {rules.dateNearDays} days.
-      </div>
+        <div className="border-t border-border px-4 py-3 text-xs">
+          <div className="text-muted-foreground">
+            {snapshot.odCalls} Open Dental read
+            {snapshot.odCalls === 1 ? "" : "s"} · {snapshot.patientsConsidered.length} patient
+            {snapshot.patientsConsidered.length === 1 ? "" : "s"} considered
+          </div>
+
+          {snapshot.rejectedCandidates > 0 && (
+            <div className="mt-2 text-muted-foreground" data-testid="match-rejected">
+              {snapshot.rejectedCandidates} Open Dental claim
+              {snapshot.rejectedCandidates === 1 ? "" : "s"} examined and not offered —{" "}
+              {rejectionSummary(snapshot)}.
+            </div>
+          )}
+
+          {!snapshot.nameRuleApplied && (
+            <div className="mt-2 text-muted-foreground" data-testid="match-name-rule-off">
+              This patient is already linked, so claims were read from their chart directly and a
+              name disagreement was shown as evidence rather than used to disqualify.
+            </div>
+          )}
+
+          {snapshot.notes.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-muted-foreground" data-testid="match-notes">
+              {snapshot.notes.map((n, i) => (
+                <li key={i}>· {n}</li>
+              ))}
+            </ul>
+          )}
+
+          <div className="mt-2 text-muted-foreground/80">
+            Amounts match within {money(rules.amountNearCents)}; dates within {rules.dateNearDays}{" "}
+            days.
+          </div>
+        </div>
+      </details>
     </div>
   );
 }
@@ -1409,11 +1624,14 @@ function CandidateCard({
   confirmedClaimNum,
   disabled,
   onConfirm,
+  onCollapse,
 }: {
   candidate: MatchCandidate;
   confirmedClaimNum: number | null;
   disabled: boolean;
   onConfirm: () => void;
+  /** Fold this card back to a line. Absent when it is the only candidate. */
+  onCollapse?: () => void;
 }) {
   const isConfirmed = confirmedClaimNum === c.odClaimNum;
   const lockedByOther =
@@ -1442,6 +1660,17 @@ function CandidateCard({
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
                 <CheckCircle2 size={11} /> Linked
               </span>
+            )}
+            {onCollapse && (
+              <button
+                type="button"
+                onClick={onCollapse}
+                data-testid={`candidate-collapse-${c.odClaimNum}`}
+                aria-expanded
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                Fold this away
+              </button>
             )}
           </div>
           {/*

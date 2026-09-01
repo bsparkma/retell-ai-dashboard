@@ -34,7 +34,7 @@
  * remove.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE HONEST DEAD-END
+ * THE HONEST DEAD-END, AND THE OFFICE IT SEARCHED
  * ─────────────────────────────────────────────────────────────────────────────
  * A claim that is not in Open Dental at all cannot be matched by looking harder,
  * and this screen has no way to create one. Saying so — and naming the thing she
@@ -42,12 +42,23 @@
  * difference between a screen that has run out of ideas and one that has an
  * answer she does not like.
  *
+ * STAGE C-3 ADDS THE CASE THAT ACTUALLY HAPPENED. A check was brought in under
+ * Valley and its claims lived in Roland. Every screen said which office had been
+ * searched — *"against Valley — Fort Smith"*, in grey, at 11px, after a
+ * timestamp — and it did not register, because a line that reads as a receipt is
+ * read as a receipt. The office is now the loudest thing in this panel, and the
+ * wrong-office remedy sits beside it: this is not a claim that is missing, it is
+ * a check that came in under the wrong practice, and the fix is to set it aside
+ * as sent in error and bring it in again on the right one.
+ *
  * NO REAL PATIENT DATA anywhere in this file.
  */
-import { CheckCircle2, Info, Search } from "lucide-react";
+import { Building2, CheckCircle2, Info, Search } from "lucide-react";
+import { Link } from "wouter";
 import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
 import { agreement, differences } from "@/features/rcm/matchWords";
 import { day, money } from "@/features/rcm/format";
+import { remittanceHref } from "@/features/rcm/flow";
 
 export interface MatchGuidanceProps {
   snapshot: MatchSnapshot | null;
@@ -61,6 +72,14 @@ export interface MatchGuidanceProps {
   onConfirm: (odClaimNum: number) => void;
   /** Scroll to the candidate list. Presentation only; it decides nothing. */
   onShowOthers: () => void;
+  /**
+   * Which check this claim came in on, when the URL said so.
+   *
+   * Only the dead-end reads it, and only to offer the way back to the one screen
+   * that can set a check aside. Null degrades to naming the act without linking
+   * to it — never to a guessed batch id.
+   */
+  fromBatchId?: string | null;
 }
 
 /**
@@ -81,6 +100,7 @@ export default function MatchGuidance({
   busy,
   onConfirm,
   onShowOthers,
+  fromBatchId = null,
 }: MatchGuidanceProps) {
   /*
    * NOTHING HAS RUN, OR THE SNAPSHOT IS IN AN OLDER SHAPE. The picker below
@@ -95,20 +115,76 @@ export default function MatchGuidance({
   if (candidates.length === 0) {
     return (
       <section
-        className="mt-4 rounded-xl border border-border bg-card p-4"
+        className="mt-4 rounded-xl border-2 border-amber-300 bg-amber-50/50 p-4 dark:border-amber-800 dark:bg-amber-950/20"
         data-testid="match-guidance-dead-end"
       >
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
           <Search size={15} />
           Nothing here to match it to
         </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Open Dental was searched and offered nothing this app is willing to link. Looking again
-          will not change that on its own.
+
+        {/*
+          ── WHICH PRACTICE'S OPEN DENTAL WAS SEARCHED ─────────────────────────
+          At heading weight, on its own line, before any advice — because the
+          single most likely reason for this screen is that the answer to this
+          question is the wrong practice, and a biller who reads it as a footnote
+          goes looking for a claim that was never going to be there.
+        */}
+        <p
+          className="mt-2 flex items-center gap-1.5 text-sm text-foreground"
+          data-testid="match-guidance-office"
+        >
+          <Building2 size={15} className="shrink-0" />
+          <span>
+            Searched{" "}
+            <strong className="font-semibold">{snapshot.officeName}</strong>&rsquo;s Open Dental.
+          </span>
         </p>
-        <p className="mt-2 text-sm text-foreground">
-          If this claim isn't in Open Dental at all, save the check for tomorrow and enter the claim
-          first. Then match it up again and it will be here.
+
+        <p className="mt-2 text-sm text-muted-foreground">
+          It offered nothing this app is willing to link. Looking again will not change that on its
+          own.
+        </p>
+
+        {/*
+          THE WRONG-OFFICE CASE, NAMED AND ANSWERED — Stage C-3, item 7.
+          It is the first thing to rule out, so it is the first remedy offered.
+        */}
+        <div
+          className="mt-3 rounded-lg border border-border bg-background p-3"
+          data-testid="match-guidance-wrong-office"
+        >
+          <p className="text-sm font-medium text-foreground">
+            Does this patient belong to your other office?
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Then this check was brought in under the wrong office — set it aside as sent in error,
+            and bring it in again under the right one. Nothing on it can ever be matched here.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {fromBatchId && (
+              <Link
+                href={remittanceHref(fromBatchId)}
+                data-testid="match-guidance-set-aside"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >
+                Go to the check to set it aside
+              </Link>
+            )}
+            <Link
+              href="/rcm/bring-in"
+              data-testid="match-guidance-bring-in"
+              className="text-xs font-medium text-foreground underline underline-offset-4"
+            >
+              Bring a check in under another office
+            </Link>
+          </div>
+        </div>
+
+        <p className="mt-3 text-sm text-foreground">
+          If it is this office&rsquo;s patient and the claim simply isn&rsquo;t in Open Dental yet,
+          save the check for tomorrow and enter the claim first. Then match it up again and it will
+          be here.
         </p>
         <Footer />
       </section>
@@ -116,16 +192,40 @@ export default function MatchGuidance({
   }
 
   const linked = confirmedClaimNum !== null;
-  const leader = candidates[0];
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ONCE LINKED, THE HERO IS ABOUT THE LINKED CLAIM — NOT THE LEADER
+   * ═══════════════════════════════════════════════════════════════════════════
+   * This block used to compare the EOB against `candidates[0]` unconditionally.
+   * A biller who linked the RUNNER-UP — which is the whole reason the list is
+   * offered rather than the top one auto-confirmed — then read a comparison of
+   * her EOB against a claim she had just declined, under a heading saying this
+   * was the one it was linked to, with the OTHER claim's billed total in it.
+   *
+   * Stage C-3 made that visible by folding the list: with one card open beside
+   * this panel, the two disagreeing about which chart claim is in play stopped
+   * being something the eye could slide past. So the subject follows the link.
+   *
+   * `?? candidates[0]` covers a confirmation whose claim is not in this
+   * snapshot — a forced re-run, an older record — and the surrounding screen
+   * already reports that case (the stale chip, the run button's own copy).
+   */
+  const subject =
+    (linked ? candidates.find((c) => c.odClaimNum === confirmedClaimNum) : null) ?? candidates[0];
   const runnerUp = candidates[1] ?? null;
   /*
    * THE SERVER'S OWN AMBIGUITY ANSWER FIRST. Only when it did NOT call the
    * snapshot ambiguous does the gap decide the wording.
+   *
+   * AND A LINKED CLAIM IS NEVER "more than one of these could be it" — a person
+   * settled it. Ambiguity is a question about a decision that has not been made;
+   * once it has, the panel's job is to show what was chosen.
    */
   const clear =
-    !snapshot.ambiguous &&
-    (runnerUp === null || leader.score - runnerUp.score >= CLEAR_ENOUGH);
-  const agrees = agreement(leader, eob);
+    linked ||
+    (!snapshot.ambiguous &&
+      (runnerUp === null || subject.score - runnerUp.score >= CLEAR_ENOUGH));
+  const agrees = agreement(subject, eob);
 
   // ── One clear candidate ────────────────────────────────────────────────────
   if (clear) {
@@ -134,9 +234,16 @@ export default function MatchGuidance({
         className="mt-4 rounded-xl border border-border bg-card p-4"
         data-testid="match-guidance-confident"
       >
+        {/*
+          THE HEADING NAMES WHAT THIS PANEL IS, NOT WHAT STATE THE CLAIM IS IN.
+          Stage C-3, item 1: the state is said once, at the top of the page. Once
+          a claim is linked this block stops being a recommendation and becomes
+          the comparison — the carrier's version beside Open Dental's — which is
+          the useful thing to keep on screen and a different thing to call it.
+        */}
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
           <CheckCircle2 size={15} />
-          {linked ? "This is the claim it is linked to" : "This looks like the one"}
+          {linked ? "How the two sides line up" : "This looks like the one"}
         </h2>
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -153,14 +260,14 @@ export default function MatchGuidance({
             title="What Open Dental holds"
             testId="match-guidance-od"
             rows={[
-              ["Patient", leader.od.patientName ?? "not recorded"],
+              ["Patient", subject.od.patientName ?? "not recorded"],
               [
                 "Born",
-                leader.od.patientBirthdate ? day(leader.od.patientBirthdate) : "not recorded",
+                subject.od.patientBirthdate ? day(subject.od.patientBirthdate) : "not recorded",
               ],
-              ["Subscriber", leader.od.subscriberId ?? "not recorded"],
-              ["Service date", leader.od.dateService ? day(leader.od.dateService) : "not recorded"],
-              ["Billed", money(leader.od.billedCents)],
+              ["Subscriber", subject.od.subscriberId ?? "not recorded"],
+              ["Service date", subject.od.dateService ? day(subject.od.dateService) : "not recorded"],
+              ["Billed", money(subject.od.billedCents)],
             ]}
           />
         </div>
@@ -174,7 +281,7 @@ export default function MatchGuidance({
         {!linked && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
-              onClick={() => onConfirm(leader.odClaimNum)}
+              onClick={() => onConfirm(subject.odClaimNum)}
               disabled={busy}
               data-testid="match-guidance-confirm"
               className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"

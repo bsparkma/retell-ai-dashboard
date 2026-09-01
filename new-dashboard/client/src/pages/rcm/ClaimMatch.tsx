@@ -31,7 +31,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useRoute, useSearchParams } from "wouter";
-import { ArrowLeft, CheckCircle2, Info, Loader2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Info, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice } from "@/contexts/OfficeContext";
 import { can } from "@/lib/permissions";
@@ -50,11 +50,24 @@ import {
   type LineDecision,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { day, MATCH_STATUS_TONE, matchStatusLabel } from "@/features/rcm/format";
-import { claimFlow, remittanceHref } from "@/features/rcm/flow";
+import { day, MATCH_STATUS_TONE } from "@/features/rcm/format";
+import { claimFlow, claimStateLine, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
+
+/**
+ * The three tones, as one map read by one element.
+ *
+ * The same rose / amber / emerald triple the verdict line uses, deliberately —
+ * a screen where the banner and the panel it summarises disagree about what red
+ * looks like is a screen that has to be read twice.
+ */
+const NOTICE_TONE = {
+  ok: "border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300",
+  warn: "border-amber-200 bg-amber-50/60 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300",
+  bad: "border-rose-300 bg-rose-50/70 text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200",
+} as const;
 
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
@@ -93,7 +106,34 @@ export default function ClaimMatchPage() {
    * than guessed at. One extra read per screen, not per claim.
    */
   const [siblings, setSiblings] = useState<string[] | null>(null);
-  const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  /**
+   * THE ONE-LINE ANSWER TO THE LAST THING THAT HAPPENED.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE TONE COMES FROM THE CONTENT — Stage C-3, item 3
+   * ═══════════════════════════════════════════════════════════════════════════
+   * This banner sits above the fold and used to have exactly two tones, chosen
+   * by WHICH FUNCTION set it rather than by what it said. `decide()` always set
+   * `ok`, because recording a decision succeeded — and then printed the server's
+   * verdict sentence in it. So a claim whose verdict came back RED rendered
+   *
+   *     ✓  Patient's number can't be trusted yet — something on this claim
+   *        does not line up with Open Dental.
+   *
+   * in green, with a tick, at the top of the screen. The act succeeded and the
+   * answer was a refusal, and the banner was reporting the act.
+   *
+   * A biller does not read a banner as "your click was received". She reads it
+   * as "here is where you are", and green means fine. So the three tones now map
+   * onto the three verdict states and nothing else may choose them:
+   *
+   *   ok    GREEN   it passed. Only ever a green verdict, or an act with no
+   *                 verdict attached at all (a confirmation, a review).
+   *   warn  AMBER   decided, and deliberately diverging — an amber verdict, and
+   *                 the refusals that are answers rather than failures.
+   *   bad   RED     blocking. A red verdict, and nothing else.
+   */
+  const [notice, setNotice] = useState<{ tone: "ok" | "warn" | "bad"; text: string } | null>(null);
   const [note, setNote] = useState("");
 
   /** Same office resolution as the remittance detail — see the note there. */
@@ -314,7 +354,19 @@ export default function ClaimMatchPage() {
     try {
       const result = await setLineDecision(office, claimId, lineId, decision, reason);
       setNotice({
-        tone: "ok",
+        /*
+         * THE VERDICT'S OWN STATE PICKS THE TONE — never the fact that the POST
+         * returned 200. See the note on `notice`. A missing verdict is the one
+         * case with nothing to be red or amber ABOUT: the decision was stored
+         * and the server said nothing further, so it is a plain green receipt.
+         */
+        tone: result.verdict
+          ? result.verdict.state === "red"
+            ? "bad"
+            : result.verdict.state === "amber"
+              ? "warn"
+              : "ok"
+          : "ok",
         // The server's own sentence about where the patient's number now lands,
         // never a second copy of that arithmetic written here.
         text: result.verdict
@@ -386,13 +438,6 @@ export default function ClaimMatchPage() {
             {day(claim.serviceDate)} · {RCM_OFFICE_LABELS[office]}
           </p>
         </div>
-        <span
-          className={`rounded-full px-2.5 py-1 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
-          data-testid="claim-match-status"
-        >
-          {matchStatusLabel(claim.odMatchStatus, snapshot?.rejectedCandidates ?? 0)}
-          {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
-        </span>
       </div>
 
       {/* The same five steps as the check and the Posting screen, scoped to
@@ -407,19 +452,66 @@ export default function ClaimMatchPage() {
         }}
       />
 
+      {/*
+        ── WHERE THIS CLAIM IS, IN ONE LINE — Stage C-3, item 1 ────────────────
+        The three states of this screen — candidates, linked, checked over — were
+        95% the same page, and the reason was not that too little changed. It was
+        that what DID change was spread thinly across a chip, a rail, three panel
+        headings and a paragraph, none of which was the place to look.
+
+        So the state lives HERE, once, in the biller's own words, directly under
+        the rail — and the panels below stopped reporting it. Everything below
+        this line is evidence for a decision, not an announcement about one.
+
+        It reads the same fields the rail reads, from the same file, so the two
+        cannot end up telling one claim two stories.
+      */}
+      {(() => {
+        const state = claimStateLine(claim);
+        return (
+          <div
+            className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-card px-3 py-2"
+            data-testid="claim-state-line"
+            data-stage={state.stage}
+          >
+            {/*
+              THE CHIP THAT USED TO SIT IN THE HEADER, brought down here.
+
+              Same helper, same tone, same words — including the `no_candidate`
+              distinction between "Open Dental has nothing" and "Open Dental had
+              things and none could be offered", which is a real fact and would
+              have been the thing lost by simply deleting a chip. What changed
+              is that the state is now said in ONE place instead of two.
+            */}
+            <span
+              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
+              data-testid="claim-match-status"
+            >
+              {state.badge}
+              {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
+            </span>
+            <span className="text-sm font-semibold text-foreground">{state.where}</span>
+            {state.next && (
+              <span className="text-sm text-muted-foreground" data-testid="claim-state-next">
+                {state.next}
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
       {notice && (
         <div
           data-testid="claim-notice"
-          className={`mt-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
-            notice.tone === "ok"
-              ? "border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"
-              : "border-amber-200 bg-amber-50/60 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
-          }`}
+          data-tone={notice.tone}
+          className={`mt-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${NOTICE_TONE[notice.tone]}`}
         >
           {notice.tone === "ok" ? (
             <CheckCircle2 size={15} className="mt-0.5 shrink-0" />
-          ) : (
+          ) : notice.tone === "warn" ? (
             <Info size={15} className="mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
           )}
           <span>{notice.text}</span>
         </div>
@@ -445,6 +537,7 @@ export default function ClaimMatchPage() {
         }}
         confirmedClaimNum={claim.odClaimNum}
         busy={busy !== null || claim.odMatchStatus === "confirmed"}
+        fromBatchId={fromBatchId}
         onConfirm={confirm}
         onShowOthers={() => {
           document
