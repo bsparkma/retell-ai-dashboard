@@ -199,6 +199,50 @@ test('children are deleted before their parents, on every RESTRICT edge', () => 
   }
 });
 
+test('the claims/queue CYCLE is broken by an UPDATE before anything is deleted', () => {
+  /*
+   * FOUND BY THE FIRST LIVE RUN, 2026-09-01, and missed by the rehearsal before
+   * it — the fixture never set `posting_queue_id`, so the edge existed in the
+   * schema and not in the data. A fixture that does not exercise an edge proves
+   * nothing about it.
+   *
+   * `rcm_posting_queue_line.claim_id -> rcm_claims` is RESTRICT and
+   * `rcm_claims.posting_queue_id -> rcm_posting_queue` is ALSO RESTRICT. No
+   * ordering of pure DELETEs satisfies both, so the back-reference is nulled
+   * first — inside the same transaction, so a later failure rolls it back too.
+   */
+  assert.equal(reset.CYCLE_BREAKS.length, 1);
+  const [step] = reset.CYCLE_BREAKS;
+  assert.equal(step.table, 'rcm_claims');
+  assert.match(step.sql, /^UPDATE rcm_claims/);
+  assert.ok(!/DELETE/i.test(step.sql), 'a cycle break must not delete anything');
+
+  /*
+   * And it must null ALL THREE columns. `rcm_claims_approval_check` holds
+   * `posting_queue_id`, `approved_at` and `approved_by` as one unit, so nulling
+   * only the FK raises a CHECK violation — the second thing the rehearsal found.
+   */
+  for (const col of ['posting_queue_id', 'approved_at', 'approved_by']) {
+    assert.ok(step.sql.includes(col + ' = NULL'), col + ' must be nulled too');
+  }
+});
+
+test('rcm_posting_document is counted, not silently cascaded away', () => {
+  /*
+   * It CASCADEs from `rcm_posting_queue`, so it never blocked anything — and it
+   * was missing from the count list entirely until the first live run against
+   * staging listed the live tables. Rows that vanish without being reported are
+   * the one thing a before/after table exists to prevent.
+   */
+  assert.ok(reset.ALL_RCM_TABLES.includes('rcm_posting_document'));
+  assert.ok(reset.DELETE_TABLES.includes('rcm_posting_document'));
+  const order = reset.DELETES.map((d) => d.table);
+  assert.ok(
+    order.indexOf('rcm_posting_document') < order.indexOf('rcm_posting_queue'),
+    'name it before its parent cascades it away uncounted'
+  );
+});
+
 test('the remittance keys go, or the reseed upload would be refused by a row pointing at nothing', () => {
   /*
    * `rcm_remittance_keys` is UNIQUE (office_id, remittance_key) and its FK to the
@@ -271,7 +315,10 @@ test('the dry run is the default, and it rolls back', async () => {
     async query(sql, params) {
       seen.push(sql.trim().split(/\s+/).slice(0, 3).join(' '));
       if (sql.includes('has_table_privilege')) {
-        return { rows: reset.DELETE_TABLES.map((t) => ({ table_name: t, can_delete: true })), rowCount: 0 };
+        return {
+          rows: reset.DELETE_TABLES.map((t) => ({ table_name: t, can_delete: true, can_update: true })),
+          rowCount: 0,
+        };
       }
       if (sql.includes('date_trunc')) return { rows: [{ cutoff: new Date('2026-09-01T05:00:00Z') }], rowCount: 0 };
       if (sql.includes('count(*)')) return { rows: [], rowCount: 0 };
@@ -304,7 +351,11 @@ test('the privilege check refuses BEFORE the first delete, naming the table and 
       seen.push(sql.trim().split(/\s+/)[0]);
       if (sql.includes('has_table_privilege')) {
         return {
-          rows: reset.DELETE_TABLES.map((t) => ({ table_name: t, can_delete: t !== 'audit_log' })),
+          rows: reset.DELETE_TABLES.map((t) => ({
+            table_name: t,
+            can_delete: t !== 'audit_log',
+            can_update: true,
+          })),
           rowCount: 0,
         };
       }

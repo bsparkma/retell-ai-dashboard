@@ -56,7 +56,7 @@
  *
  * The brief said "refuses to run unless the connection string is the staging
  * database", and this is one lane wider than that. It is here because the
- * thirteen DELETE statements below are ordered against a foreign-key graph with
+ * fourteen DELETE statements below are ordered against a foreign-key graph with
  * RESTRICT edges in it, and an order that is wrong fails at the fifth statement
  * against a live database rather than in a test. `rcm_office_settings` was
  * already-existing and only the live PostgreSQL rehearsal caught it (§RCM
@@ -73,13 +73,14 @@
  * The rcm_* tables grant `SELECT, INSERT, UPDATE, DELETE` to the same role.
  *
  * So a run as `carein_app` can clear every rcm_* row and then fail on the last
- * statement — after twelve successful deletes — with a permission error. That
+ * statement — after fourteen successful deletes — with a permission error. That
  * is a failure in the reporting path masking nothing at all, but it is still
  * the shape the §10.0 prep learned to avoid: check the cheap precondition
  * BEFORE the expensive part starts. `assertCanDelete` asks
  * `has_table_privilege` for every table this script will touch and refuses with
  * a sentence naming the role to reconnect as (`carein_owner`) rather than
- * discovering it half way through.
+ * discovering it half way through. It checks UPDATE on `rcm_claims` too, for the
+ * cycle-break below.
  *
  * Everything runs inside ONE transaction anyway, so a mid-run failure rolls the
  * whole thing back. The pre-check is about telling the operator something
@@ -276,6 +277,14 @@ const ALL_RCM_TABLES = Object.freeze([
   'rcm_recon_runs',
   'rcm_posting_queue',
   'rcm_posting_queue_line',
+  /*
+   * 6d's document table. It CASCADEs from `rcm_posting_queue`, so it never
+   * blocked anything and was missing from this list entirely until the first
+   * live run — which meant its rows were deleted by the cascade and never
+   * appeared in either count. Rows that vanish without being reported are the
+   * one thing a before/after table exists to prevent.
+   */
+  'rcm_posting_document',
 ]);
 
 /**
@@ -290,7 +299,66 @@ const ALL_RCM_TABLES = Object.freeze([
 const AUDIT_RCM_PREDICATE = "resource_type LIKE 'rcm\\_%' ESCAPE '\\'";
 
 /**
- * THE THIRTEEN STATEMENTS, IN THE ONLY ORDER THAT WORKS.
+ * BREAKING THE CYCLE — the statements that must run BEFORE any delete.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `rcm_claims` AND `rcm_posting_queue` POINT AT EACH OTHER
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `rcm_posting_queue_line.claim_id -> rcm_claims` is RESTRICT, and
+ * `rcm_claims.posting_queue_id -> rcm_posting_queue` is **also RESTRICT**. There
+ * is no ordering of pure DELETEs that satisfies both: whichever of the two goes
+ * first, the other still points at it.
+ *
+ * FOUND BY THE FIRST LIVE RUN, 2026-09-01, and not by the PostgreSQL rehearsal
+ * that preceded it — the rehearsal's fixture never set `posting_queue_id`, so
+ * the edge existed in the schema and not in the data. A fixture that does not
+ * exercise an edge proves nothing about it, and this is the second time that
+ * lesson has been paid for in this module.
+ *
+ * The transaction rolled back correctly and nothing was committed, which is the
+ * only reason this reads as a defect rather than as an incident.
+ *
+ * The fix is an UPDATE, not a reordering: null the back-reference on the claims
+ * whose plan is about to go. That is safe because the plan is being deleted —
+ * a claim pointing at a deleted plan is the thing being prevented, and a claim
+ * pointing at NOTHING is what the column already means when no plan exists.
+ *
+ * It runs INSIDE the same transaction as the deletes, so a later failure rolls
+ * the null-out back with everything else.
+ *
+ * @type {ReadonlyArray<{ table: string, sql: string, why: string }>}
+ */
+const CYCLE_BREAKS = Object.freeze([
+  {
+    table: 'rcm_claims',
+    why: 'posting_queue_id -> rcm_posting_queue is RESTRICT, and queue_line -> claims is too: a cycle',
+    /*
+     * ALL THREE COLUMNS, NOT JUST THE FOREIGN KEY.
+     *
+     * `rcm_claims_approval_check` holds `posting_queue_id`, `approved_at` and
+     * `approved_by` as ONE UNIT -- either all three are set or none is. Nulling
+     * only the FK violates it, which is what the second rehearsal found after
+     * the first live run found the cycle itself.
+     *
+     * Clearing all three is the honest answer rather than a way round the
+     * constraint: the approval being erased is an approval OF A PLAN THAT NO
+     * LONGER EXISTS. A claim left carrying "approved by X at T" with nothing to
+     * point at would be asserting something no row can corroborate.
+     */
+    sql: `UPDATE rcm_claims
+             SET posting_queue_id = NULL,
+                 approved_at = NULL,
+                 approved_by = NULL
+           WHERE posting_queue_id IS NOT NULL
+             AND posting_queue_id IN (
+                   SELECT queue_id FROM rcm_posting_queue
+                    WHERE created_at < $1
+                       OR batch_id IN (SELECT batch_id FROM rcm_payment_batches WHERE created_at < $1))`,
+  },
+]);
+
+/**
+ * THE FOURTEEN STATEMENTS, IN THE ONLY ORDER THAT WORKS.
  *
  * The FK graph carries RESTRICT edges on purpose — "a claim with money posted
  * against it must not be deletable", the same stance Open Dental itself takes.
@@ -327,8 +395,22 @@ const DELETES = Object.freeze([
                        OR claim_id IN (SELECT claim_id FROM rcm_claims WHERE created_at < $1))`,
   },
   {
+    table: 'rcm_posting_document',
+    /*
+     * CASCADEs from the plan, so it never blocks — but a cascade deletes rows
+     * without reporting them, and this table was missing from the count list
+     * entirely until the first live run. Named for the same reason
+     * `rcm_procedure_adjustments` is: the count is the point.
+     */
+    why: '6d’s document rows — CASCADE from the plan, named so the count is honest',
+    sql: `DELETE FROM rcm_posting_document
+           WHERE queue_id IN (SELECT queue_id FROM rcm_posting_queue
+                               WHERE created_at < $1
+                                  OR batch_id IN (SELECT batch_id FROM rcm_payment_batches WHERE created_at < $1))`,
+  },
+  {
     table: 'rcm_posting_queue',
-    why: 'RESTRICT to batches; its own lines went first',
+    why: 'RESTRICT to batches; its lines, its documents and the claims’ back-reference went first',
     sql: `DELETE FROM rcm_posting_queue
            WHERE created_at < $1
               OR batch_id IN (SELECT batch_id FROM rcm_payment_batches WHERE created_at < $1)`,
@@ -493,7 +575,22 @@ async function assertCanDelete(db) {
        FROM unnest($1::text[]) AS t`,
     [DELETE_TABLES]
   );
-  const denied = res.rows.filter((r) => !r.can_delete).map((r) => r.table_name);
+  /*
+   * UPDATE is checked too, because breaking the claims/queue cycle is an UPDATE
+   * and a role holding DELETE everywhere but lacking UPDATE on `rcm_claims`
+   * would fail at the very first statement — which is precisely the "discover it
+   * half way through" this function exists to prevent.
+   */
+  const upd = await db.query(
+    `SELECT t AS table_name,
+            has_table_privilege(current_user, t, 'UPDATE') AS can_update
+       FROM unnest($1::text[]) AS t`,
+    [CYCLE_BREAKS.map((s) => s.table)]
+  );
+  const denied = [
+    ...res.rows.filter((r) => !r.can_delete).map((r) => r.table_name),
+    ...upd.rows.filter((r) => !r.can_update).map((r) => `${r.table_name} (UPDATE)`),
+  ];
   if (denied.length === 0) return;
 
   const who = await db.query('SELECT current_user AS role');
@@ -590,13 +687,22 @@ async function runReset(db, { execute, timezone }) {
   const before = await countAll(db);
   const cutoff = await localMidnight(db, timezone);
 
-  /** @type {Array<{ table: string, why: string, deleted: number }>} */
+  /** @type {Array<{ table: string, why: string, deleted: number, verb: string }>} */
   const steps = [];
   await db.query('BEGIN');
   try {
+    /*
+     * The cycle-breaking UPDATEs FIRST, inside the same transaction. `rcm_claims`
+     * and `rcm_posting_queue` point at each other with RESTRICT on both edges, so
+     * no ordering of pure DELETEs can satisfy them — see CYCLE_BREAKS.
+     */
+    for (const step of CYCLE_BREAKS) {
+      const res = await db.query(step.sql, [cutoff]);
+      steps.push({ table: step.table, why: step.why, deleted: res.rowCount || 0, verb: 'UPDATE' });
+    }
     for (const step of DELETES) {
       const res = await db.query(step.sql, [cutoff]);
-      steps.push({ table: step.table, why: step.why, deleted: res.rowCount || 0 });
+      steps.push({ table: step.table, why: step.why, deleted: res.rowCount || 0, verb: 'DELETE' });
     }
     const after = await countAll(db);
     if (execute) await db.query('COMMIT');
@@ -622,13 +728,18 @@ async function main() {
     console.log(`  target      ${mode}  host=${host}  database=${database || '?'}`);
     console.log(`  timezone    ${timezone} (OFFICE_TIMEZONE)`);
     console.log(`  cutoff      ${new Date(result.cutoff).toISOString()}  — rows created BEFORE this go`);
-    console.log('\n-- what was deleted');
+    console.log('\n-- what changed');
     let total = 0;
     for (const s of result.steps) {
-      total += s.deleted;
-      console.log(`  ${String(s.deleted).padStart(6)}  ${s.table.padEnd(28)} ${s.why}`);
+      // The UPDATEs are counted separately from the TOTAL: they null a
+      // back-reference rather than removing anything, and folding them in would
+      // overstate how many rows this run actually deleted.
+      if (s.verb === 'DELETE') total += s.deleted;
+      console.log(
+        `  ${String(s.deleted).padStart(6)}  ${s.verb.padEnd(6)} ${s.table.padEnd(24)} ${s.why}`
+      );
     }
-    console.log(`  ${String(total).padStart(6)}  TOTAL`);
+    console.log(`  ${String(total).padStart(6)}  DELETED IN TOTAL`);
     console.log('\n-- row counts');
     console.log(formatCounts(result.before, result.after));
 
@@ -664,6 +775,7 @@ module.exports = {
   ResetGuardError,
   LOCAL_HOSTS,
   ALL_RCM_TABLES,
+  CYCLE_BREAKS,
   DELETES,
   DELETE_TABLES,
   AUDIT_RCM_PREDICATE,
