@@ -116,13 +116,39 @@ const FORBIDDEN_PATNUMS = Object.freeze({
  * line, a contractual write-off and a patient remainder as different sizes of
  * number. The amounts below are ordinary dental fees.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `toothNum` / `surface` — REQUIRED BY OPEN DENTAL, NOT OPTIONAL DECORATION
+ * ─────────────────────────────────────────────────────────────────────────────
+ * MEASURED 2026-09-01, on the first live prep run, which stopped at R2-1 with:
+ *
+ *     POST /procedurelogs -> 400
+ *     "A ToothNum is required for the procedure code's treatment area."
+ *
+ * Open Dental validates a procedure against its code's TreatArea. A whole-mouth
+ * code (`D0120` exam, `D1110` prophy, `D0274` bitewings, `D0330` panoramic) takes
+ * none; a tooth code (`D2740` crown, `D0220` periapical) needs a `ToothNum`; a
+ * surface code (`D2391` posterior composite) needs a `ToothNum` AND a `Surf`.
+ *
+ * The first three targets had gone in before the fourth was refused — the run
+ * was POST-only and left three live claims recorded in the manifest, which is
+ * exactly what `complete: false` is for.
+ *
+ * The obvious alternative was to swap the tooth codes for whole-mouth ones and
+ * keep the script unchanged. That was rejected: R2-2 is a $1,280 crown precisely
+ * because the office_writeoff decision should be one somebody would agonise
+ * over, and a $1,280 prophylaxis is not a fixture, it is a joke a biller would
+ * notice immediately.
+ *
+ * The tooth numbers are ordinary universal notation and are attached to
+ * synthetic patients.
+ *
  * The chart-side risk is unchanged in kind and larger in degree, which is why
  * `reseed-prep.js` reads back every id it creates and `rcm-s11-unwind.js` is the
  * only way these come off again.
  *
  * @type {ReadonlyArray<{ key: string, remittance: string, patNum: number,
- *   procCode: string, billedCents: number, allowedCents: number, paidCents: number,
- *   note: string }>}
+ *   procCode: string, toothNum?: string, surface?: string,
+ *   billedCents: number, allowedCents: number, paidCents: number, note: string }>}
  */
 const TARGETS = Object.freeze([
   // ── R1 · the clean check ──────────────────────────────────────────────────
@@ -169,6 +195,9 @@ const TARGETS = Object.freeze([
     remittance: 'R2',
     patNum: 12828,
     procCode: 'D2391',
+    /** Surface code: Open Dental refuses it without BOTH of these. */
+    toothNum: '30',
+    surface: 'O',
     billedCents: 21500,
     allowedCents: 16000,
     paidCents: 16000,
@@ -179,6 +208,8 @@ const TARGETS = Object.freeze([
     remittance: 'R2',
     patNum: 12827,
     procCode: 'D2740',
+    /** Tooth code. */
+    toothNum: '19',
     billedCents: 128000,
     allowedCents: 96000,
     paidCents: 48000,
@@ -197,6 +228,8 @@ const TARGETS = Object.freeze([
     remittance: 'R3',
     patNum: 12828,
     procCode: 'D0220',
+    /** Tooth code — a periapical is of a TOOTH, not of a mouth. */
+    toothNum: '8',
     billedCents: 3500,
     allowedCents: 2900,
     paidCents: 2900,

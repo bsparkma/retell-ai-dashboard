@@ -250,3 +250,53 @@ test('the four remittances have distinct check numbers and control numbers', () 
   assert.equal(new Set(ctls).size, ctls.length, 'interchange control numbers must differ');
   assert.equal(T.REMITTANCES.length, 4);
 });
+
+test('tooth and surface codes carry a ToothNum; whole-mouth codes carry none', () => {
+  /*
+   * MEASURED on the first live run, 2026-09-01: `POST /procedurelogs` for D2391
+   * returned 400 "A ToothNum is required for the procedure code's treatment
+   * area". Open Dental validates a procedure against its code's TreatArea, and
+   * three targets had already gone in before the fourth was refused.
+   *
+   * The pairs below are the treatment areas, not a preference — a surface code
+   * needs both, a tooth code needs one, a whole-mouth code needs neither. And a
+   * ToothNum on a whole-mouth code would be inventing a clinical fact about a
+   * chart, so "just send one everywhere" is not the fix.
+   */
+  const NEEDS = {
+    D0120: { tooth: false, surface: false }, // periodic exam        — mouth
+    D1110: { tooth: false, surface: false }, // prophylaxis          — mouth
+    D0274: { tooth: false, surface: false }, // four bitewings       — mouth
+    D0330: { tooth: false, surface: false }, // panoramic            — mouth
+    D0220: { tooth: true, surface: false }, //  periapical           — tooth
+    D2740: { tooth: true, surface: false }, //  crown                — tooth
+    D2391: { tooth: true, surface: true }, //   posterior composite  — surface
+  };
+  for (const t of T.TARGETS) {
+    const need = NEEDS[t.procCode];
+    assert.ok(need, `${t.procCode} has no recorded treatment area — add one before using it`);
+    assert.equal(Boolean(t.toothNum), need.tooth, `${t.key} (${t.procCode}) ToothNum`);
+    assert.equal(Boolean(t.surface), need.surface, `${t.key} (${t.procCode}) Surf`);
+  }
+
+  // And the prep must send them CONDITIONALLY, never as a default.
+  const src = code('reseed-prep.js');
+  assert.match(src, /if \(target\.toothNum\) procBody\.ToothNum/);
+  assert.match(src, /if \(target\.surface\) procBody\.Surf/);
+});
+
+test('a PARTIAL manifest resumes; a COMPLETE one is still refused', () => {
+  /*
+   * The first live run left three live claims and `complete: false`. Refusing
+   * outright at that point offers only bad moves — mint a second set on top of
+   * the first, or move the manifest aside and orphan three claims nothing can
+   * name any more. The manifest being the unwind's ONLY authority is exactly
+   * what makes an orphan unremovable.
+   */
+  const src = code('reseed-prep.js');
+  assert.match(src, /if \(existing\.complete\)/, 'a complete manifest must still refuse');
+  assert.match(src, /resumed = existing/, 'a partial one must be resumed');
+  assert.match(src, /done\.has\(target\.key\)/, 'already-created targets must be skipped by key');
+  // The resume must NOT re-stamp createdAt — the staleness screen reads it.
+  assert.match(src, /const manifest = resumed \|\|/, 'a resume must keep the original manifest object');
+});
