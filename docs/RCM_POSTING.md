@@ -2690,9 +2690,10 @@ shadow mode.
 
 ### 10.8 The staging reseed — clearing the debris and putting realistic checks back
 
-**Status: scripts written and tested, NOT YET RUN on staging.** They ship in the
-image, so nothing under `scripts/rcm/` can be run there until this merges and
-deploys. The ids, remittance ids and row counts below are filled in by the run.
+**Status: RUN 2026-09-01 on staging revision `0000149`. The clear is DONE (957
+rows). The reseed is 3 of 7 — Open Dental refused the fourth target and the run
+is blocked on `fix/rcm-reset-fk-cycle` reaching the image.** Both live findings
+are recorded under "The run" below.
 
 Every walk since 2026-08-25 has left something behind in the **app** database —
 remittances, claim matches, line decisions, posting plans, a shadow comparison —
@@ -2911,34 +2912,198 @@ both ways: a decoy naming `apiWriteRaw` under `scripts/rcm/` is now caught
 Nothing had exploited it — no subdirectory existed until now — but a guard that
 only works while nobody makes a folder is not a guard.
 
-#### What this reseed will have spent — FILL IN AFTER THE RUN
+#### The run — 2026-09-01, staging revision `0000149`
 
-Open Dental does not reissue an id, so every id created below is spent the moment
-it **exists**, not the moment it is used successfully. Add them to
-`RESEED_SPENT_IDS` in `scripts/rcm/reseed-targets.js` **and move
-`RESEED_SPENT_RECORDED_AT`** — `rcmReseedScripts.test.js` fails if ids are added
-without the date moving, because the staleness screen would then certify
-manifests it should refuse.
+`#136` merged as `28eb78b`. The deploy was confirmed three ways before anything
+was run:
 
-| Target | Remittance | PatNum | ProcNum | ClaimNum | ClaimProcNum |
-| --- | --- | --- | --- | --- | --- |
-| R1-1 | R1 | 12827 | _pending_ | _pending_ | _pending_ |
-| R1-2 | R1 | 12828 | _pending_ | _pending_ | _pending_ |
-| R1-3 | R1 | 12827 | _pending_ | _pending_ | _pending_ |
-| R2-1 | R2 | 12828 | _pending_ | _pending_ | _pending_ |
-| R2-2 | R2 | 12827 | _pending_ | _pending_ | _pending_ |
-| R3-1 | R3 | 12828 | _pending_ | _pending_ | _pending_ |
-| R4-1 | R4 | 12827 | _pending_ | _pending_ | _pending_ |
+| Layer | Evidence |
+| --- | --- |
+| Pipeline | `staging.yml` run `33548835163` — `build-test`, `publish`, `migrate`, `deploy` all **success**; `deploy-prod` skipped |
+| Revision | `az containerapp revision list` → `ca-carein-backend--0000149`, image `acrcareincore.azurecr.io/carein-backend:`**`28eb78b`**, 1 replica |
+| Live schema | migrate job `caj-carein-migrate-8bc1mlw` **Succeeded**, "migrations OK", and the head is still `1788000000000_audit_log_prior_state` — **#136 carries no migration, so a no-op is the correct result.** The code half of the same layer: `ls /app/scripts/rcm` in the running replica lists all four scripts |
 
-Remittance ids (`rcm_payment_batches.batch_id`) are assigned by the upload, not by
-these scripts, and are recorded here after Beau uploads the four files.
+##### Where each script was run from, and why they differ
 
-**The unwind still owes these claims.** They are ordinary disposable targets on
-12827 and 12828 and come off the same way §11's do — but §11's unwind reads the
-**§10** manifest, and this reseed writes its own at
-`/data/rcm-reseed/roland/rcm-reseed-manifest.json`. Pointing the existing unwind
-at it is a follow-up, and until that lands these seven claims are removed by
-hand or left in place deliberately.
+`reseed-prep.js` ran **inside the container**, which is the only place it can
+run: it resolves Roland's customer key from Key Vault through the app's managed
+identity.
+
+`reset-staging-fixtures.js` ran **from a workstation against the staging
+database**, at the merged commit. That is not a shortcut, it is the only correct
+place for it:
+
+- It needs `carein_owner` to clear RCM audit rows. The container runs as
+  `carein_app`, which is **append-only on `audit_log` by design** — so the run
+  the script's own privilege pre-check would refuse is exactly the run the
+  container can perform.
+- `RCM_RESET_DB_URL` is not an environment variable in the container; the tenant
+  connection string is fetched from Key Vault by name at runtime. Passing it on
+  an `az containerapp exec --command` line would put a live owner credential into
+  Azure activity logs.
+
+The connection string is `staging-tenant-carein-db-owner-url`, fetched into the
+shell for the length of one command and never printed, committed, or echoed.
+
+##### The clear — EXECUTED, 957 rows
+
+```
+=== RCM STAGING RESET — EXECUTE ===
+  target   staging  host=psql-carein-staging…  database=carein_t_carein
+  cutoff   2026-09-01T05:00:00.000Z   (local midnight, America/Chicago)
+
+     7  UPDATE rcm_claims                 breaking the claims/queue cycle
+     7  DELETE rcm_posting_queue_line         0  DELETE rcm_posting_document
+     7  DELETE rcm_posting_queue              0  DELETE rcm_claim_payment_history
+    14  DELETE rcm_batch_claim_payments       0  DELETE rcm_posting_audits
+    10  DELETE rcm_remittance_keys            0  DELETE rcm_activity_events
+    13  DELETE rcm_procedure_adjustments     20  DELETE rcm_procedure_lines
+    14  DELETE rcm_eob_uploads               13  DELETE rcm_payment_batches
+    14  DELETE rcm_claims                   845  DELETE audit_log
+   957  DELETED IN TOTAL
+```
+
+Every rcm_* table that held debris is now **0**. The tables deliberately out of
+scope (`rcm_stedi_*`, `rcm_bank_transactions`, the deposit tables) were already
+empty and are reported as such rather than assumed.
+
+**The audit trail, measured either side of the run:**
+
+| | before | after |
+| --- | --- | --- |
+| `audit_log` RCM rows | 926 | **81** (today's, kept by the cutoff) |
+| `audit_log` **non-RCM** rows (voice, TC) | 3508 | **3508 — untouched** |
+
+That second row is the one worth checking, and it is why the predicate is scoped
+rather than a bare `ts <` sweep.
+
+##### ⚠ THE FIRST RUN FAILED — a foreign-key CYCLE the rehearsal could not see
+
+The first attempt stopped at statement two and rolled back:
+
+```
+update or delete on table "rcm_posting_queue" violates foreign key constraint
+"rcm_claims_posting_queue_id_fkey" on table "rcm_claims"
+```
+
+`rcm_posting_queue_line.claim_id -> rcm_claims` is RESTRICT, and
+**`rcm_claims.posting_queue_id -> rcm_posting_queue` is RESTRICT too.** That is a
+cycle, and **no ordering of pure DELETEs can satisfy both edges.**
+
+The PostgreSQL rehearsal missed it because its fixture never set
+`posting_queue_id` — the edge existed in the schema and not in the data. *A
+fixture that does not exercise an edge proves nothing about it*, and that is now
+the second time this module has paid for that lesson. The fixture sets it now,
+and the merged code fails on it locally.
+
+Nulling only the foreign key then hit `rcm_claims_approval_check`, which holds
+`posting_queue_id`, `approved_at` and `approved_by` as **one unit**. All three
+are cleared — which is also the honest answer rather than a way round the
+constraint: the approval being erased is an approval *of a plan that no longer
+exists*.
+
+Enumerating every FK into the delete set against the **live** schema also found
+**`rcm_posting_document`**, 6d's document table. It CASCADEs from the plan so it
+never blocked anything — and it was absent from the count list, so its rows were
+deleted by the cascade and reported nowhere. Rows that vanish without being
+counted are the one thing a before/after table exists to prevent.
+
+Both fixes are in `fix/rcm-reset-fk-cycle`. **The deployed image still carries the
+broken version**, so nobody should run the reset from the container until that
+merges.
+
+##### The reseed prep — 3 of 7, and Open Dental refused the fourth
+
+Baseline read clean: PatNum 12827 **0 claims**, PatNum 12828 **0 claims**. Chart
+names read from the chart, not assumed. Then:
+
+```
+  R1-1  PatNum 12827  ProcNum 406650  ClaimNum 53857  ClaimProcNum 535770
+  R1-2  PatNum 12828  ProcNum 406651  ClaimNum 53858  ClaimProcNum 535771
+  R1-3  PatNum 12827  ProcNum 406652  ClaimNum 53859  ClaimProcNum 535773
+
+RESEED PREP FAILED: POST /procedurelogs failed for R2-1 (400):
+  "A ToothNum is required for the procedure code's treatment area."
+```
+
+**Open Dental validates a procedure against its code's TreatArea.** A whole-mouth
+code takes no tooth; a tooth code needs a `ToothNum`; a surface code needs a
+`ToothNum` **and** a `Surf`:
+
+| Code | Treatment area | Needs |
+| --- | --- | --- |
+| `D0120` exam · `D1110` prophy · `D0274` bitewings · `D0330` panoramic | mouth | — |
+| `D0220` periapical · `D2740` crown | tooth | `ToothNum` |
+| `D2391` posterior composite | surface | `ToothNum` + `Surf` |
+
+The fix sends them **conditionally**. A `ToothNum` on a whole-mouth code would be
+inventing a clinical fact about a chart, so they are omitted rather than
+defaulted — the same stance the 835s take on an NPI.
+
+Swapping the tooth codes for whole-mouth ones would have avoided the code change
+and was rejected: R2-2 is a **$1,280 crown** precisely because `office_writeoff`
+should be a decision somebody would agonise over, and a $1,280 prophylaxis is not
+a fixture.
+
+**The three claims are live, correct, and recorded.** The manifest is
+`complete: false`, which is exactly what it is for, and `reseed-835.js` refuses a
+partial manifest rather than emitting four files with three real ClaimNums and
+four missing ones.
+
+The prep used to refuse outright when a manifest existed, which at this point
+offered only bad moves: mint a second set on top of the first, or move the
+manifest aside and **orphan three claims nothing can name any more** — and the
+manifest being the unwind's only authority is what makes an orphan unremovable.
+A **partial** manifest now resumes, skipping targets it already names by key; a
+**complete** one is still a hard refusal.
+
+#### What this reseed has created — 3 of 7
+
+`/data/rcm-reseed/roland/rcm-reseed-manifest.json`, `complete: false`.
+
+| Target | Remittance | PatNum | Code | ProcNum | ClaimNum | ClaimProcNum |
+| --- | --- | --- | --- | --- | --- | --- |
+| R1-1 | R1 | 12827 | `D0120` | `406650` | **`53857`** | `535770` |
+| R1-2 | R1 | 12828 | `D1110` | `406651` | **`53858`** | `535771` |
+| R1-3 | R1 | 12827 | `D0274` | `406652` | **`53859`** | `535773` |
+| R2-1 | R2 | 12828 | `D2391` | — | — | — |
+| R2-2 | R2 | 12827 | `D2740` | — | — | — |
+| R3-1 | R3 | 12828 | `D0220` | — | — | — |
+| R4-1 | R4 | 12827 | `D0330` | — | — | — |
+
+All three claims are `ClaimStatus "W"`, unpaid, one claimproc each, service date
+`2026-09-01`.
+
+##### These ids are NOT on the deny-list yet, and that is deliberate
+
+The §10 convention is that *"an id is spent the moment it EXISTS, not the moment
+it is used successfully"* — but look at what `WALK_SPENT_IDS` actually records:
+every set in that table was added **after its unwind**, and the column is headed
+`Unwound`.
+
+That ordering is load-bearing here. `RESEED_SPENT_IDS` feeds
+`screenManifestForSpentIds`, which **refuses any manifest naming a listed id**.
+Adding `53857`–`53859` now would refuse the very manifest that names them, and
+the resume that is meant to finish this run would be blocked by the list that
+exists to protect it.
+
+**They go on the list when they are unwound, with `RESEED_SPENT_RECORDED_AT`
+moved in the same commit** — `rcmReseedScripts.test.js` fails if ids are added
+without the date moving.
+
+#### What is left
+
+1. Merge `fix/rcm-reset-fk-cycle` and let staging redeploy. **Both fixes must be
+   in the image** — the prep cannot finish without `ToothNum`, and the reset in
+   the deployed image still hits the cycle.
+2. `PROBE_OFFICE=roland RESEED_EXPECTED_CLAIMS=3 node scripts/rcm/reseed-prep.js --execute`
+   — it resumes, skips R1-1…R1-3, and creates the remaining four. The expected
+   count is **3**, not 0: it is what the chart holds now.
+3. `PROBE_OFFICE=roland node scripts/rcm/reseed-835.js` — four files to
+   `/data/rcm-reseed/roland/` and to stdout.
+4. Upload from **/rcm → Bring in**, R3 last and only after its claim has posted.
+5. Fill the four remaining rows of the table above, and record the remittance ids
+   the uploads assign.
 
 ## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 
