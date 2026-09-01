@@ -603,6 +603,20 @@ These are enforced in code. If a change would relax one, stop and ask.
 6. **Never write directly to Open Dental MySQL.** Use the OD cloud API through the
    office-keyed client registry.
 7. **No real patient data anywhere.** Use the fixtures below.
+8. **Never put free text a person typed into `audit_log`.** The table has no detail
+   column on purpose, and every free-text column in this schema is PHI-capable by
+   nature — a biller may name a patient in a `comparison_note`, a `parked_note`, a
+   `withdrawn_note` or a `review_note`. The trail records that somebody did this to
+   this row; it never becomes a second copy of the prose. **`audit_log.prior_state`
+   is SLUG-ONLY, by CHECK constraint** — `^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$` —
+   so a sentence (it has a space) and a patient's name (it has a capital) are
+   *unstorable* rather than merely discouraged. This holds for **every module**:
+   `audit_log` is one shared per-tenant table that voice, TC and RCM all write to
+   through the same `audit()` helper, so a change here is a platform change. A
+   caller needing to record anything richer must change the constraint
+   **deliberately**, in its own commit, with the argument written down — not
+   discover the limit at runtime and route around it.
+   See [docs/AUDIT.md](docs/AUDIT.md) → *The `prior_state` invariant*.
 
 ### Test-patient fixtures
 
@@ -899,3 +913,20 @@ instructions.
   above the auth gate, and `/api/tc` as "future". Both are wrong; the code is right.
 - **`audit.source_ref`** exists for exactly the voice→TC handoff, but the send-to-TC route
   does not populate it.
+
+### Repo maintenance — logged, not scheduled
+
+Neither of these breaks anything today. Both are traps for the next person.
+
+- **`.prettierrc` exists and nothing in the repo complies with it.** It asks for
+  `printWidth: 80` and `arrowParens: "avoid"`; the actual house style is ~100 columns
+  and `(e) =>`, in every file including the newest. So **running `prettier --write` on
+  any file reformats the whole thing** and buries a two-line change in a 100-line diff —
+  which happened once during Stage C-2 and had to be reverted. Until somebody decides
+  which is authoritative, do not run Prettier here: match the surrounding code by hand.
+  Fixing it means either reformatting the repo in one dedicated commit or deleting the
+  config; doing neither is what makes it a trap.
+- **GitHub Actions Node 20 deprecation.** `build-test.yml` uses `actions/checkout@v4`
+  and `actions/setup-node@v4`, which target Node 20; the runners now force them onto
+  Node 24 and annotate every run. Currently a warning, not a failure. Bumping both to
+  `@v5` clears it — one commit, all three workflows share the definition.

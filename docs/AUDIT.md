@@ -23,6 +23,7 @@ database. Stores **resource IDs and actor/source only — never a PHI value**.
 | `office` | frozen office key (`roland` \| `valley` \| `unknown`) the action touched — **whose chart**. PatNum numbering restarts per OD database, so `resource_id` alone is ambiguous once a tenant has two connected practices. `NULL` = "not an office-scoped action" |
 | `origin_office` | the office the action **came from**, when that can differ from the one it touched — **whose call**. A chart note may now be deliberately aimed at the other practice (see CLAUDE.md §2.6), and `office` alone would not say why a Roland note exists for a call that rang at Riley. Same class of value as `office`. `NULL` = "no origin distinct from the target" |
 | `source_ref` | the **external identifier that caused** the action, when the cause lives outside the audited resource (today: the voice call id behind a TC handoff). An identifier, never a PHI value. `NULL` = "no recorded external cause" |
+| `prior_state` | what the audited thing **was, immediately before this action** — for actions that REPLACE a decision somebody already made. **A slug, and a CHECK constraint enforces it.** See *the `prior_state` invariant* below before using it. `NULL` = "this action replaced nothing" |
 
 Indexes: `(ts)`, `(resource_type, resource_id)`, `(office, ts)`, and a partial
 `(origin_office, office, ts)` over the cross-office rows only — same-office actions
@@ -38,10 +39,63 @@ SELECT ts, user_id, origin_office, office, resource_type, resource_id, result
  ORDER BY ts DESC;
 ```
 
-`office`, `origin_office` and `source_ref` are nullable **with no backfill**. Rows
-written before each column existed genuinely lack the information, and writing an
-assumption into an audit trail as though it were observed is exactly what an audit
-trail must not do.
+`office`, `origin_office`, `source_ref` and `prior_state` are nullable **with no
+backfill**. Rows written before each column existed genuinely lack the
+information, and writing an assumption into an audit trail as though it were
+observed is exactly what an audit trail must not do.
+
+### The `prior_state` invariant — slug-only, platform-wide
+
+> **`audit_log.prior_state` accepts a SLUG and nothing else, in every module.**
+> A caller that needs to record anything richer must change the constraint
+> deliberately, in its own commit, with the argument written down — not discover
+> the limit at runtime and route around it.
+
+Added by `backend/migrations-tenant/1788000000000_audit_log_prior_state.js`,
+first needed by RCM Stage C-2 (a biller may revise her answer about a check, and
+the revision counter could not say which way it went). **It is not an RCM
+column.** `audit_log` is one shared per-tenant table and voice, TC and RCM all
+write to it through the same `audit()` helper, so this is a platform decision
+that happened to be made inside an RCM slice.
+
+The constraint:
+
+```sql
+CHECK (prior_state IS NULL OR prior_state ~ '^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$')
+```
+
+Which is `slug` or `slug:slug` — lowercase, digits and underscores, anchored at
+both ends. `same`, `differed:payment_amount`, `withdrawn`, `matched:phone_exact`.
+
+**Why the grammar is the safety property, not a formality.** This table has no
+detail column on purpose: the platform never copies free text a person typed into
+the trail, because every free-text column in this schema is PHI-capable by nature
+— a biller may name a patient in a `comparison_note`, a `parked_note`, a
+`withdrawn_note`, a `review_note`. A nullable `text` column with no constraint
+would have become that copy within two slices whatever its comment said. The
+regex makes the wrong thing **unstorable rather than discouraged**:
+
+| | |
+| --- | --- |
+| a sentence | has a space → refused |
+| a patient's name | has a capital → refused |
+| anything punctuated, quoted or currency-bearing | refused |
+| an empty string | refused |
+
+Anchoring matters as much as the character class: an unanchored pattern would
+match a slug *inside* a sentence and let the sentence through.
+
+Written `prior_state IS NULL OR (…)` rather than as a bare regex, because
+`prior_state ~ '…'` against a NULL yields NULL and **Postgres accepts a CHECK
+that evaluates to NULL** — it only refuses FALSE. That is the same trap
+RCM_POSTING §15 documents, and the reason every CHECK in this repo leads with an
+explicit null test.
+
+**Using it.** Pass `priorState` to `audit()` (see below). Record only what the
+thing WAS — the new state is either on the row itself or on the next audit row,
+and writing both would be one fact stored twice, which is two chances to
+disagree. Rehearsal evidence — four allowances, eight refusals, and the
+append-only grant proven unchanged — is in RCM_POSTING §11a.
 
 ### Append-only (two-role model — REQUIRED in any env holding PHI)
 
@@ -70,6 +124,13 @@ await audit.audit(req, { action: 'READ', resourceType: 'patient', resourceId: pa
 await audit.audit(req, {
   action: 'CREATE', resourceType: 'tc_case', resourceId: caseId,
   office: 'roland', sourceRef: callId, result: 'SUCCESS',
+});
+
+// Replacing a decision somebody already made — record what it WAS, as a slug.
+// Anything that is not slug-shaped is refused by the database, on purpose.
+await audit.audit(req, {
+  action: 'UPDATE', resourceType: 'rcm_remittance_comparison', resourceId: batchId,
+  office: 'roland', priorState: 'differed:write_off', result: 'SUCCESS',
 });
 ```
 
