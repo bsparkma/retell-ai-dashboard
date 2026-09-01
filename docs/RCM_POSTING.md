@@ -14,9 +14,9 @@ through the forced call sequence `docs/RCM_OD_WRITES.md` proved live on
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Offices enabled | **roland only.** valley is fail-closed (D-7, §9) |
 | Shadow gate | **Both offices ship switched OFF** (`rcm_office_settings.drain_enabled`). Roland clears the code ceiling and still cannot write to a chart until an admin flips it — §2.5 |
-| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) + **`1787900000000_rcm_shadow_comparison.js`** (the comparison, C-2) — all additive only |
+| Migration | `1787120000000_rcm_posting_drain.js` (6c) + `1787260000000_rcm_recoupment_and_documents.js` (6d) + **`1787400000000_rcm_office_settings.js`** (the shadow gate) + **`1787900000000_rcm_shadow_comparison.js`** (the comparison, C-2) + **`1788000000000_audit_log_prior_state.js`** (what a revision replaced) — all additive only |
 | Code | [`services/rcm/postingDrain.js`](../backend/services/rcm/postingDrain.js), [`services/rcm/odPostingWrites.js`](../backend/services/rcm/odPostingWrites.js), [`services/rcm/odOfficeConfig.js`](../backend/services/rcm/odOfficeConfig.js), [`services/rcm/postingGate.js`](../backend/services/rcm/postingGate.js), [`routes/rcm/posting.js`](../backend/routes/rcm/posting.js), [`routes/rcm/officeSettings.js`](../backend/routes/rcm/officeSettings.js), [`pages/rcm/PostingQueue.tsx`](../new-dashboard/client/src/pages/rcm/PostingQueue.tsx), [`pages/admin/RcmPostingSettingsCard.tsx`](../new-dashboard/client/src/pages/admin/RcmPostingSettingsCard.tsx), [`routes/rcm/comparison.js`](../backend/routes/rcm/comparison.js), [`components/rcm/CheckComparison.tsx`](../new-dashboard/client/src/components/rcm/CheckComparison.tsx), [`pages/admin/RcmShadowComparisonCard.tsx`](../new-dashboard/client/src/pages/admin/RcmShadowComparisonCard.tsx) |
-| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)**, **`shadowComparison.test.js` (25)**, **`rcm-shadow-comparison.test.tsx` (18)**, `rcm-plain-language.test.ts` (7) |
+| Tests | `postingDrain.test.js` (78), `approvalGate.test.js` (58), `odOfficeConfig.test.js` (20), `posting.test.js` (25), `rcmNoOdWrites.test.js` (16), `rcmS10Scripts.test.js` (45), **`shadowGate.test.js` (12)**, **`officeSettings.test.js` (16)**, **`postingGate.test.js` (7)**, `rcmGuard.test.js` (22), `rcm-labels.test.ts` (35), **`rcm-shadow-gate.test.tsx` (15)**, **`shadowComparison.test.js` (28)**, `audit.test.js`, **`rcm-shadow-comparison.test.tsx` (22)**, `rcm-plain-language.test.ts` (7) |
 
 ---
 
@@ -531,6 +531,62 @@ second has none — and compares the Open Dental call transcript, in order, and 
 rows each run left. Recording the answer through the route rather than seeding it
 is §15.1a's rule: a hand-written fixture would be a claim about what the route
 stores, and the place a real coupling would hide.
+
+#### The revision says which way it went
+
+`comparison_revision` says an answer was CHANGED. It cannot say **which way**, and
+the two directions mean opposite things: a `same` corrected to `differed` is the
+app being caught, and a `differed` corrected to `same` is the biller catching
+herself. Somebody weighing whether to switch posting on needs to tell them apart.
+
+So a revision's audit row carries **`prior_state`** — what the answer was
+immediately before it, as `same` or `differed:<reason>`
+(`1788000000000_audit_log_prior_state.js`). The whole chain falls out of it: for
+one check ordered by `ts`, each row names its predecessor and the batch row names
+the answer that stands.
+
+```
+row 1  prior_state = NULL                  first answer — replaced nothing
+row 2  prior_state = 'same'                ⇒ answer 1 was `same`
+row 3  prior_state = 'differed:write_off'  ⇒ answer 2 was that
+the batch row's own columns                ⇒ answer 3, the one that stands
+```
+
+Recording the NEW state as well would be the same fact written twice, and two
+copies of one fact are two chances to disagree.
+
+**SLUGS ONLY, and the database enforces it.** The note never appears here, on the
+rule that keeps every biller's sentence out of the trail. `audit_log` has no
+detail column deliberately — a column called `detail` would become a copy of
+somebody's prose within two slices whatever its comment said — so
+`audit_log_prior_state_check` constrains the value to `^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$`.
+A sentence has a space, a capital or a punctuation mark; a patient's name has a
+capital. Neither is storable, by the database rather than by anybody remembering.
+
+`prior_state` is a platform column on the precedent `source_ref` and
+`origin_office` set: an audit DIMENSION one feature needs first, named for what
+it means rather than for the feature. Nothing about it is comparison-specific —
+"what did this action replace" is a question any revisable decision will raise.
+
+#### The summary cautions before it shows her words
+
+The differences table carries `comparison_note`, which is **PHI-capable by the
+migration's own comment** — a biller may name a patient in one. And this screen
+has exactly one reader: somebody writing up how the shadow period went. That is
+precisely the moment a patient's name gets copied out of a clinical system into a
+document that leaves it, and nothing downstream of the card would catch it.
+
+So, rendered directly above the notes — not in the card header, because a warning
+three paragraphs from the thing it is about is a warning people scroll past:
+
+> These lines are in the biller's own words, and one of them may name a patient.
+> Read them here — don't paste them into a report, a message or a ticket. Refer to
+> the check number instead.
+
+It names the safe alternative on purpose. *"Do not copy this"* with no way left to
+refer to the check is an instruction people work around rather than follow. It is
+absent when there are no differences: a caution over an empty table is noise, and
+noise is what trains people to skip the one that matters.
 
 #### The summary — Admin → Offices, directly beneath the switch
 
@@ -3361,6 +3417,54 @@ neighbouring `parked_at` / `set_aside_reason` columns are untouched. `up` again
 restores all six — with the answer gone, which is the honest cost the migration's
 `down` comment names rather than hides.
 
+### C-2 — `1788000000000_audit_log_prior_state.js`
+
+Rehearsed 2026-08-31 the same way. `up` (all) → column + CHECK present, and the
+append-only grant still exactly `INSERT,SELECT` for `carein_app` → the CHECK
+exercised both ways → `down 1` over a row that HAD a `prior_state` → `up` → `down`
+all the way, clean.
+
+```
+CHECK (((prior_state IS NULL) OR (prior_state ~ '^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$')))
+carein_app grants: INSERT,SELECT          <- unchanged; append-only survives
+```
+
+**Four allowances, eight refusals** — and the refusals are the reason the column
+is safe to have at all:
+
+```
+ALLOWED
+  NULL — the pre-migration shape, and every first decision
+  'same'
+  'differed:payment_amount'
+  'differed:wrong_target'
+
+REFUSED
+  "The office absorbed $60 on Ms Fixture's crown"   <- THE POINT
+  'the app had nothing'          (any sentence)
+  'Differed'                     (a capital — and a name has one)
+  'differed: payment_amount'     (a space)
+  ''                             (empty)
+  'a:b:c'                        (three segments)
+  40 characters                  (over the ceiling)
+  'differed-payment'             (punctuation)
+```
+
+`audit_log` has no detail column on purpose: this platform never copies free text
+a person typed into the trail. A nullable text column with no CHECK would have
+become that copy within two slices whatever its comment said, so the grammar is
+the whole safety argument rather than a formality — and it is exercised here
+rather than asserted about.
+
+The constraint is written `prior_state IS NULL OR (…)` rather than as a bare
+regex, for §15's reason: `prior_state ~ '…'` against a NULL yields NULL, and
+Postgres accepts a CHECK that evaluates to NULL.
+
+`down` rolls back over live rows — `audit_log` is append-only and nothing reads
+this column to decide anything, so dropping it loses history rather than
+corrupting state. Verified: 0 columns, 0 constraints, the audit rows themselves
+survive, and `office` / `origin_office` / `source_ref` are untouched (3/3).
+
 ---
 
 ## 12. Permission (D-9)
@@ -4078,6 +4182,7 @@ The same queue. A disabled button, naming the permission an approver holds.
 | **A partially-approved remittance posts as more than one check** | ✅ **PM RULING: ACCEPTED AS DESIGNED.** Deposit reconciliation is 6e's job and matches at the **deposit** level, where two OD checks summing to one carrier EFT is a normal case. Revisit only if 6e's matcher cannot express it. | Inherent to 6b's partial approve, which is a deliberate feature. |
 | **A claim fixed after its remittance's plan has run cannot post through CareIN at all** | See §15.1 below — it now has its own refusal and its own sentence rather than hiding behind "already under way". | Needs a decision about whether a remittance may carry a second plan, which the `(office_id, remittance_key)` unique index currently forbids. |
 | **A write-off decision cannot be changed once its check is approved** | See §15.1b below. Same shape as the row above and fixed by the same slice: approving freezes the decision, and a retired plan can never be approved again, so there is no way back inside CareIN. Until 6d.2 the fix is a correction in Open Dental, and the screen says so. | The way back is an un-approve, which touches the plan state machine — 6d.2's scope by every earlier ruling. |
+| **A suite can pass every assertion and still fail the run** | ✅ **CLOSED 2026-08-31 — it cost a staging deploy.** A vitest suite that unmounts in `beforeEach` leaves its LAST tree mounted through environment teardown; an in-flight promise then setStates into a live tree, React schedules a render, and the render lands after `window` is gone. 1198 passed, 0 failed, 1 unhandled error, exit 1 — and `publish`/`migrate`/`deploy` all skipped. **Not** the `node --test` IPC flake (CLAUDE.md §5): different runner, and that one DROPS the test count. §15.3. | **Read the exit code, not the test list.** The two guards are now a rule: every RCM suite unmounts in `afterEach`, and async work a component starts must be cancellable by the path that started it — a canceller only counts if the caller that made it also runs it. |
 | **A CHECK constraint can be a constraint over nothing** | ✅ **CLOSED 2026-08-30 — caught by the live rehearsal, on the way into B1.** Two of B1's five CHECKs let a reason be stored for a write-off that did not exist. `NULL > 0` and `NULL = 'office_writeoff'` are neither TRUE nor FALSE, and **Postgres accepts a CHECK that evaluates to NULL** — it only refuses FALSE. Written with `IS NOT DISTINCT FROM` (which never returns NULL) or led with an explicit `IS NOT NULL`, both refuse. | **A CHECK is only a constraint over the values it can see as FALSE.** No unit test can tell you which of yours are secretly NULL, because the fake accepts what it is handed; the rehearsal against real Postgres, with the NULL case actually in the table, is the only thing that can. Second time that step has earned its place — the first was #113's rollback ordering. **Do not shorten it.** |
 | **The drain is a held HTTP request** | Like the batch matcher. Bounded by a wall-clock budget and honest about running out. | A polled job needs run state; the queue row is close but the request/response shape is a separate change. |
 | **maxReplicas = 1 is a standing requirement, not a constraint the code enforces** | §8. | A lease + heartbeat on the queue row. Do it **before** raising maxReplicas. |
@@ -4322,6 +4427,91 @@ somebody can be handed.
    on this morning and approved last week is a check she last touched this
    morning. No new state, no new endpoint — the existing list read got two more
    fields and one more statement per page.
+
+### 15.3 A green test list and a red exit — the suite that leaves a tree mounted
+
+**Develop went red on 2026-08-31 with 1198 tests passed and 0 failed.**
+
+```
+⎯⎯ Uncaught Exception ⎯⎯
+ReferenceError: window is not defined
+ Test Files  86 passed | 7 skipped (93)
+      Tests  1198 passed | 56 skipped (1254)
+     Errors  1 error
+ ❯ react-dom/cjs/react-dom-client.development.js:17920:15
+ ❯ Immediate.performWorkUntilDeadline scheduler/cjs/scheduler.development.js:45:48
+ ❯ processImmediate node:internal/timers:484:21
+
+This error originated in "tests/rcm-shadow-comparison.test.tsx" ...
+This error was caught after test environment was torn down.
+```
+
+`staging-cd`'s `build-test` failed at the vitest step, so **`publish`, `migrate`
+and `deploy` all skipped** and staging sat on the previous revision
+(`ca-carein-backend--0000147`, `carein-backend:765aef6`) with the slice's
+migration unapplied. A failure that no assertion reports still costs a
+deployment.
+
+#### The mechanism
+
+`cleanup()` in `beforeEach` unmounts the PREVIOUS test's tree. It never unmounts
+the LAST one, so that tree is still mounted when vitest tears the jsdom
+environment down at the end of the file. Anything the component had in flight
+then settles into a live tree:
+
+```
+last test ends → env teardown (window removed) → promise settles
+  → setState on a MOUNTED component → React schedules a render (setImmediate)
+  → the immediate runs → react-dom touches `window` → ReferenceError
+```
+
+Every assertion has already passed by then. Vitest reports it as an unhandled
+error and **exits non-zero on that alone**, which is why the run reads as a full
+green list above a red exit code — and why reading only the test counts tells you
+nothing.
+
+#### The rule
+
+1. **Every RCM suite unmounts in `afterEach`.** `afterEach(cleanup)` — as
+   `rcm-stage-c`, `rcm-shadow-gate` and `rcm-bring-in` already did.
+   `rcm-shadow-comparison` was the one exception and it is the one that failed.
+   After an unmount a late `setState` is a no-op that schedules nothing.
+2. **Async work a component starts must be cancellable by the path that started
+   it.** `CheckComparison` had a `loadTally` that returned a canceller, honoured
+   on the mount path and *discarded* by `save()` — so the only read begun by a
+   user action was the only read nobody could cancel. It now goes through the
+   same effect (a `tallyNonce` the save bumps), so there is exactly one place a
+   read starts and one thing that cancels it. A guarantee that holds on one
+   caller and not another is not a guarantee.
+
+Rule 1 closes the window; rule 2 removes what falls through it. Either alone
+leaves the same class of failure reachable from somewhere the other does not
+cover.
+
+#### It is NOT the `node --test` IPC flake
+
+Do not confuse the two — they send you to different pages.
+
+| | §15.3, here | CLAUDE.md §5 |
+| --- | --- | --- |
+| Runner | **vitest** (`new-dashboard`) | **`node --test`** (`backend`) |
+| Symptom | `ReferenceError: window is not defined`, an unhandled error, **test count intact** | `Unable to deserialize cloned data due to invalid or unsupported version`, and the **test count DROPS** |
+| Cause | a mounted tree outliving the jsdom environment | a signed-shift size decode in Node's test-runner parent IPC reader |
+| Fix | `afterEach(cleanup)` + cancellable async, in the suite | none available on Node 22; CI shards to shrink the target |
+
+The dropped test count is the tell for the Node one. This one keeps every count
+and still fails.
+
+#### Reproducing it
+
+**It needs full-suite contention and does not reproduce in isolation.** That is
+the finding, not a gap in it — four shapes were tried against the file alone (a
+delayed promise, a tree left mounted, immediate resolution, the exact assertion
+the suite makes) and all passed. The decisive evidence is elsewhere and is
+conclusive: **the identical commit passed `build-test` on the PR run
+(`33440563820`) and failed the same job on develop 42 minutes later
+(`33444084092`).** Same code, same workflow, different outcome — a race, not a
+break. Do not spend an evening trying to make it deterministic.
 
 ## 16. Out of scope
 

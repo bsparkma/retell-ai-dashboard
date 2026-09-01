@@ -65,6 +65,7 @@ const HEIGHT = {
   "c2-01-ask": 280,
   "c2-02-form": 620,
   "c2-03-answered": 320,
+  "c2-04-summary": 480,
 };
 const DEFAULT_HEIGHT = 600;
 const THEMES = ["light", "dark"];

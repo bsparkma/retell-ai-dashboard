@@ -28,7 +28,7 @@
  * NO NETWORK, NO PHI. Every payer, check number and figure is synthetic.
  */
 import * as React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -154,11 +154,27 @@ const state = vi.hoisted(() => ({
   queue: null as Record<string, unknown> | null,
   tally: null as Record<string, unknown> | null,
   recorded: [] as unknown[],
+  summary: null as Record<string, unknown> | null,
+  /**
+   * Null = signed out, which is what the CHECK screen's tests want (the panel
+   * must not depend on a permission read). The admin summary's tests set it.
+   */
+  permissions: null as string[] | null,
 }));
 
 vi.mock("@/contexts/AuthContext", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/contexts/AuthContext")>();
-  return { ...real, useAuth: () => ({ status: "loading" }) };
+  return {
+    ...real,
+    useAuth: () =>
+      state.permissions == null
+        ? { status: "loading" }
+        : {
+            status: "authenticated",
+            user: { permissions: state.permissions, isSuperAdmin: false },
+            loading: false,
+          },
+  };
 });
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -207,6 +223,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     getComparisonTally: vi.fn(async () => {
       if (!state.tally) throw new real.RcmApiError("no tally", 500, "OOPS");
       return state.tally;
+    }),
+    getComparisonSummary: vi.fn(async () => {
+      if (!state.summary) throw new real.RcmApiError("no summary", 403, "FORBIDDEN");
+      return state.summary;
     }),
     recordComparison: vi.fn(async (_office: string, _batchId: string, answer: unknown) => {
       state.recorded.push(answer);
@@ -268,7 +288,28 @@ beforeEach(() => {
   state.queue = null;
   state.tally = null;
   state.recorded = [];
+  state.summary = null;
+  state.permissions = null;
 });
+
+/*
+ * UNMOUNT AFTER EVERY TEST, NOT MERELY BEFORE THE NEXT ONE.
+ *
+ * `cleanup()` in `beforeEach` alone leaves the LAST test's tree mounted through
+ * the environment teardown at the end of the file. An in-flight promise that
+ * settles in that window calls setState on a still-MOUNTED component, React
+ * schedules a render via `setImmediate`, and that immediate runs after jsdom has
+ * removed `window` — `ReferenceError: window is not defined`, reported as an
+ * unhandled error AFTER every assertion has already passed.
+ *
+ * That failed develop on 2026-08-31 with a green test list and a red exit:
+ * 1198 passed, 0 failed, 1 error. Unmounting here makes the late setState a
+ * no-op that schedules nothing.
+ *
+ * Every other RCM suite already does this — `rcm-stage-c`, `rcm-shadow-gate`,
+ * `rcm-bring-in` — and this one was the exception. RCM_POSTING §15.3.
+ */
+afterEach(cleanup);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WHEN THE QUESTION IS ASKED
@@ -593,5 +634,98 @@ describe("the tally counts what it says it counts", () => {
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     await screen.findByTestId("comparison-same");
     expect(screen.queryByTestId("comparison-tally")).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE ADMIN SUMMARY — and the caution over the biller's own words
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SUMMARY = (over: Record<string, unknown> = {}) => ({
+  office: "roland",
+  from: null,
+  to: null,
+  compared: 18,
+  same: 17,
+  differed: 1,
+  matchedRun: 6,
+  comparedAllTime: 18,
+  differences: [
+    {
+      batchId: "b-2",
+      checkNumber: "830200002",
+      payer: "SYNTHETIC DENTAL",
+      depositDate: "2026-08-22",
+      reason: "payment_amount",
+      note: "App had $150.00 on the crown; the carrier paid $142.30.",
+      answeredAt: "2026-08-22T23:40:00.000Z",
+      answeredBy: "Billing User",
+      revision: 1,
+    },
+  ],
+  ...over,
+});
+
+describe("the admin summary warns before the notes, not after", () => {
+  it("cautions that the notes are her words and may name a patient, right above them", async () => {
+    /*
+     * THIS SCREEN HAS ONE READER: somebody writing up how the shadow period
+     * went. That is precisely when a patient's name gets copied out of a
+     * clinical system into a document that leaves it, and nothing downstream of
+     * this card would catch it.
+     */
+    state.permissions = ["rcm.read", "rcm.settings"];
+    state.summary = SUMMARY();
+
+    const Card = (await import("@/pages/admin/RcmShadowComparisonCard")).default;
+    renderAt(<Card />, "/admin");
+
+    const caution = await screen.findByTestId("rcm-comparison-phi-note-roland");
+    expect(caution.textContent).toContain("in the biller’s own words");
+    expect(caution.textContent).toContain("may name a patient");
+    // It names the SAFE ALTERNATIVE. "Do not copy this", with no way left to
+    // refer to the check, is an instruction people work around.
+    expect(caution.textContent).toContain("check number");
+
+    // ABOVE the notes, structurally — a warning three paragraphs from the thing
+    // it is about is a warning people scroll past.
+    const row = screen.getByTestId("rcm-comparison-row-b-2");
+    expect(
+      caution.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("says nothing when there are no notes to caution about", async () => {
+    // A caution over an empty table is noise, and noise is what trains people to
+    // skip the one that matters.
+    state.permissions = ["rcm.read", "rcm.settings"];
+    state.summary = SUMMARY({ differed: 0, differences: [] });
+
+    const Card = (await import("@/pages/admin/RcmShadowComparisonCard")).default;
+    renderAt(<Card />, "/admin");
+
+    await screen.findByTestId("rcm-comparison-roland");
+    expect(screen.queryByTestId("rcm-comparison-phi-note-roland")).toBeNull();
+  });
+
+  it("is absent entirely without rcm.settings — the card never even asks", async () => {
+    state.permissions = ["rcm.read", "rcm.queue"];
+    state.summary = SUMMARY();
+
+    const Card = (await import("@/pages/admin/RcmShadowComparisonCard")).default;
+    renderAt(<Card />, "/admin");
+
+    expect(screen.queryByTestId("rcm-shadow-comparison-summary")).toBeNull();
+  });
+
+  it("leads with the run, and reports it in words", async () => {
+    state.permissions = ["rcm.read", "rcm.settings"];
+    state.summary = SUMMARY();
+
+    const Card = (await import("@/pages/admin/RcmShadowComparisonCard")).default;
+    renderAt(<Card />, "/admin");
+
+    const run = await screen.findByTestId("rcm-comparison-run-roland");
+    expect(run.textContent).toContain("The last 6 checks compared here came out the same");
   });
 });

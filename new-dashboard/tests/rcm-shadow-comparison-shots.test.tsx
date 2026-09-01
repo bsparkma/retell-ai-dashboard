@@ -6,11 +6,12 @@
  * markup to `tests/.shots/c2-*.html`, which `scripts/shoot-shadow-comparison.mjs`
  * wraps in the app's real built CSS and photographs at 1280, light and dark.
  *
- * Three shots, and they are the three states a reviewer has to see:
+ * Four shots, and they are the states a reviewer has to see:
  *
- *   c2-01-ask     the question, unanswered — one click either way
- *   c2-02-form    "something was off", open, inline, over the check
- *   c2-03-tally   an answer already given, with the running tally under it
+ *   c2-01-ask      the question, unanswered — one click either way
+ *   c2-02-form     "something was off", open, inline, over the check
+ *   c2-03-answered an answer already given, with the running tally under it
+ *   c2-04-summary  the admin card, and the caution above the biller's own words
  *
  * NO NETWORK, NO BACKEND, NO PHI. Every payer, patient, check number and dollar
  * figure below is synthetic.
@@ -24,10 +25,36 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import CheckComparison from "@/components/rcm/CheckComparison";
+import RcmShadowComparisonCard from "@/pages/admin/RcmShadowComparisonCard";
+import { OfficeProvider } from "@/contexts/OfficeContext";
 
 (globalThis as Record<string, unknown>).React = React;
 
 const OUT = resolve(import.meta.dirname, ".shots");
+
+const SUMMARY = {
+  office: "roland",
+  from: null,
+  to: null,
+  compared: 18,
+  same: 17,
+  differed: 1,
+  matchedRun: 6,
+  comparedAllTime: 18,
+  differences: [
+    {
+      batchId: "b-2",
+      checkNumber: "830200002",
+      payer: "SYNTHETIC DENTAL",
+      depositDate: "2026-08-22",
+      reason: "payment_amount",
+      note: "App had $150.00 on the crown; the carrier paid $142.30.",
+      answeredAt: "2026-08-22T23:40:00.000Z",
+      answeredBy: "Billing User",
+      revision: 1,
+    },
+  ],
+};
 
 const TALLY = {
   office: "roland",
@@ -38,11 +65,37 @@ const TALLY = {
   latestDifference: { reason: "payment_amount", at: "2026-08-22T18:00:00.000Z" },
 };
 
+vi.mock("@/contexts/AuthContext", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/contexts/AuthContext")>();
+  return {
+    ...real,
+    useAuth: () => ({
+      status: "authenticated",
+      user: { permissions: ["rcm.read", "rcm.settings"], isSuperAdmin: false },
+      loading: false,
+    }),
+  };
+});
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/api")>();
+  const target = {
+    getOffices: async () => [{ officeId: "roland", officeName: "Roland Family Dental" }],
+  };
+  return {
+    ...real,
+    api: new Proxy(target, {
+      get: (t, prop) => (prop in t ? Reflect.get(t, prop) : () => new Promise(() => {})),
+    }),
+  };
+});
+
 vi.mock("@/features/rcm/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/rcm/api")>();
   return {
     ...real,
     getComparisonTally: vi.fn(async () => TALLY),
+    getComparisonSummary: vi.fn(async () => SUMMARY),
     recordComparison: vi.fn(async () => ({
       batchId: "b-1",
       verdict: "same",
@@ -66,6 +119,7 @@ function shoot(node: React.ReactElement) {
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("carein.office", "roland");
 });
 afterEach(cleanup);
 
@@ -140,5 +194,19 @@ describe.skipIf(!enabled)("Stage C-2 screenshots", () => {
     );
     await screen.findByTestId("comparison-tally");
     dump("c2-03-answered");
+  });
+
+  it("c2-04-summary — the admin card, with the caution over her own words", async () => {
+    // The card reads the office scope, so it needs the same provider the app
+    // mounts it under.
+    render(
+      <OfficeProvider>
+        <div className="mx-auto max-w-4xl p-4">
+          <RcmShadowComparisonCard />
+        </div>
+      </OfficeProvider>,
+    );
+    await screen.findByTestId("rcm-comparison-phi-note-roland");
+    dump("c2-04-summary");
   });
 });

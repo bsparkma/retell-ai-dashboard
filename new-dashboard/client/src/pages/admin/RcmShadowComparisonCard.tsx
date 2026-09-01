@@ -162,7 +162,34 @@ function OfficeSummary({ office }: { office: RcmOfficeId }) {
       </p>
 
       {summary.differences.length > 0 && (
-        <div className="mt-3 overflow-x-auto">
+        <>
+          {/*
+            ── THE NOTES BELOW ARE THE BILLER'S OWN WORDS ─────────────────────
+            And she may have named a patient in one. The migration says exactly
+            that of `comparison_note`, and it is true of every free-text column
+            in this schema — which is why none of them is ever copied into an
+            audit row or a log line.
+
+            This screen has ONE reader: somebody writing up how the shadow
+            period went. That is precisely the moment a patient's name gets
+            copied out of a clinical system into a document that leaves it, and
+            nothing downstream of here would catch it.
+
+            So the caution sits directly above the notes rather than in the card
+            header — a warning three paragraphs from the thing it is about is a
+            warning people scroll past — and it names the safe alternative,
+            because "do not copy this" with no way left to refer to the check
+            is an instruction people work around rather than follow.
+          */}
+          <p
+            className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground"
+            data-testid={`rcm-comparison-phi-note-${office}`}
+          >
+            These lines are in the biller&rsquo;s own words, and one of them may name a patient.
+            Read them here — don&rsquo;t paste them into a report, a message or a ticket. Refer to
+            the check number instead.
+          </p>
+          <div className="mt-2 overflow-x-auto">
           <table className="w-full min-w-[38rem] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
@@ -200,7 +227,8 @@ function OfficeSummary({ office }: { office: RcmOfficeId }) {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
