@@ -1,20 +1,31 @@
-# The four reseed 835s — where they come from, and why they are not here yet
+# The four reseed 835s
 
-> **Status, 2026-09-01.** The four files do **not** exist yet. The prep run that
-> mints their ClaimNums got 3 of its 7 targets in before Open Dental refused the
-> fourth (`D2391` needs a `ToothNum`), so the manifest is `complete: false` and
-> `reseed-835.js` correctly refuses to emit a set of files where three ClaimNums
-> are real and four are missing. Merge `fix/rcm-reset-fk-cycle`, let staging
-> redeploy, resume the prep, and they appear. See `docs/RCM_POSTING.md` §10.8
-> "The run".
+> **Status, 2026-09-01: generated and present.** All seven claims exist on
+> Roland's chart, and the four files below were written by `reseed-835.js` from
+> `/data/rcm-reseed/roland/rcm-reseed-manifest.json` (`complete: true`) on
+> staging revision `0000150`. The committed copies were regenerated on a
+> workstation with `--out` and are **byte-identical** to the container's.
+>
+> **Only the upload remains** — /rcm → Bring in, signed in as `admin` or
+> `office`. See `docs/RCM_POSTING.md` §10.8.
 
-`rcm-reseed-835-R1.txt` … `-R4.txt` are **generated**, not committed. This
-directory is where they land when you generate them, so they are one `git
-status` away from being visible and one file-picker away from being uploaded.
+| File | Payer · check | Claims | BPR02 |
+| --- | --- | --- | --- |
+| `rcm-reseed-835-R1.txt` | Delta Dental of Oklahoma · `RS-104477` | 53857, 53858, 53859 | $164.80 |
+| `rcm-reseed-835-R2.txt` | MetLife Dental · `RS-889021` | 53861, 53862 | $640.00 |
+| `rcm-reseed-835-R3.txt` | Cigna Dental · `RS-330415` | 53863 | −$29.00 |
+| `rcm-reseed-835-R4.txt` | Cigna Dental · `RS-330416` | 53864 | $88.00 |
+
+## Regenerating them
+
+They are **derived**, not authored: each carries the real `ClaimNum` in `CLP01`
+and the chart's own patient name in `NM1*QC`, so they cannot be written before
+the claims exist and cannot be hand-edited without becoming a lie about the
+chart. If the manifest changes, regenerate rather than patch.
 
 Full runbook: [`docs/RCM_POSTING.md` §10.8](../../RCM_POSTING.md).
 
-## Why they cannot be checked in ahead of the run
+## Why they could not be checked in ahead of the run
 
 Each file carries the **real `ClaimNum`** in `CLP01` and the **chart's own
 patient name** in `NM1*QC`. Neither exists until `reseed-prep.js` has created

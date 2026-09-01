@@ -300,3 +300,53 @@ test('a PARTIAL manifest resumes; a COMPLETE one is still refused', () => {
   // The resume must NOT re-stamp createdAt — the staleness screen reads it.
   assert.match(src, /const manifest = resumed \|\|/, 'a resume must keep the original manifest object');
 });
+
+test('pending-at-unwind ids are recorded, and never also on the spent deny-list', () => {
+  /*
+   * The 2026-09-01 run's seven claims are LIVE on Roland's chart. They belong on
+   * a deny-list eventually — the §10 convention is that an id is spent the moment
+   * it EXISTS — but not until the unwind removes them, because
+   * `screenManifestForSpentIds` REFUSES any manifest naming a listed id, and
+   * their manifest is the only thing that can remove them.
+   *
+   * So the two lists must never overlap: an id in both would be simultaneously
+   * "still on the chart" and "retired", and the screen would refuse the file the
+   * unwind depends on.
+   */
+  const pending = T.RESEED_PENDING_AT_UNWIND;
+  const spent = T.RESEED_SPENT_IDS;
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    assert.ok(Array.isArray(pending[bucket]), `${bucket} must be an array`);
+    const overlap = pending[bucket].filter((id) => spent[bucket].includes(id));
+    assert.deepEqual(
+      overlap,
+      [],
+      `${bucket}: an id cannot be both pending-at-unwind and spent — found ${overlap.join(', ')}`
+    );
+  }
+
+  // One id per target, in every bucket. A short list is a lost row.
+  assert.equal(pending.claims.length, T.TARGETS.length);
+  assert.equal(pending.procedures.length, T.TARGETS.length);
+  assert.equal(pending.claimProcs.length, T.TARGETS.length);
+
+  // And nothing may be double-counted inside a bucket.
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    assert.equal(new Set(pending[bucket]).size, pending[bucket].length, `${bucket} has a duplicate`);
+  }
+
+  /*
+   * The deny-list SCREEN reads RESEED_SPENT_IDS only. Pending ids must stay
+   * invisible to it, or the manifest naming them is refused — which is the whole
+   * reason the two lists are separate.
+   */
+  const manifest = {
+    createdAt: new Date().toISOString(),
+    targets: pending.claims.map((claimNum) => ({ claimNum })),
+  };
+  assert.equal(
+    T.screenManifestForSpentIds(manifest),
+    null,
+    'a manifest naming the live reseed claims must still be accepted'
+  );
+});
