@@ -867,7 +867,7 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
    */
   const scriptsDir = path.join(__dirname, '../../scripts');
   /*
-   * FOUR FILES, EACH FOR A NAMED REASON. Adding a fifth is a review decision.
+   * FIVE FILES, EACH FOR A NAMED REASON. Adding a sixth is a review decision.
    *
    *   rcm-d7-write-probe.js  D-7's write-verb entitlement check (RCM_POSTING §9a).
    *   rcm-d7-read-sweep.js   the read sweep that proves it landed nothing.
@@ -876,18 +876,36 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
    *   rcm-s11-unwind.js      §11 — the ONLY file anywhere in this repo that may
    *                          name DELETE against Open Dental. The block below
    *                          pins the properties that keep it narrow.
+   *   rcm/reseed-prep.js     §10.8 — creates the seven disposable claims the
+   *                          staging reseed's four 835s pay. POST only.
    *
-   * Deliberately NOT here: `rcm-s10-inventory.js` and `rcm-s10-835.js`. They are
-   * part of the same walk and they name no write verb, so they are scanned like
-   * any other script. An allow-list that covered a whole feature rather than the
-   * files that actually need it would be the escape hatch this test exists to
-   * close.
+   * Deliberately NOT here: `rcm-s10-inventory.js`, `rcm-s10-835.js`,
+   * `rcm/reseed-835.js`, `rcm/reseed-targets.js` and
+   * `rcm/reset-staging-fixtures.js`. They belong to the same operations and they
+   * name no write verb, so they are scanned like any other script. An allow-list
+   * that covered a whole feature rather than the files that actually need it
+   * would be the escape hatch this test exists to close.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE NAMES ARE PATHS RELATIVE TO `scripts/`, BECAUSE THE SCAN NOW RECURSES
+   * ─────────────────────────────────────────────────────────────────────────
+   * This was one `readdirSync` over `scripts/` matched against bare basenames,
+   * which made any SUBDIRECTORY invisible to it: a file under `scripts/rcm/`
+   * could have named `apiWriteRaw` and no guard in this file would have looked.
+   * "Put it in scripts/" is the shape this test exists to close, and "put it in
+   * scripts/anything/" was a strictly easier version of the same move.
+   *
+   * Found when `scripts/rcm/` was created for the staging reseed (2026-09-01).
+   * Nothing had exploited it — no subdirectory existed until then — but the hole
+   * was real for as long as the scan was one level deep, and a guard that only
+   * works while nobody makes a folder is not a guard.
    */
   const ALLOWED = new Set([
     'rcm-d7-write-probe.js',
     'rcm-d7-read-sweep.js',
     'rcm-s10-prep.js',
     'rcm-s11-unwind.js',
+    'rcm/reseed-prep.js',
   ]);
 
   const WRITE_SIGNALS = [
@@ -913,11 +931,33 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
     'client.delete(',
   ];
 
+  /**
+   * Every `.js`/`.cjs` under `scripts/`, AT ANY DEPTH, as a path relative to it
+   * and with forward slashes so the allow-list reads the same on every platform.
+   *
+   * `node_modules` is skipped because a scripts folder that ever grows one would
+   * otherwise make this test scan a few thousand third-party files and fail on
+   * somebody else's `axios.post(`.
+   *
+   * @param {string} dir @param {string} prefix @returns {string[]}
+   */
+  const scriptFiles = (dir, prefix = '') => {
+    /** @type {string[]} */
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) out.push(...scriptFiles(path.join(dir, entry.name), rel));
+      else if (entry.name.endsWith('.js') || entry.name.endsWith('.cjs')) out.push(rel);
+    }
+    return out;
+  };
+
   const offenders = [];
   /** Scripts that DO name a write verb — allowed or not — must not self-execute. */
   const unguarded = [];
-  for (const name of fs.readdirSync(scriptsDir)) {
-    if (!name.endsWith('.js') && !name.endsWith('.cjs')) continue;
+  const scanned = scriptFiles(scriptsDir);
+  for (const name of scanned) {
     const code = fs
       .readFileSync(path.join(scriptsDir, name), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -967,6 +1007,21 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
   for (const name of ALLOWED) {
     assert.ok(fs.existsSync(path.join(scriptsDir, name)), `scripts/${name} is missing`);
   }
+
+  /*
+   * AND THE SCAN REALLY DID GO DOWN A LEVEL.
+   *
+   * The recursion is the whole fix, and a `scriptFiles` that quietly stopped
+   * recursing would leave every assertion above passing over a smaller set —
+   * which is exactly the failure mode the one-level scan already had. So the
+   * scan must be able to point at a file it could not have seen before.
+   */
+  assert.ok(
+    scanned.some((n) => n.includes('/')),
+    'the scan must reach files in subdirectories of scripts/, or the allow-list is bypassable ' +
+      'by making a folder'
+  );
+  assert.ok(scanned.includes('rcm/reseed-prep.js'), 'the reseed prep must be among the scanned files');
 });
 
 test('the D-7 write probe cannot run without GET-checking its targets first', () => {
