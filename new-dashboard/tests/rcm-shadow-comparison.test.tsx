@@ -28,7 +28,7 @@
  * NO NETWORK, NO PHI. Every payer, check number and figure is synthetic.
  */
 import * as React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -291,6 +291,25 @@ beforeEach(() => {
   state.summary = null;
   state.permissions = null;
 });
+
+/*
+ * UNMOUNT AFTER EVERY TEST, NOT MERELY BEFORE THE NEXT ONE.
+ *
+ * `cleanup()` in `beforeEach` alone leaves the LAST test's tree mounted through
+ * the environment teardown at the end of the file. An in-flight promise that
+ * settles in that window calls setState on a still-MOUNTED component, React
+ * schedules a render via `setImmediate`, and that immediate runs after jsdom has
+ * removed `window` — `ReferenceError: window is not defined`, reported as an
+ * unhandled error AFTER every assertion has already passed.
+ *
+ * That failed develop on 2026-08-31 with a green test list and a red exit:
+ * 1198 passed, 0 failed, 1 error. Unmounting here makes the late setState a
+ * no-op that schedules nothing.
+ *
+ * Every other RCM suite already does this — `rcm-stage-c`, `rcm-shadow-gate`,
+ * `rcm-bring-in` — and this one was the exception. RCM_POSTING §15.3.
+ */
+afterEach(cleanup);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WHEN THE QUESTION IS ASKED

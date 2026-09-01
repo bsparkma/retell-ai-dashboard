@@ -4182,6 +4182,7 @@ The same queue. A disabled button, naming the permission an approver holds.
 | **A partially-approved remittance posts as more than one check** | ✅ **PM RULING: ACCEPTED AS DESIGNED.** Deposit reconciliation is 6e's job and matches at the **deposit** level, where two OD checks summing to one carrier EFT is a normal case. Revisit only if 6e's matcher cannot express it. | Inherent to 6b's partial approve, which is a deliberate feature. |
 | **A claim fixed after its remittance's plan has run cannot post through CareIN at all** | See §15.1 below — it now has its own refusal and its own sentence rather than hiding behind "already under way". | Needs a decision about whether a remittance may carry a second plan, which the `(office_id, remittance_key)` unique index currently forbids. |
 | **A write-off decision cannot be changed once its check is approved** | See §15.1b below. Same shape as the row above and fixed by the same slice: approving freezes the decision, and a retired plan can never be approved again, so there is no way back inside CareIN. Until 6d.2 the fix is a correction in Open Dental, and the screen says so. | The way back is an un-approve, which touches the plan state machine — 6d.2's scope by every earlier ruling. |
+| **A suite can pass every assertion and still fail the run** | ✅ **CLOSED 2026-08-31 — it cost a staging deploy.** A vitest suite that unmounts in `beforeEach` leaves its LAST tree mounted through environment teardown; an in-flight promise then setStates into a live tree, React schedules a render, and the render lands after `window` is gone. 1198 passed, 0 failed, 1 unhandled error, exit 1 — and `publish`/`migrate`/`deploy` all skipped. **Not** the `node --test` IPC flake (CLAUDE.md §5): different runner, and that one DROPS the test count. §15.3. | **Read the exit code, not the test list.** The two guards are now a rule: every RCM suite unmounts in `afterEach`, and async work a component starts must be cancellable by the path that started it — a canceller only counts if the caller that made it also runs it. |
 | **A CHECK constraint can be a constraint over nothing** | ✅ **CLOSED 2026-08-30 — caught by the live rehearsal, on the way into B1.** Two of B1's five CHECKs let a reason be stored for a write-off that did not exist. `NULL > 0` and `NULL = 'office_writeoff'` are neither TRUE nor FALSE, and **Postgres accepts a CHECK that evaluates to NULL** — it only refuses FALSE. Written with `IS NOT DISTINCT FROM` (which never returns NULL) or led with an explicit `IS NOT NULL`, both refuse. | **A CHECK is only a constraint over the values it can see as FALSE.** No unit test can tell you which of yours are secretly NULL, because the fake accepts what it is handed; the rehearsal against real Postgres, with the NULL case actually in the table, is the only thing that can. Second time that step has earned its place — the first was #113's rollback ordering. **Do not shorten it.** |
 | **The drain is a held HTTP request** | Like the batch matcher. Bounded by a wall-clock budget and honest about running out. | A polled job needs run state; the queue row is close but the request/response shape is a separate change. |
 | **maxReplicas = 1 is a standing requirement, not a constraint the code enforces** | §8. | A lease + heartbeat on the queue row. Do it **before** raising maxReplicas. |
@@ -4426,6 +4427,91 @@ somebody can be handed.
    on this morning and approved last week is a check she last touched this
    morning. No new state, no new endpoint — the existing list read got two more
    fields and one more statement per page.
+
+### 15.3 A green test list and a red exit — the suite that leaves a tree mounted
+
+**Develop went red on 2026-08-31 with 1198 tests passed and 0 failed.**
+
+```
+⎯⎯ Uncaught Exception ⎯⎯
+ReferenceError: window is not defined
+ Test Files  86 passed | 7 skipped (93)
+      Tests  1198 passed | 56 skipped (1254)
+     Errors  1 error
+ ❯ react-dom/cjs/react-dom-client.development.js:17920:15
+ ❯ Immediate.performWorkUntilDeadline scheduler/cjs/scheduler.development.js:45:48
+ ❯ processImmediate node:internal/timers:484:21
+
+This error originated in "tests/rcm-shadow-comparison.test.tsx" ...
+This error was caught after test environment was torn down.
+```
+
+`staging-cd`'s `build-test` failed at the vitest step, so **`publish`, `migrate`
+and `deploy` all skipped** and staging sat on the previous revision
+(`ca-carein-backend--0000147`, `carein-backend:765aef6`) with the slice's
+migration unapplied. A failure that no assertion reports still costs a
+deployment.
+
+#### The mechanism
+
+`cleanup()` in `beforeEach` unmounts the PREVIOUS test's tree. It never unmounts
+the LAST one, so that tree is still mounted when vitest tears the jsdom
+environment down at the end of the file. Anything the component had in flight
+then settles into a live tree:
+
+```
+last test ends → env teardown (window removed) → promise settles
+  → setState on a MOUNTED component → React schedules a render (setImmediate)
+  → the immediate runs → react-dom touches `window` → ReferenceError
+```
+
+Every assertion has already passed by then. Vitest reports it as an unhandled
+error and **exits non-zero on that alone**, which is why the run reads as a full
+green list above a red exit code — and why reading only the test counts tells you
+nothing.
+
+#### The rule
+
+1. **Every RCM suite unmounts in `afterEach`.** `afterEach(cleanup)` — as
+   `rcm-stage-c`, `rcm-shadow-gate` and `rcm-bring-in` already did.
+   `rcm-shadow-comparison` was the one exception and it is the one that failed.
+   After an unmount a late `setState` is a no-op that schedules nothing.
+2. **Async work a component starts must be cancellable by the path that started
+   it.** `CheckComparison` had a `loadTally` that returned a canceller, honoured
+   on the mount path and *discarded* by `save()` — so the only read begun by a
+   user action was the only read nobody could cancel. It now goes through the
+   same effect (a `tallyNonce` the save bumps), so there is exactly one place a
+   read starts and one thing that cancels it. A guarantee that holds on one
+   caller and not another is not a guarantee.
+
+Rule 1 closes the window; rule 2 removes what falls through it. Either alone
+leaves the same class of failure reachable from somewhere the other does not
+cover.
+
+#### It is NOT the `node --test` IPC flake
+
+Do not confuse the two — they send you to different pages.
+
+| | §15.3, here | CLAUDE.md §5 |
+| --- | --- | --- |
+| Runner | **vitest** (`new-dashboard`) | **`node --test`** (`backend`) |
+| Symptom | `ReferenceError: window is not defined`, an unhandled error, **test count intact** | `Unable to deserialize cloned data due to invalid or unsupported version`, and the **test count DROPS** |
+| Cause | a mounted tree outliving the jsdom environment | a signed-shift size decode in Node's test-runner parent IPC reader |
+| Fix | `afterEach(cleanup)` + cancellable async, in the suite | none available on Node 22; CI shards to shrink the target |
+
+The dropped test count is the tell for the Node one. This one keeps every count
+and still fails.
+
+#### Reproducing it
+
+**It needs full-suite contention and does not reproduce in isolation.** That is
+the finding, not a gap in it — four shapes were tried against the file alone (a
+delayed promise, a tree left mounted, immediate resolution, the exact assertion
+the suite makes) and all passed. The decisive evidence is elsewhere and is
+conclusive: **the identical commit passed `build-test` on the PR run
+(`33440563820`) and failed the same job on develop 42 minutes later
+(`33444084092`).** Same code, same workflow, different outcome — a race, not a
+break. Do not spend an evening trying to make it deterministic.
 
 ## 16. Out of scope
 

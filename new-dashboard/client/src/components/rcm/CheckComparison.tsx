@@ -101,6 +101,14 @@ export default function CheckComparison({
   const [saving, setSaving] = useState<null | "same" | "differed">(null);
   const [error, setError] = useState<string | null>(null);
   const [tally, setTally] = useState<ComparisonTally | null>(null);
+  /**
+   * Bumped to ask for a fresh tally. See the effect below.
+   *
+   * A NUMBER rather than a function call, because the refresh has to run where
+   * its cancellation lives: an effect. React runs the effect's cleanup on
+   * unmount, and nothing else in this component can.
+   */
+  const [tallyNonce, setTallyNonce] = useState(0);
 
   /*
    * THE TALLY IS FAILURE-TOLERANT AND NEVER BLOCKS THE ASK.
@@ -108,6 +116,25 @@ export default function CheckComparison({
    * It is the sentence she gets back for clicking, not a precondition for
    * clicking. A read that fails leaves the panel exactly as useful as it was —
    * the question is still there and the answer still records.
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * EVERY READ GOES THROUGH THE EFFECT, INCLUDING THE ONE AFTER A SAVE
+   * ───────────────────────────────────────────────────────────────────────────
+   * `loadTally` returns a canceller, and a canceller only does anything if
+   * somebody runs it. `save()` used to call `loadTally()` directly and throw the
+   * returned function away, so that one read — the only one started by a user
+   * action rather than by mounting — was the one read nobody could cancel.
+   *
+   * A component that unmounted while it was in flight then called setState from
+   * a dead tree. In a browser React 19 makes that a silent no-op, so it cost
+   * nothing visible; under a test runner it schedules a render that lands after
+   * the environment is gone, which is how it failed develop on 2026-08-31
+   * (RCM_POSTING §15.3). Either way the code was claiming a guarantee it did not
+   * have on one of its two paths.
+   *
+   * Routing the refresh through `tallyNonce` means there is exactly ONE place a
+   * tally read starts and exactly one thing that cancels it, so the guarantee
+   * cannot be true of one caller and false of another.
    */
   const loadTally = useCallback(() => {
     let cancelled = false;
@@ -124,7 +151,7 @@ export default function CheckComparison({
     };
   }, [office]);
 
-  useEffect(() => loadTally(), [loadTally]);
+  useEffect(() => loadTally(), [loadTally, tallyNonce]);
 
   const answered = verdict === "same" || verdict === "differed";
 
@@ -134,7 +161,9 @@ export default function CheckComparison({
     try {
       await recordComparison(office, batchId, answer);
       setForm(null);
-      loadTally();
+      // Ask the effect for a fresh tally, rather than starting a read here that
+      // nothing could cancel. See `tallyNonce` above.
+      setTallyNonce((n) => n + 1);
       onRecorded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "That could not be saved just now.");
