@@ -526,10 +526,16 @@ import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-function renderAt(ui: React.ReactElement, path: string) {
-  const memory = memoryLocation({ path, record: true });
+function renderAt(ui: React.ReactElement, path: string, searchPath = "") {
+  /*
+   * `searchHook` as well as `hook`: `?from=` is read through wouter's search
+   * hook, and a memory router that supplies only `hook` leaves it reading the
+   * jsdom URL — where the claim screen finds no batch id and falls back.
+   * `searchPath` takes NO leading "?".
+   */
+  const memory = memoryLocation({ path, searchPath, record: true });
   render(
-    <WouterRouter hook={memory.hook}>
+    <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
       <ThemeProvider defaultTheme="light" switchable>
         <TooltipProvider>
           <OfficeProvider>{ui}</OfficeProvider>
@@ -1283,8 +1289,18 @@ describe("the claim match panel", () => {
 
     const warning = await screen.findByTestId("match-ambiguous");
     expect(warning.textContent).toContain("not a recommendation");
-    // BOTH are still offered — nothing is dropped for being ambiguous.
+    /*
+     * BOTH ARE STILL OFFERED — nothing is dropped for being ambiguous.
+     *
+     * Stage C-3 folds all but one candidate to a line, so "offered" now means
+     * one open card and one row that opens on a click. The claim this test
+     * makes is unchanged: neither candidate was removed, and the runner-up is
+     * one click from the same card it always was.
+     */
     expect(screen.getByTestId("candidate-53648")).toBeTruthy();
+    expect(screen.getByTestId("candidate-row-53649")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("candidate-row-53649"));
     expect(screen.getByTestId("candidate-53649")).toBeTruthy();
   });
 
@@ -1634,9 +1650,30 @@ describe("the claim match panel", () => {
     expect(screen.getByTestId("match-notes").textContent).toContain("8 most recent");
   });
 
-  it("renders Approve DISABLED here too", async () => {
+  /*
+   * STAGE C-3, item 2. There is no Approve control on this screen any more —
+   * not an enabled one and not a disabled one. It could never be pressed on any
+   * claim, in any state, by anybody, because approving is a whole-check act, and
+   * a button that is permanently dead teaches a biller that controls here lie.
+   *
+   * What replaced it is what she actually needed: a link to the screen that
+   * approves. The test now asserts BOTH halves — the dead control is gone, and
+   * the way to the live one is present and points at it.
+   */
+  it("offers the way to where approving happens, not a dead Approve button", async () => {
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    const link = await screen.findByTestId("approve-link");
+    expect(link.getAttribute("href")).toBe("/rcm/remittances/b-1/approve");
+    expect(screen.getByTestId("approve-lives-elsewhere").textContent).toContain(
+      "Approving happens on the check",
+    );
+    expect(screen.queryByTestId("approve-disabled")).toBeNull();
+  });
+
+  it("names where approving happens even with no check to link to", async () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
-    const approve = await screen.findByTestId("approve-disabled");
-    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    const fallback = await screen.findByTestId("approve-link-list");
+    expect(fallback.getAttribute("href")).toBe("/rcm/remittances");
+    expect(screen.queryByTestId("approve-link")).toBeNull();
   });
 });

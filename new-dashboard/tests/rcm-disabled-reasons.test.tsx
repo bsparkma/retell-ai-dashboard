@@ -423,9 +423,17 @@ describe("no RCM screen greys a control without saying why", () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
     await screen.findByTestId("rcm-claim-match");
 
-    // THE §15.2 CASE, exactly: confirm one and the other's button goes grey.
-    // It used to go grey and say nothing, which reads as a bug to the person
-    // who just clicked.
+    /*
+     * THE §15.2 CASE, exactly: confirm one and the other's button goes grey.
+     * It used to go grey and say nothing, which reads as a bug to the person
+     * who just clicked.
+     *
+     * STAGE C-3 folds the unlinked candidates to a line, so the greyed button
+     * is now one click away rather than on screen. The rule is unchanged and so
+     * is this test's claim: WHEREVER that control is reachable, it says why it
+     * cannot be pressed. Opening the row is how it becomes reachable.
+     */
+    fireEvent.click(screen.getByTestId("candidate-row-53785"));
     const other = screen.getByTestId("confirm-53785") as HTMLButtonElement;
     expect(other.disabled).toBe(true);
     expect(screen.getByTestId("confirm-reason-53785").textContent).toContain(
@@ -434,9 +442,15 @@ describe("no RCM screen greys a control without saying why", () => {
       "This claim is already linked to 53784",
     );
 
-    // And the dead Approve button now names where approving lives.
-    expect(screen.getByTestId("approve-disabled-reason").textContent).toContain(
-      "Approving happens on the remittance",
+    /*
+     * AND THERE IS NO DEAD APPROVE BUTTON LEFT TO EXPLAIN (Stage C-3, item 2).
+     * The strongest version of "no control is greyed without a reason" is a
+     * control that was never going to work not being rendered as a control at
+     * all. What stands there now is a link to the screen that approves.
+     */
+    expect(screen.queryByTestId("approve-disabled")).toBeNull();
+    expect(screen.getByTestId("approve-link").getAttribute("href")).toBe(
+      "/rcm/remittances/b-1/approve",
     );
 
     expect(unexplainedDisabledControls()).toEqual([]);
