@@ -2690,10 +2690,10 @@ shadow mode.
 
 ### 10.8 The staging reseed — clearing the debris and putting realistic checks back
 
-**Status: RUN 2026-09-01 on staging revision `0000149`. The clear is DONE (957
-rows). The reseed is 3 of 7 — Open Dental refused the fourth target and the run
-is blocked on `fix/rcm-reset-fk-cycle` reaching the image.** Both live findings
-are recorded under "The run" below.
+**Status: COMPLETE on staging, 2026-09-01. The clear removed 957 rows; all seven
+claims exist; the four 835s are generated and committed under
+`docs/fixtures/rcm-reseed/`. Only Beau's upload through Bring in remains.** Two
+defects were found live and fixed in #137 — see "The run" below.
 
 Every walk since 2026-08-25 has left something behind in the **app** database —
 remittances, claim matches, line decisions, posting plans, a shadow comparison —
@@ -3012,7 +3012,7 @@ Both fixes are in `fix/rcm-reset-fk-cycle`. **The deployed image still carries t
 broken version**, so nobody should run the reset from the container until that
 merges.
 
-##### The reseed prep — 3 of 7, and Open Dental refused the fourth
+##### The reseed prep, first attempt — 3 of 7, and Open Dental refused the fourth
 
 Baseline read clean: PatNum 12827 **0 claims**, PatNum 12828 **0 claims**. Chart
 names read from the chart, not assumed. Then:
@@ -3057,53 +3057,128 @@ manifest being the unwind's only authority is what makes an orphan unremovable.
 A **partial** manifest now resumes, skipping targets it already names by key; a
 **complete** one is still a hard refusal.
 
-#### What this reseed has created — 3 of 7
+#### What this reseed created — all seven
 
-`/data/rcm-reseed/roland/rcm-reseed-manifest.json`, `complete: false`.
+`#137` merged as `34173b9` and deployed to revision **`0000150`** (pipeline green
+through `deploy`; image tag `34173b9`; and the live code half confirmed by the
+prep itself reporting *"RESUMING a partial manifest: 3 of 7"*, which only the
+fixed build can say).
 
-| Target | Remittance | PatNum | Code | ProcNum | ClaimNum | ClaimProcNum |
-| --- | --- | --- | --- | --- | --- | --- |
-| R1-1 | R1 | 12827 | `D0120` | `406650` | **`53857`** | `535770` |
-| R1-2 | R1 | 12828 | `D1110` | `406651` | **`53858`** | `535771` |
-| R1-3 | R1 | 12827 | `D0274` | `406652` | **`53859`** | `535773` |
-| R2-1 | R2 | 12828 | `D2391` | — | — | — |
-| R2-2 | R2 | 12827 | `D2740` | — | — | — |
-| R3-1 | R3 | 12828 | `D0220` | — | — | — |
-| R4-1 | R4 | 12827 | `D0330` | — | — | — |
+The resume worked exactly as designed — it skipped the three the interrupted run
+had already recorded and created only the remainder:
 
-All three claims are `ClaimStatus "W"`, unpaid, one claimproc each, service date
-`2026-09-01`.
+```
+  R1-1  already created — ClaimNum 53857 (skipped)
+  R1-2  already created — ClaimNum 53858 (skipped)
+  R1-3  already created — ClaimNum 53859 (skipped)
+  R2-1  PatNum 12828  ProcNum 406655  ClaimNum 53861  ClaimProcNum 535777
+  R2-2  PatNum 12827  ProcNum 406656  ClaimNum 53862  ClaimProcNum 535779
+  R3-1  PatNum 12828  ProcNum 406657  ClaimNum 53863  ClaimProcNum 535780
+  R4-1  PatNum 12827  ProcNum 406658  ClaimNum 53864  ClaimProcNum 535782
+```
 
-##### These ids are NOT on the deny-list yet, and that is deliberate
+`/data/rcm-reseed/roland/rcm-reseed-manifest.json`, **`complete: true`**.
 
-The §10 convention is that *"an id is spent the moment it EXISTS, not the moment
-it is used successfully"* — but look at what `WALK_SPENT_IDS` actually records:
-every set in that table was added **after its unwind**, and the column is headed
-`Unwound`.
+| Target | Remittance | PatNum | Code | Tooth | ProcNum | ClaimNum | ClaimProcNum |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| R1-1 | R1 | 12827 | `D0120` | — | `406650` | **`53857`** | `535770` |
+| R1-2 | R1 | 12828 | `D1110` | — | `406651` | **`53858`** | `535771` |
+| R1-3 | R1 | 12827 | `D0274` | — | `406652` | **`53859`** | `535773` |
+| R2-1 | R2 | 12828 | `D2391` | 30-O | `406655` | **`53861`** | `535777` |
+| R2-2 | R2 | 12827 | `D2740` | 19 | `406656` | **`53862`** | `535779` |
+| R3-1 | R3 | 12828 | `D0220` | 8 | `406657` | **`53863`** | `535780` |
+| R4-1 | R4 | 12827 | `D0330` | — | `406658` | **`53864`** | `535782` |
 
-That ordering is load-bearing here. `RESEED_SPENT_IDS` feeds
+All seven are `ClaimStatus "W"`, unpaid, one claimproc each, service date
+`2026-09-01`. Roland's baseline was **0 claims on both patients** before any of
+this; it is **7** now (12827 carries four, 12828 three).
+
+> **`ClaimNum 53860` and `ProcNum 406653`/`406654` are NOT this reseed's.** The
+> sequence skips them because the first run's refused `D2391` consumed ids before
+> Open Dental rejected it. Nothing here created them, the manifest does not name
+> them, and the unwind must never touch them.
+
+##### The four 835s
+
+Written by `reseed-835.js` from that manifest, to `/data/rcm-reseed/roland/` and
+committed under `docs/fixtures/rcm-reseed/`. The committed copies were generated
+a second time on a workstation with `--out` and are **byte-identical** to the
+container's, which is the check that matters: the files Beau uploads are the
+files the manifest produced.
+
+| File | Payer · check | Claims | BPR02 |
+| --- | --- | --- | --- |
+| `rcm-reseed-835-R1.txt` | Delta Dental of Oklahoma · `RS-104477` | 53857, 53858, 53859 | **$164.80** |
+| `rcm-reseed-835-R2.txt` | MetLife Dental · `RS-889021` | 53861, 53862 | **$640.00** |
+| `rcm-reseed-835-R3.txt` | Cigna Dental · `RS-330415` | 53863 | **−$29.00** |
+| `rcm-reseed-835-R4.txt` | Cigna Dental · `RS-330416` | 53864 | **$88.00** |
+
+Re-parsed through `services/rcm/eraParser.js` against the real ClaimNums:
+
+- every claim's `CLP05` equals `allowed − paid`, and every file's `BPR02`
+  reconciles against its claim payments;
+- no review flag on R1, R2 or R4;
+- R3 parses as a reversal — `CLP02 = 22`, `BPR03 = D`, all amounts negative, CAS
+  mirrored at `−6.00` — and raises `reversal_not_postable`, which is the gate's
+  business (`TAKEBACK_ACKNOWLEDGED`, D-11 amendment) and not a broken file;
+- R4 carries `NM1*QC*1*TSET*SDETI` against a real `CLP*53864`.
+
+#### The deny-list — PENDING AT UNWIND, and why they are not on it yet
+
+**None of the twenty-one ids above is on a deny-list, and none may be added until
+the unwind removes them.**
+
+The §10 convention says *"an id is spent the moment it EXISTS, not the moment it
+is used successfully"*. That is about which ids eventually belong on the list, not
+about when they are written down: every set in `WALK_SPENT_IDS` was added **after
+its unwind**, and that table's second column is headed `Unwound`.
+
+The ordering is load-bearing rather than stylistic. `RESEED_SPENT_IDS` feeds
 `screenManifestForSpentIds`, which **refuses any manifest naming a listed id**.
-Adding `53857`–`53859` now would refuse the very manifest that names them, and
-the resume that is meant to finish this run would be blocked by the list that
-exists to protect it.
+These seven claims are live and their manifest is the only thing that can remove
+them, so listing them now would make the screen refuse the manifest the unwind
+depends on — a deny-list denying the one file it exists to protect.
 
-**They go on the list when they are unwound, with `RESEED_SPENT_RECORDED_AT`
-moved in the same commit** — `rcmReseedScripts.test.js` fails if ids are added
-without the date moving.
+**PENDING AT UNWIND**, to be added to `RESEED_SPENT_IDS` in
+`scripts/rcm/reseed-targets.js` in the same commit that moves
+`RESEED_SPENT_RECORDED_AT` (`rcmReseedScripts.test.js` fails if ids are added
+without the date moving):
+
+```
+claims:      [53857, 53858, 53859, 53861, 53862, 53863, 53864]
+procedures:  [406650, 406651, 406652, 406655, 406656, 406657, 406658]
+claimProcs:  [535770, 535771, 535773, 535777, 535779, 535780, 535782]
+```
+
+The §10 `WALK_SPENT_IDS` list on `rcm-s10-targets.js` is **not** where these go:
+it is the §10/§11 walk's list, keyed to that walk's manifest, and mixing a second
+operation's ids into it would make the inventory print `*** SPIKE 0b RESIDUE`
+beside rows neither 0b nor the walk ever touched. Two operations, two lists, same
+rule.
+
+##### The unwind still does not know about this manifest
+
+`rcm-s11-unwind.js` reads `/data/rcm-s10/<office>/rcm-s10-manifest.json` and only
+that. The reseed writes `/data/rcm-reseed/roland/rcm-reseed-manifest.json`.
+**Until a follow-up teaches the unwind that path, these seven claims come off by
+hand or stay deliberately** — and that is the reason the ids above are recorded
+here in prose as well as in the manifest.
 
 #### What is left
 
-1. Merge `fix/rcm-reset-fk-cycle` and let staging redeploy. **Both fixes must be
-   in the image** — the prep cannot finish without `ToothNum`, and the reset in
-   the deployed image still hits the cycle.
-2. `PROBE_OFFICE=roland RESEED_EXPECTED_CLAIMS=3 node scripts/rcm/reseed-prep.js --execute`
-   — it resumes, skips R1-1…R1-3, and creates the remaining four. The expected
-   count is **3**, not 0: it is what the chart holds now.
-3. `PROBE_OFFICE=roland node scripts/rcm/reseed-835.js` — four files to
-   `/data/rcm-reseed/roland/` and to stdout.
-4. Upload from **/rcm → Bring in**, R3 last and only after its claim has posted.
-5. Fill the four remaining rows of the table above, and record the remittance ids
-   the uploads assign.
+1. **Upload the four files** from /rcm → Bring in, signed in as `admin` or
+   `office`. This cannot be scripted: `POST /api/rcm/era` needs the SSO session,
+   and the shared `DASHBOARD_API_TOKEN` carries no user identity, so
+   `tenantContext` fails it closed with `403 TENANT_UNRESOLVED` before the
+   handler is reached.
+2. **R3 last, and only after its claim has posted.** A takeback pairs to the paid
+   line; matched before the drain the eligible set is empty and the approve
+   refuses `NO_REVERSIBLE_LINES` — correctly. Re-match after the drain if you got
+   there early.
+3. **Expect R4 to fail.** `no_candidate`, nothing offered, no way to point CareIN
+   at the claim. That is §15.1c, which 6d.2 owes. Do not loosen the matcher.
+4. Record the four remittance ids the uploads assign.
+5. Teach the unwind this manifest's path, then retire the ids above.
 
 ## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 

@@ -497,6 +497,44 @@ const RESEED_SPENT_IDS = Object.freeze({
 });
 
 /**
+ * PENDING AT UNWIND — created, live, and deliberately NOT denied yet.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY A SECOND LIST INSTEAD OF ADDING THEM ABOVE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The 2026-09-01 run created all seven targets and they are LIVE on Roland's
+ * chart. The §10 convention says an id is spent the moment it EXISTS — and that
+ * is right about which ids eventually belong on a deny-list, but not about when
+ * they are written down. Every set in `rcm-s10-targets.js` WALK_SPENT_IDS was
+ * added AFTER its unwind, and that table's second column is headed `Unwound`.
+ *
+ * The ordering is load-bearing here rather than stylistic. `RESEED_SPENT_IDS`
+ * feeds `screenManifestForSpentIds`, which REFUSES any manifest naming a listed
+ * id. These claims are live and their manifest is the only thing that can remove
+ * them, so listing them now would make the screen refuse the very file the
+ * unwind depends on — a deny-list denying the one manifest it exists to protect.
+ *
+ * ⚠ This constant is a RECORD, not a guard. Nothing reads it, and nothing should:
+ * the moment these ids are unwound they MOVE into `RESEED_SPENT_IDS` above,
+ * `RESEED_SPENT_RECORDED_AT` moves with them, and this list goes back to empty.
+ * `rcmReseedScripts.test.js` pins that the two lists never overlap — an id in
+ * both would be simultaneously "still on the chart" and "retired".
+ *
+ * `ClaimNum 53860` and `ProcNum 406653`/`406654` are absent on purpose: the first
+ * run's refused `D2391` consumed those ids before Open Dental rejected it. This
+ * reseed did not create them, the manifest does not name them, and the unwind
+ * must never touch them.
+ *
+ * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
+ */
+const RESEED_PENDING_AT_UNWIND = Object.freeze({
+  // 2026-09-01 reseed, staging revision 0000150. Roland, PatNums 12827/12828.
+  claims: Object.freeze([53857, 53858, 53859, 53861, 53862, 53863, 53864]),
+  procedures: Object.freeze([406650, 406651, 406652, 406655, 406656, 406657, 406658]),
+  claimProcs: Object.freeze([535770, 535771, 535773, 535777, 535779, 535780, 535782]),
+});
+
+/**
  * WHEN `RESEED_SPENT_IDS` LAST GREW — the second half of the screen, and the
  * half the ids alone cannot express.
  *
@@ -582,6 +620,7 @@ module.exports = {
   MAX_PAGES,
   OUT_DIR,
   RESEED_SPENT_IDS,
+  RESEED_PENDING_AT_UNWIND,
   RESEED_SPENT_RECORDED_AT,
   pathsFor,
   resolveOffice,
