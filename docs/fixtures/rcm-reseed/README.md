@@ -1,5 +1,13 @@
 # The four reseed 835s — where they come from, and why they are not here yet
 
+> **Status, 2026-09-01.** The four files do **not** exist yet. The prep run that
+> mints their ClaimNums got 3 of its 7 targets in before Open Dental refused the
+> fourth (`D2391` needs a `ToothNum`), so the manifest is `complete: false` and
+> `reseed-835.js` correctly refuses to emit a set of files where three ClaimNums
+> are real and four are missing. Merge `fix/rcm-reset-fk-cycle`, let staging
+> redeploy, resume the prep, and they appear. See `docs/RCM_POSTING.md` §10.8
+> "The run".
+
 `rcm-reseed-835-R1.txt` … `-R4.txt` are **generated**, not committed. This
 directory is where they land when you generate them, so they are one `git
 status` away from being visible and one file-picker away from being uploaded.
@@ -25,37 +33,31 @@ cannot work. That is worse than an empty directory with instructions in it.
 
 ## Generating them
 
-From inside the staging container, at `/app`:
+The two halves run in different places, and it matters:
 
 ```bash
-# 1. Clear the old debris out of the app database. Dry run first.
-RCM_RESET_ALLOW=staging RCM_RESET_DB_URL=<staging tenant url> \
-  node scripts/rcm/reset-staging-fixtures.js
-RCM_RESET_ALLOW=staging RCM_RESET_DB_URL=<staging tenant url> \
+# 1. Clear the app database. FROM A WORKSTATION, not the container: this needs
+#    carein_owner, and the container runs as carein_app, which is append-only on
+#    audit_log by design. Fetch the owner URL into the session; never commit it.
+#      az keyvault secret show --vault-name kv-carein-staging \
+#        --name staging-tenant-carein-db-owner-url --query value -o tsv
+RCM_RESET_ALLOW=staging RCM_RESET_DB_URL=<staging owner url> \
+  node scripts/rcm/reset-staging-fixtures.js              # dry run first
+RCM_RESET_ALLOW=staging RCM_RESET_DB_URL=<staging owner url> \
   node scripts/rcm/reset-staging-fixtures.js --execute
 
-# 2. Create the seven claims. Dry run prints the baseline the execute needs.
+# 2 and 3. FROM INSIDE THE STAGING CONTAINER, at /app: the prep resolves
+#    Roland's customer key from Key Vault through the app's managed identity,
+#    which is the one thing a workstation cannot do.
+#
+#    The dry run prints the baseline the execute needs. A PARTIAL manifest
+#    RESUMES -- it skips targets it already named and creates only the rest --
+#    so the expected count is what the chart holds NOW, not the original 0.
 PROBE_OFFICE=roland node scripts/rcm/reseed-prep.js
 PROBE_OFFICE=roland RESEED_EXPECTED_CLAIMS=<n> \
   node scripts/rcm/reseed-prep.js --execute
 
-# 3. Emit the four 835s. No Open Dental access at all.
 PROBE_OFFICE=roland node scripts/rcm/reseed-835.js
-```
-
-Step 3 writes them to `/data/rcm-reseed/roland/` **and** prints each body to
-stdout between `8<` markers. Copy each body into a `.txt` file in this directory
-and upload it from **/rcm → Bring in**, signed in as `admin` or `office`.
-
-> **Uploading cannot be scripted.** `POST /api/rcm/era` needs the SSO session:
-> the shared `DASHBOARD_API_TOKEN` carries no user identity, so `tenantContext`
-> fails it closed with `403 TENANT_UNRESOLVED` before the handler is reached.
-
-If you are running the generator somewhere it can see this repository,
-`--out <dir>` writes the four files straight here as well:
-
-```bash
-PROBE_OFFICE=roland node scripts/rcm/reseed-835.js --out docs/fixtures/rcm-reseed
 ```
 
 ## What each file is for

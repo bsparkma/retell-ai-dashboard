@@ -216,14 +216,27 @@ async function createTarget(od, target, serviceDate) {
   if (denied) throw new Error(denied);
 
   // ── 1. The procedure ──────────────────────────────────────────────────────
-  const procRes = await od.post('/procedurelogs', {
+  /*
+   * ToothNum / Surf ONLY when the code's treatment area demands them.
+   *
+   * Open Dental refuses a tooth or surface code without them -- 400 "A ToothNum
+   * is required for the procedure code's treatment area", measured on the first
+   * live run, 2026-09-01. Sending a ToothNum on a WHOLE-MOUTH code would be
+   * inventing a clinical fact about a chart, so they are omitted rather than
+   * defaulted -- the same stance the 835s take on an NPI.
+   */
+  const procBody = {
     PatNum: target.patNum,
     ProcDate: serviceDate,
     procCode: target.procCode,
     ProcStatus: 'C',
     ProcFee: target.billedCents / 100,
     ProvNum: 1,
-  });
+  };
+  if (target.toothNum) procBody.ToothNum = String(target.toothNum);
+  if (target.surface) procBody.Surf = String(target.surface);
+
+  const procRes = await od.post('/procedurelogs', procBody);
   if (!procRes || procRes.ok === false) {
     throw new Error(
       `POST /procedurelogs failed for ${target.key} (${(procRes && procRes.status) || '?'}): ` +
@@ -333,16 +346,47 @@ async function main() {
     console.log(`         ${t.note}`);
   }
 
-  // ── Refuse a second set before touching anything ──────────────────────────
+  /*
+   * -- A COMPLETE manifest is a refusal. A PARTIAL one is a RESUME. ----------
+   *
+   * The first live run (2026-09-01) created three targets and was then refused
+   * by Open Dental on the fourth, leaving `complete: false` and three live
+   * claims recorded. Refusing outright at that point offers only bad moves: mint
+   * a second set on top of the first, or move the manifest aside and orphan
+   * three claims nothing can name any more -- and the manifest being the
+   * unwind's ONLY authority is exactly what makes an orphan unremovable.
+   *
+   * So a PARTIAL manifest is resumed: targets it already names by `key` are
+   * skipped and only the remainder is created. A COMPLETE manifest is still a
+   * hard refusal, because there is nothing left to do and a second run could
+   * only duplicate.
+   */
+  /** @type {object|null} */
+  let resumed = null;
   if (fs.existsSync(PATHS.manifestPath)) {
-    console.error(
-      `\nREFUSED: a manifest already exists at\n  ${PATHS.manifestPath}\n` +
-        '  A second run would mint a second set of claims onto patients whose first set is still\n' +
-        '  un-unwound, and the unwind would then have no record of half of them. Run\n' +
-        '  `scripts/rcm-s11-unwind.js` first, or move the manifest aside if you know it is spent.'
+    const existing = JSON.parse(fs.readFileSync(PATHS.manifestPath, 'utf8'));
+    if (existing.complete) {
+      console.error(
+        `\nREFUSED: a COMPLETE manifest already exists at\n  ${PATHS.manifestPath}\n` +
+          '  Every target it names was created and read back. A second run would mint a second\n' +
+          '  set onto patients whose first is still un-unwound. Unwind first, or move it aside\n' +
+          '  if you know it is spent.'
+      );
+      process.exitCode = 2;
+      return;
+    }
+    if (existing.office !== OFFICE) {
+      console.error(
+        `\nREFUSED: the partial manifest is for office='${existing.office}', not '${OFFICE}'.`
+      );
+      process.exitCode = 7;
+      return;
+    }
+    resumed = existing;
+    console.log(
+      `\n-- RESUMING a partial manifest: ${(existing.targets || []).length} of ` +
+        `${T.TARGETS.length} target(s) already created`
     );
-    process.exitCode = 2;
-    return;
   }
 
   // ── Prove we can record what we are about to create ───────────────────────
@@ -404,8 +448,14 @@ async function main() {
     return;
   }
 
-  /** @type {object} */
-  const manifest = {
+  /*
+   * A RESUMED manifest keeps its ORIGINAL createdAt, its original baseline and
+   * the targets it already recorded. Re-stamping `createdAt` would make the
+   * staleness screen in `screenManifestForSpentIds` certify a file older than it
+   * claims, and re-recording the baseline would erase the number the first run
+   * actually checked against.
+   */
+  const manifest = resumed || {
     office: OFFICE,
     createdAt: new Date().toISOString(),
     serviceDate,
@@ -414,11 +464,30 @@ async function main() {
     complete: false,
     targets: [],
   };
+  /* A resume clears any abort note from the run it is continuing. */
+  delete manifest.abortedBefore;
+  delete manifest.abortReason;
   writeManifest(manifest);
 
+  /** Targets the manifest already names — skipped, never re-created. */
+  const done = new Set((manifest.targets || []).map((t) => t.key));
+
   console.log('\n-- creating');
+  /*
+   * The running total starts from what is on the chart NOW, which on a resume
+   * already includes the claims the interrupted run created. Seeding it from the
+   * ORIGINAL baseline would make the very first pre-check report a phantom
+   * mismatch and abort a resume that was working correctly.
+   */
   let runningTotal = baselineTotal;
   for (const target of T.TARGETS) {
+    if (done.has(target.key)) {
+      const prior = manifest.targets.find((t) => t.key === target.key);
+      console.log(
+        `  ${target.key.padEnd(5)} already created — ClaimNum ${prior.claimNum} (skipped)`
+      );
+      continue;
+    }
     /*
      * THE PRE-CHECK, RE-RUN BEFORE EVERY CREATE.
      *
