@@ -2688,6 +2688,258 @@ shadow mode.
 > walk script that mixes them without saying so reads as one flow that keeps
 > failing. See §15.2.
 
+### 10.8 The staging reseed — clearing the debris and putting realistic checks back
+
+**Status: scripts written and tested, NOT YET RUN on staging.** They ship in the
+image, so nothing under `scripts/rcm/` can be run there until this merges and
+deploys. The ids, remittance ids and row counts below are filled in by the run.
+
+Every walk since 2026-08-25 has left something behind in the **app** database —
+remittances, claim matches, line decisions, posting plans, a shadow comparison —
+and the chart has been unwound each time while the app rows were not. What is on
+staging now is not a fixture anybody authored; it is sediment. Beau cannot
+evaluate the screens against it, and a biller certainly cannot.
+
+Two scripts and a generator, under `backend/scripts/rcm/`:
+
+| Script | Writes? | What it does |
+| --- | --- | --- |
+| `reset-staging-fixtures.js` | **Postgres only** | Deletes the pre-today remittance graph, its claim matches, line decisions, decided figures, shadow comparisons and the RCM slice of `audit_log`. **No Open Dental client exists in the file.** Dry run is the default. |
+| `reseed-prep.js` | **POST only** | Creates the seven disposable claims the four 835s pay, on PatNums 12827 and 12828. Dry run is the default. |
+| `reseed-835.js` | no OD access at all | Reads the manifest, emits the four synthetic 835s, prints each to stdout. |
+
+The unwind is unchanged: `rcm-s11-unwind.js` is still the only file in this
+repository that may issue a DELETE against Open Dental, and it takes its ids from
+its own §10 manifest. **Run it before the reset if a walk left live claims
+behind** — the reset removes the app's memory of a plan, and a plan nobody can
+read afterwards is a plan nobody can trace.
+
+#### The clear, and the three things that would have made it dangerous
+
+**It refuses anything but staging.** `RCM_RESET_ALLOW=staging` plus a host
+containing `staging`, plus `NODE_ENV != production`, plus an unconditional
+refusal on any `-prod`/`_prod`/`.prod` marker in the host *or* the database name
+— checked before the per-mode rules, so pointing at prod is reported as pointing
+at prod rather than as "not a staging host". There is one lane wider than the
+brief asked for: `RCM_RESET_ALLOW=dev` reaches a **localhost** database and
+nothing else. It exists because the thirteen statements are ordered against a
+foreign-key graph with RESTRICT edges in it, and the alternative to rehearsing on
+a throwaway container is rehearsing on staging.
+
+**It does not take the voice module's audit trail with it.** `audit_log` is
+tenant-wide: the record of who read a patient's call and who opened a TC case
+lives in the same table as RCM's. So the predicate is
+`resource_type LIKE 'rcm\_%' ESCAPE '\'` — and the escape is load-bearing, since
+`_` is a LIKE wildcard and the unescaped form also matches `rcmXanything`.
+`rcmResetStagingFixtures.test.js` scans `routes/rcm` and `services/rcm` for
+`resource_type` literals and fails if one is not `rcm_`-prefixed. Note which way
+that failure points: a new unprefixed type makes the reset **leave a row
+behind**, never delete one it should not have.
+
+**It deletes children before parents, and that order is a decision.** The schema's
+RESTRICT edges are deliberate — *"a claim with money posted against it must not be
+deletable"*, the same stance Open Dental takes — which is exactly what makes a
+wrong order fail at statement five against a live database. Thirteen statements,
+each naming its own rows, each with its reason beside it. The roots are selected
+by `created_at < <local midnight>`; everything hanging off a root goes with it
+**whatever its own timestamp says**, because a posting plan created this morning
+against last week's check is that check's debris and RESTRICT would refuse the
+parent anyway.
+
+`audit_log` filters on **`ts`**, not `created_at` — it predates the rcm_* schema
+and has no such column, and reaching for one is a 42703 raised twelve tables in.
+
+Today is **local** (`OFFICE_TIMEZONE`), computed by Postgres rather than by Node
+so the cutoff and the timestamps it is compared against are read by one clock.
+UTC midnight lands at 7pm the previous evening in Roland; a UTC cutoff run at 8pm
+would delete a check somebody uploaded two hours earlier.
+
+**The dry run is not a preview of the SQL — it runs it.** All thirteen statements
+execute inside a transaction that is then rolled back, so the counts it prints are
+measured rather than predicted, and the FK order is exercised for real. A dry run
+that only printed SQL would say nothing about whether statement five was going to
+fail.
+
+##### `audit_log` needs the OWNER role, and the script says so before it starts
+
+`audit_log` is **append-only to `carein_app`**: the audit migration revokes
+everything and grants back `INSERT, SELECT`, deliberately, so the platform cannot
+erase its own PHI trail. The rcm_* tables grant that role `DELETE`.
+
+So a run as `carein_app` would clear every rcm_* row and then fail on the
+thirteenth statement with a 42501. One transaction means it all rolls back — but
+the operator deserves a sentence, and it should arrive before the expensive part
+starts. `assertCanDelete` asks `has_table_privilege` for every table the script
+will touch and refuses up front, naming the role to reconnect as.
+
+**Connect as `carein_owner`.** Confirmed live in the rehearsal below.
+
+##### PostgreSQL 17 rehearsal — RUN 2026-09-01, throwaway container
+
+Migrations applied clean (`migrations-tenant`, all of them), a real `carein_app`
+role created so the audit grants actually applied, then a debris fixture loaded:
+last week's full remittance graph, **a posting plan created today against last
+week's batch**, today's own remittance, and nine audit rows spanning RCM, voice
+and TC.
+
+```
+-- what was deleted                                        18 rows total
+     2  rcm_posting_queue_line        2  rcm_posting_queue
+     1  rcm_claim_payment_history     1  rcm_batch_claim_payments
+     1  rcm_posting_audits            1  rcm_remittance_keys
+     1  rcm_activity_events           1  rcm_procedure_adjustments
+     1  rcm_procedure_lines           1  rcm_eob_uploads
+     1  rcm_payment_batches           1  rcm_claims
+     4  audit_log
+```
+
+| Proof | Result |
+| --- | --- |
+| Last week's remittance graph, all thirteen tables | ✅ gone |
+| **The plan created TODAY against LAST WEEK's batch** — the case a naive per-table `created_at <` sweep leaves behind, blocking its own parent | ✅ gone |
+| Today's remittance and today's claim | ✅ survived |
+| Today's `rcm_claim_match` audit row | ✅ survived |
+| `call`, `patient`, `tc_case` audit rows from last week | ✅ **survived** |
+| `rcmXnotours` — the LIKE-wildcard trap | ✅ **survived** |
+| Run as `carein_app` | ✅ refused `GUARD_NO_DELETE_PRIVILEGE`, naming `audit_log` and `carein_owner`, **before `BEGIN`** |
+
+#### The reseed — four checks, and one of them cannot be resolved
+
+Seven claims across the two designated Roland test patients, then four 835s.
+
+> **Ruling A, 2026-09-01: no new Open Dental chart.** The brief asked for R1's
+> three lines to be on three different patients. **Roland has two designated
+> synthetic patients and no third** — `11373` is rejected as a fixture (shared
+> family phone, ambiguous by construction), `7115` in Roland is a different, real
+> person, and the deny-lists in `rcm-s10-targets.js` hold ClaimNums and ProcNums,
+> never patients. So R1 runs 12827 / 12828 / 12827 across three separate claims:
+> the Patient column still changes from row to row, which is what the fixture was
+> for, and nothing had to be invented to get it.
+
+| | Payer / check | Lines | What it is for |
+| --- | --- | --- | --- |
+| **R1** | Delta Dental of Oklahoma · `RS-104477` | 3 claims, 2 patients | The clean check. One line pays 80% of allowed and leaves the patient owing **$9.20**, so the verdict line has a non-zero remainder to project. **The CC-5 fixture.** |
+| **R2** | MetLife Dental · `RS-889021` | 2 claims | One contractual-only line (`R = 0`, no control rendered) beside **$480.00** for the office to absorb — `office_writeoff`, reason **required**, and the gate refuses without one (D-11, REASON_GATE). |
+| **R3** | Cigna Dental · `RS-330415` | 1 claim | The takeback. `CLP02 = 22`, every amount negated, the CAS mirrored. |
+| **R4** | Cigna Dental · `RS-330416` | 1 claim | **§15.1c. The matcher cannot resolve it, on purpose.** |
+
+The amounts are ordinary dental fees rather than §10's $1.00. That walk uses a
+dollar so a mis-post is a dollar; this is the fixture somebody clicks through to
+see whether the screens read correctly, and a workbench where every line is $1.00
+cannot show a contractual write-off and a patient remainder as different sizes of
+number.
+
+**R3 is uploaded last, and only after its claim has posted.** A takeback pairs to
+the *paid* line; matched before the drain, the eligible set is empty and the
+approve refuses `NO_REVERSIBLE_LINES` — correctly (§10.6.4 finding 1).
+
+**Staging is the ADJUSTMENT path only. Never a negative supplemental.**
+
+##### R4, and why it is authored rather than broken
+
+§15.1c: *"if the right claim exists in Open Dental but is not among the candidates
+the matcher returned, the biller has no way to say so. Her only exit is save for
+tomorrow."* Before the first real drain that is **not tolerable**, and 6d.2 owes
+the fix. Beau should hit it himself before his biller does.
+
+R4's claim is **real** — the prep created it on a designated test patient, and it
+is visible in Open Dental from the other window. `CLP01` carries the **real
+ClaimNum**, deliberately: candidates are gathered by *patient* and never by claim
+number, so the right number being in the file changes nothing, which is what makes
+the dead end sharp rather than soft. The one thing R4 changes is `NM1*QC`, which
+carries a **transposed surname** — so `findClaimCandidates` searches
+`/patients?LName=` and `?FName=` (prefix matches), finds nobody, and returns
+before it ever looks at a claim. `no_candidate` then means exactly what it is
+documented to mean: a search ran and found nothing, with `rejectedReasons` all
+zero.
+
+> **Do not loosen the matcher to make R4 pass.** Two things stop that being
+> necessary and one stops it being silent:
+>
+> - `reseed-835.js` **refuses to write the file** if either transposed token could
+>   prefix-match any test patient's `LName` or `FName`, in either direction and
+>   across both patients. Open Dental prefix-matches, so a transposition that
+>   merely *differs* is not enough — `TEST` vs `TSET` is safe, `TEST` vs `TES` is
+>   not, and neither is a token that matches the *other* patient.
+> - `rcmReseedFixtures.test.js` pins that R4 resolves to **zero** candidates
+>   through the real `findClaimCandidates`, against a fake Open Dental that
+>   reproduces prefix matching — while the two real chart names still resolve
+>   through the same fake, so the proof is not vacuous.
+>
+> A fixture that is supposed to fail is otherwise indistinguishable from one that
+> is simply broken. If R4 ever starts matching, the limit it demonstrates has
+> stopped being reachable and nothing else would say so.
+
+##### The fixtures are proved against the real parser and the real matcher
+
+`backend/test/rcmReseedFixtures.test.js`, run 2026-09-01:
+
+| Proof | Result |
+| --- | --- |
+| Every line balances: `billed − paid = W + R`, and `CLP05 = allowed − paid` | ✅ 7/7 |
+| All four parse; `BPR02` reconciles against its claim payments | ✅ 4/4 |
+| No review flag on R1, R2, R4 | ✅ |
+| R3 parses as a reversal, `CLP02 = 22`, negative, and raises `reversal_not_postable` — which is the gate's business, answered by `TAKEBACK_ACKNOWLEDGED` since the D-11 amendment | ✅ |
+| R1–R3: each claim's top candidate is the claim the 835 names, **not ambiguous**, score ≥ 70 | ✅ 6/6 |
+| **R4: zero candidates, zero patients considered, `rejectedReasons` all zero** | ✅ |
+| The two real chart names still resolve through the same fake | ✅ (control) |
+
+One defect was found and fixed by writing that suite: `casSegmentsFor`'s `> 0`
+guards are questions about the ORIGINAL payment, and handing it pre-negated
+amounts made every guard false — so **R3 would have emitted no CAS at all** and
+would have stopped mirroring the payment it reverses. The file would still have
+parsed and still reconciled; it would just have been quietly wrong about the
+write-off. The sign is now applied to the rendered string, and both directions
+are pinned.
+
+#### The scripts/ scan was one level deep
+
+Creating `backend/scripts/rcm/` exposed a real hole in
+`routes/rcm/rcmNoOdWrites.test.js`. Its allow-list scan was a single
+`readdirSync` over `scripts/` matched against bare basenames, so **any
+subdirectory was invisible to it**: a file under `scripts/rcm/` could have named
+`apiWriteRaw` and no guard in that file would have looked. *"Put it in scripts/"*
+is the shape that test exists to close, and *"put it in scripts/anything/"* was a
+strictly easier version of the same move.
+
+The scan now recurses, the allow-list holds paths relative to `scripts/`, and two
+assertions pin the recursion itself — a `scriptFiles` that quietly stopped
+recursing would leave every other assertion passing over a smaller set. Verified
+both ways: a decoy naming `apiWriteRaw` under `scripts/rcm/` is now caught
+(`scripts/rcm/__negative-control.js → apiWriteRaw`), and was not before.
+
+Nothing had exploited it — no subdirectory existed until now — but a guard that
+only works while nobody makes a folder is not a guard.
+
+#### What this reseed will have spent — FILL IN AFTER THE RUN
+
+Open Dental does not reissue an id, so every id created below is spent the moment
+it **exists**, not the moment it is used successfully. Add them to
+`RESEED_SPENT_IDS` in `scripts/rcm/reseed-targets.js` **and move
+`RESEED_SPENT_RECORDED_AT`** — `rcmReseedScripts.test.js` fails if ids are added
+without the date moving, because the staleness screen would then certify
+manifests it should refuse.
+
+| Target | Remittance | PatNum | ProcNum | ClaimNum | ClaimProcNum |
+| --- | --- | --- | --- | --- | --- |
+| R1-1 | R1 | 12827 | _pending_ | _pending_ | _pending_ |
+| R1-2 | R1 | 12828 | _pending_ | _pending_ | _pending_ |
+| R1-3 | R1 | 12827 | _pending_ | _pending_ | _pending_ |
+| R2-1 | R2 | 12828 | _pending_ | _pending_ | _pending_ |
+| R2-2 | R2 | 12827 | _pending_ | _pending_ | _pending_ |
+| R3-1 | R3 | 12828 | _pending_ | _pending_ | _pending_ |
+| R4-1 | R4 | 12827 | _pending_ | _pending_ | _pending_ |
+
+Remittance ids (`rcm_payment_batches.batch_id`) are assigned by the upload, not by
+these scripts, and are recorded here after Beau uploads the four files.
+
+**The unwind still owes these claims.** They are ordinary disposable targets on
+12827 and 12828 and come off the same way §11's do — but §11's unwind reads the
+**§10** manifest, and this reseed writes its own at
+`/data/rcm-reseed/roland/rcm-reseed-manifest.json`. Pointing the existing unwind
+at it is a follow-up, and until that lands these seven claims are removed by
+hand or left in place deliberately.
+
 ## 11. The unwind — returning the test patient to where it started (−$0.20) — ✅ CLOSED 2026-08-26
 
 > ### ⚠️ THE ORDER IN THIS SECTION WAS WRONG UNTIL 2026-08-26
