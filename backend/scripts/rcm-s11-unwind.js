@@ -1,15 +1,36 @@
 'use strict';
 
 /*
- * §11 — RETURN PatNum 12827 TO THE BALANCE §10 FOUND IT AT.  RUN AFTER THE WALK.
+ * §11 — PUT THE TEST PATIENTS BACK WHERE THEY WERE.  RUN AFTER THE WALK.
  *
+ *   the §10 walk (PatNum 12827):
  *     PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js             # DRY RUN
  *     PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --execute   # writes
  *
- * DO NOT RUN THIS DURING THE PREP. It exists so that when the walk is finished
- * the test patient goes back to where it started, and nothing it removes can be
- * put back. Beau runs it, with `--execute`, after §10.4, and the transcript goes
+ *   the §10.8 staging reseed (PatNums 12827 and 12828):
+ *     PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --reseed
+ *     PROBE_OFFICE=roland node scripts/rcm-s11-unwind.js --reseed --execute
+ *
+ * DO NOT RUN THIS DURING A PREP. It exists so that when the walk is finished the
+ * test patients go back to where they started, and nothing it removes can be put
+ * back. Beau runs it, with `--execute`, after §10.4, and the transcript goes
  * into §11.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE FLAG PICKS THE MANIFEST, AND NOTHING ELSE ABOUT THE RUN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `--reseed` changes ONE thing: which file the ids come from. The five steps,
+ * their mandatory order, every read-back, the deny-list and the resume behaviour
+ * are identical, because the rows are identical — a claim the reseed created and
+ * a claim the walk created come off a chart exactly the same way.
+ *
+ * The bare command is unchanged and still means the §10 walk.
+ *
+ * Three ids are refused on BOTH paths and can never be named by either:
+ * `ClaimNum 53860` and `ProcNum 406653` / `406654`. Open Dental consumed them on
+ * a `POST /procedurelogs` it then rejected, so nothing was ever created at those
+ * numbers — they belong to nobody, no manifest names them, and a file that did
+ * was not written by a prep run. See `RESEED_BURNED_IDS`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE ORDER IS MANDATORY — AND IT CHANGED ON 2026-08-25
@@ -110,10 +131,13 @@
  * SAFETY PROPERTIES — enforced in code, pinned by test/rcmS10Scripts.test.js
  * ─────────────────────────────────────────────────────────────────────────────
  *   1. IDS COME FROM THE MANIFEST AND FROM NOWHERE ELSE. Not argv, not env, not
- *      a fresh read of the patient's claims. An unwind that takes ids from an
- *      argument is one typo away from deleting a real patient's claim, and "the
- *      operator will be careful" is not a safety property. If there is no
- *      manifest, this walk created nothing, so there is nothing to unwind.
+ *      a fresh read of the patient's claims. The command line carries a closed
+ *      set of BOOLEAN FLAGS and nothing else — no token on it is ever parsed as
+ *      a number, a path or an id, and an unrecognised one is a refusal. An
+ *      unwind that takes ids from an argument is one typo away from deleting a
+ *      real patient's claim, and "the operator will be careful" is not a safety
+ *      property. If there is no manifest, that run created nothing, so there is
+ *      nothing to unwind.
  *   2. A HARD DENY-LIST. Spike 0b's residue — claim 53648, procedure 405237,
  *      supplemental 533931, adjustments 19109-19112, PatPlanNum 20469 — is
  *      refused even if it appears in a manifest. The failure mode that matters
@@ -141,8 +165,30 @@
 const fs = require('node:fs');
 const odOffices = require('../config/odOffices');
 const T = require('./rcm-s10-targets');
+const RESEED = require('./rcm/reseed-targets');
 const odOfficeConfig = require('../services/rcm/odOfficeConfig');
 
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE COMMAND LINE IS A CLOSED SET OF FLAGS. NO VALUE EVER ARRIVES THIS WAY.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `process.argv` is read ONCE, here, and every token it may carry is a boolean
+ * from `FLAGS`. Nothing on the command line is ever parsed as a number, a path
+ * or an id — the property that matters in the one file in this repository that
+ * may DELETE from a chart is not "argv is read once", it is **argv can never
+ * name a row**.
+ *
+ * An UNRECOGNISED token is a REFUSAL rather than something ignored. Before this,
+ * `node scripts/rcm-s11-unwind.js 53857 --execute` ran the whole unwind and said
+ * nothing about the number — which reads to an operator as though the number had
+ * done something.
+ */
+const FLAGS = Object.freeze(['--execute', '--reseed']);
+const ARGV = Object.freeze(process.argv.slice(2));
+const UNKNOWN_ARGS = Object.freeze(ARGV.filter((a) => !FLAGS.includes(a)));
+const EXECUTE = ARGV.includes('--execute');
+const IS_RESEED = ARGV.includes('--reseed');
 
 /*
  * ─────────────────────────────────────────────────────────────────────────────
@@ -158,8 +204,160 @@ const odOfficeConfig = require('../services/rcm/odOfficeConfig');
  * test patient and a DIFFERENT, REAL person in Roland.
  */
 const TARGET = T.resolveTarget();
-const PATHS = T.pathsFor(TARGET.office);
-const DENY = T.denyIdsFor(TARGET);
+
+/*
+ * ═════════════════════════════════════════════════════════════════════════════
+ * TWO MANIFESTS, ONE UNWIND — and the bare command still means what it meant.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The §10 walk and the §10.8 reseed both create real rows on a real chart, both
+ * record exactly what they created in a manifest, and both need the SAME five
+ * steps in the SAME mandatory order to take them off again. What differs is only
+ * which file names the rows:
+ *
+ *     (bare)      /data/rcm-s10/<office>/rcm-s10-manifest.json
+ *     --reseed    /data/rcm-reseed/roland/rcm-reseed-manifest.json
+ *
+ * A second unwind script would have been a second copy of the order, the
+ * read-backs, the deny check and the resume logic — and the order is the thing
+ * that took a failed live run to get right.
+ *
+ * The bare invocation is UNCHANGED. `resolveTarget`'s own header says a bare
+ * command must keep meaning what it meant, and an operator working through the
+ * §11 runbook must not silently get a different manifest than the one it names.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE TWO MANIFESTS ARE NOT THE SAME SHAPE, AND THE DIFFERENCE IS A PATIENT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The walk's manifest carries ONE top-level `patNum` and every target belongs to
+ * it. The reseed's spans TWO — 12827 and 12828 — because R1 exists to make the
+ * Patient column change from row to row. So the patient is read PER TARGET
+ * there, screened through the reseed's own `assertPatNum` (which refuses 7115
+ * and 11373 BY NAME, with their own reasons), and a balance is printed for each.
+ */
+const SOURCES = Object.freeze({
+  walk: Object.freeze({
+    key: 'walk',
+    title: '§10 walk',
+    manifestPath: T.pathsFor(TARGET.office).manifestPath,
+    /**
+     * @param {Record<string, unknown>} manifest
+     * @returns {{ error: string }|{ patNums: number[] }}
+     */
+    screen(manifest) {
+      if (manifest.office !== TARGET.office || Number(manifest.patNum) !== TARGET.patNum) {
+        return {
+          error:
+            `the manifest is for office='${manifest.office}' patNum=${manifest.patNum}; ` +
+            `this script is '${TARGET.office}'/${TARGET.patNum} only.`,
+        };
+      }
+      return { patNums: [TARGET.patNum] };
+    },
+  }),
+
+  reseed: Object.freeze({
+    key: 'reseed',
+    title: '§10.8 staging reseed',
+    /*
+     * ROLAND ONLY, refused at LOAD rather than mid-run. `RESEED.resolveOffice`
+     * throws on anything else: Riley has never had a walk run in it, so a
+     * click-through fixture is not the right first write into a second
+     * practice's chart — and it is certainly not the right first DELETE.
+     */
+    manifestPath: RESEED.pathsFor(RESEED.resolveOffice(TARGET.office)).manifestPath,
+    /**
+     * @param {Record<string, unknown>} manifest
+     * @returns {{ error: string }|{ patNums: number[] }}
+     */
+    screen(manifest) {
+      if (manifest.office !== RESEED.OFFICE) {
+        return {
+          error: `the manifest is for office='${manifest.office}'; the reseed is ${RESEED.OFFICE} only.`,
+        };
+      }
+      const targets = Array.isArray(manifest.targets) ? manifest.targets : [];
+      /** @type {number[]} */
+      const patNums = [];
+      for (const t of targets) {
+        /*
+         * PER TARGET, through the reseed's OWN screen. It refuses 11373 (shared
+         * family phone) and 7115 (valley's patient, a different REAL person in
+         * Roland) by name, each with its own reason — which is what a person
+         * reading a refusal on a DELETE script needs.
+         */
+        const refusal = RESEED.assertPatNum(t && t.patNum);
+        if (refusal) {
+          return {
+            error: `target ${(t && t.key) || '?'} names a patient this unwind may not touch.\n  ${refusal}`,
+          };
+        }
+        const n = Number(t.patNum);
+        if (!patNums.includes(n)) patNums.push(n);
+      }
+      if (patNums.length === 0) {
+        return { error: 'the reseed manifest names no targets, so there is nothing here to unwind.' };
+      }
+      return { patNums };
+    },
+  }),
+});
+
+const SOURCE = IS_RESEED ? SOURCES.reseed : SOURCES.walk;
+const PATHS = Object.freeze({ manifestPath: SOURCE.manifestPath });
+
+/*
+ * THE DENY-LIST IS THE UNION — AND ONLY EVER WITHIN ONE PRACTICE.
+ *
+ * The walk's residue and the reseed's burned ids are all Roland numbers, and
+ * Open Dental never reissues an id, so the two sets are disjoint by construction
+ * and a union can only refuse more, never less. That is worth having on BOTH
+ * sources: a reseed manifest naming Spike 0b's residue is exactly as
+ * untrustworthy as a walk manifest naming it.
+ *
+ * The union is office-CONDITIONAL, for the reason `denyIdsFor`'s own header
+ * gives: a flat cross-office list would refuse a legitimate Riley id because
+ * Roland once used the same number, and — far worse — would fail to protect a
+ * Riley id that Roland's list happens not to name.
+ *
+ * `RESEED_PENDING_AT_UNWIND` is deliberately NOT in here. Those ids are LIVE and
+ * this script is what removes them; denying them would make the unwind refuse
+ * the one manifest it exists to act on.
+ */
+const DENY = Object.freeze([
+  ...T.denyIdsFor(TARGET),
+  ...(TARGET.office === RESEED.OFFICE ? RESEED.reseedDenyIds() : []),
+]);
+
+/**
+ * WHY a particular id is denied — so a refusal names what it actually caught.
+ *
+ * The deny-list has three provenances now and they mean different things: Spike
+ * 0b's permanent residue, ids an earlier run spent and unwound, and the three
+ * `RESEED_BURNED_IDS` Open Dental consumed on a request it then refused. A
+ * refusal that said "Spike 0b residue" for a burned id would send the reader to
+ * the wrong section of the runbook.
+ *
+ * @param {number} id
+ * @returns {string}
+ */
+function denyReasonFor(id) {
+  const n = Number(id);
+  const inSet = (bucket) =>
+    Boolean(bucket) &&
+    [bucket.claims, bucket.procedures, bucket.claimProcs, bucket.adjustments, bucket.patPlans]
+      .filter(Array.isArray)
+      .some((list) => list.includes(n));
+
+  if (inSet(TARGET.spike0bResidue)) return 'Spike 0b residue — permanent (RCM_POSTING.md §11)';
+  if (inSet(TARGET.walkSpentIds)) return 'spent by an earlier walk, and already unwound';
+  if (TARGET.office === RESEED.OFFICE) {
+    if (inSet(RESEED.RESEED_BURNED_IDS)) {
+      return 'BURNED — consumed by a prep request Open Dental then refused; it belongs to nobody';
+    }
+    if (inSet(RESEED.RESEED_SPENT_IDS)) return 'spent by an earlier reseed, and already unwound';
+  }
+  return 'on the deny-list';
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,23 +386,34 @@ function money(c) {
  * and after are measured the same way. A balance derived differently at the two
  * ends would make a correct unwind look like a posting error, or the reverse.
  *
+ * THE PATIENT IS AN ARGUMENT, not a module constant. The walk's manifest names
+ * one patient; the reseed's names two, because R1 exists to make the Patient
+ * column change from row to row. A balance function that could only ever measure
+ * `TARGET.patNum` would have reported one of the reseed's two patients and
+ * silently ignored the other — on a script whose entire output is a delta.
+ *
  * @param {(path:string, params?:Record<string,unknown>) => Promise<{ok:boolean,status:number,data:unknown,error?:string}>} get
+ * @param {number} patNum the patient to measure. Never defaulted.
  */
-async function balanceOf(get) {
+async function balanceOf(get, patNum) {
+  const pat = Number(patNum);
+  if (!Number.isFinite(pat) || pat <= 0) {
+    throw new Error('balanceOf needs the PatNum it is measuring; there is no default.');
+  }
   /** @param {string} path */
   async function list(path) {
     /** @type {Record<string, unknown>[]} */
     const rows = [];
     for (let page = 0; page < T.MAX_PAGES; page++) {
       const res = await get(path, {
-        PatNum: TARGET.patNum,
+        PatNum: pat,
         ...(page > 0 ? { Offset: page * T.OD_PAGE_SIZE } : {}),
       });
       if (!res.ok) throw new Error(`GET ${path} failed (${res.status}): ${res.error}`);
       const batch = Array.isArray(res.data) ? res.data : [];
       // Client-side re-filter: OD silently ignores list filters it does not
       // implement and answers 200 with everybody's rows.
-      for (const r of batch) if (Number(r.PatNum) === TARGET.patNum) rows.push(r);
+      for (const r of batch) if (Number(r.PatNum) === pat) rows.push(r);
       if (batch.length < T.OD_PAGE_SIZE) return rows;
     }
     throw new Error(`GET ${path} did not terminate within the page cap.`);
@@ -243,6 +452,7 @@ async function balanceOf(get) {
   const adj = adjustments.reduce((sum, a) => sum + cents(a.AdjAmt), 0);
 
   return {
+    patNum: pat,
     charges,
     insPaid,
     writeOff,
@@ -253,9 +463,22 @@ async function balanceOf(get) {
   };
 }
 
+/**
+ * Every patient a run addresses, measured. Returns them in the order given, so
+ * BEFORE and AFTER line up row for row.
+ *
+ * @param {(path:string, params?:Record<string,unknown>) => Promise<any>} get
+ * @param {ReadonlyArray<number>} patNums
+ */
+async function balancesOf(get, patNums) {
+  const out = [];
+  for (const p of patNums) out.push(await balanceOf(get, p));
+  return out;
+}
+
 /** @param {ReturnType<typeof balanceOf> extends Promise<infer B> ? B : never} b */
 function printBalance(label, b) {
-  console.log(`\n-- BALANCE ${label} (ProcStatus "D" excluded) ------------------------`);
+  console.log(`\n-- BALANCE ${label} · PatNum ${b.patNum} (ProcStatus "D" excluded) ------------`);
   console.log(`   charges  (ProcStatus "C")   ${money(b.charges).padStart(12)}`);
   console.log(`   insurance paid              ${money(-b.insPaid).padStart(12)}`);
   console.log(`   write-offs                  ${money(-b.writeOff).padStart(12)}`);
@@ -741,12 +964,113 @@ async function unwindTarget(io, target) {
   return { steps, aborted };
 }
 
+/**
+ * WHAT TO MOVE ONTO THE DENY-LIST NOW THAT THESE ROWS ARE GONE.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THE SCRIPT PRINTS THIS RATHER THAN EDITING THE FILE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `RESEED_SPENT_IDS` and `RESEED_SPENT_RECORDED_AT` are the deny-list a future
+ * run is screened against, and they live in source. A script that rewrote its
+ * own constants would be a script whose safety guard could be changed by
+ * anything that could make it run — and the change would land unreviewed, on a
+ * file whose entire purpose is to be reviewed. §10's `WALK_SPENT_IDS` were
+ * pasted in by hand after every walk, and `reseed-prep.js` prints its own
+ * "ADD THESE TO THE DENY-LIST" block for the same reason. This is that
+ * convention, at the other end of the life cycle.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ONLY AFTER A CLEAN, COMPLETE, EXECUTED RUN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Retiring an id says "this row is gone and can never come back". The moment
+ * that becomes true is when the DELETE read back, so:
+ *
+ *   · a DRY RUN prints nothing — nothing was retired;
+ *   · a run where ANY target stopped early prints nothing, and says which are
+ *     still live instead. `RESEED_SPENT_IDS` feeds `screenManifestForSpentIds`,
+ *     which REFUSES a manifest naming a listed id — so retiring a half-unwound
+ *     run would deny the very manifest the re-run needs, and the remaining rows
+ *     would be stranded on the chart with no tooling able to name them.
+ *
+ * `RESEED_PENDING_AT_UNWIND` goes back to empty in the same edit. An id must
+ * never be in both: it would be simultaneously "still on the chart" and
+ * "retired", and `rcmReseedScripts.test.js` pins that it cannot be.
+ *
+ * @param {{ targets?: ReadonlyArray<Record<string, unknown>> }} manifest
+ * @param {ReadonlyArray<{ label: string, target: Record<string, unknown>, aborted: boolean }>} results
+ * @param {boolean} execute
+ */
+function printRetirementBlock(manifest, results, execute) {
+  console.log('\n-- RETIRE THESE IDS -------------------------------------------------');
+  if (!execute) {
+    console.log('   DRY RUN — nothing was retired, so there is nothing to move yet.');
+    return;
+  }
+
+  const stuck = results.filter((r) => r.aborted);
+  if (stuck.length) {
+    console.log(
+      `   NOT YET. ${stuck.length} target(s) stopped early (${stuck.map((r) => r.label).join(', ')}),` +
+        ' so their rows are still on the chart.'
+    );
+    console.log('   Do NOT move anything onto RESEED_SPENT_IDS while that is true: the screen would');
+    console.log('   then refuse this manifest, and the re-run that finishes the job needs it.');
+    console.log('   Fix the cause, run this again — every finished step reports "already done".');
+    return;
+  }
+
+  const ids = (field) =>
+    (manifest.targets || [])
+      .map((t) => Number(t[field]))
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+
+  console.log('   Every target unwound. In scripts/rcm/reseed-targets.js, MOVE these off');
+  console.log('   RESEED_PENDING_AT_UNWIND and onto RESEED_SPENT_IDS:');
+  console.log('');
+  console.log('       const RESEED_SPENT_IDS = Object.freeze({');
+  console.log(`         claims: Object.freeze([${ids('claimNum').join(', ')}]),`);
+  console.log(`         procedures: Object.freeze([${ids('procNum').join(', ')}]),`);
+  console.log(`         claimProcs: Object.freeze([${ids('claimProcNum').join(', ')}]),`);
+  console.log('       });');
+  console.log('');
+  console.log(`       const RESEED_SPENT_RECORDED_AT = '${new Date().toISOString()}';`);
+  console.log('');
+  console.log('       const RESEED_PENDING_AT_UNWIND = Object.freeze({');
+  console.log('         claims: Object.freeze([]),');
+  console.log('         procedures: Object.freeze([]),');
+  console.log('         claimProcs: Object.freeze([]),');
+  console.log('       });');
+  console.log('');
+  console.log('   RESEED_BURNED_IDS is UNCHANGED — 53860 / 406653 / 406654 were never created,');
+  console.log('   so they were never unwound. They stay in their own list, permanently denied.');
+  console.log('   Then update the §10.8 table in docs/RCM_POSTING.md to match.');
+}
+
 async function main() {
   // FIRST. See rcm-s10-inventory.js for what a script that cannot load its own
   // secrets costs at a live chart database.
   await require('../config/secrets').loadSecrets();
 
-  const execute = process.argv.includes('--execute');
+  const execute = EXECUTE;
+
+  /*
+   * AN ARGUMENT THIS SCRIPT DOES NOT RECOGNISE IS A REFUSAL.
+   *
+   * Silently ignoring one is how `rcm-s11-unwind.js 53857 --execute` used to
+   * read as though the number had selected something. It never could — ids come
+   * from the manifest and from nowhere else — but a person watching a DELETE
+   * script run should never have to take that on trust.
+   */
+  if (UNKNOWN_ARGS.length) {
+    console.error(
+      `REFUSED: unrecognised argument(s): ${UNKNOWN_ARGS.join(' ')}\n` +
+        `  This script takes flags only, from a closed set: ${FLAGS.join(' ')}\n` +
+        '  Nothing on the command line ever names a row — the ids come from the manifest.'
+    );
+    process.exitCode = 2;
+    return;
+  }
 
   /*
    * 6d: THE OFFICE ALREADY REFUSED, ABOVE, AT LOAD.
@@ -764,8 +1088,10 @@ async function main() {
   if (!fs.existsSync(PATHS.manifestPath)) {
     console.error(
       `REFUSED: no manifest at\n  ${PATHS.manifestPath}\n` +
+        `  (the ${SOURCE.title} manifest — ` +
+        `${IS_RESEED ? 'this run passed --reseed' : 'pass --reseed for the staging reseed instead'})\n` +
         '  This script deletes only what the prep script recorded creating. No manifest means\n' +
-        '  this walk created nothing, so there is nothing here to unwind. It will NOT go looking\n' +
+        '  this run created nothing, so there is nothing here to unwind. It will NOT go looking\n' +
         "  for rows to remove: an unwind that reads a live chart for its targets is a script that\n" +
         '  can delete a real claim.'
     );
@@ -774,14 +1100,19 @@ async function main() {
   }
 
   const manifest = JSON.parse(fs.readFileSync(PATHS.manifestPath, 'utf8'));
-  if (manifest.office !== TARGET.office || Number(manifest.patNum) !== TARGET.patNum) {
-    console.error(
-      `REFUSED: the manifest is for office='${manifest.office}' patNum=${manifest.patNum}; ` +
-        `this script is '${TARGET.office}'/${TARGET.patNum} only.`
-    );
+
+  /*
+   * SAFETY 1b — is this manifest ADDRESSED TO THIS RUN, and whose chart does it
+   * name? Each source answers for its own shape: the walk's carries one
+   * top-level `patNum`, the reseed's carries one per target.
+   */
+  const screened = SOURCE.screen(manifest);
+  if (screened.error) {
+    console.error(`REFUSED: ${screened.error}`);
     process.exitCode = 4;
     return;
   }
+  const patNums = screened.patNums;
 
   /*
    * SAFETY 2 — the deny-list, applied to the manifest BEFORE anything is issued.
@@ -797,15 +1128,15 @@ async function main() {
       ['claimNum', Number(t.claimNum)],
       ['claimProcNum', Number(t.claimProcNum)],
     ]) {
-      if (DENY.includes(id)) denied.push(`${field}=${id}`);
+      if (DENY.includes(id)) denied.push(`${field}=${id} — ${denyReasonFor(id)}`);
     }
   }
   if (denied.length) {
     console.error(
-      'REFUSED: the manifest names Spike 0b residue: ' +
-        denied.join(', ') +
+      'REFUSED: the manifest names PERMANENTLY DENIED id(s):\n' +
+        denied.map((d) => `    ${d}`).join('\n') +
         '\n  Those rows are permanent (RCM_POSTING.md section 11) and this script will not touch them.\n' +
-        '  A manifest containing them was not written by the prep script, so NOTHING was issued.'
+        '  A manifest containing one was not written by a prep run, so NOTHING was issued.'
     );
     process.exitCode = 5;
     return;
@@ -839,14 +1170,24 @@ async function main() {
     return handle.client.apiGetRaw(path, params, { timeoutMs: T.OD_TIMEOUT_MS });
   };
 
-  console.log(`\n=== S11 UNWIND — ${office} (${handle.officeName}), PatNum ${TARGET.patNum} ===`);
+  console.log(`\n=== S11 UNWIND — ${office} (${handle.officeName}), PatNum ${patNums.join(', ')} ===`);
+  console.log(`    source: ${SOURCE.title}`);
   console.log(`    mode: ${execute ? '*** EXECUTE — THIS WILL WRITE ***' : 'DRY RUN (pass --execute to write)'}`);
   console.log(`    started: ${new Date().toISOString()}`);
   console.log(`    manifest: ${PATHS.manifestPath}`);
   console.log(`    baseline claim count recorded at prep: ${manifest.baselineClaimCount}`);
+  /*
+   * A PARTIAL PREP IS STILL UNWINDABLE, and saying so is the point of printing
+   * it. `complete: false` means Open Dental refused a later target — the rows
+   * recorded before it are real, live, and exactly what this script removes.
+   * Refusing an incomplete manifest would strand them.
+   */
+  if (manifest.complete === false) {
+    console.log('    ! the prep recorded `complete: false` — it did not finish. What it DID create is below.');
+  }
 
-  const before = await balanceOf(get);
-  printBalance('BEFORE', before);
+  const before = await balancesOf(get, patNums);
+  for (const b of before) printBalance('BEFORE', b);
 
   /*
    * ─── THE REVERSAL ADJTYPE, RESOLVED ONCE, BY NAME ─────────────────────────
@@ -938,8 +1279,8 @@ async function main() {
     results.push({ label, target, ...outcome });
   }
 
-  const after = await balanceOf(get);
-  printBalance(execute ? 'AFTER' : 'AFTER (unchanged — dry run)', after);
+  const after = await balancesOf(get, patNums);
+  for (const b of after) printBalance(execute ? 'AFTER' : 'AFTER (unchanged — dry run)', b);
 
   /*
    * ── The per-step table ───────────────────────────────────────────────────
@@ -970,17 +1311,39 @@ async function main() {
   }
 
   console.log('\n-- VERDICT ----------------------------------------------------------');
-  console.log(`   before ${money(before.total)}   after ${money(after.total)}   delta ${money(after.total - before.total)}`);
+  for (const [i, b] of before.entries()) {
+    const a = after[i];
+    console.log(
+      `   PatNum ${b.patNum}   before ${money(b.total)}   after ${money(a.total)}   ` +
+        `delta ${money(a.total - b.total)}`
+    );
+  }
+  /*
+   * The baseline is a TOTAL across every patient the prep measured — that is
+   * what `reseed-prep.js` records and what §10's prep records — so the
+   * comparison is against the sum, not against any one patient's count.
+   */
+  const afterClaims = after.reduce((n, b) => n + b.claimCount, 0);
   if (!execute) {
     console.log('   DRY RUN — nothing was issued. Re-run with --execute to unwind.');
-  } else if (after.claimCount === manifest.baselineClaimCount) {
+  } else if (afterClaims === manifest.baselineClaimCount) {
     console.log(`   claim count is back to the prep baseline (${manifest.baselineClaimCount}).`);
   } else {
     console.log(
-      `   ! claim count is ${after.claimCount}, not the prep baseline of ${manifest.baselineClaimCount}.` +
+      `   ! claim count is ${afterClaims}, not the prep baseline of ${manifest.baselineClaimCount}.` +
         ' Read the per-target output above.'
     );
   }
+
+  /*
+   * Only the reseed has a `RESEED_SPENT_IDS` to grow. §10's `WALK_SPENT_IDS` are
+   * pasted from the walk's own docs, and that convention is not this PR's to
+   * change. WHICH SOURCE decides is main's business, not the printer's — a
+   * function that read the module-level flag could only ever be tested by
+   * running the process with the flag set.
+   */
+  if (SOURCE.key === 'reseed') printRetirementBlock(manifest, results, execute);
+
   console.log('\n   Paste this transcript into docs/RCM_POSTING.md section 11.');
   console.log(`DONE ${new Date().toISOString()}`);
 }
@@ -999,4 +1362,19 @@ if (require.main === module) {
   );
 }
 
-module.exports = { main, unwindTarget, balanceOf, cents, money, STEPS, STEP_LABELS, UNRECEIVED_STATUS };
+module.exports = {
+  main,
+  unwindTarget,
+  balanceOf,
+  balancesOf,
+  cents,
+  money,
+  denyReasonFor,
+  printRetirementBlock,
+  DENY,
+  FLAGS,
+  SOURCES,
+  STEPS,
+  STEP_LABELS,
+  UNRECEIVED_STATUS,
+};

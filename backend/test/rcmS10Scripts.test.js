@@ -850,10 +850,32 @@ test('the unwind takes its ids from the manifest and from nowhere else', () => {
    */
   const src = code(FILES.unwind);
 
-  // argv is read for exactly one thing: the --execute flag.
+  /*
+   * argv is read ONCE, and every token it may carry is a boolean from a CLOSED
+   * SET.
+   *
+   * This assertion used to be "argv is read once, and only for --execute". That
+   * was the right property while there was one flag, and the wrong SHAPE of
+   * property: it was satisfied by `process.argv.includes('--execute')` and would
+   * have gone on being satisfied by a second read that took a VALUE. What
+   * actually matters in the one file here that may DELETE from a chart is that
+   * **argv can never name a row** — so the check is now on the closed set and on
+   * the refusal of anything outside it, which is strictly stronger.
+   */
   const argvUses = [...src.matchAll(/process\.argv[^\n]*/g)].map((m) => m[0]);
   assert.equal(argvUses.length, 1, 'argv may be read once');
-  assert.match(argvUses[0], /includes\('--execute'\)/, 'and only for the execute flag');
+  assert.match(argvUses[0], /process\.argv\.slice\(2\)/, 'and read whole, not indexed');
+
+  const { FLAGS } = require(path.join(SCRIPTS, FILES.unwind));
+  assert.deepEqual([...FLAGS].sort(), ['--execute', '--reseed'], 'the closed set, in full');
+  // Every token compared against argv is one of those flags, and nothing on the
+  // command line is ever turned into a number or a path.
+  const compared = [...src.matchAll(/ARGV\.includes\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.deepEqual(compared.sort(), ['--execute', '--reseed']);
+  assert.ok(!/Number\(\s*(?:ARGV|process\.argv)/.test(src), 'no argv token becomes a number');
+  // An argument outside the set is a refusal, not something silently ignored.
+  assert.match(src, /UNKNOWN_ARGS\.length/);
+  assert.match(read(FILES.unwind), /REFUSED: unrecognised argument/);
 
   /*
    * NO env var at all now, and certainly no id-shaped one. `PROBE_OFFICE` moved
@@ -922,9 +944,17 @@ test('the unwind hard-denies the Spike 0b residue even if a manifest names it', 
    */
   const src = read(FILES.unwind);
   assert.match(src, /DENY\.includes\(id\)/);
-  assert.match(src, /REFUSED: the manifest names Spike 0b residue/);
+  /*
+   * The sentence changed when the list gained a second provenance. It used to
+   * say "Spike 0b residue" for everything it caught, which would now send a
+   * reader to the wrong section of the runbook for a BURNED reseed id — so the
+   * refusal names the class per id, through `denyReasonFor`.
+   */
+  assert.match(src, /REFUSED: the manifest names PERMANENTLY DENIED id\(s\)/);
+  assert.match(src, /denyReasonFor\(id\)/);
   assert.ok(
-    src.indexOf('REFUSED: the manifest names Spike 0b residue') < src.indexOf('const axios = handle.client.client'),
+    src.indexOf('REFUSED: the manifest names PERMANENTLY DENIED') <
+      src.indexOf('const axios = handle.client.client'),
     'the deny-list must be applied before the raw client is even reached'
   );
   /*
@@ -945,7 +975,10 @@ test('the unwind hard-denies the Spike 0b residue even if a manifest names it', 
 
 test('the unwind is a dry run unless --execute is passed', () => {
   const src = read(FILES.unwind);
-  assert.match(src, /const execute = process\.argv\.includes\('--execute'\)/);
+  // `EXECUTE` is resolved at module load from the single argv read; `main` uses
+  // that and never re-reads the command line.
+  assert.match(src, /const EXECUTE = ARGV\.includes\('--execute'\)/);
+  assert.match(src, /const execute = EXECUTE;/);
   assert.match(src, /if \(!execute\) \{\s*\n\s*console\.log\(`   \[dry run\]/, 'issue() must short-circuit');
   assert.match(src, /DRY RUN \(pass --execute to write\)/);
 });
@@ -1297,6 +1330,253 @@ test('the unwind writes nothing at all for a target made of denied ids', async (
   // The rows are untouched, which is the point.
   assert.equal(od.rows.claim.ClaimStatus, 'R');
   assert.equal(od.rows.procedure.ProcStatus, 'C');
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+   5c. THE RESEED MANIFEST — one unwind, two sources
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/** The reseed's own constants, loaded the way the unwind loads them. */
+const RESEED = require('../scripts/rcm/reseed-targets');
+
+test('the unwind reads the RESEED manifest under --reseed, and the walk one without it', () => {
+  /*
+   * §10's walk and §10.8's reseed both create real rows and both need the same
+   * five steps in the same mandatory order to take them off again. A second
+   * script would have been a second copy of the order — the thing it took a
+   * failed live run to get right.
+   *
+   * The BARE command must keep meaning what it meant: an operator working
+   * through the §11 runbook must not silently get a different manifest than the
+   * one it names.
+   */
+  const { SOURCES } = require(path.join(SCRIPTS, FILES.unwind));
+
+  assert.match(SOURCES.walk.manifestPath, /rcm-s10[\\/]roland[\\/]rcm-s10-manifest\.json$/);
+  assert.match(SOURCES.reseed.manifestPath, /rcm-reseed[\\/]roland[\\/]rcm-reseed-manifest\.json$/);
+  assert.notEqual(SOURCES.walk.manifestPath, SOURCES.reseed.manifestPath);
+
+  // The flag picks the manifest and NOTHING else — same steps, same order.
+  const src = code(FILES.unwind);
+  assert.match(src, /const SOURCE = IS_RESEED \? SOURCES\.reseed : SOURCES\.walk;/);
+  assert.match(src, /const PATHS = Object\.freeze\(\{ manifestPath: SOURCE\.manifestPath \}\)/);
+  // Bounded to `unwindTarget` itself — `main` and the retirement printer are
+  // ALLOWED to know, and do.
+  const machine = src.slice(
+    src.indexOf('async function unwindTarget'),
+    src.indexOf('function printRetirementBlock')
+  );
+  assert.ok(machine.length > 500, 'the slice must actually cover the step machine');
+  assert.ok(!/IS_RESEED|SOURCE\b/.test(machine), 'the step machine must not know which manifest it came from');
+});
+
+test('the reseed screen accepts BOTH designated patients and refuses anything else', () => {
+  /*
+   * The shapes differ, and the difference is a patient. The walk's manifest
+   * carries ONE top-level `patNum`; the reseed's spans 12827 AND 12828, because
+   * R1 exists to make the Patient column change from row to row. A screen that
+   * only understood the walk's shape would have measured one of the two and
+   * silently ignored the other — on a script whose whole output is a delta.
+   */
+  const { SOURCES } = require(path.join(SCRIPTS, FILES.unwind));
+
+  const ok = SOURCES.reseed.screen({
+    office: 'roland',
+    targets: [
+      { key: 'R1-1', patNum: 12827 },
+      { key: 'R1-2', patNum: 12828 },
+      { key: 'R1-3', patNum: 12827 },
+    ],
+  });
+  assert.deepEqual(ok.patNums, [12827, 12828], 'distinct, in the order the manifest names them');
+
+  // 7115 is VALLEY's test patient and a different, REAL person in Roland; 11373
+  // is the shared-family-phone reject. Each is refused with its own reason,
+  // because a person reading a refusal on a DELETE script needs to know which.
+  for (const [patNum, phrase] of [
+    [7115, /REAL person/],
+    [11373, /shared family phone/],
+  ]) {
+    const bad = SOURCES.reseed.screen({ office: 'roland', targets: [{ key: 'X', patNum }] });
+    assert.ok(bad.error, `PatNum ${patNum} must be refused`);
+    assert.match(bad.error, phrase);
+    assert.equal(bad.patNums, undefined, 'a refusal yields no patients to act on');
+  }
+
+  // Another practice's manifest is not this run's, whatever it contains.
+  assert.match(
+    SOURCES.reseed.screen({ office: 'valley', targets: [{ patNum: 12827 }] }).error,
+    /roland only/
+  );
+  // And an empty one is "nothing to unwind", not an empty success.
+  assert.match(SOURCES.reseed.screen({ office: 'roland', targets: [] }).error, /names no targets/);
+});
+
+test('the reseed ids the 2026-09-01 run created are NOT denied — the unwind must reach them', () => {
+  /*
+   * The trap `RESEED_PENDING_AT_UNWIND`'s own header describes, asserted rather
+   * than trusted. Those seven claims are LIVE and this script is the only thing
+   * that removes them; denying them now would make the unwind refuse the one
+   * manifest it exists to act on — a deny-list denying the file it protects.
+   */
+  const { DENY } = require(path.join(SCRIPTS, FILES.unwind));
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    for (const id of RESEED.RESEED_PENDING_AT_UNWIND[bucket]) {
+      assert.ok(!DENY.includes(id), `${bucket} ${id} is live and must be reachable`);
+    }
+  }
+  // The seven the walk-prep is about, named so a silent renumbering is caught.
+  assert.deepEqual(
+    [...RESEED.RESEED_PENDING_AT_UNWIND.claims],
+    [53857, 53858, 53859, 53861, 53862, 53863, 53864]
+  );
+});
+
+test('53860, 406653 and 406654 are BURNED and can never be touched by either source', () => {
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE ONE THAT MATTERS.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * The 2026-09-01 prep reached R2-1 and Open Dental refused it — "A ToothNum is
+   * required for the procedure code's treatment area." — AFTER consuming the
+   * ids. Nothing was created at 53860 / 406653 / 406654. They belong to nobody.
+   *
+   * They are not in the manifest, because the prep records only what it read
+   * back, so no honest run can name them. That is exactly why they need a
+   * deny-list: the failure mode is a hand-edited file or one rebuilt from a live
+   * read, and a header comment does not survive either.
+   *
+   * Open Dental never reissues an id, so nothing can ever legitimately sit at
+   * these numbers again — which makes denying them permanently safe rather than
+   * merely cautious.
+   */
+  const { DENY, denyReasonFor } = require(path.join(SCRIPTS, FILES.unwind));
+
+  assert.deepEqual([...RESEED.RESEED_BURNED_IDS.claims], [53860]);
+  assert.deepEqual([...RESEED.RESEED_BURNED_IDS.procedures], [406653, 406654]);
+
+  for (const id of [53860, 406653, 406654]) {
+    assert.ok(DENY.includes(id), `${id} must be denied`);
+    // And the refusal must say WHY this one, not send the reader to §11's
+    // Spike 0b section for an id that has nothing to do with it.
+    assert.match(denyReasonFor(id), /BURNED/);
+  }
+
+  // A burned id is never also pending or spent — it was never created, so it
+  // can be neither "still on the chart" nor "retired".
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    for (const id of RESEED.RESEED_BURNED_IDS[bucket]) {
+      assert.ok(!RESEED.RESEED_PENDING_AT_UNWIND[bucket].includes(id), `${id} pending`);
+      assert.ok(!RESEED.RESEED_SPENT_IDS[bucket].includes(id), `${id} spent`);
+    }
+  }
+});
+
+test('a target made of BURNED ids produces no write of any kind', async () => {
+  /*
+   * The deny-list, driven rather than read. `unwindTarget` must skip every step
+   * and issue nothing — there is no partial cooperation with an untrustworthy
+   * list, because a file naming one of these was not written by a prep run and
+   * nothing else in it can be trusted either.
+   */
+  const burned = { procNum: 406653, claimNum: 53860, claimProcNum: 406654 };
+  const od = fakeOd({
+    payment: { ClaimPaymentNum: 29901, CheckAmt: 1 },
+    claimProc: { ClaimProcNum: burned.claimProcNum, Status: 'Received', InsPayAmt: 1, WriteOff: 0, DedApplied: 0, ClaimPaymentNum: 29901 },
+    claim: { ClaimNum: burned.claimNum, ClaimStatus: 'R' },
+    procedure: { ProcNum: burned.procNum, ProcStatus: 'C' },
+  });
+
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: od.write, log: () => {}, execute: true },
+    burned
+  );
+
+  assert.deepEqual(od.writes, [], 'a burned target must produce no write of any kind');
+  for (const step of ['unreceive', 'line', 'claim', 'procedure']) {
+    assert.equal(steps[step], 'skipped', `${step} must be skipped`);
+  }
+  assert.equal(od.rows.claim.ClaimStatus, 'R', 'untouched');
+  assert.equal(od.rows.procedure.ProcStatus, 'C', 'untouched');
+});
+
+test('the retirement block prints only after a clean, complete, EXECUTED run', () => {
+  /*
+   * Retiring an id says "this row is gone and can never come back", and the
+   * moment that becomes true is when the DELETE read back.
+   *
+   * A HALF-unwound run is the dangerous case: `RESEED_SPENT_IDS` feeds
+   * `screenManifestForSpentIds`, which REFUSES a manifest naming a listed id —
+   * so retiring a partial run would deny the very manifest the re-run needs, and
+   * the rows still on the chart would be stranded with no tooling able to name
+   * them.
+   */
+  const { printRetirementBlock } = require(path.join(SCRIPTS, FILES.unwind));
+  const manifest = {
+    targets: [
+      { claimNum: 53857, procNum: 406650, claimProcNum: 535770 },
+      { claimNum: 53858, procNum: 406651, claimProcNum: 535771 },
+    ],
+  };
+  const clean = [{ label: 'A', aborted: false }, { label: 'B', aborted: false }];
+
+  const say = (fn) => {
+    const lines = [];
+    const real = console.log;
+    console.log = (...a) => lines.push(a.join(' '));
+    try {
+      fn();
+    } finally {
+      console.log = real;
+    }
+    return lines.join('\n');
+  };
+
+  // A dry run retired nothing, so it offers nothing to move.
+  const dry = say(() => printRetirementBlock(manifest, clean, false));
+  assert.match(dry, /DRY RUN/);
+  assert.ok(!dry.includes('53857'), 'a dry run must not print ids to retire');
+
+  // One target stuck: not yet, and say why.
+  const partial = say(() =>
+    printRetirementBlock(manifest, [{ label: 'A', aborted: false }, { label: 'B', aborted: true }], true)
+  );
+  assert.match(partial, /NOT YET/);
+  assert.match(partial, /the screen would/);
+  assert.ok(!partial.includes('RESEED_SPENT_IDS = Object.freeze'), 'no block to paste while rows are live');
+
+  // Clean and executed: the paste-ready block, and the burned ids left alone.
+  const done = say(() => printRetirementBlock(manifest, clean, true));
+  assert.match(done, /claims: Object\.freeze\(\[53857, 53858\]\)/);
+  assert.match(done, /procedures: Object\.freeze\(\[406650, 406651\]\)/);
+  assert.match(done, /claimProcs: Object\.freeze\(\[535770, 535771\]\)/);
+  assert.match(done, /const RESEED_SPENT_RECORDED_AT = '\d{4}-\d{2}-\d{2}T/);
+  assert.match(done, /RESEED_PENDING_AT_UNWIND = Object\.freeze\(\{/);
+  assert.match(done, /RESEED_BURNED_IDS is UNCHANGED/);
+  assert.match(done, /53860 \/ 406653 \/ 406654 were never created/);
+});
+
+test('the unwind PRINTS the retirement rather than editing its own deny-list', () => {
+  /*
+   * A script that rewrote `RESEED_SPENT_IDS` would be a script whose safety
+   * guard can be changed by anything that can make it run, and the change would
+   * land unreviewed on a file whose entire purpose is to be reviewed. §10's
+   * `WALK_SPENT_IDS` were pasted in by hand after every walk; this is the same
+   * convention at the other end of the life cycle.
+   */
+  const src = code(FILES.unwind);
+  // …and only the reseed source has a list to grow. §10's WALK_SPENT_IDS are
+  // pasted from the walk's own docs, which this change does not touch.
+  assert.match(src, /if \(SOURCE\.key === 'reseed'\) printRetirementBlock\(/);
+  assert.ok(
+    !/writeFileSync|appendFileSync|createWriteStream/.test(src),
+    'the unwind writes no file at all'
+  );
+  assert.deepEqual(
+    [...new Set([...src.matchAll(/\bfs\.(\w+)\(/g)].map((m) => m[1]))].sort(),
+    ['existsSync', 'readFileSync'],
+    'it reads the manifest and nothing more'
+  );
 });
 
 test('the unwind on an already-unwound target issues zero writes', async () => {

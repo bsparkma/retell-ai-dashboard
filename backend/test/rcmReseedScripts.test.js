@@ -301,6 +301,58 @@ test('a PARTIAL manifest resumes; a COMPLETE one is still refused', () => {
   assert.match(src, /const manifest = resumed \|\|/, 'a resume must keep the original manifest object');
 });
 
+test('the ids Open Dental burned on the refused create are denied, in their OWN bucket', () => {
+  /*
+   * The 2026-09-01 prep reached R2-1 and Open Dental refused it — "A ToothNum is
+   * required for the procedure code's treatment area." — AFTER it had already
+   * consumed the ids. `ClaimNum 53860` and `ProcNum 406653` / `406654` are the
+   * numbers it burned.
+   *
+   * A THIRD list, not a corner of either other one, because the three mean
+   * different things and the difference decides what may be done with them:
+   *
+   *   pending  created, live, and the unwind must REACH them.
+   *   spent    created, and since REMOVED — dated by RESEED_SPENT_RECORDED_AT.
+   *   burned   NEVER CREATED. Nothing to reach, nothing to date, nobody to own
+   *            them. No honest manifest names one, because the prep records only
+   *            what it read back — so a file that does was not written by a prep
+   *            run, and the right response to an untrustworthy list of things to
+   *            DELETE is to delete none of them.
+   */
+  assert.deepEqual([...T.RESEED_BURNED_IDS.claims], [53860]);
+  assert.deepEqual([...T.RESEED_BURNED_IDS.procedures], [406653, 406654]);
+  assert.deepEqual([...T.RESEED_BURNED_IDS.claimProcs], []);
+
+  // Disjoint from both other lists, in every bucket. An id in two of them would
+  // be saying two contradictory things about the same row.
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    for (const id of T.RESEED_BURNED_IDS[bucket]) {
+      assert.ok(!T.RESEED_PENDING_AT_UNWIND[bucket].includes(id), `${id} cannot also be pending`);
+      assert.ok(!T.RESEED_SPENT_IDS[bucket].includes(id), `${id} cannot also be spent`);
+    }
+  }
+
+  /*
+   * `reseedDenyIds()` is the DELETE guard and is a strict superset of
+   * `denyIds()`, the staleness screen. The two questions are different: a burned
+   * id was never created, so it can never make a manifest STALE — but a manifest
+   * naming one is a file nothing in this repo wrote.
+   */
+  const deny = T.reseedDenyIds();
+  for (const id of [53860, 406653, 406654]) {
+    assert.ok(deny.includes(id), `${id} must be on the unwind's deny-list`);
+  }
+  for (const id of T.denyIds()) assert.ok(deny.includes(id), `${id} must survive the superset`);
+
+  // And the LIVE ids stay off it, or the unwind would refuse the one manifest
+  // that can remove them.
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    for (const id of T.RESEED_PENDING_AT_UNWIND[bucket]) {
+      assert.ok(!deny.includes(id), `${bucket} ${id} is live and must stay reachable`);
+    }
+  }
+});
+
 test('pending-at-unwind ids are recorded, and never also on the spent deny-list', () => {
   /*
    * The 2026-09-01 run's seven claims are LIVE on Roland's chart. They belong on
