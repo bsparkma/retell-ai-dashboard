@@ -133,6 +133,7 @@ function check(over: Record<string, unknown> = {}) {
     postedAmountCents: 0,
     plbTotalCents: 0,
     claimCount: 1,
+    patientNames: { shown: ["Fixture, Synthetic"], more: 0 },
     status: "ready",
     source: "835",
     flags: [] as string[],
@@ -459,6 +460,59 @@ describe("the Checks list says whose move it is", () => {
         "A takeback — money the carrier is reclaiming",
       ),
     );
+  });
+
+  /* ── C-3b item 1 — and WHO is on the check ─────────────────────────────── */
+
+  it("names the patients on a row, and says how many more people there are", async () => {
+    /*
+     * The question a biller arrives with is "is my patient on this check?".
+     * Before this the only way to answer it was to open every row, which costs
+     * a full audited claim read each time.
+     */
+    state.checks = [
+      check({
+        claimCount: 9,
+        patientNames: { shown: ["Fixture, Synthetic", "Sample, Placeholder"], more: 2 },
+      }),
+    ];
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const names = await screen.findByTestId("remittance-patients-b-1");
+    expect(names.textContent).toContain("Fixture, Synthetic");
+    expect(names.textContent).toContain("Sample, Placeholder");
+    expect(names.textContent).toContain("+2 more");
+  });
+
+  it("renders the count the SERVER sent, and never derives one from claimCount", async () => {
+    /*
+     * `more` counts PEOPLE. Nine claims for four people is "+2 more", not
+     * "+7 more" — and a row that did its own arithmetic would say the second
+     * thing and be wrong about the check every time a patient had two claims.
+     */
+    state.checks = [
+      check({
+        claimCount: 9,
+        patientNames: { shown: ["Fixture, Synthetic", "Sample, Placeholder"], more: 2 },
+      }),
+    ];
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const names = await screen.findByTestId("remittance-patients-b-1");
+    expect(names.textContent).not.toContain("+7");
+  });
+
+  it("prints no name line at all when the check resolved no claims", async () => {
+    // An empty line under every unresolved check is noise, and a row that said
+    // "no patients" would be asserting something the data does not support.
+    state.checks = [check({ patientNames: { shown: [], more: 0 } })];
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    await screen.findByTestId("remittance-row-b-1");
+    expect(screen.queryByTestId("remittance-patients-b-1")).toBeNull();
   });
 });
 

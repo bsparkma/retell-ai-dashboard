@@ -94,12 +94,11 @@ import {
   type RcmOfficeId,
   type RemittanceDetail,
 } from "@/features/rcm/api";
-import { money, personName, stamp } from "@/features/rcm/format";
+import { money, stamp } from "@/features/rcm/format";
 import { checkDetail, checkTitle, checkWhy } from "@/features/rcm/checks";
 import { decisionsWithClaim, rollUp, rollUpSentence } from "@/features/rcm/rollup";
 import { officeStamp } from "@/features/rcm/time";
 import { useOffice } from "@/contexts/OfficeContext";
-import { useAuth } from "@/contexts/AuthContext";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type State =
@@ -111,7 +110,6 @@ export default function ApproveCheck() {
   const [, params] = useRoute("/rcm/remittances/:id/approve");
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
-  const auth = useAuth();
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [approving, setApproving] = useState(false);
@@ -597,20 +595,22 @@ export default function ApproveCheck() {
             )}
 
             {/*
-              A PERSON'S NAME, NOT AN ADDRESS — Stage C-3, item 8(b).
+              A PERSON'S NAME, NOT AN ADDRESS — and the SERVER says so now.
 
-              `approvedBy` off this route is the crosswalk KEY, which for anyone
-              the platform minted a row for is their email address. The press was
-              made by whoever is reading this, in this browser, a second ago — so
-              the signed-in person's own display name is not a guess, it is the
-              same fact spelled the way a person says it. `personName` resolves
-              that one case and returns anything else untouched.
+              C-3 resolved this in the browser, because the route returned the
+              crosswalk key (an email, for anyone the platform minted a row for)
+              and the only case a client could answer honestly was the signed-in
+              person's own. C-3b item 2 moved it to where it belongs: `/approve`
+              runs `describeActors` like every other attributed field in the
+              module, so `approvedBy` arrives already spelled the way a person
+              says it — for colleagues too, not just for whoever is looking.
+
+              So this prints what the server sent. `personName` is deliberately
+              NOT called here any more; it stays in format.ts for the responses
+              that still send a key.
             */}
             <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-attribution">
-              Approved by{" "}
-              {personName(result.approvedBy, auth.status === "authenticated" ? auth.user : null) ??
-                result.approvedBy}{" "}
-              · {stamp(new Date().toISOString())}
+              Approved by {result.approvedBy} · {stamp(new Date().toISOString())}
             </p>
             <Link
               href={`/rcm/remittances/${encodeURIComponent(batchId)}`}

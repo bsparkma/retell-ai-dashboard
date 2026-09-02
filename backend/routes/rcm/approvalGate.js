@@ -1601,6 +1601,32 @@ async function runApproval(req, office, batchId, actor) {
       // D-5: the acting user, created on first use, on THIS connection so the
       // FKs below see it.
       const approvedBy = await resolveRcmActor(client, actor);
+      /*
+       * …AND THE SAME PERSON, SPELLED THE WAY PEOPLE SPELL THEM — C-3b item 2.
+       *
+       * `resolveRcmActor` returns the crosswalk KEY, which for anyone the
+       * platform minted a row for IS THEIR EMAIL ADDRESS. Stamping the key onto
+       * `approved_by` is right — it is the FK. Handing the key to a SCREEN is
+       * not: every other attributed field in this module reaches the browser
+       * already resolved (`describeActors` in the list, the detail, the claim
+       * routes and the comparison panel), so the one sentence a biller reads at
+       * the most consequential press in the module was the one that said
+       * `Approved by admin@carein.ai`. C-3 patched that in the client, against
+       * the signed-in person only; this is the server doing it for everyone.
+       *
+       * INSIDE THE TRANSACTION, before COMMIT, deliberately. `resolveRcmActor`
+       * may have just inserted the row, so it is visible on this connection and
+       * nowhere else yet — and a lookup that failed after the commit would turn
+       * an approval that DID happen into an error response, which is precisely
+       * the honest-states rule this module is built on.
+       *
+       * Falls back to the key rather than to "somebody": an un-crosswalked
+       * actor is a fact worth seeing, and the same fallback the list uses.
+       */
+      const approvedByName =
+        (
+          (await describeActors(client, [approvedBy]))[approvedBy] || {}
+        ).displayName || approvedBy;
 
       /*
        * ONE QUEUE ROW PER REMITTANCE, found or created.
@@ -1832,7 +1858,10 @@ async function runApproval(req, office, batchId, actor) {
       return {
         queueId,
         remittanceKey,
+        /** The crosswalk key. The FK that was stamped, for a caller that needs it. */
         approvedBy,
+        /** The same person, by name — what a screen prints. Never an address. */
+        approvedByName,
         intendedTotalCents: writtenTotal,
         enqueuedTotalCents: intendedTotal,
         queued,

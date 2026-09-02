@@ -203,6 +203,7 @@ function remittance(over: Record<string, unknown> = {}) {
     postedAmountCents: 0,
     plbTotalCents: 0,
     claimCount: 1,
+    patientNames: { shown: ["Fixture, Synthetic"], more: 0 },
     status: "ready",
     source: "835",
     // Slice 5.5's structured remittance flags, which Slice 6b finally renders.

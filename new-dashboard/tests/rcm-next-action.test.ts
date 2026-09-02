@@ -35,6 +35,7 @@ function check(over: Partial<Remittance> = {}): Remittance {
     postedAmountCents: 0,
     plbTotalCents: 0,
     claimCount: 2,
+    patientNames: { shown: ["Fixture, Synthetic"], more: 0 },
     status: "ready",
     source: "835",
     flags: [],

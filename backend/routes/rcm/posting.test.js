@@ -151,6 +151,127 @@ test('GET /posting/queue lists the office plans with the brief\'s vocabulary', a
   }
 });
 
+/* ── C-3b: who approved it, by name ───────────────────────────────────── */
+
+/**
+ * The crosswalk row `seedQueue` already writes for `approved_by`.
+ *
+ * MUTATED rather than re-seeded: `rcm_user_map` is keyed by `user_key`, so a
+ * second `seed` of the same key would leave two rows and `describeActors` would
+ * answer from whichever it read first — a test that passed for the wrong reason.
+ */
+function approverRow(db) {
+  const row = db.table('rcm_user_map').find((r) => r.user_key === 'user-1');
+  assert.ok(row, 'seedQueue is expected to have written the crosswalk row');
+  return row;
+}
+
+test('the plan names the person who approved it, on the list AND the detail', async () => {
+  /*
+   * `approved_by` is an `rcm_user_map.user_key`, which for anyone the platform
+   * minted a row for IS THEIR EMAIL. `flow.ts` prints it into a sentence —
+   * "Every claim was checked over, and approved by …" — so this screen was
+   * reading out an address where the rest of the module reads out a person.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const list = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(list.status, 200, JSON.stringify(list.body));
+    assert.equal(list.body.rows[0].approvedBy, 'Billing User');
+
+    // The detail resolves it too. One rule, so the row and the screen it opens
+    // cannot disagree about who approved the check.
+    const detail = await api(
+      app.baseUrl,
+      'GET',
+      `/api/rcm/posting/queue/${QUEUE_ID}?office=roland`
+    );
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(detail.body.plan.approvedBy, 'Billing User');
+
+    // The COLUMN is untouched — it is the FK, and it still holds the key.
+    assert.equal(db.table('rcm_posting_queue')[0].approved_by, 'user-1');
+  } finally {
+    await app.close();
+  }
+});
+
+test('an email address never reaches the posting screen as an attribution', async () => {
+  /*
+   * The defect, stated as the thing it must never do again. The platform mints
+   * a crosswalk row keyed by the EMAIL for anybody with no legacy history, so
+   * the address-shaped key is the ordinary case rather than an edge one.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const row = approverRow(db);
+  row.user_key = 'billing@carein.ai';
+  db.table('rcm_posting_queue')[0].approved_by = 'billing@carein.ai';
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.body.rows[0].approvedBy, 'Billing User');
+    assert.equal(
+      JSON.stringify(res.body.rows[0]).includes('billing@carein.ai'),
+      false,
+      'no field on a posting row may carry the address'
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('an actor with no display name falls back to the key, never to "somebody"', async () => {
+  /*
+   * An imported legacy actor can be a bare `user-1` with nothing readable on the
+   * row — or no crosswalk row at all. Rendering "somebody" would trade a real
+   * fact for a polite one; the key is at least something a person can recognise
+   * or look up. Same fallback shape as `POST /remittances/:id/approve`.
+   */
+  // (a) a row with nothing readable on it.
+  const blank = seedQueue(new FakeRcmDb());
+  const row = approverRow(blank);
+  row.display_name = '';
+  row.platform_email = '';
+  // (b) no row at all.
+  const missing = seedQueue(new FakeRcmDb());
+  missing.table('rcm_user_map').length = 0;
+
+  for (const [what, db] of [
+    ['a blank crosswalk row', blank],
+    ['no crosswalk row', missing],
+  ]) {
+    const app = await bootRcmApp({ db, od: readOnlyOd() });
+    try {
+      const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+      assert.equal(res.body.rows[0].approvedBy, 'user-1', what);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('drainedBy is STILL the raw key — unrendered, and deliberately left alone', async () => {
+  /*
+   * Pinned so the asymmetry beside `approvedBy` is a recorded decision rather
+   * than something the next reader "fixes" without knowing why one moved and
+   * the other did not. A field is resolved when a screen shows it; nothing
+   * shows this one. If that changes, pass it through `actors` and change this
+   * test in the same commit.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  db.table('rcm_posting_queue')[0].drained_by = 'user-1';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.body.rows[0].approvedBy, 'Billing User');
+    assert.equal(res.body.rows[0].drainedBy, 'user-1');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the per-state counts are ZERO-FILLED over the whole vocabulary', async () => {
   const db = seedQueue(new FakeRcmDb());
   const app = await bootRcmApp({ db, od: readOnlyOd() });

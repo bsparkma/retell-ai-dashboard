@@ -195,6 +195,7 @@ function remittance(over: Record<string, unknown> = {}) {
     postedAmountCents: 0,
     plbTotalCents: 0,
     claimCount: 2,
+    patientNames: { shown: ["Fixture, Synthetic"], more: 0 },
     status: "open",
     source: "835",
     flags: [] as string[],

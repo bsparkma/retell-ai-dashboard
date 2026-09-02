@@ -323,6 +323,7 @@ function remittance(over: Record<string, unknown> = {}) {
     postedAmountCents: 0,
     plbTotalCents: 0,
     claimCount: 1,
+    patientNames: { shown: ["Fixture, Synthetic"], more: 0 },
     status: "ready",
     source: "835",
     flags: [] as string[],
@@ -442,7 +443,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
           office,
           batchId,
           queueId: "q-1",
-          approvedBy: "admin@carein.ai",
+          // C-3b item 2: the SERVER resolves this now, so the mock sends what
+          // the server sends. A key here would be testing a wire that no longer
+          // exists.
+          approvedBy: "Beau Sparkman",
           queued: [
             {
               claimId: "c-1",
@@ -1028,7 +1032,14 @@ describe("the approve page's checklist", () => {
    ══════════════════════════════════════════════════════════════════════════════ */
 
 describe("attribution", () => {
-  it("prints the signed-in person's NAME where the route returned their address", async () => {
+  /*
+   * C-3b item 2 moved this fix to the server. The route now runs
+   * `describeActors` like every other attributed field in the module, so the
+   * screen prints what it was given — for colleagues too, not only for whoever
+   * is looking. The client-side patch is gone; `personName` is not called here
+   * and the page no longer reads the auth context to render this line.
+   */
+  it("prints the name the ROUTE sent, without patching it in the browser", async () => {
     state.auth = {
       status: "authenticated",
       user: {
@@ -1057,6 +1068,53 @@ describe("attribution", () => {
     const line = await screen.findByTestId("approve-attribution");
     expect(line.textContent).toContain("Approved by Beau Sparkman");
     expect(line.textContent).not.toContain("admin@carein.ai");
+  });
+
+  it("prints a colleague's name too — the case the browser could never resolve", async () => {
+    /*
+     * THE REASON THE FIX MOVED. The client could only ever answer for the
+     * signed-in person; anyone else's press came out as an address. A biller
+     * looking at a check approved by the office manager now reads her name.
+     */
+    state.auth = {
+      status: "authenticated",
+      user: {
+        name: "Beau Sparkman",
+        email: "admin@carein.ai",
+        isSuperAdmin: true,
+        permissions: ["rcm.read", "rcm.write", "rcm.queue"],
+      },
+    };
+    state.approveResult = {
+      office: "roland",
+      batchId: "b-1",
+      queueId: "q-1",
+      approvedBy: "Billing User",
+      queued: [],
+      withheld: [],
+      alreadyQueued: [],
+      intendedTotalCents: 0,
+      note: "Lined up to post — nothing has been written to Open Dental yet.",
+    };
+    state.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [approvalClaim()],
+      postableCount: 1,
+      withheldCount: 0,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    fireEvent.click(await screen.findByTestId("approve-button"));
+
+    const line = await screen.findByTestId("approve-attribution");
+    expect(line.textContent).toContain("Approved by Billing User");
+    expect(line.textContent).not.toContain("@");
   });
 
   it("leaves somebody ELSE's address alone rather than inventing a name", () => {

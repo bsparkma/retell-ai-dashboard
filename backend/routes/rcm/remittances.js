@@ -109,10 +109,45 @@ const {
 const MAX_WORKLIST_NOTE = 500;
 
 /**
+ * How many patient names a Checks ROW may carry. See BATCH_COLUMNS' header for
+ * why the list carries any at all.
+ *
+ * Two, and the cap is applied HERE rather than in the browser. A row is one
+ * line of a scannable list; three names wrap it and the list stops scanning.
+ * More to the point, a client-side cap is not a budget — the whole check would
+ * still have crossed the wire.
+ */
+const LIST_PATIENT_NAMES = 2;
+
+/**
  * Batch columns the list and detail read. Named explicitly (no SELECT * in this
  * repo), and the list doubles as the response's PHI budget — a payment batch
  * carries no patient data itself, which is why the batch list is cheap and the
  * claim list under it is not.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE BUDGET WAS WIDENED ON PURPOSE — Stage C-3b, item 1
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The sentence above is no longer the whole truth, and the change was a
+ * decision rather than a leak. The batch list now ships **at most two patient
+ * names per check**, in `toBatchWire`'s `patientNames`.
+ *
+ * WHY. A Checks row said "DELTA DENTAL OF ARKANSAS · 830200001 · 9 claims" and
+ * nothing else, so the one question a biller actually arrives with — *is my
+ * patient on this check?* — could only be answered by opening every row in
+ * turn. Nine opened checks to find one name is nine audited PHI reads of a
+ * whole claim list; two names on the row is one.
+ *
+ * WHAT DID NOT CHANGE. No new column here, no new statement, and **no Open
+ * Dental read**: the names come off `claimsByBatch`, the join the list already
+ * runs for `balance` and the attention counts. The cap is enforced SERVER-SIDE
+ * (`LIST_PATIENT_NAMES`) — shipping every name and letting the browser show two
+ * would widen the budget by the whole check while pretending not to. Date of
+ * birth and subscriber id stay out, on the reasoning in `CLAIM_DETAIL_COLUMNS`.
+ *
+ * The list read is already audited as a PHI read (`auditRcmRead` below), which
+ * was true before this and is what makes the widening recordable rather than
+ * merely small.
  */
 const BATCH_COLUMNS = [
   'batch_id',
@@ -420,6 +455,34 @@ function attentionFor(batch, claims, approval = {}) {
   return { needsAttention: reasons.length > 0, reasons, observations };
 }
 
+/**
+ * The patients this check names — the first two, and how many more there are.
+ *
+ * DISTINCT names, in `position` order off the 835. A check that pays two claims
+ * for the same person would otherwise print them twice, which reads as a bug
+ * rather than as a fact; and `more` counts PEOPLE, so it is not `claimCount`
+ * minus two and must never be rendered as though it were. `claimCount` is the
+ * batch's own column and is shipped separately, unchanged.
+ *
+ * `shown` empty with `more: 0` means this check named no claim rows we can
+ * resolve — an honest "nothing to show", never "no patients".
+ *
+ * @param {ReadonlyArray<{ patientName: string }>} claims in position order
+ * @returns {{ shown: string[], more: number }}
+ */
+function patientNamesFor(claims) {
+  /** @type {string[]} */
+  const distinct = [];
+  for (const c of claims) {
+    const name = typeof c.patientName === 'string' ? c.patientName.trim() : '';
+    if (name && !distinct.includes(name)) distinct.push(name);
+  }
+  return {
+    shown: distinct.slice(0, LIST_PATIENT_NAMES),
+    more: Math.max(0, distinct.length - LIST_PATIENT_NAMES),
+  };
+}
+
 /** Map a batch row + its claims to the list/detail wire shape. */
 function toBatchWire(batch, claims, source, actors, approval = {}, decided = null) {
   const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
@@ -447,6 +510,14 @@ function toBatchWire(batch, claims, source, actors, approval = {}, decided = nul
     postedAmountCents: num(batch.posted_amount_cents),
     plbTotalCents: num(batch.plb_total_cents),
     claimCount: num(batch.claim_count),
+    /**
+     * WHO IS ON THIS CHECK — at most two names, plus how many more people.
+     *
+     * PHI, deliberately and within a widened budget: see BATCH_COLUMNS. The
+     * count is of PEOPLE, not of the claims left over, so a screen must not
+     * render it against `claimCount`.
+     */
+    patientNames: patientNamesFor(claims),
     status: batch.status,
     /** '835' when an ERA produced it, 'eob' when a PDF extraction did. */
     source,
@@ -1569,7 +1640,18 @@ router.post(
       office,
       batchId,
       queueId: result.queueId,
-      approvedBy: result.approvedBy,
+      /**
+       * WHO PRESSED IT, BY NAME — C-3b item 2.
+       *
+       * A display name off `describeActors`, falling back to the crosswalk key
+       * when nobody has given that actor one. It used to be the key itself,
+       * which for anybody the platform minted a row for is their email address,
+       * so this route was the one attributed field in the module that reached a
+       * screen unresolved. It now reads like its siblings — `parkedBy`,
+       * `approvalAttemptedBy`, `comparisonBy` — and the client no longer
+       * patches it.
+       */
+      approvedBy: result.approvedByName,
       /** What this press enqueued. */
       queued: result.queued,
       /** What it did not, per claim, with every failing condition. */

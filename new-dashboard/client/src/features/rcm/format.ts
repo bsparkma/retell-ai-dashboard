@@ -306,23 +306,41 @@ export function ordinal(n: number): string {
 /**
  * A PERSON, BY NAME — never by email address — Stage C-3, item 8(b).
  *
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * THE CASE IT WAS WRITTEN FOR IS GONE — AND IT STILL STAYS (C-3b item 2)
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * `POST /remittances/:id/approve` — the route this was written against, and the
+ * one described below — now resolves the actor SERVER-SIDE through
+ * `describeActors`, like every other attributed field in the module. That is
+ * the better fix by the distance between "the one person the browser can
+ * identify" and "everyone", so `ApproveCheck` prints `approvedBy` verbatim and
+ * no longer calls this.
+ *
+ * It is not dead. `POST /:id/approve-recoupment`'s `approvedBy` and the posting
+ * plan's `drainedBy` still return keys — both unrendered, which is why they are
+ * tolerable — and imported legacy attribution can be a bare `u_7f3a` forever.
+ * Anything that starts rendering one of those should reach for this — or,
+ * better, resolve it server-side and not need to.
+ *
+ * Everything below describes the mechanism, which is unchanged.
+ *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHAT THIS FIXES, AND WHAT IT CANNOT
  * ═════════════════════════════════════════════════════════════════════════════
  * Almost every attributed field in this module is already a DISPLAY NAME by the
  * time it reaches a screen: the routes call `describeActors`, which reads
- * `rcm_user_map.display_name`. One is not. `POST /remittances/:id/approve`
- * returns `approvedBy` straight out of `resolveRcmActor`, and that function's
- * return value is the crosswalk KEY — which for anyone the platform minted a row
- * for is their email. So the sentence a biller reads at the single most
- * consequential moment in the module was
+ * `rcm_user_map.display_name`. Where one is not, what arrives is straight out
+ * of `resolveRcmActor`, and that function's return value is the crosswalk KEY
+ * — which for anyone the platform minted a row for is their email. So the
+ * sentence a biller read at the single most consequential moment in the module
+ * was
  *
  *     Approved by admin@carein.ai
  *
- * That press was made by the person reading it, in this browser, one second ago.
- * The app knows their name — `/auth/me` put it on the request. So this resolves
- * the ONE case it can answer honestly: a value that is an email address AND is
- * the signed-in person's own becomes their display name.
+ * When that press was made by the person reading it, in this browser, one
+ * second ago, the app knows their name — `/auth/me` put it on the request. So
+ * this resolves the ONE case it can answer honestly: a value that is an email
+ * address AND is the signed-in person's own becomes their display name.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * IT NEVER INVENTS ONE
@@ -331,8 +349,7 @@ export function ordinal(n: number): string {
  * know their name, and rendering "a colleague" or "somebody" in place of an
  * address a person could at least recognise would trade a real fact for a
  * polite one. Where that happens, the fix is a display name on their
- * `rcm_user_map` row, which is server-side and out of this slice's scope — see
- * the PR's backend asks.
+ * `rcm_user_map` row — server-side, and exactly what `describeActors` reads.
  *
  * @param value the attribution as it arrived — a display name, or a user key
  * @param me the signed-in person, when there is one

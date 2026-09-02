@@ -732,6 +732,31 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         <div className="truncate font-mono text-xs text-muted-foreground">
           {r.checkNumber || r.eftNumber || r.traceNumber || "No check or trace number"}
         </div>
+        {/*
+          WHO IS ON THIS CHECK — C-3b item 1.
+
+          The question a biller arrives with is "is my patient on this check?",
+          and until now the only way to answer it was to open every row. Two
+          names and a count of the rest answer most of them from the list.
+
+          The server caps it at two and counts the REST AS PEOPLE, so this
+          renders what it was given and derives nothing: "+2 more" against a
+          nine-claim check is not a contradiction, it is nine claims for four
+          people. Rendered only when there is something to render — an empty
+          line under every unresolved check would be noise.
+        */}
+        {r.patientNames.shown.length > 0 && (
+          <div
+            className="truncate text-xs text-muted-foreground"
+            data-testid={`remittance-patients-${r.batchId}`}
+            title={r.patientNames.shown.join(" · ")}
+          >
+            {r.patientNames.shown.join(" · ")}
+            {r.patientNames.more > 0 && (
+              <span className="text-muted-foreground/70"> +{r.patientNames.more} more</span>
+            )}
+          </div>
+        )}
       </div>
 
       <span className="text-sm text-muted-foreground">{day(r.depositDate)}</span>
