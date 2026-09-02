@@ -535,6 +535,51 @@ const RESEED_PENDING_AT_UNWIND = Object.freeze({
 });
 
 /**
+ * BURNED BY A REFUSAL — ids that exist to nobody, and must never be touched.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * WHY THESE ARE THEIR OWN LIST AND NOT IN EITHER OF THE OTHER TWO
+ * ══════════════════════════════════════════════════════════════════════════════
+ * The 2026-09-01 prep run reached R2-1 and was REFUSED by Open Dental:
+ *
+ *     POST /procedurelogs -> 400
+ *     "A ToothNum is required for the procedure code's treatment area."
+ *
+ * Open Dental had already consumed the ids before it rejected the request.
+ * `ClaimNum 53860` and `ProcNum 406653` / `406654` are the numbers it burned.
+ *
+ * They are NOT `RESEED_PENDING_AT_UNWIND`: that list is rows this reseed created
+ * and the unwind must remove, and these were never created — the manifest does
+ * not name them, because the prep records only what it read back.
+ *
+ * They are NOT `RESEED_SPENT_IDS` either: that list is fed by ids that WERE
+ * created and have since been retired, and its companion
+ * `RESEED_SPENT_RECORDED_AT` dates that retirement. Nothing was retired here.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * WHAT THIS LIST IS FOR
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * `rcm-s11-unwind.js` is the one file in this repository that may DELETE from a
+ * chart, and it takes its ids from a manifest. **A manifest naming one of these
+ * did not come from a prep run** — it is a hand-edit, a copy, or a file built
+ * from a live read that swept them up. The right response to an untrustworthy
+ * list of things to delete is to delete none of them, so the unwind refuses the
+ * whole file rather than skipping the row.
+ *
+ * These numbers never come back. Open Dental does not reissue an id, so nothing
+ * can ever legitimately sit at 53860, 406653 or 406654 again — which is what
+ * makes denying them permanently safe rather than merely cautious. They belong
+ * to nobody, and this list is the only place that says so.
+ *
+ * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
+ */
+const RESEED_BURNED_IDS = Object.freeze({
+  claims: Object.freeze([53860]),
+  procedures: Object.freeze([406653, 406654]),
+  claimProcs: Object.freeze([]),
+});
+
+/**
  * WHEN `RESEED_SPENT_IDS` LAST GREW — the second half of the screen, and the
  * half the ids alone cannot express.
  *
@@ -554,6 +599,32 @@ function denyIds() {
     ...RESEED_SPENT_IDS.claims,
     ...RESEED_SPENT_IDS.procedures,
     ...RESEED_SPENT_IDS.claimProcs,
+  ]);
+}
+
+/**
+ * Every id `rcm-s11-unwind.js` must refuse to touch on a reseed manifest — the
+ * retired ones AND the burned ones.
+ *
+ * A SUPERSET of `denyIds()`, and separate from it on purpose. `denyIds()` is the
+ * staleness screen `reseed-835.js` runs over a manifest before REGENERATING
+ * files from it, and its companion is `RESEED_SPENT_RECORDED_AT`. This is the
+ * DELETE guard, and the two questions are different: a burned id was never
+ * created, so it can never make a manifest stale — but a manifest that names one
+ * is a file nothing in this repo wrote, and the unwind must not act on it.
+ *
+ * `RESEED_PENDING_AT_UNWIND` is deliberately absent. Those ids are LIVE, and
+ * denying them would make the unwind refuse the very manifest that exists to
+ * remove them — the same trap that constant's own header describes.
+ *
+ * @returns {ReadonlyArray<number>}
+ */
+function reseedDenyIds() {
+  return Object.freeze([
+    ...denyIds(),
+    ...RESEED_BURNED_IDS.claims,
+    ...RESEED_BURNED_IDS.procedures,
+    ...RESEED_BURNED_IDS.claimProcs,
   ]);
 }
 
@@ -621,11 +692,13 @@ module.exports = {
   OUT_DIR,
   RESEED_SPENT_IDS,
   RESEED_PENDING_AT_UNWIND,
+  RESEED_BURNED_IDS,
   RESEED_SPENT_RECORDED_AT,
   pathsFor,
   resolveOffice,
   assertPatNum,
   checkOutDirWritable,
   denyIds,
+  reseedDenyIds,
   screenManifestForSpentIds,
 };
