@@ -89,7 +89,7 @@ const postingGate = require('../../services/rcm/postingGate');
 const odPostingWrites = require('../../services/rcm/odPostingWrites');
 const lineDecisions = require('../../services/rcm/lineDecisions');
 const { SNAPSHOT_VERSION } = require('./matchService');
-const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
+const { resolveRcmActor, describeActors } = require('../../services/rcm/rcmUserMap');
 const {
   h,
   isUuid,
@@ -119,8 +119,11 @@ const PAGE_SIZE = 50;
  * one (`approved`, `posting`) — see `postingDrain.QUEUE_STATUS_LABEL` and the
  * migration header for why the stored words were not renamed. The raw `status`
  * ships alongside it so a client is never forced to reverse the mapping.
+ *
+ * `actors` is the caller's `describeActors` map, keyed by `rcm_user_map.user_key`
+ * — resolved once for a whole page rather than once per row. See `approvedBy`.
  */
-function toQueueRow(row, label) {
+function toQueueRow(row, label, actors = {}) {
   const status = String(row.status);
   const batch = label || {};
   return {
@@ -158,10 +161,34 @@ function toQueueRow(row, label) {
      */
     reconciledAt: iso(row.reconciled_at),
     approvedAt: iso(row.approved_at),
-    approvedBy: row.approved_by == null ? null : String(row.approved_by),
+    /**
+     * WHO APPROVED IT, BY NAME — C-3b.
+     *
+     * `approved_by` is an `rcm_user_map.user_key`, which for anyone the platform
+     * minted a row for IS THEIR EMAIL ADDRESS. `flow.ts` prints this into a
+     * sentence — *"Every claim was checked over, and approved by …"* — so the
+     * posting screen was reading out an address where the rest of the module
+     * reads out a person. Same `describeActors` resolution and the same
+     * fallback shape as `POST /remittances/:id/approve`: the key when nobody
+     * has given that actor a display name, never "somebody".
+     *
+     * The COLUMN is untouched. It is the FK, and it still holds the key.
+     */
+    approvedBy:
+      row.approved_by == null
+        ? null
+        : (actors[String(row.approved_by)] || {}).displayName || String(row.approved_by),
     startedAt: iso(row.started_at),
     finishedAt: iso(row.finished_at),
     drainAttemptAt: iso(row.drain_attempt_at),
+    /**
+     * STILL THE KEY, and deliberately so.
+     *
+     * `drainedBy` has the identical defect and nothing renders it — the same
+     * standing as `POST /:id/approve-recoupment`'s `approvedBy`. Resolving it
+     * would cost nothing here, but a field is fixed when a screen shows it, not
+     * before. If one ever does, pass it through `actors` on the line above.
+     */
     drainedBy: row.drained_by == null ? null : String(row.drained_by),
     attemptCount: num(row.attempt_count),
     lastError: row.last_error == null ? null : String(row.last_error),
@@ -262,7 +289,7 @@ router.get(
      * page's shape depend on a second table's row existing. A plan whose batch
      * row is somehow missing must still list, unlabelled, rather than vanish.
      */
-    const { rows, labels, counts, total, settings } = await tenantDb.withTenantDb(req, async (pool) => {
+    const loaded = await tenantDb.withTenantDb(req, async (pool) => {
       const page = await pool.query(
         `SELECT ${postingDrain.QUEUE_COLUMNS.join(', ')} FROM rcm_posting_queue ` +
           `WHERE office_id = $1 ORDER BY approved_at DESC LIMIT $2 OFFSET $3`,
@@ -283,6 +310,13 @@ router.get(
       return {
         rows: page.rows,
         labels: new Map(batches.rows.map((b) => [String(b.batch_id), b])),
+        // ONE statement for the whole page, joined to the keys already in hand
+        // — a round trip, not a round trip per row. Same shape the remittance
+        // list uses.
+        actors: await describeActors(
+          pool,
+          page.rows.map((r) => r.approved_by)
+        ),
         counts: tally.rows,
         total: tally.rows.reduce((a, r) => a + num(r.n), 0),
         // The shadow gate, so the screen renders the SERVER's answer rather than
@@ -290,6 +324,7 @@ router.get(
         settings: await postingGate.readOfficeSettings(pool, office),
       };
     });
+    const { rows, labels, actors, counts, total, settings } = loaded;
 
     /*
      * ZERO-FILLED over the CHECK's own vocabulary, so a state this office
@@ -306,7 +341,7 @@ router.get(
     return res.json({
       success: true,
       office,
-      rows: rows.map((r) => toQueueRow(r, labels.get(String(r.batch_id)))),
+      rows: rows.map((r) => toQueueRow(r, labels.get(String(r.batch_id)), actors)),
       byStatus,
       total,
       limit,
@@ -386,6 +421,7 @@ router.get(
       return {
         row: q.rows[0],
         batch: batch.rows[0] || null,
+        actors: await describeActors(pool, [q.rows[0].approved_by]),
         lines: lines.rows,
         claims: claims.rows,
         documents: documents.rows,
@@ -403,7 +439,7 @@ router.get(
     return res.json({
       success: true,
       office,
-      plan: toQueueRow(found.row, found.batch),
+      plan: toQueueRow(found.row, found.batch, found.actors),
       lines: found.lines.map(toLineRow),
       claims: found.claims.map((c) => ({
         claimId: String(c.claim_id),

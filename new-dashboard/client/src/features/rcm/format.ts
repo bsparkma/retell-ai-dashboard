@@ -316,10 +316,11 @@ export function ordinal(n: number): string {
  * identify" and "everyone", so `ApproveCheck` prints `approvedBy` verbatim and
  * no longer calls this.
  *
- * It is not dead. `POST /:id/approve-recoupment` and the posting-plan rows in
- * `routes/rcm/posting.js` still return keys, and imported legacy attribution
- * can be a bare `u_7f3a` forever. Anything that starts rendering one of those
- * should reach for this — or, better, resolve it server-side and not need to.
+ * It is not dead. `POST /:id/approve-recoupment`'s `approvedBy` and the posting
+ * plan's `drainedBy` still return keys — both unrendered, which is why they are
+ * tolerable — and imported legacy attribution can be a bare `u_7f3a` forever.
+ * Anything that starts rendering one of those should reach for this — or,
+ * better, resolve it server-side and not need to.
  *
  * Everything below describes the mechanism, which is unchanged.
  *

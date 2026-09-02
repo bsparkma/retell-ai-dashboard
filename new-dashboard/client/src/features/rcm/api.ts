@@ -1959,6 +1959,13 @@ export interface PostingQueueRow {
    */
   reconciledAt: string | null;
   approvedAt: string | null;
+  /**
+   * WHO APPROVED IT, BY NAME — resolved server-side through `describeActors`,
+   * on the same contract `ApprovalResult.approvedBy` has. It falls back to the
+   * crosswalk key (an email, for most people) only when nobody has given that
+   * actor a display name. `flow.ts` prints it into a sentence, which is why it
+   * had to stop being an address.
+   */
   approvedBy: string | null;
   startedAt: string | null;
   finishedAt: string | null;
