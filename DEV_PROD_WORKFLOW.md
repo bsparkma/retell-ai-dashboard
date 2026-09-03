@@ -91,6 +91,29 @@ git checkout -b feature/my-thing origin/develop
 Ship path: `feature/*` → PR → `develop` → staging auto-deploys → merge `develop` → `main`
 → prod deploys after approval.
 
+### A held PR is a DRAFT, not a remembered intention
+
+**Standing rule from 2026-08-29.** When a review holds a PR — approved-pending-an-answer,
+a question left open, "do not merge until X" — **convert it to a draft immediately**, and
+mark it ready only when the reviewer releases it:
+
+```bash
+gh pr ready --undo <n>      # hold it
+gh pr ready <n>             # the reviewer has released it
+```
+
+Why it is a rule and not a habit: **PR #121 was merged while its gating question was still
+open.** Nothing was lost, and the reason nothing was lost is worth reading — the shadow
+gate (#120) had merged an hour earlier, so the defect window physically could not reach a
+patient's chart. The safety came from a gate, not from anyone's care.
+
+*"Everyone remembers not to press Drain" is not a gate* is this module's founding
+sentence (`docs/RCM_POSTING.md` §2.5). It applies to the merge button too. GitHub already
+refuses to merge a draft; use that rather than a shared memory of what was agreed.
+
+The same applies to the branch prefix conventions above: they are enforced by nothing, so
+the draft flag is the only mechanical hold this repo has.
+
 ---
 
 ## 3. Local development
@@ -312,6 +335,58 @@ has blank fields. **Deploy to prod when the team is not on calls.**
 Any `az` argument starting with `/subscriptions/...` gets rewritten by MSYS path
 conversion. Prefix with `MSYS_NO_PATHCONV=1`. This is what caused the early
 `MissingSubscription` and `--registry-identity` failures.
+
+### CI: a required check shows "Expected — waiting for status" forever
+
+A PR sits `BLOCKED` on `build-test`, the check never appears, and
+`gh run list --branch <branch>` returns **nothing**. Empty commits do not help.
+
+**Check the platform before the repo.** This happened to PR #112 on 2026-08-26 and looked
+exactly like a broken branch: the workflow file was right, the branch was up to date with
+develop, and a second repo of Beau's had the same symptom. It was a **GitHub Actions
+outage** — githubstatus.com had a *critical* "Incident with Actions" open. Nothing in the
+repo or the account would have fixed it.
+
+One command answers it:
+
+```bash
+curl -s https://www.githubstatus.com/api/v2/components.json | grep -B3 -i '"name":"Actions"'
+# then, if degraded:
+curl -s https://www.githubstatus.com/api/v2/incidents/unresolved.json
+```
+
+The diagnosis order worth walking, cheapest first:
+
+| # | Check | Command | What "fine" looks like |
+| --- | --- | --- | --- |
+| 0 | **Actions is up** | the curl above | `"status":"operational"` |
+| 1 | **Other branches still run** | `gh run list --repo bsparkma/retell-ai-dashboard --limit 10` | recent `build-test` runs on other PRs |
+| 2 | **Actions enabled for the repo** | `gh api repos/bsparkma/retell-ai-dashboard/actions/permissions` | `enabled: true`, `allowed_actions: "all"` |
+| 3 | **The workflow is active** | `gh api repos/bsparkma/retell-ai-dashboard/actions/workflows` | `state: active`, not `disabled_inactivity` |
+| 4 | **The required context matches the job name** | `gh api repos/bsparkma/retell-ai-dashboard/branches/develop/protection/required_status_checks` | `contexts: ["build-test"]` |
+
+Step 1 is the one that ends most searches: if another PR ran `build-test` in the last hour,
+the repo and the account are both fine and the problem is this branch or this moment.
+
+**Billing is a red herring on this repo.** `retell-ai-dashboard` is **public**, and public
+repos get unlimited GitHub-hosted Actions minutes — a spending limit cannot stop them. The
+`gh api users/<user>/settings/billing/actions` endpoint also needs the `user` OAuth scope
+(`gh auth refresh -h github.com -s user`, which is interactive); do not spend time on it
+before confirming the repo is private.
+
+**Do not strip the required check to get a merge through an outage.** An outage is
+transient and self-resolving; branch protection is what stopped PRs being merged blind
+(PR #106). Wait, then push an empty commit to re-fire `pull_request`:
+
+```bash
+git commit --allow-empty -m "ci: retrigger" && git push
+```
+
+If a merge genuinely cannot wait, run the gate locally first — `pnpm run check` and
+`pnpm run test` in `new-dashboard/`, then `node --check server.js` and
+`node scripts/shard-runner.mjs` in `backend/` (what CI runs) — so the merge is at least not blind, and
+say plainly in the PR that it merged without CI, so the next promotion runs `build-test`
+in staging-cd first.
 
 ### The prod LAN certificate
 

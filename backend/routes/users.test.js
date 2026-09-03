@@ -163,7 +163,16 @@ test('GET /: an admin sees the tenant roster, the role vocabulary, and their own
       res.body.users.map((u) => u.email),
       ['boss@carein.ai', 'front@carein.ai', 'hyg@carein.ai']
     );
-    assert.deepEqual(res.body.roles, ['admin', 'office', 'tc', 'hygiene', 'reviewer']);
+    // The vocabulary is TENANT_ROLES itself, so a role added to the permission
+    // map appears in the Users page's picker with no further wiring.
+    assert.deepEqual(res.body.roles, [
+      'admin',
+      'office',
+      'tc',
+      'hygiene',
+      'reviewer',
+      'rcm_biller',
+    ]);
     assert.equal(res.body.actor, 'boss@carein.ai');
     // last_login_at is surfaced as an ISO string or null — never a raw Date.
     assert.equal(typeof res.body.users[0].lastLoginAt, 'string');

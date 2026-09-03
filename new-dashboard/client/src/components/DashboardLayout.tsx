@@ -45,6 +45,7 @@ import {
   Receipt,
   ScrollText,
   Banknote,
+  Upload,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -120,22 +121,39 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
      switchableModules filters on exactly this, so a module with an empty nav is
      unreachable from the switcher.
 
-     Slice 6a added Remittances, which is where the actual WORK happens; the
-     Overview keeps the ingestion panels and the per-office counters. Ordered
-     work-first, because that is what a biller opens the module to do.
+     ─────────────────────────────────────────────────────────────────────────
+     ORDERED AROUND THE DAY, NOT AROUND THE SLICES THAT BUILT IT
+     ─────────────────────────────────────────────────────────────────────────
+     It used to read Remittances → Posting → Overview, which is the order the
+     slices shipped in: 6a built the workbench, 6c built the monitor, and the
+     overview came first historically so it went last. That put the module's
+     front door at the bottom of its own nav.
 
-     Slice 6c added Posting, and its position IS the workflow: a check is
-     reviewed and approved on Remittances, then posted from here. Below rather
-     than above, because nothing reaches it until a human has approved
-     something — a first item that is empty for every new practice would read as
-     the module's front door. */
+     Today → Checks → Posting → History is a biller's morning. Today is where
+     she starts and where work comes in; Checks is the list she works; Posting is
+     the monitor she visits when something is waiting or stuck; the SOP is
+     reference.
+
+     "Checks" rather than "Remittances" because that is the word used at the
+     desk. "Remittance" survives in body copy where precision needs it — a
+     check number and a remittance are not the same object — but a nav item is
+     read a hundred times a day and has to be the ordinary word. */
   rcm: [
     {
       title: "Revenue Cycle",
       items: [
-        { path: "/rcm/remittances", label: "Remittances", icon: ScrollText },
-        { path: "/rcm/posting", label: "Posting", icon: Banknote },
-        { path: "/rcm", label: "Overview", icon: Receipt },
+        { path: "/rcm", label: "Today", icon: Receipt },
+        { path: "/rcm/remittances", label: "Checks", icon: ScrollText },
+        /* THE ONE UPLOAD DOOR, first-class and after Checks (ruling D-16). */
+        { path: "/rcm/bring-in", label: "Bring in", icon: Upload },
+        /* "Posting history", not "Posting": this screen reports what HAS
+           happened across the practice. The working screens are above it — the
+           PM ruling is to keep it and demote it, because it is where an
+           office-wide post lives, where a stuck run is retried, and where
+           anybody debugging at 9pm looks. Deleting a debugging surface to tidy
+           a nav is not a trade this module makes. */
+        { path: "/rcm/posting", label: "Posting history", icon: Banknote },
+        { path: "/rcm/sop/takeback", label: "Takeback SOP", icon: BookOpen },
       ],
     },
   ],

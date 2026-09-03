@@ -27,78 +27,11 @@ env:
 
 jobs:
   # 1) GATE — exact checks validated in Step 2/3. Red here stops everything.
+  #    Extracted to a reusable workflow so the SAME gate also runs on every pull
+  #    request targeting develop/main (build-test.yml carries `on: pull_request`).
+  #    The called workflow has no publish/migrate/deploy job and no id-token: write.
   build-test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: carein_owner
-          POSTGRES_PASSWORD: carein_owner_devpw
-          POSTGRES_DB: carein_control
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U carein_owner -d carein_control"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: corepack enable
-
-      # --- new-dashboard: tsc + vitest ---
-      - name: new-dashboard install
-        working-directory: new-dashboard
-        run: pnpm install --frozen-lockfile
-      - name: new-dashboard typecheck (tsc)
-        working-directory: new-dashboard
-        run: pnpm run check
-      - name: new-dashboard tests (vitest)
-        working-directory: new-dashboard
-        run: pnpm run test
-
-      # --- backend: install + syntax + unit tests ---
-      - name: backend install
-        working-directory: backend
-        run: npm ci
-      - name: backend syntax check
-        working-directory: backend
-        run: node --check server.js
-      # Serial on purpose. Node 22.15's parallel test runner intermittently dies with
-      # "Unable to deserialize cloned data due to invalid or unsupported version"
-      # (ERR_TEST_FAILURE) and blames an arbitrary file — it is a function of the test
-      # FILE COUNT, not of any one test. --test-concurrency=1 removes the flake at the
-      # cost of a longer run. Do not drop this to "speed CI up".
-      - name: backend unit tests
-        working-directory: backend
-        run: node --test --test-concurrency=1
-
-      # --- spine smoke test (12/12) against an ephemeral Postgres ---
-      - name: prepare ephemeral DB (carein_app role + tenant DB)
-        env: { PGPASSWORD: carein_owner_devpw }
-        run: |
-          psql -h localhost -U carein_owner -d carein_control -v ON_ERROR_STOP=1 \
-            -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='carein_app') THEN CREATE ROLE carein_app LOGIN PASSWORD 'carein_app_devpw'; END IF; END \$\$;"
-          psql -h localhost -U carein_owner -d carein_control -v ON_ERROR_STOP=1 \
-            -c "CREATE DATABASE carein_t_carein OWNER carein_owner;"
-          psql -h localhost -U carein_owner -d carein_t_carein -v ON_ERROR_STOP=1 \
-            -c "GRANT USAGE ON SCHEMA public TO carein_app;"
-      - name: migrate control + tenant (ephemeral, as owner)
-        working-directory: backend
-        env:
-          CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
-          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
-          CAREIN_SEED_CONNECTOR_URL: https://connector-placeholder.ci.local
-        run: |
-          node scripts/migrate.js up
-          node scripts/migrate-tenant.js up --tenant carein
-      - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
-        working-directory: backend
-        env:
-          CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
-          TENANT_CAREIN_DB_URL: postgres://carein_app:carein_app_devpw@localhost:5432/carein_t_carein
-        run: node scripts/smoke-spine.js
+    uses: ./.github/workflows/build-test.yml
 
   # 2) PUBLISH — build BOTH images in ACR from their Dockerfiles (OIDC login).
   publish:

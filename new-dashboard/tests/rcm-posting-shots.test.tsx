@@ -287,8 +287,15 @@ describe.skipIf(!enabled)("posting queue screenshots", () => {
       drainRequires: "rcm.write",
       postingEnabled: true,
       documentAttach: {
-        implemented: false,
-        note: "The EOB PDF is not yet filed into the patient images — that is a later slice.",
+        implemented: true,
+        // 6d: `null` is NOT ATTEMPTED — a real third state, and what a plan
+        // whose remittance carried no document honestly looks like.
+        status: null,
+        error: null,
+        at: null,
+        documents: [],
+        canRetry: true,
+        retryRequires: "rcm.write",
       },
     };
     renderQueue();
@@ -380,8 +387,15 @@ describe.skipIf(!enabled)("posting queue screenshots", () => {
       drainRequires: "rcm.write",
       postingEnabled: true,
       documentAttach: {
-        implemented: false,
-        note: "The EOB PDF is not yet filed into the patient images — that is a later slice.",
+        implemented: true,
+        // 6d: `null` is NOT ATTEMPTED — a real third state, and what a plan
+        // whose remittance carried no document honestly looks like.
+        status: null,
+        error: null,
+        at: null,
+        documents: [],
+        canRetry: true,
+        retryRequires: "rcm.write",
       },
     };
     renderQueue();

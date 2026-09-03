@@ -57,10 +57,25 @@
  * CHECKLIST beside it is a GET and therefore runs on `rcm.read`, which the
  * `reviewer` tier holds: seeing why a claim is withheld is not a posting act.
  *
- * NOT here, and not yet: the drain and any Open Dental write (6c), the
- * recoupment typed-confirmation gate (6d), reconciliation, VCC and metrics
- * (8/9), Stedi. The only tables anything under this mount touches are rcm_* and
- * the platform audit_log.
+ * The shadow gate added the module's narrowest tier on top of all of this.
+ * `POST /posting/drain`, `POST /posting/queue/:id/withdraw` and
+ * `POST /posting/queue/:id/attach-document` each carry an explicit
+ * `requirePermission('rcm.post')`, and `GET|PUT /office-settings/:office` carry
+ * `requirePermission('rcm.settings')`. `rcm_biller` holds `rcm.read`,
+ * `rcm.queue` and `rcm.write` and neither of those two — a biller uploads,
+ * matches, confirms, reviews and APPROVES, and stops at the chart.
+ *
+ * The same is true of 6d's two additions. `POST /remittances/:id/approve-
+ * recoupment` and `POST /posting/queue/:id/attach-document` are BOTH absent from
+ * QUEUE_PATHS, so both demand `rcm.write` by construction — a `reviewer` never
+ * reaches either handler. Their GET counterparts (`/remittances/:id/recoupment`,
+ * the posting detail) run on `rcm.read`, so the person who did the reviewing can
+ * see what a takeback would do without being able to authorise it.
+ *
+ * NOT here, and not yet: reconciliation, VCC and metrics (8/9), Stedi, and the
+ * patient-portion flow (PRD-deferred; the key is not entitled for it at all).
+ * The only tables anything under this mount touches are rcm_* and the platform
+ * audit_log.
  */
 
 const express = require('express');
@@ -114,7 +129,81 @@ router.use(requireOffice);
 const QUEUE_PATHS = Object.freeze([
   /^\/claims\/[^/]+\/match$/,
   /^\/claims\/[^/]+\/review$/,
+  /*
+   * THE PER-LINE WRITE-OFF DECISION (Stage B1). Same tier, same argument as the
+   * review marker above it.
+   *
+   * It writes four columns on one of OUR rows and reaches no chart, no posting
+   * and no other claim. Deciding that the office absorbs a line is the reviewing
+   * act; authorising money to move is `rcm.write`, at the gate, and this route
+   * cannot reach it.
+   */
+  /^\/claims\/[^/]+\/lines\/[^/]+\/decision$/,
   /^\/remittances\/[^/]+\/match$/,
+  /*
+   * THE FOUR WORKLIST STATES (Stage A). Same tier, same argument.
+   *
+   * Parking a check and setting one aside change WHICH QUEUE a remittance
+   * appears in and nothing else — no Open Dental call, no chart, no plan, no
+   * money. `POST /claims/:id/review` has been exempted here since 6a for exactly
+   * that reason, and it ALSO takes a remittance out of the needs-attention view.
+   * A `reviewer` who can disposition every claim on a check must be able to say
+   * "I am coming back to this one" about the check.
+   *
+   * Both are REVERSIBLE, which is what separates them from every other way of
+   * taking something off this module's board: `withdrawn` is terminal, and it
+   * lives on `rcm.post` beside the drain.
+   */
+  /^\/remittances\/[^/]+\/park$/,
+  /^\/remittances\/[^/]+\/unpark$/,
+  /^\/remittances\/[^/]+\/set-aside$/,
+  /^\/remittances\/[^/]+\/restore$/,
+  /*
+   * THE SHADOW-MODE COMPARISON (Stage C-2). Same tier, same argument again.
+   *
+   * "Did the app get this check right?" writes six columns on one of OUR rows
+   * and reaches no chart, no posting, no plan and no money. It cannot be asked
+   * at all until somebody has approved the check, and it is refused once the
+   * check has posted — so at no point is it a decision about where money goes.
+   *
+   * `rcm.queue` is the tier that marks a claim reviewed. The person who checked
+   * every claim on this check and then put the money into Open Dental by hand is
+   * exactly the person who knows the answer, and gating her behind `rcm.write`
+   * would make the one record that decides whether posting gets switched on
+   * depend on a permission she needs for nothing else.
+   */
+  /^\/remittances\/[^/]+\/comparison$/,
+  /*
+   * THE READ-ONLY RE-CONFIRMATION (Stage C, §7).
+   *
+   * `POST /posting/:id/recheck` re-runs the confirmation against a plan that has
+   * already posted and WRITES NOTHING — not a chart, not the plan's status, not
+   * CareIN's own record of the verdict. Its two Open Dental calls are both GETs
+   * and both audited as reads.
+   *
+   * It is a POST because it spends real calls against a rate-limited credential
+   * the voice side shares, and a GET is a thing browsers and link previews fire
+   * without being asked. The METHOD says "a person pressed this"; the TIER has
+   * to say what it actually does, and what it does is read.
+   *
+   * So it belongs here, on `rcm.read`, beside the other reads — the same tier a
+   * `reviewer` uses to watch a posting and read why one is stuck. Demanding
+   * `rcm.write` to LOOK would put the person best placed to notice a wrong
+   * balance behind a permission she does not need, and would make the honest
+   * label on the button ("reads the chart and writes nothing to it") a thing the
+   * mount contradicted.
+   *
+   * It carries an EXPLICIT `rcm.queue` gate of its own rather than relying on
+   * the mount's read gate, because `rcmGuard.test.js` holds a rule worth more
+   * than the convenience: every path this exemption opens must be gated by the
+   * route itself, or a route added at one of these paths later is reachable by
+   * anyone the module guard let through. `rcm.queue` is the tier that marks a
+   * claim reviewed — reviewer, rcm_biller, office and admin all hold it.
+   *
+   * `postingRecheck.test.js` pins the no-write claim from both ends: the fake's
+   * write transcript is empty, and the plan's own row is byte-identical after.
+   */
+  /^\/posting\/[^/]+\/recheck$/,
 ]);
 
 router.use('/summary', require('./summary'));
@@ -161,6 +250,40 @@ router.use('/uploads', require('./documents'));
  * verbs, in order, and nothing else.
  */
 router.use('/posting', require('./posting'));
+/*
+ * THE SHADOW GATE'S SWITCH.
+ *
+ *   GET  /office-settings/:office   the state, who last changed it, when
+ *   PUT  /office-settings/:office   flip it
+ *
+ * Both carry their own `requirePermission('rcm.settings')` — `admin` and
+ * nothing else, narrower than the `rcm.post` that presses Drain. NOT in
+ * QUEUE_PATHS: the PUT is a mutation and must clear the mount's `rcm.write`
+ * before the narrower gate even runs, and the GET is a GET.
+ *
+ * Two conditions gate an Open Dental write in this module and neither replaces
+ * the other: `OFFICES_ENABLED_FOR_POSTING` says a practice has been VALIDATED
+ * (a code change, with the evidence in the same commit — §9), and this row says
+ * an administrator has switched it ON. Roland clears the first and ships to
+ * production with the second off, so a biller can work real EOBs to `approved`
+ * while a chart write stays impossible.
+ */
+router.use('/office-settings', require('./officeSettings'));
+/*
+ * THE SHADOW-MODE COMPARISON'S TWO READS (Stage C-2).
+ *
+ *   GET /comparison/tally     the running count under the ask, on `rcm.queue`
+ *   GET /comparison/summary   the evidence behind the switch, on `rcm.settings`
+ *
+ * Both are GETs, so both clear the mount's read gate before their own explicit
+ * `requirePermission` runs; the summary's is NARROWER than the mount, on the
+ * `office-settings` idiom directly above — an exit criterion read beside the
+ * switch it justifies, absent rather than greyed for everybody else.
+ *
+ * The WRITE lives on `/remittances/:id/comparison`, beside park and set-aside,
+ * because it is an act on one check rather than a question about the practice.
+ */
+router.use('/comparison', require('./comparison'));
 
 module.exports = router;
 module.exports.QUEUE_PATHS = QUEUE_PATHS;

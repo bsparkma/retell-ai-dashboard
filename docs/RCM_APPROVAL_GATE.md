@@ -12,7 +12,7 @@ The one thing the workbench's disabled **Approve** button has been waiting for.
 | Office | Slice 3's router-wide `requireOffice` — the validated `?office=` query param |
 | Migration | `backend/migrations-tenant/1787080000000_rcm_posting_approval.js` (additive only) |
 | Code | [`backend/routes/rcm/approvalGate.js`](../backend/routes/rcm/approvalGate.js), [`backend/services/rcm/rcmVocabulary.js`](../backend/services/rcm/rcmVocabulary.js), [`new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx`](../new-dashboard/client/src/pages/rcm/ApprovalPanel.tsx) |
-| Tests | `approvalGate.test.js` (46), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (74), `rcmVocabulary.test.js` (17), `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` (11) |
+| Tests | `approvalGate.test.js` (46), `lineDecisions.test.js` (20), `rcmNoOdWrites.test.js` (10), `workbench.test.js` (74), `rcmVocabulary.test.js` (17), `rcm-workbench.test.tsx` (49), `rcm-labels.test.ts` (11) |
 
 ---
 
@@ -95,7 +95,14 @@ then the human decisions, then facts about the file, then the arithmetic.
 | `NO_BLOCKING_PREFLIGHT` | The confirmed candidate's snapshot carries a blocking `OD_BLOCKERS` fact |
 | `LINES_PAIRED` | Any procedure line has no `od_claim_proc_num` |
 | `CLAIMPROC_NOT_ALREADY_PLANNED` | One of this claim's chart lines is already on a posting plan — another claim's, or another claim on this same remittance |
+| `PATIENT_RESPONSIBILITY_MATCHES` | What the patient will owe once this posts is not what the EOB says they owe (Stage B1 — see §3.5) |
 | `CLAIM_TOTALS_AGREE` | The claim total, the sum of its lines, and what the batch says it moved do not all agree |
+
+**The recoupment approve swaps three of these and adds two.** `NOT_REVERSAL` and
+`NOT_RECOUPMENT` are replaced by `RECOUPMENT_CONFIRMED`, and the checklist gains
+`TAKEBACK_ACKNOWLEDGED` (§3.1) and `MATCH_TAKEN_FOR_A_TAKEBACK` (§3.2). It never
+has FEWER conditions than the ordinary one — it has different, harder ones, and
+every check in the table above still has to pass.
 
 Four of these deserve their own note:
 
@@ -231,6 +238,147 @@ it, so that default is a backstop rather than a routine path.
 `uncertain_line:<N>` is handled explicitly — a line the model was unsure about is
 money read with low confidence.
 
+### 3.1 D-11 AMENDMENT (2026-08-27) — the takeback confirmation answers two flags
+
+**Ruled after the finding below. It is the first and so far only exception to
+"one vocabulary, no exceptions", and it is written as a partition rather than an
+exemption.**
+
+#### What was found
+
+`evaluateClaim`, run with `recoupmentAllowed: true`:
+
+```
+6d hand-built fixture (no parser flags) => NO_BLOCKING_REASON passed: true
+a REAL reversal 835 from the parser     => NO_BLOCKING_REASON passed: false
+                                           reversal_not_postable, negative_total_payment
+```
+
+The ERA parser marks a reversal claim `reversal_not_postable` and flags its
+remittance `negative_total_payment`. Both are blocking. `NO_BLOCKING_REASON` was
+computed over every reason unconditionally — the D-6 swap replaces
+`NOT_REVERSAL` / `NOT_RECOUPMENT` with `RECOUPMENT_CONFIRMED` and never touched
+the blocking list — so **D-6's typed-confirmation path was unreachable for any
+835 a real carrier would send.** Every takeback test 6d shipped passed, because
+they build the claim by hand: a negative amount and an empty
+`needsReviewReasons`. *A hand-built fixture for one stage of a pipeline is a
+claim about the stage upstream of it, and nothing was checking that claim.*
+
+#### The ruling
+
+On the **recoupment approve only**, `reversal_not_postable` and
+`negative_total_payment` are answered by a single named check:
+
+| | |
+| --- | --- |
+| Code | `TAKEBACK_ACKNOWLEDGED` |
+| Passes when | the claim really is a takeback — the same `recoup` that `RECOUPMENT_CONFIRMED` turns on, so the two cannot disagree |
+| Pass detail | *This is a takeback — confirmed by typing -1.00* (the amount from `formatRecoupmentTotal`, so it is the string the approver actually typed) |
+| Ordinary approve | **never added to the checklist at all**, and both flags block exactly as they did in 6b |
+
+**A PARTITION, NOT A FILTER, and the distinction is the whole ruling.** Every
+reason is still accounted for by exactly one visible check: the two takeback
+flags go to `TAKEBACK_ACKNOWLEDGED`, everything else to `NO_BLOCKING_REASON`.
+Written as `blocking.filter(...)` a reason would simply vanish from the screen,
+and D-11's point is that no code path gets to decide a flag does not apply to
+it. Here the flag still applies — it is answered, by name, in public, and the
+check can **fail**: reversal flags on a claim whose money moves forwards is a
+contradiction the screen shows rather than absorbs.
+
+**Exactly two flags, and adding a third is a ruling, not a fix.**
+`TAKEBACK_FLAGS` in `approvalGate.js` is the one place in the module where a
+blocking reason can be answered by something other than removing its cause. A
+truncated envelope or an unreadable line amount still blocks a recoupment
+approve — neither is a fact about money moving backwards, they are facts about
+not being able to read the file at all, and no typed amount confirms those.
+
+Pinned by six tests in `approvalGate.test.js`, including that the same
+parser-produced claim **fails** the ordinary gate on those exact flags, and that
+`TAKEBACK_ACKNOWLEDGED` never appears in an ordinary checklist in any shape.
+
+### 3.2 WALK NIGHT 2 (2026-08-28) — the same lesson, one stage further down
+
+**§3.1 unblocked the takeback's REVIEW REASONS. This unblocks its EVIDENCE.**
+
+#### What was found
+
+With the reversal 835 matched to claim 53830 — Received, InsPayAmt $1.00, on
+check 21424, the state the drain had put it in twenty minutes earlier — the
+takeback approve refused with the correct total typed. The checklist named it:
+
+```
+The chart is ready for this payment   LINE_HAS_CLAIM_PAYMENT, NO_PAYABLE_LINES
+Every line matched to a chart line    1 of 1 lines have no ClaimProcNum
+                                      "no postable line on this claim"
+```
+
+Every one of those sentences is **true about a payment and says nothing about a
+reversal.** A payment needs a line Open Dental will let it PUT money onto: not
+deleted, not transferred, not already attached to a check. **A takeback needs the
+exact state that refusal describes** — its target line is paid, and on a real
+reversal it is on a check already, because the money it is reversing is money
+this module posted. The two lanes ask inverse questions and `claimMatch` only
+knew how to ask one of them.
+
+`§3.1`'s own test passed because the fake chart's claim was never in the
+post-drain state. **A hand-built fixture for one stage of a pipeline is a claim
+about the stage upstream of it** — recorded in §3.1, and true again one layer
+down.
+
+#### The ruling — the same partition, on the pre-flight facts
+
+The lane is carried by `claimMatch.isTakeback` (**one predicate**;
+`approvalGate.isRecoupment` now delegates to it, so the match and the gate
+cannot disagree about which question is being asked) and is **stored on the
+snapshot** as `takeback`.
+
+| Fact | Payment lane | Takeback lane |
+| --- | --- | --- |
+| a line is paid and attached to a check | `LINE_HAS_CLAIM_PAYMENT` — **blocking** (OD refuses `Cannot change InsPayAmt when Status is Received and attached to a ClaimPayment`) | `LINE_PAID_AND_ON_CHECK` — **reported, not blocking.** It is the precondition, and it stays on the list because it is the fact that makes the ordinary button refuse |
+| every line is already paid | `NO_PAYABLE_LINES` — **blocking** | not raised |
+| no line carries a payment | not raised | `NO_REVERSIBLE_LINES` — **blocking.** A takeback against a line the carrier never paid reverses nothing |
+| the takeback exceeds what the chart shows was paid | not applicable | `TAKEBACK_EXCEEDS_PAYMENT` — **blocking**, compared as magnitudes; skipped, never passed, when the amount is unknown |
+| deleted / `'unknown'` / transferred / blocked status | **blocking** | **blocking** — identical. These are reasons Open Dental cannot be trusted about a line at all, and no direction of money makes an unreadable procedure safe |
+| line pairing | eligible = not deleted, not transferred, not blocked, **no check attached** | eligible = not deleted, not transferred, not blocked, **`InsPayAmt ≠ 0`**. Unpaired reads *"no paid line on this claim to reverse"* |
+| **a chart line is held by another plan** (walk 3) | `CLAIMPROC_NOT_ALREADY_PLANNED` — **blocking for any holding plan.** Two plans must never pay one line | **blocking only for an ACTIVE plan** (`approved`, `posting`, `failed`, `partially_posted`, `blocked`, or a plan whose status cannot be read). A **`posted`** or **`withdrawn`** plan releases the line: a posted plan is *where the reversed money came from*, so holding the line is the takeback's precondition |
+
+**A PARTITION AGAIN, NOT A RELAXATION.** The inversion is exactly two codes
+wide, the fact still prints under its own name with the opposite verdict, and
+the takeback lane gains **two refusals of its own** that the payment lane has no
+use for. Nothing was switched off: a takeback against an unpaid line, or one
+larger than the payment on the chart, is refused where before it was not
+expressible.
+
+**Being on a check is reported, not required.** A line paid but not yet attached
+to a ClaimPayment still has money to take back, and demanding the check would
+refuse a takeback against a payment posted by hand in Open Dental.
+
+#### And the evidence must have been gathered for the right question
+
+| | |
+| --- | --- |
+| Code | `MATCH_TAKEN_FOR_A_TAKEBACK` |
+| Path | **recoupment only**, like the two checks above it |
+| Passes when | `snapshot.takeback === true` |
+| Fix | *Run the match again on this claim.* |
+
+`NO_BLOCKING_PREFLIGHT` and `LINES_PAIRED` both read the snapshot, and the
+snapshot answers one of two opposite questions. Asserting the lane **before**
+either of them speaks means a biller reading three red checks is told the one
+thing that fixes all three, instead of two true-but-irrelevant sentences about
+payments. A v2 snapshot written before the field existed carries no lane and
+reads as `false` — correct rather than merely convenient: those snapshots really
+were taken for a payment.
+
+#### Pinned by `routes/rcm/takebackAgainstPostedChart.test.js`
+
+**The chart in that file is not written down.** Plan A is posted through the
+real `postingDrain.drainOffice` against `FakeOd`, and whatever state that leaves
+is what the reversal is evaluated against — including the assertion that the
+payment lane still produces the walk night refusal, and that the ordinary
+Approve button still refuses the claim outright. If the drain's output and the
+takeback's expectations ever drift apart again, that file is what notices.
+
 ### Blocking (24)
 
 | Reason | Why it blocks |
@@ -282,6 +430,272 @@ flagged. `open` means "something on this file was flagged" — a different quest
 from "may this claim be posted", and changing what `ready` promises is a separate
 decision. The fidelity doc's implementation note proposed changing it; that half
 is **not** adopted here.
+
+### 3.3 PM REVIEW (2026-08-29) — one predicate is only one question if both callers ask it
+
+§3.2 gave the match a lane and gave the gate `MATCH_TAKEN_FOR_A_TAKEBACK` to
+refuse a snapshot taken for the wrong one. The PM review of that change found the
+same class of bug **one join further out**, and it is worth stating plainly
+because the fix looked complete:
+
+`claimMatch.isTakeback` reads **two** amounts and ORs them — the claim's own
+`total_paid_cents`, and what the batch says this claim moved
+(`rcm_batch_claim_payments.paid_cents`). Either being negative is a takeback.
+`approvalGate.isRecoupment` always passed both. **`matchService` passed only the
+first.**
+
+So a claim whose own total is not negative while the batch row is would be
+matched on the payment lane and judged on the takeback lane:
+
+| | |
+| --- | --- |
+| match | `snapshot.takeback = false` — it asked the payment question |
+| gate | `isRecoupment = true` — it saw the negative batch row |
+| gate | `MATCH_TAKEN_FOR_A_TAKEBACK` fails: *"re-run the match"* |
+| biller | re-runs the match, as instructed |
+| match | reads the same non-negative claim total → `false` again |
+
+**A refusal whose own remedy cannot clear it is a loop, not a gate.**
+
+Both answers the review offered were taken, because they close different holes:
+
+* **The amounts cannot diverge today.** `eraIngest.writeClaim` and
+  `eobExtractionWorker` each bind ONE in-memory `claim.totalPaidCents` into both
+  inserts, inside one transaction. That is now pinned by a test that ingests
+  **every 835 in the fixture corpus** and asserts `sign(total_paid_cents) ==
+  sign(paid_cents)` for every claim — including the reversal, so the pin covers
+  the negative case rather than only the happy one. This makes the loop
+  **unreachable**.
+* **The match now reads the batch row too**, so both callers hand the predicate
+  the same evidence. This makes the loop **impossible**, which is the stronger
+  property: the first can be broken by a future ingest change and nobody would
+  see it until a biller was stuck. It costs no round trip — the query joins a
+  `Promise.all` in `loadClaimBundle` that was already waiting on two others.
+
+The takeback MAGNITUDE follows the gate's precedence too (the batch row when
+there is one, the claim's own total otherwise), so `TAKEBACK_EXCEEDS_PAYMENT` is
+measured at match time against the number the gate measures against later.
+
+> **Why the source pin exists.** The behavioural tests only catch this when a
+> fixture happens to diverge, and today none does. A caller quietly dropping the
+> second amount again is exactly how the bug arrived, so a test asserts that both
+> `isTakeback` call sites name **both** amounts.
+
+### 3.4 WALK 3 (2026-08-30) — the third instance, and the fixture that should have caught it
+
+**Same lesson, one layer further down, and this time a test built to prevent it
+passed while staging refused.**
+
+With plan A posted — the exact chart state §3.2 exists to reach — the recoupment
+approve refused:
+
+```
+No chart line is spoken for    ClaimProcNum 535598 already on a posting plan
+                               fix: "Release the other posting plan first"
+```
+
+535598 is A's line. It is on A's plan **because A's plan is where the payment came
+from.** The rule was written for the payment lane — two plans must never pay one
+line, still right — and it fires on the one chart state a takeback can ever
+target. Worse, **its rendered fix cannot be performed**: withdraw refuses a
+posted plan, correctly. A refusal whose remedy cannot exist is the same defect
+class as the re-match loop in §3.3.
+
+**The partition** is in the table above, and it is narrower than it first looks.
+`PLAN_STATUSES_RELEASED_FOR_REVERSAL` is **`posted`** and **`withdrawn`** only.
+
+> ⚠️ **It is deliberately NOT `TERMINAL_QUEUE_STATUSES`**, which sits ten lines
+> away in the same file and looks like exactly the right constant. That list
+> answers *"has a drain already had this plan"* and also contains
+> `partially_posted`, `failed` and `blocked`. Reusing it would release a line
+> held by a plan that may still write to it — and taking money back out from
+> under a payment that is still arriving is the genuinely unsafe case. A plan
+> whose status cannot be read holds its line too: `null` is not in the released
+> set, so it fails closed.
+
+The payment lane is untouched, and needs no protection from this change: a posted
+plan's line already cannot take a second payment (`LINE_HAS_CLAIM_PAYMENT`).
+
+The refusal now **names the status** — `ClaimProcNum 99001 (approved)` — so the
+biller knows which plan and that releasing it is possible.
+
+#### Why `takebackAgainstPostedChart.test.js` passed while staging refused
+
+That file drives the **real** `postingDrain.drainOffice` and evaluates the
+reversal against whatever state it leaves. It was written after walk night 2
+precisely so this class of miss could not recur. It passed. **Two independent
+reasons, and fixing either alone would have left the other:**
+
+1. **The map was thrown away.** Every `evaluateClaim` call passed
+   `plannedClaimprocs: new Map()`. The drain had written
+   `rcm_posting_queue_line` into that very db, so the chart state was faithful
+   and the **plan** state was discarded — `CLAIMPROC_NOT_ALREADY_PLANNED` was
+   satisfied *vacuously*, with nothing in the map to conflict with.
+2. **The reversal was not its own claim.** The fixture used one `CLAIM_ID` for
+   both the plan line and the reversal. The check only fires when
+   `planned.claimId !== claim.claimId`, so even a fully populated map would not
+   have conflicted. In production a reversal 835 ingests its **own** `rcm_claims`
+   row — on staging, plan A's claim was `262063fb…` and the recoupment's was
+   `22533a81…`, two rows against one Open Dental claim.
+
+Both are fixed: the fixture now builds the map from its own db (including the
+holding plan's status) and gives the reversal its own row. `THE WALK NIGHT
+REFUSAL, FIXED` is red-before against `develop` as a result — the test finally
+fails where staging failed.
+
+A **sibling at the route layer** was added too, because the map the fixture
+builds is a *copy* of what `loadForApproval` builds, and a copy can drift:
+`THE WALK-3 REFUSAL, THROUGH THE REAL LOADER` drives the HTTP
+`approve-recoupment` so the map comes from the real loader reading real rows.
+
+> **The general lesson, third time recorded:** *a hand-built input for one layer
+> is a claim about the layer beside it.* §10.6.1 said it about the parser's
+> flags, §10.6.3 about the chart, and this says it about the plan table. A
+> fixture that drives one real component and hand-feeds the rest tests the seam
+> it hand-fed, not the one it drove.
+
+---
+
+### 3.5 STAGE B1 (2026-08-30) — the patient's number, at the gate and on the screen
+
+The rule the workbench is built on, expressed as the gate's thirteenth check.
+
+#### The money, defined once
+
+Per claim line the carrier gives **billed** (B), **allowed** (A) and **paid** (P):
+
+```
+contractual write-off   W = B − A     the CARRIER's figure
+patient remainder       R = A − P     what the EOB says the patient owes
+```
+
+W is always accepted. It is displayed as a fact, never offered as a choice, and
+nothing in this slice can change it. (A per-office "do not accept contractual
+write-offs" flag is a later slice and is deliberately not built.)
+
+R is the whole decision, and it is one enum per line — `rcm_procedure_lines
+.line_decision`:
+
+| Value | Effect | Reason |
+| --- | --- | --- |
+| `bill_patient` | the patient is billed R; their number matches the EOB | forbidden |
+| `office_writeoff` | the office absorbs R; their number is R below the EOB **on purpose** | **required** |
+
+`NULL` means nobody has said, and the money reads it as `bill_patient` — the
+outcome that does not quietly move anything. A line where R is zero has nothing
+to decide and renders without the control at all.
+
+Over a claim:
+
+```
+EOB patient responsibility        Σ R over every line
+decided office write-off total    Σ R over office_writeoff lines
+projected patient responsibility  Σ R over bill_patient lines
+```
+
+#### The three states
+
+| State | When | At the gate |
+| --- | --- | --- |
+| **GREEN** | projected == EOB | passes |
+| **AMBER** | projected == EOB − decided, and every contributing line has a reason | **passes**, and the detail lists line, amount, reason and who |
+| **RED** | anything else | **refuses** |
+
+AMBER passing is the point. A write-off somebody decided on, with a reason and a
+name against it, is the ordinary work; refusing it would refuse the day.
+
+**And the AMBER detail is load-bearing for a permission decision, not just copy.**
+A line decision runs on `rcm.queue`; approving runs on `rcm.write`. A reviewer
+PROPOSES a write-off and somebody with write authority ACCEPTS it — a split that
+is only honest while the accepting screen shows whose decision it is and why,
+which is what naming each write-off with its reason label and its decided-by
+does. Reduce it to a count or a total and the two tiers collapse into one.
+Review-then-send, one level up from the chart. (PM ruling, 2026-08-30.)
+
+RED has exactly three causes, and every one of them names a line:
+
+- `decision_missing_reason` — a write-off with nothing recorded about why;
+- `line_not_in_chart` — the line has no ClaimProcNum, so the projection has
+  nowhere to land;
+- `od_fee_disagrees` — Open Dental was billed a different amount for that
+  procedure, so the carrier's figures describe a different line and the
+  projection is arithmetic about the wrong number.
+
+The fee comparison is read from the confirmed match snapshot's `linePairs`
+(`billedDeltaCents`), which is where the two billed figures were already
+compared. **This file still makes no Open Dental call of any kind.**
+
+#### One function, two renderers
+
+`services/rcm/lineDecisions.js` `verdictFor()` is the only place any of this
+arithmetic happens. The workbench prints its `sentence`; this gate turns the same
+verdict into a pass or a refusal, and carries it out whole on each claim so the
+checklist prints the screen's own words rather than a second computation of them.
+
+A green line beside a red check is therefore not a bug that can be introduced —
+it is a shape the code cannot produce. `routes/rcm/lineDecisions.test.js` drives
+one remittance through both surfaces and asserts the state, the three figures and
+the sentence are identical for green, amber and red.
+
+#### The imbalance sentence is a BACKSTOP
+
+`projected + decided === eob` holds **by construction**: the three sums partition
+one set. So the "doesn't match the EOB — $X here, $Z on the EOB" wording is
+unreachable today, and the sentence a biller actually reads on a red claim names
+the problem instead. It is kept because the partition is a property of one loop
+rather than of the world — a later slice that let a line be written off in PART
+would break it, and the verdict would then say which two numbers disagree rather
+than failing quietly.
+
+**It stops being unreachable in the CONFIRMED register.** After a real post the
+verdict is recomputed from the read-back, and a read-back that differs from what
+was projected is exactly the two-different-numbers case. That is B2's *"read-back
+≠ projected → Stuck, not Finished"* path, and this is the sentence it needs — so
+it is unused copy only until B2, and must not be deleted as dead.
+
+#### And a takeback may not carry one
+
+The recoupment lane refuses a claim whose lines carry a decided write-off. The
+two are opposite operations on the same money, and the recoupment INSERT writes
+supplemental lines with nowhere to put a decided figure — so a claim carrying one
+would have its decision **silently dropped** at approve. Refused rather than
+dropped, naming which of the two to undo.
+
+#### What approving freezes
+
+On approve the decision is snapshotted onto the posting line, in three columns
+kept **separate** from the carrier's own figure:
+
+| Column | Holds |
+| --- | --- |
+| `intended_write_off_cents` | W — the carrier's contractual write-off |
+| `decided_write_off_cents` | R — what this office chose to absorb. `NULL`, not zero, when nothing was decided |
+| `decided_reason`, `decided_by` | frozen with the amount, all three or none |
+| `intended_patient_cents` **(B2)** | R as approved — what this claim PROMISED the patient would owe, before the office's decision |
+
+Adding the two together at approve time would destroy the one distinction the
+slice exists to keep. The drain sums them at the moment it writes.
+
+**And the promise is frozen with them (B2).** After the post, the drain reads the
+chart back and asks whether the patient owes what this check said they would —
+against `intended_patient_cents`, never against a figure re-derived from the
+chart's own `FeeBilled`. A fee somebody edits between the approve and the press
+would move that derivation with it, so the promise would silently become whatever
+the chart now says and could never disagree. A confirmation that cannot disagree
+is not a confirmation. See RCM_POSTING §14.0c.
+
+**D-14: an approved claim is frozen.** `rcm_claims.posting_queue_id` non-null
+refuses a decision edit with 409 `CLAIM_ON_POSTING_PLAN` — the same predicate
+`runClaimMatch` already refuses on. The copy says what is actually true about
+undoing it today: retiring the posting stops it, but a retired remittance can
+never be approved again (RCM_POSTING §2.2.0), so a wrong write-off on an approved
+claim is a correction in the desktop until 6d.2 lands.
+
+The sentence names the RULE as well as the wall — a decision is free to change
+right up until Approve, and Approve is the step that freezes it — because that is
+the only part of it she can act on. Logged as a named limitation in
+**RCM_POSTING §15.1b**, beside the follow-on-plan limitation it shares a shape
+and a fixing slice with.
 
 ---
 

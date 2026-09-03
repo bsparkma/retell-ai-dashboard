@@ -6,15 +6,24 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * RUN THIS ONLY AT A QUIET HOUR FOR THE OFFICE, AND ONLY WITH BEAU'S GO-AHEAD.
  * ─────────────────────────────────────────────────────────────────────────────
- * It is the last unrecorded prerequisite before valley may be added to
- * `postingDrain.OFFICES_ENABLED_FOR_POSTING`. It is checked into the repo rather
- * than pasted from a scratchpad so the thing that was run is the thing that was
- * reviewed.
+ * RUN 2026-08-24 21:13 Central against staging. Riley is ENTITLED on both the
+ * Insurance and Documents write groups; the sweep was clean. The transcript is
+ * in `docs/RCM_POSTING.md` §9(a). Re-run only to re-establish that answer.
+ *
+ * It is checked into the repo rather than pasted from a scratchpad so the thing
+ * that was run is the thing that was reviewed — which is why the two defects
+ * that run exposed (no secret loading; execution on import) were fixed rather
+ * than worked around a second time.
  *
  * Usage, from inside the staging container (so the customer key is resolved from
  * Key Vault by the app's own loader and never printed):
  *
  *     PROBE_OFFICE=valley node scripts/rcm-d7-write-probe.js
+ *
+ * That command works as written — main() loads the secrets itself. The
+ * 2026-08-24 run needed a `node -e` wrapper around `loadSecrets()`; it no longer
+ * does, and an operator improvising at a live chart database is the thing this
+ * file exists to avoid.
  *
  * Then IMMEDIATELY run scripts/rcm-d7-read-sweep.js, which proves nothing landed.
  *
@@ -51,18 +60,29 @@
  */
 
 const odOffices = require('../config/odOffices');
+// The ghost id lives in its own one-constant module so the sweep can agree with
+// this file about which ids to check WITHOUT importing this file. See defect 2
+// in `test/rcmD7ProbeScripts.test.js`.
+const { GHOST } = require('./rcm-d7-ghost');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Far outside any real Open Dental id range in either practice.
- *
- * Exported so the read sweep proves the SAME ids were untouched — two scripts
- * disagreeing about which ids to check would make the sweep worthless.
- */
-const GHOST = 999888777;
-
 async function main() {
+  // ── 0. The customer key ───────────────────────────────────────────────────
+  //
+  // `config/odOffices` reads each office's customer key from `process.env`, and
+  // the ONLY thing that puts it there is this loader — which until now was
+  // called by `server.js` and by nothing else. A standalone script inherited an
+  // environment without it and died on `OFFICE_OD_KEY_MISSING` before issuing
+  // anything, which is exactly how the 2026-08-24 run ended up being driven
+  // through an improvised `node -e` wrapper at the console. A script whose
+  // documented invocation does not work gets improvised at a live database.
+  //
+  // Required lazily and awaited FIRST, before any odOffices call. The top-level
+  // `require` of odOffices above is harmless because `customerKeyFor` re-reads
+  // `process.env` on every call rather than snapshotting it at load.
+  await require('../config/secrets').loadSecrets();
+
   const office = process.env.PROBE_OFFICE || 'valley';
   const handle = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
   console.log(`\n=== ${office} (${handle.officeName}) — WRITE-VERB ENTITLEMENT PROBE ===`);
@@ -130,12 +150,22 @@ async function main() {
   console.log('NOW RUN: node scripts/rcm-d7-read-sweep.js');
 }
 
-main().then(
-  () => process.exit(0),
-  (e) => {
-    console.error('PROBE FAILED:', e && e.message);
-    process.exit(1);
-  }
-);
+// ── Run ONLY when invoked directly ───────────────────────────────────────────
+//
+// Without this guard, `require`-ing this file RUNS IT — which is precisely what
+// happened on 2026-08-24: the read sweep imported this module for its ghost id
+// and thereby re-issued every write verb, interleaved with its own reads. The
+// verb scan in `rcmNoOdWrites.test.js` could not catch that, because the verbs
+// were legitimately present in the file that legitimately owns them; the defect
+// was that importing the file executed them.
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    (e) => {
+      console.error('PROBE FAILED:', e && e.message);
+      process.exit(1);
+    }
+  );
+}
 
-module.exports = { GHOST };
+module.exports = { GHOST, main };

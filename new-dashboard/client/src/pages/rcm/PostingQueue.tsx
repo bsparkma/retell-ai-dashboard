@@ -36,6 +36,12 @@
  * button disabled and naming the permission a colleague holds. `canDrain` is the
  * SERVER'S answer, never a role name this component inspects.
  *
+ * THE SHADOW GATE is the server's answer as well. `drainEnabled` is false until
+ * an administrator switches posting on for this practice, and the office header
+ * carries a "Shadow" badge while it is. It is a SEPARATE field from
+ * `postingEnabled` on purpose — one means "never validated" and is fixed by a
+ * code change, the other means "not switched on yet" and is fixed by a toggle.
+ *
  * D-7 is the server's answer too: `postingEnabled` is false for a practice that
  * has not been validated yet, and the copy says so instead of the client
  * hardcoding a practice name that would go stale the day it is switched on.
@@ -68,6 +74,8 @@ import {
   drainPostingQueue,
   getPostingPlan,
   listPostingQueue,
+  retryDocumentAttach,
+  withdrawPostingPlan,
   RcmApiError,
   RCM_OFFICE_LABELS,
   type DrainResult,
@@ -76,14 +84,20 @@ import {
   type PostingQueueRow,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { day, money } from "@/features/rcm/format";
+import { day, money, officeDay, ordinal, OFFICE_TIME_NOTE } from "@/features/rcm/format";
 import {
   blockedCopy,
+  withdrawnCopy,
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
   queueStateTone,
+  SHADOW_MODE_COPY,
   stepCopy,
 } from "@/features/rcm/posting";
+import { planFlow } from "@/features/rcm/flow";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import DisabledReason from "@/components/rcm/DisabledReason";
+import CopyChip from "@/components/rcm/CopyChip";
 
 export default function PostingQueue() {
   const scope = useRcmOfficeScope();
@@ -121,16 +135,39 @@ export default function PostingQueue() {
   return (
     <div className="p-6" data-testid="rcm-posting">
       <div>
+        {/*
+          ── "POSTING HISTORY", NOT "POSTING" (Stage C, §11) ───────────────────
+          The design dropped this screen entirely, on the grounds that everything
+          about a check now happens on the check's own page. The PM ruling is to
+          KEEP it, demote it below the working screens in the nav, and rename it
+          honestly.
+
+          It earns its place three times over and none of them is a biller's
+          ordinary evening:
+            · an office-wide post lives here, and nowhere else;
+            · a stuck run is retried from here across every check at once;
+            · it is where anybody debugging at 9pm looks.
+
+          Deleting a debugging surface to tidy a nav is not a trade this module
+          makes. What it is NOT is the place a biller posts one check — that is
+          the check's own page, through the same route narrowed by `queueId`.
+        */}
         <h1
           className="text-2xl font-bold tracking-tight text-foreground"
           style={{ fontFamily: "Sora, sans-serif" }}
         >
-          Posting
+          Posting history
         </h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Approved remittances waiting to become insurance payments in Open Dental. Draining writes
-          each line's adjudication, marks the claim received, and creates the check — reading every
-          write back to prove it took.
+          Every check this practice has approved, and what happened to each one — line by line,
+          with what it wrote and what Open Dental said back. Posting writes each line&rsquo;s
+          adjudication, marks the claim received and creates the check, then asks Open Dental for
+          each write again to confirm it took.
+        </p>
+        <p className="mt-1 max-w-3xl text-sm text-muted-foreground" data-testid="posting-history-note">
+          You do not have to come here to post one check — that is on the check&rsquo;s own page,
+          and it is the same act. This screen is for posting a practice&rsquo;s whole waiting set at
+          once, and for looking at what already happened.
         </p>
       </div>
 
@@ -210,10 +247,32 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold text-foreground">{RCM_OFFICE_LABELS[office]}</h2>
+          {/*
+            SHADOW, beside the office name. Not a warning colour: nothing is
+            wrong, and painting it amber would put it in the same visual family
+            as `blocked`, which is a plan a human has to go fix.
+          */}
+          {page && !page.drainEnabled && page.postingEnabled && (
+            <span
+              className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              data-testid={`posting-shadow-badge-${office}`}
+            >
+              {SHADOW_MODE_COPY.badge}
+            </span>
+          )}
           {page && (
+            /*
+              "QUEUE:", ALWAYS — §15.2, finding 3.
+              The header counts every plan this office holds; the strip after a
+              run counts THAT RUN. They said "2 posted" and "1 posted" about the
+              same screen and both were true, because neither said which
+              population it was counting. Both now carry their scope in the
+              string, so the two numbers cannot be read as one contradicting the
+              other.
+            */
             <span className="text-sm text-muted-foreground" data-testid={`posting-counts-${office}`}>
-              {waiting} waiting · {page.byStatus.posted} posted · {page.byStatus.blocked} blocked ·{" "}
-              {page.total} total
+              All time: {waiting} waiting · {page.byStatus.posted} posted ·{" "}
+              {page.byStatus.blocked} stuck · {page.total} total
             </span>
           )}
         </div>
@@ -245,9 +304,27 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
             </div>
             <p className="mt-0.5 text-amber-800 dark:text-amber-300">
               This practice's own payment-type numbers have to be read from its own Open Dental, its
-              key's write access proven, and a test-patient run completed first. Draining here marks
-              each plan blocked and makes no Open Dental call at all.
+              key's write access proven, and a test-patient run completed first. Pressing Post here
+              marks each check stuck and makes no Open Dental call at all.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* The shadow gate, in the server's words. Shown only when the practice
+          IS validated — otherwise the D-7 banner above is the honest headline
+          and two banners would argue about which problem to fix first. */}
+      {page && page.postingEnabled && !page.drainEnabled && (
+        <div
+          className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm"
+          data-testid={`posting-shadow-${office}`}
+        >
+          <ShieldAlert size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
+          <div>
+            <div className="font-medium text-foreground">
+              {SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])}
+            </div>
+            <p className="mt-0.5 text-muted-foreground">{SHADOW_MODE_COPY.fix}</p>
           </div>
         </div>
       )}
@@ -282,14 +359,26 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
           >
             <div className="text-sm font-medium text-foreground">Nothing waiting to post</div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Approve a remittance and its posting plan appears here.
+              Approve a check and it appears here, ready to post.
             </p>
           </div>
         )}
         {state.kind === "loaded" && state.page.rows.length > 0 && (
           <div className="space-y-3">
             {state.page.rows.map((row) => (
-              <PlanCard key={row.queueId} office={office} row={row} />
+              <PlanCard
+                key={row.queueId}
+                office={office}
+                row={row}
+                canWrite={state.page.canDrain}
+                onWithdrawn={load}
+                // The explainer goes on the FIRST posted plan on the page and
+                // nowhere else. See PlanCard.
+                explainReadback={
+                  row.queueId ===
+                  state.page.rows.find((r) => r.status === "posted" && r.odClaimPaymentNum)?.queueId
+                }
+              />
             ))}
           </div>
         )}
@@ -305,6 +394,23 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
  * holds rather than leaving the screen to be inferred from a greyed-out control.
  * `canDrain` comes from the server, so a role the client has never heard of
  * still gets the right answer.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE REASON IS RENDERED, NOT HOVERED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It was a `title` attribute, which is to say it was invisible. §10.4 of this
+ * module's walk lost real time to a Drain button greyed at `0 waiting` with
+ * nothing on screen saying why: a disabled control with no reason is
+ * indistinguishable from a broken one, so the replay step read as untestable
+ * rather than as already-guaranteed. §15.2, finding 4. And a tooltip would not
+ * have fixed it either — the practice reads this screen on a tablet.
+ *
+ * Permission comes FIRST in the order below, ahead of the empty queue: telling
+ * a reviewer "nothing waiting to drain" would hide the thing that is still true
+ * when a plan arrives. The SHADOW GATE comes second, ahead of the empty queue
+ * for the same reason and behind permission for another: a reviewer in a shadow
+ * practice has two reasons she cannot press this, and the one she can do
+ * something about (ask an approver) is not the one an admin has to fix.
  */
 function DrainButton({
   office,
@@ -318,39 +424,69 @@ function DrainButton({
   onDrain: () => void;
 }) {
   const waiting = page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted;
-  const disabled = draining || !page.canDrain || waiting === 0;
+  const disabled = draining || !page.canDrain || !page.drainEnabled || waiting === 0;
 
-  const title = !page.canDrain
-    ? `Posting to Open Dental needs ${page.drainRequires} — an approver can press this`
-    : waiting === 0
-      ? "Nothing is waiting to post"
-      : `Post ${waiting} plan${waiting === 1 ? "" : "s"} to Open Dental`;
+  const reason = !page.canDrain
+    ? `Posting to Open Dental needs ${page.drainRequires}. An approver can press this.`
+    : !page.drainEnabled
+      ? SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
+      : draining
+        ? "A posting is under way. It stops cleanly between checks."
+        : waiting === 0
+          ? "Nothing waiting to post."
+          : null;
 
   return (
-    <button
-      onClick={onDrain}
-      disabled={disabled}
-      title={title}
-      data-testid={`posting-drain-${office}`}
-      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
-        disabled
-          ? "cursor-not-allowed bg-muted text-muted-foreground"
-          : "bg-foreground text-background hover:opacity-90"
-      }`}
-    >
-      {draining ? (
-        <Loader2 size={14} className="animate-spin" />
-      ) : page.canDrain ? (
-        <PlayCircle size={14} />
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={onDrain}
+        disabled={disabled}
+        data-testid={`posting-drain-${office}`}
+        className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${
+          disabled
+            ? "cursor-not-allowed bg-muted text-muted-foreground"
+            : "bg-foreground text-background hover:opacity-90"
+        }`}
+      >
+        {draining ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : page.canDrain && page.drainEnabled ? (
+          <PlayCircle size={14} />
+        ) : (
+          <Lock size={14} />
+        )}
+        {draining
+          ? "Posting…"
+          : waiting > 0
+            ? `Post ${waiting} to Open Dental`
+            : "Post to Open Dental"}
+      </button>
+      {reason ? (
+        <DisabledReason testId={`posting-drain-reason-${office}`}>{reason}</DisabledReason>
       ) : (
-        <Lock size={14} />
+        <span className="text-xs text-muted-foreground">
+          Writes {waiting} check{waiting === 1 ? "" : "s"} into patient charts.
+        </span>
       )}
-      {draining ? "Posting…" : "Drain"}
-    </button>
+    </div>
   );
 }
 
-/** What the run just did, including when it ran out of time. */
+/**
+ * What THE RUN JUST NOW did, including when it ran out of time.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THIS RUN, NOT THE QUEUE — §15.2, finding 3
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This strip counts `result.outcomes`: the plans THIS press of Drain touched.
+ * The header above counts every plan the office holds. On the walk they read
+ * "1 posted" and "2 posted" on one screen, and there was no way to tell that
+ * both were true — a queue that already held a posted plan, plus one more
+ * posted just now.
+ *
+ * Neither number moves. What changed is that each one now says which population
+ * it counted, in the string itself, so they cannot be read as a contradiction.
+ */
 function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainResult }) {
   const posted = result.outcomes.filter((o) => o.status === "posted").length;
   const blocked = result.outcomes.filter((o) => o.status === "blocked").length;
@@ -365,15 +501,19 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
     >
       <div className="font-medium text-foreground">
         {result.ran === 0
-          ? "Nothing was waiting to post."
-          : `${posted} posted · ${blocked} blocked · ${trouble} needing attention`}
+          ? "Just now: nothing was waiting to post."
+          : `Just now: ${posted} posted · ${blocked} stuck · ${trouble} needing attention`}
       </div>
+      <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`posting-run-scope-${office}`}>
+        Counts the {result.ran} check{result.ran === 1 ? "" : "s"} this press touched. The totals
+        beside the practice name count every check it holds, all time.
+      </p>
 
       {result.outOfTime && (
         <p className="mt-1 flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
           <Clock size={14} />
-          The run reached its time limit and stopped cleanly between plans.{" "}
-          {result.remaining} still waiting — press Drain again.
+          It reached its time limit and stopped cleanly between checks.{" "}
+          {result.remaining} still waiting — press Post to Open Dental again.
         </p>
       )}
 
@@ -390,13 +530,198 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
   );
 }
 
-/** One plan, with its lines behind a disclosure. */
-function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }) {
+/**
+ * Retire a plan that must never post.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS BEHIND A DISCLOSURE AND NOT A BUTTON ON THE ROW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It is terminal. There is no un-withdraw, and a plan that leaves
+ * `DRAINABLE_STATUSES` never comes back to the queue. A one-click affordance
+ * beside Refresh — on a screen a biller scans fast, on rows that all look alike
+ * — is how the wrong plan gets retired.
+ *
+ * So: closed by default, opens into a note field, and the primary button stays
+ * disabled until there is something to record. The note is not politeness. For a
+ * `manual` withdrawal it is the ONLY account of why money that was approved is
+ * not going to post; the server refuses without it, and this form would be
+ * lying if it implied otherwise.
+ */
+function WithdrawPanel({
+  office,
+  row,
+  canWrite,
+  onWithdrawn,
+}: {
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+  canWrite: boolean;
+  onWithdrawn: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /*
+   * The states a plan may be retired FROM, mirroring the server's
+   * WITHDRAWABLE_STATUSES. `posted` and `partially_posted` are absent because
+   * money that moved happened — retiring those would be a way to make the queue
+   * disagree with Open Dental. `posting` is absent because a run owns the row.
+   *
+   * The client hides the control; the server refuses it anyway. Neither is
+   * sufficient alone: hiding it is how the screen stays honest, and refusing it
+   * is what makes the rule true.
+   */
+  const eligible = ["approved", "failed", "blocked"].includes(row.status);
+  if (!eligible) return null;
+
+  const submit = () => {
+    if (busy || note.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    withdrawPostingPlan(office, row.queueId, note.trim())
+      .then(() => onWithdrawn())
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "It was not retired. Nothing changed."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        disabled={!canWrite}
+        title={canWrite ? undefined : "Retiring a check needs posting permission"}
+        className="mt-2 text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
+        data-testid={`posting-withdraw-open-${row.queueId}`}
+      >
+        This check will never post — retire it
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="mt-2 rounded-md border border-border bg-muted/40 p-3"
+      data-testid={`posting-withdraw-panel-${row.queueId}`}
+    >
+      <p className="text-sm font-medium text-foreground">Retire this check</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        It stays on the check so there is still a record, but it can never be posted from here
+        again. There is no undo. Nothing is written to Open Dental.
+      </p>
+      {/*
+        THE CONSEQUENCE A BILLER CANNOT DISCOVER FROM THE SCREEN.
+        `rcm_posting_queue` is unique on (office_id, remittance_key) — one plan
+        per remittance, ever — so retiring this one does not free the remittance
+        to be approved again. Somebody who retires a mis-approval intending to
+        redo it correctly would find that out only when the second approve was
+        refused, after the first was already gone. It has to be said BEFORE the
+        confirm, not in a tooltip. (6d.2 makes a follow-on plan possible; until
+        it lands, this is the truth.)
+      */}
+      <p
+        className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+        data-testid={`posting-withdraw-permanence-${row.queueId}`}
+      >
+        This remittance can never be posted through CareIN after this. If the money still needs to
+        reach the chart, post it by hand in Open Dental.
+      </p>
+      <label
+        htmlFor={`withdraw-note-${row.queueId}`}
+        className="mt-2 block text-xs font-medium text-foreground"
+      >
+        Why? This is the only place it will be recorded.
+      </label>
+      <textarea
+        id={`withdraw-note-${row.queueId}`}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={2}
+        className="mt-1 w-full rounded-md border border-border bg-background p-2 text-sm text-foreground"
+        data-testid={`posting-withdraw-note-${row.queueId}`}
+      />
+      {error && (
+        <p
+          className="mt-1.5 text-xs text-rose-700 dark:text-rose-300"
+          data-testid={`posting-withdraw-error-${row.queueId}`}
+        >
+          {error}
+        </p>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={submit}
+          disabled={busy || note.trim().length < 3}
+          className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid={`posting-withdraw-submit-${row.queueId}`}
+        >
+          {busy ? "Retiring…" : "Retire this check"}
+        </button>
+        <button
+          onClick={() => {
+            setOpen(false);
+            setNote("");
+            setError(null);
+          }}
+          className="text-xs text-muted-foreground underline underline-offset-2"
+          data-testid={`posting-withdraw-cancel-${row.queueId}`}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One plan, with its lines behind a disclosure.
+ *
+ * `firstPosted` decides which card carries the read-back explainer: the phrase
+ * "verified by read-back" is precise and it is not self-explanatory, and
+ * printing the paragraph on every posted row would turn a queue into an essay.
+ * Once per page, on the first one that says it.
+ */
+function PlanCard({
+  office,
+  row,
+  explainReadback,
+  canWrite,
+  onWithdrawn,
+}: {
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+  explainReadback: boolean;
+  canWrite: boolean;
+  onWithdrawn: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<PostingQueueDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const copy = QUEUE_STATE_COPY[row.statusLabel];
   const blocked = blockedCopy(row.blockedReason);
+  const withdrawn = withdrawnCopy(row.withdrawnReason);
+
+  /*
+   * Re-file an EOB that did not file. It cannot move a cent — the server
+   * refuses any plan that is not already `posted` — so the plan's own state is
+   * left alone here and only the document panel is refreshed from the answer.
+   */
+  const retryDocument = () => {
+    if (retrying) return;
+    setRetrying(true);
+    retryDocumentAttach(office, row.queueId)
+      .then((res) =>
+        setDetail((prev) => (prev ? { ...prev, documentAttach: res.documentAttach } : prev)),
+      )
+      .catch(() => {
+        /* the panel keeps showing the last known truth rather than inventing one */
+      })
+      .finally(() => setRetrying(false));
+  };
 
   useEffect(() => {
     if (!open || detail || loading) return;
@@ -412,51 +737,123 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
       className="rounded-xl border border-border bg-card"
       data-testid={`posting-plan-${row.queueId}`}
     >
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-3 p-4 text-left"
-        aria-expanded={open}
-      >
-        {open ? (
-          <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
-        )}
+      {/*
+        ── THE DISCLOSURE IS THE HEADER ROW ONLY ───────────────────────────────
+        Everything used to live INSIDE this button. It cannot any more: the check
+        number is now a copyable chip, and a `<button>` inside a `<button>` is
+        not something the HTML parser tolerates — it closes the outer one at the
+        inner start tag, so the proof line, the explainer and the metadata all
+        got ejected out of the card and rendered flush against the page edge.
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
-              data-testid={`posting-state-${row.queueId}`}
-            >
-              {copy.label}
-            </span>
-            <span className="font-medium text-foreground">
-              {row.payer ?? "Unknown payer"}
-            </span>
-            {row.checkNumber && (
-              <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
-            )}
-            <span className="text-sm font-medium text-foreground">
-              {money(row.intendedTotalCents)}
-            </span>
-          </div>
+        The header stays a button (it is what toggles), and the plan's facts sit
+        beside it as siblings. That is also the more honest markup: a read-back
+        proof and a blocking reason are content, not part of a control's label.
+      */}
+      <div className="p-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-start gap-3 text-left"
+          aria-expanded={open}
+          data-testid={`posting-toggle-${row.queueId}`}
+        >
+          {open ? (
+            <ChevronDown size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight size={16} className="mt-1 shrink-0 text-muted-foreground" />
+          )}
 
-          <p className="mt-1 text-sm text-muted-foreground">{copy.hint}</p>
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded px-1.5 py-0.5 text-xs font-semibold ${queueStateTone(row.statusLabel)}`}
+                data-testid={`posting-state-${row.queueId}`}
+              >
+                {copy.label}
+              </span>
+              <span className="font-medium text-foreground">{row.payer ?? "Unknown payer"}</span>
+              {row.checkNumber && (
+                <span className="text-sm text-muted-foreground">check {row.checkNumber}</span>
+              )}
+              <span className="text-sm font-medium text-foreground">
+                {money(row.intendedTotalCents)}
+              </span>
+            </span>
 
+            <span className="mt-1 block text-sm text-muted-foreground">{copy.hint}</span>
+          </span>
+        </button>
+
+        {/* Indented to sit under the header's text rather than under its
+            chevron — the facts belong to the plan named above them. */}
+        <div className="pl-7">
           {/* THE PROOF, on the row that claims it. A `posted` plan cannot exist
               without both halves — the database refuses — so this is a
-              statement of fact rather than an optimistic label. */}
+              statement of fact rather than an optimistic label.
+
+              The check number is a COPYABLE CHIP: the next thing a biller does
+              with it is find that check in Open Dental, and retyping a
+              seven-digit number off a screen is how the wrong check gets
+              opened.
+
+              `officeDay`, not `day`: `reconciledAt` is an instant, and slicing
+              an instant to ten characters prints its UTC calendar day — which
+              is what put an Aug 25 evening approval on Aug 26 (§15.2). */}
           {row.status === "posted" && row.odClaimPaymentNum && (
-            <p
-              className="mt-1 flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400"
+            <div
+              className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-emerald-700 dark:text-emerald-400"
               data-testid={`posting-proof-${row.queueId}`}
             >
-              <CheckCircle2 size={14} />
-              Open Dental check <strong>#{row.odClaimPaymentNum}</strong> · verified by read-back at{" "}
-              {day(row.reconciledAt)}
+              <CheckCircle2 size={14} className="shrink-0" />
+              <span>Open Dental check</span>
+              <CopyChip
+                value={String(row.odClaimPaymentNum)}
+                label={`#${row.odClaimPaymentNum}`}
+                testId={`posting-checknum-${row.queueId}`}
+              />
+              <span>confirmed in Open Dental on {officeDay(row.reconciledAt, office)}</span>
+            </div>
+          )}
+
+          {/* WHAT "VERIFIED BY READ-BACK" MEANS. Once per page, under the first
+              plan that claims it — the phrase is exact and it is not obvious,
+              and a tooltip is no use on the tablet at the front desk. */}
+          {explainReadback && (
+            <p
+              className="mt-1 max-w-3xl text-xs text-muted-foreground"
+              data-testid={`posting-readback-explainer-${row.queueId}`}
+            >
+              Confirmed in Open Dental means CareIN asked Open Dental for the check after writing
+              it and got back exactly these lines. Open Dental answers 200 to writes it quietly
+              ignores, so asking for it back is the proof and the status code is not.
             </p>
           )}
+
+          {withdrawn && (
+            <div
+              className="mt-2 rounded-md border border-border bg-muted/50 p-2 text-sm"
+              data-testid={`posting-withdrawn-${row.queueId}`}
+            >
+              <div className="font-medium text-foreground">{withdrawn.label}</div>
+              <p className="mt-0.5 text-muted-foreground">{withdrawn.fix}</p>
+              {/* The biller's own sentence, quoted rather than paraphrased. For
+                  a `manual` withdrawal it is the only account of the decision. */}
+              {row.withdrawnNote && (
+                <p
+                  className="mt-1 border-l-2 border-border pl-2 italic text-muted-foreground"
+                  data-testid={`posting-withdrawn-note-${row.queueId}`}
+                >
+                  {row.withdrawnNote}
+                </p>
+              )}
+            </div>
+          )}
+
+          <WithdrawPanel
+            office={office}
+            row={row}
+            canWrite={canWrite}
+            onWithdrawn={onWithdrawn}
+          />
 
           {blocked && (
             <div
@@ -478,18 +875,37 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
             </div>
           )}
 
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-            <span>Approved {day(row.approvedAt)}</span>
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+            {/* `officeDay`, not `day`. An approval at 20:10 Central is 01:10Z
+                the next morning, and `day` printed that UTC date — "Approved
+                Aug 26" over work done on Aug 25. §15.2, finding 2. */}
+            <span data-testid={`posting-approved-${row.queueId}`}>
+              Approved {officeDay(row.approvedAt, office)}
+            </span>
             {row.attemptCount > 0 && (
               <span>
-                {row.attemptCount} posting attempt{row.attemptCount === 1 ? "" : "s"}
+                {/*
+                  §1. "3 posting attempts" is a count of failures dressed as a
+                  statistic; "Posted on the 3rd try" is the same fact told the
+                  way a person would say it out loud, and it makes the FIRST try
+                  read as ordinary rather than as an attempt that needed
+                  recording. The unfinished case keeps a plain count, because
+                  "tried 3 times" is exactly what is true there and calling it a
+                  "try" in the past tense would imply an outcome.
+                */}
+                {row.statusLabel === "posted"
+                  ? `Posted on the ${ordinal(row.attemptCount)} try`
+                  : `Tried ${row.attemptCount} time${row.attemptCount === 1 ? "" : "s"}`}
               </span>
             )}
             {row.status === "posting" && row.step && <span>{stepCopy(row.step)}</span>}
-            {row.carrierEobDate && <span>Carrier EOB date {row.carrierEobDate}</span>}
+            {/* A DATE-ONLY value from the carrier's file — `day`, correctly:
+                it carries no time, so no zone may move it. */}
+            {row.carrierEobDate && <span>Carrier EOB date {day(row.carrierEobDate)}</span>}
+            <span>{OFFICE_TIME_NOTE}</span>
           </div>
         </div>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-border px-4 py-3">
@@ -500,18 +916,66 @@ function PlanCard({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }
             </div>
           )}
           {!loading && !detail && (
-            <div className="text-sm text-muted-foreground">Could not load this plan.</div>
+            <div className="text-sm text-muted-foreground">Could not load this check.</div>
           )}
-          {detail && <PlanLines detail={detail} />}
+          {detail && (
+            <PlanLines
+              detail={detail}
+              office={office}
+              row={row}
+              retrying={retrying}
+              onRetryDocument={retryDocument}
+            />
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function PlanLines({ detail }: { detail: PostingQueueDetail }) {
+function PlanLines({
+  detail,
+  office,
+  row,
+  retrying,
+  onRetryDocument,
+}: {
+  detail: PostingQueueDetail;
+  office: RcmOfficeId;
+  row: PostingQueueRow;
+  /** 6d: the EOB retry, owned by the card so the panel stays presentational. */
+  retrying: boolean;
+  onRetryDocument: () => void;
+}) {
+  const patients = new Set(detail.claims.map((c) => c.patientName ?? c.claimId)).size;
+
   return (
     <div data-testid="posting-plan-lines">
+      {/*
+        THE SAME SEVEN STEPS AS THE OTHER TWO SCREENS.
+        Everything before `post` is done by construction — a plan cannot exist
+        unless a person confirmed every match and approved the check — so this
+        stepper is mostly a record of what already happened, and one live step.
+        Its value is that a biller who opened this row from the posting queue
+        can still see where the remittance is and click back to it.
+      */}
+      <RcmStepper flow={planFlow(row)} here="post" testId={`posting-stepper-${row.queueId}`} />
+
+      {/*
+        HOW MANY PATIENTS. A check for $4,317 across nine patients and one
+        across nine lines of the same patient are different things to reconcile,
+        and the row above shows neither. The count comes from the plan's own
+        claims — the queue LIST row does not carry it (see the backend asks).
+      */}
+      <p
+        className="mb-3 mt-3 text-xs text-muted-foreground"
+        data-testid={`posting-plan-scope-${row.queueId}`}
+      >
+        {detail.lines.length} line{detail.lines.length === 1 ? "" : "s"} · {detail.claims.length}{" "}
+        claim{detail.claims.length === 1 ? "" : "s"} · {patients} patient
+        {patients === 1 ? "" : "s"}
+      </p>
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[46rem] text-sm">
           <thead>
@@ -554,7 +1018,7 @@ function PlanLines({ detail }: { detail: PostingQueueDetail }) {
                     line.readback.agreed ? (
                       <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
                         <CheckCircle2 size={14} />
-                        read back {day(line.readbackAt)}
+                        asked for it back {officeDay(line.readbackAt, office)}
                       </span>
                     ) : (
                       <span className="text-rose-700 dark:text-rose-400">
@@ -573,16 +1037,124 @@ function PlanLines({ detail }: { detail: PostingQueueDetail }) {
         </table>
       </div>
 
-      {/* The 6d seam, said out loud. A screen that showed nothing here would
-          leave a biller assuming the EOB PDF had been filed into the chart. */}
-      {!detail.documentAttach.implemented && (
-        <p
-          className="mt-3 text-xs text-muted-foreground"
-          data-testid="posting-document-seam"
-        >
-          {detail.documentAttach.note}
-        </p>
-      )}
+      {/*
+        THE EOB FILING, ON ITS OWN AXIS.
+
+        Never folded into the plan's status chip: a plan whose money is correct
+        and proven stays `posted` whether or not a PDF reached the chart. Three
+        distinct things are said here, and a biller has to be able to tell them
+        apart at a glance —
+
+          null      nothing to file (an 835 with no document). NOT a failure,
+                    and deliberately no retry button.
+          attached  filed, with the DocNum Open Dental gave back.
+          partial   some patients filed and some did not. Named rather than
+                    rounded up to "attached", which would claim a document
+                    exists in a chart where it does not.
+      */}
+      <div className="mt-4 border-t border-border pt-3" data-testid="posting-document-attach">
+        <p className="text-xs font-medium">EOB in the patient chart</p>
+        {detail.documentAttach.status === "none" ? (
+          /*
+           * EXAMINED, AND THERE IS NOTHING TO FILE — an 835 that arrived with no
+           * document. Deliberately no retry: there is nothing behind the button.
+           */
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="posting-document-none">
+            Nothing to file — this remittance arrived without a document.
+          </p>
+        ) : detail.documentAttach.status === null ? (
+          /*
+           * NOT ATTEMPTED. On a posted plan this is OUTSTANDING WORK, not
+           * "nothing to do" — most likely the process died between posting and
+           * the attach. It must read differently from `none` and it must offer
+           * the retry, or the EOB is silently never filed.
+           */
+          <div data-testid="posting-document-unattempted">
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              {detail.plan.statusLabel === "posted"
+                ? "Filing not attempted yet — the payment posted but the EOB was never filed."
+                : "The EOB is filed once this check posts."}
+            </p>
+            {detail.plan.statusLabel === "posted" &&
+              (detail.documentAttach.canRetry ? (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  data-testid="posting-document-retry"
+                  disabled={retrying}
+                  onClick={onRetryDocument}
+                >
+                  {retrying ? "Filing…" : "File the EOB"}
+                </button>
+              ) : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Filing a document into a chart needs posting permission (
+                  {detail.documentAttach.retryRequires}).
+                </p>
+              ))}
+          </div>
+        ) : (
+          <>
+            <p
+              className="mt-1 text-xs text-muted-foreground"
+              data-testid="posting-document-status"
+            >
+              {detail.documentAttach.status === "attached"
+                ? "Filed into every patient chart on this check."
+                : detail.documentAttach.status === "partial"
+                  ? "Filed into some of the charts on this check, but not all of them."
+                  : "Not filed. The payment itself posted correctly and is unaffected."}
+            </p>
+            {detail.documentAttach.documents.length > 0 && (
+              <ul className="mt-2 space-y-1" data-testid="posting-document-list">
+                {detail.documentAttach.documents.map((doc) => (
+                  <li key={doc.odPatientId} className="text-xs text-muted-foreground">
+                    <span className="font-mono">PatNum {doc.odPatientId}</span>{" "}
+                    {doc.status === "attached" ? (
+                      <>
+                        — filed as{" "}
+                        <span className="font-mono">DocNum {doc.odDocNum}</span>
+                      </>
+                    ) : (
+                      <>— {doc.error ?? "not filed"}</>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {detail.documentAttach.error && (
+              <p className="mt-1 text-xs text-rose-700 dark:text-rose-400">
+                {detail.documentAttach.error}
+              </p>
+            )}
+            {/*
+              The retry is offered ONLY where there is something to retry. A
+              button on a clean attach would invite a second upload into a chart
+              that already has one.
+            */}
+            {detail.documentAttach.status !== "attached" &&
+              (detail.documentAttach.canRetry ? (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-50"
+                  data-testid="posting-document-retry"
+                  disabled={retrying}
+                  onClick={onRetryDocument}
+                >
+                  {retrying ? "Filing…" : "File the EOB again"}
+                </button>
+              ) : (
+                <p
+                  className="mt-2 text-xs text-muted-foreground"
+                  data-testid="posting-document-retry-needs-permission"
+                >
+                  Filing a document into a chart needs posting permission (
+                  {detail.documentAttach.retryRequires}).
+                </p>
+              ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }

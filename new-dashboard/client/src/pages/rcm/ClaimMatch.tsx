@@ -1,90 +1,139 @@
 /**
- * /rcm/claims/:id — the match panel (Slice 6a).
+ * /rcm/claims/:id — the workbench: one claim, the EOB beside the chart.
  *
- * The carrier's version of a claim on the left; what Open Dental holds, and how
- * strongly it corresponds, on the right.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THIS FILE IS THE SHELL. `ClaimWorkbench` IS THE EVIDENCE.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Everything here is WHERE a person is and what the next click is: the
+ * breadcrumb, the patient header, the match-status chip, the five-step rail, the
+ * notice line, and every verb this screen can perform. None of it is about how
+ * the evidence is laid out.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * NOTHING ON THIS SCREEN DECIDES ANYTHING
- * ─────────────────────────────────────────────────────────────────────────────
- * Running a match reads Open Dental and ranks candidates. Every candidate shows
- * the EVIDENCE that produced its score — matched how, codes overlapping how
- * far, amounts within what tolerance — so a biller can disagree with the
- * ranking. When the top two are too close to separate, the panel SAYS SO and
- * ranks them anyway rather than picking. Confirming is a click a person makes,
- * and it is the only thing that writes an Open Dental ClaimNum onto our row.
+ * `components/rcm/ClaimWorkbench.tsx` draws the evidence — the carrier's version
+ * on the left, the per-line write-off decision under it, Open Dental's version
+ * and the identity check on the right, and the patient-responsibility verdict
+ * across the top. It fetches nothing and owns no state beyond one open reason
+ * list; every input is a prop. That split is what let Stage B replace the whole
+ * body without moving a route, a hook or a breadcrumb.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * PRE-FLIGHT FACTS ARE SHOWN BEFORE THEY BITE
- * ─────────────────────────────────────────────────────────────────────────────
- * Open Dental refuses a claimproc update when the line is an income transfer,
- * carries a blocked status, or already has a check attached — and a deleted
- * procedure still comes back in list reads with `ProcStatus "D"`. Slice 6c will
- * refuse on all of those. They are surfaced HERE, at match time, so the refusal
- * is something a biller reads rather than something they hit.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS SCREEN DECIDES, AND WHAT IT STILL DOES NOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Matching reads Open Dental and ranks candidates; confirming is a click a
+ * person makes and is the only thing that writes an Open Dental ClaimNum onto
+ * our row. NEW in Stage B: a biller decides, per line, whether the patient is
+ * billed what the EOB says they owe or the office absorbs it — recorded against
+ * the line with a reason and a name, and snapshotted onto the check's posting
+ * when somebody approves.
  *
- * Nothing here writes to Open Dental. The only OD traffic is the GET behind
- * "Run match".
+ * Nothing on this screen writes to a chart. The only Open Dental traffic is the
+ * GET behind "Match it up".
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link, useRoute } from "wouter";
-import {
-  AlertTriangle,
-  ArrowLeft,
-  Ban,
-  CheckCircle2,
-  CircleSlash,
-  Info,
-  Loader2,
-  ScanLine,
-  Search,
-  ShieldCheck,
-} from "lucide-react";
+import { Link, useRoute, useSearchParams } from "wouter";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Info, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice } from "@/contexts/OfficeContext";
 import { can } from "@/lib/permissions";
 import {
   confirmClaimMatch,
+  documentHref,
   getClaim,
+  getRemittance,
   isRcmOfficeId,
   matchClaim,
   RcmApiError,
   reviewClaim,
+  setLineDecision,
   RCM_OFFICE_LABELS,
   type ClaimDetailResponse,
-  type MatchCandidate,
-  type MatchSnapshot,
+  type LineDecision,
   type RcmOfficeId,
-  type WorkbenchClaim,
 } from "@/features/rcm/api";
-import {
-  CONFIDENCE_TONE,
-  day,
-  evidenceTone,
-  lineFlagLabel,
-  lineFlagTone,
-  MATCH_STATUS_TONE,
-  matchStatusLabel,
-  money,
-  NO_ACTION_REASONS,
-  reviewReasonLabel,
-  stamp,
-} from "@/features/rcm/format";
-import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
+import { day, MATCH_STATUS_TONE } from "@/features/rcm/format";
+import { claimFlow, claimStateLine, remittanceHref } from "@/features/rcm/flow";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
+import MatchGuidance from "@/components/rcm/MatchGuidance";
+
+/**
+ * The three tones, as one map read by one element.
+ *
+ * The same rose / amber / emerald triple the verdict line uses, deliberately —
+ * a screen where the banner and the panel it summarises disagree about what red
+ * looks like is a screen that has to be read twice.
+ */
+const NOTICE_TONE = {
+  ok: "border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300",
+  warn: "border-amber-200 bg-amber-50/60 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300",
+  bad: "border-rose-300 bg-rose-50/70 text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200",
+} as const;
 
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
   const claimId = params?.id ?? "";
   const { office: selected } = useOffice();
   const auth = useAuth();
+  /**
+   * WHICH REMITTANCE THIS CAME FROM — carried in the URL, not fetched.
+   *
+   * `GET /api/rcm/claims/:id` does not return the claim's `batch_id`
+   * (`CLAIM_LIST_COLUMNS` in matchService.js does not select it), so this screen
+   * has no server-side way to link back to the check it arrived on. §15.2's
+   * first finding is exactly that missing link.
+   *
+   * Every route into this page now passes `?from=<batchId>`. A deep link
+   * without it still works and the breadcrumb falls back to the list — an
+   * honest "all remittances" rather than a guessed one. `batchId` on the claim
+   * payload is the backend ask that would make this a fact rather than a hint.
+   */
+  const [search] = useSearchParams();
+  const fromBatchId = search.get("from");
 
   const [state, setState] = useState<
     | { kind: "loading" }
     | { kind: "loaded"; office: RcmOfficeId; data: ClaimDetailResponse }
     | { kind: "failed"; message: string }
   >({ kind: "loading" });
-  const [busy, setBusy] = useState<null | "match" | "confirm" | "review">(null);
-  const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const [busy, setBusy] = useState<null | "match" | "confirm" | "review" | "decide">(null);
+  /**
+   * WHICH CLAIM ON THIS CHECK THIS IS, so a biller can walk them without going
+   * back to the check between each one.
+   *
+   * Loaded from the remittance ONLY when the URL says which check this came
+   * from — `GET /claims/:id` does not return a `batch_id`, so without `?from=`
+   * there is no honest way to know, and the pager is simply not rendered rather
+   * than guessed at. One extra read per screen, not per claim.
+   */
+  const [siblings, setSiblings] = useState<string[] | null>(null);
+  /**
+   * THE ONE-LINE ANSWER TO THE LAST THING THAT HAPPENED.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE TONE COMES FROM THE CONTENT — Stage C-3, item 3
+   * ═══════════════════════════════════════════════════════════════════════════
+   * This banner sits above the fold and used to have exactly two tones, chosen
+   * by WHICH FUNCTION set it rather than by what it said. `decide()` always set
+   * `ok`, because recording a decision succeeded — and then printed the server's
+   * verdict sentence in it. So a claim whose verdict came back RED rendered
+   *
+   *     ✓  Patient's number can't be trusted yet — something on this claim
+   *        does not line up with Open Dental.
+   *
+   * in green, with a tick, at the top of the screen. The act succeeded and the
+   * answer was a refusal, and the banner was reporting the act.
+   *
+   * A biller does not read a banner as "your click was received". She reads it
+   * as "here is where you are", and green means fine. So the three tones now map
+   * onto the three verdict states and nothing else may choose them:
+   *
+   *   ok    GREEN   it passed. Only ever a green verdict, or an act with no
+   *                 verdict attached at all (a confirmation, a review).
+   *   warn  AMBER   decided, and deliberately diverging — an amber verdict, and
+   *                 the refusals that are answers rather than failures.
+   *   bad   RED     blocking. A red verdict, and nothing else.
+   */
+  const [notice, setNotice] = useState<{ tone: "ok" | "warn" | "bad"; text: string } | null>(null);
   const [note, setNote] = useState("");
 
   /** Same office resolution as the remittance detail — see the note there. */
@@ -125,6 +174,30 @@ export default function ClaimMatchPage() {
 
   useEffect(load, [load]);
 
+  /*
+   * The check's claims, in the order it lists them. Failure is SILENT and the
+   * pager disappears: this is a convenience for walking a check, and a red
+   * banner over a claim that loaded perfectly well because a second read failed
+   * would be a screen crying wolf about its own furniture.
+   */
+  useEffect(() => {
+    if (state.kind !== "loaded" || !fromBatchId) {
+      setSiblings(null);
+      return;
+    }
+    let cancelled = false;
+    getRemittance(state.office, fromBatchId)
+      .then((r) => {
+        if (!cancelled) setSiblings(r.claims.map((c) => c.claimId));
+      })
+      .catch(() => {
+        if (!cancelled) setSiblings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.kind, state.kind === "loaded" ? state.office : null, fromBatchId]);
+
   if (state.kind === "loading") {
     return (
       <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground" data-testid="claim-loading">
@@ -141,7 +214,7 @@ export default function ClaimMatchPage() {
           href="/rcm/remittances"
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft size={14} /> All remittances
+          <ArrowLeft size={14} /> All checks
         </Link>
         <div className="mt-4 rounded-xl border border-dashed border-border bg-card p-8 text-center">
           <div className="text-sm font-medium text-foreground">Could not open this claim</div>
@@ -169,6 +242,54 @@ export default function ClaimMatchPage() {
     auth.status !== "authenticated" ||
     auth.user.isSuperAdmin ||
     can(auth.user.permissions, "rcm.write");
+
+  /**
+   * MAY THIS PERSON DECIDE A WRITE-OFF?
+   *
+   * `rcm.queue` — the tier that runs a match and marks a claim reviewed. A
+   * write-off decision writes four columns on one of our own rows and reaches no
+   * chart, no posting and no other claim, so it is the reviewing act, not the
+   * authorising one. UI HIDING ONLY: the route carries its own
+   * `requirePermission('rcm.queue')`, whatever the buttons do.
+   *
+   * ...AND AN APPROVED CLAIM IS FROZEN (D-14). The posting carries its own
+   * snapshot of these figures, so letting the review row move afterwards would
+   * leave two records of one decision with the visible one being the one the
+   * drain does not read. The server refuses with 409 `CLAIM_ON_POSTING_PLAN`;
+   * this is what stops a biller pressing a control that cannot work.
+   */
+  const holdsQueue =
+    auth.status !== "authenticated" ||
+    auth.user.isSuperAdmin ||
+    can(auth.user.permissions, "rcm.queue");
+  const mayDecide = claim.postingQueueId == null && holdsQueue;
+  /**
+   * WHY NOT, when not, because the two causes need different sentences.
+   *
+   * The frozen one is checked FIRST: an approver looking at a check she
+   * approved holds every permission there is, and telling her it is a
+   * permission problem sends her to ask somebody for access she already has.
+   */
+  const decideBlockedBy: "approved" | "permission" | null =
+    claim.postingQueueId != null ? "approved" : holdsQueue ? null : "permission";
+
+  /**
+   * Where this claim sits on the check, and the ids either side of it.
+   *
+   * Null unless the check's claim list is loaded AND this claim is on it — a
+   * pager that cannot say which of how many is furniture, and one guessing at
+   * neighbours is worse.
+   */
+  const pagerIndex = siblings ? siblings.indexOf(claimId) : -1;
+  const pager =
+    siblings && pagerIndex >= 0
+      ? {
+          index: pagerIndex,
+          total: siblings.length,
+          prevId: pagerIndex > 0 ? siblings[pagerIndex - 1] : null,
+          nextId: pagerIndex < siblings.length - 1 ? siblings[pagerIndex + 1] : null,
+        }
+      : null;
 
   /** Turn a refusal into the server's own words, never "something went wrong". */
   function say(err: unknown, fallback: string) {
@@ -217,6 +338,49 @@ export default function ClaimMatchPage() {
     }
   }
 
+  /**
+   * Record what this office is doing with one line's patient remainder.
+   *
+   * The whole claim is reloaded afterwards rather than the one line being
+   * patched in place. The response DOES carry the recomputed verdict and lines,
+   * and using them would be one fewer round trip — but the checklist on the
+   * check, the step rail and the review stamp all read the same claim, and a
+   * screen where one panel is fresh and the others are a minute old is the class
+   * of defect PR #87 named: a stale client is an honest-states bug.
+   */
+  async function decide(lineId: string, decision: LineDecision, reason: string | null) {
+    setBusy("decide");
+    setNotice(null);
+    try {
+      const result = await setLineDecision(office, claimId, lineId, decision, reason);
+      setNotice({
+        /*
+         * THE VERDICT'S OWN STATE PICKS THE TONE — never the fact that the POST
+         * returned 200. See the note on `notice`. A missing verdict is the one
+         * case with nothing to be red or amber ABOUT: the decision was stored
+         * and the server said nothing further, so it is a plain green receipt.
+         */
+        tone: result.verdict
+          ? result.verdict.state === "red"
+            ? "bad"
+            : result.verdict.state === "amber"
+              ? "warn"
+              : "ok"
+          : "ok",
+        // The server's own sentence about where the patient's number now lands,
+        // never a second copy of that arithmetic written here.
+        text: result.verdict
+          ? result.verdict.sentence
+          : "Decision recorded.",
+      });
+      load();
+    } catch (err) {
+      say(err, "That decision could not be recorded.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function markReviewed() {
     setBusy("review");
     setNotice(null);
@@ -233,12 +397,33 @@ export default function ClaimMatchPage() {
 
   return (
     <div className="p-6" data-testid="rcm-claim-match">
-      <Link
-        href="/rcm/remittances"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ArrowLeft size={14} /> All remittances
-      </Link>
+      {/*
+        ── THE WAY BACK, AND WHAT IS OVER THERE ────────────────────────────────
+        §15.2, finding 1. Approve lives on the remittance and review and match
+        live here, and getting between them was navigation the operator had to
+        already know. The breadcrumb now names what is at the other end.
+
+        It degrades honestly: arriving without `?from=` (a bookmark, a pasted
+        link) falls back to the list rather than guessing a batch id.
+      */}
+      {fromBatchId ? (
+        <Link
+          href={remittanceHref(fromBatchId)}
+          data-testid="back-to-remittance"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft size={14} /> Back to the remittance
+          <span className="text-muted-foreground/70">— Approve is there</span>
+        </Link>
+      ) : (
+        <Link
+          href="/rcm/remittances"
+          data-testid="back-to-remittances"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft size={14} /> All checks
+        </Link>
+      )}
 
       <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -253,589 +438,132 @@ export default function ClaimMatchPage() {
             {day(claim.serviceDate)} · {RCM_OFFICE_LABELS[office]}
           </p>
         </div>
-        <span
-          className={`rounded-full px-2.5 py-1 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
-          data-testid="claim-match-status"
-        >
-          {matchStatusLabel(claim.odMatchStatus, snapshot?.rejectedCandidates ?? 0)}
-          {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
-        </span>
       </div>
+
+      {/* The same five steps as the check and the Posting screen, scoped to
+          this one claim. `post` reads `unknown` rather than "no": this screen can
+          see that the check was approved and cannot see whether it was posted. */}
+      <RcmStepper
+        flow={claimFlow(claim, fromBatchId)}
+        here="match"
+        onAction={{
+          "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
+          review: markReviewed,
+        }}
+      />
+
+      {/*
+        ── WHERE THIS CLAIM IS, IN ONE LINE — Stage C-3, item 1 ────────────────
+        The three states of this screen — candidates, linked, checked over — were
+        95% the same page, and the reason was not that too little changed. It was
+        that what DID change was spread thinly across a chip, a rail, three panel
+        headings and a paragraph, none of which was the place to look.
+
+        So the state lives HERE, once, in the biller's own words, directly under
+        the rail — and the panels below stopped reporting it. Everything below
+        this line is evidence for a decision, not an announcement about one.
+
+        It reads the same fields the rail reads, from the same file, so the two
+        cannot end up telling one claim two stories.
+      */}
+      {(() => {
+        const state = claimStateLine(claim);
+        return (
+          <div
+            className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-card px-3 py-2"
+            data-testid="claim-state-line"
+            data-stage={state.stage}
+          >
+            {/*
+              THE CHIP THAT USED TO SIT IN THE HEADER, brought down here.
+
+              Same helper, same tone, same words — including the `no_candidate`
+              distinction between "Open Dental has nothing" and "Open Dental had
+              things and none could be offered", which is a real fact and would
+              have been the thing lost by simply deleting a chip. What changed
+              is that the state is now said in ONE place instead of two.
+            */}
+            <span
+              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
+              data-testid="claim-match-status"
+            >
+              {state.badge}
+              {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
+            </span>
+            <span className="text-sm font-semibold text-foreground">{state.where}</span>
+            {state.next && (
+              <span className="text-sm text-muted-foreground" data-testid="claim-state-next">
+                {state.next}
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {notice && (
         <div
           data-testid="claim-notice"
-          className={`mt-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
-            notice.tone === "ok"
-              ? "border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"
-              : "border-amber-200 bg-amber-50/60 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
-          }`}
+          data-tone={notice.tone}
+          className={`mt-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${NOTICE_TONE[notice.tone]}`}
         >
           {notice.tone === "ok" ? (
             <CheckCircle2 size={15} className="mt-0.5 shrink-0" />
-          ) : (
+          ) : notice.tone === "warn" ? (
             <Info size={15} className="mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
           )}
           <span>{notice.text}</span>
         </div>
       )}
 
-      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
-        {/* ── LEFT: what the carrier said ──────────────────────────────────── */}
-        <section data-testid="claim-parsed">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            What the carrier said
-          </h2>
+      {/*
+        ── MATCH IT UP, IN WORDS (Stage C, §5) ─────────────────────────────────
+        Above the workbench and NOT inside it: the candidate cards below are
+        unchanged (§12 — the workbench body is a separate PR), and they are the
+        audit trail of a ranking. This block is what a person reads first —
+        which of the two cases she is in, and what actually differs between the
+        candidates, said the way she would say it.
 
-          <div className="mt-2 rounded-xl border border-border bg-card">
-            {/* HOW THESE FOUR NUMBERS WERE READ.
-                At the top of "what the carrier said" rather than in a footer,
-                because it qualifies every figure below it. `confidence` on the
-                claim is the extraction model's confidence in reading a STRING;
-                this says where that string came from, and a biller deciding
-                whether to check the paper needs the second one.
-                Rendered only when the answer is known — an 835 was parsed, not
-                read, and says nothing here. */}
-            {provenanceLabel(data.claim.provenance) && (
-              <div
-                className="flex items-start gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
-                data-testid="claim-provenance"
-              >
-                <ScanLine size={13} className="mt-0.5 shrink-0" />
-                <span>
-                  {provenanceLabel(data.claim.provenance)}
-                  {provenanceNote(data.claim.provenance) && (
-                    <> · {provenanceNote(data.claim.provenance)}</>
-                  )}
-                </span>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3 border-b border-border p-4 sm:grid-cols-4">
-              <Fact label="Billed" value={money(claim.totalBilledCents)} />
-              <Fact label="Allowed" value={money(claim.totalAllowedCents)} />
-              <Fact label="Paid" value={money(claim.totalPaidCents)} strong />
-              <Fact label="Patient" value={money(claim.patientBalanceCents)} />
-            </div>
-
-            {claim.needsReviewReasons.length > 0 && (
-              <div className="border-b border-border p-4" data-testid="claim-review-reasons">
-                <div className="flex flex-wrap gap-1.5">
-                  {claim.needsReviewReasons.map((reason) => (
-                    <span
-                      key={reason}
-                      className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-                    >
-                      <AlertTriangle size={11} />
-                      {reviewReasonLabel(reason)}
-                    </span>
-                  ))}
-                </div>
-                {claim.needsReviewReasons.some((r) => NO_ACTION_REASONS.has(r)) && (
-                  <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
-                    <CircleSlash size={12} className="mt-0.5 shrink-0" />
-                    CareIN will not post this one. Handle it in Open Dental directly — a recoupment
-                    cannot be reversed once written.
-                  </p>
-                )}
-              </div>
-            )}
-
-            <ul className="divide-y divide-border">
-              {claim.lines.map((line) => (
-                <li key={line.lineId} className="flex items-start justify-between gap-3 p-4">
-                  <div className="min-w-0">
-                    <div className="font-mono text-sm text-foreground">{line.billedCode}</div>
-                    {line.paidCode && line.paidCode !== line.billedCode && (
-                      <div className="font-mono text-xs text-amber-700 dark:text-amber-400">
-                        submitted as {line.paidCode}
-                      </div>
-                    )}
-                    <div className="text-xs text-muted-foreground">{line.description}</div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {line.flags.map((flag) => (
-                        <span
-                          key={flag}
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${lineFlagTone(flag)}`}
-                        >
-                          {lineFlagLabel(flag)}
-                        </span>
-                      ))}
-                    </div>
-                    {line.adjustments.map((adj) => (
-                      <div key={adj.adjustmentId} className="mt-1 text-xs text-muted-foreground">
-                        <span className="font-mono" title={adj.groupDescription ?? undefined}>
-                          {adj.groupCode}-{adj.reasonCode}
-                        </span>{" "}
-                        {money(adj.amountCents)}
-                        {adj.reasonDescription ? ` — ${adj.reasonDescription}` : ""}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
-                      {money(line.paidCents)}
-                    </div>
-                    <div className="font-mono text-xs tabular-nums text-muted-foreground">
-                      of {money(line.billedCents)}
-                    </div>
-                    {line.odClaimProcNum !== null && (
-                      <div className="mt-1 font-mono text-[10px] text-emerald-700 dark:text-emerald-400">
-                        → ClaimProc {line.odClaimProcNum}
-                      </div>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <ReviewBox
-            claim={claim}
-            note={note}
-            setNote={setNote}
-            busy={busy === "review"}
-            onSave={markReviewed}
-          />
-        </section>
-
-        {/* ── RIGHT: Open Dental ───────────────────────────────────────────── */}
-        <section data-testid="claim-od-match">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Open Dental
-            </h2>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => runMatch(claim.odMatchStatus === "confirmed")}
-                disabled={busy !== null || !mayRerun}
-                data-testid="run-match"
-                title={
-                  mayRerun
-                    ? undefined
-                    : "Releasing a confirmed match needs posting permission. Ask an approver to re-run it."
-                }
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {busy === "match" ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Search size={14} />
-                )}
-                {claim.odMatchStatus === "not_run"
-                  ? "Run match"
-                  : claim.odMatchStatus === "confirmed"
-                    ? "Re-run match"
-                    : "Run again"}
-              </button>
-              <button
-                disabled
-                data-testid="approve-disabled"
-                title="Posting arrives in the next release."
-                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-foreground/10 px-3 py-1.5 text-sm font-medium text-muted-foreground"
-              >
-                <ShieldCheck size={14} />
-                Approve
-              </button>
-            </div>
-          </div>
-
-          {claim.odMatchStatus === "confirmed" && (
-            <p className="mt-2 text-xs text-muted-foreground" data-testid="reconfirm-warning">
-              {mayRerun
-                ? "Re-running replaces this match and un-links the claim. The confirmation stays in the audit trail."
-                : "This claim is linked. Releasing it un-links the claim, which needs posting permission — ask an approver."}
-            </p>
-          )}
-
-          {!snapshot ? (
-            <div
-              className="mt-2 rounded-xl border border-dashed border-border bg-card p-8 text-center"
-              data-testid={claim.matchSnapshotStale ? "match-stale" : "match-not-run"}
-            >
-              <Search size={20} className="mx-auto text-muted-foreground/50" />
-              {claim.matchSnapshotStale ? (
-                <p className="mt-2 text-sm text-muted-foreground">
-                  A match was run against this claim, but under an earlier version of the record —
-                  its contents cannot be read here, and confirming from it is refused. Run it again
-                  to get a current answer. Nothing has been un-linked.
-                </p>
-              ) : (
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Nobody has looked yet. Running a match READS Open Dental — it writes nothing to any
-                  chart.
-                </p>
-              )}
-            </div>
-          ) : (
-            <>
-              <MatchMeta snapshot={snapshot} rules={data.matchRules} />
-
-              {snapshot.candidates.length === 0 ? (
-                <div
-                  className="mt-3 rounded-xl border border-border bg-card p-6 text-center"
-                  data-testid="no-candidate"
-                >
-                  <Ban size={20} className="mx-auto text-muted-foreground/60" />
-                  {/*
-                    "WE FOUND NOTHING" AND "WE FOUND THINGS AND OFFERED NONE OF
-                    THEM" ARE DIFFERENT ANSWERS.
-
-                    Both leave `candidates` empty, and telling a biller the chart
-                    has no such claim when the chart had claims we discarded is
-                    the exact failure the four honest states exist to prevent.
-                  */}
-                  {snapshot.rejectedCandidates > 0 ? (
-                    <>
-                      <p className="mt-2 text-sm font-medium text-foreground">
-                        Nothing here is safe to offer
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}.{" "}
-                        {snapshot.rejectedCandidates} Open Dental claim
-                        {snapshot.rejectedCandidates === 1 ? " was" : "s were"} examined and set
-                        aside — {rejectionSummary(snapshot)}.
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        That is not the same as the chart having no such claim. If one of them is
-                        right, link the patient first and run this again.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="mt-2 text-sm font-medium text-foreground">
-                        No matching claim in Open Dental
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Searched {stamp(snapshot.fetchedAt)} against {snapshot.officeName}. Nothing
-                        was found and nothing was set aside. This is a recorded outcome, not a
-                        missing one.
-                      </p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  {snapshot.candidates.map((c) => (
-                    <CandidateCard
-                      key={c.odClaimNum}
-                      candidate={c}
-                      confirmedClaimNum={claim.odClaimNum}
-                      disabled={busy !== null || claim.odMatchStatus === "confirmed"}
-                      onConfirm={() => confirm(c.odClaimNum)}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Why candidates were set aside, in the server's own two categories.
- *
- * Written as a sentence rather than as counts alone because the two reasons ask
- * for different next steps: a name mismatch means "link the patient first", a
- * low score means "there was nothing much to go on".
- */
-function rejectionSummary(snapshot: MatchSnapshot): string {
-  const { nameMismatch, belowScore } = snapshot.rejectedReasons;
-  const parts: string[] = [];
-  if (nameMismatch > 0) {
-    parts.push(
-      `${nameMismatch} on a different patient's name`,
-    );
-  }
-  if (belowScore > 0) {
-    parts.push(`${belowScore} scoring below ${snapshot.minScore}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : "no reason recorded";
-}
-
-function Fact({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div
-        className={`font-mono text-sm tabular-nums ${strong ? "font-semibold text-foreground" : "text-muted-foreground"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-/** What the search actually did, including everything it could NOT do. */
-function MatchMeta({
-  snapshot,
-  rules,
-}: {
-  snapshot: NonNullable<WorkbenchClaim["matchSnapshot"]>;
-  rules: ClaimDetailResponse["matchRules"];
-}) {
-  return (
-    <div className="mt-2 rounded-xl border border-border bg-card px-4 py-3 text-xs" data-testid="match-meta">
-      <div className="text-muted-foreground">
-        Searched {stamp(snapshot.fetchedAt)} · {snapshot.odCalls} Open Dental read
-        {snapshot.odCalls === 1 ? "" : "s"} ·{" "}
-        {snapshot.patientsConsidered.length} patient
-        {snapshot.patientsConsidered.length === 1 ? "" : "s"} considered
-      </div>
-
-      {/* AMBIGUITY IS DISPLAYED, NOT RESOLVED. */}
-      {snapshot.ambiguous && (
-        <div
-          className="mt-2 flex items-start gap-1.5 font-medium text-amber-800 dark:text-amber-300"
-          data-testid="match-ambiguous"
-        >
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          <span>
-            The top candidates are within {rules.ambiguityMargin} points of each other. The ranking
-            below is not a recommendation — read the evidence and decide.
-          </span>
-        </div>
-      )}
-
-      {/* Also shown when candidates WERE offered: "3 offered, 2 set aside" is
-          different information from "3 offered". */}
-      {snapshot.rejectedCandidates > 0 && (
-        <div className="mt-2 text-muted-foreground" data-testid="match-rejected">
-          {snapshot.rejectedCandidates} Open Dental claim
-          {snapshot.rejectedCandidates === 1 ? "" : "s"} examined and not offered —{" "}
-          {rejectionSummary(snapshot)}.
-        </div>
-      )}
-
-      {!snapshot.nameRuleApplied && (
-        <div className="mt-2 text-muted-foreground" data-testid="match-name-rule-off">
-          This patient is already linked, so claims were read from their chart directly and a name
-          disagreement was shown as evidence rather than used to disqualify.
-        </div>
-      )}
-
-      {snapshot.truncated && (
-        <div className="mt-2 flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          <span>A search limit was reached — some Open Dental claims were not examined.</span>
-        </div>
-      )}
-
-      {snapshot.notes.length > 0 && (
-        <ul className="mt-2 space-y-0.5 text-muted-foreground" data-testid="match-notes">
-          {snapshot.notes.map((n, i) => (
-            <li key={i}>· {n}</li>
-          ))}
-        </ul>
-      )}
-
-      <div className="mt-2 text-muted-foreground/80">
-        Amounts match within {money(rules.amountNearCents)}; dates within {rules.dateNearDays} days.
-      </div>
-    </div>
-  );
-}
-
-function CandidateCard({
-  candidate: c,
-  confirmedClaimNum,
-  disabled,
-  onConfirm,
-}: {
-  candidate: MatchCandidate;
-  confirmedClaimNum: number | null;
-  disabled: boolean;
-  onConfirm: () => void;
-}) {
-  const isConfirmed = confirmedClaimNum === c.odClaimNum;
-  const blocking = c.blockers.filter((b) => b.blocking);
-  const cautions = c.blockers.filter((b) => !b.blocking);
-
-  return (
-    <div
-      className={`rounded-xl border bg-card ${isConfirmed ? "border-emerald-300 dark:border-emerald-800" : "border-border"}`}
-      data-testid={`candidate-${c.odClaimNum}`}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3 p-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-sm font-medium text-foreground">
-              ClaimNum {c.odClaimNum}
-            </span>
-            <span
-              className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${CONFIDENCE_TONE[c.confidence]}`}
-              title="A score, not a decision. Read the evidence below."
-            >
-              {c.confidence} · {c.score}
-            </span>
-            {isConfirmed && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                <CheckCircle2 size={11} /> Linked
-              </span>
-            )}
-          </div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            {c.od.patientName ?? "Unknown patient"} · PatNum {c.odPatNum ?? "—"} · service{" "}
-            {day(c.od.dateService)} · status {c.od.claimStatus || "—"}
-          </div>
-        </div>
-        <div className="text-right">
-          {/*
-            The LIVE lines' total, not the claim header. `ClaimFee` still counts
-            soft-deleted procedures, so showing it here would put a number on
-            screen that no comparison on this page was made against.
-          */}
-          <div className="font-mono text-sm tabular-nums text-foreground">
-            {money(c.od.billedCents)}
-          </div>
-          <div className="font-mono text-xs tabular-nums text-muted-foreground">billed in chart</div>
-          {c.od.unknownDeletedLineCount > 0 && (
-            <div
-              className="font-mono text-[11px] tabular-nums text-amber-700 dark:text-amber-400"
-              data-testid={`unknown-lines-${c.odClaimNum}`}
-            >
-              {c.od.unknownDeletedLineCount} line
-              {c.od.unknownDeletedLineCount === 1 ? "" : "s"} unread
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* The evidence. Every score is an argument a biller can check. */}
-      <div className="border-t border-border px-4 py-3" data-testid={`evidence-${c.odClaimNum}`}>
-        <div className="flex flex-wrap gap-1.5">
-          {c.evidence.map((e) => (
-            <span
-              key={e.tag}
-              title={e.detail}
-              className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${evidenceTone(e.weight)}`}
-            >
-              {e.label}
-              {e.note ? ` (${e.note})` : ""}
-              <span className="ml-1 font-mono opacity-70">
-                {e.weight >= 0 ? `+${e.weight}` : e.weight}
-              </span>
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* Pre-flight: what Slice 6c would refuse on. Shown BEFORE it refuses. */}
-      {(blocking.length > 0 || cautions.length > 0) && (
-        <div className="border-t border-border px-4 py-3" data-testid={`blockers-${c.odClaimNum}`}>
-          <ul className="space-y-1">
-            {[...blocking, ...cautions].map((b) => (
-              <li
-                key={b.code}
-                className={`flex items-start gap-1.5 text-xs ${
-                  b.blocking ? "text-rose-700 dark:text-rose-400" : "text-muted-foreground"
-                }`}
-                title={b.detail}
-              >
-                {b.blocking ? (
-                  <Ban size={12} className="mt-0.5 shrink-0" />
-                ) : (
-                  <Info size={12} className="mt-0.5 shrink-0" />
-                )}
-                <span>
-                  {b.label}
-                  {b.count ? ` (${b.count})` : ""}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Which chart line each of our lines would adjudicate. */}
-      <div className="border-t border-border px-4 py-3" data-testid={`pairs-${c.odClaimNum}`}>
-        <div className="text-xs font-medium text-muted-foreground">Line pairing</div>
-        <ul className="mt-1 space-y-0.5">
-          {c.linePairs.map((p, i) => (
-            <li key={p.lineId ?? i} className="flex items-center gap-2 text-xs">
-              <span className="font-mono text-foreground">{p.code || "—"}</span>
-              <span className="text-muted-foreground">→</span>
-              {p.odClaimProcNum !== null ? (
-                <span className="font-mono text-muted-foreground">
-                  ClaimProc {p.odClaimProcNum}
-                  {p.billedDeltaCents ? ` · ${money(p.billedDeltaCents)} apart` : ""}
-                </span>
-              ) : (
-                // An unpaired line is a real answer. 6c refusing to post one is
-                // better than 6c posting it against whichever line was next.
-                <span className="text-amber-700 dark:text-amber-400">{p.reason}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="border-t border-border px-4 py-3">
-        <button
-          onClick={onConfirm}
-          disabled={disabled || isConfirmed}
-          data-testid={`confirm-${c.odClaimNum}`}
-          className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <CheckCircle2 size={14} />
-          {isConfirmed ? "Confirmed" : "Confirm this match"}
-        </button>
-        <span className="ml-2 text-xs text-muted-foreground">
-          Links the claim. Still writes nothing to the chart.
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ReviewBox({
-  claim,
-  note,
-  setNote,
-  busy,
-  onSave,
-}: {
-  claim: WorkbenchClaim;
-  note: string;
-  setNote: (v: string) => void;
-  busy: boolean;
-  onSave: () => void;
-}) {
-  return (
-    <div className="mt-4 rounded-xl border border-border bg-card p-4" data-testid="review-box">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-foreground">Review</h3>
-        {claim.reviewedAt && (
-          <span className="text-xs text-muted-foreground" data-testid="reviewed-stamp">
-            Reviewed {stamp(claim.reviewedAt)} by {claim.reviewedBy ?? "—"}
-          </span>
-        )}
-      </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Worklist hygiene only — this changes nothing in Open Dental. A claim with no chart match can
-        still be finished work.
-      </p>
-      <textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        maxLength={2000}
-        rows={2}
-        data-testid="review-note"
-        placeholder="What did you find? e.g. carrier owes a corrected EOB — nothing to post."
-        className="mt-2 w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-2 focus:ring-ring"
+        It confirms through the SAME `confirm` this page already owns, so there
+        is one route, one audit row and no second write path.
+      */}
+      <MatchGuidance
+        snapshot={snapshot}
+        eob={{
+          serviceDate: claim.serviceDate,
+          billedCents: claim.totalBilledCents,
+          patientName: claim.patientName,
+        }}
+        confirmedClaimNum={claim.odClaimNum}
+        busy={busy !== null || claim.odMatchStatus === "confirmed"}
+        fromBatchId={fromBatchId}
+        onConfirm={confirm}
+        onShowOthers={() => {
+          document
+            .querySelector('[data-testid^="candidate-"]')
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
       />
-      <button
-        onClick={onSave}
-        disabled={busy}
-        data-testid="mark-reviewed"
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
-      >
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-        {claim.reviewedAt ? "Update review" : "Mark reviewed"}
-      </button>
+
+      <ClaimWorkbench
+        data={data}
+        claim={claim}
+        snapshot={snapshot}
+        note={note}
+        setNote={setNote}
+        busy={busy}
+        mayRerun={mayRerun}
+        mayDecide={mayDecide}
+        decideBlockedBy={decideBlockedBy}
+        fromBatchId={fromBatchId}
+        siblings={pager}
+        onRunMatch={runMatch}
+        onReview={markReviewed}
+        onConfirm={confirm}
+        onDecide={decide}
+        documentHref={documentHref(office, data.claim.provenance?.uploadId)}
+      />
     </div>
   );
 }

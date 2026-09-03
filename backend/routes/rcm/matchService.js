@@ -31,10 +31,12 @@
 const odOffices = require('../../config/odOffices');
 const tenantDb = require('../../platform/tenantDb');
 const claimMatch = require('../../services/rcm/claimMatch');
+const claimWorkbench = require('../../services/rcm/claimWorkbench');
+const lineDecisions = require('../../services/rcm/lineDecisions');
 const odClaimReads = require('../../services/rcm/odClaimReads');
 const odPacer = require('../../services/rcm/odPacer');
 const { describeAdjustment } = require('../../services/rcm/adjustmentCodes');
-const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
+const { resolveRcmActor, describeActors } = require('../../services/rcm/rcmUserMap');
 const { num, iso, isoDate } = require('./helpers');
 
 /**
@@ -150,8 +152,29 @@ const CLAIM_LIST_COLUMNS = [
   "(od_match_snapshot->>'rejectedCandidates')::int AS od_match_rejected",
 ].join(', ');
 
-/** The detail view adds the snapshot; everything else is the same read. */
-const CLAIM_DETAIL_COLUMNS = `${CLAIM_LIST_COLUMNS}, od_match_snapshot`;
+/**
+ * The detail view adds the snapshot and the two identity fields the workbench
+ * compares against Open Dental.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY `patient_dob` AND `subscriber_id` ARE HERE AND NOT IN THE LIST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Both are PHI, and the list read deliberately omits them — a worklist row has
+ * no use for a date of birth and shipping one "just in case" widens the PHI
+ * surface for free.
+ *
+ * The workbench is the one screen where they earn their place: a claim posted
+ * onto the wrong patient's chart is the worst outcome this module has, and a
+ * NAME does not separate two people. Showing the remittance's date of birth
+ * beside Open Dental's is what turns a name comparison into an identity check,
+ * and that check BLOCKS an approval rather than warning about it. One claim, one
+ * audited read, two more fields.
+ */
+const CLAIM_DETAIL_COLUMNS =
+  `${CLAIM_LIST_COLUMNS}, patient_dob, subscriber_id, od_match_snapshot, ` +
+  // B2: the verdict read back out of the chart after this claim posted. Null
+  // until then, and the reason the screen can stop saying "will owe".
+  `confirmed_verdict, confirmed_at`;
 
 const LINE_COLUMNS = [
   'line_id',
@@ -175,6 +198,17 @@ const LINE_COLUMNS = [
   'is_denied',
   'flags',
   'od_claim_proc_num',
+  /*
+   * THE BILLER'S DECISION ABOUT THIS LINE'S PATIENT REMAINDER (Stage B1).
+   *
+   * NULL reads as `bill_patient` — the default that needs no action — and the
+   * pair of nulls beside it is what separates "she decided to bill it" from
+   * "nobody has looked". Both bill the patient; only one has a name on it.
+   */
+  'line_decision',
+  'decision_reason',
+  'decided_by',
+  'decided_at',
 ].join(', ');
 
 const ADJUSTMENT_COLUMNS = [
@@ -269,6 +303,31 @@ function toLineWire(line, adjustments) {
     isDenied: line.is_denied === true,
     flags: Array.isArray(line.flags) ? line.flags : [],
     odClaimProcNum: line.od_claim_proc_num == null ? null : num(line.od_claim_proc_num),
+    /**
+     * The decision, verbatim. `null` means nobody has said — which the money
+     * reads as `bill_patient` and the SCREEN reads as "no decision recorded",
+     * because those are different things to a person even though they are the
+     * same number.
+     */
+    decision: line.line_decision || null,
+    decisionReason: line.decision_reason || null,
+    /** Raw crosswalk key; resolved to a display name one level up, like the others. */
+    decidedByKey: line.decided_by || null,
+    decidedAt: iso(line.decided_at),
+    /**
+     * THE CARRIER'S ARITHMETIC, COMPUTED IN ONE PLACE.
+     *
+     * W = billed − allowed and R = allowed − paid. Shipped rather than left to
+     * the client for the same reason the takeback's typed phrase is: two
+     * subtractions done in two languages are two places for a rounding habit or
+     * a null coercion to make one screen disagree with the gate about money.
+     * `services/rcm/lineDecisions.js` is the only file that does this sum.
+     */
+    ...lineDecisions.lineMoney({
+      billedCents: num(line.billed_cents),
+      allowedCents: num(line.allowed_cents),
+      paidCents: num(line.paid_cents),
+    }),
     adjustments: adjustments.map((a) => ({
       adjustmentId: a.adjustment_id,
       amountCents: num(a.amount_cents),
@@ -302,7 +361,7 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
   if (claims.rows.length === 0) return null;
   const row = claims.rows[0];
 
-  const [lines, adjustments] = await Promise.all([
+  const [lines, adjustments, payments] = await Promise.all([
     pool.query(
       `SELECT ${LINE_COLUMNS} FROM rcm_procedure_lines WHERE office_id = $1 AND claim_id = $2 ` +
         `ORDER BY position ASC`,
@@ -313,7 +372,48 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
         `WHERE office_id = $1 AND claim_id = $2`,
       [office, claimId]
     ),
+    /*
+     * WHAT THE BATCH SAYS THIS CLAIM MOVED — the second half of the takeback
+     * question, and the reason this query exists at all.
+     *
+     * `claimMatch.isTakeback` reads TWO amounts: the claim's own paid total and
+     * the `rcm_batch_claim_payments` row's. The approval gate has always passed
+     * both. The match passed only the first, so a claim whose own total was not
+     * negative while the batch row was would be matched on the PAYMENT lane and
+     * then judged on the TAKEBACK lane — `MATCH_TAKEN_FOR_A_TAKEBACK` refuses,
+     * the biller re-matches as the refusal instructs, the re-match reads the
+     * same non-negative total and takes the payment lane again. A refusal whose
+     * own remedy cannot clear it is a loop, not a gate.
+     *
+     * Today the two amounts cannot disagree — `eraIngest.writeClaim` and
+     * `eobExtractionWorker` each write both from one in-memory
+     * `claim.totalPaidCents`, in one transaction (pinned by
+     * `routes/rcm/takebackLaneAgreement.test.js`). This query means the loop is
+     * impossible even if that ever stops being true, rather than merely
+     * unreachable while it holds.
+     *
+     * It costs no round trip: it joins a `Promise.all` that was already waiting
+     * on two queries.
+     */
+    pool.query(
+      `SELECT paid_cents FROM rcm_batch_claim_payments WHERE office_id = $1 AND claim_id = $2`,
+      [office, claimId]
+    ),
   ]);
+
+  /*
+   * The MINIMUM, not the first row. One claim has exactly one payment row today
+   * (one claim belongs to one remittance), so min IS that row. Should a claim
+   * ever carry more, min is the only reduction that cannot under-report against
+   * the gate: `isTakeback` is an OR over negatives, so if ANY row is negative
+   * the gate says takeback, and min is negative exactly then.
+   *
+   * `null` when there is no row at all, kept distinct from `0` — `num()` maps
+   * both to 0, and "no batch row" is not "the batch moved nothing".
+   */
+  const batchPaidCents = payments.rows.length
+    ? Math.min(...payments.rows.map((r) => (r.paid_cents == null ? 0 : Number(r.paid_cents))))
+    : null;
 
   const adjByLine = new Map();
   for (const a of adjustments.rows) {
@@ -337,14 +437,97 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
   const stored = row.od_match_snapshot || null;
   const usable = stored && Number(stored.version) === SNAPSHOT_VERSION;
 
+  const rawLines = lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || []));
+
+  /*
+   * WHO DECIDED, BY NAME, RESOLVED HERE.
+   *
+   * One statement for the whole claim rather than one per line — the same
+   * batching the claim-level keys get one level up. It runs only when a line
+   * actually carries a decision, so an untouched claim costs no extra query.
+   *
+   * Resolved BEFORE the verdict is built, because the amber sentence and the
+   * gate's detail both list who wrote a line off. A verdict carrying crosswalk
+   * keys where a person's name belongs would be read as a bug by the one reader
+   * it exists for.
+   */
+  const decidedKeys = rawLines.map((l) => l.decidedByKey).filter(Boolean);
+  const decidedActors = decidedKeys.length ? await describeActors(pool, decidedKeys) : {};
+  const wireLines = rawLines.map(({ decidedByKey, ...line }) => ({
+    ...line,
+    decidedBy: decidedByKey
+      ? (decidedActors[decidedByKey] || {}).displayName || decidedByKey
+      : null,
+  }));
+
   return {
     ...summary,
-    lines: lines.rows.map((l) => toLineWire(l, adjByLine.get(l.line_id) || [])),
+    /**
+     * The two identity fields, PHI, and detail-only. Null on the list read,
+     * which does not select them. See `CLAIM_DETAIL_COLUMNS`.
+     */
+    patientDob: includeSnapshot ? isoDate(row.patient_dob) : null,
+    subscriberId: includeSnapshot ? row.subscriber_id || null : null,
+    /**
+     * What the remittance batch says this claim moved, or `null` when no batch
+     * row exists. Deliberately NOT folded into `summary`: it belongs to
+     * `rcm_batch_claim_payments`, not to the claim, and the lane predicate is
+     * the only reader.
+     */
+    batchPaidCents,
+    lines: wireLines,
     ...(includeSnapshot
       ? {
           matchSnapshot: usable ? stored : null,
           /** True when there IS one and it predates the current shape. */
           matchSnapshotStale: Boolean(stored) && !usable,
+          /*
+           * THE WORKBENCH VIEW — identity, the chart as read, and the verdict.
+           *
+           * Assembled here rather than in the route so the approval gate can ask
+           * for exactly the same thing from exactly the same function. One
+           * arithmetic, two renderers: the screen prints `verdict.sentence` and
+           * the gate turns the same verdict into a pass or a refusal, so a green
+           * line beside a red check is not a state this code can reach.
+           *
+           * `register: 'projection'` is the only register a READ can be in. The
+           * confirmed register belongs to the drain's read-back, after money has
+           * moved, and a screen that has not posted anything must never word
+           * itself as though it had.
+           *
+           * A stale-shaped snapshot yields no chart and no identity comparison —
+           * `usable` is false, so `buildWorkbenchView` is handed null and says
+           * "unknown" rather than reading fields that version does not have.
+           */
+          ...claimWorkbench.buildWorkbenchView({
+            claim: {
+              odClaimNum: summary.odClaimNum,
+              patientName: summary.patientName,
+              patientDob: isoDate(row.patient_dob),
+              subscriberId: row.subscriber_id || null,
+            },
+            lines: wireLines,
+            snapshot: usable ? stored : null,
+            register: 'projection',
+          }),
+          /*
+           * …AND THE CONFIRMED VERDICT REPLACES IT ONCE THERE IS ONE (B2).
+           *
+           * Written by the drain from what Open Dental was read back as
+           * holding, and spread AFTER the projection so it wins on a claim that
+           * has posted. Without this the screen would go on saying "will owe …
+           * once posted" about a claim whose money is already in the chart —
+           * true arithmetic in a tense that stopped being true.
+           *
+           * It is READ here and never computed here: this route makes no Open
+           * Dental call, so it has nothing to confirm anything with.
+           */
+          ...(row.confirmed_verdict
+            ? {
+                verdict: row.confirmed_verdict,
+                confirmedAt: iso(row.confirmed_at),
+              }
+            : { confirmedAt: null }),
         }
       : {}),
   };
@@ -491,6 +674,46 @@ async function runClaimMatch(
     lines: claim.lines,
   });
 
+  /*
+   * ─── WHICH LANE IS THIS MATCH ON? ────────────────────────────────────────
+   *
+   * A payment and a takeback ask OPPOSITE questions of the same chart, and the
+   * match is where the answer is gathered. A payment wants a line it can be put
+   * onto — not deleted, not transferred, not already on a check. A takeback
+   * wants the line it is coming OUT of, which is paid and, on a real reversal,
+   * on a check already, because the money it is reversing is money this module
+   * posted.
+   *
+   * Read off the money through `claimMatch.isTakeback`, the SAME predicate the
+   * approval gate uses. Until walk night 2 the match had no notion of the
+   * question at all and always asked the payment one, so a reversal 835 matched
+   * to the claim the drain had just posted produced a snapshot saying "no
+   * postable line on this claim" and two blocking pre-flight facts — and D-6's
+   * typed-confirmation path could not be reached for the one chart state a
+   * takeback can ever target.
+   *
+   * The lane is STORED on the snapshot, so the gate can tell a snapshot taken
+   * for the wrong question from one taken for this one rather than reading its
+   * evidence as though it answered both.
+   */
+  const takeback = claimMatch.isTakeback({
+    totalPaidCents: claim.totalPaidCents,
+    // BOTH amounts, exactly as `approvalGate.isRecoupment` passes them. One
+    // predicate is only one question if both callers hand it the same evidence.
+    paidCents: claim.batchPaidCents,
+  });
+  /*
+   * The magnitude follows the gate's precedence too (`approvalGate.js`: the
+   * batch row when there is one, the claim's own total otherwise), so
+   * `TAKEBACK_EXCEEDS_PAYMENT` is measured against the number the gate will
+   * later measure against.
+   */
+  const takebackCents = takeback
+    ? claim.batchPaidCents == null
+      ? claim.totalPaidCents
+      : claim.batchPaidCents
+    : null;
+
   const ranked = claimMatch.rankCandidates(
     {
       claimNumber: claim.claimNumber,
@@ -504,7 +727,11 @@ async function runClaimMatch(
     // STRANGERS when a name filter is ignored. On the linked-PatNum lane there
     // are no strangers to defend against, and a married-name change would
     // otherwise disqualify every claim on the right patient.
-    { patientResolvedByLink: found.patientResolvedByLink === true }
+    {
+      patientResolvedByLink: found.patientResolvedByLink === true,
+      takeback,
+      takebackCents,
+    }
   );
 
   // Line pairing is computed per candidate at match time so the screen can show
@@ -512,7 +739,7 @@ async function runClaimMatch(
   // confirming has nothing left to compute.
   const candidates = ranked.candidates.map((c) => ({
     ...c,
-    linePairs: claimMatch.pairLines(claim.lines, c.od.lines),
+    linePairs: claimMatch.pairLines(claim.lines, c.od.lines, { takeback }),
   }));
 
   const snapshot = {
@@ -539,6 +766,21 @@ async function runClaimMatch(
     minScore: ranked.minScore,
     /** False ⇒ the patient was already linked, so the name rule was off. */
     nameRuleApplied: ranked.nameRuleApplied,
+    /**
+     * WHICH QUESTION THIS SNAPSHOT ANSWERS.
+     *
+     * The blockers and the line pairing inside it were computed for a payment
+     * or for a takeback, and the two are inverses of each other. The approval
+     * gate refuses to judge a takeback on payment-lane evidence rather than
+     * reading it as though the lane made no difference — which is what it did
+     * before this field existed, and what made the walk's third takeback
+     * attempt refuse with two sentences about payments.
+     *
+     * Absent on a v2 snapshot written before this field, which reads as `false`
+     * — and that is correct rather than merely convenient: those snapshots
+     * really were taken for a payment.
+     */
+    takeback,
     candidates,
     /** A fresh run has confirmed nothing. A human confirming fills this in. */
     confirmed: null,
@@ -1029,6 +1271,155 @@ async function markReviewed(req, office, claimId, note, actor) {
   });
 }
 
+/**
+ * Record a biller's decision about one line's patient remainder.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS WRITES, AND WHAT IT CANNOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Four columns on ONE `rcm_procedure_lines` row, in this office, on this claim.
+ * It reaches no chart, no plan and no other claim. It is the same tier of act as
+ * marking a claim reviewed: a human's sentence about work, recorded where the
+ * work is.
+ *
+ * `bill_patient` clears the reason and `office_writeoff` requires one — enforced
+ * here AND by `rcm_procedure_lines_decision_reason_check`, in both directions.
+ * The route validates that the reason is one of the canned five; the database
+ * only insists that there IS one, so the later per-office slice edits a list
+ * rather than a constraint.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * AN APPROVED CLAIM IS FROZEN (D-14)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `posting_queue_id` non-null means a person authorised these exact figures, and
+ * the posting carries its own snapshot of them. Letting the review row move
+ * afterwards would leave two records of one decision, disagreeing, with the one
+ * a biller can see being the one the drain does not read. So the claim is frozen
+ * from the moment it is approved, and the refusal says what is actually true
+ * about undoing that today — retiring the posting stops it, but a retired
+ * remittance cannot be approved again (RCM_POSTING §2.2.0), so a wrong write-off
+ * on an approved claim is a correction in the desktop until 6d.2 lands.
+ *
+ * The predicate is the CLAIM's own `posting_queue_id` and not the plan's status,
+ * deliberately: it is the same one `runClaimMatch` refuses on, single-valued,
+ * and set in the same statement that creates the plan — so there is no window in
+ * which a claim is on a posting and this route cannot see it.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @param {string} claimId
+ * @param {string} lineId
+ * @param {{ decision: string, reason: string|null }} choice
+ * @param {{ email: string, displayName?: string }} actor
+ * @returns {Promise<{ claimId: string, lineId: string, decision: string,
+ *                     reason: string|null, decidedBy: string }>}
+ */
+async function setLineDecision(req, office, claimId, lineId, choice, actor) {
+  const decision = choice && choice.decision;
+  if (!lineDecisions.LINE_DECISIONS.includes(decision)) {
+    const err = new Error(
+      `decision must be one of: ${lineDecisions.LINE_DECISIONS.join(', ')}`
+    );
+    err.httpStatus = 400;
+    err.code = 'INVALID_LINE_DECISION';
+    throw err;
+  }
+
+  /*
+   * THE REASON IS PART OF THE DECISION, not a field beside it. An office
+   * write-off with nothing recorded about why is money leaving the practice with
+   * nobody's account of it, and this is the last place a person is present to
+   * give one.
+   */
+  const reason = decision === 'office_writeoff' ? (choice && choice.reason) || null : null;
+  if (decision === 'office_writeoff' && !lineDecisions.isWriteoffReason(reason)) {
+    const err = new Error('Choose a reason for writing this line off');
+    err.httpStatus = 400;
+    err.code = 'WRITEOFF_REASON_REQUIRED';
+    throw err;
+  }
+
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      /*
+       * TWO STATEMENTS, NOT A JOIN — the same discipline `readProvenance`
+       * follows. `office_id` is a column on BOTH tables, so a join written on
+       * ids alone would be a cross-office read waiting for a uuid collision, and
+       * scoping every leg is the kind of thing that is right the day it is
+       * written and wrong the day somebody edits it.
+       *
+       * The CLAIM is read `FOR UPDATE`, and that lock is what makes the freeze
+       * check and the write one decision rather than two: a concurrent approve
+       * takes the same row lock, so this cannot read "not approved" and write
+       * after somebody else has approved.
+       */
+      const claim = await client.query(
+        `SELECT claim_id, posting_queue_id FROM rcm_claims ` +
+          `WHERE office_id = $1 AND claim_id = $2 FOR UPDATE`,
+        [office, claimId]
+      );
+      if (claim.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('No such claim for this office');
+        err.httpStatus = 404;
+        err.code = 'CLAIM_NOT_FOUND';
+        throw err;
+      }
+
+      const found = await client.query(
+        `SELECT line_id FROM rcm_procedure_lines ` +
+          `WHERE office_id = $1 AND claim_id = $2 AND line_id = $3`,
+        [office, claimId, lineId]
+      );
+      if (found.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('No such line on that claim for this office');
+        err.httpStatus = 404;
+        err.code = 'LINE_NOT_FOUND';
+        throw err;
+      }
+
+      if (claim.rows[0].posting_queue_id) {
+        await client.query('ROLLBACK');
+        const err = new Error(
+          'This claim has been approved for posting, and an approved posting cannot be ' +
+            'changed. Retiring it stops the posting, but this check could not then be ' +
+            'approved again — so a wrong write-off here is a correction in Open Dental.'
+        );
+        err.httpStatus = 409;
+        err.code = 'CLAIM_ON_POSTING_PLAN';
+        throw err;
+      }
+
+      // D-5: the acting user, created on first use, on THIS connection so the
+      // FK on `decided_by` is satisfiable by the statement that sets it.
+      const userKey = await resolveRcmActor(client, actor);
+
+      await client.query(
+        `UPDATE rcm_procedure_lines SET line_decision = $4, decision_reason = $5, ` +
+          `decided_by = $6, decided_at = now(), updated_at = now() ` +
+          `WHERE office_id = $1 AND claim_id = $2 AND line_id = $3`,
+        [office, claimId, lineId, decision, reason, userKey]
+      );
+
+      await client.query('COMMIT');
+      return { claimId, lineId, decision, reason, decidedBy: userKey };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* keep the original */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+}
+
 module.exports = {
   BATCH_PACING_MS,
   BATCH_MATCH_BUDGET_MS,
@@ -1046,4 +1437,5 @@ module.exports = {
   runBatchMatch,
   confirmMatch,
   markReviewed,
+  setLineDecision,
 };

@@ -19,6 +19,8 @@ import type {
   NotificationsConfig, MangoTranscriptionCosts,
 } from "@/lib/api";
 import { formatResetTime } from "@/lib/transcribe";
+import RcmPostingSettingsCard from "./admin/RcmPostingSettingsCard";
+import RcmShadowComparisonCard from "./admin/RcmShadowComparisonCard";
 
 /** Office keys shown first in the on-demand breakdown; anything else follows. */
 const OFFICE_ORDER = ["roland", "valley", "unknown"];
@@ -451,6 +453,20 @@ export default function Admin() {
                 </CardContent>
               </Card>
             ))}
+          </div>
+
+          {/* THE SHADOW GATE'S SWITCH — the one office-level control on this
+              page that changes what the product may do to a patient's chart.
+              Renders nothing for a role without `rcm.settings`, and nothing at
+              all for a practice with no RCM offices. */}
+          <div className="max-w-4xl space-y-4">
+            <RcmPostingSettingsCard />
+            {/* THE EVIDENCE THAT SWITCH SHOULD BE DECIDED FROM (C-2). Directly
+                beneath it on purpose: shadow mode's exit criterion is a run of
+                checks that came out the same, and a criterion kept on a
+                different page is one nobody reads before pressing. Same
+                `rcm.settings` tier, so the two are present or absent together. */}
+            <RcmShadowComparisonCard />
           </div>
         </div>
       )}

@@ -603,6 +603,20 @@ These are enforced in code. If a change would relax one, stop and ask.
 6. **Never write directly to Open Dental MySQL.** Use the OD cloud API through the
    office-keyed client registry.
 7. **No real patient data anywhere.** Use the fixtures below.
+8. **Never put free text a person typed into `audit_log`.** The table has no detail
+   column on purpose, and every free-text column in this schema is PHI-capable by
+   nature — a biller may name a patient in a `comparison_note`, a `parked_note`, a
+   `withdrawn_note` or a `review_note`. The trail records that somebody did this to
+   this row; it never becomes a second copy of the prose. **`audit_log.prior_state`
+   is SLUG-ONLY, by CHECK constraint** — `^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$` —
+   so a sentence (it has a space) and a patient's name (it has a capital) are
+   *unstorable* rather than merely discouraged. This holds for **every module**:
+   `audit_log` is one shared per-tenant table that voice, TC and RCM all write to
+   through the same `audit()` helper, so a change here is a platform change. A
+   caller needing to record anything richer must change the constraint
+   **deliberately**, in its own commit, with the argument written down — not
+   discover the limit at runtime and route around it.
+   See [docs/AUDIT.md](docs/AUDIT.md) → *The `prior_state` invariant*.
 
 ### Test-patient fixtures
 
@@ -746,6 +760,7 @@ parallel work.
 cd backend && npm ci
 node --check server.js         # syntax gate
 node --test                    # unit tests, invoked directly (there is no npm test script)
+node scripts/shard-runner.mjs  # the SAME suite, split across 4 `node --test` runs — CI runs this
 
 # dashboard — pnpm, not npm
 cd new-dashboard && pnpm install --frozen-lockfile
@@ -754,6 +769,20 @@ pnpm run test                  # vitest run
 ```
 
 There is **no lint script and no eslint dependency** anywhere in this repo.
+
+**Why CI shards the backend suite.** Every Node 22 carries a parent-side bug in
+`node --test`'s IPC reader: a per-message size decoded with a signed shift, which
+surfaces as `Unable to deserialize cloned data due to invalid or unsupported
+version` against an arbitrary file, with no assertion in it and a test count that
+DROPS — that dropped count is how you tell it from a real failure. It is tracked
+as `nodejs/node#64061` and fixed by `nodejs/node#64706` — which, **as of
+2026-08-30 per that PR's release notes and labels**, shipped in **v24.20.0 /
+v26.7.0 and in no Node 22** (nothing in `CHANGELOG_V22.md` through 22.23.2, no
+v22 backport label). **Re-check that before bumping Node** — it is a fact about
+one date. The runtime image is `node:22-alpine`, so CI stays on 22 on purpose. Sharding
+means no single parent decodes the whole stream — a smaller target, **not a
+fix**. `backend/scripts/shard-runner.mjs` has the whole story. `node --test`
+locally is still fine and still the fastest way to run one file.
 
 `--frozen-lockfile` matters. `new-dashboard/tests/tc-contract-bundle.test.ts` re-runs
 esbuild over `backend/tc/contract.entry.ts` and **byte-compares** the result against the
@@ -789,6 +818,22 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 
 - Commit messages: imperative present tense — "Add endpoint", not "Added endpoint".
 - Branches: `feature/`, `fix/`, `docs/`.
+- **Writing a repo file from Python on Windows needs `newline=""`.** Without it,
+  `io.open(p, "w")` turns every line feed into a carriage-return pair, so a file spliced by
+  a helper script lands as CRLF while this repo holds LF — and the whole file then arrives
+  in the diff as churn. It has cost two PRs (#126, and #133: 83 files, 31k raw insertions
+  against 9k real ones), and the damage is that a reviewer cannot check a one-line claim
+  about a money file buried in 7,696 changed lines. Pass `newline=""` on **both** the read
+  and the write. `sed` and `cat -A` under Git Bash silently strip the carriage return, so
+  they will not show you the problem — compare `git diff --shortstat origin/develop...HEAD`
+  against the same command plus `--ignore-all-space --ignore-blank-lines`, and the two must
+  match within a handful. (`.gitattributes` is a main-line call, deliberately not taken.
+  `client/src/App.tsx`, `client/src/lib/api.ts` and `client/src/pages/AdminUsers.tsx` are
+  CRLF **in git** — normalising those three is its own churn, so leave them.)
+- **A held PR is a draft.** If a review holds a PR for an answer, `gh pr ready --undo <n>`
+  it at once and mark it ready only when the reviewer releases it. See
+  [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) §2 — #121 merged with its gating question
+  open, and only an already-merged gate kept that off a chart.
 - No `any` in TypeScript — use `unknown` and narrow.
 - No `SELECT *` — name columns explicitly.
 - All Open Dental queries scoped by office (and by `ClinicNum` where the OD API takes one).
@@ -798,6 +843,39 @@ Full pipeline detail, the environments table, and the operational gotchas are in
 ---
 
 ## 6. Where to look next
+
+### What you can actually read — start here, every session
+
+**Everything a coding agent is expected to know is in this repo.** Read these
+before touching the slice they cover; they are the sources of truth, and they are
+reachable from the working tree with no tool but `cat`:
+
+| Before you touch | Read |
+| --- | --- |
+| Anything at all | this file |
+| The RCM posting machinery, the drain, the takeback, the workbench | [docs/RCM_POSTING.md](docs/RCM_POSTING.md) — including **§1a, the canon**, and **§15, the known limits** |
+| Anything that approves or refuses a claim | [docs/RCM_APPROVAL_GATE.md](docs/RCM_APPROVAL_GATE.md) |
+| Any dashboard screen | [new-dashboard/HANDOFF.md](new-dashboard/HANDOFF.md) |
+| Branching, worktrees, the deploy pipeline | [DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) |
+
+**Project memory is NOT one of them.** The PM works in a desktop app with its own
+memory store; that store is not in this repo, not under `.claude/`, and not
+anywhere a session running here can open. It reaches a coding agent **only by
+being quoted into the prompt**. So:
+
+- A prompt that says *"read the project memory first"* is asking for something
+  that cannot be done from here. Say so, and work from the docs above.
+- A prompt that cites a decision by number (D-7, D-11, D-13, D-15…) without
+  stating it is citing something invisible. **Ask for the text, or find it in
+  `docs/RCM_POSTING.md` §1a** — never guess what a decision number means, and
+  never assume a number that is not there does not exist.
+- Anything ruled in a review that a later slice will need has to be **written
+  into a doc in this repo** in the same PR. A ruling that lives only in the PM's
+  memory is a ruling the next session will break.
+
+### The rest
+
+
 
 | Topic | Doc |
 | --- | --- |
@@ -835,3 +913,20 @@ instructions.
   above the auth gate, and `/api/tc` as "future". Both are wrong; the code is right.
 - **`audit.source_ref`** exists for exactly the voice→TC handoff, but the send-to-TC route
   does not populate it.
+
+### Repo maintenance — logged, not scheduled
+
+Neither of these breaks anything today. Both are traps for the next person.
+
+- **`.prettierrc` exists and nothing in the repo complies with it.** It asks for
+  `printWidth: 80` and `arrowParens: "avoid"`; the actual house style is ~100 columns
+  and `(e) =>`, in every file including the newest. So **running `prettier --write` on
+  any file reformats the whole thing** and buries a two-line change in a 100-line diff —
+  which happened once during Stage C-2 and had to be reverted. Until somebody decides
+  which is authoritative, do not run Prettier here: match the surrounding code by hand.
+  Fixing it means either reformatting the repo in one dedicated commit or deleting the
+  config; doing neither is what makes it a trap.
+- **GitHub Actions Node 20 deprecation.** `build-test.yml` uses `actions/checkout@v4`
+  and `actions/setup-node@v4`, which target Node 20; the runners now force them onto
+  Node 24 and annotate every run. Currently a warning, not a failure. Bumping both to
+  `@v5` clears it — one commit, all three workflows share the definition.

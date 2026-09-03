@@ -17,8 +17,10 @@ import type { TenantRole } from "@/lib/auth";
 /** Every action the backend map defines. Keep sorted, keep in sync. */
 export const ACTIONS = [
   "admin.all",
+  "rcm.post",
   "rcm.queue",
   "rcm.read",
+  "rcm.settings",
   "rcm.write",
   "tc.full",
   "tc.hygiene",
@@ -46,7 +48,9 @@ export function can(
  *
  * A hygienist's home is the inbox, not a dashboard they cannot read. `tc` gets
  * the TC dashboard. A `reviewer` holds exactly one surface, so sending
- * them to a module hub with one tile on it would be a click for nothing.
+ * them to a module hub with one tile on it would be a click for nothing — and
+ * an `rcm_biller` holds the same one surface, wider inside it, so she lands on
+ * the same screen for the same reason.
  * office/admin keep the module hub they have today — they may hold several
  * modules, and picking one for them would be a regression.
  */
@@ -56,6 +60,7 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   tc: "/tc/dashboard",
   hygiene: "/tc/hygiene/inbox",
   reviewer: "/rcm/remittances",
+  rcm_biller: "/rcm/remittances",
 };
 
 /** The fallback home for a user whose role we could not resolve. */
@@ -95,10 +100,11 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/tc": "tc.full",
   // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
   "/tc/hygiene": "tc.hygiene",
-  // RCM is read-gated at the route. Its three tiers (rcm.read / rcm.queue /
-  // rcm.write, decision D-9) are enforced server-side per route; a page renders
-  // the same for a reviewer and an approver, and the buttons a reviewer may not
-  // press refuse honestly rather than being hidden.
+  // RCM is read-gated at the route. Its tiers (rcm.read / rcm.queue / rcm.write,
+  // decision D-9, plus rcm.post and rcm.settings from the shadow gate) are
+  // enforced server-side per route; a page renders the same for a reviewer, a
+  // biller and an approver, and the buttons a role may not press refuse
+  // honestly rather than being hidden.
   "/rcm": "rcm.read",
 };
 

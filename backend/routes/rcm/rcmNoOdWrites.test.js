@@ -88,7 +88,7 @@ const test = require('node:test');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const { FakeRcmDb, FakeOd, bootRcmApp, api } = require('./rcmTestUtils');
+const { FakeRcmDb, FakeOd, bootRcmApp, api, seedOfficeSettings } = require('./rcmTestUtils');
 
 // ─── The Open Dental surface, split by what it is FOR ────────────────────────
 
@@ -466,6 +466,9 @@ test('only the one allow-listed file names an Open Dental write method', () => {
     "'/claimpayments'",
     'claimprocs/Supplemental',
     'documents/Upload',
+    // 6d's two new verbs. They live in the allow-listed file like every other
+    // write; naming one anywhere ELSE is what this list exists to catch.
+    "'/adjustments'",
   ];
   const offenders = [];
 
@@ -514,9 +517,19 @@ test('the allow-listed file is REAL, and it does not reach for the verbs 6c excl
     'the allow-listed file does not actually reach the transport — the writes moved somewhere else'
   );
 
+  /*
+   * 6d MOVED TWO OF THESE FROM "out of scope" TO "in scope, in this file".
+   *
+   * `claimprocs/Supplemental` and `documents/Upload` were on this list because
+   * 6c refused a recoupment and left the EOB unfiled. 6d does both, behind a
+   * typed confirmation and a posted-plan precondition respectively — so the
+   * list shrinks to what genuinely remains unbuilt and un-entitled.
+   *
+   * PATIENT MONEY STAYS OFF IT, and not merely by policy: `ApiPayments` is not
+   * enabled on this key at all (G11), so `/payments` and `/paysplits` are an
+   * unproven path in the strongest sense — nothing has ever exercised them.
+   */
   const outOfScope = [
-    'claimprocs/Supplemental',
-    'documents/Upload',
     "'/payments'",
     "'/paysplits'",
   ].filter((signal) => writer.code.includes(signal));
@@ -524,10 +537,21 @@ test('the allow-listed file is REAL, and it does not reach for the verbs 6c excl
   assert.deepEqual(
     outOfScope,
     [],
-    'Slice 6c posts ordinary insurance adjudication only. Recoupments and the ' +
-      'document attach are 6d; patient money is PRD-deferred and not entitled. Found: ' +
-      outOfScope.join(', ')
+    'The patient-portion flow is PRD-deferred and the key is not entitled for it ' +
+      '(G11). Found: ' + outOfScope.join(', ')
   );
+
+  /*
+   * AND THE THREE 6d VERBS REALLY ARE HERE. An allow-list is only a guarantee
+   * if the file it names holds the writes — if these moved somewhere unwatched
+   * the test above would pass trivially while the module grew a second writer.
+   */
+  for (const signal of ['/adjustments', 'claimprocs/Supplemental', 'documents/Upload']) {
+    assert.ok(
+      writer.code.includes(signal),
+      `6d's ${signal} must live in the allow-listed write layer, not elsewhere`
+    );
+  }
 });
 
 test('only the approval gate may CREATE a posting plan, and only the drain may advance one', () => {
@@ -632,6 +656,11 @@ test('APPROVING creates queue rows and calls NOTHING on Open Dental', async () =
  */
 function seedApprovedPlan(db) {
   seedProposal(db, { approvable: true });
+  // The shadow gate, OPEN. This suite's claim is about which Open Dental verbs
+  // a drain emits, so the gate that decides whether it drains at all has to be
+  // out of the way — and saying so here is what keeps "the drain wrote nothing"
+  // from silently becoming "the drain never ran".
+  seedOfficeSettings(db, { roland: true, valley: true });
   db.seed('rcm_posting_queue', [
     {
       queue_id: '11111111-2222-4333-8444-555555555555',
@@ -822,7 +851,7 @@ test('the drain reaches Open Dental through the per-office registry; approve sti
   );
 });
 
-test('the operational D-7 probes are the ONLY scripts that reach an OD write, and they are not module code', () => {
+test('a NAMED allow-list of operational scripts may reach an OD write, and they are not module code', () => {
   /*
    * THE EVASION PATH THIS CLOSES.
    *
@@ -831,14 +860,53 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
    * any of them — and "put it in scripts/" is exactly the shape a future
    * shortcut takes.
    *
-   * Two operational probes legitimately live there: D-7's write-verb entitlement
-   * check and the read sweep that proves it landed nothing. They are checked in
-   * rather than pasted from a scratchpad so the thing that gets run is the thing
-   * that got reviewed. Anything ELSE under scripts/ that names an Open Dental
-   * write is a module trying to escape the allow-list.
+   * A small, NAMED set of operational scripts legitimately lives there. They are
+   * checked in rather than pasted from a scratchpad so the thing that gets run is
+   * the thing that got reviewed. Anything ELSE under scripts/ that names an Open
+   * Dental write is a module trying to escape the allow-list.
    */
   const scriptsDir = path.join(__dirname, '../../scripts');
-  const ALLOWED = new Set(['rcm-d7-write-probe.js', 'rcm-d7-read-sweep.js']);
+  /*
+   * FIVE FILES, EACH FOR A NAMED REASON. Adding a sixth is a review decision.
+   *
+   *   rcm-d7-write-probe.js  D-7's write-verb entitlement check (RCM_POSTING §9a).
+   *   rcm-d7-read-sweep.js   the read sweep that proves it landed nothing.
+   *   rcm-s10-prep.js        §10.1 — creates the two disposable $1.00 targets on
+   *                          the designated test patient. POST only.
+   *   rcm-s11-unwind.js      §11 — the ONLY file anywhere in this repo that may
+   *                          name DELETE against Open Dental. The block below
+   *                          pins the properties that keep it narrow.
+   *   rcm/reseed-prep.js     §10.8 — creates the seven disposable claims the
+   *                          staging reseed's four 835s pay. POST only.
+   *
+   * Deliberately NOT here: `rcm-s10-inventory.js`, `rcm-s10-835.js`,
+   * `rcm/reseed-835.js`, `rcm/reseed-targets.js` and
+   * `rcm/reset-staging-fixtures.js`. They belong to the same operations and they
+   * name no write verb, so they are scanned like any other script. An allow-list
+   * that covered a whole feature rather than the files that actually need it
+   * would be the escape hatch this test exists to close.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE NAMES ARE PATHS RELATIVE TO `scripts/`, BECAUSE THE SCAN NOW RECURSES
+   * ─────────────────────────────────────────────────────────────────────────
+   * This was one `readdirSync` over `scripts/` matched against bare basenames,
+   * which made any SUBDIRECTORY invisible to it: a file under `scripts/rcm/`
+   * could have named `apiWriteRaw` and no guard in this file would have looked.
+   * "Put it in scripts/" is the shape this test exists to close, and "put it in
+   * scripts/anything/" was a strictly easier version of the same move.
+   *
+   * Found when `scripts/rcm/` was created for the staging reseed (2026-09-01).
+   * Nothing had exploited it — no subdirectory existed until then — but the hole
+   * was real for as long as the scan was one level deep, and a guard that only
+   * works while nobody makes a folder is not a guard.
+   */
+  const ALLOWED = new Set([
+    'rcm-d7-write-probe.js',
+    'rcm-d7-read-sweep.js',
+    'rcm-s10-prep.js',
+    'rcm-s11-unwind.js',
+    'rcm/reseed-prep.js',
+  ]);
 
   const WRITE_SIGNALS = [
     'apiWriteRaw',
@@ -849,16 +917,56 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
     "'/claimpayments'",
     'claimprocs/Supplemental',
     'documents/Upload',
+    /*
+     * DELETE, added with the §11 unwind.
+     *
+     * The transport has no delete verb at all — `apiWriteRaw` is POST/PUT only,
+     * deliberately — so until §11 nothing under scripts/ could name one and the
+     * scan did not look. It looks now: `rcm-s11-unwind.js` reaches the raw axios
+     * instance to issue DELETE, which is exactly the shape a second, unreviewed
+     * deleter would take. Bare `.delete(` is NOT a signal — `Map` and `Set` use
+     * it — so the two client-shaped spellings are named instead.
+     */
+    'axios.delete(',
+    'client.delete(',
   ];
 
+  /**
+   * Every `.js`/`.cjs` under `scripts/`, AT ANY DEPTH, as a path relative to it
+   * and with forward slashes so the allow-list reads the same on every platform.
+   *
+   * `node_modules` is skipped because a scripts folder that ever grows one would
+   * otherwise make this test scan a few thousand third-party files and fail on
+   * somebody else's `axios.post(`.
+   *
+   * @param {string} dir @param {string} prefix @returns {string[]}
+   */
+  const scriptFiles = (dir, prefix = '') => {
+    /** @type {string[]} */
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) out.push(...scriptFiles(path.join(dir, entry.name), rel));
+      else if (entry.name.endsWith('.js') || entry.name.endsWith('.cjs')) out.push(rel);
+    }
+    return out;
+  };
+
   const offenders = [];
-  for (const name of fs.readdirSync(scriptsDir)) {
-    if (!name.endsWith('.js') && !name.endsWith('.cjs')) continue;
-    if (ALLOWED.has(name)) continue;
+  /** Scripts that DO name a write verb — allowed or not — must not self-execute. */
+  const unguarded = [];
+  const scanned = scriptFiles(scriptsDir);
+  for (const name of scanned) {
     const code = fs
       .readFileSync(path.join(scriptsDir, name), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
+    const namesAWrite = WRITE_SIGNALS.some((signal) => code.includes(signal));
+    if (namesAWrite && !/require\.main\s*===\s*module/.test(code)) {
+      unguarded.push(`scripts/${name}`);
+    }
+    if (ALLOWED.has(name)) continue;
     for (const signal of WRITE_SIGNALS) {
       if (code.includes(signal)) offenders.push(`scripts/${name} → ${signal}`);
     }
@@ -870,11 +978,50 @@ test('the operational D-7 probes are the ONLY scripts that reach an OD write, an
       offenders.join(', ')
   );
 
-  // And the two that ARE allowed really are there — an allow-list pointing at
+  /*
+   * AND A SCRIPT THAT NAMES A WRITE MUST NOT RUN ON IMPORT.
+   *
+   * The scan above asks WHICH files may name a write verb. It cannot ask when
+   * those verbs FIRE, and on 2026-08-24 that gap was live: the read sweep
+   * imported the write probe for its shared ghost id, the probe called `main()`
+   * at module load, and so a script named "read sweep" re-issued every write
+   * verb — invisibly to this guard, because the verbs sat in the one file that
+   * is allowed to name them.
+   *
+   * Requiring a file must not be enough to make it write to a chart. Both D-7
+   * scripts now guard `main()`, and share the ghost id through a one-constant
+   * module that requires nothing, so no file's import can run anything.
+   * `test/rcmD7ProbeScripts.test.js` proves the behaviour; this is the static
+   * rule that keeps a third script from reopening the hole.
+   */
+  assert.deepEqual(
+    unguarded,
+    [],
+    'a script that names an Open Dental write verb must guard main() behind ' +
+      '`require.main === module`, or requiring it writes to a chart. Found: ' +
+      unguarded.join(', ')
+  );
+
+  // And every file that IS allowed really is there — an allow-list pointing at
   // deleted files passes vacuously.
   for (const name of ALLOWED) {
     assert.ok(fs.existsSync(path.join(scriptsDir, name)), `scripts/${name} is missing`);
   }
+
+  /*
+   * AND THE SCAN REALLY DID GO DOWN A LEVEL.
+   *
+   * The recursion is the whole fix, and a `scriptFiles` that quietly stopped
+   * recursing would leave every assertion above passing over a smaller set —
+   * which is exactly the failure mode the one-level scan already had. So the
+   * scan must be able to point at a file it could not have seen before.
+   */
+  assert.ok(
+    scanned.some((n) => n.includes('/')),
+    'the scan must reach files in subdirectories of scripts/, or the allow-list is bypassable ' +
+      'by making a folder'
+  );
+  assert.ok(scanned.includes('rcm/reseed-prep.js'), 'the reseed prep must be among the scanned files');
 });
 
 test('the D-7 write probe cannot run without GET-checking its targets first', () => {

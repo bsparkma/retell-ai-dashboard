@@ -21,11 +21,16 @@ export function money(cents: number): string {
 }
 
 /**
- * A 'YYYY-MM-DD' date, rendered without a timezone shift.
+ * A DATE-ONLY value ('YYYY-MM-DD'), rendered without a timezone shift.
  *
  * Parsed at NOON UTC on purpose: `new Date("2026-03-02")` is midnight UTC,
  * which in America/Chicago is the evening of March 1st — so a service date
  * would render one day early for every user in the practice's own timezone.
+ *
+ * ONLY for values that carry no time. Slicing an ISO INSTANT to ten characters
+ * here yields its UTC calendar day, which is what printed "Approved Aug 26"
+ * over an approval made at 20:10 on Aug 25 in Roland (§15.2, finding 2). Those
+ * go through `officeDay` below.
  */
 export function day(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -34,18 +39,24 @@ export function day(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** An ISO instant → a short local date and time. */
-export function stamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+/**
+ * An ISO instant → a short date and time IN THE PRACTICE'S OWN ZONE.
+ *
+ * `stamp` used to render in the BROWSER's zone, so the same approval reported a
+ * different date to a biller on a laptop set to UTC than to one beside the
+ * chair. Every RCM instant now goes through `time.ts`, where the reasoning
+ * lives; these are re-exported from here so the screens already importing
+ * `stamp` are fixed without each one changing its import, and so there is one
+ * obvious answer to "how do I print a time on an RCM page".
+ */
+export {
+  officeDay,
+  officeStamp as stamp,
+  officeDayKey,
+  withinLastDays,
+  OFFICE_TIMEZONE,
+  OFFICE_TIME_NOTE,
+} from "@/features/rcm/time";
 
 /** A snake_case slug rendered readably when we have no label for it. */
 export function humanize(slug: string): string {
@@ -120,7 +131,7 @@ export const ATTENTION_LABELS: Record<string, string> = {
   /** An APPROVER owes an action: the work is done and nobody has pressed it. */
   claims_awaiting_approval: "Ready to approve for posting",
   /** An approve ran and left a claim out. Somebody owes a fix or a disposition. */
-  claims_withheld: "Claims withheld at approval",
+  claims_withheld: "Claims held back at approval",
   // ── Slice 6c: the drain ──
   /**
    * A posting run did not finish — blocked, failed, or PARTLY posted.
@@ -139,8 +150,8 @@ export const OBSERVATION_LABELS: Record<string, string> = {
   claims_unmatched: "Claims not matched to Open Dental",
   batch_open: "Held — something on this remittance was flagged",
   batch_unbalanced: "Totals do not reconcile",
-  batch_error: "The batch is in error",
-  batch_posting: "A posting run holds this batch",
+  batch_error: "This check is in error",
+  batch_posting: "A posting is under way on this check",
   /**
    * Slice 6b. The SYSTEM owes the next step and no human does, which is why it
    * is grey — "queued" means a person authorised a posting and nothing has been
@@ -149,7 +160,7 @@ export const OBSERVATION_LABELS: Record<string, string> = {
    * 6c narrowed it rather than replacing it: a plan that FAILED now raises
    * `posting_failed` instead, so this chip means what it has always said.
    */
-  claims_queued: "Queued for posting",
+  claims_queued: "Approved — ready to post",
   /**
    * Slice 6c. Finished: the money is on the chart and every write was verified
    * by reading it back. An observation, because nobody owes anything — the
@@ -262,3 +273,95 @@ export const SOURCE_TITLES: Record<string, string> = {
   "835": "Parsed from a carrier's X12 835. A machine-readable file can be malformed, but it cannot be misread.",
   eob: "Read from a PDF by a model. Check the figures against the source document before posting.",
 };
+
+/**
+ * 1 → "1st", 2 → "2nd", 3 → "3rd", 4 → "4th", 11–13 → "11th"–"13th".
+ *
+ * §1's last rename: "1 posting attempt" reads as a statistic about failure;
+ * "Posted on the 1st try" is the same fact in the words a person would use, and
+ * it lets the ordinary case — it worked first time — read as ordinary rather
+ * than as something that had to be counted.
+ *
+ * A non-positive or non-finite count returns "1st": the caller only reaches this
+ * on a check that HAS posted, so at least one try happened by construction, and
+ * printing "0th" would be arithmetic showing through the copy.
+ */
+export function ordinal(n: number): string {
+  if (!Number.isFinite(n) || n < 1) return "1st";
+  const i = Math.floor(n);
+  const tens = i % 100;
+  if (tens >= 11 && tens <= 13) return `${i}th`;
+  switch (i % 10) {
+    case 1:
+      return `${i}st`;
+    case 2:
+      return `${i}nd`;
+    case 3:
+      return `${i}rd`;
+    default:
+      return `${i}th`;
+  }
+}
+
+/**
+ * A PERSON, BY NAME — never by email address — Stage C-3, item 8(b).
+ *
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * THE CASE IT WAS WRITTEN FOR IS GONE — AND IT STILL STAYS (C-3b item 2)
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * `POST /remittances/:id/approve` — the route this was written against, and the
+ * one described below — now resolves the actor SERVER-SIDE through
+ * `describeActors`, like every other attributed field in the module. That is
+ * the better fix by the distance between "the one person the browser can
+ * identify" and "everyone", so `ApproveCheck` prints `approvedBy` verbatim and
+ * no longer calls this.
+ *
+ * It is not dead. `POST /:id/approve-recoupment`'s `approvedBy` and the posting
+ * plan's `drainedBy` still return keys — both unrendered, which is why they are
+ * tolerable — and imported legacy attribution can be a bare `u_7f3a` forever.
+ * Anything that starts rendering one of those should reach for this — or,
+ * better, resolve it server-side and not need to.
+ *
+ * Everything below describes the mechanism, which is unchanged.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS FIXES, AND WHAT IT CANNOT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Almost every attributed field in this module is already a DISPLAY NAME by the
+ * time it reaches a screen: the routes call `describeActors`, which reads
+ * `rcm_user_map.display_name`. Where one is not, what arrives is straight out
+ * of `resolveRcmActor`, and that function's return value is the crosswalk KEY
+ * — which for anyone the platform minted a row for is their email. So the
+ * sentence a biller read at the single most consequential moment in the module
+ * was
+ *
+ *     Approved by admin@carein.ai
+ *
+ * When that press was made by the person reading it, in this browser, one
+ * second ago, the app knows their name — `/auth/me` put it on the request. So
+ * this resolves the ONE case it can answer honestly: a value that is an email
+ * address AND is the signed-in person's own becomes their display name.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT NEVER INVENTS ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Somebody ELSE'S email address is returned unchanged. The client has no way to
+ * know their name, and rendering "a colleague" or "somebody" in place of an
+ * address a person could at least recognise would trade a real fact for a
+ * polite one. Where that happens, the fix is a display name on their
+ * `rcm_user_map` row — server-side, and exactly what `describeActors` reads.
+ *
+ * @param value the attribution as it arrived — a display name, or a user key
+ * @param me the signed-in person, when there is one
+ */
+export function personName(
+  value: string | null | undefined,
+  me: { name?: string | null; email?: string | null } | null | undefined,
+): string | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return null;
+  const mine = typeof me?.email === "string" ? me.email.trim().toLowerCase() : "";
+  const name = typeof me?.name === "string" ? me.name.trim() : "";
+  if (mine && name && raw.toLowerCase() === mine) return name;
+  return raw;
+}

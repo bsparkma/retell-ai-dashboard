@@ -15,20 +15,36 @@
  * for one would be worse than admitting there is none.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE APPROVE BUTTON IS LIVE (Slice 6b) — AND STILL WRITES NO CHART
+ * THE CLAIM LIST IS A TRIAGE SCREEN (Stage C, §4)
  * ─────────────────────────────────────────────────────────────────────────────
- * `ApprovalPanel` below carries the gate: the pre-flight checklist BEFORE
- * anything is pressed, the button, and what a press did. Approving creates a
- * posting PLAN in CareIN's own database. Nothing on this screen reaches Open
- * Dental — `rcmNoOdWrites.test.js` drives the approve path to success against a
- * client whose every verb throws and asserts not one was called.
+ * It was a stack of expandable cards, each carrying a patient, a payment, a set
+ * of flags and a procedure-line table. Everything true about a claim was on it,
+ * and nothing said which claim to open first.
  *
- * The Confirm button on a claim with a red blocker stays ENABLED, deliberately.
- * Linking a proposal to a chart claim is not posting, and a biller who can see
- * the right claim should be able to say so. What changed in 6b is that the
- * consequence is now PREDICTED where the confirmation happens — the claim card
- * says the confirmation cannot be approved, and the checklist says why — rather
- * than being discovered at drain time.
+ * It is a TABLE now, and the last column is the point: *Where the patient
+ * stands* — the per-claim verdict in miniature, so a biller scanning ten rows
+ * can see which one does not line up before she opens any of them.
+ *
+ * That column renders the SAME `verdictFor()` result the workbench prints and
+ * the gate judges on. It arrives on the approval preview, per claim
+ * (`routes/rcm/approvalGate.js`), so this screen computes no second summary —
+ * a green cell beside a red claim is a shape the code cannot produce.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * APPROVING IS A PAGE NOW, AND THIS SCREEN LINKS TO IT (§6)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The gate's checklist and its button used to be a panel here, below the claim
+ * cards and above the takeback box. The press that freezes a set of decisions
+ * deserves a screen where nothing competes with it — `pages/rcm/ApproveCheck.tsx`
+ * says why at length.
+ *
+ * **The ACT is untouched**: same route, same `rcm.write` tier, same gate, same
+ * audit row, same partial approve. What this page keeps is the COUNT — how many
+ * claims can be approved — and one link, so the rail's "Check it over" step
+ * still has somewhere to send her.
+ *
+ * Approving still reaches Open Dental not at all; `rcmNoOdWrites.test.js` drives
+ * the path to success against a client whose every verb throws.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
@@ -42,13 +58,20 @@ import {
   Loader2,
   RefreshCw,
   ScanLine,
+  ShieldCheck,
 } from "lucide-react";
 import {
+  COMPARISON_CLOSED_STATUSES,
+  getApprovalPreview,
   getRemittance,
+  listPostingQueue,
   matchRemittance,
   RcmApiError,
+  unparkRemittance,
   RCM_OFFICE_LABELS,
+  type ApprovalPreview,
   type BatchMatchResponse,
+  type ClaimVerdict,
   type RemittanceClaim,
   type RemittanceDetail as RemittanceDetailPayload,
 } from "@/features/rcm/api";
@@ -71,8 +94,17 @@ import {
   stamp,
 } from "@/features/rcm/format";
 import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
+import { claimHref, remittanceFlow } from "@/features/rcm/flow";
+import { waitingFor } from "@/features/rcm/waitingOn";
 import { describePlbAdjustment } from "@/features/rcm/plb";
-import ApprovalPanel from "@/pages/rcm/ApprovalPanel";
+
+import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
+import RcmStepper from "@/components/rcm/RcmStepper";
+import PostThisCheck from "@/components/rcm/PostThisCheck";
+import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
+import CheckComparison from "@/components/rcm/CheckComparison";
+import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
+import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
 
 export default function RemittanceDetailPage() {
@@ -99,6 +131,30 @@ export default function RemittanceDetailPage() {
    */
   const [matchError, setMatchError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  /**
+   * THE GATE'S PREVIEW, for the *Where the patient stands* column and the
+   * approve card's count.
+   *
+   * A SEPARATE, FAILURE-TOLERANT read. The check itself must render whether or
+   * not the gate can be evaluated — a screen that went blank because a preview
+   * timed out would hide the claim list somebody came here to look at. When it
+   * is absent the column says "not judged yet" and the approve card says it
+   * could not read the gate, which are two different and honest sentences.
+   */
+  const [preview, setPreview] = useState<ApprovalPreview | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  /**
+   * IS POSTING SWITCHED OFF FOR THIS PRACTICE? (§10)
+   *
+   * `postingEnabled && !drainEnabled` — the same predicate Today computes, from
+   * the same read. A practice D-7 has never validated is NOT in shadow mode: it
+   * is not set up, and its postings say so per row. Showing both would offer two
+   * explanations for one silence.
+   *
+   * `false` until the read lands, so the banner appears when it is known to be
+   * true and never merely because a read is slow.
+   */
+  const [shadowMode, setShadowMode] = useState(false);
 
   /**
    * Which office's remittance this is.
@@ -121,6 +177,35 @@ export default function RemittanceDetailPage() {
         try {
           const data = await getRemittance(office, batchId);
           if (!cancelled) setState({ kind: "loaded", data });
+          /*
+           * AFTER the check is on screen, never in front of it. Its failure is
+           * recorded and the page carries on — see `preview` above.
+           */
+          getApprovalPreview(office, batchId).then(
+            (p) => {
+              if (cancelled) return;
+              setPreview(p);
+              setPreviewFailed(false);
+            },
+            () => {
+              if (cancelled) return;
+              setPreview(null);
+              setPreviewFailed(true);
+            },
+          );
+          /*
+           * The posting switch, on its own failure-tolerant read. `limit: 1`
+           * because the two flags are what this page wants and the rows are
+           * not — they belong to the posting history screen.
+           */
+          listPostingQueue(office, { limit: 1 }).then(
+            (q) => {
+              if (!cancelled) setShadowMode(q.postingEnabled && !q.drainEnabled);
+            },
+            () => {
+              if (!cancelled) setShadowMode(false);
+            },
+          );
           return;
         } catch (err) {
           // A 404 under one office is the normal way to discover it belongs to
@@ -150,6 +235,33 @@ export default function RemittanceDetailPage() {
   useEffect(load, [load]);
 
   /**
+   * OPENING A SAVED CHECK PUTS IT BACK ON THE ORDINARY PILE.
+   *
+   * "Save for tomorrow" is a note to yourself, and a note has done its job the
+   * moment you are reading it. Leaving the state set would make Today keep
+   * offering the check you are already looking at, and would quietly turn a
+   * one-press convenience into a two-press chore nobody would use twice.
+   *
+   * FIRE AND FORGET, on purpose. The server is idempotent over an un-saved check
+   * (200, `wasParked: false`), so this is safe on every visit; and if it fails
+   * there is nothing to tell anybody — a note that outlived its usefulness by an
+   * hour costs nothing, while an error banner over an ordinary page-open costs
+   * the reader's attention for something they never asked for.
+   *
+   * It does NOT re-load the page. The `parkedAt` on screen is a second old and
+   * about to be irrelevant; a reload here would restart the claim bundle and the
+   * Open Dental reads under it for a cosmetic field.
+   */
+  const parkedAt = state.kind === "loaded" ? state.data.remittance.parkedAt : null;
+  const loadedOffice = state.kind === "loaded" ? state.data.office : null;
+  useEffect(() => {
+    if (!parkedAt || !loadedOffice || !batchId) return;
+    void unparkRemittance(loadedOffice, batchId).catch(() => {
+      /* see above — a stale note is not worth a banner */
+    });
+  }, [parkedAt, loadedOffice, batchId]);
+
+  /**
    * Clear the batch-match summary when the page moves to a DIFFERENT
    * remittance — and only then.
    *
@@ -168,7 +280,7 @@ export default function RemittanceDetailPage() {
     return (
       <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground" data-testid="remittance-loading">
         <Loader2 size={16} className="animate-spin" />
-        Loading remittance…
+        Loading this check…
       </div>
     );
   }
@@ -178,7 +290,7 @@ export default function RemittanceDetailPage() {
       <div className="p-6" data-testid="remittance-error">
         <BackLink />
         <div className="mt-4 rounded-xl border border-dashed border-border bg-card p-8 text-center">
-          <div className="text-sm font-medium text-foreground">Could not open this remittance</div>
+          <div className="text-sm font-medium text-foreground">Could not open this check</div>
           <p className="mt-1 text-sm text-muted-foreground">{state.message}</p>
         </div>
       </div>
@@ -186,6 +298,72 @@ export default function RemittanceDetailPage() {
   }
 
   const { remittance: r, claims, office } = state.data;
+  const flow = remittanceFlow(r, claims);
+  /*
+   * THIS CHECK'S POSTING, if it has one.
+   *
+   * `plans` is an array because the table permits more than one; today the
+   * `(office_id, remittance_key)` unique index means at most one, so reading the
+   * first is exact rather than a guess. It is typed as an array so that the day
+   * 6d.2 relaxes that index (§15.1), this line is where the follow-on shows up
+   * rather than a silently-wrong screen.
+   */
+  const plan = r.plans?.[0] ?? null;
+  const unmatchedCount = claims.filter((c) => c.odMatchStatus === "not_run").length;
+  /**
+   * WHAT IS LEFT ON THIS CHECK, for the finished panel's "Next claim".
+   *
+   * The same predicate `features/rcm/nextAction.ts` uses on Today: a claim is
+   * finished when a person has checked it over or it has been approved onto a
+   * posting. "Looked, nothing to do" is finished work, which is why a claim with
+   * no chart match can still be done.
+   */
+  const unfinished = claims.filter((c) => c.reviewedAt == null && c.postingQueueId == null);
+  const unfinishedCount = unfinished.length;
+  const nextUnfinishedClaimId = unfinished.length > 0 ? unfinished[0].claimId : null;
+  /**
+   * The per-claim verdicts, keyed by claim.
+   *
+   * From the gate's preview, which carries `verdictFor()`'s whole result per
+   * claim. A claim the preview did not judge is ABSENT rather than mapped to a
+   * neutral value — the table renders those two cases as different sentences.
+   */
+  const verdictByClaim = new Map<string, ClaimVerdict>(
+    (preview?.claims ?? [])
+      .filter((c): c is typeof c & { verdict: ClaimVerdict } => c.verdict != null)
+      .map((c) => [c.claimId, c.verdict]),
+  );
+
+  /**
+   * Take the operator to the approve button rather than growing a second one.
+   *
+   * `focus()` as well as `scrollIntoView()`: a page that jumps but leaves the
+   * keyboard where it was has moved the eye and not the hand.
+   */
+  /**
+   * The rail's "Check it over" step.
+   *
+   * It scrolls to the card that leads to the approve page rather than navigating
+   * straight there: the rail says WHERE you are, and jumping a person to another
+   * screen because they read a step name is a bigger move than they asked for.
+   * The card's own button is the navigation.
+   */
+  function goToApprovalGate() {
+    const gate = document.getElementById("rcm-approval-gate");
+    gate?.scrollIntoView({ behavior: "smooth", block: "start" });
+    gate?.querySelector<HTMLAnchorElement>('[data-testid="approve-open-page"]')?.focus({
+      preventScroll: true,
+    });
+  }
+
+  /** The same move, for the step after it. See `goToApprovalGate`. */
+  function goToPostPanel() {
+    const panel = document.querySelector<HTMLElement>('[data-testid="post-this-check"]');
+    panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    panel
+      ?.querySelector<HTMLButtonElement>('[data-testid="post-this-check-button"]')
+      ?.focus({ preventScroll: true });
+  }
 
   async function runBatchMatch() {
     setMatching(true);
@@ -247,7 +425,7 @@ export default function RemittanceDetailPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-end gap-1">
           <button
             onClick={runBatchMatch}
             disabled={matching}
@@ -257,6 +435,11 @@ export default function RemittanceDetailPage() {
             {matching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {matching ? "Matching…" : "Match all claims"}
           </button>
+          {matching && (
+            <DisabledReason testId="match-in-flight">
+              A match is running. It reads Open Dental and writes nothing.
+            </DisabledReason>
+          )}
 
           {/*
             SLICE 6b: the Approve button now lives in ApprovalPanel below, beside
@@ -265,6 +448,39 @@ export default function RemittanceDetailPage() {
           */}
         </div>
       </div>
+
+      {/*
+        ── WHERE THIS ONE IS ───────────────────────────────────────────────────
+        The same five steps as the claim screen and the Posting screen, computed
+        once in `features/rcm/flow.ts`. The CTA below it is the next click — and
+        the reason "approve is on a different page from review and match, with
+        no link between them" (§15.2, finding 1) stops being navigation somebody
+        has to already know.
+
+        NO `here`, deliberately. This page owns BOTH of the last two steps —
+        approving is the second half of "Check it over" and Post is the step
+        after it, one panel under the other — so a "you are here" marker would
+        have to name one of two steps the page really is. The rail's own current
+        dot and the CTA below it already answer "where am I" without picking.
+      */}
+      <RcmStepper
+        flow={flow}
+        onAction={{
+          "run-match": runBatchMatch,
+          // NEITHER of these is a second button. Both real controls are on this
+          // page already, below the checklist that explains them; the rail takes
+          // you to whichever one is next and puts the focus there. Two controls
+          // that both approve — or both post — would be exactly the confusion
+          // this slice exists to remove.
+          approve: goToApprovalGate,
+          drain: goToPostPanel,
+        }}
+      />
+
+      {/* SAVE FOR TOMORROW · SET ASIDE. Directly under the rail, because they
+          are answers to the same question it asks — "what is next on this one" —
+          and one honest answer is "not today". */}
+      <CheckWorklistActions office={office} remittance={r} onChanged={load} />
 
       {/*
         ── REMITTANCE-LEVEL FLAGS ──────────────────────────────────────────────
@@ -495,24 +711,202 @@ export default function RemittanceDetailPage() {
         </div>
       )}
 
-      {/* ── The approval gate ──────────────────────────────────────────────── */}
-      <ApprovalPanel office={office} batchId={r.batchId} onApproved={load} />
+      {/*
+        ── POST THIS CHECK ─────────────────────────────────────────────────────
+        Rendered only once this check HAS a posting — that is, only once somebody
+        has approved it. Before then the next act is the approval, which is the
+        panel below, and a Post button beside a check nothing has authorised
+        would be a control whose precondition is invisible.
 
-      {/* ── Claims ─────────────────────────────────────────────────────────── */}
+        ONE code path with the office-wide press: the same server route, narrowed
+        by `queueId`. See the component's header.
+      */}
+      {plan && (
+        <PostThisCheck
+          office={office}
+          queueId={plan.queueId}
+          onPosted={load}
+          /* §7's "What's left on this check". The panel cannot see the check it
+             belongs to, so the check tells it — and a "Next claim" button
+             pointing at nothing is worse than no button, which is why all three
+             are optional there and default to offering nothing. */
+          batchId={r.batchId}
+          nextClaimId={nextUnfinishedClaimId}
+          remaining={unfinishedCount}
+        />
+      )}
+
+      {/*
+        ── SHADOW MODE (§10) ───────────────────────────────────────────────────
+        Above the approve card, because it changes what the next press means. It
+        carries the worksheet — the same roll-up the approve page shows, from the
+        same per-claim verdicts — so a practice posting by hand has the figures
+        beside the check rather than on a screen it has no reason to open.
+
+        Rendered only when the practice IS in shadow: posting switched on for it
+        (D-7) and the switch off. A practice D-7 has never validated is not "in
+        shadow mode", it is not set up, and its postings say so per row.
+      */}
+      {shadowMode && preview && (
+        <ShadowModeBanner office={office} claims={preview.claims} />
+      )}
+
+      {/*
+        ── DID THE APP GET THIS CHECK RIGHT? (C-2) ─────────────────────────────
+        Directly beneath the shadow panel, which is where C-1 left the room for
+        it, and where the worksheet she just posted from is still on screen.
+
+        THE THREE CONDITIONS, and each one is doing work:
+
+          shadowMode   posting is switched off for this practice, so there IS a
+                       hand-posting to compare against. With posting on, the
+                       confirmation after a post answers this question with the
+                       chart itself, and asking a person would be asking her to
+                       repeat a read the app already did.
+          plan         somebody has approved this check, so the app has said what
+                       it would do. Before that there is nothing to compare, and
+                       the server refuses with COMPARISON_NOT_APPROVED.
+          —            a posted check still shows its recorded answer, read-only.
+                       That is `closed` rather than an absence: a control that
+                       vanishes reads as a bug.
+      */}
+      {shadowMode && plan && (
+        <CheckComparison
+          office={office}
+          batchId={r.batchId}
+          verdict={r.comparisonVerdict}
+          reason={r.comparisonReason}
+          note={r.comparisonNote}
+          answeredAt={r.comparisonAt}
+          answeredBy={r.comparisonBy}
+          revision={r.comparisonRevision}
+          closed={COMPARISON_CLOSED_STATUSES.includes(plan.status)}
+          onRecorded={load}
+        />
+      )}
+
+      {/*
+        ── CHECK IT OVER, AND SAY YES ──────────────────────────────────────────
+        The gate's checklist and its button are a PAGE now (§6). What stays here
+        is the count and the door — the rail's "Check it over" step has to have
+        somewhere to send her, and a biller standing on the check should be able
+        to see how much of it is ready without leaving.
+
+        The ACT is untouched: same route, same tier, same gate, same audit row.
+      */}
+      <section
+        id="rcm-approval-gate"
+        className="mt-6 scroll-mt-6 rounded-xl border border-border bg-card p-4"
+        data-testid="approve-card"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-foreground">Check it over, and say yes</h2>
+            {previewFailed ? (
+              <p className="mt-1 text-sm text-amber-800 dark:text-amber-300" data-testid="approve-card-unavailable">
+                What the app checked could not be read just now. The claims below are unaffected —
+                open the approve screen to try again.
+              </p>
+            ) : preview ? (
+              <p className="mt-1 text-sm text-muted-foreground" data-testid="approve-card-counts">
+                {preview.postableCount} of {preview.claims.length} claim
+                {preview.claims.length === 1 ? "" : "s"} can be approved
+                {preview.withheldCount > 0 ? ` · ${preview.withheldCount} not ready yet` : ""}
+                {preview.queuedCount > 0 ? ` · ${preview.queuedCount} already approved` : ""}
+              </p>
+            ) : (
+              <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Loader2 size={13} className="animate-spin" />
+                Checking what can be approved…
+              </p>
+            )}
+            <p className="mt-1 text-xs text-muted-foreground">
+              The next screen shows every figure that will reach Open Dental, every write-off this
+              office chose to absorb, and every condition the app applied — before anything is
+              pressed.
+            </p>
+          </div>
+          <Link
+            href={`/rcm/remittances/${encodeURIComponent(r.batchId)}/approve`}
+            data-testid="approve-open-page"
+            className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+          >
+            <ShieldCheck size={14} />
+            Review and approve
+            <ChevronRight size={13} />
+          </Link>
+        </div>
+      </section>
+      {/*
+        D-6. Rendered BESIDE the ordinary panel rather than inside it, and it
+        returns null when this remittance carries no takeback — so a biller
+        never sees a takeback control on a remittance that has none, and never
+        finds "approve nine claims" and "authorise a permanent write" behind the
+        same button.
+
+        It sits OUTSIDE the stepper deliberately: the stepper describes the
+        ordinary path a remittance walks, and a takeback is not a step on it.
+      */}
+      <div className="mt-4">
+        <RecoupmentPanel
+          office={office}
+          batchId={r.batchId}
+          onApproved={load}
+          /* §9's explanation needs the Open Dental claim numbers and the
+             carrier's own adjustment codes. Both are on the claims this page
+             already holds, so they are passed rather than fetched twice. */
+          claims={claims}
+        />
+      </div>
+
+      {/* ── Claims — the triage screen (§4) ────────────────────────────────── */}
       <h2 className="mt-8 text-lg font-semibold tracking-tight text-foreground" style={{ fontFamily: "Sora, sans-serif" }}>
         Claims
       </h2>
 
+      {/*
+        THE MONEY SANITY LINE, above the table.
+        Two facts a biller checks before she reads a single row: what the carrier
+        actually paid, and whether the claims add up to it. The balance check
+        above says the same thing in a card; this says it in the sentence she
+        would say out loud, where she is about to work.
+      */}
+      <p className="mt-1 text-sm text-muted-foreground" data-testid="claims-sanity">
+        Carrier paid <span className="font-mono text-foreground">{money(r.totalAmountCents)}</span>
+        {" · "}
+        {r.balance.balanced
+          ? "lines add up."
+          : `lines are ${money(r.balance.differenceCents)} out — nothing here can be approved until that is sorted.`}
+      </p>
+
       {claims.length === 0 ? (
         <div className="mt-3 rounded-xl border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
-          This remittance carries no claims.
+          This check carries no claims.
         </div>
       ) : (
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 overflow-hidden rounded-xl border border-border bg-card">
+          <div className="hidden grid-cols-[minmax(9rem,1.1fr)_6rem_4rem_minmax(8rem,0.9fr)_minmax(12rem,1.4fr)_5.5rem] gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground md:grid">
+            <span>Patient</span>
+            <span className="text-right">Paid</span>
+            <span className="text-right">Lines</span>
+            <span>State</span>
+            {/*
+              THE VERDICT IN MINIATURE. It is the SAME `verdictFor()` result the
+              workbench prints and the gate judges on, carried out on the
+              approval preview per claim — never a second summary computed here.
+            */}
+            <span>Where the patient stands</span>
+            <span />
+          </div>
           {claims.map((claim) => (
-            <ClaimCard
+            <ClaimTriageRow
               key={claim.claimId}
               claim={claim}
+              batchId={r.batchId}
+              verdict={verdictByClaim.get(claim.claimId) ?? null}
+              /* `null` = the gate has not answered yet; `true` = it answered and
+                 this claim was not in it, which is a different sentence. */
+              judged={preview === null ? null : verdictByClaim.has(claim.claimId)}
               open={expanded.has(claim.claimId)}
               onToggle={() =>
                 setExpanded((prev) => {
@@ -537,7 +931,7 @@ function BackLink() {
       className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
     >
       <ArrowLeft size={14} />
-      All remittances
+      All checks
     </Link>
   );
 }
@@ -563,21 +957,71 @@ function Stat({
   );
 }
 
-function ClaimCard({
+/**
+ * ONE CLAIM, AS A TRIAGE ROW.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT WAS A CARD AND IT IS A ROW, AND THE LAST COLUMN IS WHY
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The card carried everything true about a claim — the payment, every flag, the
+ * match state, an expandable line table — and nothing that said which claim to
+ * open first. Ten of them was a page you scrolled rather than a list you
+ * triaged.
+ *
+ * The row keeps every one of those facts and adds the one that ranks them:
+ * *Where the patient stands*, the per-claim verdict in miniature. A biller
+ * scanning that column sees "matches the EOB" nine times and "Open Dental's fee
+ * for D2740 doesn't match" once, and knows where her evening goes.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE VERDICT IS THE GATE'S OWN, CARRIED WHOLE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `verdict.sentence` arrives already written and already formatted from
+ * `verdictFor()` on the server — the same object the workbench prints and the
+ * approval gate judges on. This row renders it verbatim and computes nothing.
+ * A green cell beside a red claim is a shape the code cannot produce.
+ *
+ * The sentence can be long. It is truncated to one line with the whole of it on
+ * the cell's `title`, and the claim's own screen is one click away — a cell that
+ * wrapped to four lines would undo the scanning the column exists for.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE LINE TABLE IS STILL HERE, STILL BEHIND A TOGGLE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Unchanged from the card, including its own component. Triage is about picking
+ * the row; the evidence under it did not stop being useful.
+ */
+function ClaimTriageRow({
   claim,
+  batchId,
+  verdict,
+  judged,
   open,
   onToggle,
 }: {
   claim: RemittanceClaim;
+  /** Threaded through so the claim page can offer a way back to this one. */
+  batchId: string;
+  /** The gate's own verdict for this claim, or null. */
+  verdict: ClaimVerdict | null;
+  /**
+   * `null` — the gate has not answered yet.
+   * `false` — it answered and had nothing to say about this claim.
+   * `true` — it judged this claim (and `verdict` is set).
+   *
+   * Three states because they are three different sentences, and collapsing the
+   * first two would make a slow read look like a missing judgement.
+   */
+  judged: boolean | null;
   open: boolean;
   onToggle: () => void;
 }) {
   const deadEnd = claim.needsReviewReasons.some((r) => NO_ACTION_REASONS.has(r));
   /**
-   * THE GATE IS PREDICTED HERE, AND IT BITES IN THE PANEL ABOVE.
+   * THE GATE IS PREDICTED HERE, AND IT BITES ON THE APPROVE PAGE.
    *
    * The ruling on "a Confirm button enabled above a red blocker": confirming
-   * only LINKS a proposal to a chart claim, so it stays available — but the card
+   * only LINKS a proposal to a chart claim, so it stays available — but the row
    * has to say that this confirmation cannot be approved, and why. Otherwise the
    * only place the consequence appears is at the gate, after somebody has
    * already committed the linkage.
@@ -585,64 +1029,101 @@ function ClaimCard({
   const blocking = claim.needsReviewReasons.filter(isBlockingReason);
 
   return (
-    <div className="rounded-xl border border-border bg-card" data-testid={`claim-card-${claim.claimId}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3 p-4">
+    <div className="border-b border-border last:border-b-0" data-testid={`claim-card-${claim.claimId}`}>
+      <div className="grid grid-cols-1 items-center gap-3 px-4 py-3 md:grid-cols-[minmax(9rem,1.1fr)_6rem_4rem_minmax(8rem,0.9fr)_minmax(12rem,1.4fr)_5.5rem]">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-foreground">{claim.patientName}</span>
-            <span className="font-mono text-xs text-muted-foreground">#{claim.claimNumber}</span>
-            <span
-              className={`rounded-full px-2 py-0.5 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
-              data-testid={`claim-match-state-${claim.claimId}`}
-            >
-              {matchStatusLabel(claim.odMatchStatus, claim.rejectedCandidates)}
-              {claim.odClaimNum ? ` · ClaimNum ${claim.odClaimNum}` : ""}
-            </span>
+          <div className="truncate text-sm font-medium text-foreground">{claim.patientName}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
+            #{claim.claimNumber} · {day(claim.serviceDate)}
+          </div>
+        </div>
+
+        <div className="text-right">
+          <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
+            {money(claim.totalPaidCents)}
+          </div>
+          <div className="font-mono text-xs tabular-nums text-muted-foreground">
+            of {money(claim.totalBilledCents)}
+          </div>
+        </div>
+
+        <button
+          onClick={onToggle}
+          data-testid={`toggle-lines-${claim.claimId}`}
+          className="flex items-center gap-1 font-mono text-sm tabular-nums text-muted-foreground transition-colors hover:text-foreground md:justify-end"
+          aria-expanded={open}
+        >
+          {claim.lines.length}
+          <ChevronRight
+            size={11}
+            className={open ? "rotate-90 transition-transform" : "transition-transform"}
+          />
+        </button>
+
+        <div className="min-w-0">
+          <span
+            className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
+            data-testid={`claim-match-state-${claim.claimId}`}
+          >
+            {matchStatusLabel(claim.odMatchStatus, claim.rejectedCandidates)}
+          </span>
+          <div className="mt-0.5 flex flex-wrap gap-1">
             {claim.reviewedAt && (
-              <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-                Reviewed
+              <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                Checked over
               </span>
             )}
             {claim.postingQueueId && (
               <span
-                className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+                className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
                 title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
                 data-testid={`claim-queued-${claim.claimId}`}
               >
-                Queued for posting
+                Approved
               </span>
             )}
           </div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            Service {day(claim.serviceDate)} · {claim.insuranceType}
-          </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
-              {money(claim.totalPaidCents)}
-            </div>
-            <div className="font-mono text-xs tabular-nums text-muted-foreground">
-              of {money(claim.totalBilledCents)} billed
-            </div>
-          </div>
-          <Link
-            href={`/rcm/claims/${claim.claimId}`}
-            data-testid={`open-claim-${claim.claimId}`}
-            className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            Match
-            <ChevronRight size={12} />
-          </Link>
+        {/* ── WHERE THE PATIENT STANDS ───────────────────────────────────── */}
+        <div className="min-w-0" data-testid={`claim-stands-${claim.claimId}`}>
+          {verdict ? (
+            <span
+              title={verdict.sentence}
+              className={`block truncate text-xs ${
+                verdict.state === "red"
+                  ? "font-medium text-rose-700 dark:text-rose-400"
+                  : verdict.state === "amber"
+                    ? "text-amber-800 dark:text-amber-300"
+                    : "text-muted-foreground"
+              }`}
+            >
+              {verdict.sentence}
+            </span>
+          ) : judged === null ? (
+            <span className="block text-xs text-muted-foreground/70">…</span>
+          ) : (
+            <span className="block text-xs text-muted-foreground">
+              Not judged yet — match it up and check it over.
+            </span>
+          )}
         </div>
+
+        <Link
+          href={claimHref(claim.claimId, batchId)}
+          data-testid={`open-claim-${claim.claimId}`}
+          className="inline-flex w-fit items-center gap-1 justify-self-start rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted md:justify-self-end"
+        >
+          Open
+          <ChevronRight size={11} />
+        </Link>
       </div>
 
       {/* Review reasons — the flags Slices 4 and 5 wrote and nothing rendered. */}
       {claim.needsReviewReasons.length > 0 && (
-        <div className="border-t border-border px-4 py-3" data-testid={`claim-flags-${claim.claimId}`}>
+        <div className="border-t border-border px-4 pb-3 pt-2" data-testid={`claim-flags-${claim.claimId}`}>
           {/*
-            D-11: amber will WITHHOLD this claim at the approval gate; grey is
+            D-11: amber will HOLD this claim back at the approval gate; grey is
             true and does not change what to post. Both are always shown — a
             reason that vanished would make a proposal look cleaner than it is.
           */}
@@ -667,13 +1148,13 @@ function ClaimCard({
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               <span>
                 Matching this claim to a chart is still worth doing — but it cannot be approved for
-                posting while {blocking.length === 1 ? "this holds" : "these hold"}. See the approval
-                checklist above.
+                posting while {blocking.length === 1 ? "this holds" : "these hold"}. The approve
+                screen says why.
               </span>
             </p>
           )}
           {deadEnd && (
-            // Detect-and-flag means exactly that. A recoupment is the single
+            // Detect-and-flag means exactly that. A takeback is the single
             // IRREVERSIBLE Open Dental operation, so there is no action offered
             // here — only an honest statement and the manual route.
             <p
@@ -682,7 +1163,7 @@ function ClaimCard({
             >
               <CircleSlash size={12} className="mt-0.5 shrink-0" />
               <span>
-                CareIN will not post this. A recoupment cannot be reversed in Open Dental once it is
+                CareIN will not post this. A takeback cannot be reversed in Open Dental once it is
                 written — handle it in Open Dental directly, following the practice's takeback
                 procedure.
               </span>
@@ -691,20 +1172,11 @@ function ClaimCard({
         </div>
       )}
 
-      <button
-        onClick={onToggle}
-        data-testid={`toggle-lines-${claim.claimId}`}
-        className="flex w-full items-center gap-1.5 border-t border-border px-4 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40"
-      >
-        <ChevronRight size={12} className={open ? "rotate-90 transition-transform" : "transition-transform"} />
-        {open ? "Hide" : "Show"} {claim.lines.length} procedure line
-        {claim.lines.length === 1 ? "" : "s"}
-      </button>
-
       {open && <LineTable claim={claim} />}
     </div>
   );
 }
+
 
 function LineTable({ claim }: { claim: RemittanceClaim }) {
   return (

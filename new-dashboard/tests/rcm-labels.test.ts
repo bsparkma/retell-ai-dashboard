@@ -30,8 +30,17 @@ import {
   blockedCopy,
   LINE_STATE_COPY,
   QUEUE_STATE_COPY,
+  SHADOW_MODE_COPY,
+  SHADOW_REFUSAL_SLUG,
 } from "../client/src/features/rcm/posting";
 import { QUEUE_COLLISION_COPY } from "../client/src/features/rcm/api";
+// The RCM UX slice — the approval checklist's biller-language copy.
+import {
+  CHECK_COPY,
+  checkDetail,
+  checkTitle,
+  checkWhy,
+} from "../client/src/features/rcm/checks";
 
 const VOCAB = fs.readFileSync(
   path.join(__dirname, "..", "..", "backend", "services", "rcm", "rcmVocabulary.js"),
@@ -225,9 +234,24 @@ describe("the drain's vocabularies", () => {
      * fail-closed fallback in posting.ts exists to soften and this test exists to
      * stop happening at all.
      */
-    const slugs = [...DRAIN.matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
+    /*
+     * SCOPED TO `BLOCK_REASONS`, not to the whole file.
+     *
+     * This scraped every `NAME: 'slug',` line in postingDrain.js, which worked
+     * only while that file had exactly one such map. The withdraw slice added a
+     * second (`WITHDRAW_REASONS`) and this test immediately demanded BLOCKED
+     * copy for `target_removed` and `manual` — reasons a plan can never be
+     * blocked with. A drift test that reads a vocabulary by shape rather than by
+     * name drifts onto the next thing shaped like it.
+     */
+    const reasonBlock = DRAIN.match(/const BLOCK_REASONS = Object\.freeze\(\{([\s\S]+?)^\}\);/m);
+    expect(reasonBlock, "BLOCK_REASONS is no longer where this test looks").not.toBeNull();
+    const slugs = [...reasonBlock![1].matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
     const blockReasons = slugs.filter((s) => s !== "already_received_matching");
     expect(blockReasons.length).toBeGreaterThan(5);
+    // The withdrawal reasons live in their own map and are NOT block reasons.
+    expect(blockReasons).not.toContain("target_removed");
+    expect(blockReasons).not.toContain("manual");
 
     const missing = blockReasons.filter((r) => {
       const copy = blockedCopy(r);
@@ -248,6 +272,15 @@ describe("the drain's vocabularies", () => {
   });
 
   it("labels every per-line state the CHECK constraint can hold", () => {
+    /*
+     * READ FROM THE MIGRATION THAT OWNS THE VOCABULARY *NOW*, which is 6d's.
+     *
+     * 6d added `recouped` by dropping and re-adding the CHECK, so the 6c
+     * migration's list is no longer what the database will accept. A drift test
+     * pointed at a superseded constraint is a drift test that stops drifting —
+     * it would have passed while the client had no copy for a state a row can
+     * really hold.
+     */
     const MIGRATION = fs.readFileSync(
       path.join(
         __dirname,
@@ -255,7 +288,7 @@ describe("the drain's vocabularies", () => {
         "..",
         "backend",
         "migrations-tenant",
-        "1787120000000_rcm_posting_drain.js",
+        "1787260000000_rcm_recoupment_and_documents.js",
       ),
       "utf8",
     );
@@ -263,12 +296,21 @@ describe("the drain's vocabularies", () => {
     expect(block).not.toBeNull();
     const states = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(states).toContain("skipped_already_posted");
+    expect(states).toContain("recouped");
 
     const unlabelled = states.filter((s) => !(s in LINE_STATE_COPY));
     expect(unlabelled, `unlabelled line states: ${unlabelled.join(", ")}`).toEqual([]);
   });
 
   it("labels every plan state, and invents none the database cannot store", () => {
+    /*
+     * READ FROM THE MIGRATION THAT OWNS THE VOCABULARY *NOW*.
+     *
+     * The same trap the line-state test above already fell into once: this read
+     * 6c's `QUEUE_STATUSES` long after a later migration re-keyed the CHECK. A
+     * drift test pointed at a superseded constraint stops drifting — it passes
+     * happily while the client has no copy for a state a row can really hold.
+     */
     const MIGRATION = fs.readFileSync(
       path.join(
         __dirname,
@@ -276,13 +318,14 @@ describe("the drain's vocabularies", () => {
         "..",
         "backend",
         "migrations-tenant",
-        "1787120000000_rcm_posting_drain.js",
+        "1787300000000_rcm_posting_withdraw.js",
       ),
       "utf8",
     );
     const block = MIGRATION.match(/const QUEUE_STATUSES = \[([\s\S]+?)\];/);
     const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(stored).toContain("blocked");
+    expect(stored).toContain("withdrawn");
 
     /*
      * The client maps a LABEL to copy, never a stored word — the server ships
@@ -297,10 +340,127 @@ describe("the drain's vocabularies", () => {
       "partially_posted",
       "failed",
       "blocked",
+      "withdrawn",
     ]);
     expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
     expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);
     expect(stored.length).toBe(serverLabels.size);
+  });
+});
+
+/**
+ * The shadow gate — the refusal a biller reads most, in the weeks before posting
+ * is switched on.
+ *
+ * The gate's slug is NOT a `blocked_reason`: no plan moves to `blocked` when
+ * the switch is off, the refusal belongs to the route, and the plans stay
+ * `approved`. That disjointness is the thing worth pinning — a slug that leaked
+ * into `BLOCK_REASONS` would put a reason describing a PRACTICE into a map
+ * whose every other member describes a ROW.
+ */
+describe("the shadow gate's words", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "services", "rcm", "postingGate.js"),
+    "utf8",
+  );
+  const DRAIN_SRC = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "services", "rcm", "postingDrain.js"),
+    "utf8",
+  );
+
+  it("uses the slug the backend actually sends", () => {
+    const m = GATE.match(/const DRAIN_DISABLED = '([a-z_]+)';/);
+    expect(m, "postingGate.js must declare DRAIN_DISABLED").not.toBeNull();
+    expect(SHADOW_REFUSAL_SLUG).toBe(m![1]);
+  });
+
+  it("is not, and must never become, a per-plan block reason", () => {
+    const reasonBlock = DRAIN_SRC.match(/const BLOCK_REASONS = Object\.freeze\(\{([\s\S]+?)^\}\);/m);
+    expect(reasonBlock).not.toBeNull();
+    const slugs = [...reasonBlock![1].matchAll(/^\s+[A-Z_]+:\s*'([a-z_]+)',$/gm)].map((m) => m[1]);
+    expect(slugs.length).toBeGreaterThan(5);
+    expect(slugs).not.toContain(SHADOW_REFUSAL_SLUG);
+    // And the client has written no BLOCKED copy for it either — a chip for it
+    // would render over a plan that is not blocked.
+    expect(blockedCopy(SHADOW_REFUSAL_SLUG)!.label).toBe(SHADOW_REFUSAL_SLUG.replace(/_/g, " "));
+  });
+
+  it("says the same thing everywhere it is said", () => {
+    /*
+     * THREE SCREENS, ONE STRING. The Posting page's badge, its Drain button's
+     * adjacent reason, and the RCM inbox's badge all read from this one object,
+     * so a copy edit cannot land on two of them and miss the third.
+     */
+    expect(SHADOW_MODE_COPY.badge).toBe("Shadow");
+    expect(SHADOW_MODE_COPY.reason("Roland")).toBe(
+      "Posting is switched off for Roland (shadow mode). Approved checks wait here.",
+    );
+    expect(SHADOW_MODE_COPY.hint).toContain("Approved checks wait here");
+  });
+
+  it("never calls a switched-off practice an error", () => {
+    /*
+     * Nothing is wrong. The biller did her job, the plan is approved, and it is
+     * SUPPOSED to sit there. Copy that said "failed" or "error" would send her
+     * looking for a mistake she did not make.
+     */
+    const all = [
+      SHADOW_MODE_COPY.badge,
+      SHADOW_MODE_COPY.hint,
+      SHADOW_MODE_COPY.fix,
+      SHADOW_MODE_COPY.reason("Roland"),
+    ].join(" ");
+    for (const word of ["error", "failed", "failure", "problem", "wrong", "broken"]) {
+      expect(all.toLowerCase(), `the shadow copy must not say "${word}"`).not.toContain(word);
+    }
+  });
+
+  it("tells the biller what happens to the work she already did", () => {
+    // The one thing the sentence has to do: stop her wondering whether the
+    // approvals she just made are lost.
+    expect(SHADOW_MODE_COPY.reason("Roland")).toMatch(/wait/i);
+    expect(SHADOW_MODE_COPY.hint).toMatch(/wait/i);
+    // And the banner says who can end it.
+    expect(SHADOW_MODE_COPY.fix).toMatch(/administrator/i);
+  });
+
+  it("sends her to a page that is actually called that", () => {
+    /*
+     * THE DIRECTION IN THE COPY IS A CLAIM ABOUT TWO OTHER FILES.
+     *
+     * `fix` says "Admin → Office": the nav item in DashboardLayout.tsx and the
+     * tab in Admin.tsx. Neither is importable — the nav array and the tab array
+     * are both module-private literals — so this reads the source, the same way
+     * `takebackLaneAgreement.test.js` pins the isTakeback callers.
+     *
+     * It is not hypothetical. The string said "Offices" while the tab said
+     * "Office" from the day the card shipped, which is precisely the drift a
+     * rename would cause and nothing would have caught.
+     */
+    const read = (p: string) =>
+      fs.readFileSync(path.join(__dirname, "..", "client", "src", ...p.split("/")), "utf8");
+
+    const navLabel = read("components/DashboardLayout.tsx").match(
+      /path:\s*"\/admin",\s*label:\s*"([^"]+)"/,
+    );
+    expect(navLabel, "the /admin nav item moved — update this test and the copy").toBeTruthy();
+
+    const tabLabel = read("pages/Admin.tsx").match(
+      /\{\s*id:\s*"offices",\s*label:\s*"([^"]+)"/,
+    );
+    expect(tabLabel, "the offices tab moved — update this test and the copy").toBeTruthy();
+
+    /*
+     * A WORD BOUNDARY, not `toContain`. "Admin → Offices" CONTAINS
+     * "Admin → Office", so a substring assertion passes on exactly the drift
+     * this test exists to catch — which it did, on the first run.
+     */
+    const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const expected = new RegExp(`${escape(navLabel![1])} → ${escape(tabLabel![1])}\\b(?!s)`);
+    expect(
+      SHADOW_MODE_COPY.fix,
+      `the copy must send her to "${navLabel![1]} → ${tabLabel![1]}", exactly as those two are labelled`,
+    ).toMatch(expected);
   });
 });
 
@@ -341,5 +501,250 @@ describe("the queue-collision refusals", () => {
     const thrown = new Set([...GATE.matchAll(/'(QUEUE_ALREADY_[A-Z]+)'/g)].map((m) => m[1]));
     const orphans = Object.keys(QUEUE_COLLISION_COPY).filter((c) => !thrown.has(c));
     expect(orphans, `client copy for codes the gate never sends: ${orphans.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * The RCM UX slice — every approval check has three strings, and two of them
+ * are never the same one.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THIS TEST IS SHAPED LIKE THIS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `approvalGate.js` owns WHICH conditions exist; `features/rcm/checks.ts` owns
+ * what a biller reads. Two files for one list is exactly the arrangement that
+ * went stale in Slice 5.5 and produced raw slugs on a blocking proposal, so it
+ * is enforced the same way: this test reads the gate's own `CHECKS` block and
+ * fails if a code has no copy here.
+ *
+ * The second half is §15.2's copy bug. `add('SNAPSHOT_CURRENT', usable, <a
+ * ternary chain>)` evaluates its chain whether the check passed or not, so a
+ * PASSING row printed "the confirmed claim is not among the candidates the
+ * match recorded" beside a green tick. The rule that prevents it is that the
+ * passing string and the failing string come from DIFFERENT FIELDS — and this
+ * asserts they are also different WORDS, because a copy edit that made them
+ * equal would restore the confusion without restoring the bug.
+ */
+describe("the approval checklist speaks a biller's language", () => {
+  const GATE = fs.readFileSync(
+    path.join(__dirname, "..", "..", "backend", "routes", "rcm", "approvalGate.js"),
+    "utf8",
+  );
+
+  /** Every key of the gate's own `CHECKS = Object.freeze({ ... })`. */
+  function checkCodes(): string[] {
+    const open = GATE.indexOf("const CHECKS = Object.freeze({");
+    expect(open, "approvalGate.js must declare CHECKS").toBeGreaterThan(-1);
+    const end = GATE.indexOf("\n});", open);
+    expect(end, "CHECKS must be closed").toBeGreaterThan(open);
+    const body = GATE.slice(open, end);
+    return [...body.matchAll(/^ {2}([A-Z][A-Z0-9_]+):\s*\{/gm)].map((m) => m[1]);
+  }
+
+  it("reads a real list off the gate rather than an empty one", () => {
+    // A regex that silently matched nothing would make every assertion below
+    // vacuously true, which is the way this kind of test dies quietly.
+    const codes = checkCodes();
+    expect(codes.length).toBeGreaterThanOrEqual(12);
+    expect(codes).toContain("MATCH_CONFIRMED");
+    expect(codes).toContain("SNAPSHOT_CURRENT");
+  });
+
+  it("has a title, a failure instruction and a pass confirmation for every check", () => {
+    const missing = checkCodes().filter((code) => {
+      const copy = CHECK_COPY[code];
+      return !copy || !copy.title || !copy.fail || !copy.pass;
+    });
+    expect(missing, `checks with no biller-language copy: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("names no check the gate does not evaluate", () => {
+    const codes = new Set(checkCodes());
+    const orphans = Object.keys(CHECK_COPY).filter((c) => !codes.has(c));
+    expect(orphans, `copy for checks that do not exist: ${orphans.join(", ")}`).toEqual([]);
+  });
+
+  it("never prints the failure text on a check that passed — §15.2's copy bug", () => {
+    for (const code of checkCodes()) {
+      const copy = CHECK_COPY[code];
+      expect(copy.pass, `${code} pass detail equals its failure detail`).not.toBe(copy.fail);
+    }
+  });
+
+  it("starts every failure detail with a verb", () => {
+    /*
+     * "what to DO, starting with a verb" is the rule, and it is checkable:
+     * the gate's own wording began "The match record is current and complete"
+     * and "At least one procedure line has no ClaimProcNum" — descriptions of
+     * a state, which is what left a biller reading five ✗ marks with nothing
+     * to act on.
+     */
+    const notAVerb = /^(the|a|an|this|it|there|every|no|nobody|at least)\b/i;
+    const offenders = checkCodes().filter((c) => notAVerb.test(CHECK_COPY[c].fail));
+    expect(offenders, `failure details that do not start with a verb: ${offenders.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("keeps pass confirmations short — one line, not a restatement", () => {
+    const long = checkCodes().filter((c) => CHECK_COPY[c].pass.length > 60);
+    expect(long, `pass details that are not one short confirmation: ${long.join(", ")}`).toEqual([]);
+  });
+
+  it("renders the pass string on a pass and the instruction on a failure", () => {
+    const passed = {
+      code: "REVIEWED",
+      label: "Reviewed by a person",
+      passed: true,
+      detail: null,
+      fix: "Mark the claim reviewed, with a note.",
+    };
+    expect(checkTitle(passed)).toBe("Reviewed");
+    expect(checkDetail(passed)).toBe("Reviewed.");
+    expect(checkWhy(passed)).toBeNull();
+
+    const failed = { ...passed, passed: false, detail: "nobody has dispositioned this claim" };
+    expect(checkDetail(failed)).toBe("Add a note and mark this claim reviewed.");
+    expect(checkWhy(failed)).toBe("nobody has dispositioned this claim");
+  });
+
+  it("drops the gate's leftover failure sentence from a PASSING SNAPSHOT_CURRENT", () => {
+    /*
+     * The bug, reproduced. The gate really does send this string with
+     * `passed: true`, because its ternary chain has no branch for success.
+     */
+    const asTheGateSendsIt = {
+      code: "SNAPSHOT_CURRENT",
+      label: "The match record is current and complete",
+      passed: true,
+      detail: "the confirmed claim is not among the candidates the match recorded",
+      fix: "Run the match again and re-confirm it.",
+    };
+    expect(checkDetail(asTheGateSendsIt)).toBe("Up to date.");
+    expect(checkDetail(asTheGateSendsIt)).not.toContain("not among the candidates");
+    expect(checkWhy(asTheGateSendsIt)).toBeNull();
+  });
+
+  it("keeps the one passing detail that IS a fact", () => {
+    // MATCH_CONFIRMED sends `ClaimNum 53784` on a pass, which is worth reading.
+    const linked = {
+      code: "MATCH_CONFIRMED",
+      label: "Matched to an Open Dental claim",
+      passed: true,
+      detail: "ClaimNum 53784",
+      fix: "Open the claim, run the match, and confirm the right one.",
+    };
+    expect(checkDetail(linked)).toContain("53784");
+  });
+
+  it("falls back to the gate's own words for a check nobody has re-worded", () => {
+    // FAIL READABLE, like every other map in this module. An unmapped code must
+    // render the server's sentence rather than nothing.
+    const future = {
+      code: "SOME_FUTURE_CHECK",
+      label: "The server's own label",
+      passed: false,
+      detail: null,
+      fix: "The server's own fix.",
+    };
+    expect(checkTitle(future)).toBe("The server's own label");
+    expect(checkDetail(future)).toBe("The server's own fix.");
+  });
+});
+
+// ─── Stage A's two vocabularies ──────────────────────────────────────────────
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SAME MIRROR RULE, EXTENDED TO THE TWO WORKLIST STATES
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Every vocabulary in this module has exactly one home and one copy of it in the
+ * client, and a test that fails when they disagree. Stage A adds two more:
+ *
+ *   `set_aside_reason`  a CHECK constraint in the migration; the client renders
+ *                       copy from the slug.
+ *   `view=`             the populations the list endpoint pages, split between
+ *                       what the SERVER filters and what the browser does.
+ *
+ * The second one is the sharper of the two. `worklist.ts` decides which tabs go
+ * to the server and which are applied to a page, and it PRINTS A CAVEAT for the
+ * ones it applies itself. If a view were server-backed in the client's opinion
+ * and unknown to the route, the list would silently show the unfiltered `all`
+ * page under that tab's name and drop the caveat that admits it — a filter
+ * lying about its own population, which is the Slice 6a defect this module has
+ * been careful about ever since.
+ */
+describe("the worklist states", () => {
+  const backend = (file: string) =>
+    fs.readFileSync(path.join(__dirname, "..", "..", "backend", ...file.split("/")), "utf8");
+
+  it("renders copy for every reason the database will store, and invents none", async () => {
+    const { SET_ASIDE_COPY, SET_ASIDE_REASONS } = await import("../client/src/features/rcm/api");
+
+    /*
+     * THE MIGRATION THAT LAST WIDENED THE VOCABULARY, not the one that created
+     * the column.
+     *
+     * Stage C added `sent_in_error` in `1787800000000`, and `1787500000000` goes
+     * on exporting the five IT wrote — a database migrated only that far holds a
+     * five-value CHECK, so a constant there claiming six would be a claim about
+     * a schema that does not exist. The route and this test both read the
+     * current one.
+     */
+    const MIGRATION = backend(
+      "migrations-tenant/1787800000000_rcm_set_aside_sent_in_error.js",
+    );
+    const block = MIGRATION.match(/const SET_ASIDE_REASONS = \[([\s\S]+?)\];/);
+    expect(block, "the reason vocabulary moved — update this test and the copy").not.toBeNull();
+    const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(stored).toContain("other");
+
+    expect([...SET_ASIDE_REASONS].sort()).toEqual([...stored].sort());
+    const unlabelled = stored.filter((s) => !(s in SET_ASIDE_COPY));
+    expect(unlabelled, `unlabelled set-aside reasons: ${unlabelled.join(", ")}`).toEqual([]);
+    // And nothing the database would refuse.
+    const invented = Object.keys(SET_ASIDE_COPY).filter((s) => !stored.includes(s));
+    expect(invented, `copy for reasons no row can hold: ${invented.join(", ")}`).toEqual([]);
+  });
+
+  it("agrees with the route about which views the SERVER pages", async () => {
+    const { SERVER_VIEWS, WORKLIST_FILTERS } = await import("../client/src/features/rcm/worklist");
+
+    const ROUTE = backend("routes/rcm/remittances.js");
+    const block = ROUTE.match(/const REMITTANCE_VIEWS = Object\.freeze\(\[([\s\S]+?)\]\);/);
+    expect(block, "the view vocabulary moved — update this test and worklist.ts").not.toBeNull();
+    const served = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+
+    // Every view the client believes is server-backed must be one the route pages.
+    for (const view of SERVER_VIEWS) {
+      expect(served, `the client sends view=${view}; the route does not know it`).toContain(view);
+    }
+    // …and the reverse: a view the route serves and the client never sends is a
+    // filter nobody can reach, which is dead weight rather than a defect — so it
+    // is asserted, not tolerated silently.
+    for (const view of served) {
+      expect(
+        (SERVER_VIEWS as ReadonlySet<string>).has(view),
+        `the route pages view=${view} and no tab asks for it`,
+      ).toBe(true);
+    }
+    // Every tab is either server-paged or applied in the browser; there is no
+    // third kind, and a tab in neither set would render an unfiltered page.
+    for (const filter of WORKLIST_FILTERS) {
+      expect(typeof filter).toBe("string");
+    }
+  });
+
+  it("says all four states in words, and never in a slug", async () => {
+    const { FILTER_COPY, WORKLIST_FILTERS } = await import("../client/src/features/rcm/worklist");
+    for (const filter of WORKLIST_FILTERS) {
+      const copy = FILTER_COPY[filter];
+      expect(copy, `no copy for the ${filter} tab`).toBeTruthy();
+      // A label, a hint, and — always — what an EMPTY result means. "No rows" is
+      // the one thing none of them may say.
+      expect(copy.label.length).toBeGreaterThan(0);
+      expect(copy.hint.length).toBeGreaterThan(0);
+      expect(copy.empty.length).toBeGreaterThan(0);
+      expect(copy.label).not.toContain("_");
+    }
   });
 });

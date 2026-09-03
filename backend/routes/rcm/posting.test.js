@@ -12,7 +12,15 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { FakeRcmDb, FakeOd, bootRcmApp, api } = require('./rcmTestUtils');
+const {
+  FakeRcmDb,
+  FakeOd,
+  bootRcmApp,
+  api,
+  auditRows,
+  seedOfficeSettings,
+} = require('./rcmTestUtils');
+const postingGate = require('../../services/rcm/postingGate');
 const postingDrain = require('../../services/rcm/postingDrain');
 
 const QUEUE_ID = '11111111-2222-4333-8444-555555555555';
@@ -20,8 +28,16 @@ const LINE_ID = '66666666-7777-4888-8999-000000000000';
 const BATCH_ID = '8acb0e32-35ae-5cd8-9692-7b5e318a31c2';
 const CLAIM_ID = 'd1e2b359-a8d7-51a8-978c-7adf27bccc8d';
 
-/** A plan sitting at `approved` with one line, plus the rows that label it. */
+/**
+ * A plan sitting at `approved` with one line, plus the rows that label it.
+ *
+ * THE SHADOW GATE IS SEEDED OFF, exactly as the tenant migration seeds it and
+ * exactly as production ships. A test that wants the drain to actually run says
+ * so: `seedQueue(db, { drainEnabled: true })`. Defaulting it open would let a
+ * future drain test pass without the gate ever being consulted.
+ */
 function seedQueue(db, overrides = {}) {
+  seedOfficeSettings(db, { roland: overrides.drainEnabled === true, valley: overrides.drainEnabled === true });
   db.seed('rcm_user_map', [
     { user_key: 'user-1', platform_email: 'billing@carein.ai', display_name: 'Billing User', active: true },
   ]);
@@ -135,6 +151,127 @@ test('GET /posting/queue lists the office plans with the brief\'s vocabulary', a
   }
 });
 
+/* ── C-3b: who approved it, by name ───────────────────────────────────── */
+
+/**
+ * The crosswalk row `seedQueue` already writes for `approved_by`.
+ *
+ * MUTATED rather than re-seeded: `rcm_user_map` is keyed by `user_key`, so a
+ * second `seed` of the same key would leave two rows and `describeActors` would
+ * answer from whichever it read first — a test that passed for the wrong reason.
+ */
+function approverRow(db) {
+  const row = db.table('rcm_user_map').find((r) => r.user_key === 'user-1');
+  assert.ok(row, 'seedQueue is expected to have written the crosswalk row');
+  return row;
+}
+
+test('the plan names the person who approved it, on the list AND the detail', async () => {
+  /*
+   * `approved_by` is an `rcm_user_map.user_key`, which for anyone the platform
+   * minted a row for IS THEIR EMAIL. `flow.ts` prints it into a sentence —
+   * "Every claim was checked over, and approved by …" — so this screen was
+   * reading out an address where the rest of the module reads out a person.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const list = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(list.status, 200, JSON.stringify(list.body));
+    assert.equal(list.body.rows[0].approvedBy, 'Billing User');
+
+    // The detail resolves it too. One rule, so the row and the screen it opens
+    // cannot disagree about who approved the check.
+    const detail = await api(
+      app.baseUrl,
+      'GET',
+      `/api/rcm/posting/queue/${QUEUE_ID}?office=roland`
+    );
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(detail.body.plan.approvedBy, 'Billing User');
+
+    // The COLUMN is untouched — it is the FK, and it still holds the key.
+    assert.equal(db.table('rcm_posting_queue')[0].approved_by, 'user-1');
+  } finally {
+    await app.close();
+  }
+});
+
+test('an email address never reaches the posting screen as an attribution', async () => {
+  /*
+   * The defect, stated as the thing it must never do again. The platform mints
+   * a crosswalk row keyed by the EMAIL for anybody with no legacy history, so
+   * the address-shaped key is the ordinary case rather than an edge one.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const row = approverRow(db);
+  row.user_key = 'billing@carein.ai';
+  db.table('rcm_posting_queue')[0].approved_by = 'billing@carein.ai';
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.body.rows[0].approvedBy, 'Billing User');
+    assert.equal(
+      JSON.stringify(res.body.rows[0]).includes('billing@carein.ai'),
+      false,
+      'no field on a posting row may carry the address'
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('an actor with no display name falls back to the key, never to "somebody"', async () => {
+  /*
+   * An imported legacy actor can be a bare `user-1` with nothing readable on the
+   * row — or no crosswalk row at all. Rendering "somebody" would trade a real
+   * fact for a polite one; the key is at least something a person can recognise
+   * or look up. Same fallback shape as `POST /remittances/:id/approve`.
+   */
+  // (a) a row with nothing readable on it.
+  const blank = seedQueue(new FakeRcmDb());
+  const row = approverRow(blank);
+  row.display_name = '';
+  row.platform_email = '';
+  // (b) no row at all.
+  const missing = seedQueue(new FakeRcmDb());
+  missing.table('rcm_user_map').length = 0;
+
+  for (const [what, db] of [
+    ['a blank crosswalk row', blank],
+    ['no crosswalk row', missing],
+  ]) {
+    const app = await bootRcmApp({ db, od: readOnlyOd() });
+    try {
+      const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+      assert.equal(res.body.rows[0].approvedBy, 'user-1', what);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('drainedBy is STILL the raw key — unrendered, and deliberately left alone', async () => {
+  /*
+   * Pinned so the asymmetry beside `approvedBy` is a recorded decision rather
+   * than something the next reader "fixes" without knowing why one moved and
+   * the other did not. A field is resolved when a screen shows it; nothing
+   * shows this one. If that changes, pass it through `actors` and change this
+   * test in the same commit.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  db.table('rcm_posting_queue')[0].drained_by = 'user-1';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.body.rows[0].approvedBy, 'Billing User');
+    assert.equal(res.body.rows[0].drainedBy, 'user-1');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the per-state counts are ZERO-FILLED over the whole vocabulary', async () => {
   const db = seedQueue(new FakeRcmDb());
   const app = await bootRcmApp({ db, od: readOnlyOd() });
@@ -241,11 +378,19 @@ test('GET /posting/queue/:id carries the lines, the read-back evidence and the 6
     assert.equal(res.body.lines[0].readback.agreed, true, 'the evidence is kept, not just a verdict');
 
     /*
-     * The 6d seam, said out loud. A screen showing nothing here would leave a
-     * biller assuming the EOB PDF was filed into the patient's images.
+     * 6d FILLED THE SEAM. It no longer says "not yet" — it says what actually
+     * happened to the EOB, on its own axis.
+     *
+     * `status: null` is NOT ATTEMPTED, and it is a real third state: this plan
+     * is `posted` with nothing filed, which is exactly what a remittance that
+     * arrived as raw 835 looks like. A screen must render that as "nothing to
+     * file", never as a failure with a retry button behind it.
      */
-    assert.equal(res.body.documentAttach.implemented, false);
-    assert.match(res.body.documentAttach.note, /not yet filed/);
+    assert.equal(res.body.documentAttach.implemented, true);
+    assert.equal(res.body.documentAttach.status, null);
+    assert.equal(res.body.documentAttach.error, null);
+    assert.deepEqual(res.body.documentAttach.documents, []);
+    assert.equal(res.body.documentAttach.retryRequires, 'rcm.post');
   } finally {
     await app.close();
   }
@@ -291,7 +436,7 @@ test('a reviewer can WATCH the queue and cannot press Drain', async () => {
     const list = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
     assert.equal(list.status, 200, 'watching a plan post is not a posting act');
     assert.equal(list.body.canDrain, false);
-    assert.equal(list.body.drainRequires, 'rcm.write');
+    assert.equal(list.body.drainRequires, 'rcm.post');
 
     const detail = await api(app.baseUrl, 'GET', `/api/rcm/posting/queue/${QUEUE_ID}?office=roland`);
     assert.equal(detail.status, 200, 'and reading WHY one is blocked is not either');
@@ -304,6 +449,11 @@ test('a reviewer can WATCH the queue and cannot press Drain', async () => {
      * reaches the handler at all. Same structural guarantee approve has, and the
      * same consequence — the platform's FORBIDDEN rather than a prettier
      * in-handler message.
+     *
+     * `rcm.write` and not `rcm.post`, and the difference is the point: a
+     * reviewer is stopped one tier EARLIER than an `rcm_biller` is. The biller
+     * clears the mount and is refused by the route's own narrower gate; the
+     * reviewer never gets that far.
      */
     const drain = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
       body: JSON.stringify({}),
@@ -377,7 +527,7 @@ test('the server states whether posting is enabled for the office — the client
 // ─── The drain itself ────────────────────────────────────────────────────────
 
 test('a second concurrent drain is a 409, not a second run', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const app = await bootRcmApp({ db, od: readOnlyOd() });
   postingDrain.DRAIN_MUTEX.running = true;
   try {
@@ -394,7 +544,7 @@ test('a second concurrent drain is a 409, not a second run', async () => {
 });
 
 test('a valley drain blocks the plan and never resolves a client', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   // Re-stamp the plan as valley.
   for (const table of ['rcm_posting_queue', 'rcm_posting_queue_line', 'rcm_claims', 'rcm_payment_batches']) {
     for (const row of db.table(table)) row.office_id = 'valley';
@@ -428,7 +578,7 @@ test('a malformed queueId narrows to NOTHING rather than draining the whole offi
    * is null. Passing junk straight through would turn `{queueId: "../.."}` into
    * "drain everything", which is the opposite of what the caller asked for.
    */
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   const od = readOnlyOd();
   const app = await bootRcmApp({ db, od });
   try {
@@ -445,8 +595,127 @@ test('a malformed queueId narrows to NOTHING rather than draining the whole offi
   }
 });
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ONE CHECK AND THE WHOLE OFFICE ARE THE SAME PRESS (Stage A §4)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The check's own page grew a Post to Open Dental button. The one thing that
+ * must never be true of it is that it is a SECOND write path — a second route, a
+ * second set of guards, or a second function that happens to do the same thing
+ * today and drifts apart next slice.
+ *
+ * It is not. `queueId` is an optional narrowing on the SAME route, resolved into
+ * one extra `AND queue_id = $3` inside the same office-scoped, status-filtered
+ * query. These three tests are what makes that reviewable rather than asserted:
+ *
+ *   · the narrowed press reaches the same handler and the same gates;
+ *   · it can only ever reach a SUBSET of what the office-wide press reaches —
+ *     it cannot name its way into a check the unfiltered run would have skipped;
+ *   · every refusal is identical, because there is only one place they live.
+ */
+test('a narrowed press and an office-wide press take the SAME path through the same guards', async () => {
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    /*
+     * The most direct evidence available from outside: the route hands BOTH
+     * presses to `postingDrain.drainOffice`, and the only difference in what it
+     * receives is `onlyQueueId`. Everything else — office, operator, drainedBy,
+     * snapshotVersion, and the pool the shadow gate was just read on — is
+     * produced by the same lines of the same handler.
+     */
+    const seen = [];
+    const real = postingDrain.drainOffice;
+    postingDrain.drainOffice = async (ctx) => {
+      seen.push(ctx);
+      return { ran: 0, outcomes: [], outOfTime: false, remaining: 0 };
+    };
+    try {
+      await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+        body: JSON.stringify({ queueId: QUEUE_ID }),
+        json: true,
+      });
+      await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+        body: JSON.stringify({}),
+        json: true,
+      });
+    } finally {
+      postingDrain.drainOffice = real;
+    }
+
+    assert.equal(seen.length, 2);
+    const [one, all] = seen;
+    assert.equal(one.onlyQueueId, QUEUE_ID);
+    assert.equal(all.onlyQueueId, null, 'null is the sentinel for "no narrowing"');
+
+    // Everything else is identical, field for field.
+    for (const key of ['office', 'operator', 'drainedBy', 'snapshotVersion']) {
+      assert.deepEqual(one[key], all[key], `${key} must not differ between the two presses`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('naming a check the office-wide press would NOT have posted reaches nothing', async () => {
+  /*
+   * The narrowing can only ever SUBTRACT. A check in a state the unfiltered run
+   * skips — here, one already posted — is not specially handled and not
+   * specially refused; it simply is not selected, exactly as it would not be
+   * without the parameter. That is what makes "a request cannot name its way in"
+   * a property of the query rather than of a check somebody remembered to write.
+   */
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const row = db.table('rcm_posting_queue')[0];
+  row.status = 'posted';
+  row.od_claim_payment_num = 21253;
+  row.reconciled_at = new Date();
+
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({ queueId: QUEUE_ID }),
+      json: true,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ran, 0);
+    assert.deepEqual(od.methodsUsed(), [], 'not one Open Dental call');
+    assert.equal(db.table('rcm_posting_queue')[0].status, 'posted', 'and it is untouched');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the shadow gate refuses a narrowed press in exactly the same words', async () => {
+  // Both refusals come from the same lines, ABOVE the point where `queueId` is
+  // read at all — so a check's own page cannot be a way around the switch.
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: false });
+  const od = readOnlyOd();
+  const app = await bootRcmApp({ db, od });
+  try {
+    const one = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({ queueId: QUEUE_ID }),
+      json: true,
+    });
+    const all = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(one.status, 409);
+    assert.equal(one.status, all.status);
+    assert.equal(one.body.code, 'DRAIN_DISABLED_FOR_OFFICE');
+    assert.equal(one.body.error, all.body.error, 'one sentence, not two');
+    assert.deepEqual(od.methodsUsed(), []);
+    assert.equal(db.table('rcm_posting_queue')[0].status, 'approved', 'no row moved');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the drain run is audited as its own CREATE, on top of the per-call rows', async () => {
-  const db = seedQueue(new FakeRcmDb());
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
   // No drainable rows, so the run is a clean no-op and the only audit row is the
   // run itself — which is what makes this assertion about the run and not about
   // the calls.
@@ -464,6 +733,234 @@ test('the drain run is audited as its own CREATE, on top of the per-call rows', 
     assert.equal(rows.length, 1);
     assert.equal(rows[0].action, 'CREATE');
     assert.equal(rows[0].office, 'roland');
+  } finally {
+    await app.close();
+  }
+});
+
+// ─── When the drain hits a defect, the operator is told what it was ──────────
+
+/**
+ * The banner the first staging walk showed a biller was the word
+ * "Internal error". The drain had hit
+ * `column "od_patient_office" does not exist` — the one sentence that named the
+ * bug — and `h()` discarded it one layer above the code that had it.
+ *
+ * The same text is already written into `last_error` and rendered on the queue
+ * screen to this same person, so returning it here is not a new audience for
+ * anything; it is the same fact, an hour earlier.
+ */
+test('a drain defect returns its real message, not "Internal error"', async () => {
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const DB_ERROR = 'column "od_patient_office" does not exist';
+  const realQuery = db.query.bind(db);
+  db.query = (text, params) => {
+    if (String(text).includes('FROM rcm_claims')) return Promise.reject(new Error(DB_ERROR));
+    return realQuery(text, params);
+  };
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'DRAIN_FAILED');
+    assert.equal(res.body.error, DB_ERROR, 'the words Postgres used, reaching the person');
+    assert.notEqual(res.body.error, 'Internal error');
+  } finally {
+    await app.close();
+  }
+});
+
+test('and the plan it was draining is back to approved, pressable again', async () => {
+  /*
+   * The two halves of the same defect. Surfacing the message without releasing
+   * the row would still have left a plan wedged at `posting` with nothing behind
+   * it; releasing it without the message would leave a biller with a plan that
+   * silently reappeared and no idea why.
+   */
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const realQuery = db.query.bind(db);
+  db.query = (text, params) => {
+    if (String(text).includes('FROM rcm_claims')) {
+      return Promise.reject(new Error('column "od_patient_office" does not exist'));
+    }
+    return realQuery(text, params);
+  };
+
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+
+    const row = db.table('rcm_posting_queue')[0];
+    assert.equal(row.status, 'approved');
+    assert.equal(row.drain_step, null);
+    assert.match(row.last_error, /od_patient_office/);
+  } finally {
+    await app.close();
+  }
+});
+
+// ─── POST /queue/:id/withdraw ────────────────────────────────────────────────
+
+/**
+ * Retiring a plan is the only thing in this module that takes money off the
+ * board without posting it. It writes nothing to a chart, which is exactly why
+ * the guards have to be in the route rather than in the Open Dental layer:
+ * there is no read-back to catch a mistake here.
+ */
+
+function queueRow(db) {
+  return db.table('rcm_posting_queue')[0];
+}
+
+test('a withdrawal needs a note, and refuses without one', async () => {
+  /*
+   * For a `manual` withdrawal the note is the ONLY record of why money that was
+   * approved is not going to post. A plan with no account of itself would be the
+   * queue quietly losing money nobody can later explain, so this is a 400 rather
+   * than an optional field.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    for (const body of [{}, { note: '' }, { note: '  ' }, { note: 'no' }]) {
+      const res = await api(
+        app.baseUrl,
+        'POST',
+        `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+        { body: JSON.stringify(body), json: true }
+      );
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(res.body.code, 'WITHDRAW_NOTE_REQUIRED');
+    }
+    assert.equal(queueRow(db).status, 'approved', 'and nothing moved');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a withdrawal with a note retires the plan and records who and why', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      {
+        body: JSON.stringify({ note: 'Posted by hand in the desktop before this queue existed.' }),
+        json: true,
+      }
+    );
+
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.status, 'withdrawn');
+    assert.equal(res.body.withdrawnReason, 'manual');
+
+    const row = queueRow(db);
+    assert.equal(row.status, 'withdrawn');
+    assert.equal(row.withdrawn_reason, 'manual');
+    assert.match(row.withdrawn_note, /Posted by hand/);
+    assert.ok(row.withdrawn_by, 'D-5: a crosswalk key, because Open Dental cannot attribute');
+    assert.ok(row.withdrawn_at);
+  } finally {
+    await app.close();
+  }
+});
+
+test('a withdrawn plan is not offered for draining', async () => {
+  const db = seedQueue(new FakeRcmDb(), { drainEnabled: true });
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'retiring this one' }), json: true }
+    );
+
+    const drain = await api(app.baseUrl, 'POST', '/api/rcm/posting/drain?office=roland', {
+      body: JSON.stringify({}),
+      json: true,
+    });
+    assert.equal(drain.status, 200, JSON.stringify(drain.body));
+    assert.equal(drain.body.ran, 0, 'the scan does not pick it up at all');
+    assert.equal(queueRow(db).status, 'withdrawn', 'and it stayed withdrawn');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a plan that already put money in a chart cannot be retired', async () => {
+  /*
+   * The refusal that matters. Retiring a posted plan would be a way to make the
+   * queue disagree with Open Dental — the queue would show nothing owing while
+   * the chart carries a payment.
+   */
+  const db = seedQueue(new FakeRcmDb());
+  queueRow(db).status = 'posted';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'trying to hide this' }), json: true }
+    );
+
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'WITHDRAW_NOT_ALLOWED');
+    assert.equal(res.body.status, 'posted');
+    assert.match(res.body.error, /already put money in the chart/);
+    assert.equal(queueRow(db).status, 'posted');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the queue read carries the withdrawal, so a screen can account for it', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'the claim was voided upstream' }), json: true }
+    );
+
+    const page = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    const row = page.body.rows.find((r) => r.status === 'withdrawn');
+    assert.ok(row, 'the plan is still listed — withdrawing is not a delete');
+    assert.equal(row.withdrawnReason, 'manual');
+    assert.equal(row.withdrawnNote, 'the claim was voided upstream');
+    assert.ok(row.withdrawnAt);
+    assert.equal(row.statusLabel, 'withdrawn');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a plan from another office is a 404, not a refusal', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=valley`,
+      { body: JSON.stringify({ note: 'reaching across offices' }), json: true }
+    );
+    assert.equal(res.status, 404);
+    assert.equal(res.body.code, 'QUEUE_NOT_FOUND');
+    assert.equal(queueRow(db).status, 'approved');
   } finally {
     await app.close();
   }
