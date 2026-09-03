@@ -1,4 +1,9 @@
 {
+  /* Reference-only trees. The root config declares no "include", so TypeScript
+     would otherwise walk EVERY .ts/.tsx under the repo root, including the
+     vendored hygiene prototype in docs/, which is documentation and is not built,
+     typechecked or shipped. See docs/hyg-prototype/README.md. */
+  "exclude": ["node_modules", "docs/hyg-prototype"],
   "compilerOptions": {
     /* Visit https://aka.ms/tsconfig to read more about this file */
 
