@@ -14,13 +14,18 @@
  *
  * ADDING A MODULE IS A MIGRATION, NOT AN EDIT HERE. The CHECK constraint is the
  * real gate; this list must be widened in the same PR as the migration that
- * widens it, never ahead of one. (`hyg` is the next one and is deliberately
- * absent — it ships with its own migration.)
+ * widens it, never ahead of one. `hyg` arrived that way: catalog entry below,
+ * migrations/1788100000000_module_hyg.js, one commit.
+ *
+ * modules.test.js reads the EFFECTIVE constraint out of the migration sources
+ * (the last one that defines it wins, exactly as Postgres sees it) rather than
+ * out of one named file, so the next module widens the vocabulary in a new
+ * migration without having to edit the old one.
  *
  * Order is display order: the console renders them in this sequence.
  */
 
-/** @typedef {'voice'|'rcm'|'tc'|'scheduling'} ModuleName */
+/** @typedef {'voice'|'rcm'|'tc'|'hyg'|'scheduling'} ModuleName */
 
 /**
  * @type {ReadonlyArray<{ module: ModuleName, label: string, blurb: string }>}
@@ -35,6 +40,11 @@ const MODULE_CATALOG = Object.freeze([
     module: 'tc',
     label: 'Treatment Coordinator',
     blurb: 'Case pipeline, presentations, hygiene handoff',
+  }),
+  Object.freeze({
+    module: 'hyg',
+    label: 'Hygiene',
+    blurb: 'Hygiene day view, routing slip, and the handoff to TC',
   }),
   Object.freeze({
     module: 'rcm',

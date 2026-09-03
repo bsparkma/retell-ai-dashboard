@@ -891,6 +891,7 @@ being quoted into the prompt**. So:
 | Health probes, Azure Monitor alerts, reading Log Analytics | [docs/PROBES_AND_ALERTS.md](docs/PROBES_AND_ALERTS.md) |
 | Secrets and Key Vault | [docs/SECRETS.md](docs/SECRETS.md) |
 | TC module | [docs/TC_SCHEMA.md](docs/TC_SCHEMA.md), [docs/TC_IMPORT.md](docs/TC_IMPORT.md), [docs/TC_OD_READS.md](docs/TC_OD_READS.md) |
+| Hygiene module | [docs/HYG_MODULE.md](docs/HYG_MODULE.md), [docs/HYG_SPIKE_H0_OD_COVERAGE.md](docs/HYG_SPIKE_H0_OD_COVERAGE.md), [docs/hyg-prototype/README.md](docs/hyg-prototype/README.md) |
 | RCM module | [docs/RCM_SCHEMA.md](docs/RCM_SCHEMA.md), [docs/RCM_OD_WRITES.md](docs/RCM_OD_WRITES.md), [docs/RCM_FIXTURES.md](docs/RCM_FIXTURES.md), [docs/RCM_EOB_INGESTION.md](docs/RCM_EOB_INGESTION.md) |
 | Dashboard conventions | [new-dashboard/HANDOFF.md](new-dashboard/HANDOFF.md), [new-dashboard/NOTES.md](new-dashboard/NOTES.md) |
 
