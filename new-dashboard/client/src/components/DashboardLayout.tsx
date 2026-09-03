@@ -13,6 +13,7 @@ import {
   PhoneIncoming,
   Bot,
   CalendarClock,
+  CalendarDays,
   BarChart3,
   Settings,
   Building2,
@@ -157,6 +158,19 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       ],
     },
   ],
+  /* Hygiene. One group, and in slice 1 one item: the group has to exist at all
+     or the module switcher cannot see the module (switchableModules filters on
+     exactly this, so a module with an empty nav is unreachable from it).
+
+     The visit view is deliberately NOT a nav item. It is reached by tapping a
+     card on the day, it needs an appointment number, and a nav link to it could
+     only ever land somewhere with no appointment in hand. */
+  hyg: [
+    {
+      title: "Hygiene",
+      items: [{ path: "/hyg/day", label: "Today", icon: CalendarDays }],
+    },
+  ],
   /* Ordered to match DentaFlow's sidebar (Dashboard → Pipeline → Nurture →
      Tasks → Financing → Gallery → Pre-Auth → Email → Guide → Reports),
      adapted to the platform's grouped shell. */
@@ -261,6 +275,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const hideOfficePicker = isTcSharedRoute(location);
   const isTcRoute = location === "/tc" || location.startsWith("/tc/");
   const isRcmRoute = location === "/rcm" || location.startsWith("/rcm/");
+  const isHygRoute = location === "/hyg" || location.startsWith("/hyg/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   // Starts true: we have no evidence of trouble yet, and opening every session with a
@@ -308,7 +323,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // however you got there, and it became reachable in Roles PR B because a
   // hygienist lands on a TC route with 'voice' still remembered in
   // localStorage — which filtered to an empty sidebar.
-  const routeModule: ModuleId | null = isTcRoute ? "tc" : isRcmRoute ? "rcm" : null;
+  const routeModule: ModuleId | null = isTcRoute
+    ? "tc"
+    : isRcmRoute
+      ? "rcm"
+      : isHygRoute
+        ? "hyg"
+        : null;
   // Role-scoped nav (Roles PR B). While /auth/me is still in flight the
   // permission list is undefined, which filters everything out — correct, and
   // invisible in practice because RequireAuth holds the app on a spinner until

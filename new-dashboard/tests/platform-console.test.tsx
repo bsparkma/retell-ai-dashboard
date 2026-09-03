@@ -61,6 +61,7 @@ const SMITH = "22222222-2222-4222-8222-222222222222";
 const MODULES = () => [
   { module: "voice" as const, label: "Voice", blurb: "Call worklist", enabled: true },
   { module: "tc" as const, label: "Treatment Coordinator", blurb: "Case pipeline", enabled: true },
+  { module: "hyg" as const, label: "Hygiene", blurb: "Hygiene day view", enabled: false },
   { module: "rcm" as const, label: "RCM", blurb: "Claims", enabled: false },
   { module: "scheduling" as const, label: "Scheduling", blurb: "Not yet built", enabled: false },
 ];
@@ -285,11 +286,11 @@ describe("practices", () => {
     expect(smith.textContent).not.toContain("rcm");
   });
 
-  it("shows all four modules for a practice, including those with no row", async () => {
+  it("shows every catalog module for a practice, including those with no row", async () => {
     renderPage();
     await openPractice("smith");
 
-    for (const m of ["voice", "tc", "rcm", "scheduling"]) {
+    for (const m of ["voice", "tc", "hyg", "rcm", "scheduling"]) {
       expect(screen.getByTestId(`module-switch-${m}`)).toBeTruthy();
     }
   });

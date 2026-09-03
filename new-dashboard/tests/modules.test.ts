@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MODULE,
+  MODULE_IDS,
   entitledModuleIds,
   isModuleId,
   resolveActiveModule,
@@ -69,7 +70,12 @@ describe("resolveActiveModule", () => {
 
 describe("isModuleId", () => {
   it("accepts exactly the CHECK-constraint vocabulary", () => {
-    for (const id of ["voice", "rcm", "tc", "scheduling"]) expect(isModuleId(id)).toBe(true);
+    // Derived from MODULE_IDS rather than restated, so a module added to the
+    // client registry without being added here cannot pass vacuously. The
+    // negative cases below are what the assertion is really for.
+    for (const id of MODULE_IDS) expect(isModuleId(id)).toBe(true);
+    expect(isModuleId("hyg")).toBe(true); // added with migration 1788100000000
+    expect(isModuleId("perio")).toBe(false); // the next name nobody has registered
     expect(isModuleId("carein")).toBe(false); // pre-rename id must not survive client-side
     expect(isModuleId(3)).toBe(false);
   });

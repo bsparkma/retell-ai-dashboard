@@ -57,6 +57,8 @@ import TcPrepConsult from "./pages/tc/TcPrepConsult";
 import TcPostConsult from "./pages/tc/TcPostConsult";
 import TcNurture from "./pages/tc/TcNurture";
 import TcGuide from "./pages/tc/TcGuide";
+import HygDay from "./pages/hyg/HygDay";
+import HygVisit from "./pages/hyg/HygVisit";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
@@ -151,6 +153,21 @@ export function Router() {
             real page rather than prose because Slice 6a promised "the practice's
             takeback procedure" and pointed nowhere. */}
         <Route path="/rcm/sop/takeback" component={TakebackSop} />
+        {/* HYG module - entitlement-gated server-side (requireModule('hyg')).
+            Slice 1 is the day view and an honest dead end behind it.
+
+            `/hyg` redirects rather than rendering: the module's front door is
+            the day, and a bare prefix that 404s is a link somebody will paste.
+
+            /hyg/visit/:aptNum is a PLACEHOLDER on purpose. Every card on the day
+            view is a link, and a link that 404s teaches a hygienist the app is
+            broken; one that says "this ships in Slice 2" teaches her it is
+            unfinished, which is true and cheaper to believe. */}
+        <Route path="/hyg">
+          <Redirect to="/hyg/day" replace />
+        </Route>
+        <Route path="/hyg/day" component={HygDay} />
+        <Route path="/hyg/visit/:aptNum" component={HygVisit} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />

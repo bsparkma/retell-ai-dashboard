@@ -198,7 +198,7 @@ export interface TenantUsersResponse {
  * tenant_module CHECK constraint — a union rather than `string` so a namespace
  * the database would refuse cannot be typed into a request here either.
  */
-export type ModuleName = "voice" | "tc" | "rcm" | "scheduling";
+export type ModuleName = "voice" | "tc" | "rcm" | "hyg" | "scheduling";
 
 /** One module's state for one practice, with the copy the console renders. */
 export interface PracticeModule {
