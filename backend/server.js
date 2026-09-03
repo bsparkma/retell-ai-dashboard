@@ -310,6 +310,35 @@ async function bootstrap() {
   // entitlement flips (intentional — see routes/tc/index.js).
   app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
 
+  /*
+   * HYG (Hygiene) module — H1 slice 1. ONE mount for the whole /api/hyg/*
+   * surface. Ships DARK for the same reason TC and RCM did: 'hyg' entered the
+   * tenant_module vocabulary in migration 1788100000000 and no tenant is
+   * entitled to it, so everything under it 403s MODULE_NOT_ENTITLED until the
+   * entitlement flips from the Platform Console.
+   *
+   * requireReadWrite rather than a single read gate, and hyg.write exists in
+   * config/permissions.js ahead of its first use, so the first mutation slice 2
+   * adds demands the strong action BY CONSTRUCTION. Slice 1 has no non-GET
+   * route at all, which is what makes that free to do now and awkward to
+   * retrofit later.
+   *
+   * NO exemption list. Slice 1 needs none, and one added speculatively is one
+   * nobody reviewed — see routes/hyg/index.js.
+   *
+   * Office scoping is router-wide one level down, so a route added under this
+   * mount cannot forget it. Per-OFFICE readiness (hyg.odEnabled, default false
+   * everywhere) is a third, narrower gate inside the routes: entitlement says
+   * the practice bought it, permission says this person may use it, and the
+   * office switch says this location has been switched on.
+   */
+  app.use(
+    '/api/hyg',
+    requireModule('hyg'),
+    requireReadWrite('hyg.read', 'hyg.write'),
+    require('./routes/hyg')
+  );
+
   // Required once, above the mount, because the mount's own guard needs the
   // router's exported QUEUE_PATHS — the exceptions belong to the module that
   // owns those routes, not to this file.

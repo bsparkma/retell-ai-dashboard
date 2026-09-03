@@ -111,9 +111,25 @@ test("tc is read-only on voice: reads yes, every voice write no", () => {
   assert.ok(roleHasPermission('tc', 'tc.full'));
 });
 
-test('hygiene holds tc.hygiene and NOTHING else', () => {
+test('hygiene holds its own two surfaces and NOTHING else', () => {
+  // The TC handoff screens (tc.hygiene) and the hyg module (hyg.read/write).
+  // The point of the assertion is the exhaustive list, not its length: a
+  // hygienist gaining voice.read, tc.full or anything rcm.* by accident is the
+  // failure this catches, and it catches it whichever action leaks in.
   const held = permissionsForRole('hygiene');
-  assert.deepEqual(held, ['tc.hygiene']);
+  assert.deepEqual(held, ['hyg.read', 'hyg.write', 'tc.hygiene']);
+});
+
+test('the hyg module is not reachable by the roles it was not built for', () => {
+  for (const role of ['tc', 'reviewer', 'rcm_biller']) {
+    for (const action of ['hyg.read', 'hyg.write']) {
+      assert.equal(roleHasPermission(role, action), false, `${role} must NOT hold ${action}`);
+    }
+  }
+  // ... and IS reachable by the three that were.
+  for (const role of ['admin', 'office', 'hygiene']) {
+    assert.ok(roleHasPermission(role, 'hyg.read'), `${role} must hold hyg.read`);
+  }
 });
 
 test('unknown action denies for every role, including admin', () => {

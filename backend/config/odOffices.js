@@ -65,7 +65,8 @@ const { OpenDentalService } = require('./openDental');
  *
  * @typedef {Object} OdOfficeSettings
  * @property {string} officeKey            frozen internal office key
- * @property {boolean} odEnabled           the voice module's reversible OD switch
+ * @property {boolean} odEnabled           the reversible OD switch for this office
+ * @property {boolean} hygOdEnabled        the HYGIENE module's own per-office switch
  * @property {string} customerKeyEnv       process.env key holding the OD customer key
  * @property {string} customerKeySecret    Key Vault secret NAME (never a value)
  * @property {string} commTypeEnv          process.env key overriding commTypeDefNum
@@ -79,6 +80,11 @@ const OFFICE_OD_SETTINGS = Object.freeze({
   roland: ({
     officeKey: 'roland',
     odEnabled: true,
+    // The pilot office. Still false: slice 1 ships the module dark everywhere,
+    // and this flips per office after the day view has been walked against the
+    // real schedule. See hygOdBlockReason() below for why it is a SECOND flag
+    // and not a reuse of odEnabled.
+    hygOdEnabled: false,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY',
     customerKeySecret: 'opendental-customer-key',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM',
@@ -87,6 +93,7 @@ const OFFICE_OD_SETTINGS = Object.freeze({
   valley: ({
     officeKey: 'valley',
     odEnabled: true,
+    hygOdEnabled: false,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY_VALLEY',
     customerKeySecret: 'opendental-customer-key-valley',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY',
@@ -118,6 +125,11 @@ class OdOfficeError extends Error {
 const STATUS_BY_CODE = Object.freeze({
   OFFICE_UNKNOWN: 409,
   OFFICE_NOT_OD_CONNECTED: 409,
+  // The hygiene module's own per-office switch is off. 409 rather than 403 for
+  // the same reason OFFICE_NOT_OD_CONNECTED is: the caller is entitled and the
+  // request is well-formed, the OFFICE is simply not serving this module yet.
+  // 403 is reserved for entitlement and permission, which are answered upstream.
+  OFFICE_HYG_NOT_ENABLED: 409,
   OFFICE_OD_KEY_MISSING: 503,
   OFFICE_MISMATCH: 409,
   // A stored patient link that disagrees with the office an operation resolved to.
@@ -236,6 +248,66 @@ function odBlockReason(officeKey) {
  */
 function isOdReady(officeKey) {
   return odBlockReason(officeKey) === null;
+}
+
+/**
+ * Why (if at all) an office cannot serve the HYGIENE module right now.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY A SECOND FLAG, WHEN THE LAST SECOND FLAG WAS A BUG
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The header above records that `officeAgents.OFFICES[].odConnected` was retired
+ * because it "protected nothing": TC gated its routes on that flag while
+ * actually reaching Open Dental through a process-wide client built from
+ * ROLAND's key, so flipping it for valley served Roland's charts under a Riley
+ * selector. The flag and the credential it claimed to describe were not
+ * connected to each other.
+ *
+ * `hygOdEnabled` is not that. It COMPOSES with odBlockReason rather than
+ * standing beside it: this function asks odBlockReason first and can only ever
+ * narrow the answer. There is no state in which the hygiene module reaches an
+ * office that the voice module could not, and no path by which one office's
+ * credentials serve another — the client still comes from getOdOffice(), which
+ * is unchanged.
+ *
+ * What it buys is the thing a new clinical module actually needs: a per-office
+ * switch that starts OFF while the module is validated, and that can be turned
+ * off for one office without taking that office's voice worklist and TC screens
+ * down with it. Expressing "hygiene is not live at Riley yet" by flipping
+ * `odEnabled` would do exactly that.
+ *
+ * Returns null when the office IS ready. Pure — no network call, no client
+ * construction — so a roster endpoint and the UI can both ask it.
+ *
+ * @param {string} officeKey
+ * @returns {{ code: string, message: string } | null}
+ */
+function hygOdBlockReason(officeKey) {
+  // Everything the voice path refuses, the hygiene path refuses identically and
+  // with the same code: unknown office, no registry entry, switch off, no key.
+  const base = odBlockReason(officeKey);
+  if (base) return base;
+
+  const settings = OFFICE_OD_SETTINGS[officeKey];
+  const officeConfig = OFFICES[officeKey];
+  if (!settings.hygOdEnabled) {
+    return {
+      code: 'OFFICE_HYG_NOT_ENABLED',
+      message: `The hygiene module is not switched on for ${officeConfig.officeName} yet`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Whether an office can serve the hygiene module right now.
+ * Strictly narrower than isOdReady() — see hygOdBlockReason.
+ * @param {string} officeKey
+ * @returns {boolean}
+ */
+function isHygOdReady(officeKey) {
+  return hygOdBlockReason(officeKey) === null;
 }
 
 /**
@@ -387,6 +459,8 @@ module.exports = {
   httpStatusFor,
   odBlockReason,
   isOdReady,
+  hygOdBlockReason,
+  isHygOdReady,
   isChartTargetOffice,
   describeOffice,
   getOdOffice,
