@@ -31,9 +31,11 @@
  *   1. WHICH LAYER answered. "Off because somebody turned it off", "off because
  *      an app setting says so", and "off because nobody has ever chosen" are
  *      three different facts, and the operator is about to act on the difference.
- *   2. WHEN THEY DISAGREE, say so. "The database says on and
- *      HYG_OD_ENABLED_ROLAND says off" is exactly what somebody needs at 2am
- *      before concluding their change did not take.
+ *   2. WHEN THEY DISAGREE, say WHICH ONE IS IN FORCE. The app-setting override
+ *      is one-directional: `HYG_OD_ENABLED_ROLAND=false` kills the office
+ *      whatever this console says, and `=true` cannot turn anything on. Those
+ *      two read in opposite directions, so they get different sentences — the
+ *      one thing an operator must not have to work out at 2am.
  *   3. ON IS NOT THE SAME AS WORKING. An office can be switched on and still
  *      refuse every request because Open Dental is not configured for it. A
  *      green toggle over a 503 is the thing this panel must never show.
@@ -85,9 +87,11 @@ export function sourceBlurb(office: HygOfficeSwitch, setting: HygSwitchState["se
       : `Turned off by ${who} on ${when}.`;
   }
   if (office.source === "env") {
-    return `Nobody has chosen from this console, so the ${office.envVar} app setting (${office.env ? "on" : "off"}) applies.`;
+    // The ONLY way an app setting answers is by switching an office off; a
+    // `=true` never reaches here. See the notices below for the rest of it.
+    return `The ${office.envVar} app setting is off, which holds hygiene off here.`;
   }
-  return `Nobody has chosen and ${office.envVar} is unset, so hygiene is off by default.`;
+  return "Nobody has chosen from this console, so hygiene is off by default.";
 }
 
 /**
@@ -354,21 +358,39 @@ export default function HygienePanel({ practices }: { practices: Practice[] | nu
                 </p>
               )}
 
-              {/* The database answered and an app setting says the opposite, so
-                  that app setting is doing nothing. Somebody who set it and is
-                  watching nothing happen needs to be told. */}
-              {office.disagreesWithEnv && (
+              {/* An app setting is holding this office off. It OVERRIDES this
+                  console, so the toggle here cannot fix it, and somebody has to
+                  be told where the real switch is before they keep clicking. */}
+              {office.envEffect === "disables" && (
                 <p
                   className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400"
-                  data-testid={`hyg-env-disagrees-${office.officeKey}`}
+                  data-testid={`hyg-env-disables-${office.officeKey}`}
                 >
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>
-                    This console says <strong>{office.db ? "on" : "off"}</strong> and{" "}
-                    <code>{office.envVar}</code> says{" "}
-                    <strong>{office.env ? "on" : "off"}</strong>. The console wins while the
-                    control plane is reachable, so that app setting is currently having no
-                    effect — it is break-glass for when this page cannot be used.
+                    <code>{office.envVar}</code> is set to <code>false</code>, which holds this
+                    office <strong>off</strong> whatever this console says
+                    {office.disagreesWithEnv && office.db ? " — and this console says on" : ""}.
+                    Break-glass only ever turns an office off. Clear that app setting and restart
+                    before the switch here can turn it back on.
+                  </span>
+                </p>
+              )}
+
+              {/* An app setting somebody set expecting an effect, that can never
+                  have one. Silence here is the worse failure: they would be left
+                  watching the module stay dark with no explanation anywhere. */}
+              {office.envEffect === "inert" && (
+                <p
+                  className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400"
+                  data-testid={`hyg-env-inert-${office.officeKey}`}
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <code>{office.envVar}</code> is set to <code>true</code> and it is doing
+                    nothing: an app setting can only turn an office <strong>off</strong>, never
+                    on. Hygiene is {office.enabled ? "on here because this console says so" : "off here"}
+                    . Use the switch on this page.
                   </span>
                 </p>
               )}

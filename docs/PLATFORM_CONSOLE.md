@@ -263,6 +263,12 @@ Storage, precedence, the break-glass env var, and the reason the floor stays
 - **The panel renders the readback**, never the click. A write that silently did
   nothing cannot look like a success, and a refused one leaves the toggle where
   the server says it is.
+- **It says what an app setting is DOING, and the two directions are not
+  symmetric.** `HYG_OD_ENABLED_<OFFICE>=false` overrules this page, so the row
+  says the toggle here cannot lift it and names the remedy (clear the variable,
+  restart). `=true` can never enable anything, so the row says that in those
+  words rather than staying quiet and leaving somebody watching a dark module.
+  Neither is reported as the source `env` unless it is actually in force.
 - **It says which layer answered** (`db` / `env` / `default`) and, when the
   stored row and an app setting disagree, that the app setting is currently
   inert. It also distinguishes *"the stored setting does not name this office"*

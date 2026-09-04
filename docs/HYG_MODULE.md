@@ -207,7 +207,7 @@ No secrets. Three tunables, all with working defaults:
 | `HYG_WARM_SCHEDULE` | `45 7 * * *` | Cron for the morning warm, read in `OFFICE_TIMEZONE`. An unparseable value falls back to the default with a warning. |
 | `HYG_WARM_DISABLED` | unset | `'true'` arms no warm at all. The SECOND gate — the first is `hygOdEnabled`, which ships false everywhere. |
 
-| `HYG_OD_ENABLED_<OFFICE>` | unset | **Break-glass** per-office override, used only when the control plane cannot be read. `true` / `false`; anything else is ignored. See §8. |
+| `HYG_OD_ENABLED_<OFFICE>` | unset | **Break-glass** per-office kill switch. `false` forces that office OFF, whatever the console says. `true` is accepted and can never enable anything (it is reported at boot and on screen as inert); anything else is ignored. See §8. |
 | `HYG_PILOT_REFRESH_MINUTES` | `5` | How often the stored pilot switch is re-read in the background. A console write does not wait for this. |
 
 The per-office switch is no longer code: it lives in the control plane and is
@@ -409,10 +409,10 @@ would otherwise have been pilot morning in production.
 ### Precedence
 
 ```
+HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always.
+  ↓ (unset, =true, or unparseable — none of which can ENABLE anything)
 platform_setting['hyg_od_enabled']   ← the console writes this
   ↓ (no row, or a row that cannot be parsed)
-HYG_OD_ENABLED_<OFFICE>              ← break-glass, per office
-  ↓ (unset, or not literally true/false)
 OFFICE_OD_SETTINGS[x].hygOdEnabled   ← the floor, and it stays false
 ```
 
@@ -426,14 +426,19 @@ Things worth knowing before you debug this:
 
 - **A row that exists answers for every office.** Once the row is present and
   usable, an office ABSENT from it is `false` — not "unset", not "inherit". The
-  environment is consulted only when there is no usable row at all, which is
-  exactly `config/retention.js`'s `days: null` behaviour generalised to a map.
-- **`HYG_OD_ENABLED_ROLAND` is for an unreachable control plane, not an
-  override.** If the control DB is up and the row says off, the env var is
-  inert — and the console SAYS SO, in those words, rather than leaving somebody
-  to conclude their change did not take. To use it, set it and restart: on a
-  boot where the control plane cannot be read, nothing is cached and the env var
-  is what answers.
+  stored row is consulted only when nothing in the environment has already
+  killed the office, which is exactly `config/retention.js`'s `days: null`
+  behaviour generalised to a map, with a one-way gate in front of it.
+- **The env override only ever turns an office OFF.** `HYG_OD_ENABLED_ROLAND=false`
+  holds roland off whatever the stored row says — it NARROWS, the same way
+  `hygOdBlockReason()` narrows `odBlockReason()`. `=true` is accepted as input
+  and cannot enable anything; it is logged once at boot and shown on the console
+  as inert, because a variable that quietly does nothing is its own incident.
+  Break-glass exists for *the console is unreachable and I need to kill this*,
+  and there is no incident whose correct response is turning a module ON while
+  the control plane is down. That also means a stale `=true` left over from an
+  earlier incident cannot re-open an office somebody deliberately shut, not even
+  on a boot where the control DB is unreachable and nothing is cached.
 - **The floor stays `false`.** It is the bottom of the chain, not a
   configuration point. Flipping it would put the OFF direction behind a deploy
   again, which is the whole thing this replaced.
@@ -509,10 +514,16 @@ deploy, no restart. It is in force for the very next request; a hygienist
 mid-page gets a refusal on their next action, not an empty day.
 
 If the console itself is unreachable, the break-glass path is the app setting:
-set `HYG_OD_ENABLED_ROLAND=false` and restart the container. That only takes
-effect on a boot where the control plane could not be read — which is the
-situation it exists for. If the control plane IS reachable, the stored row wins
-and the console is the way.
+set `HYG_OD_ENABLED_ROLAND=false` and restart the container. It holds the office
+off from that moment on, whatever the stored row says and whether or not the
+control plane comes back — so **remember to clear it afterwards**, or the
+console's own switch will not be able to turn that office back on. The panel
+says so on the office's row while the variable is set.
+
+There is no matching way in. `HYG_OD_ENABLED_ROLAND=true` cannot turn an office
+on; the only way in is the console. That is deliberate — the fast,
+always-available path is the safe direction, which is the same reason turning
+off needs no confirmation and turning on does.
 
 ### Enabling prod
 

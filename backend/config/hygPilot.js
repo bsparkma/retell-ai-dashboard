@@ -25,10 +25,10 @@
  * PRECEDENCE
  * ═════════════════════════════════════════════════════════════════════════════
  *
+ *     HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always.
+ *       ↓ (unset, `=true`, or unparseable — none of which can ENABLE anything)
  *     platform_setting['hyg_od_enabled']   ← the console writes this
  *       ↓ (no row, or a row this module cannot parse)
- *     HYG_OD_ENABLED_<OFFICE>              ← break-glass, per office
- *       ↓ (unset or not a boolean)
  *     OFFICE_OD_SETTINGS[x].hygOdEnabled   ← hardcoded, and it stays FALSE
  *
  * Shaped after config/retention.js, which already solved this for the call
@@ -37,20 +37,32 @@
  *
  * **A ROW THAT EXISTS ANSWERS FOR EVERY OFFICE.** Once the setting row is
  * present and usable, an office ABSENT from it is `false` — not "unset", not
- * "inherit from the environment". The environment is consulted only when there
- * is no usable row at all, which is exactly the retention module's `days: null`
- * behaviour generalised to a map. Two consequences worth knowing:
+ * "inherit from the environment". That is exactly the retention module's
+ * `days: null` behaviour generalised to a map, and it means an environment the
+ * console has never touched behaves exactly as it did before this module
+ * existed. The migration seeds no row on purpose.
  *
- *   - An environment the console has never touched behaves exactly as it did
- *     before this module existed. The migration seeds no row on purpose.
- *   - `HYG_OD_ENABLED_ROLAND` is break-glass for when the control plane is
- *     UNREACHABLE, not an override that beats a stored decision. If the control
- *     DB is up and says roland is off, roland is off, and the console — which is
- *     the fast path anyway — is how you change it. If the control DB is down at
- *     boot, nothing is cached, and the env var is what answers. The console
- *     SHOWS the disagreement either way, because "the database says on and
- *     HYG_OD_ENABLED_ROLAND says off" is precisely what an operator needs at
- *     2am before concluding their change did not take.
+ * **THE ENV OVERRIDE IS ONE-DIRECTIONAL: IT CAN ONLY TURN AN OFFICE OFF.**
+ * Break-glass exists for "the console is unreachable and I need to kill this."
+ * There is no incident whose correct response is turning a module ON while the
+ * control plane is down. So:
+ *
+ *   - `HYG_OD_ENABLED_ROLAND=false` forces roland OFF, whatever the stored row
+ *     says. It wins over nothing — it only ever NARROWS, exactly the way
+ *     `odOffices.hygOdBlockReason()` narrows `odBlockReason()`.
+ *   - `HYG_OD_ENABLED_ROLAND=true` is accepted as input and cannot enable
+ *     anything. It is reported at boot and shown in the console as inert,
+ *     because somebody set it expecting an effect and a variable that quietly
+ *     does nothing is its own incident.
+ *   - Anything else (`yes`, ``, `1`) is not a boolean and is ignored, loudly.
+ *
+ * That makes the fast always-available path the SAFE one — the same rule the
+ * console already follows by confirming an on-flip and never an off-flip.
+ *
+ * The consequence to know before debugging: a stale `=true` left over from an
+ * earlier incident CANNOT re-enable an office somebody deliberately turned off,
+ * not even on a boot where the control DB is unreachable and nothing is cached.
+ * That was the hole this rule closes.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHY ONE ROW, KEYED BY OFFICE, RATHER THAN A KEY PER OFFICE
@@ -135,6 +147,13 @@ let lastLoggedError = null;
 /** @type {NodeJS.Timeout|null} */
 let refreshTimer = null;
 
+/**
+ * Have we already said that an enabling env override is inert?
+ * One line per process, at boot — see warnAboutInertEnvOverrides.
+ * @type {boolean}
+ */
+let inertEnvWarned = false;
+
 /** Minutes between background refreshes. @returns {number} */
 function refreshMinutes() {
   const raw = Number(String(process.env.HYG_PILOT_REFRESH_MINUTES ?? '').trim());
@@ -212,6 +231,12 @@ function envVarFor(officeKey) {
  * a real practice's chart data on. The raw string is surfaced by
  * `officeState()` so the console can show that somebody tried.
  *
+ * This reports what was SET, not what takes effect. `true` is a legal value
+ * here and still cannot enable an office — see `hygEnabledFor` and the header.
+ * Parsing and honouring are kept separate on purpose: the console has to be
+ * able to say "you set this to true and it is doing nothing", which it cannot
+ * do if an inert value is indistinguishable from an unset one.
+ *
  * @param {string} officeKey
  * @returns {boolean|null}
  */
@@ -222,6 +247,35 @@ function envOverrideFor(officeKey) {
   if (v === 'true') return true;
   if (v === 'false') return false;
   return null;
+}
+
+/**
+ * Say, once, that an enabling env override is doing nothing.
+ *
+ * `HYG_OD_ENABLED_ROLAND=true` is accepted as input and cannot turn anything
+ * on. Silently ignoring it would be the worse failure of the two: somebody set
+ * it during an incident, expecting an effect, and would be left watching a
+ * module stay dark with no explanation anywhere. A variable that quietly does
+ * nothing is its own incident.
+ *
+ * Called from server.js at boot, after the first refresh. Idempotent per
+ * process — this must not become a line the log prints on a timer.
+ *
+ * @returns {string[]} the offices warned about (empty when there are none)
+ */
+function warnAboutInertEnvOverrides() {
+  if (inertEnvWarned) return [];
+  inertEnvWarned = true;
+
+  const inert = Object.keys(OFFICES).filter((officeKey) => envOverrideFor(officeKey) === true);
+  for (const officeKey of inert) {
+    console.warn(
+      `[hygPilot] ${envVarFor(officeKey)}=true is set, and it is doing nothing: this variable ` +
+        `can only DISABLE an office, never enable one. Turn hygiene on for '${officeKey}' from ` +
+        'the platform console (Platform → Hygiene).'
+    );
+  }
+  return inert;
 }
 
 /**
@@ -239,23 +293,30 @@ function envOverrideFor(officeKey) {
  * @returns {boolean}
  */
 function hygEnabledFor(officeKey, hardcodedFallback = false) {
+  // Break-glass, and it only points one way: `=false` forces OFF whatever the
+  // stored row says, and no env value can enable anything. See the header.
+  if (envOverrideFor(officeKey) === false) return false;
+
   // A usable stored row answers for EVERY office; absent from it means false.
   if (cache.loaded && cache.byOffice) return cache.byOffice[officeKey] === true;
-
-  const env = envOverrideFor(officeKey);
-  if (env !== null) return env;
 
   return hardcodedFallback === true;
 }
 
 /**
  * Which layer answered `hygEnabledFor` for this office.
+ *
+ * Only a DISABLING env var can be the answer. A `=true` never is — reporting
+ * `env` for a value that cannot take effect would tell an operator the app
+ * setting is in charge at the exact moment they need to know it is inert.
+ *
  * @param {string} officeKey
  * @returns {'db'|'env'|'default'}
  */
 function sourceFor(officeKey) {
+  if (envOverrideFor(officeKey) === false) return 'env';
   if (cache.loaded && cache.byOffice) return 'db';
-  return envOverrideFor(officeKey) !== null ? 'env' : 'default';
+  return 'default';
 }
 
 /**
@@ -394,10 +455,17 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
  * Everything the console needs to render ONE office honestly, including WHY the
  * effective value is what it is and whether the layers disagree.
  *
- * `disagreesWithEnv` is the incident field. When the database has answered and
- * an env override says the opposite, that env var is INERT — and an operator
- * who set it and is watching nothing happen needs to be told that, not left to
- * conclude the switch is broken.
+ * `envEffect` is the incident field, and it has to be reported rather than
+ * derived by the caller, because the two disagreements read in OPPOSITE
+ * directions now that the override is one-directional:
+ *
+ *   `disables` — the var says false, so this office is off no matter what the
+ *                stored row says. The app setting is in charge.
+ *   `inert`    — the var says true, which can never enable anything. Somebody
+ *                set it and is watching nothing happen; say so.
+ *
+ * `disagreesWithEnv` stays as the narrower "the database answered and the env
+ * var says the opposite" fact, which is the pair a console shows side by side.
  *
  * @param {string} officeKey
  * @param {boolean} [hardcodedFallback]
@@ -410,7 +478,7 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
  *
  * @returns {{ officeKey: string, enabled: boolean, source: 'db'|'env'|'default',
  *             db: boolean|null, inRow: boolean|null, env: boolean|null,
- *             envVar: string, envRaw: string|null,
+ *             envVar: string, envRaw: string|null, envEffect: 'disables'|'inert'|null,
  *             hardcoded: boolean, disagreesWithEnv: boolean }}
  */
 function officeState(officeKey, hardcodedFallback = false) {
@@ -432,9 +500,10 @@ function officeState(officeKey, hardcodedFallback = false) {
     env,
     envVar: envVarFor(officeKey),
     envRaw: rawEnv === undefined ? null : String(rawEnv),
+    envEffect: env === false ? 'disables' : env === true ? 'inert' : null,
     hardcoded: hardcodedFallback === true,
-    // Only meaningful when the database answered — otherwise env IS the answer
-    // and there is nothing to disagree with.
+    // The narrower fact: both layers answered and they said different things.
+    // Which one is in force is `envEffect`'s job to say.
     disagreesWithEnv: db !== null && env !== null && db !== env,
   };
 }
@@ -490,6 +559,7 @@ function stopRefreshTimer() {
 function resetCacheForTests() {
   cache = { loaded: false, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
   lastLoggedError = null;
+  inertEnvWarned = false;
   stopRefreshTimer();
 }
 
@@ -498,6 +568,7 @@ module.exports = {
   ENV_PREFIX,
   envVarFor,
   envOverrideFor,
+  warnAboutInertEnvOverrides,
   hygEnabledFor,
   sourceFor,
   policyKnown,

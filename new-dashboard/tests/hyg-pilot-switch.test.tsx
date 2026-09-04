@@ -12,8 +12,9 @@
  *      confirmation in front of turning one OFF — the safe direction has to be
  *      the fast one.
  *   3. Showing a green toggle over an office that still cannot serve a day.
- *   4. Hiding a disagreement between the console and an app setting, so an
- *      operator watching their env var do nothing has no idea why.
+ *   4. Hiding what an app setting is doing. The override is one-directional —
+ *      `=false` overrules this page, `=true` cannot turn anything on — so those
+ *      two must not render as one vague "they disagree".
  *   5. Letting the per-office switch and the per-practice module entitlement
  *      read as the same thing.
  */
@@ -45,7 +46,10 @@ const server = vi.hoisted(() => ({
   valley: false,
   hasRow: false,
   policyKnown: true,
-  /** Simulates HYG_OD_ENABLED_ROLAND being set to the opposite of the row. */
+  /**
+   * Simulates HYG_OD_ENABLED_ROLAND. `false` overrules the stored row and holds
+   * the office off; `true` is accepted and can never enable anything.
+   */
   rolandEnv: null as boolean | null,
   rolandEnvRaw: null as string | null,
   /** What the VOICE path refuses for roland, independent of the switch. */
@@ -58,52 +62,63 @@ const server = vi.hoisted(() => ({
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
 
-  const state = () => ({
-    offices: [
-      {
-        officeKey: "roland",
-        officeName: "Roland Family Dental",
-        enabled: server.roland,
-        source: (server.hasRow ? "db" : server.rolandEnv !== null ? "env" : "default") as
-          | "db"
-          | "env"
-          | "default",
-        db: server.hasRow ? server.roland : null,
-        inRow: server.hasRow ? true : null,
-        env: server.rolandEnv,
-        envVar: "HYG_OD_ENABLED_ROLAND",
-        envRaw: server.rolandEnvRaw,
-        hardcoded: false,
-        disagreesWithEnv:
-          server.hasRow && server.rolandEnv !== null && server.rolandEnv !== server.roland,
-        ready: server.roland && server.rolandBlocked === null,
-        blockedBy: server.rolandBlocked,
+  const state = () => {
+    // The backend's rule, modelled here so the fixtures cannot drift from it: a
+    // disabling app setting narrows FIRST and answers; an enabling one is inert.
+    const killed = server.rolandEnv === false;
+    const rolandOn = !killed && server.roland;
+    return {
+      offices: [
+        {
+          officeKey: "roland",
+          officeName: "Roland Family Dental",
+          enabled: rolandOn,
+          source: (killed ? "env" : server.hasRow ? "db" : "default") as
+            | "db"
+            | "env"
+            | "default",
+          db: server.hasRow ? server.roland : null,
+          inRow: server.hasRow ? true : null,
+          env: server.rolandEnv,
+          envVar: "HYG_OD_ENABLED_ROLAND",
+          envRaw: server.rolandEnvRaw,
+          envEffect: (killed ? "disables" : server.rolandEnv === true ? "inert" : null) as
+            | "disables"
+            | "inert"
+            | null,
+          hardcoded: false,
+          disagreesWithEnv:
+            server.hasRow && server.rolandEnv !== null && server.rolandEnv !== server.roland,
+          ready: rolandOn && server.rolandBlocked === null,
+          blockedBy: server.rolandBlocked,
+        },
+        {
+          officeKey: "valley",
+          officeName: "Riley Family Dental",
+          enabled: server.valley,
+          source: (server.hasRow ? "db" : "default") as "db" | "env" | "default",
+          db: server.hasRow ? server.valley : null,
+          inRow: server.hasRow ? false : null,
+          env: null,
+          envVar: "HYG_OD_ENABLED_VALLEY",
+          envRaw: null,
+          envEffect: null,
+          hardcoded: false,
+          disagreesWithEnv: false,
+          ready: server.valley,
+          blockedBy: null,
+        },
+      ],
+      setting: {
+        policyKnown: server.policyKnown,
+        hasRow: server.hasRow,
+        updatedAt: server.hasRow ? "2026-09-04T12:00:00.000Z" : null,
+        updatedBy: server.hasRow ? "admin@carein.ai" : null,
+        settingKey: "hyg_od_enabled",
       },
-      {
-        officeKey: "valley",
-        officeName: "Riley Family Dental",
-        enabled: server.valley,
-        source: (server.hasRow ? "db" : "default") as "db" | "env" | "default",
-        db: server.hasRow ? server.valley : null,
-        inRow: server.hasRow ? false : null,
-        env: null,
-        envVar: "HYG_OD_ENABLED_VALLEY",
-        envRaw: null,
-        hardcoded: false,
-        disagreesWithEnv: false,
-        ready: server.valley,
-        blockedBy: null,
-      },
-    ],
-    setting: {
-      policyKnown: server.policyKnown,
-      hasRow: server.hasRow,
-      updatedAt: server.hasRow ? "2026-09-04T12:00:00.000Z" : null,
-      updatedBy: server.hasRow ? "admin@carein.ai" : null,
-      settingKey: "hyg_od_enabled",
-    },
-    controlPlaneError: server.controlPlaneError,
-  });
+      controlPlaneError: server.controlPlaneError,
+    };
+  };
 
   return {
     ...real,
@@ -252,8 +267,8 @@ describe("saying honestly why a switch reads the way it does", () => {
     const setting = { policyKnown: true, hasRow: true, updatedAt: "2026-09-04T12:00:00.000Z", updatedBy: "admin@carein.ai", settingKey: "hyg_od_enabled" };
     const base = {
       officeKey: "roland", officeName: "Roland Family Dental", envVar: "HYG_OD_ENABLED_ROLAND",
-      envRaw: null, hardcoded: false, disagreesWithEnv: false, ready: true, blockedBy: null,
-      inRow: true,
+      envRaw: null, envEffect: null, hardcoded: false, disagreesWithEnv: false, ready: true,
+      blockedBy: null, inRow: true,
     };
     expect(sourceBlurb({ ...base, enabled: true, source: "db", db: true, env: null }, setting)).toContain(
       "Turned on by admin@carein.ai",
@@ -261,9 +276,13 @@ describe("saying honestly why a switch reads the way it does", () => {
     expect(sourceBlurb({ ...base, enabled: false, source: "db", db: false, env: null }, setting)).toContain(
       "Turned off by admin@carein.ai",
     );
-    expect(sourceBlurb({ ...base, enabled: true, source: "env", db: null, env: true }, setting)).toContain(
-      "HYG_OD_ENABLED_ROLAND",
+    // `env` can only ever be the answer by holding an office OFF.
+    const byEnv = sourceBlurb(
+      { ...base, enabled: false, source: "env", db: null, env: false, envEffect: "disables" },
+      setting,
     );
+    expect(byEnv).toContain("HYG_OD_ENABLED_ROLAND");
+    expect(byEnv).toContain("off");
 
     // An office ABSENT from the stored row is off for the same reason and by
     // NOBODY'S decision. Putting a person's name and a date on that would be
@@ -277,19 +296,40 @@ describe("saying honestly why a switch reads the way it does", () => {
     expect(absent).not.toContain("admin@carein.ai");
   });
 
-  it("says when an app setting is being overruled and is therefore doing nothing", async () => {
-    // "The database says on and HYG_OD_ENABLED_ROLAND says off" — the sentence
-    // somebody needs at 2am before concluding their change did not take.
+  it("says when an app setting is holding an office off, and that this page cannot lift it", async () => {
+    // The console says on; break-glass says off. Break-glass wins, because it
+    // only ever narrows — so the toggle here is not the fix and must not
+    // pretend to be.
     server.hasRow = true;
     server.roland = true;
     server.rolandEnv = false;
     server.rolandEnvRaw = "false";
     await renderPanel();
 
-    const note = screen.getByTestId("hyg-env-disagrees-roland");
+    const note = screen.getByTestId("hyg-env-disables-roland");
     expect(note.textContent).toContain("HYG_OD_ENABLED_ROLAND");
-    expect(note.textContent).toContain("break-glass");
-    expect(screen.queryByTestId("hyg-env-disagrees-valley")).toBeNull();
+    expect(note.textContent).toContain("whatever this console says");
+    expect(note.textContent).toContain("this console says on");
+    // The effective state is OFF, and the toggle shows the effective state.
+    expect(screen.getByTestId("hyg-switch-roland").getAttribute("data-state")).toBe("unchecked");
+    expect(screen.getByTestId("hyg-source-roland").textContent).toBe("env");
+    expect(screen.queryByTestId("hyg-env-disables-valley")).toBeNull();
+  });
+
+  it("says when an app setting meant to turn hygiene ON is doing nothing", async () => {
+    // Somebody set it during an incident, expecting an effect. Silence here
+    // leaves them watching the module stay dark with no explanation anywhere.
+    server.rolandEnv = true;
+    server.rolandEnvRaw = "true";
+    await renderPanel();
+
+    const note = screen.getByTestId("hyg-env-inert-roland");
+    expect(note.textContent).toContain("HYG_OD_ENABLED_ROLAND");
+    expect(note.textContent).toContain("doing");
+    expect(note.textContent).toContain("only turn an office");
+    // And it is NOT reported as the layer that answered.
+    expect(screen.getByTestId("hyg-source-roland").textContent).toBe("default");
+    expect(screen.getByTestId("hyg-switch-roland").getAttribute("data-state")).toBe("unchecked");
   });
 
   it("says when an env var is set to something that is not a boolean", async () => {

@@ -12,15 +12,22 @@
  *   hygswitch-01-off        nobody has chosen; every office off, from the floor
  *   hygswitch-02-on         Roland switched on from this console
  *   hygswitch-03-confirm    the turn-on dialog, and what it says starts happening
- *   hygswitch-04-disagree   the database says on and the app setting says off
+ *   hygswitch-04-disagree   the database says on and the app setting kills it
+ *   hygswitch-05-inert      an app setting set to `true`, which can never work
  *
  * 01 and 02 are the pair a reviewer compares: the source badge and the sentence
  * under each office have to make "off by default" and "turned off by somebody"
  * distinguishable at a glance, and a picture is the only way to check that.
  *
- * 04 is the incident shot. It is the state an operator is in at 2am when they
- * have set an env var and are watching nothing happen, and the panel's job is
- * to tell them why.
+ * 04 is the incident shot: break-glass has been pulled, so the office is off
+ * even though this console holds it on. That override only ever narrows, which
+ * means the toggle on this page is NOT the fix — and the panel has to say so,
+ * or an operator clicks it and watches nothing happen.
+ *
+ * 05 is the other half of that asymmetry, and the reason it needs its own
+ * picture: `HYG_OD_ENABLED_ROLAND=true` is accepted and can never turn anything
+ * on. Somebody set it expecting an effect. If this panel stays quiet, they are
+ * left watching a dark module with no explanation anywhere on screen.
  *
  * A DESKTOP width on purpose — unlike the Day View, which is an iPad screen,
  * this console is used at a desk. Shooting it at 1180 would review a layout
@@ -57,52 +64,62 @@ const fixtures = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/api")>();
-  const state = () => ({
-    offices: [
-      {
-        officeKey: "roland",
-        officeName: "Roland Family Dental",
-        enabled: fixtures.roland,
-        source: (fixtures.hasRow ? "db" : fixtures.rolandEnv !== null ? "env" : "default") as
-          | "db"
-          | "env"
-          | "default",
-        db: fixtures.hasRow ? fixtures.roland : null,
-        inRow: fixtures.hasRow ? true : null,
-        env: fixtures.rolandEnv,
-        envVar: "HYG_OD_ENABLED_ROLAND",
-        envRaw: fixtures.rolandEnvRaw,
-        hardcoded: false,
-        disagreesWithEnv:
-          fixtures.hasRow && fixtures.rolandEnv !== null && fixtures.rolandEnv !== fixtures.roland,
-        ready: fixtures.roland,
-        blockedBy: null,
+  const state = () => {
+    // Same rule as the backend: a disabling app setting narrows first and
+    // answers; an enabling one is inert. See config/hygPilot.js.
+    const killed = fixtures.rolandEnv === false;
+    return {
+      offices: [
+        {
+          officeKey: "roland",
+          officeName: "Roland Family Dental",
+          enabled: !killed && fixtures.roland,
+          source: (killed ? "env" : fixtures.hasRow ? "db" : "default") as
+            | "db"
+            | "env"
+            | "default",
+          db: fixtures.hasRow ? fixtures.roland : null,
+          inRow: fixtures.hasRow ? true : null,
+          env: fixtures.rolandEnv,
+          envVar: "HYG_OD_ENABLED_ROLAND",
+          envRaw: fixtures.rolandEnvRaw,
+          envEffect: (killed ? "disables" : fixtures.rolandEnv === true ? "inert" : null) as
+            | "disables"
+            | "inert"
+            | null,
+          hardcoded: false,
+          disagreesWithEnv:
+            fixtures.hasRow && fixtures.rolandEnv !== null && fixtures.rolandEnv !== fixtures.roland,
+          ready: !killed && fixtures.roland,
+          blockedBy: null,
+        },
+        {
+          officeKey: "valley",
+          officeName: "Riley Family Dental",
+          enabled: fixtures.valley,
+          source: (fixtures.hasRow ? "db" : "default") as "db" | "env" | "default",
+          db: fixtures.hasRow ? fixtures.valley : null,
+          inRow: fixtures.hasRow ? false : null,
+          env: null,
+          envVar: "HYG_OD_ENABLED_VALLEY",
+          envRaw: null,
+          envEffect: null,
+          hardcoded: false,
+          disagreesWithEnv: false,
+          ready: fixtures.valley,
+          blockedBy: null,
+        },
+      ],
+      setting: {
+        policyKnown: true,
+        hasRow: fixtures.hasRow,
+        updatedAt: fixtures.hasRow ? "2026-09-04T12:00:00.000Z" : null,
+        updatedBy: fixtures.hasRow ? "admin@carein.ai" : null,
+        settingKey: "hyg_od_enabled",
       },
-      {
-        officeKey: "valley",
-        officeName: "Riley Family Dental",
-        enabled: fixtures.valley,
-        source: (fixtures.hasRow ? "db" : "default") as "db" | "env" | "default",
-        db: fixtures.hasRow ? fixtures.valley : null,
-        inRow: fixtures.hasRow ? false : null,
-        env: null,
-        envVar: "HYG_OD_ENABLED_VALLEY",
-        envRaw: null,
-        hardcoded: false,
-        disagreesWithEnv: false,
-        ready: fixtures.valley,
-        blockedBy: null,
-      },
-    ],
-    setting: {
-      policyKnown: true,
-      hasRow: fixtures.hasRow,
-      updatedAt: fixtures.hasRow ? "2026-09-04T12:00:00.000Z" : null,
-      updatedBy: fixtures.hasRow ? "admin@carein.ai" : null,
-      settingKey: "hyg_od_enabled",
-    },
-    controlPlaneError: null,
-  });
+      controlPlaneError: null,
+    };
+  };
   return {
     ...real,
     api: {
@@ -184,13 +201,21 @@ describe.skipIf(!SHOOT)("hygiene switch screenshot dumps", () => {
     dump("hygswitch-03-confirm");
   });
 
-  it("04 — the console and the app setting disagree", async () => {
+  it("04 — break-glass is holding the office off, against this console", async () => {
     fixtures.roland = true;
     fixtures.hasRow = true;
     fixtures.rolandEnv = false;
     fixtures.rolandEnvRaw = "false";
     render(<HygienePanel practices={PRACTICES} />);
-    await screen.findByTestId("hyg-env-disagrees-roland");
+    await screen.findByTestId("hyg-env-disables-roland");
     dump("hygswitch-04-disagree");
+  });
+
+  it("05 — an app setting that says ON, doing nothing", async () => {
+    fixtures.rolandEnv = true;
+    fixtures.rolandEnvRaw = "true";
+    render(<HygienePanel practices={PRACTICES} />);
+    await screen.findByTestId("hyg-env-inert-roland");
+    dump("hygswitch-05-inert");
   });
 });

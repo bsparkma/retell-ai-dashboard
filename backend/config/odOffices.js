@@ -85,11 +85,11 @@ const OFFICE_OD_SETTINGS = Object.freeze({
     officeKey: 'roland',
     odEnabled: true,
     // THE FLOOR, AND IT STAYS `false`. This is no longer where the pilot switch
-    // is turned on — it is the bottom of a precedence chain (control DB → env →
-    // here), and it is what answers when nothing else has. Flipping it would
-    // mean the OFF direction needs a deploy again, which is the whole thing
-    // config/hygPilot.js exists to fix. Turn an office on from the Platform
-    // Console, or with HYG_OD_ENABLED_ROLAND if the control plane is down.
+    // is turned on — it is the bottom of a precedence chain (control DB → here)
+    // and it is what answers when nothing else has. Flipping it would mean the
+    // OFF direction needs a deploy again, which is the whole thing
+    // config/hygPilot.js exists to fix. Turn an office ON from the Platform
+    // Console; HYG_OD_ENABLED_<OFFICE> can only turn one OFF.
     // See hygOdBlockReason() below for why this is a SECOND flag at all and not
     // a reuse of odEnabled.
     hygOdEnabled: false,
@@ -299,8 +299,10 @@ function hygOdBlockReason(officeKey) {
   const settings = OFFICE_OD_SETTINGS[officeKey];
   const officeConfig = OFFICES[officeKey];
   // Read at RUN TIME, through the precedence chain in config/hygPilot.js:
-  // platform_setting → HYG_OD_ENABLED_<OFFICE> → the hardcoded floor passed in
-  // here. Synchronous over a cached value, because this function is on every
+  // a disabling HYG_OD_ENABLED_<OFFICE> narrows first, then platform_setting,
+  // then the hardcoded floor passed in here. (Nothing in the environment can
+  // ENABLE an office — see that module's header.) Synchronous over a cached
+  // value, because this function is on every
   // /api/hyg request. A console write updates that cache inline, so an office
   // turned OFF is refused on the VERY NEXT request — which is the only thing
   // that makes this a kill switch rather than a deployment.

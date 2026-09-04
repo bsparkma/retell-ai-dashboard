@@ -354,8 +354,15 @@ export interface HygOfficeSwitch {
   envVar: string;
   /** The raw env string, so a value like `yes` can be shown as ignored. */
   envRaw: string | null;
+  /**
+   * What the env override is actually DOING, which is not symmetric:
+   * `disables` — it says false, so this office is off whatever the row says.
+   * `inert`    — it says true, and nothing in the environment can enable an
+   *              office. Somebody set it and is watching nothing happen.
+   */
+  envEffect: "disables" | "inert" | null;
   hardcoded: boolean;
-  /** The db answered AND an env override says the opposite, so it is inert. */
+  /** The db answered AND an env override says the opposite. */
   disagreesWithEnv: boolean;
   /** Switched on AND actually able to serve a day. */
   ready: boolean;

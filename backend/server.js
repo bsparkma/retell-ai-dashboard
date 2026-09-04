@@ -528,6 +528,10 @@ async function bootstrap() {
     //    a control plane that could not be reached leaves every office OFF,
     //    which is the safe direction. See config/hygPilot.js.
     await hygPilot.refreshFromDb();
+    //    Then say so, once, if somebody has set HYG_OD_ENABLED_<OFFICE>=true:
+    //    that variable can only DISABLE an office, so it is doing nothing —
+    //    and a variable that quietly does nothing is its own incident.
+    hygPilot.warnAboutInertEnvOverrides();
     //    Then keep it fresh, so a value written straight into the control DB by
     //    a runbook reaches the request path without a restart. A CONSOLE write
     //    does not wait for this — it refreshes inline and is in force for the

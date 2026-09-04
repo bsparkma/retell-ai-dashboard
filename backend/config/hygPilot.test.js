@@ -63,6 +63,26 @@ async function withControlPlane({ row = null, fail = false, env = {} }, fn) {
   }
 }
 
+/**
+ * Run `fn` with console.warn captured, so a test can assert on a line the app
+ * PRINTS. The boot warning about an inert env var is a deliverable here, not
+ * decoration: a variable that quietly does nothing is its own incident.
+ *
+ * @param {(warnings: string[]) => void} fn
+ */
+function withWarnings(fn) {
+  const saved = console.warn;
+  /** @type {string[]} */
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    fn(warnings);
+  } finally {
+    console.warn = saved;
+  }
+  return warnings;
+}
+
 /** A stored row wrapping `value`. */
 function row(value) {
   return { key: KEY, value, updated_at: new Date('2026-09-04T12:00:00Z'), updated_by: 'boss@carein.ai' };
@@ -77,35 +97,64 @@ test('nothing stored, nothing in the environment: OFF, from the hardcoded floor'
     assert.equal(hygPilot.sourceFor('roland'), 'default');
   }));
 
-test('no stored row: the ENVIRONMENT answers — the break-glass layer', () =>
-  withControlPlane({ env: { HYG_OD_ENABLED_ROLAND: 'true' } }, async () => {
+test('an app setting that says ON cannot switch an office on, and says so once', () =>
+  withControlPlane({ env: { HYG_OD_ENABLED_ROLAND: '  TRUE  ' } }, async () => {
     await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', false), true);
-    assert.equal(hygPilot.sourceFor('roland'), 'env');
-    // Per office, not a blanket switch.
-    assert.equal(hygPilot.hygEnabledFor('valley', false), false);
+    // There is no incident whose correct response is turning a module ON while
+    // the control plane is down, so break-glass points one way only.
+    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+    // ...and the console must not report `env` for a value that does nothing.
+    assert.equal(hygPilot.sourceFor('roland'), 'default');
+
+    // It IS parsed (whitespace and case are not typos) and IS surfaced, because
+    // silently ignoring it is the worse failure: somebody set it expecting an
+    // effect, and would be left watching the module stay dark with no reason.
+    assert.equal(hygPilot.envOverrideFor('roland'), true);
+    const state = hygPilot.officeState('roland', false);
+    assert.equal(state.envEffect, 'inert');
+    assert.equal(state.envRaw, '  TRUE  ');
+
+    withWarnings((warn) => {
+      assert.deepEqual(hygPilot.warnAboutInertEnvOverrides(), ['roland']);
+      assert.equal(warn.length, 1);
+      assert.match(warn[0], /HYG_OD_ENABLED_ROLAND=true is set, and it is doing nothing/);
+      assert.match(warn[0], /can only DISABLE an office/);
+    });
+
+    // Once per process. This must never become a line a timer prints.
+    withWarnings((warn) => {
+      assert.deepEqual(hygPilot.warnAboutInertEnvOverrides(), []);
+      assert.equal(warn.length, 0);
+    });
   }));
 
-test('the env override can turn an office OFF as well as on', () =>
+test('an app setting that says OFF switches the office off — the only direction it points', () =>
   withControlPlane({ env: { HYG_OD_ENABLED_ROLAND: 'false' } }, async () => {
     await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', true), false, 'env beats the floor in both directions');
+    assert.equal(hygPilot.hygEnabledFor('roland', true), false, 'it narrows the floor');
+    assert.equal(hygPilot.sourceFor('roland'), 'env');
+    assert.equal(hygPilot.officeState('roland', true).envEffect, 'disables');
+    // Per office, not a blanket switch.
+    assert.equal(hygPilot.hygEnabledFor('valley', true), true);
   }));
 
-test('a stored row BEATS the environment, and the disagreement is reportable', () =>
+test('an office killed from the environment stays killed, though the console says on', () =>
   withControlPlane(
     { row: row({ roland: true }), env: { HYG_OD_ENABLED_ROLAND: 'false' } },
     async () => {
       await hygPilot.refreshFromDb();
-      assert.equal(hygPilot.hygEnabledFor('roland', false), true);
-      assert.equal(hygPilot.sourceFor('roland'), 'db');
+      // Break-glass only ever narrows, the same way hygOdBlockReason narrows
+      // odBlockReason. Somebody who could not reach the console pulled this
+      // lever; a control plane coming back must not undo it under them.
+      assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+      assert.equal(hygPilot.sourceFor('roland'), 'env');
 
-      // The env var is INERT here, and an operator who set it and is watching
-      // nothing happen needs to be told that rather than left to conclude the
-      // switch is broken.
+      // Both layers stay visible, because "the database says on and
+      // HYG_OD_ENABLED_ROLAND says off" is exactly what an operator needs.
       const state = hygPilot.officeState('roland', false);
       assert.equal(state.disagreesWithEnv, true);
-      assert.equal(state.db, true);
+      assert.equal(state.envEffect, 'disables');
+      assert.equal(state.db, true, 'what the console holds is still reported');
       assert.equal(state.env, false);
       assert.equal(state.envVar, 'HYG_OD_ENABLED_ROLAND');
       assert.equal(state.envRaw, 'false');
@@ -123,15 +172,16 @@ test('agreement is not reported as disagreement', () =>
 
 test('only a plain true/false is an env override — "yes" is not a decision', () =>
   withControlPlane(
-    { env: { HYG_OD_ENABLED_ROLAND: 'yes', HYG_OD_ENABLED_VALLEY: '  TRUE  ' } },
+    { env: { HYG_OD_ENABLED_ROLAND: 'yes', HYG_OD_ENABLED_VALLEY: '  FALSE  ' } },
     async () => {
       await hygPilot.refreshFromDb();
-      // A switch that turns a real practice's chart data on does not get to
-      // interpret. Unparseable falls through to the floor.
-      assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+      // A switch over a real practice's chart data does not get to interpret.
+      // Unparseable is not a kill signal either: it falls through entirely.
+      assert.equal(hygPilot.hygEnabledFor('roland', true), true);
       assert.equal(hygPilot.sourceFor('roland'), 'default');
+      assert.equal(hygPilot.officeState('roland', true).envEffect, null);
       // ...but whitespace and case are not typos.
-      assert.equal(hygPilot.hygEnabledFor('valley', false), true);
+      assert.equal(hygPilot.hygEnabledFor('valley', true), false);
 
       // The raw string is still surfaced, so the console can show that somebody
       // tried and that it did nothing.
@@ -147,8 +197,7 @@ test('a row that exists answers for EVERY office: absent means false, not inheri
     async () => {
       await hygPilot.refreshFromDb();
       // valley is not named in the row. That is a FALSE, and the env override
-      // does not get a second look — the environment is break-glass for an
-      // unreachable control plane, not an override that beats a stored decision.
+      // does not rescue it: nothing in the environment can ENABLE an office.
       assert.equal(hygPilot.hygEnabledFor('valley', false), false);
       assert.equal(hygPilot.sourceFor('valley'), 'db');
       assert.equal(hygPilot.officeState('valley', false).disagreesWithEnv, true);
@@ -180,13 +229,15 @@ test('an office whose value is not a boolean is treated as ABSENT, which means o
   }));
 
 test('a stored value that is not a map at all falls back, and is not an error', () =>
-  withControlPlane({ row: row([1, 2, 3]), env: { HYG_OD_ENABLED_ROLAND: 'true' } }, async () => {
+  withControlPlane({ row: row([1, 2, 3]) }, async () => {
     const res = await hygPilot.refreshFromDb();
     assert.equal(res.ok, true, 'unusable is a fallback, not a failure');
     assert.equal(res.byOffice, null);
-    // Treated exactly like an absent row, so the environment answers.
-    assert.equal(hygPilot.hygEnabledFor('roland', false), true);
-    assert.equal(hygPilot.sourceFor('roland'), 'env');
+    // Treated exactly like an absent row: the floor answers, and the console is
+    // told nobody has chosen rather than shown a value nothing produced.
+    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+    assert.equal(hygPilot.sourceFor('roland'), 'default');
+    assert.equal(hygPilot.policyKnown(), true, 'we DID read the control plane');
   }));
 
 // ─── failure directions ──────────────────────────────────────────────────────
@@ -200,6 +251,27 @@ test('never read since boot, and nothing in the environment: every office OFF', 
     assert.equal(hygPilot.hygEnabledFor('roland', false), false);
     assert.equal(hygPilot.hygEnabledFor('valley', false), false);
   }));
+
+test('a leftover app setting cannot re-open an office somebody shut down', () =>
+  withControlPlane(
+    // The control DB holds the decision: roland is OFF, somebody turned it off.
+    // An earlier incident left HYG_OD_ENABLED_ROLAND=true behind. Now the
+    // container restarts while the control plane happens to be unreachable, so
+    // nothing is cached and the stored row cannot be consulted at all.
+    { row: row({ roland: false }), fail: true, env: { HYG_OD_ENABLED_ROLAND: 'true' } },
+    async () => {
+      const res = await hygPilot.refreshFromDb();
+      assert.equal(res.ok, false);
+      assert.equal(hygPilot.policyKnown(), false);
+
+      // A restart during an outage must not re-enable a practice. This is the
+      // whole reason the override is one-directional: the fast, always-available
+      // path is the SAFE one.
+      assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+      assert.equal(hygPilot.sourceFor('roland'), 'default');
+      assert.equal(hygPilot.officeState('roland', false).envEffect, 'inert');
+    }
+  ));
 
 test('read once and then unreachable: the last known value STAYS', () =>
   withControlPlane({ row: row({ roland: true }) }, async (store) => {
