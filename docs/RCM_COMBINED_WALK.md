@@ -306,9 +306,19 @@ Everything below is on **Roland**, on PatNum **12827** and **12828** only.
 | ClaimProc | 535780, 535782 | untouched so far | unwind step 3 |
 | ProcedureLog | 406650, 406651, 406652, 406655, 406656, 406657, 406658 | created by the reseed prep | **soft-deleted only — see §7** |
 
-**Still to be touched on resume:** a hand-posted ClaimPayment on 53863 (number
-unknown until created), an adjustment for the R3 takeback, and whatever
-`rcm-s10-prep` creates for the kill test.
+### Added on 2026-09-04
+
+| Kind | Number | What happened | Comes off at |
+| --- | --- | --- | --- |
+| ClaimPayment | **21490** | **hand-posted by Beau** (4a) — `CheckAmt 29`, `CheckNum "WALK4-R3"`, `PayType 472 Insurance Check`, **`DepositNum 0`**. Not in any manifest; the unwind finds it by reading the claimproc. | `--reseed` unwind step 1 |
+| ClaimProc | 535780 | `Status "Received"`, `InsPayAmt 29`, `WriteOff 6` — the payment R3 reverses | `--reseed` unwind step 3 |
+| Claim | 53863 | `W → R`, `InsPayAmt 29`, `WriteOff 6` | `--reseed` unwind steps 2 & 4 |
+| ProcedureLog | **406875**, **406876** | created by `rcm-s10-prep` — the kill-test targets | **bare** unwind (soft delete) |
+| Claim | **53900**, **53901** | created by `rcm-s10-prep`, `ClaimStatus "W"`, $1.00 each | **bare** unwind |
+| ClaimProc | **536170**, **536171** | created by `rcm-s10-prep`, `NotReceived` | **bare** unwind |
+
+**Still to be touched:** an adjustment for the R3 takeback (blocked — see W-5),
+and whatever the kill test's drain writes against 53900.
 
 ---
 
@@ -362,6 +372,135 @@ Recorded because it is the failure mode §15.1c describes — a claim that exist
 is never offered — appearing as a **warning** rather than silently, which is the
 good version of it. Worth knowing what the cap is before a real chart with real
 claim volume goes through this.
+
+### W-5 · 🔴 **A takeback can never pass the approve gate — the line pairing does not sign-normalize a reversal.** DIAGNOSIS ONLY, no fix implemented
+
+Walk step 4b stopped here. **This is a live defect, not a fixture problem**, and
+it is the next blocker behind the one #124 fixed.
+
+#### Every check the gate evaluated for claim 53863, with the stored values it saw
+
+Read out of `rcm_claims` / `rcm_procedure_lines` on staging, 2026-09-04. Stored
+state: `od_match_status "confirmed"`, `od_match_snapshot.takeback **true**`,
+`reviewed_by admin@carein.ai`, `approved_at null`, `line_decision null`,
+line `flags []`, `needs_review_reasons ["reversal_not_postable"]`.
+
+| Gate check | Result | What it saw |
+| --- | --- | --- |
+| `BELONGS_TO_PRACTICE` | ✅ | `office_id roland` |
+| `LINKED_TO_CHART_CLAIM` | ✅ | `od_claim_num 53863` |
+| `MATCH_UP_TO_DATE` | ✅ | `od_match_status "confirmed"`, confirmed 01:40:40Z |
+| `REVIEWED` | ✅ | `reviewed_at` set, note recorded |
+| `NOT_PATIENT_RESPONSIBILITY_ONLY` | ✅ | `patient_resp_cents 0`, carrier moved −2900 |
+| `RECOUPMENT_CONFIRMED` | ✅ (on typing) | `isTakeback(total_paid_cents −2900) = true` |
+| `TAKEBACK_ACKNOWLEDGED` | ✅ | claims `reversal_not_postable` + `negative_total_payment` under the D-11 partition |
+| `MATCH_TAKEN_FOR_A_TAKEBACK` | ✅ | `snapshot.takeback === true` |
+| `NO_BLOCKING_REASON` | ✅ | after the partition, `blocking` is **empty** |
+| `NO_BLOCKING_PREFLIGHT` | ✅ | both snapshot blockers are `blocking: false` — `CLAIM_ALREADY_RECEIVED` and `LINE_PAID_AND_ON_CHECK` |
+| `LINES_PAIRED` | ✅ | `odClaimProcNum 535780` |
+| `NO_CONFLICTING_PLAN` | ✅ | `posting_queue_id null` |
+| `CLAIM_TOTALS_AGREE` | ✅ | claim −2900, lines −2900, remittance −2900 |
+| **`PATIENT_RESPONSIBILITY_MATCHES`** | **❌ FAIL** | `verdict.state === 'red'`, from **`od_fee_disagrees`** |
+
+**Exactly one check fails**, and #124's fix is confirmed working — the candidate
+scored **95 / HIGH** with `NO_REVERSIBLE_LINES` **absent** and
+`LINE_PAID_AND_ON_CHECK` reported as a non-blocking fact, exactly as designed.
+
+#### The mechanism
+
+`claimMatch.pairLines` receives `{ takeback }` and uses it correctly for
+*eligibility* (`isReversibleLine` instead of the payable predicate). It then
+computes, on **both** lanes identically (`claimMatch.js:1101`):
+
+```js
+billedDeltaCents: chosen && Number.isFinite(ourBilled)
+  ? ourBilled - chosen.feeBilledCents
+  : null,
+```
+
+For R3: `ourBilled = −3500`, `chosen.feeBilledCents = 3500` → **`−7000`**. That
+value is in the stored snapshot verbatim:
+
+```json
+"linePairs":[{"code":"D0220","odClaimProcNum":535780,"billedDeltaCents":-7000}]
+"odAmountsAsRead":{"billedCents":3500,"insPaidCents":2900,"writeOffCents":600}
+```
+
+`approvalGate.js:755` passes it through as `odFeeDeltaCents`;
+`lineDecisions.js:573` raises `od_fee_disagrees` on any non-zero value and renders
+`"D0220 was billed -$35.00 on the remittance and $35.00 in Open Dental"` — the
+sentence on the screen, and the `-$70.00 apart` in the pairing panel. Red verdict
+⇒ `PATIENT_RESPONSIBILITY_MATCHES` fails ⇒ *"CareIN will not post this one."*
+
+#### Does anything sign-normalize a reversal? Mostly no — and inconsistently
+
+| Site | Behaviour |
+| --- | --- |
+| `findBlockers` → `TAKEBACK_EXCEEDS_PAYMENT` | ✅ **normalized** — compares `Math.abs` on both sides |
+| `findBlockers` → lane swap | ✅ correct — `isReversibleLine`, blockers inverted |
+| `lineMoney` (W = B−A, R = A−P) | ✅ sign-consistent by construction: W = −$6.00, R = $0.00 |
+| `scoreCandidate` billed comparison | ⚠️ **skipped**, not normalized — guarded on `ourBilledCents > 0`, so a reversal simply gets no billed evidence (53863 scored 95, missing the +10 `BILLED_AMOUNT_MATCH` a payment would earn) |
+| **`pairLines` → `billedDeltaCents`** | ❌ **not normalized** — raw signed subtraction |
+| **`lineDecisions` → `od_fee_disagrees`** | ❌ consumes the raw delta |
+
+#### Can any takeback pass? No — the path has never been green end to end
+
+For a reversal line paired to its chart line, `billedDeltaCents = (−B) − (B) =
+−2B`, which is non-zero for every `B ≠ 0` ⇒ `od_fee_disagrees` ⇒ red. If it does
+*not* pair, `line_not_in_chart` fires ⇒ also red. **Both branches are red, so no
+parser-produced reversal 835 can reach approve.**
+
+It was never caught because the only takebacks that reach this code in tests are
+hand-built with the delta pre-zeroed — `postingDrain.js:1277` literally sets
+`odFeeDeltaCents: 0`. That is the same blind spot the D-11 amendment comment
+already names: *"6d never noticed because its recoupment tests build the claim BY
+HAND."* `rcmReseedFixtures.test.js` does exercise the real matcher on R3, but it
+asserts candidate rank and score only — it never runs the result through
+`verdictFor` or the gate.
+
+#### `reversal_not_postable` is an upload-time echo, and it is NOT the blocker
+
+Set by the parser at `eraParser.js:1027` (`if (isReversal) addFlag(...)`), stored
+on `rcm_claims.needs_review_reasons` and inside `raw_extracted_json` when the file
+was ingested. It is **never re-evaluated against live chart state**. On the
+takeback lane it and `negative_total_payment` are **partitioned into
+`TAKEBACK_ACKNOWLEDGED`** by the D-11 amendment and do not block — confirmed
+above, both passed. The PM's suspicion about these two is understandable from the
+screen, but they are working as designed; the sole cause is the billed delta.
+
+#### Proposed smallest fix — NOT IMPLEMENTED, awaiting PM review
+
+One site, `claimMatch.pairLines`, because it is the only place `billedDeltaCents`
+is produced and both `approvalGate` and `claimWorkbench` read it from the stored
+snapshot. Fixing it downstream in `lineDecisions` would teach the verdict about
+lanes it deliberately knows nothing about, and would leave the stored snapshot
+carrying a misleading `−7000`.
+
+```js
+// A reversal line must MIRROR the chart line: equal magnitude, opposite sign.
+// Same-sign is not a mirror, so it stays a disagreement rather than being
+// normalised away — fail closed.
+const delta = !takeback
+  ? ourBilled - chosen.feeBilledCents
+  : (ourBilled > 0 || chosen.feeBilledCents < 0)
+      ? ourBilled - chosen.feeBilledCents          // not mirrored: still a disagreement
+      : Math.abs(ourBilled) - Math.abs(chosen.feeBilledCents);
+```
+
+Deliberately **not** widened: the money question — is the carrier taking back more
+than the chart holds? — is already answered by `TAKEBACK_EXCEEDS_PAYMENT` using
+magnitudes. `billedDeltaCents` answers the *identity* question ("is this the same
+procedure line"), and magnitude is the right comparison for identity.
+
+**Two consequences to plan for.**
+
+1. **The snapshot is stored.** A code fix changes new matches only, so R3 must be
+   **re-matched** after the fix deploys. Note that `supersededConfirmation` shows
+   Beau already re-matched once (01:27 → 01:40) and got `−7000` both times, which
+   is what rules out a stale snapshot and confirms a code defect.
+2. **Regression coverage must run a parser-produced reversal end to end** —
+   `eraParser` → `pairLines` → `verdictFor` → gate — or the next hand-built test
+   will hide the next instance of this exactly as it hid this one.
 
 ### N-1 · `az containerapp exec` — the `${IFS}` recipe is wrong for this CLI version
 
@@ -460,6 +599,49 @@ teardown              ⏳
 
 ## 9. Resume checklist
 
+### 9.0 What changed between the pause and the resume — [CC], 2026-09-04T00:5xZ
+
+**Staging moved, and the resume brief's "still `018bde6`" was out of date.** It was
+checked rather than taken on trust, which is the only reason this is a footnote:
+
+| | At the pause | At the resume |
+| --- | --- | --- |
+| `origin/develop` | `018bde6` (#141) | **`c2790f5` (#143)** |
+| staging revision | `0000154` | **`0000156`** |
+| image | `carein-backend:018bde6` | **`carein-backend:c2790f5`** |
+| replica | `…0000154-5bdfd8b68c-7vmfr` | **`…0000156-6f9ccfdf5f-4zkqw`** |
+
+`main` was separately promoted to `2fe1686` (#142); that does not touch staging.
+
+**#143 is the hygiene module's slice-1 scaffold, and it changes nothing this walk
+exercises.** `git diff --stat 018bde6..c2790f5` over `backend/services/rcm`,
+`backend/routes/rcm`, `backend/scripts`, `new-dashboard/shared/rcm`,
+`client/src/pages/rcm` and `client/src/features/rcm` is **empty** — the posting
+drain, the approval gate, the matcher, the unwind and every RCM screen are
+byte-identical. The four backend files it does touch are additive:
+
+- `config/odOffices.js` — adds a `hygOdEnabled` field (**false** for both
+  offices), one status code, and two new exported functions. `getOdOffice`,
+  `assertOfficeMatch`, `odBlockReason` and `isOdReady` are unchanged, and
+  `odEnabled` is still `true` for both offices.
+- `config/modules.js` — adds `'hyg'` to the module vocabulary.
+- `config/permissions.js` — adds `hyg.*`. **No `rcm.*`, `voice.*` or `tc.*`
+  permission changed.**
+- `server.js` — adds one `/api/hyg` mount, shipping dark.
+- migration `1788100000000_module_hyg.js` — control-DB module vocabulary only.
+
+`staging-cd` run `33819405515` on `c2790f5`: **success**. Scale still
+`min = max = 1`. `RCM_DRAIN_STEP_DELAY_MS` still **absent**.
+
+**The chart is unchanged since the pause**, confirmed by a fresh `--reseed` dry
+run: 12827 `$154.00` / 4 claims / 10 D-procs, 12828 `$35.00` / 3 claims / 0
+D-procs, targets A–E posted on checks `21461`/`21462`, F and G untouched. The
+container restarted into `0000156` at `00:22:22Z`, so the startup sweep ran; it
+found nothing to re-home, which is correct — both plans were already `posted`.
+
+**Consequence for the record:** steps 1–3 were observed on `0000154`/`018bde6`;
+steps 4 onward run on `0000156`/`c2790f5`. Same RCM code, different build number.
+
 ### 9.1 In order
 
 | # | Who | Step |
@@ -501,11 +683,57 @@ the guard.
 # In order, from inside the container at /app.
 PROBE_OFFICE=roland node scripts/rcm-s10-inventory.js      # prints the claim count
 PROBE_OFFICE=roland S10_EXPECTED_CLAIMS=<n> \
-  node scripts/rcm-s10-prep.js                             # dry run
-PROBE_OFFICE=roland S10_EXPECTED_CLAIMS=<n> \
-  node scripts/rcm-s10-prep.js --execute
-PROBE_OFFICE=roland node scripts/rcm-s10-835.js            # the file Beau uploads
+  node scripts/rcm-s10-prep.js                             # ⚠ THIS WRITES. No dry run exists.
+PROBE_OFFICE=roland node scripts/rcm-s10-835.js            # the files Beau uploads
 ```
+
+> **⚠ Correction, 2026-09-04.** An earlier draft of this section showed a bare
+> `rcm-s10-prep.js` as a dry run and a second `--execute` pass. **Neither exists.**
+> `rcm-s10-prep.js` has no `--execute` flag and no dry-run mode — the only
+> `--execute` strings in it belong to the *unwind* command it prints on the way
+> out. `S10_EXPECTED_CLAIMS` is its whole guard, and the script writes to Open
+> Dental on invocation. It was run here believing it was a dry run; the rows it
+> created are the ones the kill test wanted, so nothing was lost, but the
+> instruction was wrong and is corrected above.
+
+#### The run — 2026-09-04T01:57Z
+
+`S10_EXPECTED_CLAIMS=4` (12827 carries the reseed's four; the inventory prints
+it). Both targets pre-checked against the baseline and read back:
+
+```
+A: ProcNum=406875  ClaimNum=53900  ClaimProcNum=536170   $1.00 D0140  ClaimStatus "W"
+B: ProcNum=406876  ClaimNum=53901  ClaimProcNum=536171   $1.00 D0140  ClaimStatus "W"
+manifest: /data/rcm-s10/roland/rcm-s10-manifest.json   complete: true
+```
+
+`rcm-s10-835.js` then wrote `rcm-s10-835-A.txt` (check `S10A-53900`) and
+`rcm-s10-835-B.txt` (check `S10B-53901`), 484 bytes each, pulled down byte-exact.
+**A is the kill target; B is the spare** if the kill misses the window a fourth
+time.
+
+**The inventory's warning matters for §7:** 12827 does **not** start at zero. The
+bare unwind must return it to **$154.00** — its mid-walk value with R1 and R2
+posted — and the `--reseed` unwind then takes it the rest of the way to −$0.20.
+
+#### The delay, verified before any approve was handed over
+
+```
+az containerapp update --set-env-vars RCM_DRAIN_STEP_DELAY_MS=90000
+  env var count 31 → 32, nothing lost (before/after name diff is empty)
+  definition:  RCM_DRAIN_STEP_DELAY_MS = "90000"
+  revision:    ca-carein-backend--0000157, ingress traffic 100%, mode Single
+  replica:     ca-carein-backend--0000157-67d8fd4b55-5rmdj   Running
+  IN-CONTAINER printenv RCM_DRAIN_STEP_DELAY_MS  →  90000
+  ps -o pid,comm  →  PID 1 = node          (so `kill 1` sends SIGTERM to node)
+```
+
+> **`az containerapp revision list` reports traffic weight LATE.** Immediately
+> after the update it still showed `0000156` at 100% and `0000157` at 0, which
+> reads as "the delay is not serving". The authority is
+> `properties.configuration.ingress.traffic`, which already said `0000157: 100`,
+> and `0000156`'s replica was already `NotRunning`. Do not shift traffic by hand
+> on the strength of the revision-list column.
 
 `S10_EXPECTED_CLAIMS` is **the count on the chart now**, not zero — 12827 carries
 the reseed's four. The prep refuses without it, on purpose: *"without it there is
