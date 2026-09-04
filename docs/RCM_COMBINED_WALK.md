@@ -317,8 +317,20 @@ Everything below is on **Roland**, on PatNum **12827** and **12828** only.
 | Claim | **53900**, **53901** | created by `rcm-s10-prep`, `ClaimStatus "W"`, $1.00 each | **bare** unwind |
 | ClaimProc | **536170**, **536171** | created by `rcm-s10-prep`, `NotReceived` | **bare** unwind |
 
-**Still to be touched:** an adjustment for the R3 takeback (blocked — see W-5),
-and whatever the kill test's drain writes against 53900.
+### Added by the kill test, 2026-09-04
+
+| Kind | Number | What happened | Comes off at |
+| --- | --- | --- | --- |
+| ClaimPayment | **21491** | created by the kill test's resumed drain. `CheckAmt 1`, `CheckNum "S10A-53832"`, `DepositNum 0`. **WALK-LIVE** alongside 21461 / 21462 / 21490 (PM ruling, 2026-09-04). | **bare** unwind step 1 |
+| ClaimProc | 536170 | `Status "Received"`, `InsPayAmt 1`, on check 21491 | **bare** unwind step 3 |
+| Claim | 53900 | `W → R` | **bare** unwind steps 2 & 4 |
+
+**The stuck plan row is left exactly as it is — evidence, not to be hand-repaired
+(PM ruling 3).** The unwind removes the chart rows; the app rows stay as the
+record of W-9.
+
+**Still to be touched:** an adjustment for the R3 takeback (postponed — see W-5),
+and 53901 / 406876 / 536171, the unused spare target B.
 
 ---
 
@@ -468,7 +480,11 @@ takeback lane it and `negative_total_payment` are **partitioned into
 above, both passed. The PM's suspicion about these two is understandable from the
 screen, but they are working as designed; the sole cause is the billed delta.
 
-#### Proposed smallest fix — NOT IMPLEMENTED, awaiting PM review
+#### ✅ FIXED on `fix/rcm-takeback-gate-and-resume-strand` (`7647dd1`) — PM approved 2026-09-04
+
+Implemented as proposed below. The PM refers to this finding as **W-6**.
+
+#### The fix, as proposed and as shipped
 
 One site, `claimMatch.pairLines`, because it is the only place `billedDeltaCents`
 is produced and both `approvalGate` and `claimWorkbench` read it from the stored
@@ -574,7 +590,17 @@ The kill test has never before survived to the *resume*, so no test — unit or
 live — has ever exercised "resume a drain whose line was already written". The
 skip path itself is covered; the skip path **followed by a check write** is not.
 
-#### Proposed direction — NOT IMPLEMENTED, for PM review
+#### ✅ FIXED on `fix/rcm-takeback-gate-and-resume-strand` (`ca73657`) — PM approved 2026-09-04
+
+Option **(b)** was ratified: the line keeps its skip status and reason **and**
+carries `od_claim_payment_num`. **No migration was needed** — the constraint
+never mentioned that column. `FakeRcmDb` now enforces the CHECK constraint, which
+is what makes the whole class visible: with the constraint modelled and the drain
+fix reverted, **four** tests fail, two of them pre-existing kill-and-resume tests
+that had been passing on a row Postgres would never have accepted. The PM refers
+to this finding as **W-9**.
+
+#### The directions considered
 
 Options, smallest first:
 
@@ -601,6 +627,40 @@ is a migration, and it is the PM's call.
 > investigation. Evidence preservation beats tidiness here. **It must be unset
 > before staging is used for anything else** (§9.1 step 13), and the walk cannot
 > be called finished until it is.
+
+### PM rulings and the state at the stop — 2026-09-04
+
+| Ruling | Effect |
+| --- | --- |
+| 1 · fix direction | Option (b) for W-9 approved as recommended. Code-only; no migration. |
+| 2 · implementation | Both fixes on **one** branch off `origin/develop`, separate commits, each with a regression through the real path. Done — `ca73657`, `7647dd1`, `9af7668` on `fix/rcm-takeback-gate-and-resume-strand`. **Not merged, not deployed.** |
+| 3 · the stuck row | Left exactly as it is. No hand repair. OD check **21491** is WALK-LIVE alongside 21461 / 21462 / 21490. |
+| 4 · the drain delay | Unset. See below. |
+| 5 · postponed | The replay press and walk step 4b wait for the fixes to deploy — in the current state a re-press is precisely the action W-9 invites. |
+
+#### `RCM_DRAIN_STEP_DELAY_MS` removed, and what the restart did to the row
+
+```
+env var count 32 -> 31; printenv inside the container -> DELAY_UNSET_CONFIRMED
+new revision ca-carein-backend--0000158 at 100% traffic
+```
+
+Plan and line rows are **byte-identical before and after** the restart —
+`updated_at` unchanged at `02:35:51.378` and `02:32:15.691`.
+
+> **The startup sweep did not touch the `partially_posted` plan.** It re-homes
+> `posting` only. So a stranded plan is genuinely terminal and nothing in the
+> system would ever have recovered it — which is why W-9 is a defect rather than
+> a slow path.
+
+#### What still has to happen, in order, after the fixes deploy
+
+1. **[CC]** verify replay-safety and that the takeback gate goes green **up to the
+   enabled buttons — then STOP.** Beau makes the two presses.
+2. **[BEAU]** the replay press (expect `ran: 0`), then step 4b, the R3 takeback.
+3. **[BEAU]** posting switch OFF.
+4. **[CC]** unwind **both** manifests — `--reseed` for the seven, **bare** for the
+   kill test's 53900 / 53901.
 
 ### N-1 · `az containerapp exec` — the `${IFS}` recipe is wrong for this CLI version
 
