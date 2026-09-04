@@ -52,6 +52,8 @@
  * but the payload can explain itself and the next slice can see its own to-do list.
  */
 
+const odPatientCache = require('../odPatientCache');
+
 /** Open Dental pages every list endpoint at 100 rows. Not configurable. */
 const OD_PAGE_SIZE = 100;
 
@@ -316,14 +318,54 @@ async function readProviderLabels(odGet) {
 }
 
 /**
- * Identity and the two chairside flags Open Dental will actually tell us, for
- * one patient.
+ * One raw Open Dental patient record → the fields a day card needs.
  *
- * SEQUENTIAL, not concurrent. The Open Dental client already spaces requests on
- * a per-CREDENTIAL slot that voice and RCM share, so firing these in parallel
- * would not make them finish sooner — it would only make this module's share of
- * the slot burstier and push a voice lookup further back in the queue (the D-8
- * finding). One at a time, capped, is the polite shape.
+ * Split out from readPatients when the shared cache landed, because the cache
+ * stores what Open Dental RETURNED and every module normalizes on the way out
+ * (see services/odPatientCache.js). This is hyg's normalizer, and nothing else
+ * may depend on its shape.
+ *
+ * @param {number} patNum
+ * @param {Record<string, unknown>} p the raw `GET /patients/{PatNum}` body
+ * @returns {object}
+ */
+function normalizePatient(patNum, p) {
+  const first = str(p.Preferred) || str(p.FName);
+  const last = str(p.LName);
+  return {
+    patNum,
+    firstName: first,
+    lastName: last,
+    // "Last, First" is how Open Dental itself writes a patient, and matching
+    // it means a hygienist reading this screen and the chart beside it does
+    // not have to translate. Null when OD gave us neither half — never a
+    // fabricated "Unknown Patient", which reads as a real record.
+    displayName: last && first ? last + ', ' + first : last || first,
+    birthdate: str(p.Birthdate),
+    // Real answers, from the patient record. Premed is Open Dental's own
+    // boolean; medical alerts are the presence of a note, not its content —
+    // the note itself is PHI the day view has no reason to serve.
+    premed: odBool(p.Premed),
+    medicalAlerts: typeof p.MedUrgNote === 'string' ? p.MedUrgNote.trim().length > 0 : null,
+  };
+}
+
+/**
+ * Identity and the two chairside flags Open Dental will actually tell us, for
+ * every patient on the day.
+ *
+ * SEQUENTIAL, not concurrent, AND THAT IS NOT THE SLOW PART. The Open Dental
+ * client spaces requests on a per-CREDENTIAL slot that voice and RCM share, so
+ * firing these in parallel would not make them finish sooner — it would only
+ * make this module's share of the slot burstier and push a voice lookup further
+ * back in the queue (the D-8 finding). routes/tc/odReads.js runs the same
+ * fan-out at concurrency 5 and gets nothing for it. **If this screen is slow,
+ * raising a concurrency number here is the change that does not work.**
+ *
+ * What DOES work is not asking twice: every read goes through
+ * services/odPatientCache.js, keyed by OFFICE and PatNum. The office is
+ * therefore required — a PatNum without one identifies nobody, because
+ * numbering restarts in every Open Dental database.
  *
  * A per-patient failure is NOT fatal and does NOT invent a name. That
  * appointment comes back with `patientName: null` and every flag null, which
@@ -331,46 +373,57 @@ async function readProviderLabels(odGet) {
  *
  * @param {Function} odGet
  * @param {number[]} patNums distinct, in the order they should be spent
- * @returns {Promise<{ byPatNum: Map<number, object>, truncated: boolean, failed: number[] }>}
+ * @param {{ office: string }} opts the office these PatNums belong to
+ * @returns {Promise<{ byPatNum: Map<number, object>, truncated: boolean, failed: number[],
+ *                     odReads: number, cacheHits: number, deduped: number }>}
  */
-async function readPatients(odGet, patNums) {
+async function readPatients(odGet, patNums, { office }) {
   const byPatNum = new Map();
   /** @type {number[]} */
   const failed = [];
   const budget = patNums.slice(0, MAX_PATIENT_READS);
 
-  for (const patNum of budget) {
+  let odReads = 0;
+  let cacheHits = 0;
+  let deduped = 0;
+
+  /**
+   * The cache's transport. Invoked ONLY on a genuine miss, which is what makes
+   * `odReads` an exact count of requests issued to Open Dental.
+   * @param {number} patNum
+   */
+  const readOne = async (patNum) => {
+    odReads += 1;
     const res = await odGet('/patients/' + patNum, {}, {
       timeoutMs: OD_CALL_TIMEOUT_MS,
       module: 'hyg',
       quiet: true,
     });
-    if (!res.ok || !res.data || typeof res.data !== 'object') {
+    if (!res.ok || !res.data || typeof res.data !== 'object') return { ok: false, record: null };
+    // The RAW body is what is cached, so TC and RCM can share the entry.
+    return { ok: true, record: /** @type {Record<string, unknown>} */ (res.data) };
+  };
+
+  for (const patNum of budget) {
+    const got = await odPatientCache.getPatient(office, patNum, readOne);
+    if (got.source === 'cache') cacheHits += 1;
+    else if (got.source === 'inflight') deduped += 1;
+
+    if (!got.ok || !got.record) {
       failed.push(patNum);
       continue;
     }
-    const p = /** @type {Record<string, unknown>} */ (res.data);
-    const first = str(p.Preferred) || str(p.FName);
-    const last = str(p.LName);
-    byPatNum.set(patNum, {
-      patNum,
-      firstName: first,
-      lastName: last,
-      // "Last, First" is how Open Dental itself writes a patient, and matching
-      // it means a hygienist reading this screen and the chart beside it does
-      // not have to translate. Null when OD gave us neither half — never a
-      // fabricated "Unknown Patient", which reads as a real record.
-      displayName: last && first ? last + ', ' + first : last || first,
-      birthdate: str(p.Birthdate),
-      // Real answers, from the patient record. Premed is Open Dental's own
-      // boolean; medical alerts are the presence of a note, not its content —
-      // the note itself is PHI the day view has no reason to serve.
-      premed: odBool(p.Premed),
-      medicalAlerts: typeof p.MedUrgNote === 'string' ? p.MedUrgNote.trim().length > 0 : null,
-    });
+    byPatNum.set(patNum, normalizePatient(patNum, got.record));
   }
 
-  return { byPatNum, truncated: patNums.length > budget.length, failed };
+  return {
+    byPatNum,
+    truncated: patNums.length > budget.length,
+    failed,
+    odReads,
+    cacheHits,
+    deduped,
+  };
 }
 
 /**
@@ -415,15 +468,45 @@ function unknownFlags() {
  * `warnings` entry and a null field, because losing a chair's NAME is not the
  * same as losing the chair.
  *
+ * ── MEASUREMENT ─────────────────────────────────────────────────────────────
+ * Every day read returns `stats`: how many Open Dental requests it issued, split
+ * LIST reads from PATIENT reads, how many patients the cache answered, and how
+ * long the whole thing took. The route logs one line from it.
+ *
+ * That exists because "it should be faster" is not a result. The patient
+ * fan-out is one second per distinct patient against a shared credential, and
+ * the only way to know whether a change helped is to have counted before it.
+ *
  * @param {Function} odGet
- * @param {{ date: string }} opts
+ * @param {{ date: string, office: string }} opts `office` is REQUIRED — it is
+ *   half of the patient cache key, and a PatNum without an office identifies
+ *   nobody (numbering restarts in every Open Dental database).
  * @returns {Promise<object>}
  */
-async function readDay(odGet, { date }) {
+async function readDay(odGet, { date, office }) {
+  if (typeof office !== 'string' || office.trim() === '') {
+    // Loud rather than defaulted. The alternative to knowing the office is
+    // caching a patient under a namespace shared with another practice.
+    throw new Error('[hyg/odDay] readDay requires an office — a PatNum alone identifies nobody');
+  }
+
+  const startedAt = Date.now();
   /** @type {Array<{ resource: string, message: string }>} */
   const warnings = [];
 
-  const appts = await readAppointments(odGet, date);
+  /**
+   * Counts the LIST reads. Wrapping here rather than counting inside pagedList
+   * keeps the count honest across pages: a 3-page /appointments read is three
+   * requests against the credential, and reporting it as one would hide
+   * exactly the cost this instrumentation exists to expose.
+   */
+  let odListReads = 0;
+  const countedGet = (path, params, opts) => {
+    odListReads += 1;
+    return odGet(path, params, opts);
+  };
+
+  const appts = await readAppointments(countedGet, date);
   if (appts.error && appts.rows.length === 0) {
     return { ok: false, error: appts.error };
   }
@@ -440,7 +523,7 @@ async function readDay(odGet, { date }) {
     });
   }
 
-  const ops = await readOperatories(odGet);
+  const ops = await readOperatories(countedGet);
   if (ops.error) {
     warnings.push({ resource: 'operatories', message: 'Chair names are unavailable.' });
   }
@@ -449,12 +532,12 @@ async function readDay(odGet, { date }) {
   let typeLabels = new Map();
   let providerLabels = new Map();
   try {
-    typeLabels = await readAppointmentTypeLabels(odGet);
+    typeLabels = await readAppointmentTypeLabels(countedGet);
   } catch {
     warnings.push({ resource: 'appointmenttypes', message: 'Visit type names are unavailable.' });
   }
   try {
-    providerLabels = await readProviderLabels(odGet);
+    providerLabels = await readProviderLabels(countedGet);
   } catch {
     warnings.push({ resource: 'providers', message: 'Provider names are unavailable.' });
   }
@@ -475,7 +558,7 @@ async function readDay(odGet, { date }) {
     }
   }
 
-  const patients = await readPatients(odGet, distinctPatNums);
+  const patients = await readPatients(odGet, distinctPatNums, { office });
   if (patients.truncated) {
     warnings.push({
       resource: 'patients',
@@ -564,6 +647,25 @@ async function readDay(odGet, { date }) {
      */
     truncated: appts.truncated,
     patientNamesTruncated: patients.truncated,
+    /*
+     * WHAT THIS READ COST. Counts and milliseconds only — never a PatNum, never
+     * a name. `odListReads + odPatientReads` is the number of requests this one
+     * page load put on a credential the voice and RCM modules are also using,
+     * which is the number the whole cache slice exists to bring down.
+     *
+     * `patientsRequested = patientCacheHits + patientCacheDeduped + odPatientReads`
+     * always holds, so misses need no separate field: they ARE odPatientReads.
+     */
+    stats: {
+      odListReads,
+      odPatientReads: patients.odReads,
+      patientsRequested: Math.min(distinctPatNums.length, MAX_PATIENT_READS),
+      /** Answered from a fresh cached record — no Open Dental request at all. */
+      patientCacheHits: patients.cacheHits,
+      /** Waited on an identical read already in flight — also no request. */
+      patientCacheDeduped: patients.deduped,
+      durationMs: Date.now() - startedAt,
+    },
   };
 }
 

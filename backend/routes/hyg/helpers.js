@@ -23,7 +23,7 @@
  * can only ever narrow what the voice path already allows.
  */
 
-const { audit, AuditError } = require('../../platform/audit');
+const { audit, auditMany, AuditError } = require('../../platform/audit');
 const odOffices = require('../../config/odOffices');
 
 /**
@@ -184,6 +184,43 @@ async function auditHygRead(req, resourceType, extra) {
 }
 
 /**
+ * Audit a SET of hygiene PHI reads as one statement.
+ *
+ * Same rows `auditHygRead` writes, same fail-closed contract — one INSERT
+ * instead of one per patient. A day view discloses everybody on it, and forty
+ * sequential round trips to the control plane sat in front of a response the
+ * user was already waiting on.
+ *
+ * **The set comes from what is about to be SENT, never from what was read.**
+ * services/odPatientCache.js means a second load of the same day fetches
+ * nothing from Open Dental and discloses exactly as many patients as the first
+ * — so a trail built from fetches would go quiet precisely when the cache
+ * started working. Callers pass the response's patients; the cache has no audit
+ * call in it and must never grow one.
+ *
+ * An empty list writes nothing, which is correct: a day with nobody on it
+ * disclosed nobody. The `hyg_day` row for the request itself is separate and
+ * always written.
+ *
+ * @param {import('express').Request} req
+ * @param {Array<{ resourceType: string, office: string, resourceId: string|number|null }>} reads
+ */
+async function auditHygReads(req, reads) {
+  if (!Array.isArray(reads) || reads.length === 0) return;
+  await auditMany(
+    req,
+    reads.map((r) => ({
+      action: 'READ',
+      resourceType: r.resourceType,
+      resourceId: r.resourceId === undefined ? null : r.resourceId,
+      result: 'SUCCESS',
+      office: r.office,
+      sourceRef: null,
+    }))
+  );
+}
+
+/**
  * Audit a REFUSED or FAILED hygiene read.
  *
  * BEST EFFORT, unlike auditHygRead, and for the same reason RCM's denial helper
@@ -227,5 +264,6 @@ module.exports = {
   actorEmail,
   h,
   auditHygRead,
+  auditHygReads,
   auditHygDenial,
 };

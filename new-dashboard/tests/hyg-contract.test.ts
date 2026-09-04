@@ -303,6 +303,14 @@ describe("the day response contract matches the backend that builds it", () => {
       excludedByStatus: 0,
       truncated: false,
       patientNamesTruncated: false,
+      stats: {
+        odListReads: 4,
+        odPatientReads: 1,
+        patientsRequested: 1,
+        patientCacheHits: 0,
+        patientCacheDeduped: 0,
+        durationMs: 1200,
+      },
     };
 
     expect(HygDayResponseSchema.safeParse(payload).success).toBe(true);

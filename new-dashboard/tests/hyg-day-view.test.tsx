@@ -128,6 +128,14 @@ export const DAY: HygDayResponse = {
   excludedByStatus: 0,
   truncated: false,
   patientNamesTruncated: false,
+  stats: {
+    odListReads: 4,
+    odPatientReads: 1,
+    patientsRequested: 1,
+    patientCacheHits: 0,
+    patientCacheDeduped: 0,
+    durationMs: 1200,
+  },
 };
 
 export const EMPTY_DAY: HygDayResponse = { ...DAY, appointments: [] };

@@ -403,6 +403,35 @@ export const HygWarningSchema = z.object({
 export type HygWarning = z.infer<typeof HygWarningSchema>;
 
 /**
+ * What one day read COST, in counts and milliseconds.
+ *
+ * Never a PatNum and never a name — a cost summary must not become a list of
+ * who was seen. It is in the response rather than only in the log so a
+ * before/after can be measured with one request instead of a log query, which
+ * is the difference between "it should be faster" and a number.
+ *
+ * `patientsRequested = patientCacheHits + patientCacheDeduped + odPatientReads`
+ * always holds, so cache MISSES need no field of their own: they are exactly
+ * `odPatientReads`. Open Dental throttles at one request per second per
+ * credential, so `odListReads + odPatientReads` is very close to the wall clock
+ * in seconds.
+ */
+export const HygDayStatsSchema = z.object({
+  /** Requests spent on list endpoints — appointments, operatories, types, providers. */
+  odListReads: z.number().int(),
+  /** `GET /patients/{PatNum}` requests actually issued. One second each. */
+  odPatientReads: z.number().int(),
+  /** Distinct patients this day needed named, after the fan-out cap. */
+  patientsRequested: z.number().int(),
+  /** Answered from a fresh cached record — no Open Dental request at all. */
+  patientCacheHits: z.number().int(),
+  /** Collapsed into an identical read already in flight — also no request. */
+  patientCacheDeduped: z.number().int(),
+  durationMs: z.number().int(),
+});
+export type HygDayStats = z.infer<typeof HygDayStatsSchema>;
+
+/**
  * A successful day.
  *
  * `success: true` and an empty `appointments` means, and only means, that
@@ -423,6 +452,8 @@ export const HygDayResponseSchema = z.object({
   truncated: z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
   patientNamesTruncated: z.boolean(),
+  /** What this read cost. See HygDayStatsSchema. */
+  stats: HygDayStatsSchema,
 });
 export type HygDayResponse = z.infer<typeof HygDayResponseSchema>;
 

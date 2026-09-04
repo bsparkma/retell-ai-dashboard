@@ -111,17 +111,28 @@ async function auditForTenant(req, tenantId, entry) {
 }
 
 /**
- * The shared row builder + insert. Split out so audit() and auditForTenant()
- * cannot drift in what they record — the only thing that differs between them
- * is WHICH log the row lands in.
+ * The ordered column list every audit row is written with. ONE definition, used
+ * to build both the single-row and multi-row INSERTs, so the two statements
+ * cannot drift in what they record or in what order.
+ */
+const AUDIT_COLUMNS = Object.freeze([
+  'user_id', 'tenant_id', 'action', 'resource_type', 'resource_id', 'ip',
+  'result', 'endpoint', 'office', 'origin_office', 'source_ref', 'prior_state',
+]);
+
+/**
+ * One entry → its parameter tuple, in AUDIT_COLUMNS order.
+ *
+ * Split out from writeRow so a batch of rows is built by exactly the same code
+ * as a single one. A second copy of this mapping is how a batched writer ends
+ * up recording a subtly different row than the unbatched one it replaced.
  *
  * @param {import('express').Request & { user?: any }} req
- * @param {string} tenantId the tenant recorded in the row AND whose log it lands in
+ * @param {string} tenantId
  * @param {Parameters<typeof audit>[1]} entry
- * @param {(sql: string, params: unknown[]) => Promise<unknown>} run how to reach that log
- * @returns {Promise<void>}
+ * @returns {unknown[]}
  */
-async function writeRow(req, tenantId, entry, run) {
+function buildParams(req, tenantId, entry) {
   // Actor + source — NOT patient PHI.
   const userId = (req.user && (req.user.email || req.user.oid || req.user.sub)) || null;
   const ip = (req.ip || (req.socket && req.socket.remoteAddress)) || null;
@@ -148,18 +159,86 @@ async function writeRow(req, tenantId, entry, run) {
   // that has quietly become a copy of somebody's prose. See the header.
   const priorState = entry.priorState != null ? String(entry.priorState) : null;
 
+  return [
+    userId, tenantId, entry.action, entry.resourceType, resourceId, ip,
+    entry.result, endpoint, office, originOffice, sourceRef, priorState,
+  ];
+}
+
+/**
+ * The shared insert. Split out so audit(), auditMany() and auditForTenant()
+ * cannot drift in what they record — the only thing that differs between them
+ * is WHICH log the rows land in and HOW MANY go at once.
+ *
+ * @param {import('express').Request & { user?: any }} req
+ * @param {string} tenantId the tenant recorded in the rows AND whose log they land in
+ * @param {Array<Parameters<typeof audit>[1]>} entries
+ * @param {(sql: string, params: unknown[]) => Promise<unknown>} run how to reach that log
+ * @returns {Promise<void>}
+ */
+async function writeRows(req, tenantId, entries, run) {
+  if (entries.length === 0) return;
+
+  /** @type {unknown[]} */
+  const params = [];
+  const tuples = entries.map((entry, row) => {
+    params.push(...buildParams(req, tenantId, entry));
+    const base = row * AUDIT_COLUMNS.length;
+    return '(' + AUDIT_COLUMNS.map((_, i) => '$' + (base + i + 1)).join(', ') + ')';
+  });
+
   try {
     await run(
-      `INSERT INTO audit_log
-          (user_id, tenant_id, action, resource_type, resource_id, ip, result, endpoint, office, origin_office, source_ref, prior_state)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [userId, tenantId, entry.action, entry.resourceType, resourceId, ip, entry.result, endpoint, office, originOffice, sourceRef, priorState]
+      `INSERT INTO audit_log\n          (${AUDIT_COLUMNS.join(', ')})\n        VALUES ${tuples.join(', ')}`,
+      params
     );
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     console.error('[audit] write FAILED (fail-closed):', msg);
     throw new AuditError(`audit write failed: ${msg}`);
   }
+}
+
+/**
+ * @param {import('express').Request & { user?: any }} req
+ * @param {string} tenantId
+ * @param {Parameters<typeof audit>[1]} entry
+ * @param {(sql: string, params: unknown[]) => Promise<unknown>} run
+ * @returns {Promise<void>}
+ */
+async function writeRow(req, tenantId, entry, run) {
+  return writeRows(req, tenantId, [entry], run);
+}
+
+/**
+ * Write SEVERAL rows to the calling tenant's audit_log as ONE statement.
+ *
+ * For paths that disclose a SET of resources in a single response — a day view
+ * discloses every patient on it, and owes one row per patient, not one row for
+ * the request (see routes/hyg/day.js). Written sequentially, that is one
+ * database round trip per patient in front of the response; batched, it is one.
+ *
+ * ALL OR NOTHING, and fail-closed exactly like audit(): a single INSERT either
+ * records every disclosure or throws, so there is no state in which half a
+ * day's patients were served with a trail and half without.
+ *
+ * The entries are still ROWS, not a summary. Collapsing forty patients into one
+ * "opened Tuesday" row is the thing the per-patient trail exists to prevent;
+ * this only changes how they travel to the database.
+ *
+ * @param {import('express').Request & { user?: any, tenant?: { id?: string } }} req
+ * @param {Array<Parameters<typeof audit>[1]>} entries
+ * @returns {Promise<void>}
+ */
+async function auditMany(req, entries) {
+  const tenantId = req && req.tenant && req.tenant.id;
+  if (!tenantId) {
+    throw new AuditError('cannot audit without req.tenant.id');
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  return writeRows(req, tenantId, entries, (sql, params) =>
+    tenantDb.withTenantDb(req, (pool) => pool.query(sql, params))
+  );
 }
 
 /**
@@ -189,4 +268,4 @@ async function assertReady() {
   console.log(`[audit] audit store reachable for ${active.length} active tenant(s)`);
 }
 
-module.exports = { audit, auditForTenant, assertReady, AuditError };
+module.exports = { audit, auditMany, auditForTenant, assertReady, AuditError };
