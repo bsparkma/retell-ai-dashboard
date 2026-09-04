@@ -1103,3 +1103,40 @@ Between 2 and 3, stop: [CC] reads the new snapshot and the gate's own verdict ou
 of the database and confirms the Approve is genuinely enabled before anything is
 approved.
 
+### 11.5 Stood down for the night — [CC], 2026-09-04
+
+**Nothing is armed.** Checked rather than assumed:
+
+| | State |
+| --- | --- |
+| `RCM_DRAIN_STEP_DELAY_MS` | **absent** from the container app's env (31 vars, none of them this one) |
+| pending kill | **none** — the kill test is over; the container was replaced by the #144 deploy, so no drain is mid-flight and the in-process `DRAIN_MUTEX` is fresh |
+| scheduled anything | **none** — no cron jobs, no background tasks, no timers. The drain has no scheduler at all: it runs on a press. The startup sweep runs only at boot, and its boot has already happened |
+| scale | `min = max = 1`, mode `Single` — unchanged, and it must stay there |
+| Roland posting | **ON** (`drain_enabled: true`). Left on deliberately, so the first press tomorrow is press 1 and not a switch |
+| valley posting | `false`, untouched |
+| worktrees | both clean; `docs/rcm-combined-walk` at `0b1982a`, the fix branch at `9af7668` (merged as `9f357e2`) |
+
+The stranded plan is **left exactly as it was**, per PM ruling 3 — still
+`partially_posted`, `attempt_count` 2, check `21491` on the queue row, the line
+still carrying no check number. It is evidence until press 1 heals it.
+
+#### The three presses still owed, in order
+
+| # | Who | Press | Expected |
+| --- | --- | --- | --- |
+| **1** | [BEAU] | Posting → the **`S10A-53832`** $1.00 check → **Post** | Heals to `posted`, reconciled. Line keeps `skipped_already_posted` / `already_received_matching` and **gains check 21491**. **Zero Open Dental writes**; the chart still holds exactly one check. Predicted step by step in [§11.2](#112-the-replay-press-predicted-before-it-is-pressed). |
+| **2** | [BEAU] | R3 (Cigna **`RS-330415`**, −$29.00, claim **53863**, PatNum **12828**) → **re-match**, then **confirm 53863** | The red *"… −$70.00 apart"* line is **gone**; the new snapshot's `billedDeltaCents` is **0**, still paired to claimproc **535780**. Chart-read-only: `POST /claims/:id/match` writes nothing to Open Dental. Required because the gate reads the STORED snapshot — see [§11.3](#113-r3-is-already-confirmed-and-the-fix-is-not-retroactive). |
+| — | **[CC]** | **STOP.** Read the new snapshot and the gate's own verdict out of the tenant DB; confirm Approve is genuinely enabled | Nothing is approved until this is reported. |
+| **3** | [BEAU] | R3 → **`adjustment`** radio, type **`-29.00`**, **Approve**, then **Post** | One **−$29.00** adjustment on 12828 under *insurance deductions from previous payments*, AdjType resolved **by name**. **No new Open Dental check** — R3 is a pure recoupment and creates none. |
+
+Then, unchanged from [§9.1](#91-in-order): [BEAU] turns Roland posting **OFF**;
+[CC] unwinds **both** manifests — `--reseed` for the seven reseed targets, then
+**bare** for the kill test's — fills the teardown numbers, records the switch
+audit rows, retires the ids per [§9.3](#93-the-deny-list-is-still-pending-at-unwind),
+and opens the docs PR.
+
+**Still owed to the deny list at unwind:** checks **21461 / 21462 / 21490 /
+21491** are all WALK-LIVE. `53860` / `406653` / `406654` remain **burned** and go
+on neither list.
+
