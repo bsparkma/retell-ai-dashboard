@@ -43,6 +43,7 @@ const { requireDashboardAuth } = require('../../middleware/auth');
 // Namespace import so the harness can patch getOdOffice. A destructured import
 // would pin the real function at require time and no test could reach it.
 const odOffices = require('../../config/odOffices');
+const odPatientCache = require('../../services/odPatientCache');
 
 const REGISTRY_KEYS = [
   'getUserByEmail',
@@ -64,12 +65,21 @@ class FakeAuditDb {
   constructor() {
     /** @type {Array<Record<string, unknown>>} */
     this.audit = [];
+    /**
+     * Every statement, verbatim. Rows and STATEMENTS are different facts once
+     * the audit writer batches: a test that only counted rows could not tell a
+     * batched insert from forty sequential ones, which is the thing being
+     * changed.
+     * @type {string[]}
+     */
+    this.statements = [];
     /** Set by a test to make the NEXT audit write fail (hard rule 5). */
     this.failAudit = false;
   }
 
   async query(sql, params = []) {
     const text = String(sql);
+    this.statements.push(text);
     if (/INSERT INTO audit_log/i.test(text)) {
       if (this.failAudit) throw new Error('simulated audit_log outage');
       // The column list is PARSED out of the statement rather than restated
@@ -82,13 +92,23 @@ class FakeAuditDb {
         .split(',')
         .map((c) => c.trim())
         .filter(Boolean);
-      /** @type {Record<string, unknown>} */
-      const row = { params };
-      cols.forEach((col, i) => {
-        row[col] = params[i];
-      });
-      this.audit.push(row);
-      return { rows: [], rowCount: 1 };
+      // ONE ROW PER DISCLOSURE, however many statements they arrived in.
+      // platform/audit.js batches a day's patients into a single multi-VALUES
+      // INSERT, so `params` is a flat run of N × cols.length. Expanding it here
+      // rather than in each test keeps every existing assertion — which counts
+      // ROWS, because rows are what the HIPAA trail is measured in — true
+      // whether the route batched or not.
+      const rowCount = cols.length > 0 ? Math.max(1, Math.floor(params.length / cols.length)) : 1;
+      for (let r = 0; r < rowCount; r += 1) {
+        const slice = params.slice(r * cols.length, (r + 1) * cols.length);
+        /** @type {Record<string, unknown>} */
+        const row = { params: slice };
+        cols.forEach((col, i) => {
+          row[col] = slice[i];
+        });
+        this.audit.push(row);
+      }
+      return { rows: [], rowCount };
     }
     if (/^\s*SELECT 1 FROM audit_log/i.test(text)) return { rows: [{ '?column?': 1 }], rowCount: 1 };
     throw new Error('[hygTestUtils] unexpected SQL under /api/hyg: ' + text.slice(0, 120));
@@ -215,6 +235,16 @@ async function bootHygApp({
    * `odUnavailableFor` still produces a genuine OFFICE_OD_KEY_MISSING, from the
    * stub, which is how the unkeyed-office refusal stays testable.
    */
+  /*
+   * The patient cache is PROCESS-WIDE and survives between boots — which is the
+   * whole point of it in the app, and which would silently invalidate every
+   * "how many Open Dental calls did this make" assertion in this suite: the
+   * second test to load 2026-09-08 for roland would find the first test's
+   * patients already there. Cleared per boot so each test measures a cold read,
+   * which is what the first load of a day actually is.
+   */
+  odPatientCache.resetOdPatientCache();
+
   process.env.OPENDENTAL_CUSTOMER_KEY = 'test-customer-key-roland';
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-customer-key-valley';
   odOffices.resetOdOfficeCache();

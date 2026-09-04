@@ -29,6 +29,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const odDay = require('./odDay');
+const odPatientCache = require('../odPatientCache');
+
+/*
+ * The patient cache is process-wide and survives between tests, which is the
+ * point of it — and which would make every "how many OD calls did this make"
+ * assertion below depend on which test ran first. Cleared before each one so
+ * each measures a cold read, the way the first load of a day actually is.
+ */
+test.beforeEach(() => odPatientCache.resetOdPatientCache());
 
 /**
  * A scripted odGet. `routes` is keyed by path, or by `path?Offset=N` when a
@@ -91,7 +100,7 @@ test('a day with MORE than 100 appointments comes back whole', async () => {
   for (const a of [...page1, ...page2]) routes['/patients/' + a.PatNum] = patient(a.PatNum);
 
   const get = fakeGet(routes);
-  const day = await odDay.readDay(get, { date: '2026-09-08' });
+  const day = await odDay.readDay(get, { date: '2026-09-08', office: 'roland' });
 
   assert.equal(day.ok, true);
   assert.equal(day.appointments.length, 137, 'a second page must not be dropped');
@@ -131,7 +140,7 @@ test('a page budget exhausted on a FULL page reports truncation rather than a sh
   }
   for (const a of full) routes['/patients/' + a.PatNum] = patient(a.PatNum);
 
-  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08' });
+  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08', office: 'roland' });
 
   assert.equal(day.ok, true);
   assert.equal(day.truncated, true, 'a budget exhausted mid-list must SAY so');
@@ -147,7 +156,7 @@ test('the day is pulled ONCE — never one request per operatory', async () => {
   for (const a of rows) routes['/patients/' + a.PatNum] = patient(a.PatNum);
 
   const get = fakeGet(routes);
-  await odDay.readDay(get, { date: '2026-09-08' });
+  await odDay.readDay(get, { date: '2026-09-08', office: 'roland' });
 
   const apptCalls = get.calls.filter((c) => c.path === '/appointments');
   assert.equal(apptCalls.length, 1, 'four chairs, one request');
@@ -168,7 +177,7 @@ test('an unread flag is null, never false', async () => {
       '/providers': [],
       '/patients/800001': patient(800001, { Premed: true, MedUrgNote: 'Latex' }),
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   const flags = day.appointments[0].flags;
@@ -195,7 +204,7 @@ test('an empty medical-alert note is a measured false, and an unreadable patient
       '/patients/800001': patient(800001, { MedUrgNote: '   ' }),
       // 800002 is not scripted -> a 404 -> an unreadable patient.
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   const [a, b] = day.appointments;
@@ -246,7 +255,7 @@ test('the raw per-office Confirmed DefNum is never returned, only the resolved s
       '/providers': [],
       '/patients/800001': patient(800001),
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   const a = day.appointments[0];
@@ -266,7 +275,7 @@ test('a first-page appointments failure is NOT a day', async () => {
       '/appointments': { ok: false, status: 503, data: null, error: 'upstream unavailable' },
       '/operatories': [],
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   assert.equal(day.ok, false, 'the route must be able to refuse rather than render nothing');
@@ -284,7 +293,7 @@ test('a LATER-page failure returns what was read, and says it is partial', async
   };
   for (const a of page1) routes['/patients/' + a.PatNum] = patient(a.PatNum);
 
-  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08' });
+  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08', office: 'roland' });
 
   assert.equal(day.ok, true, 'a hundred real appointments beat an outage');
   assert.equal(day.appointments.length, 100);
@@ -300,7 +309,7 @@ test('losing chair NAMES does not lose the chairs', async () => {
       '/providers': [],
       '/patients/800001': patient(800001),
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   assert.equal(day.ok, true);
@@ -322,7 +331,7 @@ test('broken / unscheduled / planned rows are excluded and COUNTED, not silently
   const routes = { '/appointments': rows, '/operatories': [], '/appointmenttypes': [], '/providers': [] };
   for (const a of rows) routes['/patients/' + a.PatNum] = patient(a.PatNum);
 
-  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08' });
+  const day = await odDay.readDay(fakeGet(routes), { date: '2026-09-08', office: 'roland' });
 
   assert.deepEqual(
     day.appointments.map((a) => a.aptNum).sort(),
@@ -342,7 +351,7 @@ test('an UNRECOGNISED status is kept, not dropped', async () => {
       '/providers': [],
       '/patients/800001': patient(800001),
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   // Open Dental can add a status. Losing a patient because this list is stale
@@ -363,7 +372,7 @@ test('the appointment flag and the CHAIR flag are both carried, because they can
       '/providers': [],
       '/patients/800001': patient(800001),
     }),
-    { date: '2026-09-08' }
+    { date: '2026-09-08', office: 'roland' }
   );
 
   assert.equal(day.appointments[0].isHygiene, true, "the APPOINTMENT's flag is authoritative");
@@ -394,7 +403,7 @@ test('the per-patient fan-out is deduplicated and bounded', async () => {
   routes['/patients/800001'] = patient(800001);
 
   const get = fakeGet(routes);
-  await odDay.readDay(get, { date: '2026-09-08' });
+  await odDay.readDay(get, { date: '2026-09-08', office: 'roland' });
 
   const patientCalls = get.calls.filter((c) => c.path.startsWith('/patients/'));
   assert.equal(patientCalls.length, 1, 'three appointments, one patient, one read');

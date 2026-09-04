@@ -49,11 +49,37 @@
  * audit failure 500s the request rather than serving PHI with no trail. Note
  * the ordering — the day is fetched from Open Dental first, so a failure to
  * audit does not also mean a failure to know what would have been disclosed.
+ *
+ * The rows go in ONE statement (`auditMany`), not a sequential await per
+ * patient: forty patients was forty database round trips in front of the
+ * response. Still one ROW per patient — only the trip is shared.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE AUDIT FIRES ON A CACHE HIT TOO. THIS IS THE TRAP.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * services/odPatientCache.js means the second load of a day issues no Open
+ * Dental requests at all. **It still discloses every one of those patients.**
+ * An audit row records a disclosure to a user, not a fetch from a vendor, so
+ * the rows below are built from `day.appointments` — what is about to be sent —
+ * and never from what was read.
+ *
+ * That is why the cache has no audit call in it, and must never grow one:
+ * moving the row next to the fetch would mean the better the cache got, the
+ * emptier the trail got. routes/hyg/hygDayCache.test.js pins both halves —
+ * zero patient reads on the second load, and the same number of rows.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ONE LOG LINE PER DAY READ
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `[hygday]` carries what the read cost: Open Dental requests split list vs
+ * patient, how many patients the cache answered, and wall clock. Transition-log
+ * style, like `[odhealth]` — one line per read, never per call. It is the only
+ * way to answer "did the cache help" with a number instead of an opinion.
  */
 
 const express = require('express');
 
-const { h, resolveHygOd, auditHygRead, auditHygDenial } = require('./helpers');
+const { h, resolveHygOd, auditHygRead, auditHygReads, auditHygDenial } = require('./helpers');
 const odDay = require('../../services/hyg/odDay');
 
 const router = express.Router();
@@ -115,7 +141,7 @@ router.get(
 
     let day;
     try {
-      day = await odDay.readDay(odGet, { date });
+      day = await odDay.readDay(odGet, { date, office });
     } catch (err) {
       console.error('[hyg/day] office=' + office + ' date=' + date + ' read threw');
       await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
@@ -143,11 +169,20 @@ router.get(
     // One row for the request, then one per patient disclosed. Both fail-closed:
     // an AuditError propagates to h() and becomes a 500 before anything is sent.
     await auditHygRead(req, 'hyg_day', { office, resourceId: date });
-    for (const patNum of new Set(
-      day.appointments.map((a) => a.patNum).filter((p) => p !== null)
-    )) {
-      await auditHygRead(req, 'hyg_day_patient', { office, resourceId: patNum });
-    }
+    const disclosed = [
+      ...new Set(day.appointments.map((a) => a.patNum).filter((p) => p !== null)),
+    ];
+    await auditHygReads(
+      req,
+      disclosed.map((patNum) => ({ resourceType: 'hyg_day_patient', office, resourceId: patNum }))
+    );
+
+    const cost = day.stats;
+    console.log(
+      `[hygday] office=${office} date=${date} appts=${day.appointments.length} ` +
+        `patients=${cost.patientsRequested} od_list=${cost.odListReads} od_patient=${cost.odPatientReads} ` +
+        `cache_hit=${cost.patientCacheHits} cache_dedup=${cost.patientCacheDeduped} ms=${cost.durationMs}`
+    );
 
     return res.json({
       success: true,
@@ -171,6 +206,10 @@ router.get(
       // appointment is here and some carry no name — see services/hyg/odDay.js.
       truncated: day.truncated,
       patientNamesTruncated: day.patientNamesTruncated,
+      // What this read cost, in counts and milliseconds. No PatNum, no name.
+      // Shipped in the body rather than only logged so a BEFORE/AFTER can be
+      // measured with one request against staging instead of a log query.
+      stats: day.stats,
     });
   })
 );

@@ -165,6 +165,14 @@ const DAY: HygDayResponse = {
   excludedByStatus: 1,
   truncated: false,
   patientNamesTruncated: false,
+  stats: {
+    odListReads: 4,
+    odPatientReads: 1,
+    patientsRequested: 1,
+    patientCacheHits: 0,
+    patientCacheDeduped: 0,
+    durationMs: 1200,
+  },
 };
 
 const EMPTY_DAY: HygDayResponse = { ...DAY, appointments: [], excludedByStatus: 0 };
