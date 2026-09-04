@@ -969,3 +969,137 @@ untouchable · **never a negative supplemental on a real patient** · staging is
 **ADJUSTMENT path only** · DefNums resolved **by name**, never by number · any
 read-back that disagrees with what a screen promised **stops the walk** · a stopped
 walk is a finding, not a failure · no real patient data anywhere in this record.
+
+---
+
+## 11. The fixes ship, and what the two remaining presses will do
+
+### 11.1 PR #144 — merged, deployed — [CC], 2026-09-04
+
+PM review cleared `fix/rcm-takeback-gate-and-resume-strand` at `9af7668` as-is.
+
+| | |
+| --- | --- |
+| PR | **#144** — *Fix the takeback gate and the stranded resume* |
+| Base | `develop` (`c2790f5`) |
+| PR check | `build-test` **pass**, 3m49s — the first walk defect gated by PR CI (#106) before merge |
+| Merge commit | **`9f357e2`** |
+| Commits | `ca73657` (W-9 drain), `7647dd1` (W-6 pairing), `9af7668` (§10.3 note) |
+| Diff | 6 files, +412 / −9 |
+
+**Deploy, verified in three layers — [CC], 2026-09-04T03:2xZ**
+
+| Layer | Evidence |
+| --- | --- |
+| pipeline | `staging-cd` run **`33832437495`** on `9f357e2` — `build-test` ✓, `publish` ✓, `migrate` ✓, `deploy` ✓ |
+| revision | **`ca-carein-backend--0000159`**, image `acrcareincore.azurecr.io/carein-backend:9f357e2`, `latestReadyRevisionName`, mode `Single`, ingress traffic **100%**. (`revision list` reported the weight late again; the ingress config is the authority.) |
+| live behaviour | `pairLines` called **inside the running container** on R3's exact stored rows returns `billedDeltaCents: 0`. `/app/services/rcm/postingDrain.js` carries `skippedThisRun`. `RCM_DRAIN_STEP_DELAY_MS` **UNSET**. |
+
+The deploy restarted the container, so the startup sweep ran again. **The stranded
+plan is byte-identical across it** — plan `updated_at` still `02:35:51.378`, line
+still `02:32:15.691`. The evidence the PM ordered preserved is intact, and the
+sweep's indifference to `partially_posted` is now observed twice.
+
+Roland `drain_enabled` is **`true`** and valley **`false`**; both offices are
+`writeoff_mode: writeoff_field`.
+
+### 11.2 The replay press, predicted BEFORE it is pressed
+
+The stranded plan, read out of the tenant DB on `0000158` at 03:1xZ — i.e. the
+state the fixed code will meet:
+
+| | |
+| --- | --- |
+| `queue_id` | `ae114999-ac9d-4f5b-ba64-522efb8cb7aa` |
+| `status` | `partially_posted` |
+| `drain_step` | `reconcile` |
+| `attempt_count` | 2 |
+| `od_claim_payment_num` | **21491** — on the QUEUE row |
+| `reconciled_at` | `null` |
+| `posted_total_cents` / `intended_total_cents` | `100` / `100` |
+| `last_error` | `new row for relation "rcm_posting_queue_line" violates check constraint "rcm_posting_queue_line_skip_reason_check"` |
+
+Its one line:
+
+| | |
+| --- | --- |
+| `status` / `skip_reason` | `skipped_already_posted` / `already_received_matching` |
+| `od_claim_num` / `od_claim_proc_num` | `53900` / `536170` |
+| `od_claim_payment_num` | **`null`** — the number the UPDATE could not write |
+| `paid_at` | `null` |
+| `claimproc_written_at` | `2026-09-04T02:27:13.178Z` |
+
+**Predicted, step by step, from the code rather than from hope:**
+
+| Step | What happens | Open Dental |
+| --- | --- | --- |
+| claim | `partially_posted` ∈ `DRAINABLE_STATUSES` → re-claimed, `attempt_count` → **3** | — |
+| `claimproc_writes` | re-reads claim 53900; 536170 is already Received with our amounts → decision `skip` / `already_received_matching` | **1 read** |
+| `claim_receipts` | claim is already `R` **and** `appendClaimNote` finds this `queue_id` already in `ClaimNote` → returns `null` → **the PUT is skipped** | 1 read |
+| `check` | `claimPaymentNum = plan.queue.odClaimPaymentNum = 21491`, so `needsCheck && !claimPaymentNum` is false → **no POST** | — |
+| `reconcile` | reads the claimprocs attached to 21491; reconciles against `ordinaryLines`, which is `isSupplemental`-filtered and therefore **includes the skipped line** | 1 read |
+| line stamp | `skippedThisRun` is true → writes **only** `od_claim_payment_num = 21491`. Status stays `skipped_already_posted`, `skip_reason` stays, `paid_at` stays `null` | — |
+| B2 confirm | re-reads the chart and compares against the promise frozen at approve | 1 read |
+| `document_attach` | this batch's only upload is `content_type: text/plain` (raw `.edi`), and `loadRemittancePdf` returns `null` for anything but a PDF → `document_attach_status: 'none'` | **no document written** |
+| finalize | `posted`, `reconciled_at` set, `posted_total_cents` 100 | — |
+
+**Expected: ZERO Open Dental writes — no PUT, no POST, no DELETE — and about
+five reads. The chart still holds exactly one check, 21491.** This agrees with
+the PM's stated expectation in full.
+
+Two steps could still refuse instead of reaching `posted`, and **neither is a
+strand** — both leave the plan `partially_posted`, drainable, with a sentence
+naming the disagreement: a reconcile mismatch, and a red B2 patient-total
+confirmation. Neither is expected; the chart holds exactly the intended $1.00.
+
+### 11.3 R3 is already confirmed, and the fix is NOT retroactive
+
+The stored snapshot on R3's claim, read 2026-09-04:
+
+| | |
+| --- | --- |
+| `claim_id` | `615d889b-032a-46b9-b063-80d543e5b83a` |
+| `status` / `od_claim_num` | `matched` / **53863 — already confirmed** at `01:40:40Z` |
+| `total_paid_cents` | `-2900` |
+| snapshot `takeback` | `true` |
+| `confirmed.linePairs[0].billedDeltaCents` | **`-7000`** |
+| `confirmed.odAmountsAsRead` | billed `3500`, insPaid `2900`, writeOff `600`, `ClaimStatus "R"` |
+| the chart line | `claimProcNum 535780`, `claimPaymentNum 21490` (Beau's 4a hand-post) |
+
+**The gate reads the STORED snapshot, not a fresh computation.**
+`approvalGate.js:440` is `claimWorkbench.feeDeltasByLine(snapshot)`, and
+`SNAPSHOT_VERSION` is unchanged by this fix — so the old snapshot still counts as
+current and the gate will go on refusing on the frozen `-7000` until the claim is
+**re-matched**. Deploying the fix changes nothing by itself.
+
+That generalises, and it matters for the prod promotion: **any takeback claim
+matched before this build keeps its wrong delta until somebody re-matches it.**
+
+The fix does produce the right number on this exact data. `pairLines` run
+offline against the two rows above — our `-3500` against the chart's `3500`,
+`takeback: true`:
+
+```
+linePairs: [{"lineId":"L1","position":1,"code":"D0220","odClaimProcNum":535780,
+             "billedDeltaCents":0,"reason":null}]
+```
+
+**`0`, where the snapshot froze `-7000`** — and it still pairs to claimproc
+535780, so the fix did not buy agreement by refusing to pair.
+
+### 11.4 What Beau presses, in order
+
+Three presses, not two — **the re-match is the one §11.3 makes unavoidable**, and
+it is on the read-only side of the line: `POST /claims/:id/match` reads Open
+Dental and changes no chart (`routes/rcm/index.js:116`).
+
+| # | Screen | Press | Expected |
+| --- | --- | --- | --- |
+| 1 | Posting | **Post** on the $1.00 S10A check (`S10A-53832`) | Heals to **posted**, reconciled. The line keeps `skipped_already_posted` / `already_received_matching` and **gains check 21491**. **No new Open Dental write** — the chart still holds exactly one check. |
+| 2 | R3 claim (Cigna `RS-330415`, −$29.00) | **Re-match**, then **Confirm 53863** | The forced re-match releases the confirmation and writes a new snapshot. The red *"D0220 was billed −$35.00 on the remittance and $35.00 in Open Dental … −$70.00 apart"* line is **gone**; `billedDeltaCents` is **0**. |
+| 3 | R3 approve | **adjustment** radio, type **−29.00**, **Approve**, then **Post** | One **−$29.00** adjustment on 12828 under *insurance deductions from previous payments*, AdjType resolved **by name**. **No new Open Dental check** — R3 is a pure recoupment and creates none. |
+
+Between 2 and 3, stop: [CC] reads the new snapshot and the gate's own verdict out
+of the database and confirms the Approve is genuinely enabled before anything is
+approved.
+
