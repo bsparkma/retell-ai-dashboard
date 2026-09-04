@@ -379,3 +379,48 @@ test("today is the OFFICE's day, not the container's", () => {
     else process.env.OFFICE_TIMEZONE = original;
   }
 });
+
+// ─── the pilot switch is read at PASS TIME ───────────────────────────────────
+
+test('the warm re-reads the pilot switch every pass, never a boot snapshot', async () => {
+  /*
+   * An office switched off at 9am on Tuesday must not still be warmed at 7:45
+   * on Wednesday. That is not hypothetical: this job runs unattended, against a
+   * real practice's Open Dental, reading real patient records — the very thing
+   * somebody switching the office off is trying to stop.
+   *
+   * The hardcoded floor is left OFF here, so the STORED value in the control
+   * plane is the only thing that can make roland eligible. Flipping it behind
+   * the warm's back is exactly what a runbook write looks like.
+   */
+  const registryModule = require('../platform/registry');
+  const hygPilot = require('../config/hygPilot');
+  const savedGet = registryModule.getPlatformSetting;
+
+  let stored = { roland: true };
+  registryModule.getPlatformSetting = async (key) =>
+    key === hygPilot.SETTING_KEY
+      ? { key, value: stored, updated_at: new Date('2026-09-04T12:00:00Z'), updated_by: 'boss@carein.ai' }
+      : null;
+
+  const od = fakeOd(dayRoutes([12827]));
+  try {
+    await withOffices({ hygOffices: [], od }, async () => {
+      const first = await hygDayWarm.runNow({ date: '2026-09-08' });
+      assert.equal(first.offices.length, 1, 'the stored switch made roland eligible');
+      assert.equal(first.offices[0].office, 'roland');
+      const callsAfterFirst = od.calls.length;
+      assert.ok(callsAfterFirst > 0);
+
+      // Somebody turns roland off. No restart, no cache reset here.
+      stored = { roland: false };
+
+      const second = await hygDayWarm.runNow({ date: '2026-09-08' });
+      assert.equal(second.skipped, 'NO_ELIGIBLE_OFFICES');
+      assert.equal(od.calls.length, callsAfterFirst, 'not one further Open Dental request');
+    });
+  } finally {
+    registryModule.getPlatformSetting = savedGet;
+    hygPilot.resetCacheForTests();
+  }
+});

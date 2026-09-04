@@ -56,6 +56,7 @@ async function bootstrap() {
   const retentionConfig = require('./config/retention');
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
+  const hygPilot = require('./config/hygPilot');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -521,6 +522,22 @@ async function bootstrap() {
     //    Unlike the health check it does NOT fire a pass at startup: a deploy in
     //    the middle of the afternoon must not put a patient fan-out on a
     //    credential people are using.
+    //    The pilot switch is read from the control plane FIRST, and awaited, so
+    //    the warm's own "which offices are eligible" line is honest at boot
+    //    rather than reporting the hardcoded floor. refreshFromDb never throws;
+    //    a control plane that could not be reached leaves every office OFF,
+    //    which is the safe direction. See config/hygPilot.js.
+    await hygPilot.refreshFromDb();
+    //    Then say so, once, if somebody has set HYG_OD_ENABLED_<OFFICE>=true:
+    //    that variable can only DISABLE an office, so it is doing nothing —
+    //    and a variable that quietly does nothing is its own incident.
+    hygPilot.warnAboutInertEnvOverrides();
+    //    Then keep it fresh, so a value written straight into the control DB by
+    //    a runbook reaches the request path without a restart. A CONSOLE write
+    //    does not wait for this — it refreshes inline and is in force for the
+    //    next request.
+    hygPilot.startRefreshTimer();
+
     hygDayWarm.start();
 
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
@@ -539,6 +556,7 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    hygPilot.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -548,6 +566,7 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    hygPilot.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

@@ -16,8 +16,9 @@
  * Checks:
  *   1. registry     — tenant 'carein', clinics, module, db ref, admin app_user
  *   2. tenantDb     — per-tenant pool connects (as carein_app) to carein_t_carein
- *   3. audit        — INSERT + SELECT succeed as carein_app
- *   4. append-only  — UPDATE and DELETE on audit_log are DENIED for carein_app
+ *   3. audit        — INSERT + SELECT succeed as carein_app, single AND batched
+ *   4. append-only  — UPDATE and DELETE on audit_log are DENIED for carein_app,
+ *                     including against a batched write
  *   5. entitlement  — requireEntitledClinic() allows own clinic, blocks a foreign one
  *
  * Read-only against your real OD/connector — it never calls Open Dental. The OD
@@ -125,6 +126,77 @@ async function main() {
     back.rows[0] ? JSON.stringify(back.rows[0]) : '(no row)'
   );
 
+  // --- 3b. auditMany: the MULTI-ROW INSERT, against a real schema ---------
+  //
+  // WHY THIS STEP EXISTS. platform/audit.test.js stubs withTenantDb with a fake
+  // pool that captures SQL and parameters and never executes them, so
+  // `auditMany`'s `VALUES ($1..$12), ($13..$24), ...` had never been run by a
+  // database at all. The single-row path is positionally identical to what
+  // shipped before it and is fine; N > 1 was unproven until here.
+  //
+  // Same lesson the `rcm query verification` step carries: a unit suite's fake
+  // database accepts any statement a fixture shapes, and only the real migrated
+  // schema parses the real one.
+  //
+  // Three rows, because two would not distinguish a correct parameter stride
+  // from an off-by-one that happens to work for the first repetition.
+  const batch = ['smoke-batch-1', 'smoke-batch-2', 'smoke-batch-3'].map((id) => ({
+    action: 'READ',
+    resourceType: 'smoke_batch',
+    resourceId: id,
+    result: 'SUCCESS',
+    office: 'roland',
+  }));
+  await audit.auditMany(req, batch);
+
+  const batchBack = await tenantDb.withTenantDb(req, (pool) =>
+    pool.query(
+      `SELECT user_id, action, resource_type, resource_id, result, endpoint, office,
+              origin_office, source_ref, prior_state
+         FROM audit_log
+        WHERE resource_type = 'smoke_batch'
+        ORDER BY resource_id ASC`
+    )
+  );
+  record(
+    'audit: auditMany wrote all three rows',
+    batchBack.rows.length === 3 &&
+      batchBack.rows.map((r) => r.resource_id).join(',') === 'smoke-batch-1,smoke-batch-2,smoke-batch-3',
+    `${batchBack.rows.length} row(s): ${batchBack.rows.map((r) => r.resource_id).join(', ')}`
+  );
+
+  // Every column must match what a single audit() would have written for the
+  // same entry — a batch that lands the right NUMBER of rows with a shifted
+  // parameter stride would pass the count check above and still be wrong.
+  await audit.audit(req, {
+    action: 'READ',
+    resourceType: 'smoke_single',
+    resourceId: 'smoke-batch-2',
+    result: 'SUCCESS',
+    office: 'roland',
+  });
+  const singleBack = await tenantDb.withTenantDb(req, (pool) =>
+    pool.query(
+      `SELECT user_id, action, resource_id, result, endpoint, office,
+              origin_office, source_ref, prior_state
+         FROM audit_log
+        WHERE resource_type = 'smoke_single'
+        LIMIT 1`
+    )
+  );
+  const middle = batchBack.rows[1] || {};
+  const single = singleBack.rows[0] || {};
+  const sameColumns = Object.keys(single).every(
+    (col) => String(middle[col] ?? '') === String(single[col] ?? '')
+  );
+  record(
+    'audit: a batched row is identical to a single-row write',
+    singleBack.rows.length === 1 && sameColumns,
+    sameColumns
+      ? 'user_id, action, resource_id, result, endpoint, office, origin_office, source_ref, prior_state all match'
+      : `differs: ${JSON.stringify({ batched: middle, single })}`
+  );
+
   // --- 4. append-only: UPDATE / DELETE must be DENIED for carein_app ------
   // Only a genuine privilege error (SQLSTATE 42501) counts as a pass; any other
   // failure (or success) is reported so a misconfigured role can't masquerade.
@@ -139,6 +211,12 @@ async function main() {
   }
   await expectDenied("audit: UPDATE denied for carein_app", "UPDATE audit_log SET result = 'ERROR' WHERE resource_type = 'smoke'");
   await expectDenied("audit: DELETE denied for carein_app", "DELETE FROM audit_log WHERE resource_type = 'smoke'");
+  // Batched rows are not a different kind of row. Asserted separately anyway,
+  // because "append-only holds" is a claim about the TABLE and the only way to
+  // find out that a new write path landed somewhere it should not have is to
+  // aim the refusal at what that path wrote.
+  await expectDenied("audit: UPDATE denied against a BATCHED write", "UPDATE audit_log SET result = 'ERROR' WHERE resource_type = 'smoke_batch'");
+  await expectDenied("audit: DELETE denied against a BATCHED write", "DELETE FROM audit_log WHERE resource_type = 'smoke_batch'");
 
   // --- 5. entitlement guard (pure logic; the HTTP 403 is a manual check) --
   const reqEnt = { tenant: { clinics: clinics.map((c) => ({ clinic_num: c.clinic_num, name: c.name })) } };

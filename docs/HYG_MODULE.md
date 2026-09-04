@@ -4,10 +4,10 @@ What shipped, what it refuses to do, and where the next two slices attach.
 
 **Status: mounted, ships dark.** `hyg` is in the `tenant_module` vocabulary as
 of `backend/migrations/1788100000000_module_hyg.js`, no tenant is entitled to
-it, and `hygOdEnabled` is `false` for every office. Everything under `/api/hyg`
-therefore 403s `MODULE_NOT_ENTITLED` in every environment until Beau flips the
-entitlement from the Platform Console, and 409s per office until that office's
-switch is flipped too.
+it, and no office's pilot switch is on. Everything under `/api/hyg` therefore
+403s `MODULE_NOT_ENTITLED` in every environment until the entitlement is flipped
+from the Platform Console, and 409s per office until that office's switch is
+flipped too. **Both are now clicks, not deploys** — see §8.
 
 ---
 
@@ -17,7 +17,7 @@ switch is flipped too.
 | --- | --- | --- | --- |
 | `requireModule('hyg')` | Did this PRACTICE buy the product? | `server.js` mount | 403, `error: MODULE_NOT_ENTITLED` |
 | `requireReadWrite('hyg.read','hyg.write')` | May this PERSON do this? | same mount, by HTTP method | 403 `FORBIDDEN` |
-| `hygOdEnabled` | Is this LOCATION switched on? | `config/odOffices.js`, checked per route | 409 `OFFICE_NOT_READY` |
+| the pilot switch | Is this LOCATION switched on? | `config/hygPilot.js`, read per request | 409 `OFFICE_NOT_READY` |
 
 The third one is new, and it is not the mistake `officeAgents.odConnected` was.
 That flag gated TC's routes while TC actually reached Open Dental through a
@@ -207,8 +207,12 @@ No secrets. Three tunables, all with working defaults:
 | `HYG_WARM_SCHEDULE` | `45 7 * * *` | Cron for the morning warm, read in `OFFICE_TIMEZONE`. An unparseable value falls back to the default with a warning. |
 | `HYG_WARM_DISABLED` | unset | `'true'` arms no warm at all. The SECOND gate — the first is `hygOdEnabled`, which ships false everywhere. |
 
-The per-office switch is **code, not env**: `hygOdEnabled` in
-`backend/config/odOffices.js`, default `false` for both offices.
+| `HYG_OD_ENABLED_<OFFICE>` | unset | **Break-glass** per-office kill switch. `false` forces that office OFF, whatever the console says. `true` is accepted and can never enable anything (it is reported at boot and on screen as inert); anything else is ignored. See §8. |
+| `HYG_PILOT_REFRESH_MINUTES` | `5` | How often the stored pilot switch is re-read in the background. A console write does not wait for this. |
+
+The per-office switch is no longer code: it lives in the control plane and is
+flipped from the Platform Console. `OFFICE_OD_SETTINGS[x].hygOdEnabled` is now
+only the FLOOR of that precedence chain and stays `false`. See §8.
 
 ---
 
@@ -384,3 +388,145 @@ behaviour. Each is a one-line change:
 
 The cache stores the raw Open Dental body precisely so those three can share
 entries with hyg rather than each keeping their own.
+
+---
+
+## 8. The pilot switch, and the runbook that goes with it
+
+### Why it stopped being a constant
+
+`OFFICE_OD_SETTINGS[x].hygOdEnabled` was a hardcoded `false` in backend source.
+Turning hygiene on for Roland meant a deploy — and so did turning it **off**.
+Pilot morning, a hygienist hits a problem at 9am with a patient in the chair;
+switching that office off has to take under a minute. **A kill switch that
+requires a deploy is not a kill switch.**
+
+It also unblocked two things: the Day View's staging measurement (§7 of this
+doc, which needed a second deploy just to flip the flag) and
+`services/hygDayWarm.js`, which had never executed anywhere — its first real run
+would otherwise have been pilot morning in production.
+
+### Precedence
+
+```
+HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always.
+  ↓ (unset, =true, or unparseable — none of which can ENABLE anything)
+platform_setting['hyg_od_enabled']   ← the console writes this
+  ↓ (no row, or a row that cannot be parsed)
+OFFICE_OD_SETTINGS[x].hygOdEnabled   ← the floor, and it stays false
+```
+
+One `platform_setting` row holds every office as a jsonb map,
+`{"roland": true, "valley": false}`. One row rather than a key per office
+because it is a single atomic write (a change touching two offices cannot
+half-apply), a single audit target, and a single read on a path that runs on
+every `/api/hyg` request.
+
+Things worth knowing before you debug this:
+
+- **A row that exists answers for every office.** Once the row is present and
+  usable, an office ABSENT from it is `false` — not "unset", not "inherit". The
+  stored row is consulted only when nothing in the environment has already
+  killed the office, which is exactly `config/retention.js`'s `days: null`
+  behaviour generalised to a map, with a one-way gate in front of it.
+- **The env override only ever turns an office OFF.** `HYG_OD_ENABLED_ROLAND=false`
+  holds roland off whatever the stored row says — it NARROWS, the same way
+  `hygOdBlockReason()` narrows `odBlockReason()`. `=true` is accepted as input
+  and cannot enable anything; it is logged once at boot and shown on the console
+  as inert, because a variable that quietly does nothing is its own incident.
+  Break-glass exists for *the console is unreachable and I need to kill this*,
+  and there is no incident whose correct response is turning a module ON while
+  the control plane is down. That also means a stale `=true` left over from an
+  earlier incident cannot re-open an office somebody deliberately shut, not even
+  on a boot where the control DB is unreachable and nothing is cached.
+- **The floor stays `false`.** It is the bottom of the chain, not a
+  configuration point. Flipping it would put the OFF direction behind a deploy
+  again, which is the whole thing this replaced.
+- **One bad entry does not poison the map.** An unknown office key or a
+  non-boolean value is dropped, loudly, and the rest of the row still applies.
+- **Read once and then unreachable ⇒ keep using what we read.** A database blip
+  must not switch a practice's chairside screen off mid-morning any more than it
+  should switch one on. Never read at all ⇒ every office off.
+
+### It can only narrow
+
+`hygOdBlockReason()` asks `odBlockReason()` FIRST and only then consults the
+switch, so there is no value of the setting that reaches an office the voice
+module could not. An office with no customer key stays refused with the VOICE
+path's own code no matter what this says. `backend/config/hygPilot.test.js` pins
+both directions.
+
+### OFF is instant
+
+`maxReplicas` is 1, so the console write and the request path are the same
+process: `persistHygEnabled` refreshes the module cache inline, and
+`hygOdBlockReason()` reads it synchronously. The next `/api/hyg` request is
+refused. `backend/routes/hygPilotSwitch.test.js` walks
+`ON → 200 → OFF → 409` in one process with **no restart, no sleep and no cache
+reset** between the steps. If that test ever needs one of those, the switch has
+stopped being a kill switch.
+
+---
+
+## 9. The pilot runbook
+
+### Before you start
+
+Confirm on the **Platform → Practices** tab that the practice is entitled to
+`hyg`. That is a different axis from the switch and both must be on; the Hygiene
+tab shows the entitlement read-only beside each office for exactly this reason.
+
+### Enabling Roland on STAGING
+
+1. Sign in to staging as a platform administrator.
+2. **Platform → Practices → CareIN Dental → Modules**: turn `hyg` on.
+3. **Platform → Hygiene**: flip **Roland Family Dental** on and read the
+   confirmation. It says what starts happening: hygienists begin reading real
+   patient data from that practice's Open Dental, and the morning warm begins
+   running against it.
+4. The row under the office should now read `db` and *"Turned on by <you> on
+   <today>"*. If it still reads `default` or `env`, the write did not take —
+   the panel is rendering the database, not your click.
+5. Open `/hyg/day` and confirm the day loads against the real schedule.
+
+### What to watch, over several mornings
+
+| Signal | Where | What good looks like |
+| --- | --- | --- |
+| the warm ran | container log, `[hygwarm]` | one line per office per morning at ~07:45 Central: `office=roland date=… patients=N od_reads=N ms=…`. `patients` should match the day's headcount. |
+| the day view is fast | `[hygday]` line, or `stats` in the response | `od_patient=0` and `ms` in the low thousands for a load inside the warm's window; a cold load is one second per patient (§7). |
+| the schedule is right | the screen, against the practice's own day | every appointment present, names correct, no `truncated` banner. |
+| Open Dental is healthy | `[odhealth]` transitions, Platform → practice health | no `roland up→down` lines. A down office makes the day view refuse honestly, not show an empty day. |
+| nothing is being written | — | there is no OD write path in this module at all (`hygNoOdWrites.test.js`). If you see a chart change, it did not come from here. |
+
+**Good enough for prod** is: three consecutive mornings where the warm ran
+cleanly for Roland, the day view matched the real schedule, no `[odhealth]`
+transition coincided with a hygiene complaint, and the hygienist did not report
+a name or a flag that disagreed with Open Dental.
+
+**Note the honest gap:** a same-day add-on booked after the warm is a cold read
+and will be slower. That is correct behaviour, not a fault.
+
+### Turning it off fast
+
+**Platform → Hygiene → toggle the office off.** No confirmation dialog, no
+deploy, no restart. It is in force for the very next request; a hygienist
+mid-page gets a refusal on their next action, not an empty day.
+
+If the console itself is unreachable, the break-glass path is the app setting:
+set `HYG_OD_ENABLED_ROLAND=false` and restart the container. It holds the office
+off from that moment on, whatever the stored row says and whether or not the
+control plane comes back — so **remember to clear it afterwards**, or the
+console's own switch will not be able to turn that office back on. The panel
+says so on the office's row while the variable is set.
+
+There is no matching way in. `HYG_OD_ENABLED_ROLAND=true` cannot turn an office
+on; the only way in is the console. That is deliberate — the fast,
+always-available path is the safe direction, which is the same reason turning
+off needs no confirmation and turning on does.
+
+### Enabling prod
+
+Same five steps, on prod, after the staging soak. Nothing about the switch is
+environment-specific; the only difference is that prod's Roland is a live
+practice and the confirmation dialog means what it says.

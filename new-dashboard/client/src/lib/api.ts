@@ -324,6 +324,68 @@ export interface RetentionImpact {
   alreadyPruned: number;
 }
 
+/**
+ * One office's hygiene pilot switch, and WHY it reads the way it does.
+ *
+ * A DIFFERENT AXIS from the `hyg` module entitlement on a Practice. Entitlement
+ * is per-practice (did they buy it); this is per-office inside a practice that
+ * has (is hygiene live at this location). Both must be on for a hygienist to
+ * load a day.
+ */
+export interface HygOfficeSwitch {
+  officeKey: string;
+  officeName: string;
+  /** The effective value the request path is using right now. */
+  enabled: boolean;
+  /** Which layer answered: the stored row, an env override, or the floor. */
+  source: RetentionSource;
+  /** What the control plane says. `null` when there is no usable row. */
+  db: boolean | null;
+  /**
+   * Is this office actually NAMED in the stored row?
+   *
+   * Same effective value as an explicit `false`, different sentence: an
+   * office nobody has ever touched must not be described as one somebody
+   * turned off. `null` when there is no usable row at all.
+   */
+  inRow: boolean | null;
+  /** What the env override says. `null` when unset or unparseable. */
+  env: boolean | null;
+  envVar: string;
+  /** The raw env string, so a value like `yes` can be shown as ignored. */
+  envRaw: string | null;
+  /**
+   * What the env override is actually DOING, which is not symmetric:
+   * `disables` — it says false, so this office is off whatever the row says.
+   * `inert`    — it says true, and nothing in the environment can enable an
+   *              office. Somebody set it and is watching nothing happen.
+   */
+  envEffect: "disables" | "inert" | null;
+  hardcoded: boolean;
+  /** The db answered AND an env override says the opposite. */
+  disagreesWithEnv: boolean;
+  /** Switched on AND actually able to serve a day. */
+  ready: boolean;
+  /** What the VOICE path already refuses, independent of this switch. */
+  blockedBy: { code: string; message: string } | null;
+}
+
+/** The hygiene switch panel's whole view. */
+export interface HygSwitchState {
+  offices: HygOfficeSwitch[];
+  setting: {
+    /** Has the control plane been read successfully since this server booted? */
+    policyKnown: boolean;
+    /** Is there a usable stored row at all, or is nobody choosing yet? */
+    hasRow: boolean;
+    updatedAt: string | null;
+    updatedBy: string | null;
+    settingKey: string;
+  };
+  /** Non-null when the control plane could not be read on this request. */
+  controlPlaneError?: string | null;
+}
+
 /** The nightly prune's result, from POST /api/admin/call-store/prune. */
 export interface PruneResult {
   scanned?: number;
@@ -1930,6 +1992,26 @@ export const api = {
    */
   async getRetentionImpact(days: number): Promise<RetentionImpact> {
     return request<RetentionImpact>("/platform/retention/impact", { params: { days } });
+  },
+
+  /** The hygiene pilot switch for every office, with the layer that answered. */
+  async getHygOffices(): Promise<HygSwitchState> {
+    return request<HygSwitchState>("/platform/hyg-offices");
+  },
+
+  /**
+   * Turn hygiene on or off for ONE office.
+   *
+   * Takes effect on the very next request: the console write and the request
+   * path are the same process. Returns the state AS THE DATABASE NOW HAS IT,
+   * not the value sent, so a write that silently did nothing cannot look like a
+   * success.
+   */
+  async setHygOfficeEnabled(office: string, enabled: boolean): Promise<HygSwitchState> {
+    return request<HygSwitchState>(
+      `/platform/hyg-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
   },
 
   // --- call-store jobs (existing /api/admin endpoints, super_admin-gated) ----

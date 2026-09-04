@@ -11,6 +11,8 @@
  *   GET    /retention                            the call-store window + policy source
  *   PUT    /retention                            change it (30 | 60 | 90)
  *   GET    /retention/impact?days=N              how much shortening would cost
+ *   GET    /hyg-offices                          the hygiene pilot switch, per office
+ *   PUT    /hyg-offices/:office                  turn one office's hygiene on or off
  *
  * THE GATE. Every route here sits behind `requireSuperAdmin()`, applied once at
  * the mount in server.js. There is deliberately no module guard: entitlement
@@ -45,6 +47,8 @@ const registry = require('../platform/registry');
 const tenantDb = require('../platform/tenantDb');
 const { auditForTenant, audit } = require('../platform/audit');
 const retentionConfig = require('../config/retention');
+const hygPilot = require('../config/hygPilot');
+const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const callRetention = require('../services/callRetention');
@@ -514,6 +518,98 @@ router.get('/retention/impact', (req, res) => {
     wouldPrune,
     alreadyPruned: unifiedCallStore.getStats().prunedCalls,
   });
+});
+
+// ── the hygiene pilot switch ────────────────────────────────────────────────
+//
+// PER OFFICE, and that is a DIFFERENT AXIS from the module entitlement above.
+//
+//   entitlement (PUT /practices/:tenantId/modules/hyg) — did this PRACTICE buy
+//     the hygiene product? One answer per tenant.
+//   this switch  (PUT /hyg-offices/:office)            — is hygiene live at this
+//     LOCATION? One answer per office, inside a practice that has bought it.
+//
+// Both must be on for a hygienist to load a day. Confusing them is the failure
+// this pair of endpoints and the panel above them are shaped to prevent, which
+// is why they are separate routes with separate payloads rather than one
+// combined toggle that would have to explain itself in a tooltip.
+
+/** The switch panel's whole view, freshly composed. */
+function hygOfficesPayload() {
+  return {
+    offices: odOffices.hygSwitchState(),
+    setting: hygPilot.settingMeta(),
+  };
+}
+
+/**
+ * GET /hyg-offices
+ *
+ * Refreshes from the control plane before answering, for the same reason
+ * GET /retention does: this is the settings page, and a cached value here is
+ * exactly where a stale read would tell somebody their change did not take.
+ */
+router.get('/hyg-offices', async (req, res) => {
+  const refreshed = await hygPilot.refreshFromDb();
+  // Reported, not thrown. The panel is still useful when the control plane is
+  // down — it just has to say so rather than present the fallback as the policy.
+  return res.json({ success: true, ...hygOfficesPayload(), controlPlaneError: refreshed.error });
+});
+
+/**
+ * PUT /hyg-offices/:office   { enabled: boolean }
+ *
+ * TAKES EFFECT IMMEDIATELY, not at some next tick. `maxReplicas` is 1, so the
+ * console write and the request path are the same process: `persistHygEnabled`
+ * refreshes this module's cache inline, and `odOffices.hygOdBlockReason()` reads
+ * that cache synchronously on the very next `/api/hyg` request. A switch whose
+ * OFF direction waited for a refresh interval would not be a kill switch.
+ * `routes/hygPilotSwitch.test.js` pins exactly that, with no restart, sleep or
+ * cache reset between the write and the refused request.
+ *
+ * The audit row goes to the ACTING super_admin's own tenant, like the retention
+ * write and unlike the module toggle — the office registry is platform-wide and
+ * has no tenant dimension, so filing it under one practice would misrepresent
+ * its blast radius. `office` names which location moved, and `priorState` says
+ * what it moved FROM: "turned off at 09:14" and "was already off" are different
+ * facts, and only one of them explains an incident.
+ */
+router.put('/hyg-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_HYG_ENABLED');
+  }
+
+  // Read BEFORE the write, so the audit row can say what it replaced.
+  const before = odOffices.hygSwitchState().find((o) => o.officeKey === office);
+  if (!before) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await hygPilot.persistHygEnabled(office, enabled, actorEmail(req));
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: hygPilot.SETTING_KEY,
+      result: 'SUCCESS',
+      office,
+      // A slug from the switch's own two-value vocabulary — the column refuses
+      // anything that is not slug-shaped, which is what keeps the trail from
+      // becoming a copy of somebody's prose.
+      priorState: before.enabled ? 'on' : 'off',
+    });
+
+    return res.json({ success: true, ...hygOfficesPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'HYG_SWITCH_WRITE_FAILED';
+    console.error('[platform] hygiene switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_HYG_ENABLED' ? 400 : 500;
+    return fail(res, status, 'Could not save the hygiene switch', code);
+  }
 });
 
 module.exports = router;
