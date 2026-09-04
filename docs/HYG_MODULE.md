@@ -58,8 +58,14 @@ One office's whole schedule for one day.
                             xraysDue, examNeeded, openTcCase } }],
   warnings: [{ resource, message }],
   flagSources: { <flag>: 'od' | 'not_read' },
-  excludedByStatus, truncated, patientNamesTruncated }
+  excludedByStatus, truncated, patientNamesTruncated,
+  stats: { odListReads, odPatientReads, patientsRequested,
+           patientCacheHits, patientCacheDeduped, durationMs } }
 ```
+
+`stats` is what the read COST — counts and milliseconds, never a PatNum and
+never a name. It is in the body rather than only in the log so a before/after
+can be measured with one request instead of a log query. See §7.
 
 The zod schema for this shape is `new-dashboard/shared/hyg/contract.ts` and the
 CLIENT parses every response through it. The backend does not — it is CommonJS
@@ -131,6 +137,14 @@ parallel would not finish sooner — only burstier; decision D-8), capped at
 `patientNamesTruncated` — a DIFFERENT fact from `truncated`. A complete
 137-patient day whose naming budget ran out is not an incomplete schedule.
 
+Because the throttle is one request per second per credential, that fan-out was
+also the whole latency of this screen: 40 patients meant 40+ seconds of somebody
+standing at a chair. Every one of those reads now goes through the shared
+per-office cache in `backend/services/odPatientCache.js`, and a morning warm
+pays the cold cost before the practice opens. **§7 is the part to read before
+changing anything here** — in particular, raising a concurrency number is the
+change that does not work.
+
 ### Audit
 
 One `hyg_day` row for the request, plus one `hyg_day_patient` row **per distinct
@@ -188,6 +202,11 @@ No secrets. Three tunables, all with working defaults:
 | `HYG_OD_MAX_PATIENT_READS` | `120` | Cap on the per-day patient-identity fan-out. Past it, cards come back with no name and `patientNamesTruncated` is true. |
 | `HYG_OD_CALL_TIMEOUT_MS` | `30000` | Per-OD-call timeout. Matches `routes/tc/odReads.js` rather than inventing a second number — the legacy TC app proved 10s is too short. |
 
+| `OD_PATIENT_CACHE_TTL_MS` | `300000` (5 min) | How long a patient record is served without re-reading Open Dental. **A clinical bound, not a performance knob** — see §7. `0` turns the cache off. |
+| `OD_PATIENT_CACHE_MAX_ENTRIES` | `2000` | Ceiling on cached records across every office. Past it, least-recently-used entries are evicted. `0` retains nothing. |
+| `HYG_WARM_SCHEDULE` | `45 7 * * *` | Cron for the morning warm, read in `OFFICE_TIMEZONE`. An unparseable value falls back to the default with a warning. |
+| `HYG_WARM_DISABLED` | unset | `'true'` arms no warm at all. The SECOND gate — the first is `hygOdEnabled`, which ships false everywhere. |
+
 The per-office switch is **code, not env**: `hygOdEnabled` in
 `backend/config/odOffices.js`, default `false` for both offices.
 
@@ -232,3 +251,136 @@ verdict per file. `client/src/lib/hyg/dentition.ts` is the one file ported
 byte-for-byte; `tests/hyg-dentition.test.ts` pins it, because the lower arch
 reads #32 → #17 on screen and getting that backwards makes every tooth a
 hygienist taps the wrong one, in a way that looks plausible.
+
+---
+
+## 7. The patient cache and the morning warm
+
+### The arithmetic
+
+Open Dental throttles at **one request per second per credential**, and the
+reservation slot is shared by every module on that credential (`OD_SLOTS` /
+`odSlotKeyFor` in `backend/config/openDental.js`). `GET /appointments` returns
+`PatNum` and no name, and there is no bulk patient read. So naming the people on
+a day costs one `GET /patients/{PatNum}` per distinct patient — which the
+throttle turns into one SECOND per distinct patient.
+
+Measured on the shipped code paths with that spacing applied
+(`node backend/scripts/measure-hyg-day-cost.js`, 40 distinct patients):
+
+| | OD requests | wall clock |
+| --- | --- | --- |
+| Cold, no cache — what shipped in slice 1 | 44 (4 list + 40 patient) | **43.0s** |
+| Second load of the same day | 4 (4 list + 0 patient) | **3.0s** |
+| First load after the 7:45 warm | 4 (4 list + 0 patient) | **3.0s** |
+
+The warm itself is 40 reads in 39s, at 7:45am against an idle credential with
+nobody waiting on it. The 3.0s that remains is the four LIST reads —
+appointments, operatories, appointment types, providers — which this slice does
+not cache. They are the next thing worth looking at, and two of them
+(appointment types, providers) are practice configuration that changes monthly.
+
+### Concurrency is not the lever
+
+`routes/tc/odReads.js` already runs this exact fan-out through
+`mapLimit(top, OD_CONCURRENCY = 5, ...)` and gets nothing for it: the shared
+per-credential slot serializes the requests whatever the caller's concurrency
+number says. All a higher number buys is a burstier share of a slot the voice
+path is also waiting on (decision D-8). **If this screen is slow and you are
+about to raise a concurrency constant, that is the change that does not work.**
+
+### `backend/services/odPatientCache.js`
+
+Shared, not hyg's. It caches the RAW `GET /patients/{PatNum}` body, so every
+module keeps its own normalizer and three modules can share one entry.
+
+- **Keyed on office + PatNum.** PatNum numbering restarts in every Open Dental
+  database — 7115 is the valley test patient AND a different real person in
+  roland — so a cache keyed on PatNum alone is a cross-office PHI disclosure.
+  `cacheKey()` throws on a missing or unregistered office rather than defaulting
+  one, and `odPatientCache.test.js` drives the isolation from both directions.
+- **TTL 5 minutes.** `commlogTypes.js` caches for an hour and is right to: it
+  holds practice configuration. This holds `Premed` and `MedUrgNote`, which a
+  front desk can change mid-morning, in front of a screen somebody reads at a
+  chair. Five minutes collapses refreshes, back navigation and date flipping
+  without ever aging a medical alert.
+- **Stale is never served.** Past the TTL the entry is *deleted* before the
+  refresh is attempted, so a failed refresh returns a miss and the card renders
+  the way a failed read already renders — no name, null flags, the existing
+  warning. A stale name is harmless; a stale alert is not; they arrive in one
+  record, and refusing to split them is the safe choice.
+- **Bounded and in-flight deduped.** LRU-evicted at
+  `OD_PATIENT_CACHE_MAX_ENTRIES`, and two concurrent day loads issue one read
+  per patient, not two.
+
+**Audit is not the cache's job.** An audit row records a disclosure to a USER,
+not a fetch from a vendor, and a cache hit discloses that patient just the same.
+`routes/hyg/day.js` therefore builds its rows from what it is about to SEND, and
+`routes/hyg/hygDayCache.test.js` pins both halves at once: zero patient reads on
+the second load, and the same number of `hyg_day_patient` rows. Never move an
+audit call inside the cache — the better it got, the emptier the trail would get.
+
+### `backend/services/hygDayWarm.js`
+
+The cache does nothing for the 8am first load, which is the load that matters.
+The warm pre-fetches today's patients before the practice opens.
+
+- Only offices where `hygOdEnabled` is true — which is none of them today, so it
+  warms nothing until Beau turns an office on. **The warm must never be the
+  thing that starts talking to a practice.**
+- No `minIntervalMs`, so it takes the default share of the shared slot and can
+  never raise its priority the way RCM's batch matcher deliberately does. It is
+  attributed as `hyg-warm` so the transport counters can tell it apart.
+- **It writes no audit rows.** Nobody is looking at anything; there is no actor
+  to attribute a disclosure to. The disclosure is recorded when a hygienist
+  opens the day. This is the exact mirror of the audit rule above, and just as
+  easy to get backwards.
+- One log line per office per pass. A failed warm is a warning — the Day View
+  still works, it is merely cold.
+- Not fired at startup: a mid-afternoon deploy must not put a patient fan-out on
+  a credential people are using.
+
+**A same-day add-on booked after the warm is a cold read.** That is correct
+behaviour, not a gap: the alternative is a schedule that leaves out the patient
+who was just added.
+
+### The schedule and the TTL are coupled, and the coupling is tight
+
+A five-minute TTL means a warm at time T helps loads in roughly `[T, T+5min]`
+and nothing after. That is why the default is 07:45 rather than the 6am a
+"morning warm" sounds like — as close to an 8am open as "before it opens"
+allows. An operator who needs a wider window sets a repeating `HYG_WARM_SCHEDULE`
+across hour 7, at the cost of re-reading every patient on every pass.
+
+**Do not close the gap by raising the TTL.** It is a clinical bound. If a cold
+first load is still too slow at a chair, the next lever is returning the
+schedule immediately and filling names in progressively — not a longer window in
+which a medical alert is invisible, and not more concurrency.
+
+### Measuring it on staging
+
+Not possible today, and that is worth stating plainly: `/api/hyg/*` is behind
+`requireModule('hyg')` with no tenant entitled, and `hygOdEnabled` is a hardcoded
+`false` with no environment override. On staging the endpoint answers 403, and
+after entitlement it answers 409 `OFFICE_NOT_READY`. A staging before/after
+therefore needs (1) this branch deployed, (2) `hyg` entitled for the staging
+tenant from the Platform Console, and (3) `hygOdEnabled: true` for roland in
+`config/odOffices.js` — which is itself a deploy. Once those are in place the
+numbers come straight out of the response (`stats.odPatientReads`,
+`stats.durationMs`) and the `[hygday]` line in the container log.
+
+### Where TC and RCM adopt it
+
+Three call sites do the same `GET /patients/{PatNum}` fan-out on the same shared
+credential and are deliberately NOT changed here — both modules are live in
+production and hyg is dark, so fixing a dark module must not move live
+behaviour. Each is a one-line change:
+
+| Call site | Change |
+| --- | --- |
+| `backend/routes/tc/odReads.js:330` (`getPatient`) | wrap the `odGet` in `odPatientCache.getPatient(office, patNum, ...)`; the office is already resolved by the caller |
+| `backend/routes/tc/odReads.js:674` (the `mapLimit` demographics join) | same, and the `OD_CONCURRENCY` around it can then go — it never bought anything |
+| `backend/services/rcm/odClaimReads.js:366` (`getPatient`) | same |
+
+The cache stores the raw Open Dental body precisely so those three can share
+entries with hyg rather than each keeping their own.

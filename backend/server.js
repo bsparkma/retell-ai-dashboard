@@ -55,6 +55,7 @@ async function bootstrap() {
   const retentionScheduler = require('./services/retentionScheduler');
   const retentionConfig = require('./config/retention');
   const odHealthCheck = require('./services/odHealthCheck');
+  const hygDayWarm = require('./services/hygDayWarm');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -506,6 +507,22 @@ async function bootstrap() {
     //    EVERY office rather than whichever one the singleton happens to hold.
     odHealthCheck.start();
 
+    // 6. Arm the hygiene morning warm (default 7:45am America/Chicago).
+    //    Open Dental throttles at 1 req/s per credential and has no bulk patient
+    //    read, so naming a 40-patient day from cold is 40+ seconds in front of
+    //    somebody standing at a chair. This pre-fetches those records before the
+    //    practice opens. See services/hygDayWarm.js.
+    //
+    //    Warms ONLY offices with hygiene switched on — which is none of them
+    //    today, so on every current environment this schedules a job that finds
+    //    nothing to do. That is the intended shape: the warm must never be the
+    //    thing that starts talking to a practice.
+    //
+    //    Unlike the health check it does NOT fire a pass at startup: a deploy in
+    //    the middle of the afternoon must not put a patient fan-out on a
+    //    credential people are using.
+    hygDayWarm.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -521,6 +538,7 @@ async function bootstrap() {
     console.log('Received SIGTERM, shutting down gracefully...');
     retentionScheduler.stop();
     odHealthCheck.stop();
+    hygDayWarm.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -529,6 +547,7 @@ async function bootstrap() {
     console.log('Received SIGINT, shutting down gracefully...');
     retentionScheduler.stop();
     odHealthCheck.stop();
+    hygDayWarm.stop();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
