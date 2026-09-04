@@ -10,14 +10,20 @@
  * admin surface in the product, and still gets 403 from all of them. What this
  * file adds is an honest dead-end instead of a screen full of failed requests.
  *
- * WHY THE TOP-LEVEL SPLIT IS "Practices" vs "Call store". Retention is a
- * PLATFORM-WIDE setting: the call store is one JSON file for the whole process
- * and has no tenant dimension (see docs/PLATFORM_CONSOLE.md). Nesting it under a
- * selected practice would imply a per-practice policy the pruner cannot honour —
- * the tab boundary is the scoping, made visible.
+ * WHY THE TOP-LEVEL SPLIT IS "Practices" vs "Call store" vs "Hygiene". Both of
+ * the latter are PLATFORM-WIDE settings: the call store is one JSON file for the
+ * whole process, and the office registry (roland / valley) is a frozen
+ * platform-level list, not a per-tenant one. Nesting either under a selected
+ * practice would imply a per-practice policy the code cannot honour — the tab
+ * boundary is the scoping, made visible.
+ *
+ * The hygiene tab still SHOWS each practice's `hyg` entitlement, because a
+ * hygienist needs both that and the per-office switch. It shows it read-only and
+ * points at the Practices tab: a second place to flip entitlement would be a
+ * second place for that decision to be made by accident.
  */
 import { useEffect, useState } from "react";
-import { ShieldAlert, Building2, Database } from "lucide-react";
+import { ShieldAlert, Building2, Database, Stethoscope } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -25,6 +31,7 @@ import { api, ApiError } from "@/lib/api";
 import type { Practice } from "@/lib/api";
 import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
+import HygienePanel from "./platform/HygienePanel";
 
 /** The message to show for a failed request — the server's, whenever it sent one. */
 export function loadError(e: unknown): string {
@@ -109,6 +116,10 @@ export default function Platform() {
             <Database className="mr-1.5 h-3.5 w-3.5" />
             Call store
           </TabsTrigger>
+          <TabsTrigger value="hygiene" data-testid="tab-hygiene">
+            <Stethoscope className="mr-1.5 h-3.5 w-3.5" />
+            Hygiene
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="practices" className="mt-4">
@@ -122,6 +133,12 @@ export default function Platform() {
         <TabsContent value="call-store" className="mt-4">
           {/* Platform-wide, not per-practice — see the note at the top. */}
           <RetentionPanel />
+        </TabsContent>
+
+        <TabsContent value="hygiene" className="mt-4">
+          {/* The offices are platform-level; `practices` is passed in only so the
+              panel can show the OTHER axis (entitlement) beside the switch. */}
+          <HygienePanel practices={practices} />
         </TabsContent>
       </Tabs>
     </div>
