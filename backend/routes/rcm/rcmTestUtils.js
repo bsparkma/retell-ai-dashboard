@@ -163,6 +163,58 @@ function assertUniqueIndexes(table, row, existing) {
   }
 }
 
+/*
+ * ─── CHECK CONSTRAINTS THE FAKE ENFORCES ──────────────────────────────────────
+ *
+ * The same argument as `UNIQUE_INDEXES` above, learned the same way. A fake that
+ * accepts a row real Postgres rejects turns a defect into a green test — and on
+ * 2026-09-04 that is exactly what happened: the drain wrote
+ * `status='paid'` onto a line that still carried `skip_reason`, every kill-and-
+ * resume test passed because the fake shrugged, and the first live resume
+ * stranded a plan at `partially_posted` with money correctly on the chart.
+ *
+ * Only constraints whose violation is REACHABLE from code under test belong
+ * here. This one pairs two columns in both directions and is easy to break from
+ * any code path that changes a line's status without thinking about the reason
+ * beside it.
+ *
+ * Mirrors `migrations-tenant/1787120000000_rcm_posting_drain.js`:
+ *
+ *     (status IN ('skipped','skipped_already_posted') AND skip_reason IS NOT NULL)
+ *  OR (status NOT IN ('skipped','skipped_already_posted') AND skip_reason IS NULL)
+ *
+ * @type {Record<string, Array<{ name: string, ok: (row: any) => boolean }>>}
+ */
+const CHECK_CONSTRAINTS = Object.freeze({
+  rcm_posting_queue_line: [
+    {
+      name: 'rcm_posting_queue_line_skip_reason_check',
+      ok: (row) => {
+        // A row that names neither column cannot violate it — and an UPDATE that
+        // touches only, say, od_claim_payment_num must not be judged on columns
+        // it never mentioned. The caller passes the row as it WOULD be after the
+        // write, so both columns are always present by then.
+        const skipped = ['skipped', 'skipped_already_posted'].includes(String(row.status));
+        const hasReason = row.skip_reason != null;
+        return skipped === hasReason;
+      },
+    },
+  ],
+});
+
+/** Throw a pg-shaped check violation if `row` would break one. */
+function assertCheckConstraints(table, row) {
+  for (const c of CHECK_CONSTRAINTS[table] || []) {
+    if (c.ok(row)) continue;
+    const err = new Error(
+      `new row for relation "${table}" violates check constraint "${c.name}"`
+    );
+    err.code = '23514';
+    err.constraint = c.name;
+    throw err;
+  }
+}
+
 /** Parse a jsonb column's bound text, exactly as pg does on the way back out. */
 function coerceJsonb(col, value) {
   if (!JSONB_COLUMNS.has(col) || typeof value !== 'string') return value;
@@ -422,6 +474,7 @@ class FakeRcmDb {
         row[c] = coerceJsonb(c, literalOrParam(values[i], params));
       });
       assertUniqueIndexes(m[1], row, this.table(m[1]));
+      assertCheckConstraints(m[1], row);
       this.table(m[1]).push(row);
 
       const returning = m[3].match(/RETURNING (.+)$/i);
@@ -456,11 +509,26 @@ class FakeRcmDb {
         return { col, value: value.trim() };
       });
       const rows = this.table(m[1]).filter(this.wherePredicate(m[3], params));
-      for (const row of rows) {
+
+      /*
+       * VALIDATE EVERY ROW BEFORE MUTATING ANY OF THEM.
+       *
+       * A statement that violates a constraint changes nothing in Postgres, so a
+       * fake that applied the first row and then threw on the second would leave
+       * a state the database can never produce — and the test written against it
+       * would be a test of a fiction. `next` is the row as it WOULD be, so the
+       * check sees both paired columns even when the SET touched only one.
+       */
+      const pending = rows.map((row) => {
+        const next = { ...row };
         for (const { col, value } of assignments) {
-          row[col] = coerceJsonb(col, literalOrParam(value, params, row));
+          next[col] = coerceJsonb(col, literalOrParam(value, params, row));
         }
-      }
+        return { row, next };
+      });
+      for (const { next } of pending) assertCheckConstraints(m[1], next);
+      for (const { row, next } of pending) Object.assign(row, next);
+
       return {
         rows: m[4] ? rows.map((r) => project(r, m[4])) : [],
         rowCount: rows.length,

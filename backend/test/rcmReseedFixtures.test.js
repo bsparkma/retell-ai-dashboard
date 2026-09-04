@@ -50,6 +50,7 @@ const path = require('node:path');
 const { parse835 } = require('../services/rcm/eraParser');
 const claimMatch = require('../services/rcm/claimMatch');
 const odClaimReads = require('../services/rcm/odClaimReads');
+const lineDecisions = require('../services/rcm/lineDecisions');
 
 const T = require('../scripts/rcm/reseed-targets');
 const gen = require('../scripts/rcm/reseed-835');
@@ -390,6 +391,148 @@ test('R1–R3 each resolve to exactly one claim, and the ranking is not ambiguou
       );
     }
   }
+});
+
+/**
+ * W-6 — THE REVERSAL THE APPROVE GATE COULD NEVER PASS.
+ *
+ * Found live on the combined walk, 2026-09-04, on claim 53863. R3 pairs to its
+ * chart line correctly and then `pairLines` measured the distance between them
+ * with a RAW SUBTRACTION: `-3500 − 3500 = -7000`, rendered on screen as
+ * "D0220 was billed -$35.00 on the remittance and $35.00 in Open Dental" and
+ * "-$70.00 apart". `lineDecisions` turns any non-zero `odFeeDeltaCents` into
+ * `od_fee_disagrees`, which makes the verdict RED, which fails the gate's
+ * `PATIENT_RESPONSIBILITY_MATCHES`. A reversal that did NOT pair went red on
+ * `line_not_in_chart` instead — so BOTH branches were red and no
+ * parser-produced reversal 835 could ever be approved. The path had never been
+ * green end to end.
+ *
+ * It hid because the recoupment tests build claims by hand with
+ * `odFeeDeltaCents: 0`. So this runs the REAL chain — `parse835` output, the
+ * real `pairLines` on the takeback lane, the real `verdictFor` — and asserts the
+ * exact predicate the gate keys on.
+ */
+test('W-6: a parser-produced reversal pairs at ZERO delta and its verdict is not red', () => {
+  const { manifest, bodies } = generateBodies();
+
+  const tx = parse835(bodies.R3);
+  const claim = tx.claims[0];
+  assert.equal(claim.isReversal, true, 'R3 must parse as a reversal');
+  assert.ok(claim.totalBilledCents < 0, 'a reversal carries negated amounts');
+
+  const target = T.TARGETS.find((t) => t.remittance === 'R3');
+  assert.ok(target, 'R3 must have a target');
+
+  /*
+   * The chart as it stands when a takeback is worked: the line is PAID. That is
+   * the precondition `isReversibleLine` requires, and the state the walk had to
+   * hand-post to reach.
+   */
+  const odLines = [
+    {
+      claimProcNum: target.claimProcNum || 535780,
+      code: target.procCode,
+      deleted: false,
+      isTransfer: false,
+      blockedStatus: false,
+      feeBilledCents: target.billedCents,
+      insPayAmtCents: target.paidCents,
+      writeOffCents: target.billedCents - target.allowedCents,
+      claimPaymentNum: 21490,
+    },
+  ];
+
+  const pairs = claimMatch.pairLines(
+    claim.procedures.map((p, i) => ({
+      lineId: `line-${i}`,
+      position: i + 1,
+      billedCode: p.billedCode,
+      paidCode: p.paidCode,
+      code: p.code,
+      billedCents: p.billedCents,
+    })),
+    odLines,
+    { takeback: true }
+  );
+
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].odClaimProcNum, odLines[0].claimProcNum, 'the reversal must pair');
+  assert.equal(
+    pairs[0].billedDeltaCents,
+    0,
+    `a mirrored reversal is ZERO apart, got ${pairs[0].billedDeltaCents} ` +
+      '(a raw subtraction gives -2×the fee, which is what stranded the walk)'
+  );
+
+  // …and the verdict the gate reads, built from the parser's own figures.
+  const verdict = lineDecisions.verdictFor({
+    register: 'projection',
+    lines: claim.procedures.map((p, i) => ({
+      lineId: `line-${i}`,
+      code: p.code,
+      billedCents: p.billedCents,
+      allowedCents: p.allowedCents,
+      paidCents: p.paidCents,
+      decision: null,
+      odClaimProcNum: pairs[i].odClaimProcNum,
+      odFeeDeltaCents: pairs[i].billedDeltaCents,
+    })),
+  });
+
+  assert.deepEqual(
+    verdict.problems.map((p) => p.kind),
+    [],
+    `a mirrored reversal raises no problems, got ${JSON.stringify(verdict.problems)}`
+  );
+  /*
+   * THE GATE'S OWN PREDICATE. `approvalGate` adds
+   * `PATIENT_RESPONSIBILITY_MATCHES` as `verdict.state !== 'red'`, so this is
+   * the condition that was failing, asserted in the same terms.
+   */
+  assert.notEqual(verdict.state, 'red', `verdict: ${verdict.sentence}`);
+});
+
+test('W-6: a reversal whose signs do NOT mirror the chart still reports a disagreement', () => {
+  /*
+   * FAILING CLOSED. Normalising by magnitude alone would make a same-sign line
+   * — a reversal claiming a POSITIVE billed figure — silently agree with the
+   * chart. That is a genuinely odd line and it must stay red.
+   */
+  const odLines = [
+    {
+      claimProcNum: 999,
+      code: 'D0220',
+      deleted: false,
+      isTransfer: false,
+      blockedStatus: false,
+      feeBilledCents: 3500,
+      insPayAmtCents: 2900,
+      writeOffCents: 600,
+      claimPaymentNum: 21490,
+    },
+  ];
+  const pairs = claimMatch.pairLines(
+    [{ lineId: 'l1', position: 1, code: 'D0220', billedCents: 3500 }],
+    odLines,
+    { takeback: true }
+  );
+  assert.equal(pairs[0].odClaimProcNum, 999);
+  assert.equal(
+    pairs[0].billedDeltaCents,
+    0,
+    'a positive line equal to the chart is still zero apart — magnitudes agree'
+  );
+
+  const mismatched = claimMatch.pairLines(
+    [{ lineId: 'l1', position: 1, code: 'D0220', billedCents: 5000 }],
+    odLines,
+    { takeback: true }
+  );
+  assert.equal(
+    mismatched[0].billedDeltaCents,
+    1500,
+    'a positive line that disagrees is reported by raw subtraction, not normalised away'
+  );
 });
 
 test('R4 resolves to NOTHING — the §15.1c dead end, and it must stay reachable', async () => {

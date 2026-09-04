@@ -3112,9 +3112,43 @@ async function drainRow(ctx, queueId) {
         (r) => Number(r.ClaimProcNum) === line.odClaimProcNum
       );
       if (!onCheck) continue;
+
+      /*
+       * ─── A SKIPPED LINE KEEPS ITS SKIP AND STILL RECORDS ITS CHECK ─────────
+       *
+       * A line an EARLIER attempt already wrote is `skipped_already_posted`
+       * with a reason, decided a few steps up. It still belongs on this run's
+       * check, and the check number still has to be recorded against it — that
+       * is the number §10.3's "exactly ONE check" proof counts, and the number
+       * a biller needs in order to find the payment.
+       *
+       * Writing `status: 'paid'` here to carry that number is what STRANDED a
+       * live plan on 2026-09-04. The migration's constraint pairs the two
+       * columns in BOTH directions:
+       *
+       *     (status IN ('skipped','skipped_already_posted') AND skip_reason IS NOT NULL)
+       *  OR (status NOT IN ('skipped','skipped_already_posted') AND skip_reason IS NULL)
+       *
+       * Moving the status off the skip family while `skip_reason` is still set
+       * is rejected by the second branch. The UPDATE threw inside the `check`
+       * step, the catch wrote `partially_posted`, and a plan whose money was
+       * correctly and singly on the chart read as half-done permanently — the
+       * startup sweep only re-homes `posting`, never `partially_posted`.
+       *
+       * The status describes what THIS attempt did; the check number describes
+       * what the CHART holds. Neither has to lie for the other, so the status
+       * is left alone and only the number is written. `paid_at` is likewise not
+       * stamped: this attempt did not pay the line, an earlier one did, and
+       * that attempt's `claimproc_written_at` is still the honest timestamp.
+       *
+       * `decisions` rather than `line.status`: `plan.lines` was read BEFORE the
+       * claimproc-writes step ran, so the in-memory status is the previous
+       * attempt's and would miss the skip this run just made.
+       */
+      const skippedThisRun = decisions.get(line.queueLineId)?.action === 'skip';
+
       await persistLine(pool, line.queueLineId, {
-        status: 'paid',
-        paidAt: true,
+        ...(skippedThisRun ? {} : { status: 'paid', paidAt: true }),
         odClaimPaymentNum: claimPaymentNum,
         lastError: null,
       });
