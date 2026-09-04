@@ -1065,6 +1065,54 @@ function rankCandidates(
  *                   odClaimProcNum: number|null, odCode: string|null,
  *                   billedDeltaCents: number|null, reason: string|null }>}
  */
+/**
+ * How far our billed figure sits from the chart's — with a REVERSAL compared as
+ * a mirror rather than as a subtraction.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * W-6: WITHOUT THIS, NO TAKEBACK COULD EVER BE APPROVED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A reversal 835 carries NEGATED amounts: the line the carrier is taking $29.00
+ * back from is billed `-3500` where the chart says `3500`. A raw subtraction
+ * makes that `-7000` — never zero for any non-zero fee — and `lineDecisions`
+ * turns any non-zero delta into `od_fee_disagrees`, a RED verdict, and a failed
+ * `PATIENT_RESPONSIBILITY_MATCHES` at the gate. If the line did NOT pair, the
+ * verdict went red on `line_not_in_chart` instead. Both branches red, so the
+ * takeback approve was unreachable for every parser-produced reversal, and the
+ * path had never been green end to end. Found on the combined walk, 2026-09-04,
+ * on claim 53863 reading "-$70.00 apart".
+ *
+ * It hid because the recoupment tests build their claims by hand with
+ * `odFeeDeltaCents: 0`, so no test ever ran a real reversal through here.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY MAGNITUDES, AND WHY IT STILL FAILS CLOSED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This delta answers an IDENTITY question — "is this the same procedure line?" —
+ * and for identity the magnitudes are what agree. The MONEY question, "is the
+ * carrier taking back more than the chart holds?", is a different one and is
+ * already answered by `TAKEBACK_EXCEEDS_PAYMENT` in `findBlockers`, which
+ * compares `Math.abs` on both sides. This is deliberately not widened to do that
+ * job twice.
+ *
+ * A reversal must MIRROR the chart line: equal magnitude, OPPOSITE sign. Same
+ * sign is not a mirror, so it is left as a raw subtraction and stays a
+ * disagreement — normalising it away would turn a genuinely odd line into a
+ * silent pass, which is the opposite of failing closed.
+ *
+ * @param {number} ourBilled the remittance's billed figure, negative on a reversal
+ * @param {number} odFee Open Dental's FeeBilled for the paired line
+ * @param {boolean} takeback whether this claim is on the reversal lane
+ * @returns {number}
+ */
+function billedDelta(ourBilled, odFee, takeback) {
+  if (!takeback) return ourBilled - odFee;
+  // Not mirrored — our side non-negative, or the chart's negative. Report the
+  // disagreement rather than normalising it out of existence.
+  if (ourBilled > 0 || odFee < 0) return ourBilled - odFee;
+  return Math.abs(ourBilled) - Math.abs(odFee);
+}
+
 function pairLines(proposalLines, odLines, { takeback = false } = {}) {
   // `deleted === false` rather than `!deleted`: 'unknown' is truthy-adjacent
   // and must NOT be pairable — pairing writes a ClaimProcNum that Slice 6c PUTs
@@ -1104,7 +1152,9 @@ function pairLines(proposalLines, odLines, { takeback = false } = {}) {
       odClaimProcNum: chosen ? chosen.claimProcNum : null,
       odCode: chosen ? chosen.code : null,
       billedDeltaCents:
-        chosen && Number.isFinite(ourBilled) ? ourBilled - chosen.feeBilledCents : null,
+        chosen && Number.isFinite(ourBilled)
+          ? billedDelta(ourBilled, chosen.feeBilledCents, takeback)
+          : null,
       reason: chosen
         ? null
         : eligible.length === 0
