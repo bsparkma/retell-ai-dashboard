@@ -69,6 +69,7 @@ const cron = require('node-cron');
 
 const warmConfig = require('../config/hygWarm');
 const odOffices = require('../config/odOffices');
+const hygPilot = require('../config/hygPilot');
 const odDay = require('./hyg/odDay');
 const odPatientCache = require('./odPatientCache');
 const { localDayKey } = require('./localDayClock');
@@ -88,6 +89,13 @@ class HygDayWarm {
    * Open Dental credentials are present. `isHygOdReady` composes both questions
    * (config/odOffices.js), so there is no state in which the warm reaches an
    * office the Day View could not.
+   *
+   * READ AT PASS TIME, NEVER CACHED. The pilot switch is a run-time value
+   * (config/hygPilot.js) and an office turned off at 9am on Tuesday must not
+   * still be warmed at 7:45 on Wednesday by a copy this object took at boot.
+   * That is why this is a method and not a field, and why `runNow` refreshes
+   * the switch from the control plane before calling it.
+   *
    * @returns {string[]}
    */
   eligibleOffices() {
@@ -236,10 +244,18 @@ class HygDayWarm {
     }
     this.running = true;
     try {
+      // Re-read the switch FIRST, every pass — the same discipline
+      // retentionScheduler applies before every prune. A runbook can write the
+      // control-plane row directly, and the difference between a stale copy and
+      // the current value is a practice's real patient data being read at 7:45
+      // in the morning after somebody switched it off. Never throws: a control
+      // plane we cannot reach leaves the previous value in place.
+      await hygPilot.refreshFromDb();
+
       const offices = this.eligibleOffices();
       if (offices.length === 0) {
-        // The normal state today: hygOdEnabled ships false everywhere. Said
-        // once per pass at debug volume rather than silently, so "the warm is
+        // The normal state until an office is switched on from the Platform
+        // Console. Said once per pass rather than silently, so "the warm is
         // not doing anything" has an answer in the log.
         const result = { skipped: 'NO_ELIGIBLE_OFFICES', offices: [], at: new Date().toISOString() };
         this.lastRun = result;

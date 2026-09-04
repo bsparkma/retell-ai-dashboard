@@ -32,6 +32,10 @@
  */
 
 const { OFFICES, UNMAPPED_OFFICE } = require('./officeAgents');
+// The hygiene switch's run-time layers (control DB → env). It deliberately does
+// NOT require this module back: the hardcoded floor below is passed IN to it, so
+// the dependency runs one way and there is no cycle. See config/hygPilot.js.
+const hygPilot = require('./hygPilot');
 const odCloudSingleton = require('./openDental');
 const { OpenDentalService } = require('./openDental');
 
@@ -80,10 +84,14 @@ const OFFICE_OD_SETTINGS = Object.freeze({
   roland: ({
     officeKey: 'roland',
     odEnabled: true,
-    // The pilot office. Still false: slice 1 ships the module dark everywhere,
-    // and this flips per office after the day view has been walked against the
-    // real schedule. See hygOdBlockReason() below for why it is a SECOND flag
-    // and not a reuse of odEnabled.
+    // THE FLOOR, AND IT STAYS `false`. This is no longer where the pilot switch
+    // is turned on — it is the bottom of a precedence chain (control DB → env →
+    // here), and it is what answers when nothing else has. Flipping it would
+    // mean the OFF direction needs a deploy again, which is the whole thing
+    // config/hygPilot.js exists to fix. Turn an office on from the Platform
+    // Console, or with HYG_OD_ENABLED_ROLAND if the control plane is down.
+    // See hygOdBlockReason() below for why this is a SECOND flag at all and not
+    // a reuse of odEnabled.
     hygOdEnabled: false,
     customerKeyEnv: 'OPENDENTAL_CUSTOMER_KEY',
     customerKeySecret: 'opendental-customer-key',
@@ -290,7 +298,13 @@ function hygOdBlockReason(officeKey) {
 
   const settings = OFFICE_OD_SETTINGS[officeKey];
   const officeConfig = OFFICES[officeKey];
-  if (!settings.hygOdEnabled) {
+  // Read at RUN TIME, through the precedence chain in config/hygPilot.js:
+  // platform_setting → HYG_OD_ENABLED_<OFFICE> → the hardcoded floor passed in
+  // here. Synchronous over a cached value, because this function is on every
+  // /api/hyg request. A console write updates that cache inline, so an office
+  // turned OFF is refused on the VERY NEXT request — which is the only thing
+  // that makes this a kill switch rather than a deployment.
+  if (!hygPilot.hygEnabledFor(officeKey, settings.hygOdEnabled)) {
     return {
       code: 'OFFICE_HYG_NOT_ENABLED',
       message: `The hygiene module is not switched on for ${officeConfig.officeName} yet`,
@@ -298,6 +312,42 @@ function hygOdBlockReason(officeKey) {
   }
 
   return null;
+}
+
+/**
+ * The hygiene switch for every office, with the reason behind each value.
+ *
+ * THE COMPOSITION POINT, and the only place that knows all three layers: this
+ * module owns the hardcoded floor and the office registry, config/hygPilot.js
+ * owns the stored row and the environment, and neither can answer alone. A
+ * route that assembled this itself would be a second implementation of the
+ * precedence rule, and the direction that kind of disagreement fails in is a
+ * console reporting one thing while the request path does another.
+ *
+ * `blockedBy` is the OTHER honest half: an office can be switched ON here and
+ * still refuse every hygiene request because the voice path already refuses it
+ * (no credentials, `odEnabled` off). The console must show that rather than a
+ * green toggle over a 503.
+ *
+ * @returns {Array<{ officeKey: string, officeName: string, enabled: boolean,
+ *                   source: 'db'|'env'|'default', db: boolean|null, env: boolean|null,
+ *                   envVar: string, envRaw: string|null, hardcoded: boolean,
+ *                   disagreesWithEnv: boolean, ready: boolean,
+ *                   blockedBy: { code: string, message: string }|null }>}
+ */
+function hygSwitchState() {
+  return Object.keys(OFFICE_OD_SETTINGS).map((officeKey) => {
+    const settings = OFFICE_OD_SETTINGS[officeKey];
+    const state = hygPilot.officeState(officeKey, settings.hygOdEnabled);
+    // Everything the VOICE path already refuses, independent of this switch.
+    const base = odBlockReason(officeKey);
+    return {
+      ...state,
+      officeName: describeOffice(officeKey).officeName,
+      ready: isHygOdReady(officeKey),
+      blockedBy: base,
+    };
+  });
 }
 
 /**
@@ -461,6 +511,7 @@ module.exports = {
   isOdReady,
   hygOdBlockReason,
   isHygOdReady,
+  hygSwitchState,
   isChartTargetOffice,
   describeOffice,
   getOdOffice,
