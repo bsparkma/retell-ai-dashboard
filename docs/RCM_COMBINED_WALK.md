@@ -502,6 +502,106 @@ procedure line"), and magnitude is the right comparison for identity.
    `eraParser` → `pairLines` → `verdictFor` → gate — or the next hand-built test
    will hide the next instance of this exactly as it hid this one.
 
+### W-6 · 🔴 **A resumed drain cannot record its own check — the skip strands the line.** WALK STOPPED HERE
+
+The kill test's ⭐ objective **succeeded** (see §7.3) and then the *resume* hit a
+schema defect. **The chart is correct. The app's record of it is not.**
+
+#### What Open Dental holds — right
+
+```
+ClaimProc 536170   Status "Received"   InsPayAmt 1   WriteOff 0   ClaimPaymentNum 21491
+Claim 53900        ClaimStatus "R"     InsPayAmt 1   ClaimFee 1
+ClaimPayment 21491 CheckAmt 1   CheckNum "S10A-53832"   DepositNum 0   PayType 472
+```
+
+**$1.00 once, on exactly one check.** The interrupted attempt did **not** double-write
+— `InsPayAmt` is 1, not 2. Resume-from-the-chart works.
+
+#### What the app holds — wrong
+
+```
+PLAN  status "partially_posted"   drain_step "reconcile"   attempt_count 2
+      od_claim_payment_num 21491   finished_at 02:35:51.378   reconciled_at NULL
+      last_error 'new row for relation "rcm_posting_queue_line" violates check
+                  constraint "rcm_posting_queue_line_skip_reason_check"'
+
+LINE  status "skipped_already_posted"   skip_reason "already_received_matching"
+      od_claim_payment_num NULL   claim_received_at NULL   paid_at NULL
+      readback_at 02:27:13.178      updated_at 02:32:15.691
+```
+
+#### The mechanism
+
+`1787120000000_rcm_posting_drain.js:228` pairs status and reason both ways:
+
+```sql
+(status IN ('skipped','skipped_already_posted') AND skip_reason IS NOT NULL)
+OR (status NOT IN ('skipped','skipped_already_posted') AND skip_reason IS NULL)
+```
+
+On resume the drain correctly re-read the chart, saw 536170 already carrying the
+money, and at **02:32:15** wrote `status='skipped_already_posted'` +
+`skip_reason='already_received_matching'`. That succeeded. It then created
+ClaimPayment **21491** and, at the `check` step, tried to stamp the check onto the
+line — an update that moves `status` off the skip family while `skip_reason` is
+still set. **The second branch of the constraint forbids exactly that**, the update
+was rejected, and the line kept its skip while losing the check number. The plan
+could not reconcile and ended `partially_posted`.
+
+So a line that is skipped-because-already-posted has **nowhere to put its check
+number**: the schema says a skipped line carries a reason and a paid line carries
+none, and this line is legitimately both — skipped by *this* attempt, paid by the
+*previous* one.
+
+#### Consequences
+
+1. **`reconciled_at` never sets.** The plan is permanently `partially_posted`
+   even though the money is correctly on the chart — an honest-states inversion:
+   the screen under-claims what actually happened.
+2. **The §10.3 step-7 proof cannot be run as written.**
+   `count(DISTINCT od_claim_payment_num) … FROM rcm_posting_queue_line` returns
+   **0**, because the count reads the *line* and the check number only reached the
+   *plan*. Proving "exactly one check" after a resume needs the chart, or the
+   plan row, or the schema fixed. **Recorded as 0, and NOT as a failed
+   idempotency test** — the chart proves one check and one dollar.
+3. In production this leaves a biller looking at "partially posted" on a check
+   that fully posted, with the natural next action being to press Post again.
+
+#### Why this was never caught
+
+The kill test has never before survived to the *resume*, so no test — unit or
+live — has ever exercised "resume a drain whose line was already written". The
+skip path itself is covered; the skip path **followed by a check write** is not.
+
+#### Proposed direction — NOT IMPLEMENTED, for PM review
+
+Options, smallest first:
+
+- **(a)** Have the check-stamping update clear `skip_reason` when it moves a line
+  off the skip family. Smallest diff, but it discards the fact that this attempt
+  skipped — which is exactly the provenance the column exists to keep.
+- **(b)** Let a skipped line keep its reason **and** carry `od_claim_payment_num`
+  — i.e. the constraint governs `status`↔`skip_reason` only, and the check number
+  is orthogonal. Requires no status change on resume at all: the line stays
+  `skipped_already_posted` and simply records which check it is on.
+- **(c)** Add a terminal status meaning *paid by an earlier attempt* that is a
+  legal skip-family value carrying both.
+
+**(b) reads closest to drain canon** — the line's status describes what *this*
+attempt did, the check number describes what the *chart* holds, and neither should
+have to lie for the other. It also makes the step-7 proof work unchanged. But it
+is a migration, and it is the PM's call.
+
+**Nothing has been changed.** No fix written, no DB write, no branch cut.
+
+> **`RCM_DRAIN_STEP_DELAY_MS=90000` is deliberately STILL SET.** Unsetting it
+> restarts the container, and a restart runs the startup sweep — which could
+> re-home or otherwise mutate the very `partially_posted` row under
+> investigation. Evidence preservation beats tidiness here. **It must be unset
+> before staging is used for anything else** (§9.1 step 13), and the walk cannot
+> be called finished until it is.
+
 ### N-1 · `az containerapp exec` — the `${IFS}` recipe is wrong for this CLI version
 
 `feedback_az_containerapp_exec_recipe` says to join tokens with `${IFS}` because
@@ -568,11 +668,39 @@ alone**.
 Blank for a **fourth** walk. See [§9.2](#92-the-kill-target-has-to-be-rebuilt) for
 why, and what to do about it.
 
+**MEASURED, 2026-09-04 — the fourth attempt, and the first that landed.**
+
+The app's own clock, which is the number to quote; wall-clock from the `az`
+command includes ~8s of exec connection setup and is not the teardown.
+
 ```
-kill issued at        ⏳
-replica Terminated    ⏳
-teardown              ⏳
+02:27:02.379   drain claims the plan
+02:27:13.178   ClaimProc 536170 written to Open Dental          <- a real write
+02:27:15.205   [rcm/drain] pausing 90000ms after claimproc_write
+02:27:33.271   kill 1 issued        (26.2s into the 90s pause)
+02:27:41.451   Received SIGTERM, shutting down gracefully...
+02:28:05.499   Server running on port 5403
+02:28:05.499   [rcm/drain] startup sweep: 1 interrupted posting plan(s)
+               re-queued for tenant 'carein'  press Drain to resume
+
+                    TEARDOWN = 24.048 seconds
 ```
+
+Independently bracketed by a replica poller: last `Running` 02:27:40.3,
+`NotRunning` 02:27:43.9 - 02:28:05.1, back `Running` 02:28:08.6. One transition
+cycle only across 100 samples - no restart loop, no second bounce.
+
+The sweep then re-homed the plan to `approved`, `attempt_count 1`, **no check
+created**, with `last_error` = *"The server restarted while this plan was posting.
+It is queued again; draining re-reads Open Dental first and resumes from what the
+chart shows."* The line was left at `claimproc_written` - interrupted
+mid-sequence, exactly as intended.
+
+**Objective 3 is proven.** What happened on the *resume* is W-6.
+
+> **Measurement note for next time:** start the replica poller BEFORE issuing the
+> kill. On the first (missed) attempt the first sample landed 19s late and could
+> only bound the number.
 
 ---
 
