@@ -14,6 +14,25 @@
  * two CHECK constraints; this is the half a person sees.
  *
  * ═════════════════════════════════════════════════════════════════════════════
+ * THE TOOTH SELECTION IS STICKY, AND THAT IS THE WHOLE POINT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A crown prep nearly always carries a build-up, and often endo under both.
+ * ONE TOOTH, SEVERAL PROCEDURES is the most frequent compound entry this
+ * workspace will ever see — Beau hit it on his first real visit — and the first
+ * version made him re-select #30 for every one of them.
+ *
+ * So picking a tooth and tapping Build-up, Crown, RC produces three items on
+ * #30 in three taps. The selection survives an add and is cleared by an
+ * EXPLICIT clear, by switching dentition, or by tapping the teeth themselves.
+ * Nothing clears it silently: a selection that vanished on its own would leave
+ * the next tap adding a whole-mouth item, or nothing, with no way to tell which.
+ *
+ * **Three items, not one item with three codes.** Each procedure carries its
+ * own diagnosis, its own priority (a crown can be urgent while a veneer on the
+ * same tooth is cosmetic) and its own status. The MODEL is right; it was the
+ * picker that was wrong.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
  * NO NESTED INTERACTIVE ELEMENTS
  * ═════════════════════════════════════════════════════════════════════════════
  * A <button> inside a <button> is invalid HTML and React 19 renders it in a way
@@ -22,7 +41,7 @@
  * never a button wrapping buttons.
  */
 import { useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowDown, Plus, Trash2, X } from "lucide-react";
 
 import {
   DX_LABELS,
@@ -41,8 +60,64 @@ import {
   type TreatmentStatus,
   type ToothSurfaceLabel,
 } from "@shared/hyg/contract";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { ToothPicker, toothLabel, type Dentition } from "./ToothPicker";
+
+/**
+ * The key an item is grouped under: its tooth set, exactly.
+ *
+ * By the SET rather than by each tooth, so a single item spanning #3 and #14
+ * appears once rather than twice. The common case — one tooth, several
+ * procedures — groups the way Beau asked for: #30's build-up, crown and root
+ * canal read as one clinical story.
+ */
+export function toothGroupKey(item: Pick<TreatmentItem, "teeth">): string {
+  if (item.teeth === "mouth") return "mouth";
+  return [...item.teeth].sort((a, b) => a - b).join(",");
+}
+
+/** "#30", "#3, #14", "Whole mouth". */
+export function toothGroupLabel(key: string): string {
+  if (key === "mouth") return "Whole mouth";
+  if (key === "") return "No teeth recorded";
+  return key
+    .split(",")
+    .map((t) => `#${toothLabel(Number(t))}`)
+    .join(", ");
+}
+
+/**
+ * Items grouped by tooth set, in the order the groups first appear.
+ *
+ * Order matters: a hygienist adds #30's three procedures together, so keeping
+ * first-appearance order keeps her own sequence rather than re-sorting her work
+ * into tooth-number order she never chose.
+ */
+export function groupByTooth(
+  items: readonly TreatmentItem[],
+): { key: string; label: string; items: TreatmentItem[] }[] {
+  const groups: { key: string; label: string; items: TreatmentItem[] }[] = [];
+  const index = new Map<string, number>();
+  for (const item of items) {
+    const key = toothGroupKey(item);
+    const at = index.get(key);
+    if (at === undefined) {
+      index.set(key, groups.length);
+      groups.push({ key, label: toothGroupLabel(key), items: [item] });
+    } else {
+      groups[at].items.push(item);
+    }
+  }
+  return groups;
+}
 
 /** The office's own shorthand, grouped the way the paper slip groups it. */
 const CODE_GROUPS: { label: string; category: TreatmentCategory; codes: string[] }[] = [
@@ -297,15 +372,26 @@ export function TreatmentItems({
   onAdd,
   onPatch,
   onRemove,
+  onReviewAndSend,
 }: {
   items: TreatmentItem[];
   busy: boolean;
   onAdd: (input: TreatmentItemInput) => void;
   onPatch: (itemId: string, patch: Partial<TreatmentItemInput>) => void;
   onRemove: (itemId: string) => void;
+  /** The end of the form points somewhere. See the page. */
+  onReviewAndSend?: () => void;
 }) {
   const [dentition, setDentition] = useState<Dentition>("adult");
   const [selected, setSelected] = useState<number[]>([]);
+  /** A pending add that would duplicate something already on the list. */
+  const [confirmDuplicate, setConfirmDuplicate] = useState<{
+    code: string;
+    category: TreatmentCategory;
+    label: string;
+  } | null>(null);
+
+  const groups = useMemo(() => groupByTooth(items), [items]);
 
   const counts = useMemo(() => {
     const out: Record<number, number> = {};
@@ -316,9 +402,14 @@ export function TreatmentItems({
     return out;
   }, [items]);
 
-  function add(code: string, category: TreatmentCategory) {
+  /** Is this code already on the list for exactly these teeth? */
+  function existingFor(code: string, mouth: boolean): TreatmentItem | undefined {
+    const key = mouth ? "mouth" : [...selected].sort((a, b) => a - b).join(",");
+    return items.find((item) => item.code === code && toothGroupKey(item) === key);
+  }
+
+  function commit(code: string, category: TreatmentCategory) {
     const mouth = MOUTH_LEVEL.has(code);
-    if (!mouth && selected.length === 0) return;
     onAdd({
       teeth: mouth ? "mouth" : [...selected].sort((a, b) => a - b),
       code,
@@ -333,7 +424,30 @@ export function TreatmentItems({
       scheduleNext: false,
       photos: [],
     });
-    setSelected([]);
+    /*
+     * THE SELECTION SURVIVES THE ADD. #30 → Build-up → Crown → RC is three
+     * items in three taps; re-picking the tooth between them is the thing this
+     * change exists to remove. It is cleared explicitly, never silently.
+     */
+  }
+
+  function add(code: string, category: TreatmentCategory) {
+    const mouth = MOUTH_LEVEL.has(code);
+    if (!mouth && selected.length === 0) return;
+
+    const duplicate = existingFor(code, mouth);
+    if (duplicate) {
+      // A CONFIRM, NOT A BLOCK. Two crowns on one tooth is usually a slip and
+      // occasionally a retreat, and only the person holding the mirror knows
+      // which. Refusing outright would make the app wrong about a real case.
+      setConfirmDuplicate({
+        code,
+        category,
+        label: mouth ? "the whole mouth" : toothGroupLabel(toothGroupKey(duplicate)),
+      });
+      return;
+    }
+    commit(code, category);
   }
 
   return (
@@ -353,17 +467,34 @@ export function TreatmentItems({
         }
         onDentitionChange={(d) => {
           setDentition(d);
+          // Switching dentition changes what the numbers MEAN, so a selection
+          // carried across would be a selection of different teeth.
           setSelected([]);
         }}
       />
 
       <div className="rounded-xl border border-dashed border-border p-3">
-        <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <Plus size={16} />
           {selected.length > 0 ? (
-            <span data-testid="hyg-add-selection">
-              {selected.map((t) => `#${toothLabel(t)}`).join(", ")} — pick the work
-            </span>
+            <>
+              <span data-testid="hyg-add-selection">
+                {selected.map((t) => `#${toothLabel(t)}`).join(", ")} — pick the work. It stays
+                selected, so a build-up and a crown are two taps.
+              </span>
+              {/* The ONLY way the selection goes away by itself is this button
+                  and the dentition switch. A selection that cleared on its own
+                  would leave the next tap adding something else entirely. */}
+              <button
+                type="button"
+                onClick={() => setSelected([])}
+                className={cn(TAP, "border-border text-muted-foreground hover:bg-accent/40")}
+                data-testid="hyg-clear-selection"
+              >
+                <X size={14} className="mr-1 inline" />
+                Clear
+              </button>
+            </>
           ) : (
             <span data-testid="hyg-add-selection">
               Pick teeth above, then the work. Whole-mouth items need no teeth.
@@ -411,18 +542,97 @@ export function TreatmentItems({
           Nothing proposed yet. A visit with no treatment on it is a normal visit.
         </p>
       ) : (
-        <div className="space-y-2">
-          {items.map((item) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              busy={busy}
-              onPatch={(patch) => onPatch(item.id, patch)}
-              onRemove={() => onRemove(item.id)}
-            />
+        // GROUPED BY TOOTH, so #30's build-up, crown and root canal read as one
+        // clinical story rather than three unrelated rows.
+        <div className="space-y-3" data-testid="hyg-treatment-groups">
+          {groups.map((group) => (
+            <div key={group.key} data-testid={`hyg-tooth-group-${group.key}`}>
+              <div className="mb-1 flex items-baseline gap-2">
+                <span className="text-sm font-semibold text-foreground">{group.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {group.items.length} {group.items.length === 1 ? "procedure" : "procedures"}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {group.items.map((item) => (
+                  <ItemCard
+                    key={item.id}
+                    item={item}
+                    busy={busy}
+                    onPatch={(patch) => onPatch(item.id, patch)}
+                    onRemove={() => onRemove(item.id)}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
+
+      {/*
+        THE END OF THE FORM POINTS SOMEWHERE.
+        Beau, at the bottom of the page: "I do not know where to go or what to
+        do next." If the founder cannot find Send, a hygienist mid-appointment
+        cannot either. On a wide screen the tray is beside this and sticky; on a
+        narrow one it is below, and this is how you get there.
+      */}
+      {onReviewAndSend ? (
+        <button
+          type="button"
+          onClick={onReviewAndSend}
+          className={cn(
+            TAP,
+            "flex w-full items-center justify-center gap-2 border-primary bg-primary/10 text-foreground",
+          )}
+          data-testid="hyg-review-and-send"
+        >
+          Review &amp; send
+          <ArrowDown size={16} className="lg:hidden" />
+        </button>
+      ) : null}
+
+      <Dialog
+        open={confirmDuplicate !== null}
+        onOpenChange={(open) => !open && setConfirmDuplicate(null)}
+      >
+        <DialogContent data-testid="hyg-duplicate-confirm">
+          {confirmDuplicate && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  {confirmDuplicate.code} is already on the list for {confirmDuplicate.label}
+                </DialogTitle>
+                <DialogDescription>
+                  Adding it again gives this visit two of them. That is right for a retreat and
+                  usually a slip otherwise — your call.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDuplicate(null)}
+                  className={cn(TAP, "border-transparent text-muted-foreground")}
+                  data-testid="hyg-duplicate-cancel"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    commit(confirmDuplicate.code, confirmDuplicate.category);
+                    setConfirmDuplicate(null);
+                  }}
+                  className={cn(TAP, "border-primary bg-primary text-primary-foreground")}
+                  data-testid="hyg-duplicate-accept"
+                >
+                  Add it again
+                </button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

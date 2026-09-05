@@ -191,6 +191,7 @@ export function StagedWritesTray({
   staged,
   handoffCategory,
   patientName,
+  itemCount,
   busy,
   sending,
   onStage,
@@ -202,6 +203,8 @@ export function StagedWritesTray({
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
   patientName: string;
+  /** How many treatment items are on the visit. See `handoffUnavailable`. */
+  itemCount: number;
   busy: boolean;
   sending: boolean;
   onStage: (kind: StagedWriteKind) => void;
@@ -214,6 +217,19 @@ export function StagedWritesTray({
   const [confirming, setConfirming] = useState<StagedWrite[] | null>(null);
   const byKind = new Map(staged.map((w) => [w.kind, w]));
   const ready = staged.filter((w) => w.state === "Staged");
+
+  /**
+   * A handoff with nothing to hand off cannot be staged, and the card says so
+   * IN WORDS.
+   *
+   * It used to say "It will go in as Other", which is what `deriveCategory`
+   * returns for an empty list — a derived category doing quiet double duty as
+   * the only tell that the visit has no treatment on it. Somebody reading that
+   * learns the wrong thing twice: that there is a category, and that Stage
+   * would do something. The server refuses this with NOTHING_TO_STAGE either
+   * way; this is the screen saying the same thing before the round trip.
+   */
+  const handoffUnavailable = itemCount === 0;
 
   return (
     <section className="space-y-3" data-testid="hyg-staged-tray">
@@ -259,10 +275,19 @@ export function StagedWritesTray({
                     {write ? write.summary : KIND_BLURBS[kind]}
                   </p>
                   {kind === "tc-handoff" && !write ? (
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      It will go in as <strong>{handoffCategory}</strong> — worked out from the
-                      items, so you are not asked to classify the visit twice.
-                    </p>
+                    handoffUnavailable ? (
+                      <p
+                        className="mt-0.5 text-xs text-muted-foreground"
+                        data-testid="hyg-handoff-no-items"
+                      >
+                        No treatment items yet — add them above and this becomes stageable.
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        It will go in as <strong>{handoffCategory}</strong> — worked out from the
+                        items, so you are not asked to classify the visit twice.
+                      </p>
+                    )
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -292,11 +317,16 @@ export function StagedWritesTray({
                     <button
                       type="button"
                       onClick={() => onStage(kind)}
-                      disabled={busy || sending || !available}
+                      disabled={
+                        busy ||
+                        sending ||
+                        !available ||
+                        (kind === "tc-handoff" && handoffUnavailable)
+                      }
                       data-testid={`hyg-stage-${kind}`}
                       className={cn(
                         TAP,
-                        available
+                        available && !(kind === "tc-handoff" && handoffUnavailable)
                           ? "border-border text-foreground hover:bg-accent/50"
                           : "cursor-not-allowed border-border text-muted-foreground/60",
                       )}

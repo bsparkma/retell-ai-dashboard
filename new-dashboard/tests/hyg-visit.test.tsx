@@ -367,16 +367,41 @@ describe("the server owns the visit", () => {
   });
 
   it("shows a refusal to stage beside the thing that was refused", async () => {
-    server.stageRefusal = { status: 422, message: "There is no treatment on this visit to hand off." };
+    // Staged on the ROUTER, not the handoff: a zero-item handoff is now
+    // disabled before the round trip (see "the zero-item handoff card" below),
+    // so the refusal path needs a control that is actually pressable.
+    server.stageRefusal = { status: 409, message: "This router write is written and cannot be re-staged." };
     renderVisit();
     await screen.findByTestId("hyg-visit");
 
-    fireEvent.click(screen.getByTestId("hyg-stage-tc-handoff"));
-    const note = await screen.findByTestId("hyg-stage-refused-tc-handoff");
-    expect(note.textContent).toMatch(/no treatment on this visit/i);
+    fireEvent.click(screen.getByTestId("hyg-stage-router"));
+    const note = await screen.findByTestId("hyg-stage-refused-router");
+    expect(note.textContent).toMatch(/cannot be re-staged/i);
     // And the page is still usable — a content refusal is not a page error.
     expect(screen.getByTestId("hyg-visit")).toBeTruthy();
     expect(screen.queryByTestId("hyg-visit-inline-error")).toBeNull();
+  });
+
+  it("the zero-item handoff card states its own condition and will not stage", async () => {
+    renderVisit();
+    await screen.findByTestId("hyg-visit");
+
+    // It used to say "It will go in as Other" — a derived category doing quiet
+    // double duty as the only tell that there was nothing to hand off.
+    const card = screen.getByTestId("hyg-staged-tc-handoff");
+    expect(screen.getByTestId("hyg-handoff-no-items").textContent).toMatch(
+      /No treatment items yet/i,
+    );
+    expect(card.textContent).not.toMatch(/It will go in as/);
+    expect(screen.getByTestId("hyg-stage-tc-handoff").hasAttribute("disabled")).toBe(true);
+
+    // Add one, and it becomes stageable — with its derived category back.
+    fireEvent.click(screen.getByTestId("hyg-tooth-3"));
+    fireEvent.click(screen.getByTestId("hyg-add-Crown"));
+    await waitFor(() =>
+      expect(screen.getByTestId("hyg-stage-tc-handoff").hasAttribute("disabled")).toBe(false),
+    );
+    expect(screen.queryByTestId("hyg-handoff-no-items")).toBeNull();
   });
 });
 
