@@ -120,15 +120,25 @@ test('a Failed staged write must carry a reason, and attribution is all-or-nothi
   assert.match(SOURCE, /\(sent_by IS NULL\) = \(sent_at IS NULL\)/);
 });
 
-test('the migration number is above every migration already in the tree', () => {
+test('the hyg migrations sort after everything that came before them', () => {
   // A lower-timestamped migration cannot land behind a deployed one:
   // node-pg-migrate's checkOrder refuses it, and the failure is at deploy time.
+  //
+  // Stated as "after everything that is not ours" rather than "after
+  // everything", because slice 3 legitimately adds one above slice 2's and a
+  // test that forbade that would have to be deleted the first time it mattered.
   const dir = path.join(__dirname, '..', '..', 'migrations-tenant');
-  const numbers = fs
-    .readdirSync(dir)
-    .filter((f) => /^\d+_/.test(f))
-    .map((f) => Number(f.split('_')[0]));
-  const mine = 1788200000000;
-  const higher = numbers.filter((n) => n > mine);
-  assert.deepEqual(higher, [], 'something already sorts after the hyg_visit migration');
+  const files = fs.readdirSync(dir).filter((f) => /^\d+_/.test(f));
+  const numbers = files.map((f) => Number(f.split('_')[0]));
+  assert.equal(new Set(numbers).size, numbers.length, 'two migrations share a timestamp');
+
+  const hyg = files.filter((f) => f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
+  const others = files.filter((f) => !f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
+  assert.ok(hyg.length >= 2, 'expected the slice 2 and slice 3 migrations');
+  assert.ok(
+    Math.min(...hyg) > Math.max(...others),
+    'a hygiene migration sorts before one that already existed'
+  );
+  // And they are in slice order among themselves.
+  assert.deepEqual(hyg, [...hyg].sort((a, b) => a - b));
 });

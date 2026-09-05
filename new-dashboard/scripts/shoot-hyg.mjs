@@ -110,6 +110,17 @@ for (const dump of dumps) {
 <style>
   html, body { background: var(--background); color: var(--foreground); }
   body { padding: 0; }
+  /*
+    FREEZE ENTRY ANIMATIONS. A Radix dialog opens from opacity 0, and headless
+    Chrome photographs it mid-keyframe even with a virtual-time budget — the
+    confirm shot came out washed out until this was added. Harmless everywhere
+    else: a still of a finished animation is what every other shot wanted too.
+  */
+  *, *::before, *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transition: none !important;
+  }
 </style>
 </head>
 <body>${body}</body>

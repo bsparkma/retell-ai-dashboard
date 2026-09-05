@@ -1,14 +1,22 @@
 'use strict';
 
 /**
- * /api/hyg/visit — the visit workspace (H1 slice 2).
+ * /api/hyg/visit — the visit workspace and the send (H1 slices 2 and 3).
  *
- * The module's first mutations. **NOTHING HERE WRITES TO OPEN DENTAL.** A visit
- * is COMPOSED here — the routing slip, the treatment items on it, and what is
- * staged to be sent — and slice 3 is what sends it. The only Open Dental
- * traffic on these routes is the same read-only `apiGetRaw` day pull the day
- * view makes, and it exists for exactly one reason: to learn WHICH PATIENT this
- * appointment belongs to from Open Dental rather than from a request body.
+ * Everything on this router except ONE route composes: the routing slip, the
+ * treatment items on it, and what is staged to be written. `POST /:aptNum/send`
+ * is the exception, and it is the module's first Open Dental WRITE.
+ *
+ * That write does not happen here. This route validates, resolves the office,
+ * checks that what is being confirmed is what is stored, and hands off to
+ * `services/hyg/sendVisit.js`, which reaches the transport only through
+ * `services/hyg/odWriter.js` — the one file `hygNoOdWrites.test.js` allows to
+ * name a write verb.
+ *
+ * The send route lives in THIS file rather than a sibling on purpose: the
+ * mutation allow-list in that same guard names one file, and a send is a
+ * mutation on a visit. Two files would be two places for the next mutation to
+ * go, and the second is always the one nobody reviewed.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHY `patNum` IS NEVER IN A REQUEST BODY
@@ -55,8 +63,8 @@
  * Beau's ruling, verbatim: *"the hygienist should be able to send the treatment
  * to the tc app."* `recareScheduled` and `txEnteredInOd` are ordinary slip
  * fields. The RECORDS_MATRIX produces a list a screen shows. Neither refuses
- * anything here, and `hygVisitStage.test.js` pins that an entirely unanswered
- * slip still stages every write it has content for.
+ * anything here — including on the SEND path, which `hygSend.test.js` pins with
+ * a completely unanswered slip going all the way into a chart.
  */
 
 const express = require('express');
@@ -68,6 +76,7 @@ const tenantDb = require('../../platform/tenantDb');
 const odDay = require('../../services/hyg/odDay');
 const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
+const sendVisitService = require('../../services/hyg/sendVisit');
 const contract = require('../../hyg/contract.gen.cjs');
 
 const router = express.Router();
@@ -226,7 +235,9 @@ async function resolveAppointment(req, { office, aptNum, date }) {
       },
     };
   }
-  return { ok: true, appointment, officeName: resolved.od.officeName, day };
+  // `od` travels with it: the send path needs the SAME handle this function
+  // already put through assertOfficeMatch, not a second resolution of it.
+  return { ok: true, appointment, officeName: resolved.od.officeName, od: resolved.od, day };
 }
 
 /**
@@ -693,6 +704,209 @@ router.delete(
       sourceRef: null,
     });
     return res.json(visitPayload(outcome.visit));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/send?office=&date=   (H1 slice 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  '/:aptNum/send',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    if (!isRealDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'date query param is required and must be a real calendar date (YYYY-MM-DD)',
+        code: 'INVALID_DATE',
+        office,
+      });
+    }
+
+    // The body carries WHICH kinds and WHAT THEY LOOKED LIKE. Never a payload:
+    // everything that reaches a chart is built server-side from the stored row.
+    const body = parseBody(res, contract.SendVisitRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    // OFFICE READINESS FIRST, before this route says anything about whether a
+    // visit exists. An office that is switched off, unkeyed or unreachable must
+    // hear its own refusal — answering "no such visit" for a practice CareIN is
+    // not talking to is a true sentence that teaches the wrong thing.
+    //
+    // It also re-reads the appointment from Open Dental at SEND time rather
+    // than trusting the stage: the provider, the operatory and the patient's
+    // name come from here, and `resolveAppointment` puts the office handle
+    // through assertOfficeMatch before any of it is used.
+    const resolved = await resolveAppointment(req, { office, aptNum, date });
+    if (!resolved.ok) {
+      await auditHygDenial(req, 'hyg_visit_send', aptNum, {
+        office,
+        result: resolved.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(resolved.status).json(resolved.body);
+    }
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    if (resolved.appointment.patNum !== visit.patNum) {
+      // The appointment moved to a different patient since the visit was
+      // opened. Refuse: there is no version of this where guessing is right.
+      await auditHygDenial(req, 'hyg_visit_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(409).json({
+        success: false,
+        error:
+          'This appointment now belongs to a different patient in Open Dental than the visit ' +
+          'that was composed for it. Nothing was sent.',
+        code: 'PATIENT_CHANGED',
+        office,
+      });
+    }
+
+    const odGet = (path, params, opts) =>
+      resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+
+    const actor = actorEmail(req);
+    const outcome = await tenantDb.withTenantDb(req, (pool) =>
+      sendVisitService.sendVisit({
+        req,
+        pool,
+        office,
+        officeName: resolved.officeName,
+        date,
+        visit,
+        appointment: resolved.appointment,
+        od: resolved.od,
+        odGet,
+        actor,
+        confirmations: body.confirm,
+        submitHygieneIntake: req.app.get('hygTcSubmit') || undefined,
+      })
+    );
+
+    if (!outcome.ok) {
+      await auditHygDenial(req, 'hyg_visit_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(outcome.status).json({
+        success: false,
+        error: outcome.error,
+        code: outcome.code,
+        office,
+      });
+    }
+
+    // ONE AUDIT ROW PER WRITE, with the approving user on it, and the result
+    // recorded honestly — a failed write is an ERROR row, not a missing one.
+    // The action is UPDATE because that is what reaching a chart is; the
+    // vocabulary is CHECK-constrained to four verbs (audit_log_action_check).
+    for (const result of outcome.outcomes) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_visit_send',
+        resourceId: aptNum,
+        result: result.state === 'Written' ? 'SUCCESS' : 'ERROR',
+        office,
+        sourceRef: null,
+      });
+    }
+
+    const after = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getVisit(pool, { office, aptNum })
+    );
+
+    const written = outcome.outcomes.filter((o) => o.state === 'Written').length;
+    const failed = outcome.outcomes.filter((o) => o.state === 'Failed').length;
+    console.log(
+      `[hygsend] office=${office} apt=${aptNum} by=${actor} ` +
+        `written=${written} failed=${failed} ` +
+        outcome.outcomes.map((o) => `${o.kind}:${o.state}`).join(' ')
+    );
+
+    // 200 even when everything failed. The REQUEST succeeded — it did what it
+    // was asked and reports what happened. A 500 here would say "we do not know
+    // what happened", which would be a lie about a body full of outcomes.
+    return res.json({
+      ...visitPayload(after),
+      outcomes: outcome.outcomes,
+      written,
+      failed,
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/staged-writes/:kind/retry
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  '/:aptNum/staged-writes/:kind/retry',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const kind = contract.StagedWriteKindSchema.safeParse(req.params.kind);
+    if (!kind.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'kind must be one of: ' + contract.StagedWriteKindSchema.options.join(', '),
+        code: 'INVALID_BODY',
+        field: 'kind',
+        office,
+      });
+    }
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    // Failed → Staged, with the SAME words. A retry that re-composed would send
+    // something the hygienist never read, which is the rule this slice is built
+    // around. Changing the visit and staging again is the other, explicit path.
+    const moved = await tenantDb.withTenantDb(req, async (pool) => {
+      const ok = await visitStore.retryStagedWrite(pool, {
+        office,
+        visitId: visit.visitId,
+        kind: kind.data,
+        actor: actorEmail(req),
+      });
+      if (!ok) return null;
+      return visitStore.getVisit(pool, { office, aptNum });
+    });
+
+    if (!moved) {
+      return res.status(409).json({
+        success: false,
+        error: `The ${kind.data} write is not in a failed state, so there is nothing to retry`,
+        code: 'STAGED_WRITE_IMMUTABLE',
+        office,
+      });
+    }
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_staged_write',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json(visitPayload(moved));
   })
 );
 

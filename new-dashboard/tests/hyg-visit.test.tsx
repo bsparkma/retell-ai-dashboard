@@ -304,18 +304,26 @@ describe("nothing is gated on completeness", () => {
     expect(screen.getByTestId("hyg-unstage-router").hasAttribute("disabled")).toBe(false);
   });
 
-  it("the Send affordance is disabled ONLY because sending is not built", async () => {
+  it("Send is disabled ONLY when nothing is staged — never by a completeness check", async () => {
     renderVisit();
     await screen.findByTestId("hyg-visit");
 
+    // Nothing staged: disabled, and the reason names the missing STAGE rather
+    // than anything she has or has not filled in.
     const send = screen.getByTestId("hyg-send-all");
     expect(send.hasAttribute("disabled")).toBe(true);
-    // The reason is permanently visible and is about the RELEASE, not about
-    // anything she has or has not filled in.
     const reason = screen.getByTestId("hyg-send-all-reason").textContent ?? "";
-    expect(reason).toMatch(/not built yet/i);
-    expect(reason).toMatch(/not waiting on anything you have filled in/i);
+    expect(reason).toMatch(/stage the slip/i);
     expect(reason).not.toMatch(/recare|records|complete/i);
+
+    // Stage one thing, with the front-desk questions still unanswered and the
+    // records list still outstanding. Send becomes available anyway — that is
+    // Beau's ruling, and it is the whole point of this test.
+    fireEvent.click(screen.getByTestId("hyg-stage-router"));
+    await waitFor(() =>
+      expect(screen.getByTestId("hyg-send-all").hasAttribute("disabled")).toBe(false),
+    );
+    expect(screen.getByTestId("hyg-slip-recare-reminder")).toBeTruthy();
   });
 });
 
@@ -353,7 +361,7 @@ describe("the server owns the visit", () => {
     fireEvent.click(screen.getByTestId("hyg-stage-router"));
     const preview = await screen.findByTestId("hyg-staged-preview-router");
 
-    expect(screen.getByTestId("hyg-staged-state").textContent).toBe("Staged");
+    expect(screen.getByTestId("hyg-staged-state-Staged").textContent).toBe("Staged");
     // The server's words, including the honest "not answered".
     expect(preview.textContent).toContain("Recare scheduled: not answered");
   });
