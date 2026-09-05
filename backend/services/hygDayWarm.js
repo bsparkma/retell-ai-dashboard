@@ -190,6 +190,21 @@ class HygDayWarm {
       const patNums = [];
       const seen = new Set();
       for (const row of ordered) {
+        /*
+         * THE DEFAULT SCOPE, AND ONLY THE DEFAULT SCOPE.
+         *
+         * GET /api/hyg/day defaults to `scope=hygiene`, so the entries this
+         * warm should populate are the hygiene appointments' patients. Warming
+         * the doctors' patients too would spend the credential before the
+         * practice opens on records the default screen never asks for — and
+         * the cache is small and short-lived, so those entries would likely
+         * expire before anything hit them.
+         *
+         * Same rule as odDay's scope filter, for the same reason: the
+         * APPOINTMENT's own flag, and a null is served. "Show full day" is the
+         * rare path and pays its own cost at the moment somebody asks for it.
+         */
+        if (odDay.odBool(row.IsHygiene) === false) continue;
         const patNum = odDay.odInt(row.PatNum);
         if (patNum !== null && patNum > 0 && !seen.has(patNum)) {
           seen.add(patNum);

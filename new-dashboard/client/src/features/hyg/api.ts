@@ -24,6 +24,7 @@ import { z } from "zod";
 
 import { handleUnauthorized } from "@/lib/api";
 import {
+  type HygDayScope,
   FlagSourceSchema,
   HandoffCategorySchema,
   HygAppointmentSchema,
@@ -199,16 +200,22 @@ async function get<T>(
  *
  * A rejection is never an empty day: the server refuses with a code for each
  * way of not knowing, and this throws every one of them. The only way to get
- * `appointments: []` back is for nobody to be booked.
+ * `appointments: []` back is for nobody to be booked — or, under the hygiene
+ * lens, for nobody to be booked WITH A HYGIENIST, which the response says in
+ * `excludedByScope` rather than leaving the screen to imply.
+ *
+ * `scope` defaults to `hygiene`, matching the server. Asking for `all` is a
+ * SECOND request and pays for the doctors' patients; it is the rare path.
  */
 export async function fetchDay(
   office: OfficeId,
   date: string,
+  scope: HygDayScope = "hygiene",
   signal?: AbortSignal,
 ): Promise<HygDayResponse> {
   return get(
     "/day",
-    { office, date },
+    { office, date, scope },
     (raw) => {
       const parsed = HygDayResponseSchema.safeParse(raw);
       if (!parsed.success) {

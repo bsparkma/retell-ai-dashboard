@@ -477,13 +477,31 @@ function unknownFlags() {
  * fan-out is one second per distinct patient against a shared credential, and
  * the only way to know whether a change helped is to have counted before it.
  *
+ * ── SCOPE ───────────────────────────────────────────────────────────────────
+ * `scope: 'hygiene'` (the default) serves only the hygiene appointments and
+ * resolves identity only for THEIR patients. That is the whole point of it: the
+ * fan-out is one Open Dental request per distinct patient against a throttled
+ * shared credential, and a hygienist looking at a hygiene day should not pay for
+ * the doctors' patients.
+ *
+ * A patient this read does not serve is not fetched, not named, and — because
+ * the route builds its audit rows from what it is about to SEND — not audited
+ * either. Not disclosed, no row.
+ *
+ * ⚠️ THE FILTER IS THE APPOINTMENT'S OWN `IsHygiene`, NEVER THE CHAIR'S. ⚠️ A
+ * hygiene appointment can sit in a doctor's operatory on an overflow day (H0
+ * §5), and filtering on the chair would drop that patient off the hygienist's
+ * day. An appointment Open Dental did not classify at all is SERVED: "we could
+ * not tell" is not "no".
+ *
  * @param {Function} odGet
- * @param {{ date: string, office: string }} opts `office` is REQUIRED — it is
- *   half of the patient cache key, and a PatNum without an office identifies
- *   nobody (numbering restarts in every Open Dental database).
+ * @param {{ date: string, office: string, scope?: 'hygiene'|'all' }} opts
+ *   `office` is REQUIRED — it is half of the patient cache key, and a PatNum
+ *   without an office identifies nobody (numbering restarts in every Open Dental
+ *   database).
  * @returns {Promise<object>}
  */
-async function readDay(odGet, { date, office }) {
+async function readDay(odGet, { date, office, scope = 'hygiene' }) {
   if (typeof office !== 'string' || office.trim() === '') {
     // Loud rather than defaulted. The alternative to knowing the office is
     // caching a patient under a namespace shared with another practice.
@@ -542,15 +560,30 @@ async function readDay(odGet, { date, office }) {
     warnings.push({ resource: 'providers', message: 'Provider names are unavailable.' });
   }
 
-  // Distinct PatNums in schedule order, so the budget is spent on the earliest
-  // appointments — the ones a hygienist is looking at first.
   const ordered = [...appts.rows].sort((a, b) =>
     String(a.AptDateTime || '').localeCompare(String(b.AptDateTime || ''))
   );
+
+  /*
+   * THE SCOPE, APPLIED BEFORE ANYTHING IS PAID FOR.
+   *
+   * `IsHygiene !== false` rather than `=== true`: an appointment Open Dental
+   * did not classify is served, because "we could not tell" is not "no" and a
+   * hygienist must not lose a patient to a null. The chair's own flag is NOT
+   * consulted here — see the header.
+   */
+  const inScope =
+    scope === 'all' ? ordered : ordered.filter((r) => odBool(r.IsHygiene) !== false);
+  const excludedByScope = ordered.length - inScope.length;
+
+  // Distinct PatNums in schedule order, so the budget is spent on the earliest
+  // appointments — the ones a hygienist is looking at first. From the SERVED
+  // rows only: a patient this response will not carry is a patient nothing here
+  // may fetch, name or disclose.
   /** @type {number[]} */
   const distinctPatNums = [];
   const seen = new Set();
-  for (const r of ordered) {
+  for (const r of inScope) {
     const patNum = odInt(r.PatNum);
     // `> 0`, not merely `!== null`. Open Dental writes PatNum 0 on an
     // appointment that carries no patient — a blockout, or a row somebody
@@ -581,7 +614,7 @@ async function readDay(odGet, { date, office }) {
 
   const opsByNum = new Map(ops.operatories.map((o) => [o.opNum, o]));
 
-  const appointments = ordered.map((r) => {
+  const appointments = inScope.map((r) => {
     // Same rule as the fan-out above: PatNum 0 is Open Dental's "no patient on
     // this appointment", and reporting it as a PatNum would let a caller
     // attach a visit — and one slice later a chart note — to patient zero.
@@ -642,14 +675,26 @@ async function readDay(odGet, { date, office }) {
     warnings,
     flagSources: FLAG_SOURCES,
     excludedByStatus: appts.excludedByStatus,
+    scope,
+    /*
+     * Appointments this SCOPE did not serve. Reported, never silently dropped:
+     * a hygienist wondering where the 2pm doctor visit went should get an
+     * answer. Distinct from excludedByStatus, which counts rows that are not
+     * visits at all.
+     */
+    excludedByScope,
     /*
      * TWO TRUNCATIONS, KEPT APART ON PURPOSE.
      *
      * `truncated` is about the SCHEDULE: an appointment is missing, so the
      * screen is not showing somebody's day. `patientNamesTruncated` is about
-     * IDENTITY: every appointment is present, and some of them have no name on
-     * them. The first means "do not trust this page"; the second means "these
-     * cards are unlabelled".
+     * IDENTITY: every appointment IN THIS SCOPE is present, and some of them
+     * have no name on them. The first means "do not trust this page"; the
+     * second means "these cards are unlabelled".
+     *
+     * Neither is about the scope. An appointment the hygiene lens did not serve
+     * is not missing and not unnamed — it was not asked for, and
+     * `excludedByScope` is where that is said.
      *
      * They were one boolean for about an hour. A day of 137 patients — every
      * appointment fetched, whole, correct — reported itself as truncated

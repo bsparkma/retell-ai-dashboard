@@ -243,7 +243,10 @@ afterEach(cleanup);
 describe.skipIf(!SHOOT)("hyg screenshot dumps", () => {
   it("01 — a populated day", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    // THE LIST IS THE DEFAULT as of the hygiene lens, so this shot — "what a
+    // hygienist sees when she opens the app" — is the list. The chair grid has
+    // its own shot in hyg-lens-shots.test.tsx.
+    await screen.findByTestId("hyg-day-list");
     expect(screen.getAllByTestId("hyg-appointment-card")).toHaveLength(5);
     dump("hyg-01-day-populated");
   });

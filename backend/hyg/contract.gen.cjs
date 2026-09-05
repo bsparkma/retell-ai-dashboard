@@ -14829,12 +14829,14 @@ __export(contract_entry_exports, {
   EXAM_STATUS_LABELS: () => EXAM_STATUS_LABELS,
   ExamStatusSchema: () => ExamStatusSchema,
   FlagSourceSchema: () => FlagSourceSchema,
+  HYG_DAY_SCOPES: () => HYG_DAY_SCOPES,
   HYG_ERROR_CODES: () => HYG_ERROR_CODES,
   HYG_VISIT_ERROR_CODES: () => HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema: () => HandoffCategorySchema,
   HygAppointmentSchema: () => HygAppointmentSchema,
   HygDayFlagsSchema: () => HygDayFlagsSchema,
   HygDayResponseSchema: () => HygDayResponseSchema,
+  HygDayScopeSchema: () => HygDayScopeSchema,
   HygDayStatsSchema: () => HygDayStatsSchema,
   HygErrorSchema: () => HygErrorSchema,
   HygOperatorySchema: () => HygOperatorySchema,
@@ -15038,6 +15040,8 @@ var StagedWriteStateSchema = import_zod.z.enum([
   "Written",
   "Failed"
 ]);
+var HygDayScopeSchema = import_zod.z.enum(["hygiene", "all"]);
+var HYG_DAY_SCOPES = HygDayScopeSchema.options;
 var FlagSourceSchema = import_zod.z.enum(["od", "not_read"]);
 var HygDayFlagsSchema = import_zod.z.object({
   premed: import_zod.z.boolean().nullable(),
@@ -15116,6 +15120,21 @@ var HygDayResponseSchema = import_zod.z.object({
   warnings: import_zod.z.array(HygWarningSchema),
   flagSources: import_zod.z.record(import_zod.z.string(), FlagSourceSchema),
   excludedByStatus: import_zod.z.number().int(),
+  /** Which appointments this read was asked to serve. See HygDayScopeSchema. */
+  scope: HygDayScopeSchema,
+  /**
+   * Appointments Open Dental returned for this date that this SCOPE did not
+   * serve — the doctors' columns, under the hygiene lens.
+   *
+   * Distinct from `excludedByStatus`, which counts rows that are not visits at
+   * all (broken, unscheduled, planned). Both are reported rather than silently
+   * dropped, so "where did my 2pm doctor visit go" has an answer instead of
+   * being a mystery.
+   *
+   * These appointments carry no PatNum, no name and no audit row: a patient
+   * this response did not serve was not disclosed.
+   */
+  excludedByScope: import_zod.z.number().int(),
   /** The SCHEDULE is incomplete — an appointment is missing from this payload. */
   truncated: import_zod.z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
@@ -15398,12 +15417,14 @@ var import_zod2 = __toESM(require_zod());
   EXAM_STATUS_LABELS,
   ExamStatusSchema,
   FlagSourceSchema,
+  HYG_DAY_SCOPES,
   HYG_ERROR_CODES,
   HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema,
   HygAppointmentSchema,
   HygDayFlagsSchema,
   HygDayResponseSchema,
+  HygDayScopeSchema,
   HygDayStatsSchema,
   HygErrorSchema,
   HygOperatorySchema,

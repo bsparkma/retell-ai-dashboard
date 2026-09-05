@@ -319,6 +319,31 @@ export type StagedWriteState = z.infer<typeof StagedWriteStateSchema>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * WHICH appointments a day read is being asked to serve.
+ *
+ * `hygiene` — the default. Only the hygiene appointments, and therefore only
+ *   their patients: the Open Dental identity fan-out is one request per
+ *   distinct patient against a throttled shared credential, and a hygienist
+ *   looking at a hygiene day should not pay for the doctors' patients.
+ * `all` — the whole day, including the doctor columns. The "Show full day"
+ *   path, and it pays its own cost.
+ *
+ * ⚠️ THE FILTER IS THE APPOINTMENT'S OWN `isHygiene`, NEVER THE CHAIR'S. ⚠️
+ * A hygiene appointment can sit in a doctor's operatory on an overflow day
+ * (H0 §5, and the reason HygAppointment carries both flags). Filtering on the
+ * chair would silently drop that patient from the hygienist's day, which is the
+ * failure this whole screen is written against.
+ *
+ * An appointment whose `isHygiene` is NULL — Open Dental did not say — is
+ * SERVED under the hygiene scope. "We could not tell" is not "no", and hiding
+ * an unclassified visit is the same silent loss with an extra step.
+ */
+export const HygDayScopeSchema = z.enum(["hygiene", "all"]);
+export type HygDayScope = z.infer<typeof HygDayScopeSchema>;
+
+export const HYG_DAY_SCOPES = HygDayScopeSchema.options;
+
+/**
  * Whether a flag on a card is a real answer or an unasked question.
  *
  * `od` — we asked Open Dental; the value is true, false, or null because the
@@ -448,6 +473,21 @@ export const HygDayResponseSchema = z.object({
   warnings: z.array(HygWarningSchema),
   flagSources: z.record(z.string(), FlagSourceSchema),
   excludedByStatus: z.number().int(),
+  /** Which appointments this read was asked to serve. See HygDayScopeSchema. */
+  scope: HygDayScopeSchema,
+  /**
+   * Appointments Open Dental returned for this date that this SCOPE did not
+   * serve — the doctors' columns, under the hygiene lens.
+   *
+   * Distinct from `excludedByStatus`, which counts rows that are not visits at
+   * all (broken, unscheduled, planned). Both are reported rather than silently
+   * dropped, so "where did my 2pm doctor visit go" has an answer instead of
+   * being a mystery.
+   *
+   * These appointments carry no PatNum, no name and no audit row: a patient
+   * this response did not serve was not disclosed.
+   */
+  excludedByScope: z.number().int(),
   /** The SCHEDULE is incomplete — an appointment is missing from this payload. */
   truncated: z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
