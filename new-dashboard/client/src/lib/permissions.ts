@@ -60,7 +60,11 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   admin: "/home",
   office: "/home",
   tc: "/tc/dashboard",
-  hygiene: "/tc/hygiene/inbox",
+  // The hygiene module's own day view, as of H1 slice 2. It used to be the TC
+  // hygiene inbox, which was the best available landing page when /hyg did not
+  // exist; a hygienist signing in now lands on today's schedule, which is the
+  // screen she opens the app to look at.
+  hygiene: "/hyg/day",
   reviewer: "/rcm/remittances",
   rcm_biller: "/rcm/remittances",
 };

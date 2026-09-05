@@ -212,23 +212,36 @@ function SummaryStrip({ day }: { day: HygDayResponse }) {
     { label: "Appointments", value: s.total },
     { label: "Hygiene", value: s.hygiene },
     { label: "Flagged", value: s.flagged },
-    // Counted and shown SEPARATELY. Folding unknowns into "flagged" would make
-    // that number mean "at least this many", which is not a number anybody can
-    // act on.
-    { label: "Unknowns", value: s.unknownFlags, muted: true },
+    // ⚠️ THIS COUNTS CARDS, AND THE CHIP ON A CARD COUNTS FLAGS. ⚠️
+    //
+    // It read "Unknowns 5" over a grid whose cards said "6 unknown", which is
+    // two different units under one word and reads like a defect. `summarise`
+    // counts APPOINTMENTS with at least one unknown flag; the chip counts the
+    // unknown FLAGS on that one card. Both are useful and neither is wrong —
+    // the label is what was wrong.
+    //
+    // Counted separately from "Flagged" for the original reason: folding
+    // unknowns in would make that number mean "at least this many", which is
+    // not a number anybody can act on.
+    { label: "Cards with unknowns", value: s.unknownFlags, muted: true },
   ];
   return (
-    <div className="mt-4 flex flex-wrap gap-2" data-testid="hyg-day-summary">
+    // One compact row rather than four tall tiles. At five appointments the old
+    // strip cost about 70px of the 820 an iPad has, above a grid that was
+    // already short — so the page read as mostly empty on a normal day.
+    <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="hyg-day-summary">
       {items.map((item) => (
         <div
           key={item.label}
           className={cn(
-            "rounded-xl border border-border bg-card px-4 py-2",
+            "flex items-baseline gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5",
             item.muted && "border-dashed",
           )}
         >
-          <div className="text-xl font-semibold tabular-nums text-foreground">{item.value}</div>
-          <div className="text-xs text-muted-foreground">{item.label}</div>
+          <span className="text-base font-semibold tabular-nums text-foreground">
+            {item.value}
+          </span>
+          <span className="text-xs text-muted-foreground">{item.label}</span>
         </div>
       ))}
     </div>
@@ -295,7 +308,12 @@ function DayColumns({ day }: { day: HygDayResponse }) {
           </header>
           <div className="mt-2 space-y-3">
             {column.appointments.map((appt) => (
-              <AppointmentCard key={String(appt.aptNum ?? appt.start)} appointment={appt} />
+              <AppointmentCard
+                key={String(appt.aptNum ?? appt.start)}
+                appointment={appt}
+                office={day.office}
+                date={day.date}
+              />
             ))}
           </div>
         </section>

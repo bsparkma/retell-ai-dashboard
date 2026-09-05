@@ -552,7 +552,14 @@ async function readDay(odGet, { date, office }) {
   const seen = new Set();
   for (const r of ordered) {
     const patNum = odInt(r.PatNum);
-    if (patNum !== null && !seen.has(patNum)) {
+    // `> 0`, not merely `!== null`. Open Dental writes PatNum 0 on an
+    // appointment that carries no patient — a blockout, or a row somebody
+    // started and never attached anybody to — and 0 is not a patient. Passing
+    // it on made services/odPatientCache.js throw ("PatNum must be a positive
+    // integer"), which readDay reported as a failed read, which 502'd the WHOLE
+    // day. One unattached row must not take a hygienist's whole schedule down;
+    // it comes back as an appointment with no name, which is what it is.
+    if (patNum !== null && patNum > 0 && !seen.has(patNum)) {
       seen.add(patNum);
       distinctPatNums.push(patNum);
     }
@@ -575,7 +582,11 @@ async function readDay(odGet, { date, office }) {
   const opsByNum = new Map(ops.operatories.map((o) => [o.opNum, o]));
 
   const appointments = ordered.map((r) => {
-    const patNum = odInt(r.PatNum);
+    // Same rule as the fan-out above: PatNum 0 is Open Dental's "no patient on
+    // this appointment", and reporting it as a PatNum would let a caller
+    // attach a visit — and one slice later a chart note — to patient zero.
+    const rawPatNum = odInt(r.PatNum);
+    const patNum = rawPatNum !== null && rawPatNum > 0 ? rawPatNum : null;
     const patient = patNum !== null ? patients.byPatNum.get(patNum) : undefined;
     const opNum = odInt(r.Op);
     const op = opNum !== null ? opsByNum.get(opNum) : undefined;
