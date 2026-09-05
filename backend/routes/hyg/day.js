@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * GET /api/hyg/day?office=<key>&date=YYYY-MM-DD — one office's hygiene day.
+ * GET /api/hyg/day?office=<key>&date=YYYY-MM-DD&scope=hygiene|all — one office's
+ * hygiene day.
  *
  * The whole schedule for one day, in one pull, shaped for a screen a hygienist
  * reads standing at a chair. Read-only: there is no non-GET route in this
@@ -53,6 +54,13 @@
  * The rows go in ONE statement (`auditMany`), not a sequential await per
  * patient: forty patients was forty database round trips in front of the
  * response. Still one ROW per patient — only the trip is shared.
+ *
+ * AND ONE ROW PER PATIENT **SERVED**, not per patient on the date. Under the
+ * default `scope=hygiene` the doctors' patients are never fetched, never named
+ * and never sent — so they are not disclosed, and a trail that recorded them
+ * would be claiming a disclosure that did not happen. The rows are built from
+ * `day.appointments`, which is exactly what the response carries, so this is
+ * true by construction rather than by remembering.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE AUDIT FIRES ON A CACHE HIT TOO. THIS IS THE TRAP.
@@ -121,6 +129,21 @@ router.get(
       });
     }
 
+    // Defaults to the hygiene lens. An unrecognised scope is a 400 rather than
+    // a silent fallback: "all" and "hygiene" differ by how many patients are
+    // disclosed, and guessing which one a caller meant is not a decision this
+    // route may make on its own.
+    const rawScope = req.query.scope === undefined ? 'hygiene' : String(req.query.scope).trim();
+    if (rawScope !== 'hygiene' && rawScope !== 'all') {
+      return res.status(400).json({
+        success: false,
+        error: "scope must be 'hygiene' or 'all'",
+        code: 'INVALID_SCOPE',
+        office,
+      });
+    }
+    const scope = rawScope;
+
     // Office readiness BEFORE anything else. Unknown office, hygiene not
     // switched on here, switch on but no customer key — each has its own
     // `reason`, and none of them falls back to another practice's client.
@@ -141,7 +164,7 @@ router.get(
 
     let day;
     try {
-      day = await odDay.readDay(odGet, { date, office });
+      day = await odDay.readDay(odGet, { date, office, scope });
     } catch (err) {
       console.error('[hyg/day] office=' + office + ' date=' + date + ' read threw');
       await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
@@ -179,7 +202,8 @@ router.get(
 
     const cost = day.stats;
     console.log(
-      `[hygday] office=${office} date=${date} appts=${day.appointments.length} ` +
+      `[hygday] office=${office} date=${date} scope=${scope} appts=${day.appointments.length} ` +
+        `hidden=${day.excludedByScope} ` +
         `patients=${cost.patientsRequested} od_list=${cost.odListReads} od_patient=${cost.odPatientReads} ` +
         `cache_hit=${cost.patientCacheHits} cache_dedup=${cost.patientCacheDeduped} ms=${cost.durationMs}`
     );
@@ -201,6 +225,11 @@ router.get(
       // broken, unscheduled, planned, patient notes. Reported rather than
       // silently dropped, so "my 2pm is missing" has an answer.
       excludedByStatus: day.excludedByStatus,
+      // Which appointments this read served, and how many it did not. The
+      // second number is what lets the screen say "3 doctor appointments are
+      // not shown" instead of leaving a hygienist to wonder.
+      scope: day.scope,
+      excludedByScope: day.excludedByScope,
       // The SCHEDULE is incomplete: an appointment is missing and the screen
       // must say so. Distinct from patientNamesTruncated, which means every
       // appointment is here and some carry no name — see services/hyg/odDay.js.

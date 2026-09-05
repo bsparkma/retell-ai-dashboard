@@ -38,18 +38,29 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Columns3,
   Info,
+  List,
   PlugZap,
   RefreshCw,
 } from "lucide-react";
 
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
-import { isOfficeId, type HygDayResponse, type OfficeId } from "@shared/hyg/contract";
+import {
+  isOfficeId,
+  type HygAppointment,
+  type HygDayResponse,
+  type HygDayScope,
+  type OfficeId,
+} from "@shared/hyg/contract";
 import { fetchDay, HygApiError, HYG_OFFICE_LABELS } from "@/features/hyg/api";
 import {
+  byStartTime,
   columnLabel,
+  filterByProvider,
   formatDayHeading,
   groupByOperatory,
+  providersOnDay,
   shiftIsoDate,
   summarise,
   todayIso,
@@ -203,6 +214,56 @@ function PickAnOffice() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// What this browser remembers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The view, the lens and the hygienist picker persist PER BROWSER.
+ *
+ * They are conveniences, not state anyone else needs: nobody's chart, nobody's
+ * audit trail and nobody's other device depends on which way a hygienist likes
+ * to read her day. localStorage is exactly the right size of promise for that,
+ * and every read is wrapped because a private window, cleared site data or a
+ * browser set to block storage all throw rather than returning null.
+ */
+const PREF_KEY = "hyg.day.prefs.v1";
+
+interface DayPrefs {
+  view: "list" | "grid";
+  /** `hygiene` is the DEFAULT — the doctors' chairs are hidden until asked for. */
+  scope: HygDayScope;
+  /** A provider name, or null for all of them. */
+  provider: string | null;
+}
+
+const DEFAULT_PREFS: DayPrefs = { view: "list", scope: "hygiene", provider: null };
+
+function readPrefs(): DayPrefs {
+  try {
+    const raw = localStorage.getItem(PREF_KEY);
+    if (!raw) return DEFAULT_PREFS;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return DEFAULT_PREFS;
+    const value = parsed as Partial<DayPrefs>;
+    return {
+      view: value.view === "grid" ? "grid" : "list",
+      scope: value.scope === "all" ? "all" : "hygiene",
+      provider: typeof value.provider === "string" ? value.provider : null,
+    };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+function writePrefs(prefs: DayPrefs) {
+  try {
+    localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+  } catch {
+    /* a preference that cannot be remembered is not worth an error */
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The day itself
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -269,6 +330,18 @@ function Notices({ day }: { day: HygDayResponse }) {
         `${n === 1 ? "is" : "are"} not shown.`,
     );
   }
+  // THE LENS SAYS WHAT IT IS HIDING. A hygienist wondering where the 2pm
+  // doctor visit went gets an answer rather than a mystery — the same quiet
+  // tone as the line above, because it is the same kind of fact.
+  if (day.scope === "hygiene" && day.excludedByScope > 0) {
+    const n = day.excludedByScope;
+    notices.push(
+      `${n} ${n === 1 ? "appointment" : "appointments"} on this date ${
+        n === 1 ? "is" : "are"
+      } not a hygiene visit and ${n === 1 ? "is" : "are"} not shown. ` +
+        "Show the full day to see them.",
+    );
+  }
   if (notices.length === 0) return null;
 
   return (
@@ -286,10 +359,42 @@ function Notices({ day }: { day: HygDayResponse }) {
   );
 }
 
-function DayColumns({ day }: { day: HygDayResponse }) {
+/**
+ * The day as a LIST, in time order. The default.
+ *
+ * Beau, the first time a real schedule was on this screen: the day is fine as a
+ * list. The paper routing slip is a list, a hygienist reads her day forwards in
+ * time, and the column grid — which is genuinely better for seeing two chairs
+ * running in parallel — is one tap away rather than gone.
+ *
+ * The chair moves onto the row, because in a list it is a property of the
+ * appointment rather than the axis it is arranged along.
+ */
+function DayList({ appointments, day }: { appointments: HygAppointment[]; day: HygDayResponse }) {
+  const rows = useMemo(() => byStartTime(appointments), [appointments]);
+  return (
+    <div className="mt-3 space-y-2" data-testid="hyg-day-list">
+      {rows.map((appt) => (
+        <div key={String(appt.aptNum ?? appt.start)} className="flex items-stretch gap-2">
+          <div className="w-28 shrink-0 pt-3 text-xs text-muted-foreground">
+            {/* The chair, beside the card rather than above a column. Never
+                "Op null": an appointment Open Dental gave no operatory is a
+                real appointment with an unknown chair. */}
+            {appt.opName ?? (appt.opNum !== null ? `Op ${appt.opNum}` : "No chair")}
+          </div>
+          <div className="min-w-0 flex-1">
+            <AppointmentCard appointment={appt} office={day.office} date={day.date} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DayColumns({ day, appointments }: { day: HygDayResponse; appointments: HygAppointment[] }) {
   const columns = useMemo(
-    () => groupByOperatory(day.appointments, day.operatories),
-    [day.appointments, day.operatories],
+    () => groupByOperatory(appointments, day.operatories),
+    [appointments, day.operatories],
   );
 
   return (
@@ -331,6 +436,15 @@ export default function HygDay() {
   const [date, setDate] = useState<string>(() => todayIso());
   const [state, setState] = useState<DayState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
+  const [prefs, setPrefs] = useState<DayPrefs>(() => readPrefs());
+
+  const updatePrefs = useCallback((patch: Partial<DayPrefs>) => {
+    setPrefs((current) => {
+      const next = { ...current, ...patch };
+      writePrefs(next);
+      return next;
+    });
+  }, []);
 
   // A hygiene day belongs to ONE office. There is no all-offices fan-out here,
   // unlike RCM's list screens: a hygienist is standing in one building, and a
@@ -342,7 +456,10 @@ export default function HygDay() {
     if (office === null) return;
     const abort = new AbortController();
     setState({ kind: "loading" });
-    fetchDay(office, date, abort.signal)
+    // THE SCOPE IS PART OF THE REQUEST. Widening the lens is a SECOND fetch,
+    // because the doctors' patients were never read the first time — that is
+    // the saving, and it is the honest cost of asking for them.
+    fetchDay(office, date, prefs.scope, abort.signal)
       .then((day) => {
         if (!abort.signal.aborted) setState({ kind: "ready", day });
       })
@@ -361,7 +478,7 @@ export default function HygDay() {
         });
       });
     return () => abort.abort();
-  }, [office, date, reloadKey]);
+  }, [office, date, prefs.scope, reloadKey]);
 
   const retry = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -371,6 +488,24 @@ export default function HygDay() {
   // SERVER's own sentence, so the two can never disagree on screen.
   const officeName =
     selected?.officeName ?? (office ? HYG_OFFICE_LABELS[office] : null) ?? "this office";
+
+  /** The names the picker offers, from the day that actually loaded. */
+  const providers = useMemo(
+    () => (state.kind === "ready" ? providersOnDay(state.day.appointments) : []),
+    [state],
+  );
+
+  /**
+   * What is drawn. The SERVER decided which appointments this page is allowed
+   * to have (the scope); this only narrows what is drawn from them.
+   */
+  const visible = useMemo(
+    () =>
+      state.kind === "ready"
+        ? filterByProvider(state.day.appointments, prefs.provider)
+        : ([] as HygAppointment[]),
+    [state, prefs.provider],
+  );
 
   return (
     <div className="p-6" data-testid="hyg-day">
@@ -431,6 +566,69 @@ export default function HygDay() {
         </div>
       </div>
 
+      {/* The lens, the view and the hygienist. All three persist per browser;
+          none of them changes what anybody else sees. */}
+      {state.kind === "ready" ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="hyg-day-controls">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className={cn(TAP, prefs.view === "list" && "border-primary bg-primary/10")}
+              aria-pressed={prefs.view === "list"}
+              onClick={() => updatePrefs({ view: "list" })}
+              data-testid="hyg-view-list"
+            >
+              <List size={16} />
+              List
+            </button>
+            <button
+              type="button"
+              className={cn(TAP, prefs.view === "grid" && "border-primary bg-primary/10")}
+              aria-pressed={prefs.view === "grid"}
+              onClick={() => updatePrefs({ view: "grid" })}
+              data-testid="hyg-view-grid"
+            >
+              <Columns3 size={16} />
+              Chairs
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className={cn(TAP, prefs.scope === "all" && "border-primary bg-primary/10")}
+            aria-pressed={prefs.scope === "all"}
+            onClick={() =>
+              updatePrefs({ scope: prefs.scope === "all" ? "hygiene" : "all", provider: null })
+            }
+            data-testid="hyg-scope-toggle"
+          >
+            {prefs.scope === "all" ? "Showing the full day" : "Show full day"}
+          </button>
+
+          {/* DISPLAY-ONLY. Open Dental has no provider filter on /appointments —
+              the whole day comes down in one paged pull regardless — so this
+              filters what is drawn and nothing else. */}
+          {providers.length > 0 ? (
+            <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <span className="sr-only">Hygienist</span>
+              <select
+                className={cn(TAP, "bg-background")}
+                value={prefs.provider ?? ""}
+                onChange={(e) => updatePrefs({ provider: e.target.value || null })}
+                data-testid="hyg-provider-picker"
+              >
+                <option value="">All hygienists</option>
+                {providers.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
+      ) : null}
+
       {office === null ? (
         // The roster is still arriving, or the picker is on "All Offices".
         // Never an empty grid: it would read as "nobody is booked" for a day
@@ -449,14 +647,30 @@ export default function HygDay() {
           <Notices day={state.day} />
           {/* The date the SERVER answered for, not the one this page asked
               with. Same reason as the heading above: the sentence claims a
-              specific day loaded, so it has to name the day that loaded. */}
+              specific day loaded, so it has to name the day that loaded.
+              Notices runs FIRST so an empty hygiene day that is empty BECAUSE
+              of the lens says so above the "nobody is booked" panel. */}
           <EmptyDay date={state.day.date} officeName={state.day.officeName} />
         </>
       ) : (
         <>
           <SummaryStrip day={state.day} />
           <Notices day={state.day} />
-          <DayColumns day={state.day} />
+          {visible.length === 0 ? (
+            // Filtered to nothing by the PICKER — a different fact from an
+            // empty day, and it must not borrow the empty day's words.
+            <p
+              className="mt-4 text-sm text-muted-foreground"
+              data-testid="hyg-day-filtered-empty"
+            >
+              No appointments for {prefs.provider}. Choose “All hygienists” to see the rest of
+              the day.
+            </p>
+          ) : prefs.view === "list" ? (
+            <DayList appointments={visible} day={state.day} />
+          ) : (
+            <DayColumns day={state.day} appointments={visible} />
+          )}
         </>
       )}
     </div>

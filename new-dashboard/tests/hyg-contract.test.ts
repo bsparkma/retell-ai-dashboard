@@ -301,6 +301,12 @@ describe("the day response contract matches the backend that builds it", () => {
       warnings: [],
       flagSources: { premed: "od", allergies: "not_read" },
       excludedByStatus: 0,
+      // The hygiene lens: which appointments this read served, and how many it
+      // did not. Both are REQUIRED on the wire — a payload without them is a
+      // backend that predates the lens, and the parse should refuse it rather
+      // than let a screen assume "all".
+      scope: "hygiene",
+      excludedByScope: 0,
       truncated: false,
       patientNamesTruncated: false,
       stats: {

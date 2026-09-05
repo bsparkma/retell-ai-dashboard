@@ -126,6 +126,8 @@ export const DAY: HygDayResponse = {
     openTcCase: "not_read",
   },
   excludedByStatus: 0,
+  scope: "hygiene",
+  excludedByScope: 0,
   truncated: false,
   patientNamesTruncated: false,
   stats: {
@@ -210,7 +212,10 @@ afterEach(cleanup);
 describe("the day view's four states are four different screens", () => {
   it("renders the populated day", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    // THE LIST IS THE DEFAULT as of the hygiene lens: the paper routing slip is
+    // a list and a hygienist reads her day forwards in time. The column grid is
+    // one tap away, and its own test is below.
+    await screen.findByTestId("hyg-day-list");
 
     expect(screen.getAllByTestId("hyg-appointment-card")).toHaveLength(3);
     expect(screen.queryByTestId("hyg-day-empty")).toBeNull();
@@ -225,7 +230,7 @@ describe("the day view's four states are four different screens", () => {
 
     expect(screen.queryByTestId("hyg-day-empty")).toBeNull();
     expect(screen.queryByTestId("hyg-day-error")).toBeNull();
-    expect(screen.queryByTestId("hyg-day-columns")).toBeNull();
+    expect(screen.queryByTestId("hyg-day-list")).toBeNull();
   });
 
   it("renders an EMPTY day that says it loaded", async () => {
@@ -304,7 +309,7 @@ describe("the day view's four states are four different screens", () => {
     // "All offices" is not a hygiene day. An empty grid here would read as
     // "nobody is booked" for a day nobody has asked for yet.
     expect(screen.queryByTestId("hyg-day-empty")).toBeNull();
-    expect(screen.queryByTestId("hyg-day-columns")).toBeNull();
+    expect(screen.queryByTestId("hyg-day-list")).toBeNull();
   });
 });
 
@@ -313,7 +318,7 @@ describe("the day view's four states are four different screens", () => {
 describe("the appointment card", () => {
   it("draws an UNKNOWN flag differently from a clear one", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
 
     // Every card in the fixture has unread flags, so every card has one.
     expect(screen.getAllByTestId("hyg-flag-unknown").length).toBeGreaterThan(0);
@@ -323,7 +328,7 @@ describe("the appointment card", () => {
 
   it("says what it does not know instead of filling it in", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
 
     // The third fixture card is missing a name, a length, a type and a provider.
     expect(screen.getByText(/name unavailable/i)).toBeTruthy();
@@ -335,7 +340,7 @@ describe("the appointment card", () => {
 
   it("links every card to its visit, WITH the office and the date on it", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
 
     const links = screen
       .getAllByTestId("hyg-appointment-card")
@@ -355,7 +360,7 @@ describe("the appointment card", () => {
     // Two Apple minimums stacked. This is used standing at a chair by somebody
     // who has just put down an instrument, not at a desk with a mouse.
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
     for (const card of screen.getAllByTestId("hyg-appointment-card")) {
       expect(card.className).toMatch(/min-h-\[88px\]/);
     }
@@ -388,7 +393,7 @@ describe("the day says what it could not read", () => {
 
   it("shows nothing when the day is whole", async () => {
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
     // An empty notices strip on a good day is how the amber one keeps meaning
     // something on a bad one.
     expect(screen.queryByTestId("hyg-day-notices")).toBeNull();
@@ -424,7 +429,7 @@ describe("refresh", () => {
   it("re-asks the server rather than re-rendering what it has", async () => {
     const { fetchDay } = await import("@/features/hyg/api");
     renderAt(<HygDay />, "/hyg/day");
-    await screen.findByTestId("hyg-day-columns");
+    await screen.findByTestId("hyg-day-list");
     const before = vi.mocked(fetchDay).mock.calls.length;
 
     screen.getByTestId("hyg-day-refresh").click();

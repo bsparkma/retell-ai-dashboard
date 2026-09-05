@@ -148,6 +148,57 @@ function dayRoutes(patNums) {
   };
 }
 
+/**
+ * A mixed day: two hygiene appointments and two of the doctors'.
+ *
+ * `IsHygiene` is on the APPOINTMENT, which is the flag the scope filter reads —
+ * never the chair's, because a hygiene appointment can sit in a doctor's op.
+ */
+function mixedDayRoutes() {
+  const rows = [
+    { AptNum: 900200, PatNum: 12827, IsHygiene: true, Op: 2 },
+    { AptNum: 900201, PatNum: 990003, IsHygiene: false, Op: 5 },
+    { AptNum: 900202, PatNum: 12828, IsHygiene: true, Op: 5 },
+    { AptNum: 900203, PatNum: 990004, IsHygiene: false, Op: 6 },
+  ];
+  return {
+    '/appointments': rows.map((r, i) => ({
+      ...r,
+      AptStatus: 'Scheduled',
+      Pattern: 'XXXXXXXXXXXX',
+      AptDateTime: '2026-09-08 0' + (8 + i) + ':00:00',
+    })),
+    ...Object.fromEntries(
+      rows.map((r) => [
+        '/patients/' + r.PatNum,
+        { PatNum: r.PatNum, LName: 'Test 2', FName: 'Stedi', Premed: false, MedUrgNote: '' },
+      ])
+    ),
+  };
+}
+
+test('the warm warms the DEFAULT SCOPE — the hygiene patients, not the doctors’', async () => {
+  // GET /api/hyg/day defaults to scope=hygiene, so these are the entries the
+  // default screen will actually hit. Warming the doctors' patients too would
+  // spend the shared credential before the practice opens on records nothing
+  // asks for, and the cache is short-lived enough that they would likely expire
+  // before anything did.
+  const od = fakeOd(mixedDayRoutes());
+  await withOffices({ hygOffices: ['roland'], od }, async () => {
+    const result = await hygDayWarm.runNow({ date: '2026-09-08' });
+    assert.equal(result.offices[0].ok, true);
+    assert.equal(result.offices[0].patients, 2, 'two hygiene patients, not four');
+
+    const fetched = od.calls
+      .filter((c) => c.path.startsWith('/patients/'))
+      .map((c) => c.path)
+      .sort();
+    // The overflow case is included: 12828's hygiene appointment is in op 5,
+    // the doctor's chair, and the filter is the APPOINTMENT's own flag.
+    assert.deepEqual(fetched, ['/patients/12827', '/patients/12828']);
+  });
+});
+
 // ─── The switch ──────────────────────────────────────────────────────────────
 
 test('with no office switched on for hygiene, the warm touches NOTHING', async () => {

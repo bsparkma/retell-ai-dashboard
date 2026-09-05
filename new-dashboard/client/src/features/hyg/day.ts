@@ -171,6 +171,66 @@ export function columnLabel(column: DayColumn): string {
 // The summary strip
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The day's appointments in time order — the LIST view's whole layout rule.
+ *
+ * The paper routing slip is a list and the day reads as one, which is what Beau
+ * said the first time a real schedule was on this screen. An appointment with
+ * no start time sorts LAST rather than being dropped or floated to 8am: a visit
+ * whose time Open Dental would not give us is still a visit somebody is coming
+ * to, and putting it first would be a guess printed as a fact.
+ */
+export function byStartTime(
+  appointments: readonly HygAppointment[],
+): HygAppointment[] {
+  return [...appointments].sort((a, b) => {
+    const aKnown = a.start !== null;
+    const bKnown = b.start !== null;
+    if (aKnown !== bKnown) return aKnown ? -1 : 1;
+    return startMinutes(a.start) - startMinutes(b.start);
+  });
+}
+
+/**
+ * Every provider name on the day, for the hygienist picker.
+ *
+ * DISPLAY-ONLY, and it has to be: Open Dental has no provider filter on
+ * `/appointments`, so the whole day comes down in one paged pull whatever this
+ * picker says (H0 §5, and the header of services/hyg/odDay.js). There is
+ * nothing to push this filter into.
+ *
+ * A null provider name is not offered as an option — "unknown" is not a person
+ * to filter by — but those appointments are never hidden either: see
+ * `filterByProvider`.
+ */
+export function providersOnDay(appointments: readonly HygAppointment[]): string[] {
+  const names = new Set<string>();
+  for (const appt of appointments) {
+    if (appt.providerName) names.add(appt.providerName);
+  }
+  // Array.from, not a spread: this package's tsconfig has no `target` and
+  // defaults to ES5, where spreading a Set is a type error. `groupByOperatory`
+  // documents the same constraint.
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The appointments for one provider, or all of them.
+ *
+ * ⚠️ AN APPOINTMENT WITH NO PROVIDER IS ALWAYS SHOWN. ⚠️ Filtering it out would
+ * mean a patient disappears because Open Dental did not label their visit,
+ * which is the same silent loss the hygiene lens is careful about one level up.
+ * A hygienist filtering to her own name would rather see one extra card than
+ * miss one.
+ */
+export function filterByProvider(
+  appointments: readonly HygAppointment[],
+  provider: string | null,
+): HygAppointment[] {
+  if (provider === null) return [...appointments];
+  return appointments.filter((a) => a.providerName === null || a.providerName === provider);
+}
+
 export interface DaySummary {
   /** Every appointment on the day. */
   total: number;
