@@ -206,6 +206,9 @@ async function sendNote(payload, ctx) {
 
   const written = await odWriter.writeGroupNote(ctx.od, ctx.odGet, {
     aptNum: ctx.visit.aptNum,
+    // REQUIRED by Open Dental, and it comes from the VISIT — which took it from
+    // Open Dental's own answer for the appointment, never from a request body.
+    patNum: ctx.visit.patNum,
     procNums: procedures.procNums,
     note: payload.text,
     provNum: ctx.appointment.provHyg ?? ctx.appointment.provNum ?? null,

@@ -878,6 +878,12 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
    *                          pins the properties that keep it narrow.
    *   rcm/reseed-prep.js     §10.8 — creates the seven disposable claims the
    *                          staging reseed's four 835s pay. POST only.
+   *   probe-hyg-groupnote.js the hygiene GroupNote bisect. The first real hyg
+   *                          send came back "Invalid JSON" and this is what
+   *                          finds out which part of the payload Open Dental
+   *                          refuses. POST only, one designated test patient
+   *                          only, and it STOPS at the first success because a
+   *                          landed probe is a permanent procnote row.
    *
    * Deliberately NOT here: `rcm-s10-inventory.js`, `rcm-s10-835.js`,
    * `rcm/reseed-835.js`, `rcm/reseed-targets.js` and
@@ -906,6 +912,11 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
     'rcm-s10-prep.js',
     'rcm-s11-unwind.js',
     'rcm/reseed-prep.js',
+    // NOT an RCM script. This guard scans the whole of scripts/, which is the
+    // point of it — "put it in scripts/" is the evasion it closes, and that is
+    // as true of a hygiene script as an RCM one. Adding a name here is the
+    // review decision this list exists to force.
+    'probe-hyg-groupnote.js',
   ]);
 
   const WRITE_SIGNALS = [

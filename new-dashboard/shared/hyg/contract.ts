@@ -257,31 +257,62 @@ const HANDOFF_CATEGORY_PRIORITY: HandoffCategory[] = [
 ];
 
 /**
+ * One treatment item's category → the handoff category it contributes.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * EXHAUSTIVE, SO A NEW CATEGORY CANNOT FALL THROUGH
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The version ported from the prototype was an if/else chain that handled
+ * Prosth, Endo, Surgery, Cosmetic, Ortho and Perio — and **never plain
+ * `"Restorative"`**, which fell to the else and became `"Other"`. Beau's first
+ * real handoff was four Restorative items and went to TC as **Category: Other**.
+ *
+ * A `switch` with no `default`, over a union, is checked by TypeScript: the
+ * function's declared return type makes a missing branch a compile error rather
+ * than a silent "Other". That is the property this rewrite is for — the bug was
+ * not a typo, it was a shape that let a case go missing.
+ *
+ * `Other` survives for exactly two things: the `Other` CATEGORY itself, and the
+ * empty list, which `deriveCategory` handles before it gets here.
+ */
+function handoffCategoryFor(item: TreatmentItem): HandoffCategory {
+  switch (item.category) {
+    case "Prosth":
+      // An implant is the one restorative case a treatment coordinator preps
+      // differently, and the CODE is what distinguishes it.
+      return item.code === "IMP" || item.code === "Mini" ? "Implant" : "Restorative";
+    case "Restorative":
+      // THE MISSING BRANCH. Four fillings are a restorative case.
+      return "Restorative";
+    case "Endo":
+    case "Surgery":
+      // Folded in: a TC's pipeline does not distinguish endo from surgery.
+      return "Restorative";
+    case "Cosmetic":
+      return "Cosmetic";
+    case "Ortho":
+      return "Ortho";
+    case "Perio":
+      return "Perio";
+    case "Other":
+      return "Other";
+  }
+}
+
+/**
  * The single handoff category that best represents a set of treatment items.
  *
- * Ported from the prototype unchanged. It is what removes the manual category
- * pick from the handoff: a hygienist has already said what each item IS, and
- * asking her to also classify the visit is asking the same question twice and
- * accepting two answers.
+ * It is what removes the manual category pick from the handoff: a hygienist has
+ * already said what each item IS, and asking her to also classify the visit is
+ * asking the same question twice and accepting two answers.
  */
 export function deriveCategory(items: readonly TreatmentItem[]): HandoffCategory {
+  // An empty list has no category, and guessing "Restorative" for it would put
+  // an empty case in a real queue. This is the ONLY place "Other" means "we do
+  // not know" rather than "the Other category".
   if (items.length === 0) return "Other";
   const present = new Set<HandoffCategory>();
-  for (const item of items) {
-    if (item.category === "Prosth") {
-      present.add(item.code === "IMP" || item.code === "Mini" ? "Implant" : "Restorative");
-    } else if (item.category === "Endo" || item.category === "Surgery") {
-      present.add("Restorative");
-    } else if (item.category === "Cosmetic") {
-      present.add("Cosmetic");
-    } else if (item.category === "Ortho") {
-      present.add("Ortho");
-    } else if (item.category === "Perio") {
-      present.add("Perio");
-    } else {
-      present.add("Other");
-    }
-  }
+  for (const item of items) present.add(handoffCategoryFor(item));
   return HANDOFF_CATEGORY_PRIORITY.find((c) => present.has(c)) ?? "Other";
 }
 

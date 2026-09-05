@@ -36,6 +36,23 @@
  * module matches /\bsigned\b/i. A compliance claim is not a styling decision.
  *
  * ═════════════════════════════════════════════════════════════════════════════
+ * EVERY LINE IS OD-SAFE BEFORE IT IS FINGERPRINTED
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `line()` runs every composed line through `utils/sanitizeForOd` — the same
+ * function the voice module has used on commlog notes for months. Typographic
+ * punctuation (`·`, `—`, smart quotes) becomes ASCII here, in the COMPOSER,
+ * which is the only place it can go:
+ *
+ *   **the preview IS the write.** The fingerprint is taken over these lines and
+ *   the note text is built from them. A writer that quietly rewrote the text
+ *   after fingerprinting would break that guarantee from the inside — the
+ *   hygienist would confirm one string and a different one would land.
+ *
+ * So the middot in "#30 · Crown · Urgent" is now a hyphen ON SCREEN as well as
+ * in the chart, and those are the same bytes. `stagedWriteComposer.test.js`
+ * asserts every composed line is inside the safe set.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
  * WHAT IS NOT HERE
  * ═════════════════════════════════════════════════════════════════════════════
  * `perio` is a kind in the contract's vocabulary and composes to NOTHING in
@@ -46,6 +63,11 @@
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
+// THE PLATFORM'S OWN SANITIZER, not a second one. The voice module has run
+// every commlog note through this for months (routes/unifiedCalls.js,
+// services/openDentalSync.js); this module was the one Open Dental note path
+// that did not, and the first real send came back "Invalid JSON".
+const { sanitizeForOd } = require('../../utils/sanitizeForOd');
 
 /**
  * The typed name block that stands in for a signature, and is not one.
@@ -53,10 +75,35 @@ const contract = require('../../hyg/contract.gen.cjs');
  */
 const NAME_BLOCK_PREFIX = 'Entered in CareIN by';
 
+/**
+ * How lines are joined in the note text Open Dental receives.
+ *
+ * A bare LF, which is what the first real send used and what the preview shows.
+ * Open Dental's own docs prefer CRLF in note fields and the probe script tests
+ * both — until that has actually been run against staging, changing it would be
+ * a guess, and a guess made at the same time as two real fixes is a guess
+ * nobody could later attribute.
+ */
+const NOTE_NEWLINE = '\n';
+
 /** Human labels for the slip's chip ids, so a preview reads like the paper. */
 const DONE_TODAY_LABELS = Object.fromEntries(
   contract.DONE_TODAY_OPTIONS.map((o) => [o.id, o.label])
 );
+
+/**
+ * One composed line, made safe for an Open Dental note field.
+ *
+ * The single choke point: every string that reaches a `preview` array goes
+ * through here, so "the preview is ASCII" is a property of the composer rather
+ * than of whoever remembered to call the sanitizer.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function line(value) {
+  return sanitizeForOd(String(value));
+}
 
 /**
  * `#3, #14` — or "Whole mouth". Never an empty string: a treatment line whose
@@ -185,7 +232,7 @@ function recordsLines(items, recordsStatus) {
  *   `unavailable` — this kind is not built yet. `empty` — there is genuinely
  *   nothing to send, which is a refusal rather than an empty envelope.
  */
-function compose(kind, { visit, items, actor }) {
+function composeRaw(kind, { visit, items, actor }) {
   const slip = visit.slip || {};
   const dateLabel = visit.visitDate || 'today';
 
@@ -301,8 +348,42 @@ function compose(kind, { visit, items, actor }) {
   return { unavailable: `'${kind}' is not a staged write this version knows how to compose` };
 }
 
+/**
+ * Compose, then make every word of it OD-safe. THE ONLY EXPORT.
+ *
+ * One choke point rather than a `line()` call at forty push sites: "the preview
+ * is ASCII" has to be a property of this module, not of whoever remembered. The
+ * payload is sanitized in the same pass, and the note's `text` is rebuilt from
+ * the sanitized lines — so the fingerprinted preview and the transmitted string
+ * are the same bytes, which is what "the preview IS the write" means.
+ *
+ * @param {'router'|'perio'|'note'|'tc-handoff'} kind
+ * @param {{ visit: Record<string, any>, items: Record<string, any>[], actor: string }} ctx
+ */
+function compose(kind, ctx) {
+  const composed = composeRaw(kind, ctx);
+  if (!composed || !composed.preview) return composed;
+
+  const preview = composed.preview.map(line);
+  const payload = { ...composed.payload };
+  if (Array.isArray(payload.lines)) payload.lines = payload.lines.map(line);
+  if (typeof payload.nameBlock === 'string') payload.nameBlock = line(payload.nameBlock);
+  // REBUILT from the sanitized lines, not sanitized separately — two sanitizers
+  // over two strings is two chances for them to disagree.
+  if (typeof payload.text === 'string') payload.text = preview.join(NOTE_NEWLINE);
+
+  return {
+    title: line(composed.title),
+    summary: line(composed.summary),
+    preview,
+    payload,
+  };
+}
+
 module.exports = {
   compose,
+  // Exported so a test can state what the sanitizer actually changed.
+  composeRaw,
   NAME_BLOCK_PREFIX,
   // Exported for tests and for the route's records/handoff summary.
   teethLabel,
