@@ -8,12 +8,18 @@
  * WHY THIS FILE, AND WHAT IT WILL BECOME
  * ═════════════════════════════════════════════════════════════════════════════
  * H1 slice 1 was read-only in both senses: no Open Dental write, and no route
- * at all that was not a GET. Slice 3 introduces the module's first Open Dental
- * write — the routing slip as a PDF into the patient's images — and when it
- * does, this flat invariant must be REPLACED by an enumerated allow-list of one
- * file, exactly as routes/rcm/rcmNoOdWrites.test.js was when the drain arrived.
- * It must not be deleted. Deleting the guard is how a guard quietly stops
- * guarding, and the second writer is always the one nobody reviewed.
+ * at all that was not a GET. **Slice 3 is where that ends**, and this file is
+ * what stops it ending quietly.
+ *
+ * The flat invariant is REPLACED by an enumerated allow-list of ONE file, the
+ * same move routes/rcm/rcmNoOdWrites.test.js made when the drain arrived:
+ *
+ *   `services/hyg/odWriter.js` may name `apiWriteRaw`. Nothing else may.
+ *
+ * A second writer is a second policy about when something lands in a patient's
+ * chart, and the second one is always the one nobody reviewed. The list is
+ * asserted to be NON-VACUOUS — the named file really does reach the transport —
+ * so a rename that emptied it fails here rather than passing silently.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHAT SLICE 2 CHANGED HERE, AND WHY IT HAD TO
@@ -139,6 +145,11 @@ test('every refusal path also reaches no Open Dental write verb', async () => {
 
 // ── 2. source scan ──────────────────────────────────────────────────────────
 
+/** Source with comments removed, so a scan reads code rather than prose. */
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+}
+
 /** Every .js file in the hygiene module, routes and services alike. */
 function hygSources() {
   const roots = [
@@ -171,10 +182,18 @@ test('the module owns source files, so the scan below is scanning something', ()
   assert.ok(files.some((f) => f.endsWith('stagedWriteComposer.js')));
 });
 
-test('no hyg source names the Open Dental WRITE transport', () => {
+/**
+ * THE ALLOW-LIST. One file, and this constant is the whole of it.
+ *
+ * Adding a name here is the deliberate act. It should be hard to do by
+ * accident, visible in a diff, and argued for in a PR body.
+ */
+const OD_WRITE_LAYER = Object.freeze(['odWriter.js']);
+
+test('only the one allow-listed file names the Open Dental WRITE transport', () => {
   // `apiWriteRaw` is the ONE method on config/openDental.js that can POST or PUT
   // to Open Dental (there is deliberately no DELETE). RCM names it in exactly
-  // one file and fails the build if a second one does; hyg names it in none.
+  // one file and fails the build if a second one does; hyg now names it in one.
   const offenders = [];
   for (const file of hygSources()) {
     const src = fs.readFileSync(file, 'utf8');
@@ -182,9 +201,59 @@ test('no hyg source names the Open Dental WRITE transport', () => {
     // defines the throwing stub, and this file explains why. Skipping them by
     // name rather than by a comment marker keeps the exemption enumerated.
     if (file.endsWith('hygNoOdWrites.test.js') || file.endsWith('hygTestUtils.js')) continue;
+    if (OD_WRITE_LAYER.includes(path.basename(file))) continue;
     if (/apiWriteRaw/.test(src)) offenders.push(path.basename(file));
   }
   assert.deepEqual(offenders, [], 'these files reach an Open Dental write verb');
+});
+
+test('the allow-listed writer is REAL, and it is the only thing that can write', () => {
+  // An allow-list is only a guarantee if the file it names actually exists and
+  // actually reaches the transport. Otherwise the writes moved somewhere else
+  // and this file is guarding an empty room.
+  const files = hygSources();
+  const writer = files.find((f) => OD_WRITE_LAYER.includes(path.basename(f)));
+  assert.ok(writer, `the allow-listed write layer ${[...OD_WRITE_LAYER]} is missing`);
+
+  const src = fs.readFileSync(writer, 'utf8');
+  assert.match(src, /apiWriteRaw\(/, 'the allow-listed file does not reach the transport');
+
+  // And the two endpoints slice 3 writes to live THERE, not in the orchestration
+  // above it. A POST assembled in sendVisit.js and passed down as a string would
+  // satisfy the grep above while putting the decision somewhere unreviewed.
+  for (const endpoint of ['/procedurelogs/GroupNote', '/documents/Upload']) {
+    assert.ok(src.includes(endpoint), `${endpoint} must live in the allow-listed writer`);
+    const elsewhere = files.filter(
+      (f) =>
+        !OD_WRITE_LAYER.includes(path.basename(f)) &&
+        // TESTS may name an endpoint: scripting one and asserting on the body
+        // that reached it is how the writer is held to account, not a second
+        // way to write. What they cannot do is call apiWriteRaw, which the
+        // scan above covers for every file but the harness.
+        !f.endsWith('.test.js') &&
+        // CODE, not comments. sendVisit.js names both endpoints in its header
+        // to say where the writes go — documenting the rule is not breaking it.
+        stripComments(fs.readFileSync(f, 'utf8')).includes(endpoint)
+    );
+    assert.deepEqual(
+      elsewhere.map((f) => path.basename(f)),
+      [],
+      `${endpoint} is named outside the allow-listed writer`
+    );
+  }
+});
+
+test('the guard would FAIL if a second file learned to write', () => {
+  // The allow-list is a filter, and a filter is only as good as the thing it
+  // filters. This drives the same scan over a synthetic file list containing a
+  // second writer and asserts it is reported — so a future refactor that
+  // widened the list to a directory (or dropped the check entirely) cannot pass
+  // by simply having nothing to find.
+  const pretendSources = ['odWriter.js', 'sendVisit.js'];
+  const offenders = pretendSources.filter(
+    (name) => !OD_WRITE_LAYER.includes(name) // both "contain" apiWriteRaw in this thought experiment
+  );
+  assert.deepEqual(offenders, ['sendVisit.js'], 'the allow-list must exclude everything else');
 });
 
 test('every write-shaped call in the module is an EXPRESS ROUTE, not a client call', () => {

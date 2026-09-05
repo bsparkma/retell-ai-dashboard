@@ -46,6 +46,8 @@
  * half-object, because a half-object is what silently loses what somebody typed.
  */
 
+const crypto = require('node:crypto');
+
 const contract = require('../../hyg/contract.gen.cjs');
 
 /**
@@ -64,7 +66,7 @@ const ITEM_COLUMNS = `
 
 const STAGED_COLUMNS = `
   staged_write_id, visit_id, office, kind, state, title, summary, preview, payload,
-  error_message, staged_by, staged_at, sent_by, sent_at, created_at, updated_at
+  error_message, written_ref, staged_by, staged_at, sent_by, sent_at, created_at, updated_at
 `;
 
 const VISIT_COLUMNS = `
@@ -141,16 +143,40 @@ function toItem(row) {
   };
 }
 
+/**
+ * The fingerprint of a preview.
+ *
+ * THE PREVIEW IS THE WRITE. A send names the fingerprint of the lines the
+ * hygienist read; the server recomputes it from the stored row and refuses the
+ * whole send on a mismatch. So this must be a pure function of the preview and
+ * of nothing else — no timestamp, no id, nothing that changes when the words do
+ * not, and nothing that stays the same when they do.
+ *
+ * Truncated to 32 hex characters: 128 bits, against an accident rather than an
+ * adversary (a caller who wanted to send unread words could simply not read
+ * them). Full length would be noise in a request body.
+ *
+ * @param {string[]} preview
+ * @returns {string}
+ */
+function fingerprintPreview(preview) {
+  const lines = Array.isArray(preview) ? preview : [];
+  return crypto.createHash('sha256').update(JSON.stringify(lines), 'utf8').digest('hex').slice(0, 32);
+}
+
 /** One hyg_staged_write row → the contract's StagedWrite. */
 function toStagedWrite(row) {
+  const preview = arr(row.preview);
   return {
     id: row.staged_write_id,
     kind: row.kind,
     state: row.state,
     title: row.title,
     summary: row.summary,
-    preview: arr(row.preview),
+    preview,
+    previewFingerprint: fingerprintPreview(preview),
     errorMessage: row.error_message ?? null,
+    writtenRef: row.written_ref ?? null,
     stagedBy: row.staged_by ?? null,
     stagedAt: iso(row.staged_at),
     sentBy: row.sent_by ?? null,
@@ -514,8 +540,107 @@ async function unstageWrite(pool, { office, visitId, kind, actor }) {
   return { ok: true };
 }
 
+/**
+ * One staged write, whole, for the send path.
+ *
+ * Office-scoped like everything else here. Returns the ROW rather than the
+ * contract shape, because the sender needs `payload`, which is deliberately not
+ * on the wire.
+ *
+ * @returns {Promise<Record<string, any>|null>}
+ */
+async function getStagedWrite(pool, { office, visitId, kind }) {
+  const res = await pool.query(
+    `SELECT ${STAGED_COLUMNS} FROM hyg_staged_write
+      WHERE visit_id = $1 AND office = $2 AND kind = $3`,
+    [visitId, office, kind]
+  );
+  return res.rowCount === 0 ? null : res.rows[0];
+}
+
+/**
+ * Draft/Staged → Sending, PERSISTED BEFORE THE CALL IS MADE.
+ *
+ * Not bookkeeping. If the process dies between here and the read-back, the row
+ * says `Sending` — which is the honest state, "we tried and do not know" —
+ * rather than `Staged`, which would invite somebody to press send again on a
+ * write that may already be in a chart.
+ *
+ * The WHERE clause re-asserts the state, so two concurrent sends cannot both
+ * begin: the loser updates zero rows and is told so.
+ *
+ * @returns {Promise<boolean>} whether this call is the one that claimed it
+ */
+async function markSending(pool, { office, visitId, kind }) {
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Sending', error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Staged'`,
+    [visitId, office, kind]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Sending → Written. Only ever called AFTER a read-back confirmed the write.
+ *
+ * `sent_by` and `sent_at` are set together — the schema refuses half an
+ * attribution — and `written_ref` is the identifier the other system minted, so
+ * "it was sent" can be followed to "here it is".
+ */
+async function markWritten(pool, { office, visitId, kind, actor, writtenRef }) {
+  await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Written', sent_by = $4, sent_at = now(), written_ref = $5,
+            error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3`,
+    [visitId, office, kind, actor, writtenRef]
+  );
+}
+
+/**
+ * Sending → Failed, with the reason.
+ *
+ * The schema refuses a `Failed` row with no `error_message`: a failure nobody
+ * can read is a failure nobody can act on. `sent_by`/`sent_at` are left alone —
+ * an attempt is not a send, and stamping them would make a failed write look
+ * like one somebody made.
+ */
+async function markFailed(pool, { office, visitId, kind, error }) {
+  await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Failed', error_message = $4, written_ref = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3`,
+    [visitId, office, kind, String(error || 'Unknown failure').slice(0, 2000)]
+  );
+}
+
+/**
+ * Failed → Staged, so a hygienist can try again.
+ *
+ * Deliberately NOT a re-compose: it puts the SAME words back on the list, which
+ * is what "retry" has to mean if the preview is the write. Changing the visit
+ * and staging again is the other, explicit, path.
+ */
+async function retryStagedWrite(pool, { office, visitId, kind, actor }) {
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Staged', error_message = NULL, staged_by = $4, staged_at = now(),
+            updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Failed'`,
+    [visitId, office, kind, actor]
+  );
+  return res.rowCount === 1;
+}
+
 module.exports = {
   CLIENT_MUTABLE_STATES,
+  fingerprintPreview,
+  getStagedWrite,
+  markSending,
+  markWritten,
+  markFailed,
+  retryStagedWrite,
   getVisit,
   openVisit,
   saveSlip,

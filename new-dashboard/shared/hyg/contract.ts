@@ -717,8 +717,24 @@ export const StagedWriteSchema = z.object({
   summary: z.string(),
   /** The lines a hygienist reads before confirming. Slice 3 sends exactly these. */
   preview: z.array(z.string()),
+  /**
+   * A fingerprint of `preview`, computed by the server.
+   *
+   * THE PREVIEW IS THE WRITE. A send names the fingerprint of what the
+   * hygienist actually read, the server recomputes it from the stored row, and
+   * a mismatch refuses the WHOLE send. Without it, anything that re-stages
+   * between the preview and the confirm — her own edit in another tab, a second
+   * device — would send words nobody approved.
+   */
+  previewFingerprint: z.string(),
   /** Why it failed, when it did. Null in every other state. */
   errorMessage: z.string().nullable(),
+  /**
+   * What Open Dental (or TC) minted, once it landed: `Document 4711`,
+   * `Case 8f3c…`. Null until then. A pointer a person can follow — the
+   * difference between "it was sent" and "here is where it went".
+   */
+  writtenRef: z.string().nullable(),
   stagedBy: z.string().nullable(),
   stagedAt: z.string().nullable(),
   sentBy: z.string().nullable(),
@@ -755,6 +771,70 @@ export const HygVisitResponseSchema = z.object({
 });
 export type HygVisitResponse = z.infer<typeof HygVisitResponseSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/send  (H1 slice 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A confirmation: one kind, and the fingerprint of the preview the hygienist
+ * read before pressing send.
+ *
+ * The fingerprint is not decoration. The server recomputes it from the stored
+ * row and refuses the whole send on a mismatch, which is what makes "the
+ * preview IS the write" a property rather than an intention.
+ */
+export const SendConfirmationSchema = z
+  .object({
+    kind: StagedWriteKindSchema,
+    previewFingerprint: z.string().min(1).max(200),
+  })
+  .strict();
+export type SendConfirmation = z.infer<typeof SendConfirmationSchema>;
+
+/**
+ * POST /api/hyg/visit/:aptNum/send
+ *
+ * `.strict()`, and it carries NO payload — only which kinds are being confirmed
+ * and what they looked like. Everything that reaches Open Dental is built
+ * server-side from the row that was staged.
+ */
+export const SendVisitRequestSchema = z
+  .object({ confirm: z.array(SendConfirmationSchema).min(1).max(4) })
+  .strict();
+export type SendVisitRequest = z.infer<typeof SendVisitRequestSchema>;
+
+/**
+ * What one write did.
+ *
+ * A VISIT IS NEVER "SENT". Its individual writes are, and partial success is
+ * the normal case: the note can land and the slip fail. Every entry carries its
+ * own outcome, and the summary below counts rather than concludes.
+ */
+export const SendOutcomeSchema = z.object({
+  kind: StagedWriteKindSchema,
+  state: StagedWriteStateSchema,
+  /** Present when it landed. */
+  writtenRef: z.string().nullable(),
+  /** Present when it did not. Never empty when the state is Failed. */
+  errorMessage: z.string().nullable(),
+  /** The precise reason, for a screen that wants to switch on it. */
+  code: z.string().nullable(),
+});
+export type SendOutcome = z.infer<typeof SendOutcomeSchema>;
+
+export const HygSendResponseSchema = z.object({
+  success: z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: z.array(z.string()),
+  handoffCategory: HandoffCategorySchema,
+  /** One entry per confirmed kind, in the order they were attempted. */
+  outcomes: z.array(SendOutcomeSchema),
+  /** Counts, not a verdict. `written + failed` is what was attempted. */
+  written: z.number().int(),
+  failed: z.number().int(),
+});
+export type HygSendResponse = z.infer<typeof HygSendResponseSchema>;
+
 /** The refusal codes slice 2 adds on top of HYG_ERROR_CODES. */
 export const HYG_VISIT_ERROR_CODES = [
   "INVALID_APT_NUM",
@@ -767,5 +847,9 @@ export const HYG_VISIT_ERROR_CODES = [
   "STAGED_WRITE_IMMUTABLE",
   "STAGED_WRITE_KIND_UNAVAILABLE",
   "NOTHING_TO_STAGE",
+  // Slice 3.
+  "PREVIEW_CHANGED",
+  "NOTHING_TO_SEND",
+  "NOT_STAGED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

@@ -32,12 +32,17 @@
  *    real DDL agrees; `backend/scripts/rehearse-hyg-visit.js` runs the real
  *    migration and the real store against a real Postgres for that.
  *
- * 2. A RECORDING OPEN DENTAL CLIENT WITH WRITE VERBS THAT THROW. `FakeOd` below
- *    answers `apiGetRaw` from a scripted route table and defines `apiWriteRaw`,
- *    `post`, `put` and `patch` as throwing stubs. That is what makes
- *    hygNoOdWrites.test.js a behavioural claim rather than a grep: driving the
- *    day route to SUCCESS against this client proves no write verb was reached,
- *    because reaching one would have thrown.
+ * 2. A RECORDING OPEN DENTAL CLIENT WHOSE WRITE VERBS THROW BY DEFAULT.
+ *    `FakeOd` answers `apiGetRaw` from a scripted route table and defines
+ *    `apiWriteRaw`, `post`, `put` and `patch` as throwing stubs. That is what
+ *    makes hygNoOdWrites.test.js a behavioural claim rather than a grep:
+ *    driving a route to SUCCESS against this client proves no write verb was
+ *    reached, because reaching one would have thrown.
+ *
+ *    Slice 3 has to write, so a test may pass `{ writes: {...} }` to script
+ *    `apiWriteRaw` — and the DEFAULT is unchanged, deliberately. A test that
+ *    does not opt in still gets the throwing client, so every existing claim
+ *    about the read surface keeps meaning what it meant.
  *
  * NOT a test file (no .test suffix) — node --test must not run it directly.
  */
@@ -391,6 +396,78 @@ class FakeHygDb extends FakeAuditDb {
     }
 
     // ── hyg_staged_write ────────────────────────────────────────────────────
+    if (/^\s*SELECT[\s\S]*FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2 AND kind = \$3/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const rows = this.hyg_staged_write.filter(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === kind
+      );
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/UPDATE hyg_staged_write\s+SET state = 'Sending'/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Staged'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.state = 'Sending';
+      row.error_message = null;
+      row.updated_at = new Date();
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write\s+SET state = 'Written'/i.test(text)) {
+      const [visitId, office, kind, actor, writtenRef] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === kind
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: 'Written',
+        sent_by: actor,
+        sent_at: new Date(),
+        written_ref: writtenRef,
+        error_message: null,
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write\s+SET state = 'Failed'/i.test(text)) {
+      const [visitId, office, kind, error] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === kind
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      // The schema refuses a Failed row with no reason; so does this.
+      if (!error) throw new Error('hyg_staged_write_failed_reason_check violated');
+      Object.assign(row, {
+        state: 'Failed',
+        error_message: error,
+        written_ref: null,
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write\s+SET state = 'Staged'/i.test(text)) {
+      const [visitId, office, kind, actor] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Failed'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: 'Staged',
+        error_message: null,
+        staged_by: actor,
+        staged_at: new Date(),
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
     if (/^\s*SELECT state FROM hyg_staged_write/i.test(text)) {
       const [visitId, office, kind] = params;
       const rows = this.hyg_staged_write
@@ -442,6 +519,7 @@ class FakeHygDb extends FakeAuditDb {
         kind,
         sent_by: null,
         sent_at: null,
+        written_ref: null,
         created_at: new Date(),
         ...fields,
       };
@@ -472,13 +550,18 @@ class FakeHygDb extends FakeAuditDb {
  */
 class FakeOd {
   /**
-   * @param {Record<string, unknown>} routes
+   * @param {Record<string, unknown>} routes GET path → response
+   * @param {{ writes?: Record<string, unknown> }} [opts] when `writes` is given,
+   *   apiWriteRaw answers from it (keyed by OD path) instead of throwing. A path
+   *   that is not in the map still throws, so a test opts into exactly the
+   *   writes it means to allow.
    */
-  constructor(routes = {}) {
+  constructor(routes = {}, { writes = null } = {}) {
     this.routes = routes;
+    this.writeRoutes = writes;
     /** Every GET made, in order: `{ path, params, opts }`. */
     this.calls = [];
-    /** Write verbs reached. Must stay empty — see the class note. */
+    /** Write verbs reached. Empty unless a test scripted one — see the note. */
     this.writes = [];
   }
 
@@ -503,9 +586,18 @@ class FakeOd {
 
   // Every write verb the transport defines, plus the raw axios ones the older
   // code paths use. Reaching any of them from /api/hyg is the failure.
-  async apiWriteRaw(...args) {
-    this.writes.push(['apiWriteRaw', ...args]);
-    throw new Error('[hygTestUtils] /api/hyg reached an Open Dental WRITE verb: apiWriteRaw');
+  async apiWriteRaw(method, path, body = {}, opts = {}) {
+    this.writes.push(['apiWriteRaw', method, path, body, opts]);
+    if (!this.writeRoutes || !Object.prototype.hasOwnProperty.call(this.writeRoutes, path)) {
+      throw new Error(
+        '[hygTestUtils] /api/hyg reached an UNSCRIPTED Open Dental WRITE verb: ' +
+          method + ' ' + path
+      );
+    }
+    const scripted = this.writeRoutes[path];
+    const value = typeof scripted === 'function' ? scripted(body, this) : scripted;
+    if (value && typeof value === 'object' && 'ok' in value) return value;
+    return { ok: true, status: 200, data: value };
   }
   async post(...args) {
     this.writes.push(['post', ...args]);
@@ -553,6 +645,7 @@ async function bootHygApp({
   od = new FakeOd(),
   hygOffices = ['roland'],
   odUnavailableFor = [],
+  tcSubmit = null,
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
@@ -650,6 +743,17 @@ async function bootHygApp({
   process.env.DASHBOARD_API_TOKEN = 'test-token';
 
   const app = express();
+  /*
+   * The TC handoff's transport, injectable.
+   *
+   * In the app it is a LOOPBACK HTTP call to this same process, forwarding the
+   * caller's own credential so TC applies its own guards. A test cannot make
+   * that call — there is no TC mount on this harness's app — so the send route
+   * reads the submitter off `app`, and a test that wants to exercise the
+   * handoff supplies one. Unset means the real client, which is what production
+   * gets: nothing here can turn the loopback into a service credential.
+   */
+  if (tcSubmit) app.set('hygTcSubmit', tcSubmit);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', requireDashboardAuth());
   if (user) {
