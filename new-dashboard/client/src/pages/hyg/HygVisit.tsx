@@ -175,6 +175,15 @@ export default function HygVisit() {
   /** The slip being edited, which may be a keystroke ahead of what is stored. */
   const [draft, setDraft] = useState<HygSlip>(emptySlip());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The tray, so the end of the form can point at it.
+   *
+   * Beau, at the bottom of the page: "I do not know where to go or what to do
+   * next." On iPad landscape the tray is beside the form and sticky, so it is
+   * already in view; narrower than that it is below, and this is how the form
+   * ends up pointing somewhere instead of stopping.
+   */
+  const trayRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -427,14 +436,23 @@ export default function HygVisit() {
               void run(() => updateTreatmentItem(office, aptNum, itemId, patch))
             }
             onRemove={(itemId) => void run(() => removeTreatmentItem(office, aptNum, itemId))}
+            onReviewAndSend={() =>
+              trayRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
           />
         </div>
 
-        <aside className="w-full shrink-0 lg:w-[340px]">
+        {/* STICKY on a wide screen, so the tray is in view while she works the
+            form rather than a scroll away at the bottom of it. */}
+        <aside
+          ref={trayRef}
+          className="w-full shrink-0 lg:sticky lg:top-6 lg:w-[340px] lg:self-start"
+        >
           <StagedWritesTray
             staged={staged}
             handoffCategory={page.handoffCategory}
             patientName={page.appointment.patientName ?? "this patient"}
+            itemCount={items.length}
             busy={busy}
             sending={sending}
             onStage={(kind) => void onStage(kind)}
