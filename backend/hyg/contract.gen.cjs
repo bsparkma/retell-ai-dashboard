@@ -15012,24 +15012,29 @@ var HANDOFF_CATEGORY_PRIORITY = [
   "Perio",
   "Other"
 ];
+function handoffCategoryFor(item) {
+  switch (item.category) {
+    case "Prosth":
+      return item.code === "IMP" || item.code === "Mini" ? "Implant" : "Restorative";
+    case "Restorative":
+      return "Restorative";
+    case "Endo":
+    case "Surgery":
+      return "Restorative";
+    case "Cosmetic":
+      return "Cosmetic";
+    case "Ortho":
+      return "Ortho";
+    case "Perio":
+      return "Perio";
+    case "Other":
+      return "Other";
+  }
+}
 function deriveCategory(items) {
   if (items.length === 0) return "Other";
   const present = /* @__PURE__ */ new Set();
-  for (const item of items) {
-    if (item.category === "Prosth") {
-      present.add(item.code === "IMP" || item.code === "Mini" ? "Implant" : "Restorative");
-    } else if (item.category === "Endo" || item.category === "Surgery") {
-      present.add("Restorative");
-    } else if (item.category === "Cosmetic") {
-      present.add("Cosmetic");
-    } else if (item.category === "Ortho") {
-      present.add("Ortho");
-    } else if (item.category === "Perio") {
-      present.add("Perio");
-    } else {
-      present.add("Other");
-    }
-  }
+  for (const item of items) present.add(handoffCategoryFor(item));
   return HANDOFF_CATEGORY_PRIORITY.find((c) => present.has(c)) ?? "Other";
 }
 var StagedWriteKindSchema = import_zod.z.enum(["router", "perio", "note", "tc-handoff"]);

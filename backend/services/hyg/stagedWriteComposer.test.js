@@ -78,6 +78,84 @@ test('the visit note carries a typed name block and NEVER claims a signature', (
   assert.doesNotMatch(text, /(?<!un)\bsigned\b/i);
 });
 
+test('EVERY composed line is inside the character set Open Dental accepts', () => {
+  // The first real send came back "Invalid JSON" — Open Dental's parse-stage
+  // refusal — and the note was the only payload carrying typographic
+  // punctuation into an OD JSON field (the slip travels as base64, the handoff
+  // goes to our own API). Whatever else was wrong with that request, this half
+  // is now provable rather than argued.
+  //
+  // The sanitizer is the platform's OWN (utils/sanitizeForOd), the one the
+  // voice module has run every commlog note through for months — not a second
+  // one invented here.
+  const composed = composer.compose('router', {
+    visit: visit({
+      slip: {
+        ...emptySlip(),
+        // Everything a hygienist can paste out of Word or a browser.
+        patientConcerns: 'Cold sensitivity — upper right — “sharp”, she said…',
+        hygieneFindings: "Patient's own words: ‘it aches’ · worse at night",
+        recordsStatus: { 'Pre-op PA': 'taken_today' },
+      },
+    }),
+    items: [item({ surfaces: ['M', 'O'], dx: ['D', 'RD'] })],
+    actor: ACTOR,
+  });
+
+  const everything = [
+    composed.title,
+    composed.summary,
+    ...composed.preview,
+    String(composed.payload.text ?? ''),
+    ...(composed.payload.lines ?? []),
+  ].join('\n');
+
+  // Printable ASCII plus newline. Nothing else survives to a chart.
+  const offenders = [...everything].filter((ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    return code !== 10 && (code < 32 || code > 126);
+  });
+  assert.deepEqual(
+    [...new Set(offenders)],
+    [],
+    'these characters would reach an Open Dental note field'
+  );
+  // And it really did change something — a test that passed because the fixture
+  // was already ASCII would prove nothing.
+  const raw = composer.composeRaw('router', {
+    visit: visit({
+      slip: {
+        ...emptySlip(),
+        patientConcerns: 'Cold sensitivity — upper right — “sharp”, she said…',
+        hygieneFindings: "Patient's own words: ‘it aches’ · worse at night",
+        recordsStatus: { 'Pre-op PA': 'taken_today' },
+      },
+    }),
+    items: [item()],
+    actor: ACTOR,
+  });
+  assert.ok(
+    raw.preview.join('\n') !== composed.preview.join('\n'),
+    'the sanitizer must actually be doing something here'
+  );
+});
+
+test('THE PREVIEW IS THE WRITE: the fingerprinted lines ARE the transmitted string', () => {
+  // The sanitizing happens in the COMPOSER, before the fingerprint is taken.
+  // A writer that rewrote the text afterwards would break the PREVIEW_CHANGED
+  // guarantee from the inside: she would confirm one string and another would
+  // land in the chart.
+  const composed = composer.compose('note', {
+    visit: visit({ slip: { ...emptySlip(), patientConcerns: 'Sharp — cold — #30' } }),
+    items: [item()],
+    actor: ACTOR,
+  });
+  assert.equal(composed.payload.text, composed.preview.join('\n'));
+  // Byte-for-byte, through JSON — which is the shape it crosses the wire in.
+  const roundTripped = JSON.parse(JSON.stringify({ Note: composed.payload.text })).Note;
+  assert.equal(roundTripped, composed.preview.join('\n'));
+});
+
 test('no source line in the composer can produce the word "signed"', () => {
   // Belt and braces over the test above, which can only see the branches it
   // exercises. A future kind that said "Signed by Dr X" would pass that one.
@@ -159,10 +237,12 @@ test('the router slip prints the records each treatment needs, with their status
     items: [item()],
     actor: ACTOR,
   });
-  assert.ok(composed.preview.includes('  Pre-op PA — Taken today'));
+  // ASCII: the em dash is normalized by utils/sanitizeForOd before the line is
+  // fingerprinted, so the preview and the chart note are the same bytes.
+  assert.ok(composed.preview.includes('  Pre-op PA -- Taken today'));
   // One nobody has touched still prints, as "Needed" — the list is a prompt,
   // and a prompt that hides the outstanding half is not one.
-  assert.ok(composed.preview.some((l) => l.startsWith('  Missing teeth note — Needed')));
+  assert.ok(composed.preview.some((l) => l.startsWith('  Missing teeth note -- Needed')));
 });
 
 test('the payload and the preview are built from the same snapshot', () => {

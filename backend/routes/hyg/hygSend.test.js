@@ -129,7 +129,11 @@ test('the note lands, unsigned, and is only Written after it is read back', asyn
     assert.ok(write, 'the GroupNote write was made');
     const body = write[3];
     assert.equal(body.isSigned, false, 'CareIN never claims a signature');
-    assert.equal(body.ProcNums, '5001,5002');
+    // THE PAYLOAD H0 DOCUMENTED: PatNum is REQUIRED and ProcNums is an ARRAY.
+    // The first version sent no PatNum and a comma-joined string, and the first
+    // real send came back "Invalid JSON" — Open Dental's parse-stage refusal.
+    assert.equal(body.PatNum, 12827, 'PatNum is required and was missing');
+    assert.deepEqual(body.ProcNums, [5001, 5002], 'an array, not a comma string');
     assert.equal(body.ProvNum, 7, "the appointment's hygiene provider");
     assert.match(body.Note, /Entered in CareIN by hygienist@carein\.ai\. Unsigned\./);
     assert.doesNotMatch(body.Note, /(?<!un)\bsigned\b/i);

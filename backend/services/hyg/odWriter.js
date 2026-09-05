@@ -157,12 +157,44 @@ async function readAppointmentProcedures(odGet, aptNum) {
  * must be present on at least one procedure. The POST returning 200 is not the
  * claim being made here; "the chart contains this" is.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE PAYLOAD, AND THE TWO THINGS THE FIRST REAL SEND GOT WRONG
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The first real send (staging, 2026-09-05) came back **"Invalid JSON"** — Open
+ * Dental's PARSE-stage refusal, which writes nothing. `docs/HYG_SPIKE_H0_OD_COVERAGE.md`
+ * §"How the two clinical options differ" is the authoritative record of what H0
+ * proved against a live database, and it says:
+ *
+ *   > POST /procedurelogs/GroupNote — required `PatNum`, `Note`;
+ *   > optional `ProcNums[]`, `ProvNum`, `isSigned`.
+ *
+ * The first version of this function sent **no `PatNum` at all** — a REQUIRED
+ * field — and sent `ProcNums` as a comma-joined STRING where the contract says
+ * an ARRAY. Both are fixed here. A missing required field and a wrongly-typed
+ * one are a better explanation of a parse-stage refusal than any character in
+ * the note, and unlike a character they are checkable against this repo's own
+ * spike rather than against a guess.
+ *
+ * The note text is ALSO now ASCII-safe, upstream in the composer — see
+ * services/hyg/stagedWriteComposer.js. That change is independent and would
+ * have been right regardless: the platform has normalized OD note text for
+ * months (utils/sanitizeForOd.js), and this module was the one path that did
+ * not.
+ *
+ * `backend/scripts/probe-hyg-groupnote.js` is what distinguishes the two
+ * causes on staging, and it has not been run — see the slice report.
+ *
+ * @param {number} patNum REQUIRED by Open Dental. Never optional here.
  * @returns {Promise<{ ok: true, procNums: number[] }
  *          | { ok: false, code: string, error: string }>}
  */
-async function writeGroupNote(od, odGet, { aptNum, procNums, note, provNum }) {
+async function writeGroupNote(od, odGet, { aptNum, patNum, procNums, note, provNum }) {
   const body = {
-    ProcNums: procNums.join(','),
+    // REQUIRED. Its absence is the likeliest cause of the "Invalid JSON" that
+    // came back from the first real send.
+    PatNum: patNum,
+    // AN ARRAY, per H0. It was a comma-joined string.
+    ProcNums: procNums,
     Note: note,
     // NEVER true. See the note above.
     isSigned: false,

@@ -238,6 +238,41 @@ describe.skipIf(!SHOOT)("send screenshot dumps", () => {
     dump("hyg-send-03-partial@1180x1200");
   });
 
+  it("05 — the note that failed on 2026-09-05, now Written", async () => {
+    // The note from the first real send, reconstructed: the same lines, with the
+    // middots and the em dash now normalized to ASCII by the composer BEFORE the
+    // fingerprint is taken — so the preview on screen and the string in the
+    // chart are the same bytes.
+    fixtures.staged = [
+      write("note", {
+        state: "Written",
+        preview: [
+          "Done today: Prophy, Fluoride",
+          "Recare scheduled: not answered",
+          "Treatment identified today (4):",
+          "  #30 - Build-up - Preventative - Restorative - proposed",
+          "  #30 - Crown - Preventative - Restorative - proposed",
+          "  #3 - Comp - Preventative - Restorative - proposed",
+          "  #14 - Comp - Preventative - Restorative - proposed",
+          "  Pre-op PA -- Needed",
+          "Entered in CareIN by hygienist@carein.ai. Unsigned.",
+        ],
+        writtenRef: "GroupNote on 4 procedures (5001, 5002, 5003, 5004)",
+        sentBy: "hygienist@carein.ai",
+        sentAt: "2026-09-05T18:04:00.000Z",
+      }),
+      write("router", {
+        state: "Written",
+        writtenRef: "Document 311924 in Routers",
+        sentBy: "hygienist@carein.ai",
+        sentAt: "2026-09-05T18:04:02.000Z",
+      }),
+    ];
+    renderVisit();
+    await screen.findByTestId("hyg-visit");
+    dump("hyg-send-05-note-fixed@1180x1200");
+  });
+
   it("04 — the office is not switched on, so nothing can be sent", async () => {
     fixtures.notReady = true;
     renderVisit("valley");

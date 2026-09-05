@@ -33,6 +33,7 @@ import {
   TreatmentStatusSchema,
   deriveCategory,
   isOfficeId,
+  type HandoffCategory,
   type TreatmentCategory,
   type TreatmentItem,
   type TreatmentPriority,
@@ -197,6 +198,45 @@ describe("TreatmentItemSchema", () => {
 });
 
 describe("deriveCategory", () => {
+  it("A VISIT OF PLAIN RESTORATIVE ITEMS IS RESTORATIVE", () => {
+    // THE BUG, pinned. Beau's first real handoff was four Restorative items and
+    // went to TC as "Other": the ported if/else chain handled Prosth, Endo,
+    // Surgery, Cosmetic, Ortho and Perio and never plain "Restorative", which
+    // fell to the else. Nothing here asserted it, which is how it survived the
+    // port — the "ortho first" test below HAS a Restorative item, and the
+    // answer is Ortho, so the hole was invisible.
+    expect(
+      deriveCategory([
+        item({ category: "Restorative", code: "Comp" }),
+        item({ category: "Restorative", code: "Comp" }),
+        item({ category: "Restorative", code: "Crown" }),
+        item({ category: "Restorative", code: "Build-up" }),
+      ]),
+    ).toBe("Restorative");
+    expect(deriveCategory([item({ category: "Restorative", code: "Comp" })])).toBe("Restorative");
+  });
+
+  it("gives EVERY category an answer, and only an empty visit gets Other", () => {
+    // Table-driven over the whole union, so a future category cannot fall
+    // through silently. The function itself is an exhaustive switch — a missing
+    // branch is a compile error — and this is the runtime half of that claim.
+    const expected: Record<TreatmentCategory, HandoffCategory> = {
+      Restorative: "Restorative",
+      Endo: "Restorative",
+      Surgery: "Restorative",
+      Perio: "Perio",
+      Prosth: "Restorative",
+      Ortho: "Ortho",
+      Cosmetic: "Cosmetic",
+      Other: "Other",
+    };
+    for (const category of TreatmentCategorySchema.options) {
+      expect(deriveCategory([item({ category, code: "Comp" })]), category).toBe(
+        expected[category],
+      );
+    }
+  });
+
   it("folds implants out of Prosth and everything surgical into Restorative", () => {
     expect(deriveCategory([item({ category: "Prosth", code: "IMP" })])).toBe("Implant");
     expect(deriveCategory([item({ category: "Prosth", code: "Mini" })])).toBe("Implant");
