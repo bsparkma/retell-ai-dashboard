@@ -1,6 +1,6 @@
-# The Hygiene module (`hyg`) — H1 slice 1
+# The Hygiene module (`hyg`) — H1 slices 1 and 2
 
-What shipped, what it refuses to do, and where the next two slices attach.
+What shipped, what it refuses to do, and where slice 3 attaches.
 
 **Status: mounted, ships dark.** `hyg` is in the `tenant_module` vocabulary as
 of `backend/migrations/1788100000000_module_hyg.js`, no tenant is entitled to
@@ -35,9 +35,10 @@ office without taking that office's voice worklist and TC screens down with it.
 **Roles.** `hyg.read` and `hyg.write` are held by `admin`, `office` and
 `hygiene`. `tc` deliberately holds neither — a treatment coordinator receives
 the handoff (`tc.hygiene`, which already exists), and standing at a chair
-reading the day is the other side of that exchange. `hyg.write` exists ahead of
-its first use so slice 2's first POST demands it by construction rather than by
-whoever writes it remembering to decorate the route.
+reading the day is the other side of that exchange. `hyg.write` is what every slice-2
+mutation demands, by construction rather than by whoever wrote it remembering to
+decorate the route — `routes/hyg/hygVisitGuard.test.js` drives all seven of them
+as a read-only role and gets seven 403s.
 
 ---
 
@@ -530,3 +531,125 @@ off needs no confirmation and turning on does.
 Same five steps, on prod, after the staging soak. Nothing about the switch is
 environment-specific; the only difference is that prod's Roland is a live
 practice and the confirmation dialog means what it says.
+
+
+---
+
+## 10. The visit workspace (H1 slice 2)
+
+`/hyg/visit/:aptNum?office=&date=` and `/api/hyg/visit/...`. Tap a card on the
+day, work the visit, stage what will be written.
+
+**SLICE 2 WRITES NOTHING TO OPEN DENTAL.** It composes. Slice 3 sends. The only
+Open Dental traffic on these routes is the same read-only day pull §2 describes,
+and it exists for one reason: to learn which PATIENT an appointment belongs to
+from Open Dental rather than from a request body.
+
+### The three tables
+
+`backend/migrations-tenant/1788200000000_hyg_visit.js` creates `hyg_visit`,
+`hyg_treatment_item` and `hyg_staged_write` — the module's first tables, and
+therefore its first `carein_app` GRANT block. (Slice 1 correctly shipped none
+because it created no tables. A table the least-privilege role cannot reach
+fails in production as a permission error, not as a red migration — the
+`call_record` lesson.)
+
+Three things about the schema are load-bearing:
+
+- **`office` is on every row and never optional**, with a COMPOSITE FK from each
+  child back to `(visit_id, office)`. PatNum numbering restarts in every Open
+  Dental database, so a row carrying a PatNum without an office can be attached
+  to the wrong human being. The denormalised copy means every lookup is
+  office-scoped without a join — and the composite FK means it cannot drift from
+  the parent.
+- **`priority` and `category` are separate columns with separate CHECKs.** They
+  are different axes that share the word "cosmetic": a cosmetic veneer is a
+  Cosmetic-CATEGORY item, and a cosmetic PRIORITY says the work can wait. One
+  shared column, one shared enum type, or one case-insensitive comparison
+  anywhere between them puts "this can wait" on a chart.
+- **`UNIQUE (office, apt_num)`** — one visit per appointment. Re-opening the same
+  appointment finds the visit already there rather than starting a second one
+  beside it, because a hygienist who backgrounded the app mid-visit must not come
+  back to an empty slip with her work in a sibling row nothing renders.
+
+### The staged-write state machine lives on the server
+
+```
+Draft → Staged → Sending → Written | Failed
+```
+
+Slice 2 reaches `Staged` and un-staging. `Sending`, `Written` and `Failed` are
+slice 3's, set by the server around a real Open Dental call after a read-back.
+
+No request schema in `shared/hyg/contract.ts` has a `state` field, so a client
+cannot ask for one — and the stage body is `.strict()`, so trying is a 400
+rather than a silently ignored key. A row that has left Draft/Staged is
+immutable to this slice: re-staging one is refused, because resetting it would
+erase the record of a write that already reached a chart.
+
+**The stage request carries ONE field: the kind.** Title, summary, preview lines
+and payload are all composed server-side by `services/hyg/stagedWriteComposer.js`
+from the stored visit. That is the fix for RCM audit finding F3 — *"confirm gates
+client-side only; submit paths never re-check and record NO user"* — and it is
+what makes slice 3's rule expressible at all: **the preview IS the write**, which
+is only true because one call built both from the same snapshot.
+
+### The backend runs zod now
+
+`backend/hyg/contract.gen.cjs`, an esbuild bundle of `shared/hyg`, committed —
+the same mechanism TC has used since its slice 3. Slice 1 deliberately shipped
+without it (its whole request surface was two query params). Slice 2 introduces
+request BODIES that become chart writes one slice later, and a body is exactly
+where a client and a server most need the same schema.
+
+Every wire-crossing body is parsed before any handler logic, and a rejection is
+a 400 that NAMES the field — including the unknown key inside a `.strict()`
+object, which zod reports against the parent. Regenerate with the pinned esbuild
+whenever `shared/hyg` changes; `new-dashboard/tests/hyg-contract-bundle.test.ts`
+makes a stale bundle a red build.
+
+### Nothing is gated on completeness
+
+Beau's ruling, verbatim: *"the hygienist should be able to send the treatment to
+the tc app."*
+
+`recareScheduled` and `txEnteredInOd` are ordinary slip fields with a MUTED
+reminder when unanswered. `RECORDS_MATRIX` produces a list a screen shows. The
+prototype's Finish tab disabled its Send until both questions were answered and
+drew them in destructive red; both describe work the FRONT DESK does after the
+hygienist has finished, so gating on them makes her wait on somebody else with a
+patient in the chair.
+
+The Send affordance on the workspace IS disabled, for exactly one reason —
+sending is not built yet — and it says so in words, permanently, beside itself.
+Rendering no Send at all would have been worse: a hygienist who has staged three
+writes and can see no way to send them concludes the app is broken rather than
+unfinished.
+
+### The visit note is UNSIGNED, and nothing may say otherwise
+
+CareIN writes the note with a typed name block: *"Entered in CareIN by
+&lt;email&gt;. Unsigned."* Open Dental's own signature block is the only thing
+allowed to claim a signature. The prototype's notes summary said "Signed by" —
+a defect, not copy to lift. Two tests pin it: one on the composed output, and
+one that scans the composer's own string literals.
+
+### What is deliberately NOT here
+
+- **Perio charting.** `perio` is a kind in the contract's vocabulary and
+  composes to nothing; staging it is an honest 422 that says why. A stray
+  Probing row is PERMANENT in Open Dental (only Mobility and SkipTooth can be
+  deleted), so it gets its own arc (H4) rather than riding on this one.
+- **The ortho workup**, the prototype's 1,400-line tab. Its own arc.
+- **Photos.** `TreatmentItem.photos` exists in the contract and is always empty:
+  an upload path needs a blob store, a retention answer and an audit story.
+- **The prototype's pre-visit block** (insurance verified, balance to collect).
+  That is front-desk work, and this screen is used at a chair.
+
+### Verified against a real Postgres
+
+`backend/scripts/rehearse-hyg-visit.js` runs the real migration and the real
+store against a real database, connected as `carein_app`, and tries to break
+every constraint on purpose — 20 checks. The route tests use a
+statement-dispatch fake, and a fake is a second implementation of the rules
+whose failure mode is agreeing with itself and not with Postgres.

@@ -67,10 +67,29 @@ const css = readFileSync(resolve(assetsDir, cssFile), "utf8");
 mkdirSync(outDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
 
-/** The device. Not a variable, and not per-shot — see the header. */
+/**
+ * The device. The WIDTH is not a variable and not per-shot — it is what decides
+ * the layout, and a review of a width nobody uses is not a review.
+ *
+ * The HEIGHT is the iPad's, and a dump may ask for a taller FRAME by ending its
+ * name with `@1180x1500`. That is not a different device: it is the same page,
+ * scrolled, and it exists because the visit workspace is taller than one screen
+ * and a screenshot that does not contain its own subject is not evidence. Every
+ * shot still carries its real size in the filename, so nobody has to guess
+ * which they are looking at.
+ */
 const WIDTH = 1180;
 const HEIGHT = 820;
 const THEMES = ["light", "dark"];
+
+/** `name@1180x1500` → `{ name, width, height }`. */
+function frameOf(rawName) {
+  const at = rawName.lastIndexOf("@");
+  if (at === -1) return { name: rawName, width: WIDTH, height: HEIGHT };
+  const size = /^(\d+)x(\d+)$/.exec(rawName.slice(at + 1));
+  if (!size) return { name: rawName, width: WIDTH, height: HEIGHT };
+  return { name: rawName.slice(0, at), width: Number(size[1]), height: Number(size[2]) };
+}
 
 const dumps = readdirSync(shotsDir)
   .filter((f) => f.startsWith("hyg-") && f.endsWith(".html"))
@@ -81,7 +100,7 @@ if (dumps.length === 0) {
 }
 
 for (const dump of dumps) {
-  const name = dump.replace(/\.html$/, "");
+  const { name, width, height } = frameOf(dump.replace(/\.html$/, ""));
   const body = readFileSync(resolve(shotsDir, dump), "utf8");
 
   for (const theme of THEMES) {
@@ -96,7 +115,7 @@ for (const dump of dumps) {
 <body>${body}</body>
 </html>`;
 
-    const slug = `${name}-${WIDTH}x${HEIGHT}-${theme}`;
+    const slug = `${name}-${width}x${height}-${theme}`;
     const htmlPath = resolve(tmpDir, `${slug}.html`);
     writeFileSync(htmlPath, page, "utf8");
 
@@ -108,7 +127,7 @@ for (const dump of dumps) {
         "--disable-gpu",
         "--hide-scrollbars",
         "--force-device-scale-factor=2",
-        `--window-size=${WIDTH},${HEIGHT}`,
+        `--window-size=${width},${height}`,
         "--virtual-time-budget=3000",
         "--screenshot=" + out,
         "file:///" + htmlPath.replace(/\\/g, "/"),

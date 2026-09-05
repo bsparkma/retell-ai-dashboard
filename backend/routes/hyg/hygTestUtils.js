@@ -16,11 +16,21 @@
  *
  * TWO DELIBERATE DIFFERENCES FROM THE RCM HARNESS
  *
- * 1. NO SQL FAKE. Slice 1 owns no tables. The only database traffic under this
- *    mount is the platform audit_log INSERT, so `FakeAuditDb` below captures
- *    that one statement and refuses everything else loudly rather than
- *    pretending to be a database. When slice 2 adds hyg_* tables this grows a
- *    real fake; growing it now would be a fake with no SQL to execute.
+ * 1. A STATEMENT-DISPATCH SQL FAKE, NOT A SQL INTERPRETER. RCM's fake parses
+ *    WHERE clauses because RCM builds queries dynamically across two dozen
+ *    tables. The hygiene module's whole database surface is thirteen FIXED
+ *    statements in services/hyg/visitStore.js, so `FakeHygDb` below dispatches
+ *    on each one and hand-implements it. An unrecognised statement THROWS,
+ *    which is the point: a new query has to be taught to this file, and
+ *    teaching it is where somebody notices they wrote one without an office in
+ *    the WHERE clause.
+ *
+ *    It enforces the CHECK constraints that carry meaning — the office list,
+ *    the priority and category vocabularies, both unique keys, and the
+ *    composite FK's office match — so a test can state "a cross-office write is
+ *    impossible" against the fake and mean it. What it CANNOT prove is that the
+ *    real DDL agrees; `backend/scripts/rehearse-hyg-visit.js` runs the real
+ *    migration and the real store against a real Postgres for that.
  *
  * 2. A RECORDING OPEN DENTAL CLIENT WITH WRITE VERBS THAT THROW. `FakeOd` below
  *    answers `apiGetRaw` from a scripted route table and defines `apiWriteRaw`,
@@ -116,6 +126,343 @@ class FakeAuditDb {
 }
 
 /**
+ * The audit trail PLUS the three hyg_* tables (H1 slice 2).
+ *
+ * Extends FakeAuditDb rather than replacing it, so every existing audit
+ * assertion in this suite keeps working unchanged and the audit statements stay
+ * captured in exactly the same place.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IT ENFORCES, AND WHY THOSE THINGS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A fake that accepts anything proves nothing. This one refuses what the
+ * migration refuses, for the constraints a test would otherwise have to take on
+ * trust:
+ *
+ *   - `office` must be roland or valley, on every table.
+ *   - A child row's office must equal its parent's (the composite FK).
+ *   - `priority` and `category` are checked against their OWN separate lists.
+ *     They are different axes that share the word "cosmetic", and a fake that
+ *     let one hold the other's value would make the whole point untestable.
+ *   - UNIQUE (office, apt_num) and UNIQUE (visit_id, kind).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * JSONB ROUND-TRIPS ARE SIMULATED, NOT SKIPPED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * visitStore passes jsonb columns as JSON STRINGS and reads them back as
+ * OBJECTS, because that is what node-postgres does. This fake parses on the way
+ * in for the same reason: a fake that stored the string would let a bug through
+ * where the store forgot to stringify, and every read would return a string
+ * where production returns an object.
+ */
+class FakeHygDb extends FakeAuditDb {
+  constructor() {
+    super();
+    /** @type {Array<Record<string, any>>} */
+    this.hyg_visit = [];
+    /** @type {Array<Record<string, any>>} */
+    this.hyg_treatment_item = [];
+    /** @type {Array<Record<string, any>>} */
+    this.hyg_staged_write = [];
+    this.seq = 0;
+  }
+
+  /** Deterministic ids — a test that asserts on one should not need a regex. */
+  nextId(prefix) {
+    this.seq += 1;
+    return `${prefix}-${String(this.seq).padStart(4, '0')}`;
+  }
+
+  static OFFICES = ['roland', 'valley'];
+  static PRIORITIES = ['urgent', 'preventative', 'cosmetic'];
+  static CATEGORIES = [
+    'Restorative', 'Endo', 'Surgery', 'Perio', 'Prosth', 'Ortho', 'Cosmetic', 'Other',
+  ];
+  static STATUSES = ['proposed', 'watch', 'confirmed', 'scheduled'];
+  static KINDS = ['router', 'perio', 'note', 'tc-handoff'];
+  static STATES = ['Draft', 'Staged', 'Sending', 'Written', 'Failed'];
+
+  checkOffice(office) {
+    if (!FakeHygDb.OFFICES.includes(office)) {
+      throw new Error(`hyg office_check violated: '${office}'`);
+    }
+  }
+
+  /** A jsonb parameter as the driver would have stored it. */
+  static json(value) {
+    if (typeof value !== 'string') return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new Error('invalid input syntax for type json: ' + value.slice(0, 40));
+    }
+  }
+
+  async query(sql, params = []) {
+    const text = String(sql);
+    // Audit and its probe stay with the parent, unchanged.
+    if (/audit_log/i.test(text)) return super.query(sql, params);
+    this.statements.push(text);
+
+    // ── hyg_visit ───────────────────────────────────────────────────────────
+    if (/^\s*SELECT[\s\S]*FROM hyg_visit\s+WHERE office = \$1 AND apt_num = \$2/i.test(text)) {
+      const [office, aptNum] = params;
+      const rows = this.hyg_visit.filter(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum)
+      );
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/INSERT INTO hyg_visit/i.test(text)) {
+      const [office, aptNum, patNum, visitDate, slip, actor] = params;
+      this.checkOffice(office);
+      const existing = this.hyg_visit.find(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum)
+      );
+      if (existing) {
+        // ON CONFLICT (office, apt_num) DO UPDATE — the upsert that makes
+        // re-opening an appointment find the visit already there.
+        existing.pat_num = Number(patNum);
+        if (visitDate) existing.visit_date = visitDate;
+        existing.updated_at = new Date();
+        return { rows: [existing], rowCount: 1 };
+      }
+      const row = {
+        visit_id: this.nextId('visit'),
+        office,
+        apt_num: Number(aptNum),
+        pat_num: Number(patNum),
+        visit_date: visitDate,
+        slip: FakeHygDb.json(slip),
+        created_by: actor,
+        created_at: new Date(),
+        updated_by: actor,
+        updated_at: new Date(),
+      };
+      this.hyg_visit.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_visit\s+SET slip/i.test(text)) {
+      const [office, aptNum, slip, actor] = params;
+      const row = this.hyg_visit.find(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.slip = FakeHygDb.json(slip);
+      row.updated_by = actor;
+      row.updated_at = new Date();
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_visit SET updated_by/i.test(text)) {
+      const [visitId, office, actor] = params;
+      const row = this.hyg_visit.find((r) => r.visit_id === visitId && r.office === office);
+      if (row) {
+        row.updated_by = actor;
+        row.updated_at = new Date();
+      }
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+
+    // ── hyg_treatment_item ──────────────────────────────────────────────────
+    if (/^\s*SELECT[\s\S]*FROM hyg_treatment_item\s+WHERE visit_id = \$1 AND office = \$2/i.test(text)) {
+      const [visitId, office] = params;
+      const rows = this.hyg_treatment_item
+        .filter((r) => r.visit_id === visitId && r.office === office)
+        .sort((a, b) => a.item_order - b.item_order);
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/^\s*SELECT[\s\S]*FROM hyg_treatment_item\s+WHERE item_id = \$1/i.test(text)) {
+      const [itemId, visitId, office] = params;
+      const rows = this.hyg_treatment_item.filter(
+        (r) => r.item_id === itemId && r.visit_id === visitId && r.office === office
+      );
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/INSERT INTO hyg_treatment_item/i.test(text)) {
+      const [
+        visitId, office, teeth, wholeMouth, code, category, priority, status,
+        surfaces, dx, dxNote, motivation, motivationNote, crownType, prosthesis,
+        scheduleNext, note, photos, tags, actor,
+      ] = params;
+      this.checkOffice(office);
+      // The composite FK: a child cannot claim an office its parent does not have.
+      const parent = this.hyg_visit.find((r) => r.visit_id === visitId && r.office === office);
+      if (!parent) {
+        throw new Error('hyg_treatment_item_visit_fk violated: no such (visit_id, office)');
+      }
+      if (!FakeHygDb.CATEGORIES.includes(category)) {
+        throw new Error(`hyg_treatment_item_category_check violated: '${category}'`);
+      }
+      if (!FakeHygDb.PRIORITIES.includes(priority)) {
+        throw new Error(`hyg_treatment_item_priority_check violated: '${priority}'`);
+      }
+      if (!FakeHygDb.STATUSES.includes(status)) {
+        throw new Error(`hyg_treatment_item_status_check violated: '${status}'`);
+      }
+      const teethValue = FakeHygDb.json(teeth);
+      if (wholeMouth ? teethValue.length !== 0 : teethValue.length < 1) {
+        throw new Error('hyg_treatment_item_teeth_check violated');
+      }
+      const siblings = this.hyg_treatment_item.filter(
+        (r) => r.visit_id === visitId && r.office === office
+      );
+      const row = {
+        item_id: this.nextId('item'),
+        visit_id: visitId,
+        office,
+        teeth: teethValue,
+        whole_mouth: wholeMouth === true,
+        code,
+        category,
+        priority,
+        status,
+        surfaces: FakeHygDb.json(surfaces),
+        dx: FakeHygDb.json(dx),
+        dx_note: dxNote,
+        motivation: FakeHygDb.json(motivation),
+        motivation_note: motivationNote,
+        crown_type: crownType,
+        prosthesis: prosthesis === null ? null : FakeHygDb.json(prosthesis),
+        schedule_next: scheduleNext === true,
+        note,
+        photos: FakeHygDb.json(photos),
+        tags: FakeHygDb.json(tags),
+        item_order: siblings.reduce((max, r) => Math.max(max, r.item_order), 0) + 1,
+        created_by: actor,
+        created_at: new Date(),
+        updated_by: actor,
+        updated_at: new Date(),
+      };
+      this.hyg_treatment_item.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_treatment_item/i.test(text)) {
+      const [
+        itemId, visitId, office, teeth, wholeMouth, code, category, priority, status,
+        surfaces, dx, dxNote, motivation, motivationNote, crownType, prosthesis,
+        scheduleNext, note, photos, tags, actor,
+      ] = params;
+      const row = this.hyg_treatment_item.find(
+        (r) => r.item_id === itemId && r.visit_id === visitId && r.office === office
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      if (!FakeHygDb.CATEGORIES.includes(category)) {
+        throw new Error(`hyg_treatment_item_category_check violated: '${category}'`);
+      }
+      if (!FakeHygDb.PRIORITIES.includes(priority)) {
+        throw new Error(`hyg_treatment_item_priority_check violated: '${priority}'`);
+      }
+      Object.assign(row, {
+        teeth: FakeHygDb.json(teeth),
+        whole_mouth: wholeMouth === true,
+        code,
+        category,
+        priority,
+        status,
+        surfaces: FakeHygDb.json(surfaces),
+        dx: FakeHygDb.json(dx),
+        dx_note: dxNote,
+        motivation: FakeHygDb.json(motivation),
+        motivation_note: motivationNote,
+        crown_type: crownType,
+        prosthesis: prosthesis === null ? null : FakeHygDb.json(prosthesis),
+        schedule_next: scheduleNext === true,
+        note,
+        photos: FakeHygDb.json(photos),
+        tags: FakeHygDb.json(tags),
+        updated_by: actor,
+        updated_at: new Date(),
+      });
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/DELETE FROM hyg_treatment_item/i.test(text)) {
+      const [itemId, visitId, office] = params;
+      const before = this.hyg_treatment_item.length;
+      this.hyg_treatment_item = this.hyg_treatment_item.filter(
+        (r) => !(r.item_id === itemId && r.visit_id === visitId && r.office === office)
+      );
+      return { rows: [], rowCount: before - this.hyg_treatment_item.length };
+    }
+
+    // ── hyg_staged_write ────────────────────────────────────────────────────
+    if (/^\s*SELECT state FROM hyg_staged_write/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const rows = this.hyg_staged_write
+        .filter((r) => r.visit_id === visitId && r.office === office && r.kind === kind)
+        .map((r) => ({ state: r.state }));
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/^\s*SELECT[\s\S]*FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2/i.test(text)) {
+      const [visitId, office] = params;
+      const rows = this.hyg_staged_write.filter(
+        (r) => r.visit_id === visitId && r.office === office
+      );
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/INSERT INTO hyg_staged_write/i.test(text)) {
+      const [visitId, office, kind, title, summary, preview, payload, actor] = params;
+      this.checkOffice(office);
+      if (!FakeHygDb.KINDS.includes(kind)) {
+        throw new Error(`hyg_staged_write_kind_check violated: '${kind}'`);
+      }
+      const parent = this.hyg_visit.find((r) => r.visit_id === visitId && r.office === office);
+      if (!parent) {
+        throw new Error('hyg_staged_write_visit_fk violated: no such (visit_id, office)');
+      }
+      const existing = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.kind === kind
+      );
+      const fields = {
+        state: 'Staged',
+        title,
+        summary,
+        preview: FakeHygDb.json(preview),
+        payload: FakeHygDb.json(payload),
+        error_message: null,
+        staged_by: actor,
+        staged_at: new Date(),
+        updated_at: new Date(),
+      };
+      if (existing) {
+        Object.assign(existing, fields);
+        return { rows: [existing], rowCount: 1 };
+      }
+      const row = {
+        staged_write_id: this.nextId('staged'),
+        visit_id: visitId,
+        office,
+        kind,
+        sent_by: null,
+        sent_at: null,
+        created_at: new Date(),
+        ...fields,
+      };
+      this.hyg_staged_write.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/DELETE FROM hyg_staged_write/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const before = this.hyg_staged_write.length;
+      this.hyg_staged_write = this.hyg_staged_write.filter(
+        (r) => !(r.visit_id === visitId && r.office === office && r.kind === kind)
+      );
+      return { rows: [], rowCount: before - this.hyg_staged_write.length };
+    }
+
+    throw new Error('[hygTestUtils] unexpected SQL under /api/hyg: ' + text.trim().slice(0, 160));
+  }
+}
+
+/**
  * A scripted Open Dental client bound to one office.
  *
  * `routes` maps an OD path (or a `path?Offset=N` key, for paging tests) to
@@ -202,7 +549,7 @@ async function bootHygApp({
   user = { email: 'hygienist@carein.ai', name: 'Hyg User', tenantId: 'x' },
   role = 'hygiene',
   superAdmin = false,
-  db = new FakeAuditDb(),
+  db = new FakeHygDb(),
   od = new FakeOd(),
   hygOffices = ['roland'],
   odUnavailableFor = [],
@@ -432,6 +779,7 @@ function operatoryRow(over = {}) {
 
 module.exports = {
   FakeAuditDb,
+  FakeHygDb,
   FakeOd,
   bootHygApp,
   api,
