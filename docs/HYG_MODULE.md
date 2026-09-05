@@ -1,6 +1,6 @@
-# The Hygiene module (`hyg`) — H1 slices 1 and 2
+# The Hygiene module (`hyg`) — H1 slices 1, 2 and 3
 
-What shipped, what it refuses to do, and where slice 3 attaches.
+What shipped, and what it refuses to do.
 
 **Status: mounted, ships dark.** `hyg` is in the `tenant_module` vocabulary as
 of `backend/migrations/1788100000000_module_hyg.js`, no tenant is entitled to
@@ -653,3 +653,80 @@ store against a real database, connected as `carein_app`, and tries to break
 every constraint on purpose — 20 checks. The route tests use a
 statement-dispatch fake, and a fake is a second implementation of the rules
 whose failure mode is agreeing with itself and not with Postgres.
+
+
+---
+
+## 11. The send (H1 slice 3)
+
+`POST /api/hyg/visit/:aptNum/send`. The module's first Open Dental WRITES.
+
+### Exactly one file may write
+
+`services/hyg/odWriter.js`, and `routes/hyg/hygNoOdWrites.test.js` names it.
+Everything else — the orchestration in `sendVisit.js`, the routes, the composer
+— reaches Open Dental only through the four functions it exports. A second
+writer is a second policy about when something lands in a chart, and the second
+one is always the one nobody reviewed. The allow-list is asserted to be
+non-vacuous (the named file really does reach the transport) and to hold both
+endpoints, so a POST assembled elsewhere and passed down as a string would fail
+the build.
+
+### Three destinations
+
+| | Endpoint | Read-back |
+| --- | --- | --- |
+| the visit note | `POST /procedurelogs/GroupNote`, `isSigned: false` | `GET /procedurelogs?AptNum=` must contain the note text |
+| the routing slip | `POST /documents/Upload`, `.pdf` + `rawBase64` | the response must carry a `DocNum` |
+| the treatment | TC's own `POST /api/tc/hygiene-intakes` (loopback, caller's credential) | the response must carry a `caseId` |
+
+**A 200 is not the claim.** `Written` is reached only after the thing has been
+read back; a write Open Dental accepted but cannot show is `Failed`, with the
+reason. `Sending` is persisted BEFORE the call, so a process that dies mid-write
+leaves "we tried and do not know" rather than "ready to send".
+
+### The preview IS the write
+
+The confirm request carries, per kind, the FINGERPRINT of the preview lines the
+hygienist read — `sha256(preview)`, truncated. The server recomputes it from its
+own row and refuses the **whole send** on any mismatch, before anything is
+written. A send that half-honours a stale preview is worse than one that does
+not start.
+
+That holds for the PDF too, because `services/hyg/slipPdf.js` is deterministic:
+the same lines produce byte-identical output, and it writes no timestamp, no
+`/Info` and no `/ID`. It is hand-rolled — about a hundred lines of a
+thirty-year-old file format — rather than a new dependency on the path that
+files documents into a chart.
+
+### DocCategory is resolved BY NAME, per office, every time
+
+`GET /definitions?Category=18`, matched on the name (default `Routers`,
+overridable per office with `HYG_SLIP_DOC_CATEGORY_<OFFICE>`). H0 found the same
+category name is DefNum 473 at one practice and 429 at the other, so a constant
+would file a document into whatever that number happens to mean elsewhere.
+DocCategory is ALWAYS sent: omitting it files into the first category, and a
+slip that lands where nobody looks is worse than a failed upload.
+
+### Partial success is the normal case
+
+A visit is never "sent" — its individual writes are. Each has its own state, its
+own reason when it failed, and its own `written_ref` when it landed (`Document
+4711 in Routers`, `GroupNote on 2 procedures (5001, 5002)`, `Case 8f3c…`). The
+route answers **200 with counts**, not a verdict, and the screen shows every row.
+A failed write offers a retry that re-sends the SAME words — a retry that
+re-composed would send something she never read.
+
+### The order, and why
+
+`note → router → tc-handoff`. The note is the record that the visit happened and
+the one whose absence is hardest to notice later. The handoff is last because it
+is the only one that creates work for another person: if the first two are
+failing, the treatment coordinator is better off not receiving a case about a
+visit whose chart note is missing.
+
+### What is still not here
+
+Perio. `POST /perioexams` and `/periomeasures` are not called and the writer
+does not know their names — a stray Probing row is PERMANENT in Open Dental
+(only Mobility and SkipTooth can be deleted). H4.

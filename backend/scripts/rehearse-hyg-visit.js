@@ -320,9 +320,11 @@ async function main() {
         )
     );
 
-    // Slice 3 will set these together, and the database permits exactly that.
+    // The send path sets all four together, and the database permits exactly
+    // that combination and no other: state, attribution, and the reference.
     await pool.query(
-      `UPDATE hyg_staged_write SET state = 'Written', sent_by = $2, sent_at = now()
+      `UPDATE hyg_staged_write
+          SET state = 'Written', sent_by = $2, sent_at = now(), written_ref = 'Document 1 in Routers'
         WHERE visit_id = $1 AND kind = 'router'`,
       [first.visitId, ACTOR]
     );
@@ -337,6 +339,45 @@ async function main() {
       ok('a Written row cannot be re-staged');
     } else {
       bad('a Written row cannot be re-staged', JSON.stringify(immutable));
+    }
+
+    // ── 6b. slice 3's written_ref, and the pairing it enforces ──────────────
+    await refuses(
+      'a Written row with no reference is refused',
+      'hyg_staged_write_written_ref_check',
+      () =>
+        pool.query(
+          `UPDATE hyg_staged_write SET state = 'Written', written_ref = NULL,
+                  sent_by = $2, sent_at = now()
+            WHERE visit_id = $1 AND kind = 'router'`,
+          [first.visitId, ACTOR]
+        )
+    );
+    await refuses(
+      'a reference on a row that was never Written is refused',
+      'hyg_staged_write_written_ref_check',
+      () =>
+        pool.query(
+          `UPDATE hyg_staged_write SET state = 'Staged', written_ref = 'Document 4711'
+            WHERE visit_id = $1 AND kind = 'router'`,
+          [first.visitId]
+        )
+    );
+    // And the pair the send path actually writes is accepted.
+    await pool.query(
+      `UPDATE hyg_staged_write SET state = 'Written', written_ref = 'Document 4711 in Routers',
+              sent_by = $2, sent_at = now()
+        WHERE visit_id = $1 AND kind = 'router'`,
+      [first.visitId, ACTOR]
+    );
+    const written = await pool.query(
+      `SELECT written_ref FROM hyg_staged_write WHERE visit_id = $1 AND kind = 'router'`,
+      [first.visitId]
+    );
+    if (written.rows[0].written_ref === 'Document 4711 in Routers') {
+      ok('a Written row carries the reference the send recorded');
+    } else {
+      bad('a Written row carries the reference the send recorded');
     }
 
     // ── 7. the cascade, and cleanup ─────────────────────────────────────────

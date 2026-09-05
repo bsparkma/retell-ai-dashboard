@@ -28,11 +28,14 @@ import {
   HandoffCategorySchema,
   HygAppointmentSchema,
   HygDayResponseSchema,
+  HygSendResponseSchema,
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayResponse,
+  type HygSendResponse,
   type HygSlip,
   type OfficeId,
+  type SendConfirmation,
   type StagedWriteKind,
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
@@ -418,4 +421,63 @@ export async function unstageWrite(
   kind: StagedWriteKind,
 ): Promise<HygVisitMutation> {
   return mutate("DELETE", `/visit/${aptNum}/staged-writes/${kind}`, { office }, parseVisit);
+}
+
+/**
+ * Send the confirmed writes (H1 slice 3).
+ *
+ * ⚠️ THE BODY CARRIES NO PAYLOAD. ⚠️ It names which kinds are being confirmed
+ * and the FINGERPRINT of the preview that was on screen when the hygienist
+ * pressed the button. The server recomputes that fingerprint from its own
+ * stored row and refuses the whole send if anything changed — so a second tab,
+ * a second device, or her own edit between reading and confirming cannot send
+ * words nobody approved.
+ *
+ * A 200 does NOT mean everything landed. Partial success is the normal case:
+ * read `outcomes`, per kind. A visit is never "sent" — its writes are.
+ */
+export async function sendVisit(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  confirm: SendConfirmation[],
+): Promise<HygSendResponse> {
+  return mutate(
+    "POST",
+    `/visit/${aptNum}/send`,
+    { office, date },
+    (raw) => {
+      const parsed = HygSendResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN sent something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { confirm },
+  );
+}
+
+/**
+ * Put a FAILED write back on the list, with the same words.
+ *
+ * Deliberately not a re-compose: a retry that rebuilt the preview would send
+ * something she never read. Changing the visit and staging again is the other,
+ * explicit path.
+ */
+export async function retryStagedWrite(
+  office: OfficeId,
+  aptNum: number,
+  kind: StagedWriteKind,
+): Promise<HygVisitMutation> {
+  return mutate(
+    "POST",
+    `/visit/${aptNum}/staged-writes/${kind}/retry`,
+    { office },
+    parseVisit,
+  );
 }

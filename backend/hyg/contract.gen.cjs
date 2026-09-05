@@ -14838,6 +14838,7 @@ __export(contract_entry_exports, {
   HygDayStatsSchema: () => HygDayStatsSchema,
   HygErrorSchema: () => HygErrorSchema,
   HygOperatorySchema: () => HygOperatorySchema,
+  HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
   HygVisitResponseSchema: () => HygVisitResponseSchema,
   HygVisitSchema: () => HygVisitSchema,
@@ -14853,6 +14854,9 @@ __export(contract_entry_exports, {
   RECORDS_MATRIX: () => RECORDS_MATRIX,
   RECORD_STATUS_LABELS: () => RECORD_STATUS_LABELS,
   RecordStatusSchema: () => RecordStatusSchema,
+  SendConfirmationSchema: () => SendConfirmationSchema,
+  SendOutcomeSchema: () => SendOutcomeSchema,
+  SendVisitRequestSchema: () => SendVisitRequestSchema,
   StagedWriteCreateRequestSchema: () => StagedWriteCreateRequestSchema,
   StagedWriteKindSchema: () => StagedWriteKindSchema,
   StagedWriteSchema: () => StagedWriteSchema,
@@ -15243,8 +15247,24 @@ var StagedWriteSchema = import_zod.z.object({
   summary: import_zod.z.string(),
   /** The lines a hygienist reads before confirming. Slice 3 sends exactly these. */
   preview: import_zod.z.array(import_zod.z.string()),
+  /**
+   * A fingerprint of `preview`, computed by the server.
+   *
+   * THE PREVIEW IS THE WRITE. A send names the fingerprint of what the
+   * hygienist actually read, the server recomputes it from the stored row, and
+   * a mismatch refuses the WHOLE send. Without it, anything that re-stages
+   * between the preview and the confirm — her own edit in another tab, a second
+   * device — would send words nobody approved.
+   */
+  previewFingerprint: import_zod.z.string(),
   /** Why it failed, when it did. Null in every other state. */
   errorMessage: import_zod.z.string().nullable(),
+  /**
+   * What Open Dental (or TC) minted, once it landed: `Document 4711`,
+   * `Case 8f3c…`. Null until then. A pointer a person can follow — the
+   * difference between "it was sent" and "here is where it went".
+   */
+  writtenRef: import_zod.z.string().nullable(),
   stagedBy: import_zod.z.string().nullable(),
   stagedAt: import_zod.z.string().nullable(),
   sentBy: import_zod.z.string().nullable(),
@@ -15274,6 +15294,32 @@ var HygVisitResponseSchema = import_zod.z.object({
   /** The handoff category deriveCategory() computes from the items. */
   handoffCategory: HandoffCategorySchema
 });
+var SendConfirmationSchema = import_zod.z.object({
+  kind: StagedWriteKindSchema,
+  previewFingerprint: import_zod.z.string().min(1).max(200)
+}).strict();
+var SendVisitRequestSchema = import_zod.z.object({ confirm: import_zod.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
+var SendOutcomeSchema = import_zod.z.object({
+  kind: StagedWriteKindSchema,
+  state: StagedWriteStateSchema,
+  /** Present when it landed. */
+  writtenRef: import_zod.z.string().nullable(),
+  /** Present when it did not. Never empty when the state is Failed. */
+  errorMessage: import_zod.z.string().nullable(),
+  /** The precise reason, for a screen that wants to switch on it. */
+  code: import_zod.z.string().nullable()
+});
+var HygSendResponseSchema = import_zod.z.object({
+  success: import_zod.z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: import_zod.z.array(import_zod.z.string()),
+  handoffCategory: HandoffCategorySchema,
+  /** One entry per confirmed kind, in the order they were attempted. */
+  outcomes: import_zod.z.array(SendOutcomeSchema),
+  /** Counts, not a verdict. `written + failed` is what was attempted. */
+  written: import_zod.z.number().int(),
+  failed: import_zod.z.number().int()
+});
 var HYG_VISIT_ERROR_CODES = [
   "INVALID_APT_NUM",
   "INVALID_BODY",
@@ -15284,7 +15330,11 @@ var HYG_VISIT_ERROR_CODES = [
   "STAGED_WRITE_NOT_FOUND",
   "STAGED_WRITE_IMMUTABLE",
   "STAGED_WRITE_KIND_UNAVAILABLE",
-  "NOTHING_TO_STAGE"
+  "NOTHING_TO_STAGE",
+  // Slice 3.
+  "PREVIEW_CHANGED",
+  "NOTHING_TO_SEND",
+  "NOT_STAGED"
 ];
 
 // shared/hyg/records.ts
@@ -15357,6 +15407,7 @@ var import_zod2 = __toESM(require_zod());
   HygDayStatsSchema,
   HygErrorSchema,
   HygOperatorySchema,
+  HygSendResponseSchema,
   HygSlipSchema,
   HygVisitResponseSchema,
   HygVisitSchema,
@@ -15372,6 +15423,9 @@ var import_zod2 = __toESM(require_zod());
   RECORDS_MATRIX,
   RECORD_STATUS_LABELS,
   RecordStatusSchema,
+  SendConfirmationSchema,
+  SendOutcomeSchema,
+  SendVisitRequestSchema,
   StagedWriteCreateRequestSchema,
   StagedWriteKindSchema,
   StagedWriteSchema,

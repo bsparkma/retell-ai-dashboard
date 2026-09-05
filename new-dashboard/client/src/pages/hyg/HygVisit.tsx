@@ -30,6 +30,18 @@
  *
  * The visit ROW is created lazily, on the first change. A GET creates nothing,
  * so glancing at a card leaves no visit behind for a patient nobody worked on.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ONE THING ON THIS PAGE REACHES A CHART (H1 slice 3)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The Send button, and only after a confirmation that shows the exact lines
+ * being written. What goes back to the server is a FINGERPRINT of those lines,
+ * never a payload — the server recomputes it from its own rows and refuses the
+ * whole send if they differ, so a second tab or a second device cannot make
+ * this page confirm words nobody read.
+ *
+ * A 200 from that call does not mean everything landed. Partial success is
+ * normal, and the tray renders each write's own state.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -39,6 +51,7 @@ import {
   emptySlip,
   isOfficeId,
   type HygSlip,
+  type SendConfirmation,
   type StagedWriteKind,
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
@@ -48,7 +61,9 @@ import {
   HygApiError,
   openVisit,
   removeTreatmentItem,
+  retryStagedWrite,
   saveSlip,
+  sendVisit,
   stageWrite,
   unstageWrite,
   updateTreatmentItem,
@@ -151,7 +166,12 @@ export default function HygVisit() {
   const [error, setError] = useState<HygApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [refusal, setRefusal] = useState<{ kind: StagedWriteKind; message: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  /** `kind: null` means the refusal is about the SEND, not one write. */
+  const [refusal, setRefusal] = useState<{
+    kind: StagedWriteKind | null;
+    message: string;
+  } | null>(null);
   /** The slip being edited, which may be a keystroke ahead of what is stored. */
   const [draft, setDraft] = useState<HygSlip>(emptySlip());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -274,6 +294,38 @@ export default function HygVisit() {
     [office, aptNum, date, page, adopt],
   );
 
+  /**
+   * Send the confirmed writes.
+   *
+   * A 200 is NOT "it worked" — partial success is the normal case, and the tray
+   * renders each write's own state from the readback. The only thing handled
+   * specially here is the 409 the server answers when the preview changed, which
+   * stopped everything and belongs beside the Send button rather than on a row.
+   */
+  const onSend = useCallback(
+    async (confirm: SendConfirmation[]) => {
+      if (!isOfficeId(office) || !page) return;
+      setSending(true);
+      setRefusal(null);
+      try {
+        const res = await sendVisit(office, aptNum, date, confirm);
+        adopt(res);
+      } catch (err) {
+        if (err instanceof HygApiError && err.status === 409) {
+          setRefusal({ kind: null, message: err.message });
+          // Re-read: the server refused because its rows differ from what this
+          // page is showing, so what this page is showing is the stale half.
+          await load();
+        } else if (err instanceof HygApiError) {
+          setError(err);
+        }
+      } finally {
+        setSending(false);
+      }
+    },
+    [office, aptNum, date, page, adopt, load],
+  );
+
   const backHref = `/hyg/day${office ? `?office=${office}&date=${date}` : ""}`;
 
   if (!isOfficeId(office)) {
@@ -382,9 +434,13 @@ export default function HygVisit() {
           <StagedWritesTray
             staged={staged}
             handoffCategory={page.handoffCategory}
+            patientName={page.appointment.patientName ?? "this patient"}
             busy={busy}
+            sending={sending}
             onStage={(kind) => void onStage(kind)}
             onUnstage={(kind) => void run(() => unstageWrite(office, aptNum, kind))}
+            onSend={(confirm) => void onSend(confirm)}
+            onRetry={(kind) => void run(() => retryStagedWrite(office, aptNum, kind))}
             refusal={refusal}
           />
         </aside>
