@@ -7,12 +7,39 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * WHY THIS FILE, AND WHAT IT WILL BECOME
  * ═════════════════════════════════════════════════════════════════════════════
- * H1 slice 1 is read-only. Slice 3 introduces the module's first Open Dental
+ * H1 slice 1 was read-only in both senses: no Open Dental write, and no route
+ * at all that was not a GET. Slice 3 introduces the module's first Open Dental
  * write — the routing slip as a PDF into the patient's images — and when it
  * does, this flat invariant must be REPLACED by an enumerated allow-list of one
  * file, exactly as routes/rcm/rcmNoOdWrites.test.js was when the drain arrived.
  * It must not be deleted. Deleting the guard is how a guard quietly stops
  * guarding, and the second writer is always the one nobody reviewed.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT SLICE 2 CHANGED HERE, AND WHY IT HAD TO
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Slice 2 adds the visit workspace, which MUTATES — POST, PUT and DELETE — in
+ * this platform's own Postgres. Two of the statements below could not tell that
+ * apart from an Open Dental write and had to be sharpened:
+ *
+ *   - `no hyg source issues a POST, PUT or PATCH through any client` matched
+ *     `\.(post|put|patch)\s*\(` anywhere, which `router.post(` satisfies. It now
+ *     captures the RECEIVER of every such call and asserts the receiver set is
+ *     exactly {router, app}. That is STRICTER in the direction that matters:
+ *     the old regex could not have distinguished `client.post` from
+ *     `this.od.client.put`, and this one names whatever it finds.
+ *
+ *   - `no hyg ROUTE is registered on a non-GET method` was written with the
+ *     comment "slice 2's first mutation is a deliberate edit to this test", and
+ *     this is that edit. It becomes a ONE-FILE ALLOW-LIST for mutations, the
+ *     same shape slice 3 will give the Open Dental write: routes/hyg/visit.js
+ *     may register non-GET routes and no other file may, so a second file
+ *     learning to mutate is a red build.
+ *
+ * WHAT DID NOT CHANGE: the behavioural statement and the `apiWriteRaw` scan —
+ * the two that are actually about Open Dental — are byte-identical, and slice 2
+ * ADDS a behavioural case that drives the new mutations to success against the
+ * throwing client.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * TWO STATEMENTS, AND WHY BOTH ARE NEEDED
@@ -36,6 +63,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { FakeOd, bootHygApp, api, apptRow, patientRow, operatoryRow } = require('./hygTestUtils');
+// The SAME contract the routes run, so a slip this test builds is a slip they accept.
+const { emptySlip } = require('../../hyg/contract.gen.cjs');
 
 const DATE = '2026-09-08';
 
@@ -132,9 +161,14 @@ test('the module owns source files, so the scan below is scanning something', ()
   // A scan over an empty file list passes vacuously and would keep passing if
   // the module were renamed out from under it.
   const files = hygSources();
-  assert.ok(files.length >= 4, 'expected the hyg routes and services, found ' + files.length);
+  assert.ok(files.length >= 6, 'expected the hyg routes and services, found ' + files.length);
   assert.ok(files.some((f) => f.endsWith('day.js')));
   assert.ok(files.some((f) => f.endsWith('odDay.js')));
+  // Slice 2's files, named — so a scan that stopped covering them fails here
+  // rather than passing over a module that quietly moved.
+  assert.ok(files.some((f) => f.endsWith('visit.js')));
+  assert.ok(files.some((f) => f.endsWith('visitStore.js')));
+  assert.ok(files.some((f) => f.endsWith('stagedWriteComposer.js')));
 });
 
 test('no hyg source names the Open Dental WRITE transport', () => {
@@ -153,32 +187,103 @@ test('no hyg source names the Open Dental WRITE transport', () => {
   assert.deepEqual(offenders, [], 'these files reach an Open Dental write verb');
 });
 
-test('no hyg source issues a POST, PUT or PATCH through any client', () => {
+test('every write-shaped call in the module is an EXPRESS ROUTE, not a client call', () => {
   // Broader than the verb name: `client.post(...)`, `client.put(...)` and
   // `axios.patch(...)` bypass apiWriteRaw entirely, which is exactly how
   // config/openDental.js's own bookAppointment reaches Open Dental today.
+  //
+  // So this captures the RECEIVER of every write-shaped call and requires it to
+  // be an Express router. `router.post('/x', ...)` registers a route on OUR api;
+  // `client.post(...)` sends one to somebody else's, and only one of those two
+  // can reach a patient's chart.
+  const allowedReceivers = new Set(['router', 'app']);
   const offenders = [];
   for (const file of hygSources()) {
     if (file.endsWith('hygNoOdWrites.test.js') || file.endsWith('hygTestUtils.js')) continue;
     const src = fs.readFileSync(file, 'utf8');
-    const hit = src.match(/\.(post|put|patch)\s*\(/);
-    if (hit) offenders.push(path.basename(file) + ' -> ' + hit[0]);
+    // The receiver is the dotted expression immediately before the verb, so
+    // `this.od.client.put(` reports `this.od.client` rather than slipping
+    // through on the last segment.
+    for (const hit of src.matchAll(/([A-Za-z_$][\w$.]*)\.(post|put|patch|delete)\s*\(/g)) {
+      if (allowedReceivers.has(hit[1])) continue;
+      offenders.push(path.basename(file) + ' -> ' + hit[1] + '.' + hit[2]);
+    }
   }
-  assert.deepEqual(offenders, [], 'these files issue a write-shaped call');
+  assert.deepEqual(offenders, [], 'these files issue a write-shaped call to a CLIENT');
 });
 
-test('no hyg ROUTE is registered on a non-GET method', () => {
-  // The module has no mutation in slice 1, so the mount's
-  // requireReadWrite('hyg.read','hyg.write') is currently unexercised — which
-  // means a POST added without a permission gate would inherit hyg.write by
-  // construction and nobody would notice the tier had arrived. This makes
-  // slice 2's first mutation a deliberate edit to this test.
+test('exactly ONE file registers non-GET hyg routes, and it is the named one', () => {
+  // The one-file allow-list, the same shape slice 3 will give the Open Dental
+  // write itself. Slice 2 owns the module's first mutations; they all live in
+  // routes/hyg/visit.js, behind the mount's requireReadWrite('hyg.read',
+  // 'hyg.write'), which applies BY HTTP METHOD — so every one of them demands
+  // hyg.write by construction rather than by whoever wrote it remembering.
+  //
+  // A second file learning to mutate is a red build. That is the whole value:
+  // the second writer is always the one nobody reviewed.
+  const ALLOWED = ['visit.js'];
   const offenders = [];
   for (const file of hygSources()) {
     if (file.endsWith('.test.js') || file.endsWith('hygTestUtils.js')) continue;
-    const src = fs.readFileSync(file, 'utf8');
-    const hits = [...src.matchAll(/router\.(post|put|patch|delete)\s*\(/g)];
+    if (ALLOWED.includes(path.basename(file))) continue;
+    const hits = [...fs.readFileSync(file, 'utf8').matchAll(/router\.(post|put|patch|delete)\s*\(/g)];
     for (const hit of hits) offenders.push(path.basename(file) + ' -> router.' + hit[1]);
   }
-  assert.deepEqual(offenders, [], 'slice 1 is read-only; a mutation belongs to slice 2');
+  assert.deepEqual(offenders, [], 'only routes/hyg/visit.js may register a mutation');
+
+  // And the allow-list is not vacuous: the named file really does mutate, so a
+  // rename that emptied it would not pass this quietly.
+  const visitSrc = fs.readFileSync(path.join(__dirname, 'visit.js'), 'utf8');
+  assert.match(visitSrc, /router\.post\s*\(/, 'routes/hyg/visit.js should own the mutations');
+});
+
+test('driving the visit MUTATIONS to success reaches no Open Dental write verb', async () => {
+  // The module's first mutations, against the throwing client. Slice 1 could
+  // only make this claim about a GET; the interesting question now is whether
+  // composing and staging a visit — the paths that will BECOME chart writes one
+  // slice later — reach one today. They must not.
+  const od = new FakeOd({
+    '/appointments': [apptRow({ AptNum: 900001, PatNum: 12827, AptDateTime: DATE + ' 08:00:00' })],
+    '/operatories': [operatoryRow()],
+    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Prophy Adult' }],
+    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
+    '/patients/12827': patientRow(),
+  });
+
+  const app = await bootHygApp({ od });
+  const q = '?office=roland&date=' + DATE;
+  try {
+    const opened = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + q);
+    assert.equal(opened.status, 200);
+
+    const item = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/items' + q, {
+      body: {
+        teeth: [3],
+        code: 'Comp',
+        category: 'Restorative',
+        surfaces: ['O'],
+        dx: ['D'],
+        priority: 'urgent',
+        motivation: ['pain'],
+        status: 'proposed',
+        scheduleNext: true,
+        photos: [],
+      },
+    });
+    assert.equal(item.status, 201);
+
+    const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + q, {
+      body: { kind: 'router' },
+    });
+    assert.equal(staged.status, 201, 'the mutations must actually SUCCEED, or this proves nothing');
+
+    const slip = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001' + q, {
+      body: { slip: emptySlip() },
+    });
+    assert.equal(slip.status, 200);
+
+    assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
+  } finally {
+    await app.close();
+  }
 });

@@ -333,14 +333,22 @@ describe("the appointment card", () => {
     expect(screen.queryByText("30 min")).toBeNull();
   });
 
-  it("links every card to its visit", async () => {
+  it("links every card to its visit, WITH the office and the date on it", async () => {
     renderAt(<HygDay />, "/hyg/day");
     await screen.findByTestId("hyg-day-columns");
 
     const links = screen
       .getAllByTestId("hyg-appointment-card")
       .map((el) => el.getAttribute("href"));
-    expect(links).toEqual(["/hyg/visit/900001", "/hyg/visit/900002", "/hyg/visit/900003"]);
+    // The office travels with the link because an AptNum means a DIFFERENT
+    // appointment in each practice's Open Dental database, so a bare
+    // /hyg/visit/900001 names nothing. The visit page refuses one that arrives
+    // without an office rather than guessing which practice was meant.
+    expect(links).toEqual([
+      "/hyg/visit/900001?office=roland&date=2026-09-08",
+      "/hyg/visit/900002?office=roland&date=2026-09-08",
+      "/hyg/visit/900003?office=roland&date=2026-09-08",
+    ]);
   });
 
   it("gives every card a tap target at least 88px tall", async () => {
@@ -389,29 +397,24 @@ describe("the day says what it could not read", () => {
 
 // ─── The slice-2 placeholder ─────────────────────────────────────────────────
 
-describe("the visit placeholder", () => {
-  it("is an honest dead end, not a 404 and not a blank", async () => {
+describe("the visit route", () => {
+  // Slice 1's placeholder is gone; the workspace it promised is in
+  // tests/hyg-visit.test.tsx, which fetches, renders and mutates a real visit.
+  // What is left here is the one property this FILE is about: the day view
+  // hands the visit page everything it needs to identify what to open.
+  it("refuses to guess an office rather than opening the wrong practice's visit", async () => {
     // Rendered under the REAL route pattern, not bare: the appointment number
     // comes from useParams, and a test that rendered the component directly
     // would pass with the route pattern misspelled in App.tsx.
     renderAt(<Route path="/hyg/visit/:aptNum" component={HygVisit} />, "/hyg/visit/900001");
-    const page = await screen.findByTestId("hyg-visit-placeholder");
+    const page = await screen.findByTestId("hyg-visit-no-office");
 
-    expect(page.textContent).toMatch(/ships in Slice 2/i);
-    expect(page.textContent).toContain("900001");
-    expect(screen.getByText(/back to the day/i)).toBeTruthy();
-  });
-
-  it("shows NO patient details, because it has read no chart", async () => {
-    renderAt(<Route path="/hyg/visit/:aptNum" component={HygVisit} />, "/hyg/visit/900001");
-    const page = await screen.findByTestId("hyg-visit-placeholder");
-
-    // The day view has the name in memory and passing it through would be
-    // trivial. This page has made no request, checked no entitlement and
-    // written no audit row — PHI on a screen with no trail behind it is the one
+    expect(page.textContent).toMatch(/which office/i);
+    // And it shows no patient details while it does not know which database to
+    // ask — PHI on a screen with no request and no audit row behind it is the
     // thing the platform's audit rule exists to prevent.
     expect(page.textContent).not.toMatch(/Kiwi|Papaya/);
-    expect(page.textContent).toMatch(/read a chart/i);
+    expect(screen.getByText(/back to the day/i)).toBeTruthy();
   });
 });
 

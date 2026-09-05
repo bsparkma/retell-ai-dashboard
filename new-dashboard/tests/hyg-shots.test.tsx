@@ -278,9 +278,14 @@ describe.skipIf(!SHOOT)("hyg screenshot dumps", () => {
     dump("hyg-04-day-not-ready");
   });
 
-  it("05 — the slice-2 placeholder behind a card tap", async () => {
+  it("05 — a visit URL that arrived without an office", async () => {
+    // Slice 1 shot the placeholder here. The workspace it promised now has its
+    // own five shots in tests/hyg-visit-shots.test.tsx, so what is worth a
+    // picture on THIS route is the refusal: a bare /hyg/visit/900001 names a
+    // different appointment in each practice's database, and the page says so
+    // rather than guessing which one was meant.
     renderAt(<Route path="/hyg/visit/:aptNum" component={HygVisit} />, "/hyg/visit/900001");
-    await screen.findByTestId("hyg-visit-placeholder");
-    dump("hyg-05-visit-placeholder");
+    await screen.findByTestId("hyg-visit-no-office");
+    dump("hyg-05-visit-no-office");
   });
 });

@@ -18,21 +18,21 @@
  * localised failure at the boundary rather than an `undefined` three components
  * deep.
  *
- * The BACKEND does not execute these schemas, and that is a decision rather
- * than an omission. It is CommonJS with no build step, so the only way it can
- * run zod is the committed esbuild bundle TC uses (backend/tc/contract.gen.cjs,
- * 650KB, plus a byte-compare drift test that this repo's CLAUDE.md already
- * documents as fragile under a plain `pnpm install`). Slice 1's entire request
- * surface is two query params — an office from a frozen two-item list and a
- * calendar date — which the route validates in eight lines, and everything
- * else crossing the wire is a RESPONSE the client parses here. A second 650KB
- * bundle would double a known-fragile guard to validate two strings.
+ * THE BACKEND NOW EXECUTES THESE SCHEMAS TOO (H1 slice 2). It is CommonJS with
+ * no build step, so it reaches them through a COMMITTED esbuild bundle —
+ * backend/hyg/contract.gen.cjs, built from backend/hyg/contract.entry.ts, the
+ * same mechanism TC has used since its slice 3. Slice 1 deliberately shipped
+ * without it: its whole request surface was two query params, and a second
+ * 650KB bundle to validate two strings was not worth doubling a known-fragile
+ * byte-compare guard.
  *
- * When slice 2 adds request BODIES (the routing slip, the staged writes), that
- * trade flips: a body is where a client and a server most need the same
- * schema, and the bundle should be added then. `hyg-contract.test.ts` pins the
- * backend's response keys against this file in the meantime, so the two cannot
- * drift silently while the bundle is absent.
+ * Slice 2 flipped that trade, because slice 2 introduces request BODIES and
+ * those bodies become chart writes one slice later. A body is exactly where a
+ * client and a server most need the same schema, and "the client validated it"
+ * is not a statement the server may rely on — see the REQUEST BODIES section
+ * below. Regenerate the bundle whenever this file changes; the drift guard is
+ * new-dashboard/tests/hyg-contract-bundle.test.ts and a stale bundle is a red
+ * build rather than a discovery.
  */
 import { z } from "zod";
 
@@ -488,3 +488,284 @@ export const HYG_ERROR_CODES = [
   "INTERNAL_ERROR",
 ] as const;
 export type HygErrorCode = (typeof HYG_ERROR_CODES)[number];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The routing slip (H1 slice 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A yes/no a hygienist ticked. `null` — the field's absence from the slip —
+ * means nobody has answered, and the two are never the same thing.
+ */
+export const YesNoSchema = z.enum(["yes", "no"]);
+export type YesNo = z.infer<typeof YesNoSchema>;
+
+/** Where one of the records a treatment needs currently stands. */
+export const RecordStatusSchema = z.enum(["needed", "on_file", "taken_today"]);
+export type RecordStatus = z.infer<typeof RecordStatusSchema>;
+
+export const RECORD_STATUS_LABELS: Record<RecordStatus, string> = {
+  needed: "Needed",
+  on_file: "On file",
+  taken_today: "Taken today",
+};
+
+/** Whether the doctor exam happened, is due, or is not owed today. */
+export const ExamStatusSchema = z.enum(["needed_today", "completed", "not_due"]);
+export type ExamStatus = z.infer<typeof ExamStatusSchema>;
+
+export const EXAM_STATUS_LABELS: Record<ExamStatus, string> = {
+  needed_today: "Needed today",
+  completed: "Completed",
+  not_due: "Not due",
+};
+
+/** The 2017 AAP staging, as the slip writes it. */
+export const PerioStageSchema = z.enum([
+  "health",
+  "gingivitis",
+  "stage_i",
+  "stage_ii",
+  "stage_iii",
+  "stage_iv",
+]);
+export type PerioStage = z.infer<typeof PerioStageSchema>;
+
+export const PERIO_STAGE_LABELS: Record<PerioStage, string> = {
+  health: "Health",
+  gingivitis: "Gingivitis",
+  stage_i: "Stage I",
+  stage_ii: "Stage II",
+  stage_iii: "Stage III",
+  stage_iv: "Stage IV",
+};
+
+export const PerioGradeSchema = z.enum(["a", "b", "c"]);
+export type PerioGrade = z.infer<typeof PerioGradeSchema>;
+
+/** What was done in the chair today. Chip ids, so no screen invents its own. */
+export const DONE_TODAY_OPTIONS = [
+  { id: "prophy", label: "Prophy" },
+  { id: "srp-ur", label: "SRP UR" },
+  { id: "srp-ul", label: "SRP UL" },
+  { id: "srp-lr", label: "SRP LR" },
+  { id: "srp-ll", label: "SRP LL" },
+  { id: "fluoride", label: "Fluoride" },
+  { id: "sealants", label: "Sealants" },
+  { id: "irrigation", label: "Irrigation" },
+  { id: "polish", label: "Polish" },
+] as const;
+
+export const XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"] as const;
+
+/**
+ * The next hygiene visit the front desk should book.
+ *
+ * Every field is nullable because the slip is filled DURING a visit, not after
+ * it: a half-filled slip is the normal state of this object for most of an
+ * hour, and a schema that refused one would refuse every save but the last.
+ */
+export const NextVisitSchema = z
+  .object({
+    type: z.string().max(120).nullable(),
+    intervalMonths: z.number().int().min(1).max(24).nullable(),
+    lengthMin: z.number().int().min(5).max(240).nullable(),
+    withDoctor: z.boolean(),
+  })
+  .strict();
+export type NextVisit = z.infer<typeof NextVisitSchema>;
+
+/**
+ * The routing slip: the paper form, as one object.
+ *
+ * ⚠️ `recareScheduled` and `txEnteredInOd` ARE ORDINARY FIELDS. ⚠️
+ *
+ * The prototype's Finish tab treated both as blocking gates — `Send all` was
+ * disabled until they were answered. Beau's ruling, verbatim: *"the hygienist
+ * should be able to send the treatment to the tc app."* Both describe work the
+ * FRONT DESK does after the hygienist has finished, so gating on them makes a
+ * hygienist wait on somebody else's task while a patient sits in the chair.
+ * They render an unobtrusive reminder when unanswered and nothing more.
+ * Nothing in this module may hard-gate a send on a completeness check, and
+ * `hyg-visit.test.ts` and `hygVisitStage.test.js` both pin it.
+ *
+ * `.strict()` is deliberate: an unknown key is a 400 naming the key rather
+ * than a silently-dropped field. A slip that quietly loses what somebody typed
+ * is worse than one that refuses to save.
+ */
+export const HygSlipSchema = z
+  .object({
+    /** Chip ids from DONE_TODAY_OPTIONS. */
+    doneToday: z.array(z.string().min(1).max(60)),
+    doneTodayNote: z.string().max(4000),
+    xrayTypes: z.array(z.string().min(1).max(20)),
+    examStatus: ExamStatusSchema.nullable(),
+    perioStage: PerioStageSchema.nullable(),
+    perioGrade: PerioGradeSchema.nullable(),
+    patientConcerns: z.string().max(4000),
+    hygieneFindings: z.string().max(4000),
+    nextVisit: NextVisitSchema,
+    /** A reminder when unanswered. NEVER a gate. See the note above. */
+    recareScheduled: YesNoSchema.nullable(),
+    /** A reminder when unanswered. NEVER a gate. See the note above. */
+    txEnteredInOd: YesNoSchema.nullable(),
+    frontDeskNote: z.string().max(4000),
+    financialNote: z.string().max(4000),
+    productsDispensed: z.array(z.string().min(1).max(120)),
+    /** Keyed by the record label RECORDS_MATRIX produces. */
+    recordsStatus: z.record(z.string(), RecordStatusSchema),
+  })
+  .strict();
+export type HygSlip = z.infer<typeof HygSlipSchema>;
+
+/**
+ * An empty slip.
+ *
+ * Exported so the server can persist a real object on first open and the
+ * client can render one before the first save — one definition, because two
+ * would drift and the drift would look like data loss.
+ */
+export function emptySlip(): HygSlip {
+  return {
+    doneToday: [],
+    doneTodayNote: "",
+    xrayTypes: [],
+    examStatus: null,
+    perioStage: null,
+    perioGrade: null,
+    patientConcerns: "",
+    hygieneFindings: "",
+    nextVisit: { type: null, intervalMonths: null, lengthMin: null, withDoctor: false },
+    recareScheduled: null,
+    txEnteredInOd: null,
+    frontDeskNote: "",
+    financialNote: "",
+    productsDispensed: [],
+    recordsStatus: {},
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUEST BODIES — the schemas the BACKEND runs (H1 slice 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A treatment item as a CLIENT may send it.
+ *
+ * `id`, `createdBy` and `createdAt` are omitted because they are the server's
+ * to mint. A client that could choose an item's id could overwrite another
+ * visit's row, and a client that could choose `createdBy` could put somebody
+ * else's name on a proposal that ends up on a chart.
+ */
+export const TreatmentItemInputSchema = TreatmentItemSchema.omit({
+  id: true,
+  createdBy: true,
+  createdAt: true,
+}).strict();
+export type TreatmentItemInput = z.infer<typeof TreatmentItemInputSchema>;
+
+/** PUT /api/hyg/visit/:aptNum — the slip, whole. */
+export const VisitUpsertRequestSchema = z.object({ slip: HygSlipSchema }).strict();
+export type VisitUpsertRequest = z.infer<typeof VisitUpsertRequestSchema>;
+
+/** POST /api/hyg/visit/:aptNum/items */
+export const TreatmentItemCreateRequestSchema = TreatmentItemInputSchema;
+
+/**
+ * PUT /api/hyg/visit/:aptNum/items/:itemId — a partial edit.
+ *
+ * Partial rather than whole-object so a tooth toggle is one field on the wire;
+ * the server merges onto the stored row and re-validates the RESULT, so a
+ * partial body can never assemble an item the whole-object schema would refuse.
+ */
+export const TreatmentItemUpdateRequestSchema = TreatmentItemInputSchema.partial();
+export type TreatmentItemUpdateRequest = z.infer<typeof TreatmentItemUpdateRequestSchema>;
+
+/**
+ * POST /api/hyg/visit/:aptNum/staged-writes — stage one kind.
+ *
+ * ⚠️ THE BODY CARRIES ONLY THE KIND. ⚠️ The title, the summary, the preview
+ * lines and the payload are all composed SERVER-SIDE from the stored visit.
+ * That is the fix for RCM audit finding F3 ("confirm gates client-side only;
+ * submit paths never re-check and record no user") and it is what makes slice
+ * 3's rule — the preview IS the write — expressible at all: a payload the
+ * client supplied is a payload the client can change after the preview.
+ */
+export const StagedWriteCreateRequestSchema = z
+  .object({ kind: StagedWriteKindSchema })
+  .strict();
+export type StagedWriteCreateRequest = z.infer<typeof StagedWriteCreateRequestSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/hyg/visit/:aptNum
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One staged write, as the server reports it.
+ *
+ * `state` is READ-ONLY over the wire. There is no request schema anywhere in
+ * this contract that accepts a `state`, and that is the point: `Sending`,
+ * `Written` and `Failed` are reached by the SERVER, in slice 3, after Open
+ * Dental answers. A client that could post `Written` could make a failed write
+ * look sent, which is the exact failure the honest-states rule exists for.
+ */
+export const StagedWriteSchema = z.object({
+  id: z.string().min(1),
+  kind: StagedWriteKindSchema,
+  state: StagedWriteStateSchema,
+  title: z.string(),
+  summary: z.string(),
+  /** The lines a hygienist reads before confirming. Slice 3 sends exactly these. */
+  preview: z.array(z.string()),
+  /** Why it failed, when it did. Null in every other state. */
+  errorMessage: z.string().nullable(),
+  stagedBy: z.string().nullable(),
+  stagedAt: z.string().nullable(),
+  sentBy: z.string().nullable(),
+  sentAt: z.string().nullable(),
+  updatedAt: z.string(),
+});
+export type StagedWrite = z.infer<typeof StagedWriteSchema>;
+
+/** The whole visit: the slip, the items, and what is staged. */
+export const HygVisitSchema = z.object({
+  visitId: z.string().min(1),
+  office: OfficeIdSchema,
+  aptNum: z.number().int(),
+  /** MEANINGLESS WITHOUT `office` — see HygAppointmentSchema. */
+  patNum: z.number().int(),
+  visitDate: z.string().nullable(),
+  slip: HygSlipSchema,
+  items: z.array(TreatmentItemSchema),
+  stagedWrites: z.array(StagedWriteSchema),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedBy: z.string().nullable(),
+  updatedAt: z.string(),
+});
+export type HygVisit = z.infer<typeof HygVisitSchema>;
+
+export const HygVisitResponseSchema = z.object({
+  success: z.literal(true),
+  visit: HygVisitSchema,
+  /** Every record the proposed treatments need, from RECORDS_MATRIX. */
+  recordsNeeded: z.array(z.string()),
+  /** The handoff category deriveCategory() computes from the items. */
+  handoffCategory: HandoffCategorySchema,
+});
+export type HygVisitResponse = z.infer<typeof HygVisitResponseSchema>;
+
+/** The refusal codes slice 2 adds on top of HYG_ERROR_CODES. */
+export const HYG_VISIT_ERROR_CODES = [
+  "INVALID_APT_NUM",
+  "INVALID_BODY",
+  "APPOINTMENT_NOT_ON_DAY",
+  "APPOINTMENT_HAS_NO_PATIENT",
+  "VISIT_NOT_FOUND",
+  "ITEM_NOT_FOUND",
+  "STAGED_WRITE_NOT_FOUND",
+  "STAGED_WRITE_IMMUTABLE",
+  "STAGED_WRITE_KIND_UNAVAILABLE",
+  "NOTHING_TO_STAGE",
+] as const;
+export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

@@ -27,7 +27,7 @@
 import { Link } from "wouter";
 import { AlertTriangle, HelpCircle, Clock } from "lucide-react";
 
-import type { HygAppointment } from "@shared/hyg/contract";
+import type { HygAppointment, OfficeId } from "@shared/hyg/contract";
 import { formatClock, formatLength, visibleFlags } from "@/features/hyg/day";
 import { cn } from "@/lib/utils";
 
@@ -61,7 +61,15 @@ function FlagChip({
   );
 }
 
-export function AppointmentCard({ appointment }: { appointment: HygAppointment }) {
+export function AppointmentCard({
+  appointment,
+  office,
+  date,
+}: {
+  appointment: HygAppointment;
+  office: OfficeId;
+  date: string;
+}) {
   const clock = formatClock(appointment.start);
   const length = formatLength(appointment.lengthMin);
   const flags = visibleFlags(appointment.flags);
@@ -71,7 +79,15 @@ export function AppointmentCard({ appointment }: { appointment: HygAppointment }
   // An appointment with no AptNum cannot be opened — there is nothing to open.
   // It still RENDERS, because a patient who is coming in is more important than
   // a link, and it says why it is not a link rather than looking broken.
-  const href = appointment.aptNum !== null ? `/hyg/visit/${appointment.aptNum}` : null;
+  //
+  // The office and the date travel WITH the link. An AptNum means a different
+  // appointment in each practice's Open Dental database, so a visit URL without
+  // an office beside it names nothing — and the visit page refuses one that
+  // arrives without it rather than guessing.
+  const href =
+    appointment.aptNum !== null
+      ? `/hyg/visit/${appointment.aptNum}?office=${office}&date=${date}`
+      : null;
 
   const body = (
     <>
