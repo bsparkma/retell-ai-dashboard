@@ -20,6 +20,29 @@
  *                    Retry button, because retrying will never help
  *   OD ERROR         Open Dental did not answer. The only state with a Retry
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SCHEDULE PAINTS FIRST. THE NAMES ARRIVE AFTER.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `GET /day` resolves identities only from the server's patient cache, so it
+ * returns in list-read time — a few seconds — with `identity: 'pending'` on
+ * whatever it could not name. This page then calls `GET /day/identities` in a
+ * loop, merging each batch onto the cards it already has.
+ *
+ * A 40-patient day used to be ~40 seconds of skeleton, because every name is
+ * one Open Dental request on a credential throttled to one per second and
+ * shared with voice and RCM. That cost has not gone away and is not what
+ * changed: the SCHEDULE no longer waits behind it.
+ *
+ * THE LOOP STOPS. It runs while `pending` is FALLING, and stops the moment a
+ * batch does not move it. A patient Open Dental refuses comes back in
+ * `unavailable` and the card says "Name unavailable"; a patient that somehow
+ * neither resolves nor fails would otherwise be a spinner nobody can end, and
+ * "spins forever" is the same lie as "empty day" wearing a different hat.
+ *
+ * A FAILED FILL DOES NOT DISCARD THE SCHEDULE. It is its own banner with its
+ * own retry, because refetching the day to recover the names would throw away
+ * a schedule that loaded perfectly well.
+ *
  * The server is what makes this possible: it refuses with a code for every way
  * of not knowing, and `appointments: []` comes back only when nobody is booked.
  * This page renders that distinction rather than inventing it.
@@ -43,17 +66,19 @@ import {
   List,
   PlugZap,
   RefreshCw,
+  UserX,
 } from "lucide-react";
 
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import {
   isOfficeId,
   type HygAppointment,
+  type HygDayIdentitiesResponse,
   type HygDayResponse,
   type HygDayScope,
   type OfficeId,
 } from "@shared/hyg/contract";
-import { fetchDay, HygApiError, HYG_OFFICE_LABELS } from "@/features/hyg/api";
+import { fetchDay, fetchDayIdentities, HygApiError, HYG_OFFICE_LABELS } from "@/features/hyg/api";
 import {
   byStartTime,
   columnLabel,
@@ -76,6 +101,74 @@ type DayState =
   | { kind: "loading" }
   | { kind: "ready"; day: HygDayResponse }
   | { kind: "error"; error: HygApiError };
+
+/**
+ * Merge one batch of names onto the day already on screen.
+ *
+ * PURE, and it replaces nothing it was not given. A card that is already
+ * `resolved` keeps what it has; a `pending` one whose PatNum is in this batch
+ * becomes `resolved`; a PatNum the server reports as `unavailable` becomes
+ * `unavailable` so its card stops waiting and says so.
+ *
+ * The flags are merged rather than replaced: `premed` and `medicalAlerts` are
+ * the two this fill knows about, and the other five keep whatever they had.
+ * Overwriting the whole object would quietly blank flags a later slice adds —
+ * and blanking a clinical flag is the failure this module is written against.
+ */
+export function mergeIdentities(
+  day: HygDayResponse,
+  fill: HygDayIdentitiesResponse,
+): HygDayResponse {
+  const byPatNum = new Map(fill.patients.map((p) => [p.patNum, p]));
+  const unavailable = new Set(fill.unavailable);
+
+  const appointments = day.appointments.map((appt) => {
+    if (appt.patNum === null) return appt;
+    const named = byPatNum.get(appt.patNum);
+    if (named) {
+      return {
+        ...appt,
+        identity: "resolved" as const,
+        patientName: named.patientName,
+        flags: { ...appt.flags, premed: named.premed, medicalAlerts: named.medicalAlerts },
+      };
+    }
+    if (appt.identity === "pending" && unavailable.has(appt.patNum)) {
+      return { ...appt, identity: "unavailable" as const };
+    }
+    return appt;
+  });
+
+  return { ...day, appointments, identitiesPending: fill.pending };
+}
+
+/**
+ * NOTHING IS STILL COMING. Turn every remaining shimmer into a plain answer.
+ *
+ * Called when the fill loop stops for ANY reason — nothing left, no progress,
+ * or a failure. `pending` means "a request is on its way"; once no request is,
+ * a card that keeps shimmering is claiming something that is not true, and it
+ * is the same lie as an empty day wearing a different hat.
+ *
+ * Three ways to reach it, and all three are real:
+ *
+ *   - the server named everyone it was going to and some card was not among
+ *     them (past the fan-out cap — `patientNamesTruncated` says so too);
+ *   - a batch made no progress;
+ *   - the request failed, and the banner above the list says so.
+ *
+ * In every one of them, waiting will not help, which is exactly what "Name
+ * unavailable" means on this screen.
+ */
+export function settleIdentities(day: HygDayResponse): HygDayResponse {
+  if (!day.appointments.some((a) => a.identity === "pending")) return day;
+  return {
+    ...day,
+    appointments: day.appointments.map((a) =>
+      a.identity === "pending" ? { ...a, identity: "unavailable" as const } : a,
+    ),
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The four states
@@ -189,6 +282,59 @@ function OdError({ error, onRetry }: { error: HygApiError; onRetry: () => void }
           <button type="button" onClick={onRetry} className={cn(TAP, "mt-4 bg-background")}>
             <RefreshCw size={15} />
             Try again
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The names did not finish, and the schedule did.
+ *
+ * Its own banner, in its own tone, with a retry that refetches ONLY the names.
+ * Folding this into the day's error state would have thrown away a schedule
+ * that loaded — and a hygienist can work from times and chairs while the names
+ * catch up, which is the entire point of painting them separately.
+ */
+function FillFailed({ error, onRetry }: { error: HygApiError; onRetry: () => void }) {
+  return (
+    <div
+      /*
+       * A FAILURE WITH A REMEDY, not a note. The notices above it are amber
+       * facts a hygienist reads and moves on from; this one is asking her to
+       * do something, and the first screenshot had the two stacked in the same
+       * tone reading as one long amber block.
+       *
+       * NOT red. Red on this page means "the schedule did not load", and the
+       * schedule DID load — saying otherwise in colour would undo the whole
+       * point of separating the two requests.
+       */
+      className="mt-4 rounded-xl border-2 border-amber-400 bg-amber-100/80 p-3 text-sm shadow-sm dark:border-amber-600 dark:bg-amber-950/60"
+      data-testid="hyg-fill-error"
+    >
+      <div className="flex items-start gap-2 text-amber-950 dark:text-amber-200">
+        <UserX size={15} className="mt-0.5 shrink-0" />
+        <div className="min-w-0">
+          <p>
+            <strong className="font-semibold">The schedule loaded; the names did not.</strong>{" "}
+            {error.message}
+          </p>
+          {/* WHAT OPEN DENTAL SAID. "It fails at times" costs a day to
+              reproduce; a status line costs nothing to read out over a phone. */}
+          {error.detail ? (
+            <p className="mt-1 font-mono text-xs opacity-80" data-testid="hyg-fill-error-detail">
+              {error.detail}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRetry}
+            className={cn(TAP, "mt-2 bg-background")}
+            data-testid="hyg-fill-retry"
+          >
+            <RefreshCw size={14} />
+            Try the names again
           </button>
         </div>
       </div>
@@ -310,37 +456,42 @@ function SummaryStrip({ day }: { day: HygDayResponse }) {
 }
 
 function Notices({ day }: { day: HygDayResponse }) {
-  const notices: string[] = [];
+  const notices: { text: string; detail?: string | null }[] = [];
   if (day.truncated) {
-    notices.push(
-      "This day is bigger than one read of Open Dental. Some appointments are missing from this page.",
-    );
+    notices.push({
+      text: "This day is bigger than one read of Open Dental. Some appointments are missing from this page.",
+    });
   }
   if (day.patientNamesTruncated) {
-    notices.push(
-      "There are more patients on this day than CareIN reads names for. Every appointment is here; some cards have no name.",
-    );
+    notices.push({
+      text: "There are more patients on this day than CareIN reads names for. Every appointment is here; some cards have no name.",
+    });
   }
-  for (const w of day.warnings) notices.push(w.message);
+  // THE SERVER'S SENTENCE, AND OPEN DENTAL'S OWN WORDS UNDER IT. The first
+  // tells a hygienist what she is missing; the second is what she reads out
+  // when she calls somebody about it.
+  for (const w of day.warnings) notices.push({ text: w.message, detail: w.detail });
   if (day.excludedByStatus > 0) {
     const n = day.excludedByStatus;
-    notices.push(
-      `${n} ${n === 1 ? "row" : "rows"} on this date ${n === 1 ? "is" : "are"} not a visit ` +
+    notices.push({
+      text:
+        `${n} ${n === 1 ? "row" : "rows"} on this date ${n === 1 ? "is" : "are"} not a visit ` +
         "(broken, unscheduled, planned, or a note) and " +
         `${n === 1 ? "is" : "are"} not shown.`,
-    );
+    });
   }
   // THE LENS SAYS WHAT IT IS HIDING. A hygienist wondering where the 2pm
   // doctor visit went gets an answer rather than a mystery — the same quiet
   // tone as the line above, because it is the same kind of fact.
   if (day.scope === "hygiene" && day.excludedByScope > 0) {
     const n = day.excludedByScope;
-    notices.push(
-      `${n} ${n === 1 ? "appointment" : "appointments"} on this date ${
-        n === 1 ? "is" : "are"
-      } not a hygiene visit and ${n === 1 ? "is" : "are"} not shown. ` +
+    notices.push({
+      text:
+        `${n} ${n === 1 ? "appointment" : "appointments"} on this date ${
+          n === 1 ? "is" : "are"
+        } not a hygiene visit and ${n === 1 ? "is" : "are"} not shown. ` +
         "Show the full day to see them.",
-    );
+    });
   }
   if (notices.length === 0) return null;
 
@@ -350,9 +501,14 @@ function Notices({ day }: { day: HygDayResponse }) {
       data-testid="hyg-day-notices"
     >
       {notices.map((n) => (
-        <div key={n} className="flex items-start gap-2">
+        <div key={n.text} className="flex items-start gap-2">
           <Info size={14} className="mt-0.5 shrink-0" />
-          <span>{n}</span>
+          <span>
+            {n.text}
+            {n.detail ? (
+              <span className="ml-1.5 font-mono text-xs opacity-70">{n.detail}</span>
+            ) : null}
+          </span>
         </div>
       ))}
     </div>
@@ -436,6 +592,9 @@ export default function HygDay() {
   const [date, setDate] = useState<string>(() => todayIso());
   const [state, setState] = useState<DayState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
+  /** Bumped by "Try the names again" — reloads the FILL, never the schedule. */
+  const [fillKey, setFillKey] = useState(0);
+  const [fillError, setFillError] = useState<HygApiError | null>(null);
   const [prefs, setPrefs] = useState<DayPrefs>(() => readPrefs());
 
   const updatePrefs = useCallback((patch: Partial<DayPrefs>) => {
@@ -456,6 +615,9 @@ export default function HygDay() {
     if (office === null) return;
     const abort = new AbortController();
     setState({ kind: "loading" });
+    // A new day's fill has not failed yet. Carrying the last one's banner over
+    // would report a failure that did not happen on this schedule.
+    setFillError(null);
     // THE SCOPE IS PART OF THE REQUEST. Widening the lens is a SECOND fetch,
     // because the doctors' patients were never read the first time — that is
     // the saving, and it is the honest cost of asking for them.
@@ -480,7 +642,103 @@ export default function HygDay() {
     return () => abort.abort();
   }, [office, date, prefs.scope, reloadKey]);
 
-  const retry = useCallback(() => setReloadKey((k) => k + 1), []);
+  const retry = useCallback(() => {
+    setFillError(null);
+    setReloadKey((k) => k + 1);
+  }, []);
+
+  /**
+   * THE FILL.
+   *
+   * Runs whenever the day on screen still has unnamed cards, and asks for one
+   * batch at a time. Three things end it, and all three are deliberate:
+   *
+   *   - `pending` reaches zero — the day is fully named;
+   *   - `pending` does not FALL — a batch that made no progress will not make
+   *     any on the next attempt either, and looping on it is how a spinner
+   *     becomes permanent;
+   *   - the request fails — its own banner, its own retry, and the schedule
+   *     stays exactly where it is.
+   *
+   * `fillKey` is what a retry bumps. It is separate from `reloadKey` because
+   * refetching the whole day to recover the names would discard a schedule that
+   * loaded perfectly well.
+   */
+  useEffect(() => {
+    if (office === null) return;
+    if (state.kind !== "ready") return;
+    if (state.day.identitiesPending <= 0) return;
+
+    const abort = new AbortController();
+    let cancelled = false;
+    const dayKey = `${state.day.office}|${state.day.date}|${state.day.scope}`;
+
+    /** No request is on its way any more, so no card may say one is. */
+    const settle = () => {
+      if (cancelled || abort.signal.aborted) return;
+      setState((current) => {
+        if (current.kind !== "ready") return current;
+        const key = `${current.day.office}|${current.day.date}|${current.day.scope}`;
+        if (key !== dayKey) return current;
+        return { kind: "ready", day: settleIdentities(current.day) };
+      });
+    };
+
+    (async () => {
+      let pending = state.day.identitiesPending;
+      while (!cancelled && pending > 0) {
+        let fill: HygDayIdentitiesResponse;
+        try {
+          fill = await fetchDayIdentities(office, date, prefs.scope, abort.signal);
+        } catch (err: unknown) {
+          if (cancelled || abort.signal.aborted) return;
+          setFillError(
+            err instanceof HygApiError
+              ? err
+              : new HygApiError(
+                  err instanceof Error ? err.message : "Could not load patient names",
+                  0,
+                  null,
+                ),
+          );
+          settle();
+          return;
+        }
+        if (cancelled || abort.signal.aborted) return;
+
+        setState((current) => {
+          // The day may have been replaced under us — a date change, a refresh.
+          // Merging a batch onto a different day would put one day's names on
+          // another's cards, which is the worst thing this loop could do.
+          if (current.kind !== "ready") return current;
+          const key = `${current.day.office}|${current.day.date}|${current.day.scope}`;
+          if (key !== dayKey) return current;
+          return { kind: "ready", day: mergeIdentities(current.day, fill) };
+        });
+
+        if (fill.pending >= pending) {
+          // NO PROGRESS. Whatever is left is not going to resolve by asking
+          // again, and the cards say what they know. Stop.
+          settle();
+          return;
+        }
+        pending = fill.pending;
+      }
+      // Nothing left pending on the server. Anything still shimmering here is
+      // a card the fill was never going to reach — past the fan-out cap — and
+      // it says so rather than waiting on a request nobody is making.
+      settle();
+    })();
+
+    return () => {
+      cancelled = true;
+      abort.abort();
+    };
+    // `state` is intentionally read rather than depended on in full: the effect
+    // re-runs when the day IDENTITY changes (office, date, scope, reload) or
+    // when a fresh fill is asked for, not on every merge it performs itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [office, date, prefs.scope, reloadKey, fillKey, state.kind]);
 
   // The roster's display name is what the rest of the shell shows; the short
   // module label is the fallback when the roster has not arrived. Used only in
@@ -656,6 +914,15 @@ export default function HygDay() {
         <>
           <SummaryStrip day={state.day} />
           <Notices day={state.day} />
+          {fillError ? (
+            <FillFailed
+              error={fillError}
+              onRetry={() => {
+                setFillError(null);
+                setFillKey((k) => k + 1);
+              }}
+            />
+          ) : null}
           {visible.length === 0 ? (
             // Filtered to nothing by the PICKER — a different fact from an
             // empty day, and it must not borrow the empty day's words.

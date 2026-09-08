@@ -14835,10 +14835,13 @@ __export(contract_entry_exports, {
   HandoffCategorySchema: () => HandoffCategorySchema,
   HygAppointmentSchema: () => HygAppointmentSchema,
   HygDayFlagsSchema: () => HygDayFlagsSchema,
+  HygDayIdentitiesResponseSchema: () => HygDayIdentitiesResponseSchema,
   HygDayResponseSchema: () => HygDayResponseSchema,
   HygDayScopeSchema: () => HygDayScopeSchema,
   HygDayStatsSchema: () => HygDayStatsSchema,
   HygErrorSchema: () => HygErrorSchema,
+  HygIdentitySchema: () => HygIdentitySchema,
+  HygIdentityStateSchema: () => HygIdentityStateSchema,
   HygOperatorySchema: () => HygOperatorySchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
@@ -15057,6 +15060,12 @@ var HygDayFlagsSchema = import_zod.z.object({
   examNeeded: import_zod.z.boolean().nullable(),
   openTcCase: import_zod.z.boolean().nullable()
 });
+var HygIdentityStateSchema = import_zod.z.enum([
+  "resolved",
+  "pending",
+  "unavailable",
+  "no_patient"
+]);
 var HygOperatorySchema = import_zod.z.object({
   opNum: import_zod.z.number().int(),
   name: import_zod.z.string().nullable(),
@@ -15072,6 +15081,12 @@ var HygAppointmentSchema = import_zod.z.object({
    * person in roland. Nothing may carry one of these without the office beside it.
    */
   patNum: import_zod.z.number().int().nullable(),
+  /**
+   * WHY the name and the flags are or are not here. See HygIdentityStateSchema
+   * — `patientName: null` alone cannot tell "still loading" from "we asked and
+   * could not read it", and those want different words on a card.
+   */
+  identity: HygIdentityStateSchema,
   /** Null when the patient record could not be read. Never "Unknown Patient". */
   patientName: import_zod.z.string().nullable(),
   /** Open Dental local time, `YYYY-MM-DD HH:mm:ss`. Not a UTC instant. */
@@ -15100,7 +15115,8 @@ var HygAppointmentSchema = import_zod.z.object({
 });
 var HygWarningSchema = import_zod.z.object({
   resource: import_zod.z.string(),
-  message: import_zod.z.string()
+  message: import_zod.z.string(),
+  detail: import_zod.z.string().nullable()
 });
 var HygDayStatsSchema = import_zod.z.object({
   /** Requests spent on list endpoints — appointments, operatories, types, providers. */
@@ -15113,7 +15129,16 @@ var HygDayStatsSchema = import_zod.z.object({
   patientCacheHits: import_zod.z.number().int(),
   /** Collapsed into an identical read already in flight — also no request. */
   patientCacheDeduped: import_zod.z.number().int(),
-  durationMs: import_zod.z.number().int()
+  durationMs: import_zod.z.number().int(),
+  /**
+   * Wall clock per PHASE — `appointments`, `operatories`, `labels`,
+   * `identities`. A total says the day was slow; these say which read was, and
+   * that is the difference between a measurement and a feeling.
+   *
+   * Optional because the fill endpoint reports the same stats shape without
+   * phases: it has only one.
+   */
+  phaseMs: import_zod.z.record(import_zod.z.string(), import_zod.z.number().int()).optional()
 });
 var HygDayResponseSchema = import_zod.z.object({
   success: import_zod.z.literal(true),
@@ -15144,7 +15169,36 @@ var HygDayResponseSchema = import_zod.z.object({
   truncated: import_zod.z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
   patientNamesTruncated: import_zod.z.boolean(),
+  /**
+   * How many appointments are still waiting for a name.
+   *
+   * `GET /day` resolves identities from the patient cache only, so the schedule
+   * paints in list-read time; this is what is left for `GET /day/identities` to
+   * fetch. The client asks again while this is FALLING and stops when it is
+   * not, which is what keeps a patient Open Dental will never answer for from
+   * becoming a spinner nobody can end.
+   */
+  identitiesPending: import_zod.z.number().int(),
   /** What this read cost. See HygDayStatsSchema. */
+  stats: HygDayStatsSchema
+});
+var HygIdentitySchema = import_zod.z.object({
+  patNum: import_zod.z.number().int(),
+  /** Still nullable: Open Dental can hold a record with neither name half. */
+  patientName: import_zod.z.string().nullable(),
+  premed: import_zod.z.boolean().nullable(),
+  medicalAlerts: import_zod.z.boolean().nullable()
+});
+var HygDayIdentitiesResponseSchema = import_zod.z.object({
+  success: import_zod.z.literal(true),
+  office: OfficeIdSchema,
+  date: import_zod.z.string(),
+  scope: HygDayScopeSchema,
+  patients: import_zod.z.array(HygIdentitySchema),
+  /** PatNums Open Dental would not answer for. Waiting will not help. */
+  unavailable: import_zod.z.array(import_zod.z.number().int()),
+  /** Still unnamed after this batch. Zero means the day is fully named. */
+  pending: import_zod.z.number().int(),
   stats: HygDayStatsSchema
 });
 var HygErrorSchema = import_zod.z.object({
@@ -15428,10 +15482,13 @@ var import_zod2 = __toESM(require_zod());
   HandoffCategorySchema,
   HygAppointmentSchema,
   HygDayFlagsSchema,
+  HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
   HygDayScopeSchema,
   HygDayStatsSchema,
   HygErrorSchema,
+  HygIdentitySchema,
+  HygIdentityStateSchema,
   HygOperatorySchema,
   HygSendResponseSchema,
   HygSlipSchema,

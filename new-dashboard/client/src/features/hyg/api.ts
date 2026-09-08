@@ -28,10 +28,12 @@ import {
   FlagSourceSchema,
   HandoffCategorySchema,
   HygAppointmentSchema,
+  HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
   HygSendResponseSchema,
   HygVisitSchema,
   OfficeIdSchema,
+  type HygDayIdentitiesResponse,
   type HygDayResponse,
   type HygSendResponse,
   type HygSlip,
@@ -100,6 +102,29 @@ export class HygApiError extends Error {
    */
   get odUnavailable(): boolean {
     return this.code === "OD_READ_FAILED";
+  }
+
+  /**
+   * WHICH read failed — `appointments` or `identities`.
+   *
+   * The screen needs it to offer the right retry: the whole day, or only the
+   * names. Retrying the day when only the fill failed would throw away a
+   * schedule that loaded perfectly well.
+   */
+  get phase(): string | null {
+    const raw = this.details.phase;
+    return typeof raw === "string" ? raw : null;
+  }
+
+  /**
+   * Open Dental's own status or timeout, under the sentence.
+   *
+   * "It fails at times" is not a bug report. This is the line that turns one
+   * into a measurement, and it carries no PHI — a status, never a body.
+   */
+  get detail(): string | null {
+    const raw = this.details.detail;
+    return typeof raw === "string" && raw.trim() !== "" ? raw : null;
   }
 }
 
@@ -225,6 +250,43 @@ export async function fetchDay(
         // catch it for us — it does not run these schemas.
         throw new HygApiError(
           "CareIN returned a schedule this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * The next batch of names for a day that has already painted.
+ *
+ * ⚠️ THIS SENDS NO PatNums. ⚠️ The server derives them from that day's own
+ * schedule — see HygDayIdentitiesResponseSchema. The client's job is to ask
+ * again while `pending` is FALLING, and to stop when it is not: a patient Open
+ * Dental will never answer for comes back in `unavailable`, and one that
+ * somehow does neither would otherwise be a spinner nobody can end.
+ *
+ * `scope` must be the scope the day was read under. A wider one here would
+ * name patients the day itself never served.
+ */
+export async function fetchDayIdentities(
+  office: OfficeId,
+  date: string,
+  scope: HygDayScope = "hygiene",
+  signal?: AbortSignal,
+): Promise<HygDayIdentitiesResponse> {
+  return get(
+    "/day/identities",
+    { office, date, scope },
+    (raw) => {
+      const parsed = HygDayIdentitiesResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned patient names this page could not read",
           0,
           "CONTRACT_MISMATCH",
           { issues: parsed.error.issues.slice(0, 5) },

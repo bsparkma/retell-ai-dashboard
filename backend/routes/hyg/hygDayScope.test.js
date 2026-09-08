@@ -83,21 +83,41 @@ function patientReads(od) {
   return od.calls.filter((c) => c.path.startsWith('/patients/')).length;
 }
 
+/**
+ * The day, then its names — the two requests the page makes.
+ *
+ * The scope goes to BOTH. A fill under a wider lens would name patients the
+ * day itself never served, which is the disclosure this whole file is about.
+ *
+ * @param {string} base @param {string} [scope]
+ */
+async function loadDay(base, scope) {
+  const q = `office=roland&date=${DATE}` + (scope ? `&scope=${scope}` : '');
+  const day = await api(base, 'GET', `/api/hyg/day?${q}`);
+  if (day.status !== 200 || day.body.identitiesPending === 0) return { day, fill: null };
+  const fill = await api(base, 'GET', `/api/hyg/day/identities?${q}`);
+  return { day, fill };
+}
+
 test('A HYGIENE APPOINTMENT IN A DOCTOR’S CHAIR IS STILL SERVED', async () => {
   const od = mixedDay();
   const app = await bootHygApp({ od });
   try {
-    const res = await api(app.baseUrl, 'GET', `/api/hyg/day?office=roland&date=${DATE}`);
+    const { day: res, fill } = await loadDay(app.baseUrl);
     assert.equal(res.status, 200);
     assert.equal(res.body.scope, 'hygiene', 'the lens is the default');
 
     const apt = res.body.appointments.find((a) => a.aptNum === 900002);
     assert.ok(apt, 'the overflow appointment must not vanish');
-    // In the DOCTOR's chair, and named, because the appointment says hygiene.
+    // In the DOCTOR's chair, because the appointment says hygiene.
     assert.equal(apt.opName, 'Dr Farmer');
     assert.equal(apt.isHygiene, true);
     assert.equal(apt.opIsHygiene, false, 'the two flags disagree, and both survive');
-    assert.equal(apt.patientName, 'Test, MangoTest');
+    // And NAMED — by the fill, which is served under the same lens, so the
+    // overflow patient is one of the people this day is allowed to name.
+    assert.equal(apt.identity, 'pending', 'the schedule paints before the names');
+    const named = fill.body.patients.find((p) => p.patNum === apt.patNum);
+    assert.equal(named.patientName, 'Test, MangoTest');
   } finally {
     await app.close();
   }
@@ -107,7 +127,7 @@ test('the lens serves hygiene and unclassified, and reports what it did not', as
   const od = mixedDay();
   const app = await bootHygApp({ od });
   try {
-    const res = await api(app.baseUrl, 'GET', `/api/hyg/day?office=roland&date=${DATE}`);
+    const { day: res } = await loadDay(app.baseUrl);
     assert.deepEqual(
       res.body.appointments.map((a) => a.aptNum).sort(),
       [900001, 900002, 900005],
@@ -128,19 +148,26 @@ test('the lens pays for the hygiene patients ONLY, and discloses only those', as
   const od = mixedDay();
   const app = await bootHygApp({ od });
   try {
-    const res = await api(app.baseUrl, 'GET', `/api/hyg/day?office=roland&date=${DATE}`);
+    const { day: res, fill } = await loadDay(app.baseUrl);
     assert.equal(res.status, 200);
 
     // Three served patients, three Open Dental identity reads. The doctors'
     // two are never fetched — that is the saving, and it is one second each
     // against a credential the voice and RCM modules also use.
+    //
+    // THE LENS NARROWS THE FILL TOO. If it did not, the schedule would hide
+    // the doctors' patients and the fill would go and fetch them anyway, which
+    // is the whole saving given back plus an audit row for a disclosure that
+    // never reached the screen.
     assert.equal(patientReads(od), 3);
     assert.deepEqual(
       od.calls.filter((c) => c.path.startsWith('/patients/')).map((c) => c.path).sort(),
       ['/patients/12827', '/patients/12828', '/patients/990005']
     );
-    assert.equal(res.body.stats.odPatientReads, 3);
+    assert.equal(res.body.stats.odPatientReads, 0, 'the schedule pays for none of them');
     assert.equal(res.body.stats.patientsRequested, 3);
+    assert.equal(fill.body.stats.odPatientReads, 3);
+    assert.equal(fill.body.pending, 0);
 
     // A PATIENT NOT SERVED IS NOT DISCLOSED. One audit row per served patient,
     // and none for the two the response does not carry.
@@ -159,11 +186,7 @@ test('scope=all serves the whole day and pays its own cost', async () => {
   const od = mixedDay();
   const app = await bootHygApp({ od });
   try {
-    const res = await api(
-      app.baseUrl,
-      'GET',
-      `/api/hyg/day?office=roland&date=${DATE}&scope=all`
-    );
+    const { day: res } = await loadDay(app.baseUrl, 'all');
     assert.equal(res.status, 200);
     assert.equal(res.body.scope, 'all');
     assert.equal(res.body.appointments.length, 5);
@@ -195,10 +218,29 @@ test('an unrecognised scope is a 400, never a silent fallback', async () => {
       }
       assert.equal(res.status, 400, JSON.stringify(bad));
       assert.equal(res.body.code, 'INVALID_SCOPE');
+
+      // THE FILL REFUSES THE SAME WAY. A fill that fell back to a default
+      // scope where the day refused would be the silent widening this test
+      // exists to prevent, on the endpoint that actually sends the names.
+      const filled = await api(
+        app.baseUrl,
+        'GET',
+        `/api/hyg/day/identities?office=roland&date=${DATE}&scope=${encodeURIComponent(bad)}`
+      );
+      assert.equal(filled.status, 400, JSON.stringify(bad));
+      assert.equal(filled.body.code, 'INVALID_SCOPE');
     }
     // The two scopes differ by how many patients are disclosed. Guessing which
-    // one a caller meant is not a decision this route may make.
-    assert.equal(patientReads(od), 3, 'only the one valid request read anything');
+    // one a caller meant is not a decision either route may make — and a
+    // REFUSED request must not have read a patient on its way to refusing.
+    assert.equal(patientReads(od), 0, 'the valid one was the day, which names nobody');
+    const ok = await api(
+      app.baseUrl,
+      'GET',
+      `/api/hyg/day/identities?office=roland&date=${DATE}&scope=hygiene`
+    );
+    assert.equal(ok.status, 200);
+    assert.equal(patientReads(od), 3, 'only the ACCEPTED fill read anything');
   } finally {
     await app.close();
   }

@@ -404,6 +404,27 @@ export const HygDayFlagsSchema = z.object({
 });
 export type HygDayFlags = z.infer<typeof HygDayFlagsSchema>;
 
+/**
+ * WHY A CARD HAS NO NAME ON IT. Four different answers, and a screen that drew
+ * them all the same way would be wrong about three of them.
+ *
+ * `resolved` — the patient record was read. `patientName` may STILL be null, if
+ *   Open Dental held neither half of a name. That is an answer.
+ * `pending` — not asked yet. The fill is on its way; the card says so, and it
+ *   is the only one of the four that changes on its own.
+ * `unavailable` — asked, and Open Dental would not answer. Waiting will not
+ *   help, and a card that kept spinning would imply it might.
+ * `no_patient` — the appointment carries no PatNum at all: a blockout, or a row
+ *   nobody was attached to. There is nobody to name, which is not a failure.
+ */
+export const HygIdentityStateSchema = z.enum([
+  "resolved",
+  "pending",
+  "unavailable",
+  "no_patient",
+]);
+export type HygIdentityState = z.infer<typeof HygIdentityStateSchema>;
+
 /** One chair. */
 export const HygOperatorySchema = z.object({
   opNum: z.number().int(),
@@ -423,6 +444,12 @@ export const HygAppointmentSchema = z.object({
    * person in roland. Nothing may carry one of these without the office beside it.
    */
   patNum: z.number().int().nullable(),
+  /**
+   * WHY the name and the flags are or are not here. See HygIdentityStateSchema
+   * — `patientName: null` alone cannot tell "still loading" from "we asked and
+   * could not read it", and those want different words on a card.
+   */
+  identity: HygIdentityStateSchema,
   /** Null when the patient record could not be read. Never "Unknown Patient". */
   patientName: z.string().nullable(),
   /** Open Dental local time, `YYYY-MM-DD HH:mm:ss`. Not a UTC instant. */
@@ -451,10 +478,21 @@ export const HygAppointmentSchema = z.object({
 });
 export type HygAppointment = z.infer<typeof HygAppointmentSchema>;
 
-/** Something the server could not fetch, in words a screen can render. */
+/**
+ * Something the server could not fetch — in words a screen can render, and in
+ * the transport's own words underneath.
+ *
+ * `message` is what a hygienist reads and acts on. `detail` is the status or
+ * the timeout Open Dental gave, which is what whoever she calls needs. A screen
+ * that carried only one of them would turn the other into a guess, and "it
+ * fails at times" is precisely the bug report that costs a day to reproduce.
+ *
+ * `detail` carries no PHI: it is a status line, never a body.
+ */
 export const HygWarningSchema = z.object({
   resource: z.string(),
   message: z.string(),
+  detail: z.string().nullable(),
 });
 export type HygWarning = z.infer<typeof HygWarningSchema>;
 
@@ -484,6 +522,15 @@ export const HygDayStatsSchema = z.object({
   /** Collapsed into an identical read already in flight — also no request. */
   patientCacheDeduped: z.number().int(),
   durationMs: z.number().int(),
+  /**
+   * Wall clock per PHASE — `appointments`, `operatories`, `labels`,
+   * `identities`. A total says the day was slow; these say which read was, and
+   * that is the difference between a measurement and a feeling.
+   *
+   * Optional because the fill endpoint reports the same stats shape without
+   * phases: it has only one.
+   */
+  phaseMs: z.record(z.string(), z.number().int()).optional(),
 });
 export type HygDayStats = z.infer<typeof HygDayStatsSchema>;
 
@@ -523,10 +570,55 @@ export const HygDayResponseSchema = z.object({
   truncated: z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
   patientNamesTruncated: z.boolean(),
+  /**
+   * How many appointments are still waiting for a name.
+   *
+   * `GET /day` resolves identities from the patient cache only, so the schedule
+   * paints in list-read time; this is what is left for `GET /day/identities` to
+   * fetch. The client asks again while this is FALLING and stops when it is
+   * not, which is what keeps a patient Open Dental will never answer for from
+   * becoming a spinner nobody can end.
+   */
+  identitiesPending: z.number().int(),
   /** What this read cost. See HygDayStatsSchema. */
   stats: HygDayStatsSchema,
 });
 export type HygDayResponse = z.infer<typeof HygDayResponseSchema>;
+
+/** One patient's identity, as the fill returns it. */
+export const HygIdentitySchema = z.object({
+  patNum: z.number().int(),
+  /** Still nullable: Open Dental can hold a record with neither name half. */
+  patientName: z.string().nullable(),
+  premed: z.boolean().nullable(),
+  medicalAlerts: z.boolean().nullable(),
+});
+export type HygIdentity = z.infer<typeof HygIdentitySchema>;
+
+/**
+ * A batch of names for a day that has already painted.
+ *
+ * ⚠️ THE REQUEST NAMES NO PatNums. ⚠️ The server derives them from that day's
+ * own schedule. A route that took a list would be a name-and-medical-alert
+ * lookup for any patient number in the practice, which is a much larger
+ * disclosure surface than "who is booked today" and one that could be walked.
+ *
+ * `unavailable` is not a retry list: Open Dental refused those records, and a
+ * card whose name is unavailable should say so rather than keep waiting.
+ */
+export const HygDayIdentitiesResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  date: z.string(),
+  scope: HygDayScopeSchema,
+  patients: z.array(HygIdentitySchema),
+  /** PatNums Open Dental would not answer for. Waiting will not help. */
+  unavailable: z.array(z.number().int()),
+  /** Still unnamed after this batch. Zero means the day is fully named. */
+  pending: z.number().int(),
+  stats: HygDayStatsSchema,
+});
+export type HygDayIdentitiesResponse = z.infer<typeof HygDayIdentitiesResponseSchema>;
 
 /**
  * Every refusal shape /api/hyg can return.

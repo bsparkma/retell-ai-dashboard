@@ -22,6 +22,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   DX_LABELS,
   DxCodeSchema,
+  HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
   MOTIVATION_LABELS,
   MotivationCodeSchema,
@@ -284,10 +285,21 @@ describe("recordsNeededFor", () => {
 // ─── 3. agreement with the backend ───────────────────────────────────────────
 
 describe("the day response contract matches the backend that builds it", () => {
-  /** Every key the route's response literal names. */
-  function backendResponseKeys(): string[] {
+  /**
+   * Every key one route's success literal names.
+   *
+   * `day.js` holds TWO handlers since progressive fill, so the source is cut at
+   * the fill's banner first. Without that, `lastIndexOf` finds the LAST
+   * `res.json` in the file and this test silently starts checking the wrong
+   * endpoint against the day's schema — passing or failing for reasons that
+   * have nothing to do with the day.
+   */
+  function backendResponseKeys(which: "day" | "identities"): string[] {
     const src = readFileSync(path.join(repoRoot, "backend", "routes", "hyg", "day.js"), "utf8");
-    const body = src.slice(src.lastIndexOf("return res.json({"));
+    const split = src.indexOf("// GET /api/hyg/day/identities");
+    expect(split, "the fill route's banner is what separates the two handlers").toBeGreaterThan(0);
+    const half = which === "day" ? src.slice(0, split) : src.slice(split);
+    const body = half.slice(half.lastIndexOf("return res.json({"));
     return [...body.matchAll(/^\s{6}([a-zA-Z][a-zA-Z0-9]*)[,:]/gm)].map((m) => m[1]).sort();
   }
 
@@ -297,7 +309,16 @@ describe("the day response contract matches the backend that builds it", () => {
     // make the esbuild bundle worth its weight. A key added on one side and not
     // the other is a field a screen silently renders as undefined.
     const schemaKeys = Object.keys(HygDayResponseSchema.shape).sort();
-    expect(backendResponseKeys()).toEqual(schemaKeys);
+    expect(backendResponseKeys("day")).toEqual(schemaKeys);
+  });
+
+  it("names exactly the keys the FILL route returns", () => {
+    // Same guarantee for the second endpoint. It is the one that actually
+    // sends the names, so a field lost between the two sides here is a card
+    // that never fills in.
+    expect(backendResponseKeys("identities")).toEqual(
+      Object.keys(HygDayIdentitiesResponseSchema.shape).sort(),
+    );
   });
 
   it("parses a payload shaped like the backend's, and rejects a truncated one", () => {
@@ -313,6 +334,11 @@ describe("the day response contract matches the backend that builds it", () => {
         {
           aptNum: 900001,
           patNum: 12827,
+          // WHY the name is or is not here. REQUIRED on the wire: a payload
+          // without it is a backend that predates progressive fill, and a
+          // screen that assumed "resolved" would draw "Name unavailable" over
+          // every card that is merely still loading.
+          identity: "resolved",
           patientName: "Test 2, Stedi",
           start: "2026-09-08 08:00:00",
           lengthMin: 60,
@@ -349,6 +375,7 @@ describe("the day response contract matches the backend that builds it", () => {
       excludedByScope: 0,
       truncated: false,
       patientNamesTruncated: false,
+      identitiesPending: 0,
       stats: {
         odListReads: 4,
         odPatientReads: 1,

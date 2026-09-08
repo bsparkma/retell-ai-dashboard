@@ -12,6 +12,7 @@
  * Two route families:
  *
  *   GET /day?office=&date=       one office's whole schedule for one day
+ *   GET /day/identities?…       the next batch of names for that day
  *   /visit/:aptNum ...           the visit workspace (H1 slice 2)
  *
  * Slice 3 adds the send: the slip as a PDF into the patient's images, the

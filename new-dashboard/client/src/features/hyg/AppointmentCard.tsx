@@ -61,6 +61,57 @@ function FlagChip({
   );
 }
 
+/**
+ * WHO IS IN THE CHAIR — or why this card cannot say yet.
+ *
+ * The schedule now paints before the names do, so "no name" has four different
+ * causes and only one of them will change on its own. Drawing them all as
+ * "Name unavailable" would have a hygienist waiting on a card that is finished,
+ * or giving up on one that is still coming.
+ *
+ *   pending      a shimmer, and the word "Loading". It is going to change.
+ *   unavailable  "Name unavailable" — Open Dental refused this record and
+ *                waiting will not help.
+ *   no_patient   "No patient on this appointment" — a blockout or an
+ *                unattached row. Nothing failed and nothing is coming.
+ *   resolved     the name. Still italic-and-unavailable if Open Dental held
+ *                neither half of one, which is an ANSWER and reads correctly
+ *                as "we asked, and there is no name on this record".
+ */
+function PatientName({ appointment }: { appointment: HygAppointment }) {
+  if (appointment.patientName !== null) return <>{appointment.patientName}</>;
+
+  if (appointment.identity === "pending") {
+    return (
+      <span
+        className="inline-flex items-center gap-2 font-normal text-muted-foreground"
+        data-testid="hyg-name-pending"
+      >
+        <span className="inline-block h-4 w-28 animate-pulse rounded bg-muted align-middle" />
+        <span className="text-xs italic">Loading name…</span>
+      </span>
+    );
+  }
+  if (appointment.identity === "no_patient") {
+    return (
+      <span
+        className="font-normal italic text-muted-foreground"
+        data-testid="hyg-name-no-patient"
+      >
+        No patient on this appointment
+      </span>
+    );
+  }
+  return (
+    <span
+      className="font-normal italic text-muted-foreground"
+      data-testid="hyg-name-unavailable"
+    >
+      Name unavailable
+    </span>
+  );
+}
+
 export function AppointmentCard({
   appointment,
   office,
@@ -109,9 +160,7 @@ export function AppointmentCard({
       </div>
 
       <div className="mt-1 truncate text-lg font-semibold leading-tight text-foreground">
-        {appointment.patientName ?? (
-          <span className="italic font-normal text-muted-foreground">Name unavailable</span>
-        )}
+        <PatientName appointment={appointment} />
       </div>
 
       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted-foreground">

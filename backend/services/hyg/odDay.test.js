@@ -29,6 +29,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const odDay = require('./odDay');
+const odConfigCache = require('../odConfigCache');
 const odPatientCache = require('../odPatientCache');
 
 /*
@@ -37,7 +38,14 @@ const odPatientCache = require('../odPatientCache');
  * assertion below depend on which test ran first. Cleared before each one so
  * each measures a cold read, the way the first load of a day actually is.
  */
-test.beforeEach(() => odPatientCache.resetOdPatientCache());
+test.beforeEach(() => {
+  odPatientCache.resetOdPatientCache();
+  // The config lists are cached for an HOUR now, per office. Without this a
+  // test's chairs would be served to the next test from the previous one's
+  // fake — which is the shape of a cross-office leak, caught here as a
+  // cross-TEST one.
+  odConfigCache.resetOdConfigCache();
+});
 
 /**
  * A scripted odGet. `routes` is keyed by path, or by `path?Offset=N` when a
@@ -389,7 +397,10 @@ test('hidden operatories are dropped, and one with an UNKNOWN IsHidden is kept',
         // in it; an extra empty column is the cheaper mistake.
         { OperatoryNum: 3, OpName: 'Hyg 2', ItemOrder: 3, IsHygiene: 'true' },
       ],
-    })
+    }),
+    // The office is not optional any more: chairs are cached per practice, and
+    // Operatory 4 is a different room in each one.
+    { office: 'roland' }
   );
 
   assert.deepEqual(operatories.map((o) => o.opNum), [1, 3]);
