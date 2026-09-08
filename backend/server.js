@@ -55,6 +55,8 @@ async function bootstrap() {
   const retentionScheduler = require('./services/retentionScheduler');
   const retentionConfig = require('./config/retention');
   const odHealthCheck = require('./services/odHealthCheck');
+  const hygDayWarm = require('./services/hygDayWarm');
+  const hygPilot = require('./config/hygPilot');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -310,6 +312,35 @@ async function bootstrap() {
   // entitlement flips (intentional — see routes/tc/index.js).
   app.use('/api/tc', requireModule('tc'), require('./routes/tc'));
 
+  /*
+   * HYG (Hygiene) module — H1 slice 1. ONE mount for the whole /api/hyg/*
+   * surface. Ships DARK for the same reason TC and RCM did: 'hyg' entered the
+   * tenant_module vocabulary in migration 1788100000000 and no tenant is
+   * entitled to it, so everything under it 403s MODULE_NOT_ENTITLED until the
+   * entitlement flips from the Platform Console.
+   *
+   * requireReadWrite rather than a single read gate, and hyg.write exists in
+   * config/permissions.js ahead of its first use, so the first mutation slice 2
+   * adds demands the strong action BY CONSTRUCTION. Slice 1 has no non-GET
+   * route at all, which is what makes that free to do now and awkward to
+   * retrofit later.
+   *
+   * NO exemption list. Slice 1 needs none, and one added speculatively is one
+   * nobody reviewed — see routes/hyg/index.js.
+   *
+   * Office scoping is router-wide one level down, so a route added under this
+   * mount cannot forget it. Per-OFFICE readiness (hyg.odEnabled, default false
+   * everywhere) is a third, narrower gate inside the routes: entitlement says
+   * the practice bought it, permission says this person may use it, and the
+   * office switch says this location has been switched on.
+   */
+  app.use(
+    '/api/hyg',
+    requireModule('hyg'),
+    requireReadWrite('hyg.read', 'hyg.write'),
+    require('./routes/hyg')
+  );
+
   // Required once, above the mount, because the mount's own guard needs the
   // router's exported QUEUE_PATHS — the exceptions belong to the module that
   // owns those routes, not to this file.
@@ -477,6 +508,38 @@ async function bootstrap() {
     //    EVERY office rather than whichever one the singleton happens to hold.
     odHealthCheck.start();
 
+    // 6. Arm the hygiene morning warm (default 7:45am America/Chicago).
+    //    Open Dental throttles at 1 req/s per credential and has no bulk patient
+    //    read, so naming a 40-patient day from cold is 40+ seconds in front of
+    //    somebody standing at a chair. This pre-fetches those records before the
+    //    practice opens. See services/hygDayWarm.js.
+    //
+    //    Warms ONLY offices with hygiene switched on — which is none of them
+    //    today, so on every current environment this schedules a job that finds
+    //    nothing to do. That is the intended shape: the warm must never be the
+    //    thing that starts talking to a practice.
+    //
+    //    Unlike the health check it does NOT fire a pass at startup: a deploy in
+    //    the middle of the afternoon must not put a patient fan-out on a
+    //    credential people are using.
+    //    The pilot switch is read from the control plane FIRST, and awaited, so
+    //    the warm's own "which offices are eligible" line is honest at boot
+    //    rather than reporting the hardcoded floor. refreshFromDb never throws;
+    //    a control plane that could not be reached leaves every office OFF,
+    //    which is the safe direction. See config/hygPilot.js.
+    await hygPilot.refreshFromDb();
+    //    Then say so, once, if somebody has set HYG_OD_ENABLED_<OFFICE>=true:
+    //    that variable can only DISABLE an office, so it is doing nothing —
+    //    and a variable that quietly does nothing is its own incident.
+    hygPilot.warnAboutInertEnvOverrides();
+    //    Then keep it fresh, so a value written straight into the control DB by
+    //    a runbook reaches the request path without a restart. A CONSOLE write
+    //    does not wait for this — it refreshes inline and is in force for the
+    //    next request.
+    hygPilot.startRefreshTimer();
+
+    hygDayWarm.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -492,6 +555,8 @@ async function bootstrap() {
     console.log('Received SIGTERM, shutting down gracefully...');
     retentionScheduler.stop();
     odHealthCheck.stop();
+    hygDayWarm.stop();
+    hygPilot.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -500,6 +565,8 @@ async function bootstrap() {
     console.log('Received SIGINT, shutting down gracefully...');
     retentionScheduler.stop();
     odHealthCheck.stop();
+    hygDayWarm.stop();
+    hygPilot.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

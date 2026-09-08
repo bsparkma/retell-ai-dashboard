@@ -17,6 +17,8 @@ import type { TenantRole } from "@/lib/auth";
 /** Every action the backend map defines. Keep sorted, keep in sync. */
 export const ACTIONS = [
   "admin.all",
+  "hyg.read",
+  "hyg.write",
   "rcm.post",
   "rcm.queue",
   "rcm.read",
@@ -58,7 +60,11 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   admin: "/home",
   office: "/home",
   tc: "/tc/dashboard",
-  hygiene: "/tc/hygiene/inbox",
+  // The hygiene module's own day view, as of H1 slice 2. It used to be the TC
+  // hygiene inbox, which was the best available landing page when /hyg did not
+  // exist; a hygienist signing in now lands on today's schedule, which is the
+  // screen she opens the app to look at.
+  hygiene: "/hyg/day",
   reviewer: "/rcm/remittances",
   rcm_biller: "/rcm/remittances",
 };
@@ -106,6 +112,10 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   // biller and an approver, and the buttons a role may not press refuse
   // honestly rather than being hidden.
   "/rcm": "rcm.read",
+  // Hygiene. Read-gated at the route; the module has no mutation yet, and
+  // when slice 2 adds one it demands hyg.write server-side at the mount.
+  // A page renders the same for everyone who can open it.
+  "/hyg": "hyg.read",
 };
 
 /** The action a path requires, or null if it is unrestricted. */

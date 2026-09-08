@@ -128,8 +128,11 @@ describe("canVisit per role", () => {
 });
 
 describe("homeForRole", () => {
-  it("lands hygiene on the inbox and tc on the TC dashboard", () => {
-    expect(homeForRole("hygiene")).toBe("/tc/hygiene/inbox");
+  it("lands hygiene on her own day view and tc on the TC dashboard", () => {
+    // It used to be the TC hygiene inbox, which was the best available landing
+    // page while /hyg did not exist. As of H1 slice 2 a hygienist signing in
+    // lands on today's schedule — the screen she opens the app to look at.
+    expect(homeForRole("hygiene")).toBe("/hyg/day");
     expect(homeForRole("tc")).toBe("/tc/dashboard");
   });
 
@@ -150,7 +153,10 @@ describe("homeForRole", () => {
       // day is allowed to do are different authorities.
       office: ACTIONS.filter((a) => a !== "admin.all" && a !== "rcm.settings"),
       tc: ["voice.read", "tc.full", "tc.hygiene"],
-      hygiene: ["tc.hygiene"],
+      // `hyg.read` as well as `tc.hygiene`: her home is now the hygiene
+      // module's day view, and this test exists to prove a role's home is
+      // somewhere it may actually go.
+      hygiene: ["tc.hygiene", "hyg.read"],
       // The RCM reviewer tier (D-9): the workbench and nothing else.
       reviewer: ["rcm.read", "rcm.queue"],
       // The biller tier: everything the reviewer holds, plus the write tier —

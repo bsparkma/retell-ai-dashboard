@@ -165,8 +165,10 @@ test('/auth/me: returns the role, super_admin flag, and the derived permissions'
     const body = await (await me('good-token')).json();
     assert.equal(body.role, 'hygiene');
     assert.equal(body.isSuperAdmin, false);
-    // A hygienist can reach exactly one action.
-    assert.deepEqual(body.permissions, ['tc.hygiene']);
+    // A hygienist reaches the TC handoff screens and the hyg module, and
+    // nothing else. Spelled out rather than counted: the failure this guards
+    // against is voice.read or tc.full leaking in, which a length check misses.
+    assert.deepEqual(body.permissions, ['hyg.read', 'hyg.write', 'tc.hygiene']);
   } finally {
     await close();
   }

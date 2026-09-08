@@ -885,9 +885,26 @@ test('a line the chart already shows Received with our amounts is skipped WITH A
   assert.deepEqual(od.writesIssued(), ['PUT /claims/53648', 'POST /claimpayments']);
 
   const line = db.table('rcm_posting_queue_line')[0];
-  // It ends `paid` because the check attached it, and the SKIP is recorded on
-  // the way through — "already done" and "we did it" stay distinguishable.
-  assert.equal(line.status, 'paid');
+  /*
+   * IT KEEPS THE SKIP, AND STILL CARRIES THE CHECK.
+   *
+   * This assertion used to read `assert.equal(line.status, 'paid')`, with a
+   * comment claiming that "already done" and "we did it" stayed
+   * distinguishable. They did not: moving the status to `paid` is what erases
+   * the skip, and the paired CHECK constraint refuses the row outright. It only
+   * ever passed because `FakeRcmDb` did not model that constraint — which is now
+   * fixed in `rcmTestUtils.js`, so this test is what proves the drain writes a
+   * row Postgres will actually take.
+   *
+   * The status says what THIS attempt did (nothing — the chart already had it);
+   * the check number says what the chart holds. Both are true at once.
+   */
+  assert.equal(line.status, 'skipped_already_posted');
+  assert.equal(line.skip_reason, 'already_received_matching');
+  assert.equal(Number(line.od_claim_payment_num), Number(db.table('rcm_posting_queue')[0].od_claim_payment_num));
+  assert.ok(line.od_claim_payment_num != null, 'the skipped line must still record its check');
+  // `paid_at` stays null: an earlier attempt paid it, not this one.
+  assert.equal(line.paid_at ?? null, null);
 });
 
 test('two concurrent drains cannot both run', async () => {
@@ -987,6 +1004,85 @@ for (const { name, dieAfter, expectMidState } of [
     );
   });
 }
+
+/**
+ * W-9 — THE RESUME THAT STRANDED A LIVE PLAN, 2026-09-04.
+ *
+ * The combined walk killed the container 26s into a paused drain, after the
+ * claimproc PUT had landed and before the check existed. The resume did the
+ * right thing at every Open Dental boundary — it re-read the chart, saw the
+ * money already there, skipped the write, created ONE check and attached the
+ * line — and then could not say so: stamping the check meant writing
+ * `status='paid'` over a row still carrying `skip_reason`, which the paired
+ * CHECK constraint refuses. The UPDATE threw inside the `check` step, the catch
+ * wrote `partially_posted`, and because the startup sweep only re-homes
+ * `posting`, the plan was stuck for good — money correctly on the chart, the app
+ * insisting it was half-done.
+ *
+ * The whole class hid because `FakeRcmDb` did not model CHECK constraints, so
+ * every kill-and-resume test above wrote the illegal row and went green. The
+ * fake now enforces it; this test pins the contract that follows from it.
+ *
+ * Deliberately driven through the REAL interrupt path (`dieAfterWrites: 1`, the
+ * live window), not by seeding a skipped row by hand — a hand-built row is how
+ * 6d's recoupment tests missed their own defect.
+ */
+test('W-9: a resume that SKIPS an already-posted line ends `posted`, keeps the skip, and records the check', async () => {
+  const db = seedPlan(new FakeRcmDb());
+
+  // Die immediately after the claimproc PUT lands — the exact live window.
+  const dying = odFixture({ dieAfterWrites: 1 });
+  const first = await postingDrain.drainOffice(ctxFor(db, dying));
+  assert.equal(first.outcomes[0].status, 'partially_posted');
+
+  // A restarted container: same chart, fresh client.
+  const revived = odFixture();
+  revived.rows = dying.rows;
+  const second = await postingDrain.drainOffice(ctxFor(db, revived));
+
+  // 1. The plan completes. `partially_posted` here is the defect.
+  assert.equal(
+    second.outcomes[0].status,
+    'posted',
+    `resume must finish, got ${JSON.stringify(second.outcomes[0])}`
+  );
+
+  const plan = db.table('rcm_posting_queue')[0];
+  assert.equal(plan.status, 'posted');
+  assert.ok(plan.reconciled_at != null, 'a completed plan must reconcile');
+  assert.equal(plan.last_error ?? null, null, 'no constraint violation may survive');
+
+  // 2. The line kept the skip THIS run made…
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'skipped_already_posted');
+  assert.equal(line.skip_reason, 'already_received_matching');
+
+  // 3. …and still records the check the chart holds. This is the number
+  //    §10.3's "exactly ONE check" proof counts off the LINE; before the fix it
+  //    was null and that proof read 0 on a plan that had posted correctly.
+  assert.ok(
+    line.od_claim_payment_num != null,
+    'the skipped line must carry the check number, or the §10.3 proof cannot see it'
+  );
+  assert.equal(
+    Number(line.od_claim_payment_num),
+    Number(plan.od_claim_payment_num),
+    'the line and the plan must name the same check'
+  );
+
+  // 4. The row is one Postgres would accept — the fake now enforces the real
+  //    constraint, so reaching this line at all is the proof.
+  const skipped = ['skipped', 'skipped_already_posted'].includes(String(line.status));
+  assert.equal(
+    skipped,
+    line.skip_reason != null,
+    'status and skip_reason must satisfy rcm_posting_queue_line_skip_reason_check'
+  );
+
+  // 5. And the chart still holds exactly one check for one dollar of intent.
+  const checkNums = new Set(odCheckNums(revived).filter((n) => n > 0));
+  assert.equal(checkNums.size, 1, `chart carries ${checkNums.size} checks`);
+});
 
 test('a check that LANDED but whose response was lost is adopted, never re-created', async () => {
   /*

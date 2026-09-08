@@ -2,7 +2,7 @@
  * Platform module registry (client side).
  *
  * Module ids mirror the backend tenant_module vocabulary (CHECK constraint in
- * carein_control): 'voice' | 'rcm' | 'tc' | 'scheduling'. The SPA uses this to
+ * carein_control): 'voice' | 'rcm' | 'tc' | 'hyg' | 'scheduling'. The SPA uses this to
  * decide which product shells to render — UI convenience only; the backend
  * requireModule() 403 is the source of truth for entitlement.
  *
@@ -12,9 +12,9 @@
  * won't render.
  */
 
-import { KanbanSquare, PhoneCall, Receipt, type LucideIcon } from "lucide-react";
+import { KanbanSquare, PhoneCall, Receipt, Sparkles, type LucideIcon } from "lucide-react";
 
-export const MODULE_IDS = ["voice", "rcm", "tc", "scheduling"] as const;
+export const MODULE_IDS = ["voice", "rcm", "tc", "hyg", "scheduling"] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
 
 export interface ModuleDef {
@@ -43,6 +43,13 @@ export const MODULES: Partial<Record<ModuleId, ModuleDef>> = {
     description: "Case pipeline, follow-ups, pre-auth, and patient presentations.",
     icon: KanbanSquare,
     basePath: "/tc",
+  },
+  hyg: {
+    id: "hyg",
+    label: "Hygiene",
+    description: "The hygiene day, the routing slip, and the handoff to TC.",
+    icon: Sparkles,
+    basePath: "/hyg/day",
   },
   rcm: {
     id: "rcm",

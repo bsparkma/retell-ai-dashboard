@@ -13,6 +13,7 @@ Enforced by a CHECK constraint on `tenant_module.module` (carein_control):
 | `voice`      | CareIN voice agent dashboard (formerly id `carein`)  | Live — the entire current app |
 | `rcm`        | AR / RCM agent                                       | **Mounted, ships dark** — `/api/rcm/*` + `/rcm`; no tenant entitled yet |
 | `tc`         | Treatment Coordinator                                | Live (entitlement flipped in prod 2026-08-05) |
+| `hyg`        | Hygiene (day view, routing slip, TC handoff)         | **Mounted, ships dark** — `/api/hyg/*` + `/hyg`; no tenant entitled yet. Per-office `hygOdEnabled` is a SECOND switch, default false everywhere |
 | `scheduling` | Native scheduling (decided future paid add-on)       | Reserved |
 
 The `carein` → `voice` rename lives in
@@ -150,11 +151,25 @@ source of truth.
    `ROUTE_PERMISSIONS`, and render its pages under that prefix.
 5. Add the new mount to the guarded list in
    `backend/test/moduleGateWiring.test.js`.
-6. If the module id is genuinely new (not in voice/rcm/tc/scheduling), write a
-   migration extending the `tenant_module_module_check` constraint first.
+6. If the module id is genuinely new, write a migration extending the
+   `tenant_module_module_check` constraint, IN THE SAME COMMIT as the
+   `config/modules.js` catalog entry — `config/modules.test.js` compares the
+   two, so splitting them is a red build. `hyg` is the worked example
+   (`migrations/1788100000000_module_hyg.js`); write the CHECK literal INLINE at
+   the `addConstraint` call, because that test finds it by scanning the source
+   and a hoisted constant is invisible to it.
 7. Write down any mount-ORDER constraint as a comment **and** a test. RCM's
    router-wide office guard (`routes/rcm/rcmMountOrder.test.js`) is the pattern:
    a comment alone is what let the TC ordering constraint stay invisible.
+
+8. If the module reaches Open Dental and is not yet validated at every
+   location, give it a PER-OFFICE switch alongside the entitlement — `hyg` is
+   the pattern (`hygOdEnabled` in `config/odOffices.js`, default false). It must
+   COMPOSE with `odBlockReason` rather than stand beside it, so it can only ever
+   narrow what the office could already reach. The retired
+   `officeAgents.odConnected` is the counter-example: it gated routes while the
+   module reached Open Dental through a different office's client, so it
+   protected nothing.
 
 Watch for the entitled-but-unregistered case: a module in `/auth/me` with no
 `lib/modules.ts` entry renders no tile and no nav, which is correct (the pages

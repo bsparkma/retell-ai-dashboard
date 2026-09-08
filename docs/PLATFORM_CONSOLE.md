@@ -232,3 +232,51 @@ events it exists to preserve. Consistent with how `/api/users` treats listing.
 | Audit log schema and the two-role model | [AUDIT.md](AUDIT.md) |
 | Roles and the permission map | `backend/config/permissions.js` |
 | Retention policy and the stub shape | `backend/services/callRetention.js` |
+
+---
+
+## 6. The hygiene pilot switch (Hygiene tab)
+
+`GET /api/platform/hyg-offices`, `PUT /api/platform/hyg-offices/:office` — both
+behind the same `requireSuperAdmin()` mount as everything else here.
+
+Per OFFICE, which is a different axis from the module entitlement in §2: the
+entitlement asks *did this practice buy hygiene* (one answer per tenant), and
+this asks *is hygiene live at this location* (one answer per office inside it).
+Both must be on. The tab shows the entitlement read-only beside each office and
+points at the Practices tab, because a second place to flip entitlement would be
+a second place for that decision to be made by accident.
+
+Storage, precedence, the break-glass env var, and the reason the floor stays
+`false` are all in [HYG_MODULE.md §8](HYG_MODULE.md). The console-specific parts:
+
+- **Turning ON confirms; turning OFF does not.** The safe direction is the fast
+  one — a dialog in front of a kill switch is a dialog somebody reads while a
+  patient waits. The ON dialog names the blast radius in plain words: hygienists
+  start reading real patient data from that practice's Open Dental, and the
+  morning warm starts running against it.
+- **Both directions write an audit row** to the acting super_admin's own tenant
+  (like retention, unlike the module toggle — the office registry is
+  platform-wide and has no tenant dimension). `office` names which location
+  moved and `prior_state` says what it moved from, because "turned off at 09:14"
+  and "was already off" are different facts and only one explains an incident.
+- **The panel renders the readback**, never the click. A write that silently did
+  nothing cannot look like a success, and a refused one leaves the toggle where
+  the server says it is.
+- **It says what an app setting is DOING, and the two directions are not
+  symmetric.** `HYG_OD_ENABLED_<OFFICE>=false` overrules this page, so the row
+  says the toggle here cannot lift it and names the remedy (clear the variable,
+  restart). `=true` can never enable anything, so the row says that in those
+  words rather than staying quiet and leaving somebody watching a dark module.
+  Neither is reported as the source `env` unless it is actually in force.
+- **It says which layer answered** (`db` / `env` / `default`) and, when the
+  stored row and an app setting disagree, that the app setting is currently
+  inert. It also distinguishes *"the stored setting does not name this office"*
+  from *"somebody turned it off"* — same value, and only one of them has a
+  person's name on it.
+- **On is not the same as working.** An office switched on whose Open Dental is
+  unusable is shown with what still blocks it, rather than a green toggle over a
+  503.
+
+The pilot runbook — enable on staging, what to watch over several mornings, and
+the click path to turn it off fast — is [HYG_MODULE.md §9](HYG_MODULE.md).

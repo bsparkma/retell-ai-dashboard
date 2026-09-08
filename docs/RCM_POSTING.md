@@ -1850,6 +1850,18 @@ SELECT count(DISTINCT od_claim_payment_num) FROM rcm_posting_queue_line
  WHERE queue_id = '<plan>' AND od_claim_payment_num IS NOT NULL;   -- 1
 ```
 
+> **This counts SKIPPED lines too, and it has to.** After a resume, the lines the
+> earlier attempt already wrote end `skipped_already_posted` — they still sit on
+> this run's check and still record its number. On the combined walk of
+> 2026-09-04 this query returned **0** on a plan that had posted correctly,
+> because the drain could not write the check number onto a skipped line at all
+> (W-9): stamping it meant moving `status` to `paid` over a row still carrying
+> `skip_reason`, which `rcm_posting_queue_line_skip_reason_check` refuses. The
+> line kept the skip, lost the number, and the plan stranded at
+> `partially_posted`. Fixed by letting a skipped line keep its status **and**
+> carry `od_claim_payment_num`, so this query needs no `status` filter — and
+> must not grow one, or it would stop seeing exactly the lines a resume produces.
+
 #### RUN 2026-08-25 — **THE KILL MISSED THE WINDOW. NOT PROVEN.**
 
 `az containerapp revision restart` was issued after B posted. The drain takes

@@ -1,0 +1,882 @@
+# The Hygiene module (`hyg`) — H1 slices 1, 2 and 3
+
+What shipped, and what it refuses to do.
+
+**Status: mounted, ships dark.** `hyg` is in the `tenant_module` vocabulary as
+of `backend/migrations/1788100000000_module_hyg.js`, no tenant is entitled to
+it, and no office's pilot switch is on. Everything under `/api/hyg` therefore
+403s `MODULE_NOT_ENTITLED` in every environment until the entitlement is flipped
+from the Platform Console, and 409s per office until that office's switch is
+flipped too. **Both are now clicks, not deploys** — see §8.
+
+---
+
+## 1. Three gates, and they answer three different questions
+
+| Gate | Question | Where | Failure |
+| --- | --- | --- | --- |
+| `requireModule('hyg')` | Did this PRACTICE buy the product? | `server.js` mount | 403, `error: MODULE_NOT_ENTITLED` |
+| `requireReadWrite('hyg.read','hyg.write')` | May this PERSON do this? | same mount, by HTTP method | 403 `FORBIDDEN` |
+| the pilot switch | Is this LOCATION switched on? | `config/hygPilot.js`, read per request | 409 `OFFICE_NOT_READY` |
+
+The third one is new, and it is not the mistake `officeAgents.odConnected` was.
+That flag gated TC's routes while TC actually reached Open Dental through a
+process-wide client built from Roland's key, so flipping it for Riley would have
+served Roland's charts under a Riley selector — it and the credential it claimed
+to describe were not connected to each other. `hygOdBlockReason()` asks
+`odBlockReason()` FIRST and can only narrow the answer; there is no state in
+which the hygiene module reaches an office the voice module could not, and the
+client still comes from `getOdOffice()` unchanged.
+
+What it buys is what a new clinical module needs: a switch that starts off while
+the module is validated at one location, and that can be turned off for one
+office without taking that office's voice worklist and TC screens down with it.
+
+**Roles.** `hyg.read` and `hyg.write` are held by `admin`, `office` and
+`hygiene`. `tc` deliberately holds neither — a treatment coordinator receives
+the handoff (`tc.hygiene`, which already exists), and standing at a chair
+reading the day is the other side of that exchange. `hyg.write` is what every slice-2
+mutation demands, by construction rather than by whoever wrote it remembering to
+decorate the route — `routes/hyg/hygVisitGuard.test.js` drives all seven of them
+as a read-only role and gets seven 403s.
+
+---
+
+## 2. `GET /api/hyg/day?office=&date=`
+
+One office's whole schedule for one day.
+
+### What it returns
+
+```
+{ success: true, office, officeName, date,
+  operatories: [{ opNum, name, abbrev, isHygiene, itemOrder }],
+  appointments: [{ aptNum, patNum, identity, patientName, start, lengthMin,
+                   opNum, opName, isHygiene, opIsHygiene,
+                   provNum, provHyg, providerName,
+                   apptTypeLabel, confirmedStatus, aptStatus, isNewPatient,
+                   flags: { premed, medicalAlerts, allergies, lastPerioDate,
+                            xraysDue, examNeeded, openTcCase } }],
+  warnings: [{ resource, message, detail }],
+  flagSources: { <flag>: 'od' | 'not_read' },
+  excludedByStatus, scope, excludedByScope,
+  truncated, patientNamesTruncated, identitiesPending,
+  stats: { odListReads, odPatientReads, patientsRequested,
+           patientCacheHits, patientCacheDeduped, durationMs, phaseMs } }
+```
+
+`identity` is `resolved | pending | unavailable | no_patient` — see §7. A
+`pending` card has no name yet and `GET /api/hyg/day/identities` is what fills
+it in.
+
+`warnings[].detail` is Open Dental's own status or timeout under the sentence a
+hygienist reads. Both, because one of them tells her what to do and the other
+tells whoever she calls what to look at.
+
+`stats.phaseMs` is wall clock per phase — `appointments`, `operatories`,
+`labels`, `identities`. A total says the day was slow; these say which read was.
+
+### `GET /api/hyg/day/identities?office=&date=&scope=`
+
+The next batch of names for a day that has already painted.
+
+```
+{ success: true, office, date, scope,
+  patients: [{ patNum, patientName, premed, medicalAlerts }],
+  unavailable: [patNum],   // Open Dental refused these. Waiting will not help.
+  pending,                 // still unnamed. Ask again while this is FALLING.
+  stats }
+```
+
+**It takes no PatNums.** See §7.
+
+`stats` is what the read COST — counts and milliseconds, never a PatNum and
+never a name. It is in the body rather than only in the log so a before/after
+can be measured with one request instead of a log query. See §7.
+
+The zod schema for this shape is `new-dashboard/shared/hyg/contract.ts` and the
+CLIENT parses every response through it. The backend does not — it is CommonJS
+with no build step, so running zod there means a second committed esbuild bundle
+like `backend/tc/contract.gen.cjs` (650KB plus a byte-compare drift test this
+repo's CLAUDE.md already documents as fragile). Slice 1's whole request surface
+is two query params. `new-dashboard/tests/hyg-contract.test.ts` pins the
+backend's response keys against the schema in the meantime. **When slice 2 adds
+request bodies, add the bundle** — a body is where a client and a server most
+need the same schema.
+
+### What it refuses to do
+
+**It never answers an empty day it is not sure about.** Five things can go wrong
+before there is a day to show, and each has its own status and code:
+
+| Situation | Status | `code` | `reason` |
+| --- | --- | --- | --- |
+| Not entitled | 403 | `MODULE_NOT_ENTITLED` (in `error`) | — |
+| Role lacks `hyg.read` | 403 | `FORBIDDEN` | — |
+| Office missing / not one of ours | 400 | `INVALID_OFFICE` | — |
+| Date missing or not a real date | 400 | `INVALID_DATE` | — |
+| Office not switched on for hygiene | 409 | `OFFICE_NOT_READY` | `OFFICE_HYG_NOT_ENABLED` |
+| Office switched on, no customer key | 503 | `OFFICE_NOT_READY` | `OFFICE_OD_KEY_MISSING` |
+| Open Dental did not answer | 502 | `OD_READ_FAILED` | — |
+| Audit write failed | 500 | `AUDIT_FAILED` | — |
+
+`appointments: []` means, and only means, that nobody is booked. That is not a
+stylistic preference: this screen's job is to tell somebody what is about to
+happen to them all day, and a blank one that actually means "we could not reach
+your practice" is the worst thing it could show.
+
+`2026-02-31` is refused rather than passed through. It matches the date shape,
+and JavaScript rolls it forward to March 3rd — Open Dental would then return a
+DIFFERENT day's schedule under the heading the caller asked for.
+
+**It never fabricates a flag.** `premed` and `medicalAlerts` are read from
+`GET /patients/{PatNum}` and can be `true`, `false` or `null`. The other five
+are `null` and `flagSources` says `not_read` — slice 1 does not call
+`/allergies`, `/perioexams`, `/documents` or the TC case store at all. A `false`
+there would claim we had asked.
+
+**It never invents a duration or a name.** No `Pattern` is a null `lengthMin`,
+not the 30 minutes `config/openDental.js`'s older helper defaults to. A patient
+record that could not be read is a null `patientName`, not `"Unknown Patient"`.
+
+### How it reads Open Dental
+
+One pull for the schedule, **no per-chair fan-out**. `GET /appointments`
+accepts `Op=` and it filters to exactly one operatory (H0 spike §5), so a day
+view over eight chairs would issue eight requests against a credential the voice
+and RCM modules share to assemble what one `date=` request already returns. The
+day is pulled once and partitioned by `Op` in memory. There is no provider
+filter at all — narrowing to one hygienist is client-side after a full-day read,
+and that is a property of Open Dental's API.
+
+**Paging is not optional.** Open Dental caps every list at 100 rows and pages
+with `Offset`. The H0 spike caught this the only way it can be caught:
+`GET /scheduleops` came back with exactly 100 rows, which reads as a complete
+answer and is not one. `pagedList` keeps requesting until a page comes back
+SHORT, and reports `truncated` if its page budget runs out instead of quietly
+returning what it had.
+
+Patient identity IS a genuine fan-out: `/appointments` returns `PatNum` and no
+name, and Open Dental offers no way to ask for a set of PatNums at once. It is
+deduplicated, sequential (the client's throttle slot is per-credential, so
+parallel would not finish sooner — only burstier; decision D-8), capped at
+`HYG_OD_MAX_PATIENT_READS`, and its budget is reported as
+`patientNamesTruncated` — a DIFFERENT fact from `truncated`. A complete
+137-patient day whose naming budget ran out is not an incomplete schedule.
+
+Because the throttle is one request per second per credential, that fan-out was
+also the whole latency of this screen: 40 patients meant 40+ seconds of somebody
+standing at a chair. Every one of those reads now goes through the shared
+per-office cache in `backend/services/odPatientCache.js`, and a morning warm
+pays the cold cost before the practice opens. **§7 is the part to read before
+changing anything here** — in particular, raising a concurrency number is the
+change that does not work.
+
+### Audit
+
+One `hyg_day` row for the request, plus one `hyg_day_patient` row **per distinct
+patient disclosed**. A single "somebody opened Tuesday" row cannot answer "whose
+chart was read on Tuesday", which is the question the trail exists to answer.
+Fail-closed: the writes happen before the response is sent, and a failure 500s.
+A refused request is audited too, best-effort, as `UNAUTHORIZED` — auditing only
+successes discards exactly what a HIPAA trail most needs.
+
+### Zero Open Dental writes
+
+The only transport in reach is `apiGetRaw`, which has no write counterpart.
+`backend/routes/hyg/hygNoOdWrites.test.js` makes that a test in two ways: it
+drives the day route to SUCCESS against a client whose every write verb throws
+and asserts none was reached, and it scans every source file in the module for
+`apiWriteRaw`, for `.post(`/`.put(`/`.patch(`, and for a non-GET `router.*`
+registration. Slice 3 introduces exactly one writer file and that test grows a
+one-file allow-list, the way RCM's did. **Do not delete it** — that is how a
+guard quietly stops guarding.
+
+---
+
+## 3. `/hyg/day` and `/hyg/visit/:aptNum`
+
+iPad landscape, **1180 × 820**, designed to that viewport first. Every control
+is at least 44px and every card at least 88px; nothing is hover-only, because a
+tooltip on a touch screen is a chip that means nothing.
+
+Four visually distinct states, and the distinction is the point:
+
+- **loading** — a skeleton in the shape of the day
+- **empty** — a bordered, centred, POSITIVE statement: the schedule loaded and
+  nobody is on it
+- **not ready** — a blue panel, and **no Retry button**: this is a setting, and
+  offering a retry invites somebody to spend a minute finding out it can never
+  help
+- **OD error** — a red panel that says, in as many words, "this is not an empty
+  day", and the only one with a Retry
+
+`/hyg/visit/:aptNum` is a slice-2 placeholder rather than a 404: every card is a
+link, and a link that 404s teaches a hygienist the app is broken. It shows the
+appointment number and **no patient details** — it has made no request, checked
+no entitlement and written no audit row, and PHI on a screen with no trail
+behind it is what the audit rule exists to prevent.
+
+---
+
+## 4. Configuration
+
+No secrets. Three tunables, all with working defaults:
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `HYG_OD_MAX_PAGES` | `25` | Page budget per Open Dental list read (25 × 100 = 2,500 rows). A circuit breaker; exceeding it sets `truncated`. |
+| `HYG_OD_MAX_PATIENT_READS` | `120` | Cap on the per-day patient-identity fan-out. Past it, cards come back with no name and `patientNamesTruncated` is true. |
+| `HYG_OD_CALL_TIMEOUT_MS` | `30000` | Per-OD-call timeout. Matches `routes/tc/odReads.js` rather than inventing a second number — the legacy TC app proved 10s is too short. |
+
+| `OD_PATIENT_CACHE_TTL_MS` | `300000` (5 min) | How long a patient record is served without re-reading Open Dental. **A clinical bound, not a performance knob** — see §7. `0` turns the cache off. |
+| `OD_PATIENT_CACHE_MAX_ENTRIES` | `2000` | Ceiling on cached records across every office. Past it, least-recently-used entries are evicted. `0` retains nothing. |
+| `OD_CONFIG_CACHE_TTL_MS` | `3600000` (1 hour) | How long `/appointmenttypes`, `/providers` and `/operatories` are served without re-reading. **Practice configuration only** — the resource list is closed, so `/patients` cannot be put behind it. `0` turns it off. |
+| `HYG_DAY_IDENTITY_BATCH` | `8` | How many patients one fill request may fetch. ~9s of wall clock per batch (eight patients plus the schedule read). Not a throughput lever — the credential is the throughput, and it is shared. |
+| `HYG_WARM_SCHEDULE` | `45 7 * * *` | Cron for the morning warm, read in `OFFICE_TIMEZONE`. An unparseable value falls back to the default with a warning. |
+| `HYG_WARM_DISABLED` | unset | `'true'` arms no warm at all. The SECOND gate — the first is `hygOdEnabled`, which ships false everywhere. |
+
+| `HYG_OD_ENABLED_<OFFICE>` | unset | **Break-glass** per-office kill switch. `false` forces that office OFF, whatever the console says. `true` is accepted and can never enable anything (it is reported at boot and on screen as inert); anything else is ignored. See §8. |
+| `HYG_PILOT_REFRESH_MINUTES` | `5` | How often the stored pilot switch is re-read in the background. A console write does not wait for this. |
+
+The per-office switch is no longer code: it lives in the control plane and is
+flipped from the Platform Console. `OFFICE_OD_SETTINGS[x].hygOdEnabled` is now
+only the FLOOR of that precedence chain and stays `false`. See §8.
+
+---
+
+## 5. Where slices 2 and 3 attach
+
+- **Slice 2** — `hyg_visit`, `hyg_staged_write`, `hyg_treatment_item` (a TENANT
+  migration, each table with its own `carein_app` GRANT block — the
+  `call_record` lesson). The Router tab, sections (a)–(l) from the prototype,
+  the Odontogram, the treatment items, the records matrix, and the module's
+  first mutations. `RECORDS_MATRIX` produces **warnings**, never a gate: Beau's
+  ruling is that nothing here hard-blocks a Send on a completeness check, and
+  the prototype's two "hard checks" are front-desk work a hygienist cannot do.
+- **Slice 3** — the send. The slip rendered to PDF into the patient's images
+  (`POST /documents/Upload`, with the office's "Routers" DocCategory resolved BY
+  NAME — DefNums differ per office, proven 473 vs 429), and the handoff into TC
+  via the existing case-create path. Read-back before anything is marked
+  `Written`.
+
+The vocabulary both slices build on is already here:
+`new-dashboard/shared/hyg/contract.ts` (`TreatmentItem`, `DxCode`,
+`MotivationCode`, `TreatmentStatus`, `StagedWriteState`, `deriveCategory`) and
+`shared/hyg/records.ts`.
+
+**`TreatmentPriority` is `"urgent" | "preventative" | "cosmetic"`.** Beau's
+ruling; the prototype's P1–P4 does not ship, and neither does its parallel
+Routine/Soon/Urgent handoff scale. `"watch"` is a `TreatmentStatus`, not a
+priority. Priority and `TreatmentCategory` share the word *cosmetic* and are
+different axes; `tests/hyg-contract.test.ts` holds a type-level assertion that
+neither is assignable to the other plus a lexical one that they share no EXACT
+string — so lowercasing `"Cosmetic"` later fails the build rather than silently
+letting a category reach a priority field.
+
+---
+
+## 6. The prototype
+
+`docs/hyg-prototype/` is Beau's v0, vendored as reference and wired into no
+build. Its README carries the per-toolchain proof of that and the port/discard
+verdict per file. `client/src/lib/hyg/dentition.ts` is the one file ported
+byte-for-byte; `tests/hyg-dentition.test.ts` pins it, because the lower arch
+reads #32 → #17 on screen and getting that backwards makes every tooth a
+hygienist taps the wrong one, in a way that looks plausible.
+
+---
+
+## 7. The patient cache and the morning warm
+
+### The arithmetic
+
+Open Dental throttles at **one request per second per credential**, and the
+reservation slot is shared by every module on that credential (`OD_SLOTS` /
+`odSlotKeyFor` in `backend/config/openDental.js`). `GET /appointments` returns
+`PatNum` and no name, and there is no bulk patient read. So naming the people on
+a day costs one `GET /patients/{PatNum}` per distinct patient — which the
+throttle turns into one SECOND per distinct patient.
+
+Measured on the shipped code paths with that spacing applied
+(`node backend/scripts/measure-hyg-day-cost.js`, 40 distinct patients):
+
+| | OD requests | wall clock |
+| --- | --- | --- |
+| Cold, all-at-once — what shipped in slice 1 | 44 (4 list + 40 patient) | **43.0s** |
+| **Cold — the schedule paints** | **4 (4 list + 0 patient)** | **3.0s** |
+| …then the names, in five batches, while she reads it | 45 | 45.0s |
+| Second load of the same day | 1 (1 list + 0 patient) | **0.0s** |
+| First load after the 7:45 warm | 4 (4 list + 0 patient) | **3.0s** |
+
+The warm itself is 40 reads in 39s, at 7:45am against an idle credential with
+nobody waiting on it.
+
+**43.0s → 3.0s is the headline, and it is not a saving.** The identity fan-out
+still costs one request per patient; it no longer holds the schedule up. Row 3
+is that cost, paid after the page is usable — and it is five requests LARGER
+than row 1, because each batch re-reads the schedule (see "The fill takes no
+PatNums" below).
+
+The second load falls to ONE list read because the three config lists —
+appointment types, providers, operatories — are cached for an hour per office in
+`backend/services/odConfigCache.js`. Only `/appointments` is re-read, and it has
+to be: a schedule an hour old is a schedule somebody added a patient to.
+
+### Progressive fill
+
+`GET /api/hyg/day` resolves identities from the patient cache and **issues no
+patient requests at all**. Everything it could not name comes back
+`identity: "pending"`, and `identitiesPending` says how many. The client then
+calls `GET /api/hyg/day/identities` in a loop, merging each batch onto the cards
+already on screen.
+
+`identity` is a four-state answer to "why does this card have no name", because
+one null cannot carry four different facts:
+
+| | means | changes on its own |
+| --- | --- | --- |
+| `resolved` | the record was read. `patientName` may still be null — Open Dental held neither half — and that is an ANSWER | no |
+| `pending` | not asked yet | **yes** |
+| `unavailable` | asked; Open Dental would not answer. Waiting will not help | no |
+| `no_patient` | the appointment carries no PatNum — a blockout, or an unattached row | no |
+
+**The loop stops.** It runs while `pending` is FALLING and stops the moment a
+batch does not move it, and when it stops the page settles every remaining
+`pending` card to `unavailable`. A shimmer with no request behind it claims
+something untrue, which is the same failure as an empty day wearing a different
+hat.
+
+**A failed fill does not discard the schedule.** It gets its own banner, its own
+retry, and Open Dental's own status line — refetching the day to recover the
+names would throw away a schedule that loaded perfectly well.
+
+### ⚠️ The fill takes no PatNums
+
+`GET /day/identities` derives the set of patients from that day's own schedule,
+server-side. A route that accepted a list of PatNums would be a
+name-and-medical-alert lookup for **any** patient number in the practice,
+walkable one integer at a time — a far larger disclosure surface than "who is
+booked today".
+
+That costs one extra `/appointments` read per batch, which is the whole of the
+45-vs-44 difference in the table. It also buys freshness: a patient added to the
+day mid-fill is picked up rather than missed until a refresh.
+
+The `scope` is validated on the fill exactly as on the day, and for the same
+reason — a fill under a wider lens would name patients the day never served.
+
+### Audit follows the DISCLOSURE, not the request
+
+`GET /day` writes one `hyg_day_patient` row per appointment whose identity it
+actually carries. A `pending` card carries a PatNum, a time and a chair and **no
+name and no flags**: nothing about that person has been disclosed, so it gets no
+row. The fill writes the row at the moment it sends the name.
+
+This is the same rule the cache follows from the other direction — a cache HIT
+still discloses, so it still audits — and it is just as easy to get backwards.
+
+### Concurrency is not the lever
+
+`routes/tc/odReads.js` already runs this exact fan-out through
+`mapLimit(top, OD_CONCURRENCY = 5, ...)` and gets nothing for it: the shared
+per-credential slot serializes the requests whatever the caller's concurrency
+number says. All a higher number buys is a burstier share of a slot the voice
+path is also waiting on (decision D-8). **If this screen is slow and you are
+about to raise a concurrency constant, that is the change that does not work.**
+
+### `backend/services/odPatientCache.js`
+
+Shared, not hyg's. It caches the RAW `GET /patients/{PatNum}` body, so every
+module keeps its own normalizer and three modules can share one entry.
+
+- **Keyed on office + PatNum.** PatNum numbering restarts in every Open Dental
+  database — 7115 is the valley test patient AND a different real person in
+  roland — so a cache keyed on PatNum alone is a cross-office PHI disclosure.
+  `cacheKey()` throws on a missing or unregistered office rather than defaulting
+  one, and `odPatientCache.test.js` drives the isolation from both directions.
+- **TTL 5 minutes.** `commlogTypes.js` caches for an hour and is right to: it
+  holds practice configuration. This holds `Premed` and `MedUrgNote`, which a
+  front desk can change mid-morning, in front of a screen somebody reads at a
+  chair. Five minutes collapses refreshes, back navigation and date flipping
+  without ever aging a medical alert.
+- **Stale is never served.** Past the TTL the entry is *deleted* before the
+  refresh is attempted, so a failed refresh returns a miss and the card renders
+  the way a failed read already renders — no name, null flags, the existing
+  warning. A stale name is harmless; a stale alert is not; they arrive in one
+  record, and refusing to split them is the safe choice.
+- **Bounded and in-flight deduped.** LRU-evicted at
+  `OD_PATIENT_CACHE_MAX_ENTRIES`, and two concurrent day loads issue one read
+  per patient, not two.
+
+**Audit is not the cache's job.** An audit row records a disclosure to a USER,
+not a fetch from a vendor, and a cache hit discloses that patient just the same.
+`routes/hyg/day.js` therefore builds its rows from what it is about to SEND, and
+`routes/hyg/hygDayCache.test.js` pins both halves at once: zero patient reads on
+the second load, and the same number of `hyg_day_patient` rows. Never move an
+audit call inside the cache — the better it got, the emptier the trail would get.
+
+### `backend/services/hygDayWarm.js`
+
+The cache does nothing for the 8am first load, which is the load that matters.
+The warm pre-fetches today's patients before the practice opens.
+
+- Only offices where `hygOdEnabled` is true — which is none of them today, so it
+  warms nothing until Beau turns an office on. **The warm must never be the
+  thing that starts talking to a practice.**
+- No `minIntervalMs`, so it takes the default share of the shared slot and can
+  never raise its priority the way RCM's batch matcher deliberately does. It is
+  attributed as `hyg-warm` so the transport counters can tell it apart.
+- **It writes no audit rows.** Nobody is looking at anything; there is no actor
+  to attribute a disclosure to. The disclosure is recorded when a hygienist
+  opens the day. This is the exact mirror of the audit rule above, and just as
+  easy to get backwards.
+- One log line per office per pass. A failed warm is a warning — the Day View
+  still works, it is merely cold.
+- Not fired at startup: a mid-afternoon deploy must not put a patient fan-out on
+  a credential people are using.
+
+**A same-day add-on booked after the warm is a cold read.** That is correct
+behaviour, not a gap: the alternative is a schedule that leaves out the patient
+who was just added.
+
+### The schedule and the TTL are coupled, and the coupling is tight
+
+A five-minute TTL means a warm at time T helps loads in roughly `[T, T+5min]`
+and nothing after. That is why the default is 07:45 rather than the 6am a
+"morning warm" sounds like — as close to an 8am open as "before it opens"
+allows. An operator who needs a wider window sets a repeating `HYG_WARM_SCHEDULE`
+across hour 7, at the cost of re-reading every patient on every pass.
+
+**Do not close the gap by raising the TTL.** It is a clinical bound. If a cold
+first load is still too slow at a chair, the next lever is returning the
+schedule immediately and filling names in progressively — not a longer window in
+which a medical alert is invisible, and not more concurrency.
+
+### Measuring it on staging
+
+Not possible today, and that is worth stating plainly: `/api/hyg/*` is behind
+`requireModule('hyg')` with no tenant entitled, and `hygOdEnabled` is a hardcoded
+`false` with no environment override. On staging the endpoint answers 403, and
+after entitlement it answers 409 `OFFICE_NOT_READY`. A staging before/after
+therefore needs (1) this branch deployed, (2) `hyg` entitled for the staging
+tenant from the Platform Console, and (3) `hygOdEnabled: true` for roland in
+`config/odOffices.js` — which is itself a deploy. Once those are in place the
+numbers come straight out of the response (`stats.odPatientReads`,
+`stats.durationMs`) and the `[hygday]` line in the container log.
+
+### Where TC and RCM adopt it
+
+Three call sites do the same `GET /patients/{PatNum}` fan-out on the same shared
+credential and are deliberately NOT changed here — both modules are live in
+production and hyg is dark, so fixing a dark module must not move live
+behaviour. Each is a one-line change:
+
+| Call site | Change |
+| --- | --- |
+| `backend/routes/tc/odReads.js:330` (`getPatient`) | wrap the `odGet` in `odPatientCache.getPatient(office, patNum, ...)`; the office is already resolved by the caller |
+| `backend/routes/tc/odReads.js:674` (the `mapLimit` demographics join) | same, and the `OD_CONCURRENCY` around it can then go — it never bought anything |
+| `backend/services/rcm/odClaimReads.js:366` (`getPatient`) | same |
+
+The cache stores the raw Open Dental body precisely so those three can share
+entries with hyg rather than each keeping their own.
+
+---
+
+## 8. The pilot switch, and the runbook that goes with it
+
+### Why it stopped being a constant
+
+`OFFICE_OD_SETTINGS[x].hygOdEnabled` was a hardcoded `false` in backend source.
+Turning hygiene on for Roland meant a deploy — and so did turning it **off**.
+Pilot morning, a hygienist hits a problem at 9am with a patient in the chair;
+switching that office off has to take under a minute. **A kill switch that
+requires a deploy is not a kill switch.**
+
+It also unblocked two things: the Day View's staging measurement (§7 of this
+doc, which needed a second deploy just to flip the flag) and
+`services/hygDayWarm.js`, which had never executed anywhere — its first real run
+would otherwise have been pilot morning in production.
+
+### Precedence
+
+```
+HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always.
+  ↓ (unset, =true, or unparseable — none of which can ENABLE anything)
+platform_setting['hyg_od_enabled']   ← the console writes this
+  ↓ (no row, or a row that cannot be parsed)
+OFFICE_OD_SETTINGS[x].hygOdEnabled   ← the floor, and it stays false
+```
+
+One `platform_setting` row holds every office as a jsonb map,
+`{"roland": true, "valley": false}`. One row rather than a key per office
+because it is a single atomic write (a change touching two offices cannot
+half-apply), a single audit target, and a single read on a path that runs on
+every `/api/hyg` request.
+
+Things worth knowing before you debug this:
+
+- **A row that exists answers for every office.** Once the row is present and
+  usable, an office ABSENT from it is `false` — not "unset", not "inherit". The
+  stored row is consulted only when nothing in the environment has already
+  killed the office, which is exactly `config/retention.js`'s `days: null`
+  behaviour generalised to a map, with a one-way gate in front of it.
+- **The env override only ever turns an office OFF.** `HYG_OD_ENABLED_ROLAND=false`
+  holds roland off whatever the stored row says — it NARROWS, the same way
+  `hygOdBlockReason()` narrows `odBlockReason()`. `=true` is accepted as input
+  and cannot enable anything; it is logged once at boot and shown on the console
+  as inert, because a variable that quietly does nothing is its own incident.
+  Break-glass exists for *the console is unreachable and I need to kill this*,
+  and there is no incident whose correct response is turning a module ON while
+  the control plane is down. That also means a stale `=true` left over from an
+  earlier incident cannot re-open an office somebody deliberately shut, not even
+  on a boot where the control DB is unreachable and nothing is cached.
+- **The floor stays `false`.** It is the bottom of the chain, not a
+  configuration point. Flipping it would put the OFF direction behind a deploy
+  again, which is the whole thing this replaced.
+- **One bad entry does not poison the map.** An unknown office key or a
+  non-boolean value is dropped, loudly, and the rest of the row still applies.
+- **Read once and then unreachable ⇒ keep using what we read.** A database blip
+  must not switch a practice's chairside screen off mid-morning any more than it
+  should switch one on. Never read at all ⇒ every office off.
+
+### It can only narrow
+
+`hygOdBlockReason()` asks `odBlockReason()` FIRST and only then consults the
+switch, so there is no value of the setting that reaches an office the voice
+module could not. An office with no customer key stays refused with the VOICE
+path's own code no matter what this says. `backend/config/hygPilot.test.js` pins
+both directions.
+
+### OFF is instant
+
+`maxReplicas` is 1, so the console write and the request path are the same
+process: `persistHygEnabled` refreshes the module cache inline, and
+`hygOdBlockReason()` reads it synchronously. The next `/api/hyg` request is
+refused. `backend/routes/hygPilotSwitch.test.js` walks
+`ON → 200 → OFF → 409` in one process with **no restart, no sleep and no cache
+reset** between the steps. If that test ever needs one of those, the switch has
+stopped being a kill switch.
+
+---
+
+## 9. The pilot runbook
+
+### Before you start
+
+Confirm on the **Platform → Practices** tab that the practice is entitled to
+`hyg`. That is a different axis from the switch and both must be on; the Hygiene
+tab shows the entitlement read-only beside each office for exactly this reason.
+
+### Enabling Roland on STAGING
+
+1. Sign in to staging as a platform administrator.
+2. **Platform → Practices → CareIN Dental → Modules**: turn `hyg` on.
+3. **Platform → Hygiene**: flip **Roland Family Dental** on and read the
+   confirmation. It says what starts happening: hygienists begin reading real
+   patient data from that practice's Open Dental, and the morning warm begins
+   running against it.
+4. The row under the office should now read `db` and *"Turned on by <you> on
+   <today>"*. If it still reads `default` or `env`, the write did not take —
+   the panel is rendering the database, not your click.
+5. Open `/hyg/day` and confirm the day loads against the real schedule.
+
+### What to watch, over several mornings
+
+| Signal | Where | What good looks like |
+| --- | --- | --- |
+| the warm ran | container log, `[hygwarm]` | one line per office per morning at ~07:45 Central: `office=roland date=… patients=N od_reads=N ms=…`. `patients` should match the day's headcount. |
+| the day view is fast | `[hygday]` line, or `stats` in the response | `od_patient=0` and `ms` in the low thousands for a load inside the warm's window; a cold load is one second per patient (§7). |
+| the schedule is right | the screen, against the practice's own day | every appointment present, names correct, no `truncated` banner. |
+| Open Dental is healthy | `[odhealth]` transitions, Platform → practice health | no `roland up→down` lines. A down office makes the day view refuse honestly, not show an empty day. |
+| nothing is being written | — | there is no OD write path in this module at all (`hygNoOdWrites.test.js`). If you see a chart change, it did not come from here. |
+
+**Good enough for prod** is: three consecutive mornings where the warm ran
+cleanly for Roland, the day view matched the real schedule, no `[odhealth]`
+transition coincided with a hygiene complaint, and the hygienist did not report
+a name or a flag that disagreed with Open Dental.
+
+**Note the honest gap:** a same-day add-on booked after the warm is a cold read
+and will be slower. That is correct behaviour, not a fault.
+
+### Turning it off fast
+
+**Platform → Hygiene → toggle the office off.** No confirmation dialog, no
+deploy, no restart. It is in force for the very next request; a hygienist
+mid-page gets a refusal on their next action, not an empty day.
+
+If the console itself is unreachable, the break-glass path is the app setting:
+set `HYG_OD_ENABLED_ROLAND=false` and restart the container. It holds the office
+off from that moment on, whatever the stored row says and whether or not the
+control plane comes back — so **remember to clear it afterwards**, or the
+console's own switch will not be able to turn that office back on. The panel
+says so on the office's row while the variable is set.
+
+There is no matching way in. `HYG_OD_ENABLED_ROLAND=true` cannot turn an office
+on; the only way in is the console. That is deliberate — the fast,
+always-available path is the safe direction, which is the same reason turning
+off needs no confirmation and turning on does.
+
+### Enabling prod
+
+Same five steps, on prod, after the staging soak. Nothing about the switch is
+environment-specific; the only difference is that prod's Roland is a live
+practice and the confirmation dialog means what it says.
+
+
+---
+
+## 10. The visit workspace (H1 slice 2)
+
+`/hyg/visit/:aptNum?office=&date=` and `/api/hyg/visit/...`. Tap a card on the
+day, work the visit, stage what will be written.
+
+**SLICE 2 WRITES NOTHING TO OPEN DENTAL.** It composes. Slice 3 sends. The only
+Open Dental traffic on these routes is the same read-only day pull §2 describes,
+and it exists for one reason: to learn which PATIENT an appointment belongs to
+from Open Dental rather than from a request body.
+
+### The three tables
+
+`backend/migrations-tenant/1788200000000_hyg_visit.js` creates `hyg_visit`,
+`hyg_treatment_item` and `hyg_staged_write` — the module's first tables, and
+therefore its first `carein_app` GRANT block. (Slice 1 correctly shipped none
+because it created no tables. A table the least-privilege role cannot reach
+fails in production as a permission error, not as a red migration — the
+`call_record` lesson.)
+
+Three things about the schema are load-bearing:
+
+- **`office` is on every row and never optional**, with a COMPOSITE FK from each
+  child back to `(visit_id, office)`. PatNum numbering restarts in every Open
+  Dental database, so a row carrying a PatNum without an office can be attached
+  to the wrong human being. The denormalised copy means every lookup is
+  office-scoped without a join — and the composite FK means it cannot drift from
+  the parent.
+- **`priority` and `category` are separate columns with separate CHECKs.** They
+  are different axes that share the word "cosmetic": a cosmetic veneer is a
+  Cosmetic-CATEGORY item, and a cosmetic PRIORITY says the work can wait. One
+  shared column, one shared enum type, or one case-insensitive comparison
+  anywhere between them puts "this can wait" on a chart.
+- **`UNIQUE (office, apt_num)`** — one visit per appointment. Re-opening the same
+  appointment finds the visit already there rather than starting a second one
+  beside it, because a hygienist who backgrounded the app mid-visit must not come
+  back to an empty slip with her work in a sibling row nothing renders.
+
+### The staged-write state machine lives on the server
+
+```
+Draft → Staged → Sending → Written | Failed
+```
+
+Slice 2 reaches `Staged` and un-staging. `Sending`, `Written` and `Failed` are
+slice 3's, set by the server around a real Open Dental call after a read-back.
+
+No request schema in `shared/hyg/contract.ts` has a `state` field, so a client
+cannot ask for one — and the stage body is `.strict()`, so trying is a 400
+rather than a silently ignored key. A row that has left Draft/Staged is
+immutable to this slice: re-staging one is refused, because resetting it would
+erase the record of a write that already reached a chart.
+
+**The stage request carries ONE field: the kind.** Title, summary, preview lines
+and payload are all composed server-side by `services/hyg/stagedWriteComposer.js`
+from the stored visit. That is the fix for RCM audit finding F3 — *"confirm gates
+client-side only; submit paths never re-check and record NO user"* — and it is
+what makes slice 3's rule expressible at all: **the preview IS the write**, which
+is only true because one call built both from the same snapshot.
+
+### The backend runs zod now
+
+`backend/hyg/contract.gen.cjs`, an esbuild bundle of `shared/hyg`, committed —
+the same mechanism TC has used since its slice 3. Slice 1 deliberately shipped
+without it (its whole request surface was two query params). Slice 2 introduces
+request BODIES that become chart writes one slice later, and a body is exactly
+where a client and a server most need the same schema.
+
+Every wire-crossing body is parsed before any handler logic, and a rejection is
+a 400 that NAMES the field — including the unknown key inside a `.strict()`
+object, which zod reports against the parent. Regenerate with the pinned esbuild
+whenever `shared/hyg` changes; `new-dashboard/tests/hyg-contract-bundle.test.ts`
+makes a stale bundle a red build.
+
+### Nothing is gated on completeness
+
+Beau's ruling, verbatim: *"the hygienist should be able to send the treatment to
+the tc app."*
+
+`recareScheduled` and `txEnteredInOd` are ordinary slip fields with a MUTED
+reminder when unanswered. `RECORDS_MATRIX` produces a list a screen shows. The
+prototype's Finish tab disabled its Send until both questions were answered and
+drew them in destructive red; both describe work the FRONT DESK does after the
+hygienist has finished, so gating on them makes her wait on somebody else with a
+patient in the chair.
+
+The Send affordance on the workspace IS disabled, for exactly one reason —
+sending is not built yet — and it says so in words, permanently, beside itself.
+Rendering no Send at all would have been worse: a hygienist who has staged three
+writes and can see no way to send them concludes the app is broken rather than
+unfinished.
+
+### The visit note is UNSIGNED, and nothing may say otherwise
+
+CareIN writes the note with a typed name block: *"Entered in CareIN by
+&lt;email&gt;. Unsigned."* Open Dental's own signature block is the only thing
+allowed to claim a signature. The prototype's notes summary said "Signed by" —
+a defect, not copy to lift. Two tests pin it: one on the composed output, and
+one that scans the composer's own string literals.
+
+### What is deliberately NOT here
+
+- **Perio charting.** `perio` is a kind in the contract's vocabulary and
+  composes to nothing; staging it is an honest 422 that says why. A stray
+  Probing row is PERMANENT in Open Dental (only Mobility and SkipTooth can be
+  deleted), so it gets its own arc (H4) rather than riding on this one.
+- **The ortho workup**, the prototype's 1,400-line tab. Its own arc.
+- **Photos.** `TreatmentItem.photos` exists in the contract and is always empty:
+  an upload path needs a blob store, a retention answer and an audit story.
+- **The prototype's pre-visit block** (insurance verified, balance to collect).
+  That is front-desk work, and this screen is used at a chair.
+
+### Verified against a real Postgres
+
+`backend/scripts/rehearse-hyg-visit.js` runs the real migration and the real
+store against a real database, connected as `carein_app`, and tries to break
+every constraint on purpose — 20 checks. The route tests use a
+statement-dispatch fake, and a fake is a second implementation of the rules
+whose failure mode is agreeing with itself and not with Postgres.
+
+
+---
+
+## 11. The send (H1 slice 3)
+
+`POST /api/hyg/visit/:aptNum/send`. The module's first Open Dental WRITES.
+
+### Exactly one file may write
+
+`services/hyg/odWriter.js`, and `routes/hyg/hygNoOdWrites.test.js` names it.
+Everything else — the orchestration in `sendVisit.js`, the routes, the composer
+— reaches Open Dental only through the four functions it exports. A second
+writer is a second policy about when something lands in a chart, and the second
+one is always the one nobody reviewed. The allow-list is asserted to be
+non-vacuous (the named file really does reach the transport) and to hold both
+endpoints, so a POST assembled elsewhere and passed down as a string would fail
+the build.
+
+### Three destinations
+
+| | Endpoint | Read-back |
+| --- | --- | --- |
+| the visit note | `POST /procedurelogs/GroupNote`, `isSigned: false` | a NEW row on `GET /procedurelogs/GroupNotes?PatNum=` carrying exactly this text |
+| the routing slip | `POST /documents/Upload`, `.pdf` + `rawBase64` | the response must carry a `DocNum` |
+| the treatment | TC's own `POST /api/tc/hygiene-intakes` (loopback, caller's credential) | the response must carry a `caseId` |
+
+**A 200 is not the claim.** `Written` is reached only after the thing has been
+read back; a write Open Dental accepted but cannot show is `Failed`, with the
+reason. `Sending` is persisted BEFORE the call, so a process that dies mid-write
+leaves "we tried and do not know" rather than "ready to send".
+
+#### The note is read back from `GroupNotes`, and read BEFORE it is written
+
+A GroupNote does not put text on the procedures it spans — it creates a
+synthetic `~GRP~` procedure, and H0 names `GET /procedurelogs/GroupNotes?PatNum=`
+as that row's read surface. The first version asked `GET /procedurelogs?AptNum=`
+instead and looked for the text on the appointment's own procedures, which is
+wrong twice: the `~GRP~` row is not among them, and a procedurelog row carries no
+note text at all. So the comparison ran against an empty string every time, and
+on 2026-09-07 a note the POST had accepted came back `Failed`.
+
+The same surface is read **before** the write, and that read is load-bearing:
+
+- an identical note already on **the same ProcNums** ⇒ **do not POST**; report
+  the row that is already there. Notes are append-only in Open Dental, so
+  without this every press of Retry over a landed-but-unconfirmed note filed
+  another permanent copy;
+- the write is then confirmed by the row that **appeared** between the two reads
+  — not merely by a row that matches, which an older identical note would also
+  satisfy — and that row's ProcNum becomes the `written_ref`;
+- an unreadable pre-check **refuses** (`NOTE_PRECHECK_UNAVAILABLE`) rather than
+  falling through to the POST. A write that could not have been confirmed, and
+  whose retry could not have deduped, is exactly the one that duplicates.
+
+The text comparison is exact, with `\r\n` folded to `\n` on both sides and
+nothing else normalized. The `ProcNums` match is what separates today's note
+from an identical one written at another visit.
+
+#### What the surface actually returns — GET-verified, roland, 2026-09-08
+
+`backend/scripts/diag-hyg-groupnotes.js` (read-only) called it. H0 had marked
+this row **Docs**; it is verified now:
+
+```
+GET /procedurelogs/GroupNotes?PatNum=12828   200, 1 row
+  keys: Note, PatNum, ProcNum, ProcNums, ProvNum, isSigned
+  ProcNum=406901   ProcNums=[406880, 406881]   (an ARRAY)
+  Note="Done today: Prophy\r\nX-rays: BW-4, PA\r\n…"
+
+GET /procedurelogs?AptNum=110123             200, 2 rows
+  45 keys, and NEITHER `Note` NOR `ProcNote` among them.
+```
+
+Three things follow, and all three are in the code:
+
+1. **The note was on the chart all along.** The 9/07 send landed; only the
+   confirmation missed.
+2. **There is NO DATE on the row** — no `ProcDate`, no `AptNum`, no
+   `EntryDateTime`. The first version of this matched on text plus `ProcDate`,
+   a field this surface does not have, so the dedupe would never have fired and
+   every Retry would still have duplicated. It matches on `ProcNums`, which is
+   **stronger** than a date: a date says "some visit that day", while these
+   ProcNums are the procedures on ONE appointment.
+3. **Open Dental returns `\r\n`** where the app sent `\n`. The newline fold
+   is load-bearing, not defensive: without it nothing would ever match.
+
+The surface timed out at 30s on three of five attempts, against a credential
+voice and RCM were also using. A timeout is not an empty answer, and the
+diagnostic says so rather than concluding from one.
+
+### The preview IS the write
+
+The confirm request carries, per kind, the FINGERPRINT of the preview lines the
+hygienist read — `sha256(preview)`, truncated. The server recomputes it from its
+own row and refuses the **whole send** on any mismatch, before anything is
+written. A send that half-honours a stale preview is worse than one that does
+not start.
+
+That holds for the PDF too, because `services/hyg/slipPdf.js` is deterministic:
+the same lines produce byte-identical output, and it writes no timestamp, no
+`/Info` and no `/ID`. It is hand-rolled — about a hundred lines of a
+thirty-year-old file format — rather than a new dependency on the path that
+files documents into a chart.
+
+### DocCategory is resolved BY NAME, per office, every time
+
+`GET /definitions?Category=18`, matched on the name (default `Routers`,
+overridable per office with `HYG_SLIP_DOC_CATEGORY_<OFFICE>`). H0 found the same
+category name is DefNum 473 at one practice and 429 at the other, so a constant
+would file a document into whatever that number happens to mean elsewhere.
+DocCategory is ALWAYS sent: omitting it files into the first category, and a
+slip that lands where nobody looks is worse than a failed upload.
+
+### Partial success is the normal case
+
+A visit is never "sent" — its individual writes are. Each has its own state, its
+own reason when it failed, and its own `written_ref` when it landed (`Document
+4711 in Routers`, `GroupNote on 2 procedures (5001, 5002)`, `Case 8f3c…`). The
+route answers **200 with counts**, not a verdict, and the screen shows every row.
+A failed write offers a retry that re-sends the SAME words — a retry that
+re-composed would send something she never read.
+
+### The order, and why
+
+`note → router → tc-handoff`. The note is the record that the visit happened and
+the one whose absence is hardest to notice later. The handoff is last because it
+is the only one that creates work for another person: if the first two are
+failing, the treatment coordinator is better off not receiving a case about a
+visit whose chart note is missing.
+
+### What is still not here
+
+Perio. `POST /perioexams` and `/periomeasures` are not called and the writer
+does not know their names — a stray Probing row is PERMANENT in Open Dental
+(only Mobility and SkipTooth can be deleted). H4.

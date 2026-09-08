@@ -13,7 +13,8 @@
  *   admin    everything, including /api/admin
  *   office   everything except /api/admin
  *   tc       TC module + READ-ONLY voice
- *   hygiene  hygiene intake/submissions/inbox only
+ *   hygiene  hygiene intake/submissions/inbox, and the hyg module (day view,
+ *            routing slip) once the practice is entitled to it
  *   reviewer RCM review workbench: read it and WORK it, but commit nothing
  *            (added by RCM Slice 6a, decision D-9 — see the rcm block below).
  *            Named for what it DOES: it cannot perform the billing act.
@@ -57,6 +58,38 @@ const PERMISSIONS = Object.freeze({
   'tc.full': Object.freeze(['admin', 'office', 'tc']),
   /** The hygiene handoff surface only — intake, my submissions, inbox. */
   'tc.hygiene': Object.freeze(['admin', 'office', 'tc', 'hygiene']),
+
+  // --- hyg ------------------------------------------------------------------
+  /*
+   * THE HYGIENE MODULE (H1 slice 1). Read is the whole surface today.
+   *
+   * `hygiene` is the role this module was built for and the only role that
+   * gains anything new here. `admin` and `office` hold it for the same reason
+   * they hold everything else: somebody has to be able to look at a screen a
+   * hygienist says is wrong.
+   *
+   * `tc` deliberately does NOT hold it. A treatment coordinator receives the
+   * handoff — that is `tc.hygiene`, which already exists and already includes
+   * the hygiene role. Standing at a chair reading the day's schedule is the
+   * other side of that exchange, and giving one role both would make the two
+   * surfaces indistinguishable in the permission map.
+   */
+
+  /** Read the hygiene surface: the day view, a visit, the routing slip. */
+  'hyg.read': Object.freeze(['admin', 'office', 'hygiene']),
+  /**
+   * Any hygiene MUTATION. Nothing under /api/hyg needs it in slice 1 — the day
+   * view is read-only and there is not one non-GET route in the module.
+   *
+   * It exists ahead of its first use ON PURPOSE, and for the same reason
+   * `rcm.write` did through Slice 3: the mount is
+   * requireReadWrite('hyg.read', 'hyg.write'), applied by HTTP METHOD, so the
+   * first POST slice 2 adds demands the strong action BY CONSTRUCTION rather
+   * than by whoever adds it remembering to decorate it. Declaring it later,
+   * alongside the route that needs it, is how a mutation quietly lands on the
+   * read tier.
+   */
+  'hyg.write': Object.freeze(['admin', 'office', 'hygiene']),
 
   // --- rcm ------------------------------------------------------------------
   /*

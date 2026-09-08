@@ -38,6 +38,7 @@ const retentionConfig = require('../config/retention');
 const retentionScheduler = require('../services/retentionScheduler');
 const store = require('../services/unifiedCallStore');
 const { requireSuperAdmin } = require('../config/permissions');
+const { MODULE_NAMES } = require('../config/modules');
 
 const CAREIN = '11111111-1111-4111-8111-111111111111';
 const SMITH = '22222222-2222-4222-8222-222222222222';
@@ -84,10 +85,10 @@ beforeEach(async () => {
     { tenant_id: CAREIN, slug: 'carein', display_name: 'CareIN Dental', status: 'active', created_at: new Date('2026-01-05T00:00:00Z'), user_count: 13 },
     { tenant_id: SMITH, slug: 'smith', display_name: 'Smith Dental', status: 'active', created_at: new Date('2026-06-01T00:00:00Z'), user_count: 4 },
   ];
-  // Note SMITH has no 'rcm' or 'scheduling' ROW at all — the composed response
-  // must still show all four modules, with the absent ones off.
+  // Note SMITH has a 'voice' row and NOTHING else — the composed response must
+  // still show every module in the catalog, with the absent ones off.
   modules = {
-    [CAREIN]: [{ module: 'voice', enabled: true }, { module: 'tc', enabled: true }, { module: 'rcm', enabled: false }, { module: 'scheduling', enabled: false }],
+    [CAREIN]: MODULE_NAMES.map((m) => ({ module: m, enabled: m === 'voice' || m === 'tc' })),
     [SMITH]: [{ module: 'voice', enabled: true }],
   };
   users = {
@@ -244,7 +245,7 @@ test('a refused toggle changes nothing', async () => {
 
 // --- 2. practices -----------------------------------------------------------
 
-test('the practice list composes all four modules, including the ones with no row', async () => {
+test('the practice list composes EVERY catalog module, including the ones with no row', async () => {
   asSuperAdmin();
 
   const body = await (await get('/api/platform/practices')).json();
@@ -255,10 +256,18 @@ test('the practice list composes all four modules, including the ones with no ro
   const smith = body.practices.find((p) => p.slug === 'smith');
   assert.equal(smith.displayName, 'Smith Dental');
   assert.equal(smith.userCount, 4);
-  assert.equal(smith.modules.length, 4, 'a missing tenant_module row is OFF, not a missing toggle');
+  // Derived from the catalog rather than restated, so adding a module (hyg was
+  // the first) is a one-line catalog edit and not a test to go and fix. The
+  // claim is the same either way: a missing tenant_module row is a toggle that
+  // reads OFF, never a toggle that is absent from the console.
+  assert.equal(
+    smith.modules.length,
+    MODULE_NAMES.length,
+    'a missing tenant_module row is OFF, not a missing toggle'
+  );
   assert.deepEqual(
     smith.modules.map((m) => [m.module, m.enabled]),
-    [['voice', true], ['tc', false], ['rcm', false], ['scheduling', false]]
+    MODULE_NAMES.map((m) => [m, m === 'voice'])
   );
 });
 
@@ -310,7 +319,10 @@ test("a flip is filed in the AFFECTED practice's log, not the operator's", async
 test('an unknown module is refused before it can reach the CHECK constraint', async () => {
   asSuperAdmin();
 
-  const res = await send('PUT', `/api/platform/practices/${CAREIN}/modules/hyg`, { enabled: true });
+  // 'hyg' stood here until it became a real module (migration 1788100000000).
+  // 'perio' is the next name nobody has registered — the point of the test is
+  // that an UNREGISTERED name is refused by the route, not by the database.
+  const res = await send('PUT', `/api/platform/practices/${CAREIN}/modules/perio`, { enabled: true });
   const body = await res.json();
 
   assert.equal(res.status, 400);
