@@ -16,8 +16,29 @@
  *
  * `docs/HYG_SPIKE_H0_OD_COVERAGE.md` says a GroupNote creates a synthetic
  * `~GRP~` procedure and names `GET /procedurelogs/GroupNotes?PatNum=` as its
- * read surface — but it marks that row **Docs**, not GET-verified. The spike
+ * read surface — but it marked that row **Docs**, not GET-verified. The spike
  * never called it. This script calls it.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT IT FOUND — roland, PatNum 12828, AptNum 110123, 2026-09-08
+ * ═════════════════════════════════════════════════════════════════════════════
+ *   GET /procedurelogs/GroupNotes?PatNum=12828   200, 1 row
+ *     keys: Note, PatNum, ProcNum, ProcNums, ProvNum, isSigned
+ *     ProcNum=406901  ProcNums=[406880, 406881] (an ARRAY)
+ *     Note="Done today: Prophy" + CRLF + "X-rays: BW-4, PA" + CRLF + "…"
+ *
+ *   GET /procedurelogs?AptNum=110123             200, 2 rows
+ *     45 keys, and NEITHER `Note` NOR `ProcNote` among them.
+ *
+ * So: the note was on the chart all along; the read-back was asking a surface
+ * that structurally cannot carry note text. And the GroupNotes row has **no
+ * date of any kind** — no ProcDate, no AptNum, no EntryDateTime — so it is
+ * `ProcNums` that identifies a note, which is a stronger discriminator than a
+ * date would have been. See services/hyg/odWriter.js.
+ *
+ * Worth knowing if you run this: the surface timed out at 30s on three of five
+ * attempts against a credential voice and RCM were also using. A timeout is not
+ * an empty answer, and the script now says so rather than concluding from one.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHAT TO LOOK FOR IN THE OUTPUT
@@ -123,6 +144,11 @@ function printNoteRows(rows) {
       `ProcDate=${row.ProcDate ?? '—'}`,
       `AptNum=${row.AptNum ?? '—'}`,
       `ProcCode=${row.procCode ?? row.ProcCode ?? row.CodeSent ?? '—'}`,
+      // The procedures a ~GRP~ row spans. Printed with its TYPE because the
+      // whole 2026-09-05 "Invalid JSON" turned on array-vs-string, and because
+      // this is the field the retry guard has to match on when there is no date.
+      `ProcNums=${JSON.stringify(row.ProcNums) ?? '—'} (${Array.isArray(row.ProcNums) ? 'array' : typeof row.ProcNums})`,
+      `EntryDateTime=${row.EntryDateTime ?? '—'}`,
     ];
     console.log(`   · ${parts.join('  ')}`);
     console.log(`     Note=${preview(row.Note)}`);
@@ -172,12 +198,21 @@ async function main() {
     const anyText = aptRows.some(
       (row) => typeof (row && (row.Note ?? row.ProcNote)) === 'string' && (row.Note ?? row.ProcNote)
     );
+    // A FAILED READ IS NOT EVIDENCE OF AN EMPTY ONE. The first version of this
+    // printed "no note text on these rows at all" after a timeout, because an
+    // unanswered read and an answered one with no note text both arrive here as
+    // an empty array. A diagnostic that states a finding it did not observe is
+    // worse than one that says nothing — it is the same class of mistake as the
+    // read-back it exists to investigate.
     console.log(
-      anyText
-        ? '\n   ⚠️ These rows DO carry note text — the old read-back could have worked, so the ' +
-            'miss has another cause. Say so in the report rather than assuming.'
-        : '\n   → No note text on these rows at all, which is the claim: the old read-back was ' +
-            'comparing against an empty string every time.'
+      aptRows.length === 0
+        ? '\n   ? This read returned nothing — see the line above for whether that was a ' +
+            'refusal or an empty answer. No conclusion is available from it either way.'
+        : anyText
+          ? '\n   ⚠️ These rows DO carry note text — the old read-back could have worked, so the ' +
+              'miss has another cause. Say so in the report rather than assuming.'
+          : '\n   → No note text on these rows at all, which is the claim: the old read-back was ' +
+              'comparing against an empty string every time.'
     );
   }
 

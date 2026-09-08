@@ -697,10 +697,10 @@ on 2026-09-07 a note the POST had accepted came back `Failed`.
 
 The same surface is read **before** the write, and that read is load-bearing:
 
-- an identical note already on the visit's date ⇒ **do not POST**; report the row
-  that is already there. Notes are append-only in Open Dental, so without this
-  every press of Retry over a landed-but-unconfirmed note filed another
-  permanent copy;
+- an identical note already on **the same ProcNums** ⇒ **do not POST**; report
+  the row that is already there. Notes are append-only in Open Dental, so
+  without this every press of Retry over a landed-but-unconfirmed note filed
+  another permanent copy;
 - the write is then confirmed by the row that **appeared** between the two reads
   — not merely by a row that matches, which an older identical note would also
   satisfy — and that row's ProcNum becomes the `written_ref`;
@@ -709,11 +709,40 @@ The same surface is read **before** the write, and that read is load-bearing:
   whose retry could not have deduped, is exactly the one that duplicates.
 
 The text comparison is exact, with `\r\n` folded to `\n` on both sides and
-nothing else normalized. The date match is what separates today's note from an
-identical one written at another visit.
+nothing else normalized. The `ProcNums` match is what separates today's note
+from an identical one written at another visit.
 
-`backend/scripts/diag-hyg-groupnotes.js` is the read-only script that prints what
-the surface actually returns; H0 marks it **Docs**, not GET-verified.
+#### What the surface actually returns — GET-verified, roland, 2026-09-08
+
+`backend/scripts/diag-hyg-groupnotes.js` (read-only) called it. H0 had marked
+this row **Docs**; it is verified now:
+
+```
+GET /procedurelogs/GroupNotes?PatNum=12828   200, 1 row
+  keys: Note, PatNum, ProcNum, ProcNums, ProvNum, isSigned
+  ProcNum=406901   ProcNums=[406880, 406881]   (an ARRAY)
+  Note="Done today: Prophy\r\nX-rays: BW-4, PA\r\n…"
+
+GET /procedurelogs?AptNum=110123             200, 2 rows
+  45 keys, and NEITHER `Note` NOR `ProcNote` among them.
+```
+
+Three things follow, and all three are in the code:
+
+1. **The note was on the chart all along.** The 9/07 send landed; only the
+   confirmation missed.
+2. **There is NO DATE on the row** — no `ProcDate`, no `AptNum`, no
+   `EntryDateTime`. The first version of this matched on text plus `ProcDate`,
+   a field this surface does not have, so the dedupe would never have fired and
+   every Retry would still have duplicated. It matches on `ProcNums`, which is
+   **stronger** than a date: a date says "some visit that day", while these
+   ProcNums are the procedures on ONE appointment.
+3. **Open Dental returns `\r\n`** where the app sent `\n`. The newline fold
+   is load-bearing, not defensive: without it nothing would ever match.
+
+The surface timed out at 30s on three of five attempts, against a credential
+voice and RCM were also using. A timeout is not an empty answer, and the
+diagnostic says so rather than concluding from one.
 
 ### The preview IS the write
 

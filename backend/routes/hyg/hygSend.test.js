@@ -88,17 +88,32 @@ function od({ procedures = [{ ProcNum: 5001 }, { ProcNum: 5002 }], writes = {}, 
  * The GroupNote write, succeeding — as Open Dental behaves: a NEW `~GRP~` row
  * appears on the GroupNotes surface, with a ProcNum the database minted.
  *
+ * THE ROW SHAPE IS THE ONE THE LIVE API RETURNED (roland, 2026-09-08, via
+ * scripts/diag-hyg-groupnotes.js): `Note, PatNum, ProcNum, ProcNums, ProvNum,
+ * isSigned`, with ProcNums an ARRAY — and **no date field of any kind**. The
+ * first version of this fake invented a `ProcDate`, which is how the matcher
+ * came to be written against a field the surface does not have.
+ *
+ * Open Dental also returns `\r\n` in the note, and this echoes that: the app
+ * sends `\n`, so a fake that echoed `\n` back would hide the one normalization
+ * the retry guard cannot work without.
+ *
  * @param {import('./hygTestUtils').FakeOd} client
- * @param {{ procDate?: string }} [opts] `procDate` defaults to the visit date;
- *   pass another to model a row the dedupe must NOT treat as today's note.
  */
-function groupNoteThatLands(client, { procDate = DATE } = {}) {
+function groupNoteThatLands(client) {
   let nextProcNum = 60001;
   return (body) => {
     const procNum = nextProcNum++;
     client.routes['/procedurelogs/GroupNotes'] = [
       ...client.routes['/procedurelogs/GroupNotes'],
-      { ProcNum: procNum, ProcDate: procDate, Note: body.Note, procCode: '~GRP~' },
+      {
+        ProcNum: procNum,
+        PatNum: body.PatNum,
+        ProcNums: body.ProcNums,
+        ProvNum: body.ProvNum,
+        isSigned: false,
+        Note: String(body.Note).replace(/\n/g, '\r\n'),
+      },
     ];
     return { ok: true, status: 200, data: { ProcNum: procNum } };
   };
@@ -237,7 +252,13 @@ test('RETRY DOES NOT WRITE TWICE: the 9/07 row repairs itself instead of duplica
   let landed = null;
   client.writeRoutes = {
     '/procedurelogs/GroupNote': (body) => {
-      landed = { ProcNum: 60001, ProcDate: DATE, Note: body.Note, procCode: '~GRP~' };
+      landed = {
+        ProcNum: 60001,
+        PatNum: body.PatNum,
+        ProcNums: body.ProcNums,
+        // CRLF, as the live surface returns it.
+        Note: String(body.Note).replace(/\n/g, '\r\n'),
+      };
       client.routes['/procedurelogs/GroupNotes'] = {
         ok: false,
         status: 503,
@@ -285,19 +306,20 @@ test('RETRY DOES NOT WRITE TWICE: the 9/07 row repairs itself instead of duplica
   }
 });
 
-test('an identical note from ANOTHER DAY does not false-confirm today\'s', async () => {
+test('an identical note on ANOTHER APPOINTMENT does not false-confirm this one', async () => {
   // Two prophy visits can compose byte-identical notes. "This text appears
   // somewhere in the patient's history" is not evidence that today's note was
-  // filed, so the date has to match before the writer declines to write.
+  // filed — so the ProcNums have to match too, and they are what pins a note to
+  // ONE appointment. (The surface carries no date; see odWriter.js.)
   const client = od();
   client.writeRoutes = { '/procedurelogs/GroupNote': groupNoteThatLands(client) };
   const app = await bootHygApp({ od: client });
   try {
     const staged = await stagedVisit(app, ['note']);
     const noteText = app.db.hyg_staged_write[0].payload.text;
-    // The same note, on the chart, dated three months ago.
+    // The same note, on the chart, over a DIFFERENT visit's procedures.
     client.routes['/procedurelogs/GroupNotes'] = [
-      { ProcNum: 41200, ProcDate: '2026-06-08', Note: noteText, procCode: '~GRP~' },
+      { ProcNum: 41200, ProcNums: [41198, 41199], Note: noteText },
     ];
 
     const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
@@ -326,9 +348,8 @@ test('a LONGER note containing this one does not confirm it', async () => {
     client.routes['/procedurelogs/GroupNotes'] = [
       {
         ProcNum: 41201,
-        ProcDate: DATE,
+        ProcNums: [5001, 5002],
         Note: noteText + '\nAddendum: patient rescheduled.',
-        procCode: '~GRP~',
       },
     ];
 
@@ -345,10 +366,12 @@ test('a LONGER note containing this one does not confirm it', async () => {
 });
 
 test('the same note in CRLF is the same note', async () => {
-  // The app sends `\n`; Open Dental's docs prefer `\r\n` in note fields, so a
-  // round trip may come back in the other convention. That is the same note
-  // written the same way — and if it did not match, every retry would file
-  // another copy forever.
+  // NOT A HYPOTHETICAL, and not a docs claim. The LIVE surface returned
+  // `"Done today: Prophy\r\nX-rays: BW-4, PA\r\n…"` for a note this app
+  // sent with \n (roland, 2026-09-08, scripts/diag-hyg-groupnotes.js). Without
+  // folding one convention to the other, NOTHING would ever match — the
+  // dedupe would never fire and every retry would file another permanent
+  // copy.
   const client = od();
   client.writeRoutes = { '/procedurelogs/GroupNote': { ok: true, status: 200, data: {} } };
   const app = await bootHygApp({ od: client });
@@ -356,7 +379,7 @@ test('the same note in CRLF is the same note', async () => {
     const staged = await stagedVisit(app, ['note']);
     const noteText = app.db.hyg_staged_write[0].payload.text;
     client.routes['/procedurelogs/GroupNotes'] = [
-      { ProcNum: 41202, ProcDate: DATE, Note: noteText.replace(/\n/g, '\r\n'), procCode: '~GRP~' },
+      { ProcNum: 41202, ProcNums: [5001, 5002], Note: noteText.replace(/\n/g, '\r\n') },
     ];
 
     const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {

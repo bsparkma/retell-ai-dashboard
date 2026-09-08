@@ -166,9 +166,32 @@ async function readAppointmentProcedures(odGet, aptNum) {
  * could never have confirmed anything. On 2026-09-07 it duly reported
  * NOTE_UNCONFIRMED for a note the POST had accepted with a 200.
  *
- * ⚠️ The coverage table marks this surface **Docs**, not GET-verified — the
- * spike never called it. `backend/scripts/diag-hyg-groupnotes.js` is the
- * read-only script that settles its shape; see the slice report.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT THE SURFACE ACTUALLY RETURNS — GET-VERIFIED, roland, 2026-09-08
+ * ═════════════════════════════════════════════════════════════════════════════
+ * H0 marked this row **Docs**; `backend/scripts/diag-hyg-groupnotes.js` called
+ * it. `GET /procedurelogs/GroupNotes?PatNum=12828` answered 200 with one row:
+ *
+ *   keys: Note, PatNum, ProcNum, ProcNums, ProvNum, isSigned
+ *   ProcNum=406901  ProcNums=[406880, 406881]  (an ARRAY)
+ *   Note="Done today: Prophy\r\nX-rays: BW-4, PA\r\n…"
+ *
+ * Three things that decide how the matching below works:
+ *
+ * 1. **The text is under `Note`.**
+ * 2. **THERE IS NO DATE. No ProcDate, no AptNum, no EntryDateTime.** The first
+ *    version of this matched a prior note on text plus `ProcDate`, which is a
+ *    field this surface does not have — so the dedupe would never have fired
+ *    and every Retry would still have written a second permanent copy. That is
+ *    the SAME mistake as the bug this file is fixing: matching on a field that
+ *    was never there. It is `ProcNums` that identifies the note now.
+ * 3. **Open Dental returns `\r\n`.** The app sends `\n`. Folding one to the
+ *    other in `sameNoteText` is load-bearing, not defensive: without it nothing
+ *    would ever match and every retry would duplicate.
+ *
+ * And the other half, from the same run: `GET /procedurelogs?AptNum=110123`
+ * returned two rows whose 45 keys contain neither `Note` nor `ProcNote`. The
+ * old read-back was comparing against `undefined` every single time.
  */
 const GROUP_NOTES_PATH = '/procedurelogs/GroupNotes';
 
@@ -213,16 +236,35 @@ function sameNoteText(a, b) {
 }
 
 /**
- * The row's procedure date as `YYYY-MM-DD`, or null when it carries none.
+ * The procedures a `~GRP~` row spans, ascending, or null when it names none.
  *
- * @param {any} row @returns {string | null}
+ * THIS IS WHAT IDENTIFIES A NOTE, because the surface carries no date (see the
+ * block above). It is a BETTER discriminator than a date would have been: a
+ * date says "some visit that day", while these ProcNums are the procedures on
+ * ONE appointment. Two prophy visits that compose byte-identical notes are two
+ * different appointments with two different sets of procedurelog rows.
+ *
+ * @param {any} row @returns {number[] | null}
  */
-function groupNoteDate(row) {
-  if (!row || typeof row !== 'object') return null;
-  const raw = row.ProcDate ?? row.procDate;
-  if (typeof raw !== 'string') return null;
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(raw.trim());
-  return m ? m[1] : null;
+function groupNoteProcNums(row) {
+  if (!row || typeof row !== 'object' || !Array.isArray(row.ProcNums)) return null;
+  const nums = row.ProcNums.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
+  return nums.length > 0 ? nums.sort((a, b) => a - b) : null;
+}
+
+/**
+ * The same procedures, exactly — not merely overlapping.
+ *
+ * Exact, because if the appointment's procedures changed between a failed send
+ * and a retry then the note is about a different set of work and SHOULD be
+ * written. An overlap rule would suppress it.
+ *
+ * @param {number[] | null} a @param {number[]} b @returns {boolean}
+ */
+function sameProcNums(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const wanted = [...b].sort((x, y) => x - y);
+  return a.every((n, i) => n === wanted[i]);
 }
 
 /**
@@ -335,13 +377,11 @@ function matchingGroupNotes(rows, note) {
  * causes on staging, and it has not been run — see the slice report.
  *
  * @param {number} patNum REQUIRED by Open Dental. Never optional here.
- * @param {string | null} visitDate `YYYY-MM-DD`; the date a prior identical
- *   note must share before this declines to write a second one.
  * @returns {Promise<{ ok: true, procNums: number[], groupProcNum: number | null,
  *            alreadyPresent: boolean }
  *          | { ok: false, code: string, error: string }>}
  */
-async function writeGroupNote(od, odGet, { patNum, procNums, note, provNum, visitDate }) {
+async function writeGroupNote(od, odGet, { patNum, procNums, note, provNum }) {
   // ── 1. WHAT IS ALREADY THERE ───────────────────────────────────────────────
   const before = await readGroupNotes(odGet, patNum);
   if (!before.ok) {
@@ -357,14 +397,12 @@ async function writeGroupNote(od, odGet, { patNum, procNums, note, provNum, visi
   const priorMatches = matchingGroupNotes(before.rows, note);
 
   // ── 2. ALREADY ON THE CHART ────────────────────────────────────────────────
-  // The date is required for this branch, not optional: two prophy visits can
-  // compose the SAME note text, and "identical text somewhere in this patient's
-  // history" is not evidence that today's note was filed. When the surface
-  // carries no date, this simply does not fire and the write proceeds — the
-  // status quo, and never a Written that isn't true.
-  const already = visitDate
-    ? priorMatches.find((row) => groupNoteDate(row) === visitDate)
-    : undefined;
+  // TEXT **AND** ProcNums. Text alone is not evidence: two prophy visits can
+  // compose byte-identical notes, and "this text appears somewhere in this
+  // patient's history" would mark today's note Written over last month's. The
+  // ProcNums pin it to one appointment, which is what makes this a retry guard
+  // rather than a guess.
+  const already = priorMatches.find((row) => sameProcNums(groupNoteProcNums(row), procNums));
   if (already) {
     return {
       ok: true,
@@ -506,8 +544,9 @@ module.exports = {
   readGroupNotes,
   matchingGroupNotes,
   sameNoteText,
+  sameProcNums,
   groupNoteText,
-  groupNoteDate,
+  groupNoteProcNums,
   groupNoteProcNum,
   writeGroupNote,
   uploadDocument,
