@@ -266,15 +266,24 @@ test('a group note is recognised across the two field names, and across CRLF', (
   assert.equal(odWriter.sameNoteText(note, null), false);
 });
 
-test('the row date is read as a calendar date, or not at all', () => {
-  // The date is what lets a retry tell today's note from an identical one
-  // written at another visit. A row that carries none must read as null rather
-  // than as something that might accidentally compare equal.
-  assert.equal(odWriter.groupNoteDate({ ProcDate: '2026-09-08' }), '2026-09-08');
-  assert.equal(odWriter.groupNoteDate({ ProcDate: '2026-09-08 00:00:00' }), '2026-09-08');
-  assert.equal(odWriter.groupNoteDate({}), null);
-  assert.equal(odWriter.groupNoteDate({ ProcDate: '' }), null);
-  assert.equal(odWriter.groupNoteDate({ ProcDate: 20260908 }), null, 'a number is not a date here');
+test('a note is identified by the PROCEDURES it spans — there is no date here', () => {
+  // GET-VERIFIED, roland, 2026-09-08: the row's keys are
+  // `Note, PatNum, ProcNum, ProcNums, ProvNum, isSigned`. No ProcDate, no
+  // AptNum, no EntryDateTime. Matching on a date would be matching on a field
+  // that does not exist — the same mistake as the read-back this slice fixes.
+  const row = { ProcNum: 406901, ProcNums: [406881, 406880], Note: 'x' };
+  assert.deepEqual(odWriter.groupNoteProcNums(row), [406880, 406881], 'sorted');
+  assert.equal(odWriter.groupNoteProcNums({ ProcNums: [] }), null);
+  assert.equal(odWriter.groupNoteProcNums({ ProcNums: '406880,406881' }), null, 'not a string');
+  assert.equal(odWriter.groupNoteProcNums({}), null);
+
+  // EXACT, not overlapping. If the appointment's procedures changed between a
+  // failed send and a retry, the note is about different work and SHOULD be
+  // written — an overlap rule would suppress it.
+  assert.equal(odWriter.sameProcNums([406880, 406881], [406881, 406880]), true, 'order-free');
+  assert.equal(odWriter.sameProcNums([406880, 406881], [406880]), false);
+  assert.equal(odWriter.sameProcNums([406880], [406880, 406881]), false);
+  assert.equal(odWriter.sameProcNums(null, [406880]), false);
 
   // The ~GRP~ row's own ProcNum is the identifier Open Dental minted.
   assert.equal(odWriter.groupNoteProcNum({ ProcNum: 60001 }), 60001);

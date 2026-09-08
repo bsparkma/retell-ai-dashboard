@@ -211,9 +211,6 @@ async function sendNote(payload, ctx) {
     procNums: procedures.procNums,
     note: payload.text,
     provNum: ctx.appointment.provHyg ?? ctx.appointment.provNum ?? null,
-    // What an already-present note must SHARE before the writer declines to
-    // file a second copy of it. Same date the visit itself is keyed by.
-    visitDate: ctx.visit.visitDate || ctx.date,
   });
   if (!written.ok) return written;
   return { ok: true, writtenRef: groupNoteRef(written) };
