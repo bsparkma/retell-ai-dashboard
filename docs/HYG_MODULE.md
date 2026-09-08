@@ -51,18 +51,44 @@ One office's whole schedule for one day.
 ```
 { success: true, office, officeName, date,
   operatories: [{ opNum, name, abbrev, isHygiene, itemOrder }],
-  appointments: [{ aptNum, patNum, patientName, start, lengthMin,
+  appointments: [{ aptNum, patNum, identity, patientName, start, lengthMin,
                    opNum, opName, isHygiene, opIsHygiene,
                    provNum, provHyg, providerName,
                    apptTypeLabel, confirmedStatus, aptStatus, isNewPatient,
                    flags: { premed, medicalAlerts, allergies, lastPerioDate,
                             xraysDue, examNeeded, openTcCase } }],
-  warnings: [{ resource, message }],
+  warnings: [{ resource, message, detail }],
   flagSources: { <flag>: 'od' | 'not_read' },
-  excludedByStatus, truncated, patientNamesTruncated,
+  excludedByStatus, scope, excludedByScope,
+  truncated, patientNamesTruncated, identitiesPending,
   stats: { odListReads, odPatientReads, patientsRequested,
-           patientCacheHits, patientCacheDeduped, durationMs } }
+           patientCacheHits, patientCacheDeduped, durationMs, phaseMs } }
 ```
+
+`identity` is `resolved | pending | unavailable | no_patient` — see §7. A
+`pending` card has no name yet and `GET /api/hyg/day/identities` is what fills
+it in.
+
+`warnings[].detail` is Open Dental's own status or timeout under the sentence a
+hygienist reads. Both, because one of them tells her what to do and the other
+tells whoever she calls what to look at.
+
+`stats.phaseMs` is wall clock per phase — `appointments`, `operatories`,
+`labels`, `identities`. A total says the day was slow; these say which read was.
+
+### `GET /api/hyg/day/identities?office=&date=&scope=`
+
+The next batch of names for a day that has already painted.
+
+```
+{ success: true, office, date, scope,
+  patients: [{ patNum, patientName, premed, medicalAlerts }],
+  unavailable: [patNum],   // Open Dental refused these. Waiting will not help.
+  pending,                 // still unnamed. Ask again while this is FALLING.
+  stats }
+```
+
+**It takes no PatNums.** See §7.
 
 `stats` is what the read COST — counts and milliseconds, never a PatNum and
 never a name. It is in the body rather than only in the log so a before/after
@@ -205,6 +231,8 @@ No secrets. Three tunables, all with working defaults:
 
 | `OD_PATIENT_CACHE_TTL_MS` | `300000` (5 min) | How long a patient record is served without re-reading Open Dental. **A clinical bound, not a performance knob** — see §7. `0` turns the cache off. |
 | `OD_PATIENT_CACHE_MAX_ENTRIES` | `2000` | Ceiling on cached records across every office. Past it, least-recently-used entries are evicted. `0` retains nothing. |
+| `OD_CONFIG_CACHE_TTL_MS` | `3600000` (1 hour) | How long `/appointmenttypes`, `/providers` and `/operatories` are served without re-reading. **Practice configuration only** — the resource list is closed, so `/patients` cannot be put behind it. `0` turns it off. |
+| `HYG_DAY_IDENTITY_BATCH` | `8` | How many patients one fill request may fetch. ~9s of wall clock per batch (eight patients plus the schedule read). Not a throughput lever — the credential is the throughput, and it is shared. |
 | `HYG_WARM_SCHEDULE` | `45 7 * * *` | Cron for the morning warm, read in `OFFICE_TIMEZONE`. An unparseable value falls back to the default with a warning. |
 | `HYG_WARM_DISABLED` | unset | `'true'` arms no warm at all. The SECOND gate — the first is `hygOdEnabled`, which ships false everywhere. |
 
@@ -275,15 +303,78 @@ Measured on the shipped code paths with that spacing applied
 
 | | OD requests | wall clock |
 | --- | --- | --- |
-| Cold, no cache — what shipped in slice 1 | 44 (4 list + 40 patient) | **43.0s** |
-| Second load of the same day | 4 (4 list + 0 patient) | **3.0s** |
+| Cold, all-at-once — what shipped in slice 1 | 44 (4 list + 40 patient) | **43.0s** |
+| **Cold — the schedule paints** | **4 (4 list + 0 patient)** | **3.0s** |
+| …then the names, in five batches, while she reads it | 45 | 45.0s |
+| Second load of the same day | 1 (1 list + 0 patient) | **0.0s** |
 | First load after the 7:45 warm | 4 (4 list + 0 patient) | **3.0s** |
 
 The warm itself is 40 reads in 39s, at 7:45am against an idle credential with
-nobody waiting on it. The 3.0s that remains is the four LIST reads —
-appointments, operatories, appointment types, providers — which this slice does
-not cache. They are the next thing worth looking at, and two of them
-(appointment types, providers) are practice configuration that changes monthly.
+nobody waiting on it.
+
+**43.0s → 3.0s is the headline, and it is not a saving.** The identity fan-out
+still costs one request per patient; it no longer holds the schedule up. Row 3
+is that cost, paid after the page is usable — and it is five requests LARGER
+than row 1, because each batch re-reads the schedule (see "The fill takes no
+PatNums" below).
+
+The second load falls to ONE list read because the three config lists —
+appointment types, providers, operatories — are cached for an hour per office in
+`backend/services/odConfigCache.js`. Only `/appointments` is re-read, and it has
+to be: a schedule an hour old is a schedule somebody added a patient to.
+
+### Progressive fill
+
+`GET /api/hyg/day` resolves identities from the patient cache and **issues no
+patient requests at all**. Everything it could not name comes back
+`identity: "pending"`, and `identitiesPending` says how many. The client then
+calls `GET /api/hyg/day/identities` in a loop, merging each batch onto the cards
+already on screen.
+
+`identity` is a four-state answer to "why does this card have no name", because
+one null cannot carry four different facts:
+
+| | means | changes on its own |
+| --- | --- | --- |
+| `resolved` | the record was read. `patientName` may still be null — Open Dental held neither half — and that is an ANSWER | no |
+| `pending` | not asked yet | **yes** |
+| `unavailable` | asked; Open Dental would not answer. Waiting will not help | no |
+| `no_patient` | the appointment carries no PatNum — a blockout, or an unattached row | no |
+
+**The loop stops.** It runs while `pending` is FALLING and stops the moment a
+batch does not move it, and when it stops the page settles every remaining
+`pending` card to `unavailable`. A shimmer with no request behind it claims
+something untrue, which is the same failure as an empty day wearing a different
+hat.
+
+**A failed fill does not discard the schedule.** It gets its own banner, its own
+retry, and Open Dental's own status line — refetching the day to recover the
+names would throw away a schedule that loaded perfectly well.
+
+### ⚠️ The fill takes no PatNums
+
+`GET /day/identities` derives the set of patients from that day's own schedule,
+server-side. A route that accepted a list of PatNums would be a
+name-and-medical-alert lookup for **any** patient number in the practice,
+walkable one integer at a time — a far larger disclosure surface than "who is
+booked today".
+
+That costs one extra `/appointments` read per batch, which is the whole of the
+45-vs-44 difference in the table. It also buys freshness: a patient added to the
+day mid-fill is picked up rather than missed until a refresh.
+
+The `scope` is validated on the fill exactly as on the day, and for the same
+reason — a fill under a wider lens would name patients the day never served.
+
+### Audit follows the DISCLOSURE, not the request
+
+`GET /day` writes one `hyg_day_patient` row per appointment whose identity it
+actually carries. A `pending` card carries a PatNum, a time and a chair and **no
+name and no flags**: nothing about that person has been disclosed, so it gets no
+row. The fill writes the row at the moment it sends the name.
+
+This is the same rule the cache follows from the other direction — a cache HIT
+still discloses, so it still audits — and it is just as easy to get backwards.
 
 ### Concurrency is not the lever
 

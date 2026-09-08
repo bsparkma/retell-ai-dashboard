@@ -32,6 +32,7 @@
  */
 
 const odDay = require('../services/hyg/odDay');
+const odConfigCache = require('../services/odConfigCache');
 const odPatientCache = require('../services/odPatientCache');
 
 function arg(name, fallback) {
@@ -122,21 +123,58 @@ async function main() {
       `${SPACING_MS}ms per request (Open Dental's documented 1 req/s per credential)\n`
   );
 
-  // ── 1. COLD. What ships on develop today. ─────────────────────────────────
-  odPatientCache.resetOdPatientCache();
+  const cold = () => {
+    odPatientCache.resetOdPatientCache();
+    odConfigCache.resetOdConfigCache();
+  };
+
+  // ── 1. COLD, THE OLD WAY. Everything before anything is on screen. ────────
+  cold();
   let t = makeOdGet();
   let startedAt = Date.now();
   let day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE });
-  line('BEFORE  cold, no cache', day.stats, Date.now() - startedAt);
+  line('BEFORE  cold, all-at-once', day.stats, Date.now() - startedAt);
 
-  // ── 2. The same day again, seconds later. A refresh, a back navigation. ───
+  // ── 2. COLD, PROGRESSIVE. What the screen now waits for. ─────────────────
+  //
+  // THE HEADLINE. The schedule is a fixed four list reads whatever the day
+  // looks like; the names cost one request each and no longer hold it up.
+  cold();
   t = makeOdGet();
   startedAt = Date.now();
-  day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE });
+  day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE, identities: 'cached' });
+  const paintedMs = Date.now() - startedAt;
+  line('AFTER   cold, SCHEDULE PAINTS', day.stats, paintedMs);
+
+  // ...and then the fill, in batches, while she is already reading it.
+  let batches = 0;
+  let pending = day.identitiesPending;
+  let fillRequests = 0;
+  startedAt = Date.now();
+  while (pending > 0) {
+    const fill = await odDay.readDayIdentities(t.odGet, { date: DATE, office: OFFICE });
+    batches += 1;
+    fillRequests += fill.stats.odListReads + fill.stats.odPatientReads;
+    if (fill.pending >= pending) break;
+    pending = fill.pending;
+  }
+  const filledMs = Date.now() - startedAt;
+  console.log(
+    '        '.padEnd(34) +
+      String(fillRequests).padStart(4) + ' OD requests  ' +
+      ('(' + batches + ' fill batches)').padEnd(26) +
+      '            ' +
+      (filledMs / 1000).toFixed(1).padStart(6) + 's  ← names, after the paint'
+  );
+
+  // ── 3. The same day again, seconds later. A refresh, a back navigation. ───
+  t = makeOdGet();
+  startedAt = Date.now();
+  day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE, identities: 'cached' });
   line('AFTER   second load, warm cache', day.stats, Date.now() - startedAt);
 
-  // ── 3. The 8am first load, after the 7:45 warm. The one that matters. ─────
-  odPatientCache.resetOdPatientCache();
+  // ── 4. The 8am first load, after the 7:45 warm. The one that matters. ─────
+  cold();
   t = makeOdGet();
   startedAt = Date.now();
   // The warm's fan-out, through the same function the Day View uses.
@@ -145,12 +183,16 @@ async function main() {
 
   t = makeOdGet();
   startedAt = Date.now();
-  day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE });
+  day = await odDay.readDay(t.odGet, { date: DATE, office: OFFICE, identities: 'cached' });
   line('AFTER   first load, pre-warmed', day.stats, Date.now() - startedAt);
 
   console.log(
     `\n        the warm itself: ${PAT_NUMS.length} patient reads in ${(warmMs / 1000).toFixed(1)}s, ` +
-      'at 7:45am against an idle credential, with nobody waiting.\n'
+      'at 7:45am against an idle credential, with nobody waiting.'
+  );
+  console.log(
+    '        the config lists (types, providers, chairs) are cached for an hour per\n' +
+      '        office, so every load after the first spends ONE list read, not four.\n'
   );
 }
 

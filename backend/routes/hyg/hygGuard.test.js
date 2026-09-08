@@ -232,14 +232,26 @@ test('a genuinely empty day is a 200 with an empty list and no warnings', async 
 test('one audit row per PATIENT disclosed, plus one for the request', async () => {
   const app = await bootHygApp({ od: odWithADay() });
   try {
+    // THE SCHEDULE DISCLOSES NOBODY. Cards with a time, a chair and no name
+    // say nothing about a person, so the day writes its request row and no
+    // patient rows at all — a trail must not claim a disclosure that did not
+    // happen, in either direction.
     await api(app.baseUrl, 'GET', '/api/hyg/day?office=roland&date=' + DATE);
+    assert.equal(
+      app.db.audit.filter((r) => r.resource_type === 'hyg_day_patient').length,
+      0,
+      'nothing about a patient has been sent yet'
+    );
+
+    // The FILL is what sends the names, and it is where the rows belong.
+    await api(app.baseUrl, 'GET', '/api/hyg/day/identities?office=roland&date=' + DATE);
 
     const rows = app.db.audit;
     const day = rows.filter((r) => r.resource_type === 'hyg_day');
     const patients = rows.filter((r) => r.resource_type === 'hyg_day_patient');
 
-    assert.equal(day.length, 1, 'the request itself is one row');
-    assert.equal(day[0].resource_id, DATE);
+    assert.equal(day.length, 2, 'one request row per endpoint');
+    for (const r of day) assert.equal(r.resource_id, DATE);
     // "Somebody opened Tuesday" cannot answer "whose chart was read on
     // Tuesday". Two patients on the day means two rows.
     assert.equal(patients.length, 2);
@@ -265,6 +277,7 @@ test('a patient on TWO appointments is audited once, not twice', async () => {
   const app = await bootHygApp({ od });
   try {
     await api(app.baseUrl, 'GET', '/api/hyg/day?office=roland&date=' + DATE);
+    await api(app.baseUrl, 'GET', '/api/hyg/day/identities?office=roland&date=' + DATE);
     const patients = app.db.audit.filter((r) => r.resource_type === 'hyg_day_patient');
     assert.equal(patients.length, 1, 'one disclosure of one patient');
   } finally {
@@ -312,7 +325,19 @@ test('the day carries the chairs, the labels, and honest unknowns', async () => 
     const first = body.appointments[0];
     assert.equal(first.aptNum, 900001);
     assert.equal(first.patNum, 12827);
-    assert.equal(first.patientName, 'Test 2, Stedi');
+    // The chairs and the labels are on the FIRST paint; the name arrives with
+    // the fill, and the card says which of those it is waiting for.
+    assert.equal(first.identity, 'pending');
+    assert.equal(first.patientName, null);
+    const fill = await api(
+      app.baseUrl,
+      'GET',
+      '/api/hyg/day/identities?office=roland&date=' + DATE
+    );
+    assert.equal(
+      fill.body.patients.find((p) => p.patNum === 12827).patientName,
+      'Test 2, Stedi'
+    );
     assert.equal(first.opName, 'Hygiene 1');
     assert.equal(first.apptTypeLabel, 'Prophy Adult');
     assert.equal(first.providerName, 'HYG1');

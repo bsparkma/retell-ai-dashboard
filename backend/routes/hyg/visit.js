@@ -188,7 +188,20 @@ async function resolveAppointment(req, { office, aptNum, date }) {
 
   let day;
   try {
-    day = await odDay.readDay(odGet, { date, office });
+    /*
+     * CACHE-ONLY, THEN ONE PATIENT.
+     *
+     * This reads the whole day to find one appointment, because Open Dental
+     * has no "get me this appointment" that also carries the chair and the
+     * type. It used to resolve every patient on that day too — so opening one
+     * visit paid the whole fan-out, about forty seconds on a cold cache, to
+     * learn one name.
+     *
+     * Now the day comes back with cached identities only, and the ONE patient
+     * this visit is about is resolved below if the cache did not have them.
+     * Same names on screen, one request instead of forty.
+     */
+    day = await odDay.readDay(odGet, { date, office, identities: 'cached' });
   } catch {
     day = { ok: false };
   }
@@ -206,7 +219,26 @@ async function resolveAppointment(req, { office, aptNum, date }) {
     };
   }
 
-  const appointment = day.appointments.find((a) => a.aptNum === aptNum) || null;
+  let appointment = day.appointments.find((a) => a.aptNum === aptNum) || null;
+  if (appointment && appointment.identity === 'pending' && appointment.patNum !== null) {
+    // The one patient this page is about. A miss here is not fatal: the visit
+    // opens with an unnamed appointment, exactly as it always did when a
+    // patient record could not be read.
+    const one = await odDay.readPatients(odGet, [appointment.patNum], { office });
+    const patient = one.byPatNum.get(appointment.patNum);
+    appointment = patient
+      ? {
+          ...appointment,
+          identity: 'resolved',
+          patientName: patient.displayName,
+          flags: {
+            ...appointment.flags,
+            premed: patient.premed,
+            medicalAlerts: patient.medicalAlerts,
+          },
+        }
+      : { ...appointment, identity: 'unavailable' };
+  }
   if (!appointment) {
     return {
       ok: false,

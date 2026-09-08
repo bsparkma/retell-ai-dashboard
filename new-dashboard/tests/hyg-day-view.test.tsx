@@ -31,7 +31,11 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Route, Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
-import type { HygAppointment, HygDayResponse } from "@shared/hyg/contract";
+import type {
+  HygAppointment,
+  HygDayIdentitiesResponse,
+  HygDayResponse,
+} from "@shared/hyg/contract";
 
 (globalThis as Record<string, unknown>).React = React;
 
@@ -61,6 +65,7 @@ function appt(over: Partial<HygAppointment> = {}): HygAppointment {
   return {
     aptNum: 900001,
     patNum: 12827,
+    identity: "resolved",
     patientName: "Kiwi S.",
     start: "2026-09-08 08:00:00",
     lengthMin: 60,
@@ -113,6 +118,9 @@ export const DAY: HygDayResponse = {
       opNum: 3,
       start: "2026-09-08 11:00:00",
       flags: flags(),
+      // ASKED, AND OPEN DENTAL WOULD NOT ANSWER. Distinct from "still
+      // loading", which is what the fill tests below are about.
+      identity: "unavailable",
     }),
   ],
   warnings: [],
@@ -130,6 +138,7 @@ export const DAY: HygDayResponse = {
   excludedByScope: 0,
   truncated: false,
   patientNamesTruncated: false,
+  identitiesPending: 0,
   stats: {
     odListReads: 4,
     odPatientReads: 1,
@@ -137,7 +146,25 @@ export const DAY: HygDayResponse = {
     patientCacheHits: 0,
     patientCacheDeduped: 0,
     durationMs: 1200,
+    phaseMs: { appointments: 900, operatories: 100, labels: 150, identities: 50 },
   },
+};
+
+/** The same day as it arrives now: painted, and waiting on two names. */
+export const UNNAMED_DAY: HygDayResponse = {
+  ...DAY,
+  appointments: [
+    appt({ aptNum: 900001, patNum: 12827, identity: "pending", patientName: null }),
+    appt({
+      aptNum: 900002,
+      patNum: 12828,
+      identity: "pending",
+      patientName: null,
+      opNum: 3,
+      start: "2026-09-08 09:00:00",
+    }),
+  ],
+  identitiesPending: 2,
 };
 
 export const EMPTY_DAY: HygDayResponse = { ...DAY, appointments: [] };
@@ -150,6 +177,14 @@ const fixtures = vi.hoisted(() => ({
   fail: null as unknown,
   /** Never resolves — the loading state. */
   hang: false,
+  /** Each fill response in turn. The last one repeats. */
+  fills: [] as unknown[],
+  /** Thrown by every fill. */
+  fillFail: null as unknown,
+  /** The fill never answers — the "still loading" state, held still. */
+  fillHang: false,
+  /** How many times the page asked for names. The loop's stop is asserted on it. */
+  fillCalls: 0,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -173,6 +208,23 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       if (fixtures.hang) return new Promise(() => {}) as never;
       if (fixtures.fail) throw fixtures.fail;
       return fixtures.day as HygDayResponse;
+    }),
+    fetchDayIdentities: vi.fn(async () => {
+      const at = fixtures.fillCalls;
+      fixtures.fillCalls += 1;
+      if (fixtures.fillHang) return new Promise(() => {}) as never;
+      if (fixtures.fillFail) throw fixtures.fillFail;
+      const list = fixtures.fills;
+      return (list[Math.min(at, list.length - 1)] ?? {
+        success: true,
+        office: "roland",
+        date: "2026-09-08",
+        scope: "hygiene",
+        patients: [],
+        unavailable: [],
+        pending: 0,
+        stats: DAY.stats,
+      }) as HygDayIdentitiesResponse;
     }),
   };
 });
@@ -204,6 +256,10 @@ beforeEach(() => {
   fixtures.day = DAY;
   fixtures.fail = null;
   fixtures.hang = false;
+  fixtures.fills = [];
+  fixtures.fillFail = null;
+  fixtures.fillHang = false;
+  fixtures.fillCalls = 0;
 });
 afterEach(cleanup);
 
@@ -436,5 +492,197 @@ describe("refresh", () => {
     await waitFor(() => {
       expect(vi.mocked(fetchDay).mock.calls.length).toBeGreaterThan(before);
     });
+  });
+});
+
+// ─── Progressive fill ────────────────────────────────────────────────────────
+
+/** One fill response. */
+function fill(over: Partial<HygDayIdentitiesResponse> = {}): HygDayIdentitiesResponse {
+  return {
+    success: true,
+    office: "roland",
+    date: "2026-09-08",
+    scope: "hygiene",
+    patients: [],
+    unavailable: [],
+    pending: 0,
+    stats: DAY.stats,
+    ...over,
+  };
+}
+
+describe("the schedule paints first and the names arrive after", () => {
+  it("shows every card, with 'Loading name' where a name is still coming", async () => {
+    // THE POINT OF THE SLICE. Times and chairs are on screen in list-read
+    // time; the identities cost one Open Dental request each and no longer
+    // hold the schedule up.
+    fixtures.day = UNNAMED_DAY;
+    // The fill never answers, so the page is held in the state under test: a
+    // request IS on its way, which is exactly what the shimmer claims.
+    fixtures.fillHang = true;
+    renderAt(<HygDay />, "/hyg/day");
+
+    await screen.findByTestId("hyg-day-list");
+    expect(screen.getAllByTestId("hyg-appointment-card")).toHaveLength(2);
+    // The pending state has its OWN words. "Name unavailable" would tell a
+    // hygienist to stop waiting for something that is on its way.
+    const pending = await screen.findAllByTestId("hyg-name-pending");
+    expect(pending.length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("hyg-day-loading")).toBeNull();
+    expect(screen.queryByTestId("hyg-day-empty")).toBeNull();
+  });
+
+  it("merges each batch onto the cards already on screen", async () => {
+    fixtures.day = UNNAMED_DAY;
+    fixtures.fills = [
+      fill({
+        patients: [{ patNum: 12827, patientName: "Kiwi S.", premed: true, medicalAlerts: null }],
+        pending: 1,
+      }),
+      fill({
+        patients: [
+          { patNum: 12828, patientName: "Papaya P.", premed: false, medicalAlerts: true },
+        ],
+        pending: 0,
+      }),
+    ];
+    renderAt(<HygDay />, "/hyg/day");
+
+    expect(await screen.findByText("Kiwi S.")).toBeTruthy();
+    expect(await screen.findByText("Papaya P.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("hyg-name-pending")).toBeNull());
+    // Two batches, and then it stopped: pending reached zero.
+    expect(fixtures.fillCalls).toBe(2);
+  });
+
+  it("A PATIENT WHO NEVER RESOLVES LEAVES AN HONEST CARD, NOT A SPINNER", async () => {
+    // The loop runs while `pending` FALLS. A server that keeps answering "one
+    // still pending" without ever naming them would otherwise be an infinite
+    // request loop and a card that shimmers forever — which is the same lie as
+    // an empty day, wearing a different hat.
+    fixtures.day = UNNAMED_DAY;
+    fixtures.fills = [
+      fill({
+        patients: [{ patNum: 12827, patientName: "Kiwi S.", premed: null, medicalAlerts: null }],
+        unavailable: [12828],
+        pending: 0,
+      }),
+    ];
+    renderAt(<HygDay />, "/hyg/day");
+
+    expect(await screen.findByText("Kiwi S.")).toBeTruthy();
+    // The refused one says so, and says it in the words that mean "waiting
+    // will not help" rather than the ones that mean "nearly there".
+    expect(await screen.findByTestId("hyg-name-unavailable")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("hyg-name-pending")).toBeNull());
+    expect(fixtures.fillCalls).toBe(1);
+  });
+
+  it("stops asking when a batch makes no progress", async () => {
+    fixtures.day = UNNAMED_DAY;
+    // Two still pending, every time. The server is not lying and not failing —
+    // it simply is not getting anywhere.
+    fixtures.fills = [fill({ pending: 2 })];
+    renderAt(<HygDay />, "/hyg/day");
+
+    await screen.findByTestId("hyg-day-list");
+    await waitFor(() => expect(fixtures.fillCalls).toBe(1));
+    // Give the loop every chance to run again. It must not.
+    await new Promise((r) => setTimeout(r, 60));
+    expect(fixtures.fillCalls).toBe(1);
+  });
+
+  it("A CARD THE FILL NEVER REACHES STOPS SHIMMERING", async () => {
+    // The server says nothing is pending and this card was not among the names
+    // — it is past the fan-out cap, which `patientNamesTruncated` also reports.
+    // A shimmer with no request behind it claims something untrue, so it
+    // settles to the words that mean "waiting will not help".
+    fixtures.day = { ...UNNAMED_DAY, patientNamesTruncated: true };
+    fixtures.fills = [
+      fill({
+        patients: [{ patNum: 12827, patientName: "Kiwi S.", premed: null, medicalAlerts: null }],
+        pending: 0,
+      }),
+    ];
+    renderAt(<HygDay />, "/hyg/day");
+
+    expect(await screen.findByText("Kiwi S.")).toBeTruthy();
+    expect(await screen.findByTestId("hyg-name-unavailable")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("hyg-name-pending")).toBeNull());
+    expect(fixtures.fillCalls).toBe(1);
+  });
+
+  it("a failed fill keeps the schedule and offers its OWN retry", async () => {
+    // Refetching the day to recover the names would throw away a schedule that
+    // loaded perfectly well — and on a slow morning that is the thing she is
+    // actually reading.
+    fixtures.day = UNNAMED_DAY;
+    fixtures.fillFail = new HygApiError("Open Dental did not answer", 502, "OD_READ_FAILED", {
+      phase: "identities",
+      detail: "HTTP 504",
+    });
+    renderAt(<HygDay />, "/hyg/day");
+
+    await screen.findByTestId("hyg-day-list");
+    expect(screen.getAllByTestId("hyg-appointment-card")).toHaveLength(2);
+
+    const banner = await screen.findByTestId("hyg-fill-error");
+    expect(banner.textContent).toContain("The schedule loaded; the names did not");
+    // And the cards stop pretending a request is on its way — the banner is
+    // the thing saying what happened, not a shimmer that never ends.
+    await waitFor(() => expect(screen.queryByTestId("hyg-name-pending")).toBeNull());
+    // WHAT OPEN DENTAL SAID, verbatim. "It fails at times" costs a day to
+    // reproduce; a status line costs nothing to read out over a phone.
+    expect(screen.getByTestId("hyg-fill-error-detail").textContent).toBe("HTTP 504");
+    // And it is NOT the whole-day error state.
+    expect(screen.queryByTestId("hyg-day-error")).toBeNull();
+    expect(screen.getByTestId("hyg-fill-retry")).toBeTruthy();
+  });
+});
+
+describe("mergeIdentities", () => {
+  it("keeps every flag it was not told about", async () => {
+    // The fill answers for premed and medicalAlerts and NOTHING ELSE.
+    // Replacing the flags object would blank the other five — and blanking a
+    // clinical flag is the failure this whole module is written against.
+    const { mergeIdentities } = await import("@/pages/hyg/HygDay");
+    const before: HygDayResponse = {
+      ...UNNAMED_DAY,
+      appointments: [
+        appt({
+          patNum: 12827,
+          identity: "pending",
+          patientName: null,
+          flags: flags({ allergies: true, xraysDue: false }),
+        }),
+      ],
+    };
+
+    const after = mergeIdentities(
+      before,
+      fill({
+        patients: [{ patNum: 12827, patientName: "Kiwi S.", premed: true, medicalAlerts: false }],
+        pending: 0,
+      }),
+    );
+
+    expect(after.appointments[0].identity).toBe("resolved");
+    expect(after.appointments[0].patientName).toBe("Kiwi S.");
+    expect(after.appointments[0].flags.premed).toBe(true);
+    expect(after.appointments[0].flags.medicalAlerts).toBe(false);
+    expect(after.appointments[0].flags.allergies).toBe(true);
+    expect(after.appointments[0].flags.xraysDue).toBe(false);
+    expect(after.identitiesPending).toBe(0);
+  });
+
+  it("does not un-resolve a card the fill did not mention", async () => {
+    const { mergeIdentities } = await import("@/pages/hyg/HygDay");
+    const after = mergeIdentities(DAY, fill({ pending: 0 }));
+    expect(after.appointments[0].patientName).toBe("Kiwi S.");
+    expect(after.appointments[0].identity).toBe("resolved");
+    // And a card that was already `unavailable` stays that way — an empty
+    // batch is not evidence about anybody.
+    expect(after.appointments[2].identity).toBe("unavailable");
   });
 });

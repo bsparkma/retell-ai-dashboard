@@ -58,6 +58,7 @@ const { requireDashboardAuth } = require('../../middleware/auth');
 // Namespace import so the harness can patch getOdOffice. A destructured import
 // would pin the real function at require time and no test could reach it.
 const odOffices = require('../../config/odOffices');
+const odConfigCache = require('../../services/odConfigCache');
 const odPatientCache = require('../../services/odPatientCache');
 
 const REGISTRY_KEYS = [
@@ -684,6 +685,7 @@ async function bootHygApp({
    * which is what the first load of a day actually is.
    */
   odPatientCache.resetOdPatientCache();
+  odConfigCache.resetOdConfigCache();
 
   process.env.OPENDENTAL_CUSTOMER_KEY = 'test-customer-key-roland';
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-customer-key-valley';

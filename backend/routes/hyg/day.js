@@ -38,6 +38,30 @@
  * that reads a database it does not name.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * TWO ENDPOINTS, BECAUSE THE SCHEDULE AND THE NAMES COST DIFFERENT THINGS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `GET /day` reads the schedule and resolves identities ONLY from the patient
+ * cache — zero `GET /patients/{PatNum}` requests, so it returns in list-read
+ * time whatever the day looks like. Appointments it could not name come back
+ * `identity: 'pending'`.
+ *
+ * `GET /day/identities` then resolves the pending ones a bounded batch at a
+ * time, and the screen fills in. The client asks again while `pending` is
+ * falling and stops when it is not.
+ *
+ * A 40-patient day was ~40 seconds of blank skeleton, because the schedule
+ * waited behind one Open Dental request per patient on a credential throttled
+ * to one request a second and shared with voice and RCM. The two rulings that
+ * would have made that one request cheaper — repeat the morning warm, lengthen
+ * the patient TTL — were both rejected on 2026-09-03 and are not revisited
+ * here. This does not make the fan-out cheaper; it stops the schedule waiting
+ * behind it.
+ *
+ * ⚠️ THE FILL ENDPOINT TAKES NO PatNums. ⚠️ It derives them from the day, as
+ * `/day` does. A route that accepted a list would be a name-and-alert lookup
+ * for any patient number in the practice; see services/hyg/odDay.js.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * AUDIT: ONE ROW PER PATIENT, NOT ONE PER REQUEST
  * ─────────────────────────────────────────────────────────────────────────────
  * Serving this endpoint discloses every patient on the day. A single
@@ -55,12 +79,20 @@
  * patient: forty patients was forty database round trips in front of the
  * response. Still one ROW per patient — only the trip is shared.
  *
- * AND ONE ROW PER PATIENT **SERVED**, not per patient on the date. Under the
- * default `scope=hygiene` the doctors' patients are never fetched, never named
- * and never sent — so they are not disclosed, and a trail that recorded them
- * would be claiming a disclosure that did not happen. The rows are built from
- * `day.appointments`, which is exactly what the response carries, so this is
- * true by construction rather than by remembering.
+ * AND ONE ROW PER PATIENT **DISCLOSED**, not per patient on the date and not
+ * per appointment in the payload. Two things narrow it, and both are the same
+ * rule: a trail must not claim a disclosure that did not happen.
+ *
+ *   - Under `scope=hygiene` the doctors' patients are never fetched, never
+ *     named and never sent.
+ *   - Under progressive fill a `pending` appointment carries a PatNum, a time
+ *     and a chair, and NO NAME AND NO FLAGS. Nothing about that person has been
+ *     disclosed yet, so it gets no row here — it gets one from `/day/identities`
+ *     at the moment the name is actually sent.
+ *
+ * The rows are built from the appointments whose `identity` is `resolved`,
+ * which is exactly the set this response carries a name for, so this is true by
+ * construction rather than by remembering.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE AUDIT FIRES ON A CACHE HIT TOO. THIS IS THE TRAP.
@@ -114,6 +146,22 @@ function isRealDate(value) {
   return d.toISOString().slice(0, 10) === value;
 }
 
+/**
+ * `{ appointments: 1100, identities: 39800 }` → `ms_appointments=1100 ms_identities=39800`.
+ *
+ * Flat key=value, because that is what the log queries in docs/ already grep
+ * for and a nested object in a log line is a thing nobody can filter on.
+ *
+ * @param {Record<string, number>|undefined} phaseMs
+ * @returns {string}
+ */
+function phaseFields(phaseMs) {
+  if (!phaseMs || typeof phaseMs !== 'object') return '';
+  return Object.entries(phaseMs)
+    .map(([name, ms]) => `ms_${name}=${ms}`)
+    .join(' ');
+}
+
 router.get(
   '/',
   h(async (req, res) => {
@@ -164,7 +212,9 @@ router.get(
 
     let day;
     try {
-      day = await odDay.readDay(odGet, { date, office, scope });
+      // CACHE-ONLY IDENTITIES. The schedule must not wait behind the fan-out;
+      // GET /day/identities is what pays for it, a batch at a time.
+      day = await odDay.readDay(odGet, { date, office, scope, identities: 'cached' });
     } catch (err) {
       console.error('[hyg/day] office=' + office + ' date=' + date + ' read threw');
       await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
@@ -180,10 +230,19 @@ router.get(
     if (!day.ok) {
       // Open Dental answered, and the answer was not a day. NOT an empty day.
       await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
+      console.error(
+        `[hygday] office=${office} date=${date} FAILED phase=appointments ` +
+          `detail=${JSON.stringify(day.error || 'unknown')}`
+      );
       return res.status(502).json({
         success: false,
         error: 'Could not read the schedule from Open Dental',
         code: 'OD_READ_FAILED',
+        // WHICH read failed and WHAT it said. "Fails at times" is not something
+        // anybody can act on; "the appointments read timed out" is. It is the
+        // transport's own words, which carry no PHI — a status or a timeout.
+        phase: 'appointments',
+        detail: typeof day.error === 'string' ? day.error : null,
         office,
         date,
       });
@@ -192,8 +251,14 @@ router.get(
     // One row for the request, then one per patient disclosed. Both fail-closed:
     // an AuditError propagates to h() and becomes a 500 before anything is sent.
     await auditHygRead(req, 'hyg_day', { office, resourceId: date });
+    // RESOLVED ONLY. A pending card discloses nobody — see the header.
     const disclosed = [
-      ...new Set(day.appointments.map((a) => a.patNum).filter((p) => p !== null)),
+      ...new Set(
+        day.appointments
+          .filter((a) => a.identity === 'resolved')
+          .map((a) => a.patNum)
+          .filter((p) => p !== null)
+      ),
     ];
     await auditHygReads(
       req,
@@ -205,7 +270,10 @@ router.get(
       `[hygday] office=${office} date=${date} scope=${scope} appts=${day.appointments.length} ` +
         `hidden=${day.excludedByScope} ` +
         `patients=${cost.patientsRequested} od_list=${cost.odListReads} od_patient=${cost.odPatientReads} ` +
-        `cache_hit=${cost.patientCacheHits} cache_dedup=${cost.patientCacheDeduped} ms=${cost.durationMs}`
+        `cache_hit=${cost.patientCacheHits} cache_dedup=${cost.patientCacheDeduped} ` +
+        `pending=${day.identitiesPending} warn=${day.warnings.length} ` +
+        // PER PHASE. A total says the day was slow; these say which read was.
+        `ms=${cost.durationMs} ${phaseFields(cost.phaseMs)}`
     );
 
     return res.json({
@@ -235,10 +303,132 @@ router.get(
       // appointment is here and some carry no name — see services/hyg/odDay.js.
       truncated: day.truncated,
       patientNamesTruncated: day.patientNamesTruncated,
+      // How many cards are still waiting for a name. The client fills while
+      // this is falling and stops when it is not, so a patient Open Dental
+      // will never answer for cannot become an endless spinner.
+      identitiesPending: day.identitiesPending,
       // What this read cost, in counts and milliseconds. No PatNum, no name.
       // Shipped in the body rather than only logged so a BEFORE/AFTER can be
       // measured with one request against staging instead of a log query.
       stats: day.stats,
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/hyg/day/identities — the fill
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the next batch of unnamed patients on this day.
+ *
+ * NO PatNums IN THE REQUEST. The set is derived from the day's own schedule,
+ * server-side — see the header and services/hyg/odDay.js. What the caller may
+ * ask for is "the next few names on this day", and there is no value of any
+ * query param that widens that to a patient who is not on it.
+ *
+ * Audited exactly like `/day`: one request row, then one row per patient whose
+ * name and flags are actually in the response. A patient this batch did not
+ * reach is not in it and gets no row.
+ */
+router.get(
+  '/identities',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+
+    const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    if (!isRealDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'date query param is required and must be a real calendar date (YYYY-MM-DD)',
+        code: 'INVALID_DATE',
+        office,
+      });
+    }
+
+    // The SAME scope the day was read under. A fill under a wider scope would
+    // name patients the day itself never served.
+    const rawScope = req.query.scope === undefined ? 'hygiene' : String(req.query.scope).trim();
+    if (rawScope !== 'hygiene' && rawScope !== 'all') {
+      return res.status(400).json({
+        success: false,
+        error: "scope must be 'hygiene' or 'all'",
+        code: 'INVALID_SCOPE',
+        office,
+      });
+    }
+
+    const resolved = resolveHygOd(office);
+    if (!resolved.ok) {
+      await auditHygDenial(req, 'hyg_day', date, { office, result: 'UNAUTHORIZED' });
+      return res.status(resolved.status).json(resolved.body);
+    }
+
+    const odGet = (path, params, opts) =>
+      resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+
+    let fill;
+    try {
+      fill = await odDay.readDayIdentities(odGet, { date, office, scope: rawScope });
+    } catch {
+      console.error('[hygday] office=' + office + ' date=' + date + ' identities read threw');
+      await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
+      return res.status(502).json({
+        success: false,
+        error: 'Could not read patient names from Open Dental',
+        code: 'OD_READ_FAILED',
+        phase: 'identities',
+        detail: null,
+        office,
+        date,
+      });
+    }
+
+    if (!fill.ok) {
+      await auditHygDenial(req, 'hyg_day', date, { office, result: 'ERROR' });
+      return res.status(502).json({
+        success: false,
+        error: 'Could not read patient names from Open Dental',
+        code: 'OD_READ_FAILED',
+        phase: 'identities',
+        detail: typeof fill.error === 'string' ? fill.error : null,
+        office,
+        date,
+      });
+    }
+
+    // Fail-closed, before the response: one row for the request, one per
+    // patient this batch is about to name.
+    await auditHygRead(req, 'hyg_day', { office, resourceId: date });
+    await auditHygReads(
+      req,
+      fill.patients.map((p) => ({
+        resourceType: 'hyg_day_patient',
+        office,
+        resourceId: p.patNum,
+      }))
+    );
+
+    const cost = fill.stats;
+    console.log(
+      `[hygfill] office=${office} date=${date} scope=${rawScope} named=${fill.patients.length} ` +
+        `unavailable=${fill.unavailable.length} pending=${fill.pending} ` +
+        `od_list=${cost.odListReads} od_patient=${cost.odPatientReads} ` +
+        `cache_hit=${cost.patientCacheHits} cache_dedup=${cost.patientCacheDeduped} ms=${cost.durationMs}`
+    );
+
+    return res.json({
+      success: true,
+      office,
+      date,
+      scope: rawScope,
+      patients: fill.patients,
+      // Open Dental refused these. Reported so a card can stop waiting and say
+      // "name unavailable" rather than spin — waiting will not help.
+      unavailable: fill.unavailable,
+      // Still unnamed. The client asks again while this is FALLING.
+      pending: fill.pending,
+      stats: fill.stats,
     });
   })
 );

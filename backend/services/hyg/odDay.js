@@ -50,8 +50,42 @@
  * WHY it might be null: `od` (we asked and this is the answer), or `not_read`
  * (slice 1 does not read this at all yet). The UI renders "unknown" for both,
  * but the payload can explain itself and the next slice can see its own to-do list.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SCHEDULE AND THE IDENTITIES ARE TWO DIFFERENT READS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The list reads — appointments, chairs, types, providers — are four requests
+ * whatever the day looks like. The identity fan-out is ONE REQUEST PER DISTINCT
+ * PATIENT, and Open Dental throttles at one request per second per credential,
+ * so a 40-patient day is ~40 seconds. Waiting for all of it before showing
+ * anything meant a hygienist watched a skeleton for the whole of it.
+ *
+ * The rulings of 2026-09-03 stand: repeating the morning warm is REJECTED (it
+ * spends a credential voice and RCM share — D-8) and lengthening the patient
+ * TTL is REJECTED (a medical alert entered at 9:02 must not be invisible at
+ * 9:40). Neither is revisited here. **Concurrency is not a lever either** — see
+ * services/odPatientCache.js.
+ *
+ * So `readDay` takes `identities`:
+ *
+ *   'cached'  resolve ONLY from services/odPatientCache.js. Zero patient
+ *             requests, so the day costs its list reads and nothing else, and
+ *             every unresolved appointment says `identity: 'pending'`.
+ *   'all'     the original behaviour, and still the default: fetch every
+ *             patient this day needs.
+ *
+ * `readDayIdentities` then resolves the pending ones a BOUNDED BATCH at a time,
+ * and the screen fills in.
+ *
+ * ⚠️ WHICH PATIENTS TO RESOLVE IS DERIVED SERVER-SIDE, FROM THE SCHEDULE. ⚠️ A
+ * caller never names a PatNum. An endpoint that took a list of them would be a
+ * name-lookup for any patient number in the practice, which is a different and
+ * much larger disclosure surface than "who is booked today". That costs one
+ * extra `/appointments` read per batch, and buying it is deliberate — see
+ * readDayIdentities.
  */
 
+const odConfigCache = require('../odConfigCache');
 const odPatientCache = require('../odPatientCache');
 
 /** Open Dental pages every list endpoint at 100 rows. Not configurable. */
@@ -110,6 +144,17 @@ function asArray(data) {
   if (Array.isArray(data)) return data;
   if (data && Array.isArray(data.data)) return data.data;
   return [];
+}
+
+/**
+ * A thrown thing, as one short line for a warning's `detail`.
+ * @param {unknown} err @returns {string}
+ */
+function errText(err) {
+  if (err instanceof Error && typeof err.message === 'string' && err.message.trim()) {
+    return err.message.trim().slice(0, 200);
+  }
+  return 'threw';
 }
 
 /** A trimmed string, or null. Never '' — an empty string reads as a value. */
@@ -230,8 +275,10 @@ async function pagedList(odGet, path, params = {}) {
  * @param {Function} odGet
  * @returns {Promise<{ operatories: Array<object>, truncated: boolean, error: string|null }>}
  */
-async function readOperatories(odGet) {
-  const { rows, truncated, error } = await pagedList(odGet, '/operatories');
+async function readOperatories(odGet, { office }) {
+  const { rows, truncated, error } = await odConfigCache.getList(office, 'operatories', () =>
+    pagedList(odGet, '/operatories')
+  );
 
   const operatories = rows
     // `IsHidden` unknown is NOT a reason to hide a chair: dropping an operatory
@@ -283,28 +330,40 @@ async function readAppointments(odGet, date) {
 /**
  * Appointment types, so a card can say "Prophy Adult" instead of a number.
  * Optional: a failure here costs a label, not the day.
+ *
+ * PRACTICE CONFIGURATION, cached for an hour per office — see
+ * services/odConfigCache.js. The list is edited when the practice renames a
+ * visit type, which is not something that happens between two page loads.
+ *
  * @param {Function} odGet
- * @returns {Promise<Map<number, string>>}
+ * @param {{ office: string }} opts
+ * @returns {Promise<{ byNum: Map<number, string>, error: string|null }>}
  */
-async function readAppointmentTypeLabels(odGet) {
-  const { rows } = await pagedList(odGet, '/appointmenttypes');
+async function readAppointmentTypeLabels(odGet, { office }) {
+  const { rows, error } = await odConfigCache.getList(office, 'appointmenttypes', () =>
+    pagedList(odGet, '/appointmenttypes')
+  );
   const byNum = new Map();
   for (const r of rows) {
     const num = odInt(r.AppointmentTypeNum);
     const name = str(r.AppointmentTypeName) || str(r.ItemName) || str(r.Name);
     if (num !== null && name !== null) byNum.set(num, name);
   }
-  return byNum;
+  return { byNum, error };
 }
 
 /**
  * Providers, so a card can name the hygienist rather than a ProvNum.
- * Optional in the same way appointment types are.
+ * Optional in the same way appointment types are, and cached the same way.
+ *
  * @param {Function} odGet
- * @returns {Promise<Map<number, string>>}
+ * @param {{ office: string }} opts
+ * @returns {Promise<{ byNum: Map<number, string>, error: string|null }>}
  */
-async function readProviderLabels(odGet) {
-  const { rows } = await pagedList(odGet, '/providers');
+async function readProviderLabels(odGet, { office }) {
+  const { rows, error } = await odConfigCache.getList(office, 'providers', () =>
+    pagedList(odGet, '/providers')
+  );
   const byNum = new Map();
   for (const r of rows) {
     const num = odInt(r.ProvNum);
@@ -314,7 +373,7 @@ async function readProviderLabels(odGet) {
       null;
     if (num !== null && label !== null) byNum.set(num, label);
   }
-  return byNum;
+  return { byNum, error };
 }
 
 /**
@@ -371,16 +430,38 @@ function normalizePatient(patNum, p) {
  * appointment comes back with `patientName: null` and every flag null, which
  * the card renders as "name unavailable" — visibly different from an empty day.
  *
+ * ── THE REQUEST BUDGET ──────────────────────────────────────────────────────
+ * `odBudget` caps how many of these may become an ACTUAL Open Dental request.
+ * Cache hits are free and unlimited; only misses are counted. `0` therefore
+ * means "answer from the cache and ask for nothing", which is what makes the
+ * day view paint in list-read time, and a finite number is what makes the
+ * follow-up fill arrive in bounded waves instead of one 40-second wait.
+ *
+ * A patient skipped for budget is neither resolved nor failed: it is left out
+ * of `byPatNum` and named in `unresolved`, because "we have not asked yet" and
+ * "we asked and could not read it" are different sentences and a card renders
+ * them differently.
+ *
+ * The budget check uses `odPatientCache.hasFresh`, so a read already IN FLIGHT
+ * for another request counts as a miss and is skipped even though joining it
+ * would have been free. That loses the occasional free identity to the next
+ * batch; the alternative is blocking on somebody else's request while holding a
+ * budget of zero, which is the thing this is here to prevent.
+ *
  * @param {Function} odGet
  * @param {number[]} patNums distinct, in the order they should be spent
- * @param {{ office: string }} opts the office these PatNums belong to
+ * @param {{ office: string, odBudget?: number }} opts the office these PatNums
+ *   belong to, and how many Open Dental requests this call may issue.
  * @returns {Promise<{ byPatNum: Map<number, object>, truncated: boolean, failed: number[],
- *                     odReads: number, cacheHits: number, deduped: number }>}
+ *                     unresolved: number[], odReads: number, cacheHits: number,
+ *                     deduped: number }>}
  */
-async function readPatients(odGet, patNums, { office }) {
+async function readPatients(odGet, patNums, { office, odBudget = Infinity }) {
   const byPatNum = new Map();
   /** @type {number[]} */
   const failed = [];
+  /** @type {number[]} */
+  const unresolved = [];
   const budget = patNums.slice(0, MAX_PATIENT_READS);
 
   let odReads = 0;
@@ -405,6 +486,12 @@ async function readPatients(odGet, patNums, { office }) {
   };
 
   for (const patNum of budget) {
+    // NOT ASKED YET. Distinct from failed — see the budget note above.
+    if (odReads >= odBudget && !odPatientCache.hasFresh(office, patNum)) {
+      unresolved.push(patNum);
+      continue;
+    }
+
     const got = await odPatientCache.getPatient(office, patNum, readOne);
     if (got.source === 'cache') cacheHits += 1;
     else if (got.source === 'inflight') deduped += 1;
@@ -420,6 +507,7 @@ async function readPatients(odGet, patNums, { office }) {
     byPatNum,
     truncated: patNums.length > budget.length,
     failed,
+    unresolved,
     odReads,
     cacheHits,
     deduped,
@@ -471,11 +559,19 @@ function unknownFlags() {
  * ── MEASUREMENT ─────────────────────────────────────────────────────────────
  * Every day read returns `stats`: how many Open Dental requests it issued, split
  * LIST reads from PATIENT reads, how many patients the cache answered, and how
- * long the whole thing took. The route logs one line from it.
+ * long each PHASE took — the schedule, the chairs, the labels, the identities.
+ * The route logs one line from it.
  *
- * That exists because "it should be faster" is not a result. The patient
- * fan-out is one second per distinct patient against a shared credential, and
- * the only way to know whether a change helped is to have counted before it.
+ * That exists because "it should be faster" is not a result, and neither is
+ * "it fails at times". A total of 41s says nothing about which read to look at;
+ * `ms_appts=1100 ms_ids=39800` says all of it. The phases are timed separately
+ * for the same reason the failures are named separately.
+ *
+ * ── IDENTITIES ──────────────────────────────────────────────────────────────
+ * `identities: 'cached'` resolves names and flags ONLY from the patient cache
+ * and issues no patient requests at all, so the day comes back in list-read
+ * time with `identity: 'pending'` on whatever is unresolved. `'all'` (the
+ * default) is the original behaviour. See the file header.
  *
  * ── SCOPE ───────────────────────────────────────────────────────────────────
  * `scope: 'hygiene'` (the default) serves only the hygiene appointments and
@@ -495,13 +591,14 @@ function unknownFlags() {
  * not tell" is not "no".
  *
  * @param {Function} odGet
- * @param {{ date: string, office: string, scope?: 'hygiene'|'all' }} opts
+ * @param {{ date: string, office: string, scope?: 'hygiene'|'all',
+ *          identities?: 'all'|'cached' }} opts
  *   `office` is REQUIRED — it is half of the patient cache key, and a PatNum
  *   without an office identifies nobody (numbering restarts in every Open Dental
  *   database).
  * @returns {Promise<object>}
  */
-async function readDay(odGet, { date, office, scope = 'hygiene' }) {
+async function readDay(odGet, { date, office, scope = 'hygiene', identities = 'all' }) {
   if (typeof office !== 'string' || office.trim() === '') {
     // Loud rather than defaulted. The alternative to knowing the office is
     // caching a patient under a namespace shared with another practice.
@@ -509,8 +606,38 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
   }
 
   const startedAt = Date.now();
-  /** @type {Array<{ resource: string, message: string }>} */
+  /** @type {Array<{ resource: string, message: string, detail: string|null }>} */
   const warnings = [];
+
+  /**
+   * WHAT FAILED, IN OPEN DENTAL'S OWN WORDS.
+   *
+   * `message` is the sentence a hygienist reads; `detail` is the status or the
+   * timeout underneath it. Both, because "Chair names are unavailable" tells
+   * her what to do and "HTTP 504" tells whoever she calls what to look at, and
+   * a screen that carries only one of them turns the other into a guess.
+   *
+   * @param {string} resource @param {string} message @param {string|null} [detail]
+   */
+  const warn = (resource, message, detail = null) => {
+    warnings.push({ resource, message, detail: detail || null });
+  };
+
+  /** Per-phase wall clock. See MEASUREMENT in the docblock. @type {Record<string, number>} */
+  const phaseMs = {};
+  /**
+   * Time one phase. Never swallows: a throw is re-thrown after the clock stops,
+   * so a phase that failed is still measured.
+   * @template T @param {string} name @param {() => Promise<T>} run @returns {Promise<T>}
+   */
+  const timed = async (name, run) => {
+    const at = Date.now();
+    try {
+      return await run();
+    } finally {
+      phaseMs[name] = Date.now() - at;
+    }
+  };
 
   /**
    * Counts the LIST reads. Wrapping here rather than counting inside pagedList
@@ -524,41 +651,51 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
     return odGet(path, params, opts);
   };
 
-  const appts = await readAppointments(countedGet, date);
+  const appts = await timed('appointments', () => readAppointments(countedGet, date));
   if (appts.error && appts.rows.length === 0) {
-    return { ok: false, error: appts.error };
+    // The one unrecoverable failure: there is no day to show. The reason comes
+    // back with it so the route can name what went wrong instead of saying
+    // "could not read the schedule" and leaving the rest to a log query.
+    return { ok: false, error: appts.error, phaseMs, odListReads };
   }
   if (appts.error) {
-    warnings.push({
-      resource: 'appointments',
-      message: 'Only part of the day could be read from Open Dental.',
-    });
+    warn(
+      'appointments',
+      'Only part of the day could be read from Open Dental.',
+      appts.error
+    );
   }
   if (appts.truncated) {
-    warnings.push({
-      resource: 'appointments',
-      message: 'This day has more appointments than one read can return; some are missing.',
-    });
+    warn(
+      'appointments',
+      'This day has more appointments than one read can return; some are missing.'
+    );
   }
 
-  const ops = await readOperatories(countedGet);
+  const ops = await timed('operatories', () => readOperatories(countedGet, { office }));
   if (ops.error) {
-    warnings.push({ resource: 'operatories', message: 'Chair names are unavailable.' });
+    warn('operatories', 'Chair names are unavailable.', ops.error);
   }
 
   // Labels are cheap and optional; a throw here must not cost the day.
   let typeLabels = new Map();
   let providerLabels = new Map();
-  try {
-    typeLabels = await readAppointmentTypeLabels(countedGet);
-  } catch {
-    warnings.push({ resource: 'appointmenttypes', message: 'Visit type names are unavailable.' });
-  }
-  try {
-    providerLabels = await readProviderLabels(countedGet);
-  } catch {
-    warnings.push({ resource: 'providers', message: 'Provider names are unavailable.' });
-  }
+  await timed('labels', async () => {
+    try {
+      const types = await readAppointmentTypeLabels(countedGet, { office });
+      typeLabels = types.byNum;
+      if (types.error) warn('appointmenttypes', 'Visit type names are unavailable.', types.error);
+    } catch (err) {
+      warn('appointmenttypes', 'Visit type names are unavailable.', errText(err));
+    }
+    try {
+      const provs = await readProviderLabels(countedGet, { office });
+      providerLabels = provs.byNum;
+      if (provs.error) warn('providers', 'Provider names are unavailable.', provs.error);
+    } catch (err) {
+      warn('providers', 'Provider names are unavailable.', errText(err));
+    }
+  });
 
   const ordered = [...appts.rows].sort((a, b) =>
     String(a.AptDateTime || '').localeCompare(String(b.AptDateTime || ''))
@@ -598,19 +735,30 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
     }
   }
 
-  const patients = await readPatients(odGet, distinctPatNums, { office });
+  // `identities: 'cached'` spends NOTHING here: every miss comes back
+  // unresolved and the follow-up fill asks for them a batch at a time.
+  const patients = await timed('identities', () =>
+    readPatients(odGet, distinctPatNums, {
+      office,
+      odBudget: identities === 'cached' ? 0 : Infinity,
+    })
+  );
   if (patients.truncated) {
-    warnings.push({
-      resource: 'patients',
-      message: 'This day has more patients than one read can name; later cards show no name.',
-    });
+    warn(
+      'patients',
+      'This day has more patients than one read can name; later cards show no name.'
+    );
   }
   if (patients.failed.length > 0) {
-    warnings.push({
-      resource: 'patients',
-      message: patients.failed.length + ' patient record(s) could not be read.',
-    });
+    warn(
+      'patients',
+      patients.failed.length + ' patient record(s) could not be read.',
+      'Open Dental answered for the schedule but not for ' +
+        patients.failed.length + ' of its patients'
+    );
   }
+
+  const failedPatNums = new Set(patients.failed);
 
   const opsByNum = new Map(ops.operatories.map((o) => [o.opNum, o]));
 
@@ -636,6 +784,28 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
     return {
       aptNum: odInt(r.AptNum),
       patNum,
+      /*
+       * WHY THIS CARD HAS NO NAME ON IT — four different answers, and a screen
+       * that rendered them all as "Name unavailable" would be lying about three
+       * of them.
+       *
+       *   resolved     we read the patient record. `patientName` may STILL be
+       *                null, if Open Dental held neither half of a name — that
+       *                is an answer, and it is this one.
+       *   pending      not asked yet. The fill is coming; the card says so.
+       *   unavailable  asked, and could not read it. Waiting will not help.
+       *   no_patient   the appointment carries no PatNum at all — a blockout,
+       *                or a row nobody was ever attached to. There is nobody to
+       *                name, which is not a failure of any kind.
+       */
+      identity:
+        patNum === null
+          ? 'no_patient'
+          : patient
+            ? 'resolved'
+            : failedPatNums.has(patNum)
+              ? 'unavailable'
+              : 'pending',
       // Null, not 'Unknown Patient'. See readPatients.
       patientName: patient ? patient.displayName : null,
       start: str(r.AptDateTime),
@@ -704,6 +874,13 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
     truncated: appts.truncated,
     patientNamesTruncated: patients.truncated,
     /*
+     * How many appointments are still waiting for a name. The client polls the
+     * fill while this is above zero and STOPS when a batch does not move it,
+     * so a patient Open Dental will never answer for leaves an honest card
+     * rather than a spinner that never ends.
+     */
+    identitiesPending: patients.unresolved.length,
+    /*
      * WHAT THIS READ COST. Counts and milliseconds only — never a PatNum, never
      * a name. `odListReads + odPatientReads` is the number of requests this one
      * page load put on a credential the voice and RCM modules are also using,
@@ -721,12 +898,136 @@ async function readDay(odGet, { date, office, scope = 'hygiene' }) {
       /** Waited on an identical read already in flight — also no request. */
       patientCacheDeduped: patients.deduped,
       durationMs: Date.now() - startedAt,
+      /*
+       * WHERE THE TIME WENT. One number per phase, so "the schedule is slow"
+       * becomes a specific read. Counts and milliseconds only — never a PatNum.
+       */
+      phaseMs,
+    },
+  };
+}
+
+
+/**
+ * How many patients ONE fill request may fetch from Open Dental.
+ *
+ * Eight, because Open Dental serves one request a second per credential: a
+ * batch is about nine seconds of wall clock (eight patients plus the schedule
+ * read that decides who they are), which is short enough that a hygienist sees
+ * names arriving in waves rather than watching one long request, and long
+ * enough that a 40-patient day is five round trips rather than forty.
+ *
+ * Raising it makes each wave later and larger. Lowering it multiplies the
+ * per-batch schedule read. Neither is a throughput lever — the credential is
+ * the throughput, and it is shared.
+ */
+const IDENTITY_BATCH = Number(process.env.HYG_DAY_IDENTITY_BATCH || 8);
+
+/**
+ * Resolve the next batch of unnamed patients on a day.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE CALLER DOES NOT SAY WHICH PATIENTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * This re-reads the day's appointments and derives the PatNums itself, exactly
+ * as `readDay` does. An endpoint that accepted a list of PatNums would be a
+ * name-and-medical-alert lookup for ANY patient number in the practice —
+ * a far larger disclosure surface than "who is booked today", and one that
+ * could be walked. The set of people this can name is the set of people on that
+ * day, and that is true by construction rather than by validation.
+ *
+ * It costs one extra `/appointments` read per batch. It also buys something:
+ * each batch sees the CURRENT schedule, so a patient added to the day while the
+ * fill is running is picked up rather than missed until a refresh.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT IT RETURNS, AND WHY IT CANNOT LOOP FOREVER
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `patients` are the ones resolved THIS TIME plus any the cache already held —
+ * the caller merges them onto its cards. `unavailable` are the ones Open Dental
+ * refused; they are reported so a card can stop waiting and say so. `pending`
+ * is what is left.
+ *
+ * A patient that fails is in `unavailable`, not in `pending`, so a chart Open
+ * Dental will never serve leaves an honest card instead of a spinner. And the
+ * caller stops when `pending` stops falling, which covers the case where a read
+ * neither succeeds nor fails cleanly.
+ *
+ * @param {Function} odGet
+ * @param {{ date: string, office: string, scope?: 'hygiene'|'all', batch?: number }} opts
+ * @returns {Promise<{ ok: true, patients: object[], unavailable: number[],
+ *                     pending: number, stats: object }
+ *          | { ok: false, error: string }>}
+ */
+async function readDayIdentities(odGet, { date, office, scope = 'hygiene', batch }) {
+  if (typeof office !== 'string' || office.trim() === '') {
+    throw new Error('[hyg/odDay] readDayIdentities requires an office — a PatNum alone identifies nobody');
+  }
+  const startedAt = Date.now();
+  let odListReads = 0;
+  const countedGet = (path, params, opts) => {
+    odListReads += 1;
+    return odGet(path, params, opts);
+  };
+
+  const appts = await readAppointments(countedGet, date);
+  if (appts.error && appts.rows.length === 0) return { ok: false, error: appts.error };
+
+  // The SAME scope rule as readDay, and for the same reason: a patient this
+  // day does not serve is a patient nothing here may fetch or name.
+  const inScope =
+    scope === 'all' ? appts.rows : appts.rows.filter((r) => odBool(r.IsHygiene) !== false);
+  const ordered = [...inScope].sort((a, b) =>
+    String(a.AptDateTime || '').localeCompare(String(b.AptDateTime || ''))
+  );
+
+  /** @type {number[]} */
+  const distinctPatNums = [];
+  const seen = new Set();
+  for (const r of ordered) {
+    // `> 0`: PatNum 0 is Open Dental's "nobody is attached to this row".
+    const patNum = odInt(r.PatNum);
+    if (patNum !== null && patNum > 0 && !seen.has(patNum)) {
+      seen.add(patNum);
+      distinctPatNums.push(patNum);
+    }
+  }
+
+  const limit = Number.isInteger(batch) && batch > 0 ? batch : IDENTITY_BATCH;
+  const read = await readPatients(odGet, distinctPatNums, { office, odBudget: limit });
+
+  const patients = [];
+  for (const [patNum, p] of read.byPatNum) {
+    // Only what a card needs, and only what the patient record answered. The
+    // medical-alert NOTE is never sent — its presence is the fact this screen
+    // uses, and its text is PHI the day view has no reason to carry.
+    patients.push({
+      patNum,
+      patientName: p.displayName,
+      premed: p.premed,
+      medicalAlerts: p.medicalAlerts,
+    });
+  }
+
+  return {
+    ok: true,
+    patients,
+    unavailable: read.failed,
+    pending: read.unresolved.length,
+    stats: {
+      odListReads,
+      odPatientReads: read.odReads,
+      patientsRequested: Math.min(distinctPatNums.length, MAX_PATIENT_READS),
+      patientCacheHits: read.cacheHits,
+      patientCacheDeduped: read.deduped,
+      durationMs: Date.now() - startedAt,
     },
   };
 }
 
 module.exports = {
   readDay,
+  readDayIdentities,
   // Exported for tests and for the slices that follow, not for routes to call
   // directly — routes call readDay.
   pagedList,
@@ -740,4 +1041,5 @@ module.exports = {
   DAY_STATUSES,
   OD_PAGE_SIZE,
   MAX_PATIENT_READS,
+  IDENTITY_BATCH,
 };
