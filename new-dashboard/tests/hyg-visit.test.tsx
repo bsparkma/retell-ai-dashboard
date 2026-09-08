@@ -130,6 +130,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       // exercised against the backend in hygVisit.test.js.
       recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
       handoffCategory: "Restorative" as const,
+      doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
     };
   };
 
@@ -149,6 +150,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
           : null,
         recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
         handoffCategory: "Restorative" as const,
+        doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
       };
     }),
     openVisit: vi.fn(async () => {

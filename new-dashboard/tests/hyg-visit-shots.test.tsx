@@ -136,6 +136,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         ? ["Pre-op PA", "Missing teeth note", "New/replacement noted"]
         : [],
     handoffCategory: "Restorative" as const,
+    doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
   });
 
   return {
@@ -146,6 +147,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: page().visit,
       recordsNeeded: page().recordsNeeded,
       handoffCategory: "Restorative" as const,
+      doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
     })),
   };
 });

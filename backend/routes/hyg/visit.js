@@ -77,6 +77,7 @@ const odDay = require('../../services/hyg/odDay');
 const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
+const hygStaff = require('../../config/hygStaff');
 const contract = require('../../hyg/contract.gen.cjs');
 
 const router = express.Router();
@@ -167,7 +168,32 @@ function visitPayload(visit) {
     // saved since.
     recordsNeeded: contract.recordsNeededFor(visit.items),
     handoffCategory: contract.deriveCategory(visit.items),
+    // THE DOCTOR PICK-LIST, FROM THE OFFICE ON THE STORED VISIT.
+    //
+    // `Dr. ___ performed periodic exam` needs a name, and a name compiled into
+    // a component is a name that can be rendered for the wrong practice. The
+    // office comes off the visit row rather than off a query param for the same
+    // reason every other office decision in this module does: there is no value
+    // a request can pass that changes whose doctors appear on whose note.
+    doctorOptions: hygStaff.doctorOptions(visit.office),
   };
+}
+
+/**
+ * The typed-name block a note ends with, for THIS request's signed-in user.
+ *
+ * Built in the route because it needs `req` and the office; handed to the
+ * composer, which stays pure. `req.user.name` is the SSO display name — who is
+ * SIGNED IN, which the roster then turns into a licence line when it knows one.
+ * A name it does not know prints alone. See backend/config/hygStaff.js.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office
+ * @returns {string[]}
+ */
+function signatureFor(req, office) {
+  const name = req.user && typeof req.user.name === 'string' ? req.user.name.trim() : '';
+  return hygStaff.signatureBlock({ office, hygienistName: name || null });
 }
 
 /**
@@ -362,6 +388,10 @@ router.get(
       visit,
       recordsNeeded: visit ? contract.recordsNeededFor(visit.items) : [],
       handoffCategory: visit ? contract.deriveCategory(visit.items) : 'Other',
+      // Present even before a visit row exists — the form draws the doctor row
+      // on first open, and `office` here is the REQUEST's office, which the
+      // module gate has already checked.
+      doctorOptions: hygStaff.doctorOptions(office),
     });
   })
 );
@@ -649,7 +679,11 @@ router.post(
         visit,
         kind: body.kind,
         actor: actorEmail(req),
-        compose: composer.compose,
+        // BOUND, not passed through the store. The signature depends on who is
+        // signed in and which office this is, and visitStore has no business
+        // knowing either — it holds rows.
+        compose: (kind, ctx) =>
+          composer.compose(kind, { ...ctx, signature: signatureFor(req, office) }),
       });
       if (!staged.ok) return staged;
       return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
