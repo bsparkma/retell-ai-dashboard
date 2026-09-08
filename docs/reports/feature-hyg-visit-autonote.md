@@ -3,6 +3,20 @@
 Branch `feature/hyg-visit-autonote`, off `origin/develop` at `def5dca`.
 Worktree `C:\Users\beau\carein-wt\hyg-visit-autonote`.
 
+> **NOT PUSHED — auto mode refused `git push`.** Everything below is committed on the
+> branch in that worktree. Beau, paste these:
+>
+> ```bash
+> cd "C:/Users/beau/carein-wt/hyg-visit-autonote"
+> git push -u origin feature/hyg-visit-autonote
+> gh pr create --base develop --head feature/hyg-visit-autonote \
+>   --title "Make the visit form write the practice's own clinic note" \
+>   --body-file docs/reports/feature-hyg-visit-autonote.md
+> ```
+>
+> (`gh pr edit` is broken repo-wide — if the body needs changing afterwards, use
+> `gh api -X PATCH`.)
+
 ---
 
 ## What this does
