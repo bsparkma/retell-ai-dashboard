@@ -676,7 +676,7 @@ the build.
 
 | | Endpoint | Read-back |
 | --- | --- | --- |
-| the visit note | `POST /procedurelogs/GroupNote`, `isSigned: false` | `GET /procedurelogs?AptNum=` must contain the note text |
+| the visit note | `POST /procedurelogs/GroupNote`, `isSigned: false` | a NEW row on `GET /procedurelogs/GroupNotes?PatNum=` carrying exactly this text |
 | the routing slip | `POST /documents/Upload`, `.pdf` + `rawBase64` | the response must carry a `DocNum` |
 | the treatment | TC's own `POST /api/tc/hygiene-intakes` (loopback, caller's credential) | the response must carry a `caseId` |
 
@@ -684,6 +684,36 @@ the build.
 read back; a write Open Dental accepted but cannot show is `Failed`, with the
 reason. `Sending` is persisted BEFORE the call, so a process that dies mid-write
 leaves "we tried and do not know" rather than "ready to send".
+
+#### The note is read back from `GroupNotes`, and read BEFORE it is written
+
+A GroupNote does not put text on the procedures it spans — it creates a
+synthetic `~GRP~` procedure, and H0 names `GET /procedurelogs/GroupNotes?PatNum=`
+as that row's read surface. The first version asked `GET /procedurelogs?AptNum=`
+instead and looked for the text on the appointment's own procedures, which is
+wrong twice: the `~GRP~` row is not among them, and a procedurelog row carries no
+note text at all. So the comparison ran against an empty string every time, and
+on 2026-09-07 a note the POST had accepted came back `Failed`.
+
+The same surface is read **before** the write, and that read is load-bearing:
+
+- an identical note already on the visit's date ⇒ **do not POST**; report the row
+  that is already there. Notes are append-only in Open Dental, so without this
+  every press of Retry over a landed-but-unconfirmed note filed another
+  permanent copy;
+- the write is then confirmed by the row that **appeared** between the two reads
+  — not merely by a row that matches, which an older identical note would also
+  satisfy — and that row's ProcNum becomes the `written_ref`;
+- an unreadable pre-check **refuses** (`NOTE_PRECHECK_UNAVAILABLE`) rather than
+  falling through to the POST. A write that could not have been confirmed, and
+  whose retry could not have deduped, is exactly the one that duplicates.
+
+The text comparison is exact, with `\r\n` folded to `\n` on both sides and
+nothing else normalized. The date match is what separates today's note from an
+identical one written at another visit.
+
+`backend/scripts/diag-hyg-groupnotes.js` is the read-only script that prints what
+the surface actually returns; H0 marks it **Docs**, not GET-verified.
 
 ### The preview IS the write
 

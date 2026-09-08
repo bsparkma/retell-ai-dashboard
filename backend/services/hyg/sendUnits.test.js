@@ -12,6 +12,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const odWriter = require('./odWriter');
 const slipPdf = require('./slipPdf');
 const sendVisit = require('./sendVisit');
 const tcHandoff = require('./tcHandoffClient');
@@ -240,4 +241,59 @@ test('every handoff category maps to a category TC actually has', () => {
   for (const stage of contract.PerioStageSchema.options) {
     assert.ok(tcPerio.includes(tcHandoff.PERIO_MAP[stage]), stage);
   }
+});
+
+// ── reading a group note back ───────────────────────────────────────────────
+
+test('a group note is recognised across the two field names, and across CRLF', () => {
+  // H0 documents the POST field as `Note` and quotes Open Dental calling the
+  // stored column `ProcNote`. Which one this surface echoes is what the
+  // read-only diagnostic prints; until it has been run, both are read — and
+  // NOTHING else is, because inventing a third spelling is exactly how the
+  // first read-back came to look at a field that was never there.
+  const note = 'Done today: Prophy\nEntered in CareIN by hygienist@carein.ai. Unsigned.';
+
+  assert.equal(odWriter.groupNoteText({ Note: note }), note);
+  assert.equal(odWriter.groupNoteText({ ProcNote: note }), note);
+  assert.equal(odWriter.groupNoteText({ note }), null, 'not a third spelling');
+  assert.equal(odWriter.groupNoteText(null), null);
+
+  // The app sends `\n`; Open Dental's docs prefer `\r\n`. Same note.
+  assert.ok(odWriter.sameNoteText(note, note.replace(/\n/g, '\r\n')));
+  // And nothing looser than that.
+  assert.equal(odWriter.sameNoteText(note, note + '\nAddendum.'), false);
+  assert.equal(odWriter.sameNoteText(note, note.trim() + ' '), false);
+  assert.equal(odWriter.sameNoteText(note, null), false);
+});
+
+test('the row date is read as a calendar date, or not at all', () => {
+  // The date is what lets a retry tell today's note from an identical one
+  // written at another visit. A row that carries none must read as null rather
+  // than as something that might accidentally compare equal.
+  assert.equal(odWriter.groupNoteDate({ ProcDate: '2026-09-08' }), '2026-09-08');
+  assert.equal(odWriter.groupNoteDate({ ProcDate: '2026-09-08 00:00:00' }), '2026-09-08');
+  assert.equal(odWriter.groupNoteDate({}), null);
+  assert.equal(odWriter.groupNoteDate({ ProcDate: '' }), null);
+  assert.equal(odWriter.groupNoteDate({ ProcDate: 20260908 }), null, 'a number is not a date here');
+
+  // The ~GRP~ row's own ProcNum is the identifier Open Dental minted.
+  assert.equal(odWriter.groupNoteProcNum({ ProcNum: 60001 }), 60001);
+  assert.equal(odWriter.groupNoteProcNum({ ProcNum: 0 }), null);
+  assert.equal(odWriter.groupNoteProcNum({}), null);
+});
+
+test('an unreadable GroupNotes surface is a refusal, not an empty list', () => {
+  // The difference between "this patient has no notes" and "we could not ask"
+  // decides whether the next step writes. Conflating them is how a transient
+  // read failure would turn into a duplicate in a chart.
+  const seen = [];
+  const failing = async (path, params) => {
+    seen.push([path, params]);
+    return { ok: false, status: 503, data: null, error: 'upstream timeout' };
+  };
+  return odWriter.readGroupNotes(failing, 12828).then((res) => {
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'GROUP_NOTES_UNREADABLE');
+    assert.deepEqual(seen, [['/procedurelogs/GroupNotes', { PatNum: 12828 }]]);
+  });
 });
