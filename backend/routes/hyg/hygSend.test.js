@@ -64,6 +64,15 @@ function od({ procedures = [{ ProcNum: 5001 }, { ProcNum: 5002 }], writes = {}, 
       '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
       '/patients/12827': patientRow(),
       '/procedurelogs': procedures,
+      // WHERE A GROUP NOTE IS READ BACK FROM. Empty until a write puts one
+      // here — see groupNoteThatLands.
+      //
+      // The old harness echoed the note onto the `/procedurelogs` rows instead,
+      // which is a shape Open Dental does not produce: a procedurelog row
+      // carries no note text (H0 quotes OD's own "use API ProcNotes instead").
+      // The fake made the broken read-back pass, which is why six green tests
+      // sat on top of a read-back that could never confirm anything.
+      '/procedurelogs/GroupNotes': [],
       // DefNum 473 at roland. H0 found the SAME category name is 429 at the
       // other office, which is why nothing here may hardcode a number.
       '/definitions': definitions ?? [
@@ -75,16 +84,29 @@ function od({ procedures = [{ ProcNum: 5001 }, { ProcNum: 5002 }], writes = {}, 
   );
 }
 
-/** The GroupNote write, succeeding, with the note echoed back on the reads. */
-function groupNoteThatLands(client) {
+/**
+ * The GroupNote write, succeeding — as Open Dental behaves: a NEW `~GRP~` row
+ * appears on the GroupNotes surface, with a ProcNum the database minted.
+ *
+ * @param {import('./hygTestUtils').FakeOd} client
+ * @param {{ procDate?: string }} [opts] `procDate` defaults to the visit date;
+ *   pass another to model a row the dedupe must NOT treat as today's note.
+ */
+function groupNoteThatLands(client, { procDate = DATE } = {}) {
+  let nextProcNum = 60001;
   return (body) => {
-    // The read-back path: after the write, /procedurelogs carries the note.
-    client.routes['/procedurelogs'] = [
-      { ProcNum: 5001, Note: body.Note },
-      { ProcNum: 5002, Note: body.Note },
+    const procNum = nextProcNum++;
+    client.routes['/procedurelogs/GroupNotes'] = [
+      ...client.routes['/procedurelogs/GroupNotes'],
+      { ProcNum: procNum, ProcDate: procDate, Note: body.Note, procCode: '~GRP~' },
     ];
-    return { ok: true, status: 200, data: { Note: body.Note } };
+    return { ok: true, status: 200, data: { ProcNum: procNum } };
   };
+}
+
+/** How many GroupNote POSTs reached Open Dental. */
+function noteWrites(client) {
+  return client.writes.filter((w) => w[2] === '/procedurelogs/GroupNote').length;
 }
 
 /** Open a visit, add a crown, stage the given kinds. Returns the visit body. */
@@ -122,7 +144,9 @@ test('the note lands, unsigned, and is only Written after it is read back', asyn
     assert.equal(res.body.written, 1);
     assert.equal(res.body.failed, 0);
     assert.equal(res.body.outcomes[0].state, 'Written');
-    assert.match(res.body.outcomes[0].writtenRef, /GroupNote on 2 procedures \(5001, 5002\)/);
+    // THE REFERENCE CARRIES THE ~GRP~ ProcNum OPEN DENTAL MINTED, which is the
+        // whole point of reading back from the surface that has one.
+    assert.match(res.body.outcomes[0].writtenRef, /GroupNote 60001 on 2 procedures \(5001, 5002\)/);
 
     // THE PAYLOAD OPEN DENTAL SAW.
     const write = client.writes.find((w) => w[2] === '/procedurelogs/GroupNote');
@@ -150,8 +174,9 @@ test('the note lands, unsigned, and is only Written after it is read back', asyn
 });
 
 test('a note Open Dental accepts but cannot show back is Failed, never Written', async () => {
-  // The write returns 200 and the read-back does not contain the note. "We
-  // think it worked" and "the chart contains this" are different claims.
+  // The write returns 200 and the note is not on the GroupNotes surface
+  // afterwards. "We think it worked" and "the chart contains this" are
+  // different claims, and only the second one may set a row to Written.
   const client = od();
   client.writeRoutes = { '/procedurelogs/GroupNote': { ok: true, status: 200, data: {} } };
   const app = await bootHygApp({ od: client });
@@ -165,8 +190,209 @@ test('a note Open Dental accepts but cannot show back is Failed, never Written',
     assert.equal(res.body.failed, 1);
     assert.equal(res.body.outcomes[0].state, 'Failed');
     assert.equal(res.body.outcomes[0].code, 'NOTE_UNCONFIRMED');
-    assert.match(res.body.outcomes[0].errorMessage, /read it back|not on the appointment/);
+    assert.match(res.body.outcomes[0].errorMessage, /read it back|visit notes/);
     assert.equal(res.body.visit.stagedWrites[0].sentAt, null, 'a failed send is not a send');
+  } finally {
+    await app.close();
+  }
+});
+
+test('THE 9/07 BUG: a note that is only on the GroupNotes surface still confirms', async () => {
+  // What actually happened in staging on 2026-09-07: the POST returned 200, the
+  // slip and the handoff landed, and the note came back Failed. The read-back
+  // was asking `/procedurelogs?AptNum=` — the appointment's own procedures —
+  // where a `~GRP~` row never appears and where no row carries note text at
+  // all. This is that shape: the appointment rows have NO note on them, and the
+  // note is on the GroupNotes surface, which is where it really lives.
+  const client = od();
+  client.writeRoutes = { '/procedurelogs/GroupNote': groupNoteThatLands(client) };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirmAll(staged, ['note']) },
+    });
+
+    assert.equal(res.body.outcomes[0].state, 'Written');
+    // Nothing was echoed onto the appointment's procedures, and it did not
+    // matter: the old read-back's whole surface stayed empty of note text.
+    assert.deepEqual(client.routes['/procedurelogs'], [{ ProcNum: 5001 }, { ProcNum: 5002 }]);
+  } finally {
+    await app.close();
+  }
+});
+
+test('RETRY DOES NOT WRITE TWICE: the 9/07 row repairs itself instead of duplicating', async () => {
+  // THE LOAD-BEARING TEST, and the exact staging sequence from 2026-09-07.
+  //
+  // H0: "No existing procnote can EVER be edited or deleted." So a note that
+  // LANDED but could not be confirmed leaves a Failed row with a Retry button
+  // sitting over a note that is already in the chart — and every press of it
+  // used to file another permanent copy that nobody can take back out.
+  //
+  // Modelled honestly: the POST lands the row, and Open Dental then stops
+  // answering the read that would have confirmed it.
+  const client = od();
+  /** @type {any} */
+  let landed = null;
+  client.writeRoutes = {
+    '/procedurelogs/GroupNote': (body) => {
+      landed = { ProcNum: 60001, ProcDate: DATE, Note: body.Note, procCode: '~GRP~' };
+      client.routes['/procedurelogs/GroupNotes'] = {
+        ok: false,
+        status: 503,
+        data: null,
+        error: 'upstream timeout',
+      };
+      return { ok: true, status: 200, data: {} };
+    },
+  };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const send = () =>
+      api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+        body: { confirm: confirmAll(staged, ['note']) },
+      });
+
+    // 1. The send that happened on 9/07: 200 from the POST, no confirmation.
+    const first = await send();
+    assert.equal(first.body.outcomes[0].state, 'Failed');
+    assert.equal(first.body.outcomes[0].code, 'NOTE_UNCONFIRMED');
+    assert.equal(noteWrites(client), 1);
+    assert.ok(landed, 'and the note really is in the chart');
+
+    // 2. Open Dental answers again. The hygienist presses Retry.
+    client.routes['/procedurelogs/GroupNotes'] = [landed];
+    const retry = await api(
+      app.baseUrl,
+      'POST',
+      '/api/hyg/visit/900001/staged-writes/note/retry' + Q
+    );
+    assert.equal(retry.status, 200);
+
+    // 3. The send that would have duplicated the note.
+    const second = await send();
+    assert.equal(second.body.outcomes[0].state, 'Written', 'honest: the note IS on the chart');
+    assert.equal(noteWrites(client), 1, 'AND OPEN DENTAL WAS NOT WRITTEN TO A SECOND TIME');
+    assert.match(
+      second.body.outcomes[0].writtenRef,
+      /GroupNote 60001 .*already on the chart/,
+      'the reference names the row that was already there, and says which event this was'
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('an identical note from ANOTHER DAY does not false-confirm today\'s', async () => {
+  // Two prophy visits can compose byte-identical notes. "This text appears
+  // somewhere in the patient's history" is not evidence that today's note was
+  // filed, so the date has to match before the writer declines to write.
+  const client = od();
+  client.writeRoutes = { '/procedurelogs/GroupNote': groupNoteThatLands(client) };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const noteText = app.db.hyg_staged_write[0].payload.text;
+    // The same note, on the chart, dated three months ago.
+    client.routes['/procedurelogs/GroupNotes'] = [
+      { ProcNum: 41200, ProcDate: '2026-06-08', Note: noteText, procCode: '~GRP~' },
+    ];
+
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirmAll(staged, ['note']) },
+    });
+
+    assert.equal(res.body.outcomes[0].state, 'Written');
+    assert.equal(noteWrites(client), 1, "today's note WAS written — the old one is not it");
+    assert.match(res.body.outcomes[0].writtenRef, /GroupNote 60001 /, 'confirmed by the NEW row');
+    assert.doesNotMatch(res.body.outcomes[0].writtenRef, /already on the chart/);
+  } finally {
+    await app.close();
+  }
+});
+
+test('a LONGER note containing this one does not confirm it', async () => {
+  // The old read-back used `.includes()`. Once the same comparison also decides
+  // whether to SKIP a write, a loose match stops being cosmetic and becomes a
+  // note that never reaches a chart.
+  const client = od();
+  client.writeRoutes = { '/procedurelogs/GroupNote': { ok: true, status: 200, data: {} } };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const noteText = app.db.hyg_staged_write[0].payload.text;
+    client.routes['/procedurelogs/GroupNotes'] = [
+      {
+        ProcNum: 41201,
+        ProcDate: DATE,
+        Note: noteText + '\nAddendum: patient rescheduled.',
+        procCode: '~GRP~',
+      },
+    ];
+
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirmAll(staged, ['note']) },
+    });
+
+    assert.equal(res.body.outcomes[0].state, 'Failed');
+    assert.equal(res.body.outcomes[0].code, 'NOTE_UNCONFIRMED');
+    assert.equal(noteWrites(client), 1, 'the near-miss did not suppress the write either');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the same note in CRLF is the same note', async () => {
+  // The app sends `\n`; Open Dental's docs prefer `\r\n` in note fields, so a
+  // round trip may come back in the other convention. That is the same note
+  // written the same way — and if it did not match, every retry would file
+  // another copy forever.
+  const client = od();
+  client.writeRoutes = { '/procedurelogs/GroupNote': { ok: true, status: 200, data: {} } };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const noteText = app.db.hyg_staged_write[0].payload.text;
+    client.routes['/procedurelogs/GroupNotes'] = [
+      { ProcNum: 41202, ProcDate: DATE, Note: noteText.replace(/\n/g, '\r\n'), procCode: '~GRP~' },
+    ];
+
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirmAll(staged, ['note']) },
+    });
+
+    assert.equal(res.body.outcomes[0].state, 'Written');
+    assert.equal(noteWrites(client), 0, 'and it was recognised BEFORE writing, not after');
+    assert.match(res.body.outcomes[0].writtenRef, /GroupNote 41202 .*already on the chart/);
+  } finally {
+    await app.close();
+  }
+});
+
+test('an unreadable pre-check refuses rather than risking a duplicate', async () => {
+  // Fail closed. A write we could not have confirmed, and whose retry could not
+  // have deduped, is exactly the write that produced the duplicate. Declining
+  // costs a retry; making it costs a permanent row in a patient's chart.
+  const client = od();
+  client.routes['/procedurelogs/GroupNotes'] = {
+    ok: false,
+    status: 503,
+    data: null,
+    error: 'upstream timeout',
+  };
+  client.writeRoutes = { '/procedurelogs/GroupNote': groupNoteThatLands(client) };
+  const app = await bootHygApp({ od: client });
+  try {
+    const staged = await stagedVisit(app, ['note']);
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirmAll(staged, ['note']) },
+    });
+
+    assert.equal(res.body.outcomes[0].state, 'Failed');
+    assert.equal(res.body.outcomes[0].code, 'NOTE_PRECHECK_UNAVAILABLE');
+    assert.equal(noteWrites(client), 0, 'NOTHING was written');
   } finally {
     await app.close();
   }

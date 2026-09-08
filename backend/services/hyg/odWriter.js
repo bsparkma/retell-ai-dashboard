@@ -141,6 +141,130 @@ async function readAppointmentProcedures(odGet, aptNum) {
   return { ok: true, procNums };
 }
 
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHERE A GROUP NOTE IS READ BACK FROM — AND WHY IT IS NOT /procedurelogs
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A GroupNote does not put text on the procedures it spans. It creates a
+ * SYNTHETIC procedure whose code is `~GRP~` and whose note holds the text —
+ * `docs/HYG_SPIKE_H0_OD_COVERAGE.md` says so in both places it discusses the
+ * endpoint, and it names a dedicated read surface for those rows:
+ *
+ *   > `/procedurelogs/GroupNote` … Read: `GET /procedurelogs/GroupNotes?PatNum=`
+ *   > (25.2.38) … creates a `~GRP~` procedure spanning `ProcNums[]`
+ *
+ * Both practices run 25.4.48, so the surface exists at both.
+ *
+ * The first version of the read-back asked `GET /procedurelogs?AptNum=` and
+ * looked for the text on the appointment's own procedures. That is the wrong
+ * question twice over: the `~GRP~` row is not one of them, and a procedurelog
+ * row does not carry note text at all — Open Dental's own documentation, quoted
+ * in H0, says *"Cannot update notes on single procedures through ProcedureLog
+ * endpoints; use API ProcNotes instead"*, because the note lives in `procnote`.
+ * `String(p.Note ?? '')` was therefore `''` on every row, and the read-back
+ * could never have confirmed anything. On 2026-09-07 it duly reported
+ * NOTE_UNCONFIRMED for a note the POST had accepted with a 200.
+ *
+ * ⚠️ The coverage table marks this surface **Docs**, not GET-verified — the
+ * spike never called it. `backend/scripts/diag-hyg-groupnotes.js` is the
+ * read-only script that settles its shape; see the slice report.
+ */
+const GROUP_NOTES_PATH = '/procedurelogs/GroupNotes';
+
+/**
+ * The note text on a GroupNotes row, or null.
+ *
+ * TWO FIELD NAMES, BOTH FROM THE RECORD — not a guess and not a net cast wide.
+ * H0 documents the POST field as `Note`, and quotes Open Dental calling the
+ * procedure's stored column `ProcNote`. Which one this surface echoes is
+ * exactly what the diagnostic prints. Nothing else is read: inventing a third
+ * spelling is how the first read-back came to look at a field that was never
+ * there.
+ *
+ * @param {any} row
+ * @returns {string | null}
+ */
+function groupNoteText(row) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = row.Note ?? row.ProcNote;
+  return typeof raw === 'string' ? raw : null;
+}
+
+/**
+ * The two texts are the same note.
+ *
+ * EXACT, with ONE normalization: `\r\n` is folded to `\n` on both sides. The
+ * app sends `\n` (stagedWriteComposer's NOTE_NEWLINE) and Open Dental's docs
+ * prefer `\r\n` in note fields, so a round trip may well come back in the other
+ * convention. That is the same note written the same way, not a similar one.
+ *
+ * Everything else is byte-exact on purpose. The old read-back used
+ * `.includes()`, which would have matched a longer note that merely CONTAINED
+ * this one — and once this comparison also decides whether to skip a write, a
+ * loose match stops being a cosmetic risk and starts being a note that never
+ * reaches a chart.
+ *
+ * @param {string | null} a @param {string | null} b @returns {boolean}
+ */
+function sameNoteText(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  return a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
+}
+
+/**
+ * The row's procedure date as `YYYY-MM-DD`, or null when it carries none.
+ *
+ * @param {any} row @returns {string | null}
+ */
+function groupNoteDate(row) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = row.ProcDate ?? row.procDate;
+  if (typeof raw !== 'string') return null;
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(raw.trim());
+  return m ? m[1] : null;
+}
+
+/**
+ * The `~GRP~` row's own ProcNum — the identifier OPEN DENTAL minted.
+ *
+ * @param {any} row @returns {number | null}
+ */
+function groupNoteProcNum(row) {
+  if (!row || typeof row !== 'object') return null;
+  const n = Number(row.ProcNum);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Every GroupNote on a patient.
+ *
+ * @param {(path: string, params?: object, opts?: object) => Promise<any>} odGet
+ * @param {number} patNum
+ * @returns {Promise<{ ok: true, rows: any[] }
+ *          | { ok: false, code: string, error: string }>}
+ */
+async function readGroupNotes(odGet, patNum) {
+  const res = await odGet(GROUP_NOTES_PATH, { PatNum: patNum });
+  if (!res || !res.ok || !Array.isArray(res.data)) {
+    return {
+      ok: false,
+      code: 'GROUP_NOTES_UNREADABLE',
+      error: 'Could not read this patient’s visit notes back from Open Dental',
+    };
+  }
+  return { ok: true, rows: res.data };
+}
+
+/**
+ * The rows carrying exactly this note text.
+ *
+ * @param {any[]} rows @param {string} note @returns {any[]}
+ */
+function matchingGroupNotes(rows, note) {
+  return rows.filter((row) => sameNoteText(groupNoteText(row), note));
+}
+
 /**
  * Write the visit note as a GroupNote, UNSIGNED.
  *
@@ -153,9 +277,35 @@ async function readAppointmentProcedures(odGet, aptNum) {
  * has one. Omitted when it does not — a note attributed to provider zero is
  * worse than a note attributed to nobody.
  *
- * READ-BACK: the note text is fetched again from `/procedurelogs?AptNum=` and
- * must be present on at least one procedure. The POST returning 200 is not the
- * claim being made here; "the chart contains this" is.
+ * READ-BACK: the note is fetched again from `/procedurelogs/GroupNotes?PatNum=`
+ * — see the block above for why that surface and not the appointment's own
+ * procedures. The POST returning 200 is not the claim being made here; "the
+ * chart contains this" is.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * READ FIRST. A RETRY MUST NOT WRITE A SECOND PERMANENT NOTE.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * H0: *"No existing procnote can EVER be edited or deleted."* So a POST that
+ * landed but could not be confirmed leaves a row the hygienist sees as Failed,
+ * with a Retry button, over a note that is already in the chart — and every
+ * press of it filed another copy that nobody can take out again. That is the
+ * shape this function is built around now:
+ *
+ *   1. read the patient's GroupNotes BEFORE writing;
+ *   2. an identical note already on the visit's date ⇒ do not POST at all,
+ *      report the row that is already there;
+ *   3. POST;
+ *   4. read again, and confirm by the row that APPEARED — not merely by a row
+ *      that matches, which an older identical note would also satisfy.
+ *
+ * Step 4 is why the before-read is not just a dedupe check: comparing the two
+ * reads identifies the `~GRP~` ProcNum Open Dental minted for THIS note, which
+ * is the identifier this file's header requires of every `ok: true`.
+ *
+ * ⚠️ An unreadable before-read REFUSES rather than falling through to the POST.
+ * A write we could not have confirmed and whose retry could not have deduped is
+ * exactly the write that produced the duplicate; declining to make it costs a
+ * retry, and making it costs a permanent row.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE PAYLOAD, AND THE TWO THINGS THE FIRST REAL SEND GOT WRONG
@@ -185,10 +335,45 @@ async function readAppointmentProcedures(odGet, aptNum) {
  * causes on staging, and it has not been run — see the slice report.
  *
  * @param {number} patNum REQUIRED by Open Dental. Never optional here.
- * @returns {Promise<{ ok: true, procNums: number[] }
+ * @param {string | null} visitDate `YYYY-MM-DD`; the date a prior identical
+ *   note must share before this declines to write a second one.
+ * @returns {Promise<{ ok: true, procNums: number[], groupProcNum: number | null,
+ *            alreadyPresent: boolean }
  *          | { ok: false, code: string, error: string }>}
  */
-async function writeGroupNote(od, odGet, { aptNum, patNum, procNums, note, provNum }) {
+async function writeGroupNote(od, odGet, { patNum, procNums, note, provNum, visitDate }) {
+  // ── 1. WHAT IS ALREADY THERE ───────────────────────────────────────────────
+  const before = await readGroupNotes(odGet, patNum);
+  if (!before.ok) {
+    return {
+      ok: false,
+      code: 'NOTE_PRECHECK_UNAVAILABLE',
+      error:
+        'Open Dental did not answer when asked which visit notes this patient already has, ' +
+        'so the note was not sent — writing it now could file a second permanent copy of a ' +
+        'note that is already in the chart. Try again.',
+    };
+  }
+  const priorMatches = matchingGroupNotes(before.rows, note);
+
+  // ── 2. ALREADY ON THE CHART ────────────────────────────────────────────────
+  // The date is required for this branch, not optional: two prophy visits can
+  // compose the SAME note text, and "identical text somewhere in this patient's
+  // history" is not evidence that today's note was filed. When the surface
+  // carries no date, this simply does not fire and the write proceeds — the
+  // status quo, and never a Written that isn't true.
+  const already = visitDate
+    ? priorMatches.find((row) => groupNoteDate(row) === visitDate)
+    : undefined;
+  if (already) {
+    return {
+      ok: true,
+      procNums,
+      groupProcNum: groupNoteProcNum(already),
+      alreadyPresent: true,
+    };
+  }
+  // ── 3. WRITE ──────────────────────────────────────────────────────────────
   const body = {
     // REQUIRED. Its absence is the likeliest cause of the "Invalid JSON" that
     // came back from the first real send.
@@ -213,26 +398,44 @@ async function writeGroupNote(od, odGet, { aptNum, patNum, procNums, note, provN
     };
   }
 
-  // READ-BACK. A 200 is not the claim.
-  const after = await odGet('/procedurelogs', { AptNum: aptNum });
-  if (!after || !after.ok || !Array.isArray(after.data)) {
+  // ── 4. READ-BACK. A 200 IS NOT THE CLAIM. ─────────────────────────────────
+  const after = await readGroupNotes(odGet, patNum);
+  if (!after.ok) {
     return {
       ok: false,
       code: 'NOTE_UNCONFIRMED',
       error:
         'Open Dental accepted the note but did not answer when asked to read it back, ' +
-        'so this is being reported as unsent rather than guessed at',
+        'so this is being reported as unsent rather than guessed at. Sending it again is ' +
+        'safe: CareIN checks for it before writing.',
     };
   }
-  const landed = after.data.some((p) => String(p.Note ?? '').includes(note));
-  if (!landed) {
-    return {
-      ok: false,
-      code: 'NOTE_UNCONFIRMED',
-      error: 'Open Dental accepted the note but it is not on the appointment when read back',
-    };
+
+  // CONFIRM BY WHAT APPEARED, not by what matches. An older identical note
+  // would satisfy "a row with this text exists" without our note ever landing.
+  const priorProcNums = new Set(
+    priorMatches.map((row) => groupNoteProcNum(row)).filter((n) => n !== null)
+  );
+  const afterMatches = matchingGroupNotes(after.rows, note);
+  const appeared = afterMatches.find((row) => {
+    const procNum = groupNoteProcNum(row);
+    return procNum !== null && !priorProcNums.has(procNum);
+  });
+  if (appeared) {
+    return { ok: true, procNums, groupProcNum: groupNoteProcNum(appeared), alreadyPresent: false };
   }
-  return { ok: true, procNums };
+  // No ProcNum to diff on, but there is one more matching row than there was.
+  // Weaker evidence, and still evidence: the count moved because of this write.
+  if (afterMatches.length > priorMatches.length) {
+    return { ok: true, procNums, groupProcNum: null, alreadyPresent: false };
+  }
+  return {
+    ok: false,
+    code: 'NOTE_UNCONFIRMED',
+    error:
+      'Open Dental accepted the note but it is not among this patient’s visit notes when ' +
+      'read back',
+  };
 }
 
 /**
@@ -300,7 +503,14 @@ module.exports = {
   slipCategoryName,
   resolveSlipDocCategory,
   readAppointmentProcedures,
+  readGroupNotes,
+  matchingGroupNotes,
+  sameNoteText,
+  groupNoteText,
+  groupNoteDate,
+  groupNoteProcNum,
   writeGroupNote,
   uploadDocument,
   DOC_CATEGORY_DEFINITION_CATEGORY,
+  GROUP_NOTES_PATH,
 };

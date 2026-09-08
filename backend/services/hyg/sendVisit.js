@@ -205,21 +205,40 @@ async function sendNote(payload, ctx) {
   }
 
   const written = await odWriter.writeGroupNote(ctx.od, ctx.odGet, {
-    aptNum: ctx.visit.aptNum,
     // REQUIRED by Open Dental, and it comes from the VISIT — which took it from
     // Open Dental's own answer for the appointment, never from a request body.
     patNum: ctx.visit.patNum,
     procNums: procedures.procNums,
     note: payload.text,
     provNum: ctx.appointment.provHyg ?? ctx.appointment.provNum ?? null,
+    // What an already-present note must SHARE before the writer declines to
+    // file a second copy of it. Same date the visit itself is keyed by.
+    visitDate: ctx.visit.visitDate || ctx.date,
   });
   if (!written.ok) return written;
-  return {
-    ok: true,
-    writtenRef: `GroupNote on ${written.procNums.length} procedure${
-      written.procNums.length === 1 ? '' : 's'
-    } (${written.procNums.join(', ')})`,
-  };
+  return { ok: true, writtenRef: groupNoteRef(written) };
+}
+
+/**
+ * Where the note is, in the words of the system that holds it.
+ *
+ * `groupProcNum` is the `~GRP~` row Open Dental minted, when the read-back
+ * surface gave one — the strongest form this reference takes, because it is a
+ * number the chart can be searched by rather than an echo of what we sent.
+ *
+ * `alreadyPresent` is said out loud. A row that reads Written because CareIN
+ * found the note already on the chart is not the same event as a row that
+ * reads Written because CareIN just filed it, and a reference that blurred the
+ * two would quietly turn "we did not write twice" into "we wrote twice".
+ *
+ * @param {{ procNums: number[], groupProcNum: number | null, alreadyPresent: boolean }} written
+ * @returns {string}
+ */
+function groupNoteRef(written) {
+  const count = written.procNums.length;
+  const on = `on ${count} procedure${count === 1 ? '' : 's'} (${written.procNums.join(', ')})`;
+  const head = written.groupProcNum ? `GroupNote ${written.groupProcNum} ${on}` : `GroupNote ${on}`;
+  return written.alreadyPresent ? `${head} — already on the chart` : head;
 }
 
 /** The routing slip → a deterministic PDF into the patient's images. */
