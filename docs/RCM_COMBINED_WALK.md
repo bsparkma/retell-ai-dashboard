@@ -1522,3 +1522,119 @@ is why.
 | **W-13** | Reword, keep refusing. Rides the fix-before-shadow batch. **This branch is not reopened.** |
 | **W-14** | Deferred to fix-before-shadow beside W-7 — same family, and scoring changes do not happen mid-walk. **Logged, not dropped.** |
 
+---
+
+## 17. W-15 — press 1 refused, on the sibling of the branch W-9 fixed
+
+Read fresh at **`2026-09-09T14:00:51.766Z`** (plan/line) and
+**`14:02:02.946Z`** (chart). **No writes, no fixes.**
+
+### 17.1 The press ran, and it got further than ever before
+
+| | Value |
+| --- | --- |
+| `drain_attempt_at` | **`2026-09-09T13:51:19.165Z`** — Beau's press |
+| `drained_by` | `admin@carein.ai` |
+| `attempt_count` | **4** (was 3) |
+| `finished_at` | **`2026-09-09T13:51:29.079Z`** — ten seconds later |
+| `status` | **`partially_posted`** (was `blocked`) |
+| `drain_step` | **`claimproc_writes`** (was `resolve_config`) |
+| `last_error` | `new row for relation "rcm_posting_queue_line" violates check constraint "rcm_posting_queue_line_skip_reason_check"` |
+| `reconciled_at` | `null` |
+| `posted_total_cents` | `0` |
+| `od_claim_payment_num` | `21491`, unchanged |
+| the line row | **byte-identical** — `updated_at` still `2026-09-04T02:32:15.691Z` |
+
+**The W-10 fix worked.** `drain_step` moving from `resolve_config` to
+`claimproc_writes` is the proof: the plan cleared `checkPreconditions` for the
+first time since 9/4 and entered the run. It then refused one step later.
+
+### 17.2 The screen is not stale — it refused, on the same sentence from a different place
+
+`partially_posted` is the true current status.
+
+The constraint is the same one W-9 was about. The **writer** is not.
+`postingDrain.js:2848`, in the claimproc-writes step:
+
+```js
+if (decision.action === 'attached') {
+  // On a check already. Never PUT again (test 11) and never re-billed.
+  await persistLine(pool, line.queueLineId, {
+    status: 'paid',
+    odClaimPaymentNum: decision.checkNum,
+    paidAt: true,
+    lastError: null,
+  });
+```
+
+`status: 'paid'` over a row that still carries `skip_reason` — refused by the
+paired constraint, thrown out of the step, caught, written `partially_posted`.
+
+**Why it appeared only now, on the fourth attempt.** `decideLineAction` re-reads
+the chart every run and the chart has changed underneath it:
+
+| Attempt | What the chart held at decision time | Decision | Writer |
+| --- | --- | --- | --- |
+| 2 (9/4) | money on the claimproc, **check not yet created** | `skip` | the check-stamping loop → **W-9** |
+| 4 (today) | money on the claimproc **and attached to check 21491** | **`attached`** | `:2848` → **W-15** |
+
+The line's state machine walked from one branch to its sibling as the chart
+filled in, and the sibling carries the identical defect.
+
+### 17.3 Open Dental did not change
+
+Every timestamp on the chart is from the ORIGINAL kill-test run on 2026-09-03,
+not from today's press:
+
+| | Value | `SecDateTEdit` |
+| --- | --- | --- |
+| claim **53900** | `ClaimStatus "R"`, `DateReceived 2026-08-29`, `InsPayAmt 1`, `WriteOff 0` | `2026-09-03 21:32:16` |
+| claimproc **536170** | `Received`, `InsPayAmt 1`, `ClaimPaymentNum 21491`, `DateCP 2026-08-29` | `2026-09-03 21:34:20` |
+| check **21491** | `CheckAmt 1`, `DepositNum 0` | `2026-09-03 21:34:20` |
+
+**Exactly one claimproc, exactly one check, nothing added and nothing edited.**
+The `attached` branch issues no Open Dental write by design — *"Never PUT again
+(test 11)"* — so the run was reads only, and the chart proves it.
+
+### 17.4 This is my incomplete fix, and the sweep was the wrong shape to catch it
+
+W-9 guarded **the call site that manifested** rather than the writer every call
+site shares. `persistLine` is that writer — a single function, `:1606` — and it
+will move a row off the skip family while leaving `skip_reason` set for any
+caller that asks it to.
+
+Enumerating the callers that write a NON-skip status over a row that may carry a
+reason:
+
+| Site | Status written | Reachable on a skipped row? |
+| --- | --- | --- |
+| `:2851` | `paid` (**attached**) | **YES — fired today, W-15** |
+| `:2922` | `claimproc_written` | yes, if a later run decides `write` |
+| `:2756` | `failed` (**conflict**) | yes, if a later run decides `conflict` |
+| `:3220` | `paid` (check stamping) | guarded by `skippedThisRun` — **W-9's fix** |
+| `:3005` | `claim_received` | guarded — `attached` and `skip` both `continue` |
+| `:1836`, `:1899`, `:1967`, `:3295` | `failed` / `recouped` | takeback lines, which never carry a skip |
+
+So there are **two more live paths** behind this one, not just the one that fired.
+
+**And §17's class sweep could never have found it.** That sweep asked *does this
+predicate misread a negative number* — a question about **signs**. This defect is
+about **which columns may legally change together**, which is a question about
+**constraints**. Right instinct, wrong axis. The sweep that would have caught it
+is: *which code paths write `status` without clearing `skip_reason`* — and it is
+answered by the table above.
+
+### 17.5 Proposed, not implemented
+
+**Fix the writer, not the callers.** `persistLine` already builds every UPDATE for
+this table in one place. When a patch sets a status outside
+`('skipped', 'skipped_already_posted')` and does not itself supply a
+`skipReason`, it should clear `skip_reason` in the same statement — which makes
+the constraint unbreakable for every caller, present and future, instead of
+correct at whichever call sites somebody remembered.
+
+That is one change at `postingDrain.js:1606`, and it retires W-9's per-site guard
+as well rather than adding a third.
+
+**No code written. Awaiting PM.**
+
