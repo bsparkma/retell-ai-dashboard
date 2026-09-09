@@ -1910,11 +1910,35 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
             'cannot be written here. Nothing was sent for this line.',
           'recoupment'
         );
-        throw new OdWriteError(
+        /*
+         * `alreadyBlocked` — THE ROW IS ALREADY IN ITS HONEST FINAL STATE.
+         *
+         * This is the only site in the module that blocks a row and then
+         * throws, and the outer catch's job is to finalise a row that has NOT
+         * yet been finalised. Without this flag the catch overwrites a
+         * deliberate `blocked` + `no_adj_type` with `partially_posted` and no
+         * reason at all — a less honest state, and one
+         * `rcm_posting_queue_blocked_reason_check` refuses outright, so on real
+         * Postgres the refusal threw a second error on top of itself.
+         *
+         * Found by the 2026-09-09 constraint sweep once `FakeRcmDb` learned the
+         * constraint. Roland carries the adjustment type, which is why the walk
+         * never met it; valley's Category-1 list has not been read, and valley
+         * is the next office to be switched on.
+         */
+        const refusal = new OdWriteError(
           'no recoupment adjustment type in this practice',
           'OD_NO_ADJ_TYPE',
           { status: 0, retryable: false }
         );
+        /*
+         * Set here rather than passed in: `OdWriteError`'s constructor keeps
+         * `status`, `retryable` and `detail` and drops anything else, and
+         * widening a class the whole transport shares for one caller's use
+         * would put a drain concern in an Open Dental type.
+         */
+        refusal.alreadyBlocked = true;
+        throw refusal;
       }
 
       const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
@@ -3629,6 +3653,15 @@ async function drainRow(ctx, queueId) {
      * rewriting that status — `attachEobDocuments` handles its own failures on
      * its own columns and never throws to here.
      */
+    /*
+     * A ROW THAT REFUSED ITSELF IS ALREADY FINISHED. See `alreadyBlocked` above:
+     * finalising it again would replace a named refusal with a vaguer state.
+     */
+    if (err && err.alreadyBlocked === true) {
+      console.error(`[rcm/drain] ${office} plan ${queueId} blocked at ${step}: ${err.message}`);
+      return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_ADJ_TYPE, detail: err.message };
+    }
+
     const touchedChart = [
       'claimproc_writes',
       'claim_receipts',

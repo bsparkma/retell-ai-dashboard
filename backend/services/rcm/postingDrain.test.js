@@ -2013,6 +2013,23 @@ test('the adjustment path REFUSES when the practice has no such adjustment type'
     'and it is NEVER promoted to the irreversible path — nobody authorised that'
   );
   assert.ok(result.outcomes[0]);
+
+  /*
+   * W-17 — THE REFUSAL KEEPS ITS OWN STATE.
+   *
+   * This is the only site that blocks a row and then throws, and the outer
+   * catch's job is to finalise a row that has NOT been finalised. It used to
+   * overwrite this deliberate `blocked` + `no_adj_type` with `partially_posted`
+   * and no reason — a vaguer state, and one
+   * `rcm_posting_queue_blocked_reason_check` refuses outright, so against real
+   * Postgres an honest refusal threw a second error on top of itself.
+   *
+   * Invisible until the 2026-09-09 sweep taught `FakeRcmDb` the constraint:
+   * the assertion above passed either way, because the reason survived in the
+   * row while the STATUS moved out from under it.
+   */
+  assert.equal(row.status, 'blocked', 'the block is not overwritten by the catch');
+  assert.equal(result.outcomes[0].status, 'blocked');
 });
 
 test('a MIXED plan writes a check for the positive lines ONLY', async () => {
