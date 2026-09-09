@@ -1140,3 +1140,93 @@ and opens the docs PR.
 21491** are all WALK-LIVE. `53860` / `406653` / `406654` remain **burned** and go
 on neither list.
 
+
+---
+
+## 12. W-10 — the plan cannot be healed, and press 1 already proved it
+
+### 12.1 What actually happened
+
+**Press 1 was already made, on 2026-09-04 at `03:31:09Z`, and it blocked.** It ran
+on revision `0000159` — the fixed build — twenty minutes after the deploy and
+after [§11.5](#115-stood-down-for-the-night--cc-2026-09-04) was written.
+
+| | |
+| --- | --- |
+| `status` | **`blocked`** (was `partially_posted`) |
+| `blocked_reason` | **`plan_empty`** |
+| `last_error` | **"This plan has no postable lines."** |
+| `drain_step` | `resolve_config` |
+| `attempt_count` | **3** |
+| `drained_by` / `drain_attempt_at` | `admin@carein.ai` / `2026-09-04T03:31:09.107Z` |
+| the line | unchanged — `skipped_already_posted`, `od_claim_payment_num` still **null**, `updated_at` still `02:32:15.691` |
+| `od_claim_payment_num` on the queue | still **21491** |
+
+**No chart write occurred.** The refusal is a precondition, and it fires before
+`claimproc_writes` — the line row is byte-identical to where the strand left it.
+
+### 12.2 The cause, read out of the code
+
+`checkPreconditions`, `postingDrain.js:752`:
+
+```js
+const actionable = lines.filter(
+  (l) => l.status !== 'skipped' && l.status !== 'skipped_already_posted'
+);
+if (lines.length === 0 || actionable.length === 0) {
+  return { reason: BLOCK_REASONS.PLAN_EMPTY, detail: 'This plan has no postable lines.' };
+}
+```
+
+This plan's **only** line is `skipped_already_posted`, so `actionable.length === 0`
+and the run is refused before it starts.
+
+**This is W-9's category error one gate earlier.** W-9 was a skipped line that
+could not record what it knew; W-10 is a skipped line that makes its whole plan
+look absent. The predicate conflates *"no line needs a CHART write"* with *"no
+line needs anything"* — and the second is false here. The plan still owes the
+check number on its line, a reconcile, the B2 confirmation and a finalize to
+`posted`. That is precisely the work W-9 unblocked, and this gate stops the drain
+from ever reaching it.
+
+**W-9 was necessary but not sufficient.** The strand survives.
+
+### 12.3 There is no way out in the current code
+
+| Route | Answer |
+| --- | --- |
+| `POST /posting/drain` | `blocked` **is** drainable, so it re-runs — and re-blocks on the same predicate. Every press produces another `plan_empty`. |
+| `POST /posting/:id/recheck` | refuses anything but `posted` / `partially_posted` → **`NOTHING_POSTED_YET`**. It only reads, so it could not finalize the plan even if it answered. |
+
+The plan is stranded again, one step earlier than before, and pressing Post
+cannot move it.
+
+**Reachability beyond this walk:** any interrupted run whose lines all come back
+already-posted lands here. On a single-line plan — which is ordinary — that is
+every resume after the claimproc write. This is not a kill-test artefact.
+
+### 12.4 Two corrections I owe this record
+
+1. **[§11.2](#112-the-replay-press-predicted-before-it-is-pressed)'s prediction was
+   wrong.** I traced the drain forward from `claimRow` through claimproc, claim,
+   check, reconcile and finalize, and never checked `checkPreconditions`, which
+   runs **before all of it**. I predicted "heals to `posted`" and the real answer
+   was "refused as empty". The steps I did trace are still right; they are simply
+   never reached.
+2. **[§11.5](#115-stood-down-for-the-night--cc-2026-09-04) says the stranded plan
+   was "left exactly as it was". It was not, and I did not check.** The stand-down
+   verified the env, the scheduler and the worktrees, and then asserted the plan
+   row from memory of a reading twenty minutes stale. The row had already moved.
+
+### 12.5 Proposed, not implemented
+
+The narrow fix is to ask whether the plan has anything **left to record**, not
+whether it has anything left to **write**. `checkPreconditions` already holds the
+queue row, so the evidence is in hand: a plan whose lines are all skipped but
+which carries `od_claim_payment_num` with `reconciled_at` still null has
+unmistakable outstanding work, and refusing it as empty is the false half of the
+predicate.
+
+**No code has been written for this.** Awaiting a PM ruling, per the walk's
+standing pattern.
+
