@@ -425,6 +425,14 @@ test("today is the OFFICE's day, not the container's", () => {
     assert.equal(hygDayWarm.today(new Date('2026-09-09T04:30:00Z')), '2026-09-08');
     // The winter side of the same boundary, where the offset is UTC-6.
     assert.equal(hygDayWarm.today(new Date('2026-01-09T05:30:00Z')), '2026-01-08');
+
+    // 01:00 UTC — 8pm Central the evening before, and the window a CI run or a
+    // hygienist working late actually lands in. This is the instant the whole
+    // slice is named after.
+    assert.equal(hygDayWarm.today(new Date('2026-09-09T01:00:00Z')), '2026-09-08');
+    // And the boundary itself, from both sides: midnight CENTRAL, not UTC.
+    assert.equal(hygDayWarm.today(new Date('2026-09-09T04:59:59Z')), '2026-09-08');
+    assert.equal(hygDayWarm.today(new Date('2026-09-09T05:00:00Z')), '2026-09-09');
   } finally {
     if (original === undefined) delete process.env.OFFICE_TIMEZONE;
     else process.env.OFFICE_TIMEZONE = original;
@@ -473,5 +481,67 @@ test('the warm re-reads the pilot switch every pass, never a boot snapshot', asy
   } finally {
     registryModule.getPlatformSetting = savedGet;
     hygPilot.resetCacheForTests();
+  }
+});
+
+/**
+ * THE ONE PLACE THE CLIENT AND THE SERVER COULD DISAGREE ABOUT "TODAY".
+ *
+ * The Day View has to know the office's zone BEFORE it has asked the server
+ * anything — the default date is needed at mount, not after the first fetch —
+ * so it cannot read `OFFICE_TIMEZONE` and carries its own constant instead.
+ * That makes this the only seam where the two could drift apart, and a drift
+ * here is a hygienist being shown one day while the 07:45 warm heated another.
+ *
+ * So it is asserted rather than trusted. Changing the office's zone means
+ * changing both, and forgetting one is a red build.
+ */
+test('the client constant and the warm agree about the office timezone', () => {
+  const warmConfig = require('../config/hygWarm');
+  const contract = require('../hyg/contract.gen.cjs');
+
+  assert.equal(
+    contract.OFFICE_TIME_ZONE,
+    warmConfig.DEFAULT_TIMEZONE,
+    'shared/hyg/contract.ts OFFICE_TIME_ZONE and hygWarm DEFAULT_TIMEZONE have drifted'
+  );
+
+  // And it is a real IANA zone rather than an offset or a typo — `Intl` throws
+  // on a name it does not know, which is what makes this worth one line.
+  assert.doesNotThrow(() =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: contract.OFFICE_TIME_ZONE }).format(new Date())
+  );
+});
+
+test('the client and the warm name the SAME day at 01:00 UTC', () => {
+  // The two implementations are different — `Intl` in the browser bundle,
+  // `localDayKey` on the server — so agreeing on the constant is not the same
+  // as agreeing on the answer. This checks the answer, on both sides of the
+  // Central midnight the evening hours sit before.
+  const contract = require('../hyg/contract.gen.cjs');
+  const { localDayKey } = require('./localDayClock');
+  const original = process.env.OFFICE_TIMEZONE;
+  process.env.OFFICE_TIMEZONE = 'America/Chicago';
+  try {
+    for (const instant of [
+      '2026-09-09T01:00:00Z',
+      '2026-09-09T04:59:59Z',
+      '2026-09-09T05:00:00Z',
+      '2026-01-06T05:59:59Z',
+      '2026-01-06T06:00:00Z',
+    ]) {
+      const now = new Date(instant);
+      const client = new Intl.DateTimeFormat('en-CA', {
+        timeZone: contract.OFFICE_TIME_ZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(now);
+      assert.equal(client, localDayKey('America/Chicago', now), instant);
+      assert.equal(client, hygDayWarm.today(now), instant);
+    }
+  } finally {
+    if (original === undefined) delete process.env.OFFICE_TIMEZONE;
+    else process.env.OFFICE_TIMEZONE = original;
   }
 });

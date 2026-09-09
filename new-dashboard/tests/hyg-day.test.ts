@@ -23,6 +23,7 @@ import {
   formatClock,
   formatLength,
   groupByOperatory,
+  rollToNewDay,
   shiftIsoDate,
   startMinutes,
   summarise,
@@ -72,16 +73,75 @@ function op(over: Partial<HygOperatory> = {}): HygOperatory {
 
 // ─── dates ───────────────────────────────────────────────────────────────────
 
+/**
+ * EVERY TEST BELOW NAMES ITS OWN INSTANT, IN UTC.
+ *
+ * A date test that leans on the runner's zone passes on a laptop in Chicago
+ * and fails on a CI runner on UTC — or, worse, passes on both until the hour
+ * of day changes. `new Date(2026, 8, 8, 19)` is such a test: it means a
+ * DIFFERENT instant depending on where it runs. Every instant here is written
+ * as a `Z` literal, so these tests state what they are testing and hold in any
+ * zone the suite is ever run in.
+ */
 describe("todayIso", () => {
-  it("uses the LOCAL calendar date, not the UTC one", () => {
-    // 7pm Central on the 8th is already the 9th in UTC. The UTC version of this
-    // function would head the page "Today" over tomorrow's schedule.
-    const localEvening = new Date(2026, 8, 8, 19, 30, 0);
-    expect(todayIso(localEvening)).toBe("2026-09-08");
+  it("is the OFFICE's day at 01:00 UTC — the hours the bug lived in", () => {
+    // 01:00 UTC on the 9th is 8pm Central on the 8th. The UTC answer is
+    // "the 9th" and it is wrong: a hygienist opening the app after dinner
+    // would be handed TOMORROW's schedule under today's heading.
+    expect(todayIso(new Date("2026-09-09T01:00:00Z"))).toBe("2026-09-08");
+  });
+
+  it("does not roll over until midnight CENTRAL", () => {
+    // 04:59 UTC is 11:59pm Central — still the 8th.
+    expect(todayIso(new Date("2026-09-09T04:59:59Z"))).toBe("2026-09-08");
+    // 05:00 UTC is midnight Central — now the 9th.
+    expect(todayIso(new Date("2026-09-09T05:00:00Z"))).toBe("2026-09-09");
+  });
+
+  it("follows DST rather than a fixed offset", () => {
+    // In JANUARY the office is on CST (UTC-6), so the boundary is 06:00 UTC.
+    expect(todayIso(new Date("2026-01-06T05:59:59Z"))).toBe("2026-01-05");
+    expect(todayIso(new Date("2026-01-06T06:00:00Z"))).toBe("2026-01-06");
+  });
+
+  /**
+   * THE TEST THAT ACTUALLY DISCRIMINATES, wherever it is run.
+   *
+   * Every other case here passes on a Central laptop even with the old
+   * device-local implementation, because on a Central laptop the two agree.
+   * Moving the DEVICE is the only way to tell them apart, so this moves it —
+   * `process.env.TZ` is re-read by `Date`'s local accessors at assignment, so
+   * the zone can be changed inside the test rather than around the runner.
+   *
+   * (`TZ=... vitest` is not an option: on Windows the variable is ignored at
+   * process start, so a suite "run under UTC" there is quietly still Central
+   * and proves nothing.)
+   */
+  it("ignores the DEVICE's zone entirely — it is the OFFICE's day", () => {
+    const original = process.env.TZ;
+    try {
+      for (const deviceZone of [
+        "UTC",
+        "Asia/Tokyo", // reads the 9th at this instant, and is 14 hours ahead
+        "America/Los_Angeles", // two hours behind the office
+        "Pacific/Kiritimati", // +14, the furthest ahead any device can be
+      ]) {
+        process.env.TZ = deviceZone;
+        // 8pm Central on the 8th. The practice is open; the schedule is the
+        // 8th's, whatever the tablet in somebody's hand believes.
+        expect(todayIso(new Date("2026-09-09T01:00:00Z")), deviceZone).toBe("2026-09-08");
+        // And half an hour past midnight Central, it is genuinely the 9th —
+        // a device further west must not hold the page on yesterday.
+        expect(todayIso(new Date("2026-09-09T05:30:00Z")), deviceZone).toBe("2026-09-09");
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
   });
 
   it("pads single-digit months and days", () => {
-    expect(todayIso(new Date(2026, 0, 5, 12))).toBe("2026-01-05");
+    expect(todayIso(new Date("2026-01-05T18:00:00Z"))).toBe("2026-01-05");
   });
 });
 
@@ -98,10 +158,60 @@ describe("shiftIsoDate", () => {
   });
 
   it("survives the spring-forward day", () => {
-    // Parsed at local NOON rather than midnight: on a DST transition, midnight
-    // itself moves and "+1 day" from it can land back on the same date.
+    // Pure UTC calendar arithmetic on a string with no time and no zone in it,
+    // so a DST transition is not something it can trip over.
     expect(shiftIsoDate("2026-03-08", 1)).toBe("2026-03-09");
     expect(shiftIsoDate("2026-03-08", -1)).toBe("2026-03-07");
+    expect(shiftIsoDate("2026-11-01", 1)).toBe("2026-11-02");
+    expect(shiftIsoDate("2026-11-01", -1)).toBe("2026-10-31");
+  });
+
+  it("is a calendar step, not an instant step, so it cannot skip a day", () => {
+    // A round trip over a whole year: every step lands on the next calendar
+    // date, which the previous device-local-noon version could not promise on
+    // a device whose zone was far from the office's.
+    let date = "2025-12-30";
+    const seen: string[] = [];
+    for (let i = 0; i < 370; i += 1) {
+      date = shiftIsoDate(date, 1);
+      seen.push(date);
+    }
+    expect(new Set(seen).size).toBe(370);
+    expect(seen[0]).toBe("2025-12-31");
+    expect(seen[1]).toBe("2026-01-01");
+    // And stepping back the same number returns to where it started.
+    for (let i = 0; i < 370; i += 1) date = shiftIsoDate(date, -1);
+    expect(date).toBe("2025-12-30");
+  });
+});
+
+/**
+ * THE DEVICE THAT IS NEVER CLOSED.
+ *
+ * The Day View picks its date once, at mount. On the iPad this module is built
+ * for — propped at a chair, never shut down — that date is still yesterday's
+ * the next morning, under today's own "Today" button. This is the rule that
+ * moves it, and the rule that refuses to move it when she chose the day
+ * herself.
+ */
+describe("rollToNewDay", () => {
+  it("does nothing while the office day has not changed", () => {
+    expect(rollToNewDay("2026-09-08", "2026-09-08", "2026-09-08")).toBe("2026-09-08");
+    // Including when she is looking at another day entirely.
+    expect(rollToNewDay("2026-09-11", "2026-09-08", "2026-09-08")).toBe("2026-09-11");
+  });
+
+  it("moves a page that was sitting on what USED to be today", () => {
+    // Opened Monday, still open Tuesday morning. This is the reported bug.
+    expect(rollToNewDay("2026-09-07", "2026-09-07", "2026-09-08")).toBe("2026-09-08");
+  });
+
+  it("NEVER moves a date the hygienist stepped to herself", () => {
+    // She is looking ahead at Thursday. Midnight must not snatch it back —
+    // moving a day somebody chose is a worse bug than the one being fixed.
+    expect(rollToNewDay("2026-09-11", "2026-09-07", "2026-09-08")).toBe("2026-09-11");
+    // Or back at yesterday, to check what she wrote.
+    expect(rollToNewDay("2026-09-06", "2026-09-07", "2026-09-08")).toBe("2026-09-06");
   });
 });
 

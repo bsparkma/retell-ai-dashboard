@@ -14858,6 +14858,7 @@ __export(contract_entry_exports, {
   NoteFieldSchema: () => NoteFieldSchema,
   NoteFreeFieldSchema: () => NoteFreeFieldSchema,
   OFFICE_IDS: () => OFFICE_IDS,
+  OFFICE_TIME_ZONE: () => OFFICE_TIME_ZONE,
   OfficeIdSchema: () => OfficeIdSchema,
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
   PerioGradeSchema: () => PerioGradeSchema,
@@ -15335,6 +15336,7 @@ var OFFICE_IDS = OfficeIdSchema.options;
 function isOfficeId(value) {
   return OfficeIdSchema.safeParse(value).success;
 }
+var OFFICE_TIME_ZONE = "America/Chicago";
 var TreatmentPrioritySchema = import_zod2.z.enum(["urgent", "preventative", "cosmetic"]);
 var TREATMENT_PRIORITY_LABELS = {
   urgent: "Urgent",
@@ -16012,6 +16014,7 @@ var import_zod3 = __toESM(require_zod());
   NoteFieldSchema,
   NoteFreeFieldSchema,
   OFFICE_IDS,
+  OFFICE_TIME_ZONE,
   OfficeIdSchema,
   PERIO_STAGE_LABELS,
   PerioGradeSchema,
