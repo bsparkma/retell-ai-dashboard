@@ -1,62 +1,41 @@
 
 ---
 
-## 13. W-11 — the remittance's "run match" silently skips a confirmed claim
+## 14. The takeback gate goes green — [CC], 2026-09-09
 
-### 13.1 The re-match did not happen
+Re-matched and re-confirmed from **the claim's own Match page** (the forcing one,
+per [§13.2](#132-why-the-press-did-nothing)). The record moved this time:
 
-Reported re-matched and confirmed on 2026-09-08. The stored record says
-otherwise — **nothing moved**:
-
-| | Value | |
+| | Before | After |
 | --- | --- | --- |
-| `od_match_at` | `2026-09-04T01:40:29.189Z` | the ORIGINAL match |
-| `od_match_confirmed_at` | `2026-09-04T01:40:40.660Z` | the original confirmation |
-| `confirmed.linePairs[0].billedDeltaCents` | **`-7000`** | unchanged |
-| `confirmed.supersedes.confirmedAt` | `2026-09-04T01:27:24.002Z` | an EARLIER confirmation, so the force path does work — it just did not run |
+| `od_match_at` | `2026-09-04T01:40:29.189Z` | **`2026-09-09T01:56:57.921Z`** |
+| `od_match_confirmed_at` | `2026-09-04T01:40:40.660Z` | **`2026-09-09T01:57:30.389Z`** |
+| `confirmed.linePairs[0].billedDeltaCents` | **`-7000`** | **`0`** |
+| `confidence` | 100 | 100 |
+| still paired to | `odClaimProcNum 535780` | `odClaimProcNum 535780` |
 
-The gate, read straight out of `previewRecoupment` on the live build:
+**`odAmountsAsRead` is byte-identical across the re-match** — billed `3500`,
+`insPaidCents 2900`, `writeOffCents 600`, `ClaimStatus "R"`. The chart did not
+change; the arithmetic did. That is the W-6 fix and nothing else.
+
+The gate, read out of `previewRecoupment` on the live build:
 
 ```
-postable: false      withheld: 1      failed checks: 1
+postable: true        withheld: 0        failing checks: 0
+verdict.state: green
+verdict.sentence: "Patient will owe $0.00 once posted — matches the EOB."
+problems: []
 
-PATIENT_RESPONSIBILITY_MATCHES — "Patient's number can't be trusted yet …
-  Look at D0220."
-verdict.state: red
-problems: [ od_fee_disagrees — "D0220 was billed -$35.00 on the remittance
-            and $35.00 in Open Dental" ]
+recoupmentTotalCents: -2900   typedTotalExpected: "-29.00"
+paths: [adjustment, supplemental]   defaultPath: adjustment   balanced: true
 ```
 
-Every other check passes, including `TAKEBACK_ACKNOWLEDGED` ("This is a takeback
-— confirmed by typing -29.00") and `MATCH_TAKEN_FOR_A_TAKEBACK`. The recoupment
-total is `-2900`, the batch balances, and `defaultPath` is `adjustment`. **One
-check stands between this claim and an enabled Approve, and it is the frozen
-`-7000`.**
+**This is the first parser-produced reversal 835 ever to reach an enabled Approve
+in this system.** Before `7647dd1` both branches were red — a reversal that paired
+went red on `od_fee_disagrees`, and one that did not went red on
+`line_not_in_chart` — so the takeback lane had never been green end to end.
+[§6](#6-findings)'s W-6 is now proven live on real data through the real gate, not
+only in a regression test.
 
-### 13.2 Why the press did nothing
-
-There are two different controls both wired to the `run-match` action, and only
-one of them forces:
-
-| Screen | Wiring | On an already-confirmed claim |
-| --- | --- | --- |
-| the claim's own Match page | `ClaimMatch.tsx:450` — `runMatch(claim.odMatchStatus === "confirmed")` | **forces**, releases the confirmation, re-reads Open Dental, writes a NEW snapshot |
-| the remittance page | `RemittanceDetail.tsx:469` — `runBatchMatch` | `runClaimMatch` **without** `force`, which **throws** `This claim already has a confirmed Open Dental match` — and `runBatchMatch`'s own header records that the catch **swallows it and the loop carries on** |
-
-So the batch button reports a run that did nothing, with no visible refusal on
-the claim that was skipped. On a partly-worked remittance that is the *mundane*
-outcome, which is exactly what makes it easy to read as success.
-
-**Not a defect in the fix, and not a bad press** — it is a screen that cannot
-say "I skipped the one claim you were trying to re-match".
-
-### 13.3 What actually moves it
-
-Open **claim 53863's own Match page** (into the claim from the R3 remittance),
-run the match there — the page forces because the claim is confirmed — then
-confirm 53863. Forcing requires posting permission (`mayReleaseConfirmed`).
-
-Then the delta should read **0**, not `-7000`, and
-`PATIENT_RESPONSIBILITY_MATCHES` should pass. **[CC] re-reads the snapshot and
-the gate before anything is approved.**
+**Stopped at the button, per the PM.** Nothing is approved.
 
