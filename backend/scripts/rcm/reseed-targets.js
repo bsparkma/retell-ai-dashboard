@@ -491,9 +491,18 @@ function checkOutDirWritable(dir) {
  * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
  */
 const RESEED_SPENT_IDS = Object.freeze({
-  claims: Object.freeze([]),
-  procedures: Object.freeze([]),
-  claimProcs: Object.freeze([]),
+  // 2026-09-01 reseed, unwound 2026-09-09T20:28:11.452Z at the end of the
+  // combined walk. All seven targets finished; the verdict read PatNum 12827
+  // back to -$0.20 and PatNum 12828 to $0.00, both at 0 claims.
+  //
+  // ClaimPaymentNums 21461 / 21462 / 21490 are SPENT and recorded here in prose
+  // for the reason `rcm-s10-targets.js` gives: the manifest shape is
+  // `{procNum, claimNum, claimProcNum}` and has no field for a check, so "a
+  // future manifest must never name them" cannot apply to one. All three were
+  // deleted by the unwind and read back 404.
+  claims: Object.freeze([53857, 53858, 53859, 53861, 53862, 53863, 53864]),
+  procedures: Object.freeze([406650, 406651, 406652, 406655, 406656, 406657, 406658]),
+  claimProcs: Object.freeze([535770, 535771, 535773, 535777, 535779, 535780, 535782]),
 });
 
 /**
@@ -528,10 +537,11 @@ const RESEED_SPENT_IDS = Object.freeze({
  * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
  */
 const RESEED_PENDING_AT_UNWIND = Object.freeze({
-  // 2026-09-01 reseed, staging revision 0000150. Roland, PatNums 12827/12828.
-  claims: Object.freeze([53857, 53858, 53859, 53861, 53862, 53863, 53864]),
-  procedures: Object.freeze([406650, 406651, 406652, 406655, 406656, 406657, 406658]),
-  claimProcs: Object.freeze([535770, 535771, 535773, 535777, 535779, 535780, 535782]),
+  // Empty since 2026-09-09: the 2026-09-01 reseed is unwound and its ids moved
+  // to RESEED_SPENT_IDS above, exactly as this constant's header requires.
+  claims: Object.freeze([]),
+  procedures: Object.freeze([]),
+  claimProcs: Object.freeze([]),
 });
 
 /**
@@ -591,7 +601,7 @@ const RESEED_BURNED_IDS = Object.freeze({
  *
  * ISO 8601, UTC, and it MOVES every time a set is added above.
  */
-const RESEED_SPENT_RECORDED_AT = '2026-09-01T00:00:00.000Z';
+const RESEED_SPENT_RECORDED_AT = '2026-09-09T20:28:11.452Z';
 
 /** Every denied id, flattened — what a manifest is screened against. */
 function denyIds() {

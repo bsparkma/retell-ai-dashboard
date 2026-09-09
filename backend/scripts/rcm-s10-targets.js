@@ -209,8 +209,9 @@ const SPIKE_0B_RESIDUE = Object.freeze({
  * created is the only thing that matters to a deny-list. An id is spent the
  * moment it exists, not the moment it is used successfully.
  *
- * NOT included: ClaimPaymentNums `21399`/`21400` (2026-08-25/26) and
- * `21424`/`21425` (walk night 2 — checks A and B). The manifest has no field for
+ * NOT included: ClaimPaymentNums `21399`/`21400` (2026-08-25/26),
+ * `21424`/`21425` (walk night 2 — checks A and B), and `21491` (the combined
+ * walk's kill-test check `S10A-53832`, deleted 2026-09-09 and read back 404). The manifest has no field for
  * a check — its shape is `{procNum, claimNum, claimProcNum}` — so "a future
  * manifest must never name them" cannot apply to a check. The unwind discovers a
  * ClaimPaymentNum from a live read of the claimproc, and every one of those
@@ -224,12 +225,13 @@ const WALK_SPENT_IDS = Object.freeze({
   // 2026-08-26 walk, unwound 2026-08-26 01:25Z (§11.4).
   // 2026-08-28 walk night 2, unwound the same night (§11.5).
   // 2026-08-30 mini-walk 3, TABLED at the takeback; unwound 2026-08-30 (§11.7).
-  claims: Object.freeze([53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833]),
+  // 2026-09-04 combined-walk kill test, unwound 2026-09-09T18:26:23.310Z.
+  claims: Object.freeze([53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833, 53900, 53901]),
   procedures: Object.freeze([
-    406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433,
+    406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433, 406875, 406876,
   ]),
   claimProcs: Object.freeze([
-    535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599,
+    535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599, 536170, 536171,
   ]),
 });
 
@@ -248,7 +250,7 @@ const WALK_SPENT_IDS = Object.freeze({
  * pins that: a walk added to `WALK_SPENT_IDS` without moving this date leaves
  * the staleness screen certifying manifests it should refuse.
  */
-const WALK_SPENT_RECORDED_AT = '2026-08-30T00:00:00.000Z';
+const WALK_SPENT_RECORDED_AT = '2026-09-09T18:26:23.310Z';
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════
