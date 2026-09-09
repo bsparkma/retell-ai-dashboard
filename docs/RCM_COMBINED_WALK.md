@@ -1768,3 +1768,66 @@ warning in plain terms: if the *"what the chart says"* box shows a sentence afte
 an early stop, **it is not measuring anything, and nothing in Open Dental gets
 hand-corrected.**
 
+---
+
+## 20. Press 1 — the strand heals, on the fifth attempt
+
+Pressed `2026-09-09T17:22:52.163Z`, finished `17:23:25.185Z` — **33 seconds**.
+Read back `17:23:45.779Z`.
+
+### 20.1 The plan
+
+| | Value |
+| --- | --- |
+| `status` | **`posted`** |
+| `drain_step` | `document_attach` — it ran to the end |
+| `attempt_count` | **5** |
+| `reconciled_at` | **`2026-09-09T17:23:25.184Z`** |
+| `last_error` / `blocked_reason` | **`null` / `null`** |
+| `od_claim_payment_num` | `21491` |
+| `posted_total_cents` | **`100`** = `intended_total_cents` |
+| `drained_by` | `admin@carein.ai` |
+
+### 20.2 The line — every clause of the ruling, observed
+
+| | Value | The ruling |
+| --- | --- | --- |
+| `status` | **`skipped_already_posted`** | *keeps its status* ✓ |
+| `skip_reason` | **`already_received_matching`** | *and its reason* ✓ |
+| `od_claim_payment_num` | **`21491`** | *gains the check* ✓ |
+| `paid_at` | **`null`** | *this attempt adopted the number, it did not pay the line* ✓ |
+| `last_error` | `null` | |
+
+### 20.3 Open Dental was not touched
+
+| | State | `SecDateTEdit` |
+| --- | --- | --- |
+| claim **53900** | `R`, `InsPayAmt 1` | `2026-09-03 21:32:16` |
+| claimproc **536170** | `Received`, `InsPayAmt 1`, `ClaimPaymentNum 21491` | `2026-09-03 21:34:20` |
+| check **21491** | `CheckAmt 1`, `DepositNum 0` | `2026-09-03 21:34:20` |
+
+**Every timestamp is still from the original kill test on 2026-09-03.** One
+claimproc, one check, nothing added and nothing edited — a run that recorded what
+the chart already held and wrote nothing to it.
+
+### 20.4 What this closes
+
+The plan was stranded on **2026-09-04 at 02:35** and took four refusals to clear:
+
+| Attempt | Refusal | Fixed by |
+| --- | --- | --- |
+| 2 | `skipped_already_posted` + `status: 'paid'` at the check-stamping loop | **W-9** — `ca73657` |
+| 3 | `plan_empty` — every line skipped read as no lines | **W-10** — `7896239` |
+| 4 | `skipped_already_posted` + `status: 'paid'` at the **`attached`** branch | **W-15** — `beae911` |
+| **5** | — | **posted** |
+
+Three defects in one line's state machine, each hidden behind the one in front of
+it, and each only visible once its predecessor cleared. That is the argument for
+pressing one at a time, and it is why [§19.4](#194-the-presses-are-sequenced-this-time)
+sequenced these two.
+
+**§10.3's one-check proof now returns what it was written to return.** The count
+of distinct `od_claim_payment_num` on this plan's lines is **1**, because the
+number is finally on the line — which is what `9af7668` documented and what the
+query could not see while the UPDATE that wrote it was being refused.
+
