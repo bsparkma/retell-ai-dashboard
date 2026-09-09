@@ -195,7 +195,10 @@ export function RouterSlip({
         ))}
       </Row>
 
-      <Row label="Perio classification" hint="Stage, and grade if you have one.">
+      <Row
+        label="Perio classification"
+        hint="The 2017 AAP staging, for the slip. The note has its own perio row above."
+      >
         {PerioStageSchema.options.map((st: PerioStage) => (
           <Chip
             key={st}
@@ -216,9 +219,16 @@ export function RouterSlip({
       </Row>
 
       <div className="grid gap-3 sm:grid-cols-2">
+        {/*
+          ONE BOX PER QUESTION. The note templates call this the chief
+          complaint and the slip called it patient concerns; they are the same
+          sentence, so it stays ONE field with the note's own word on it. A
+          second box asking the same thing, only one of which reached the chart,
+          would be the worse design and the likelier bug.
+        */}
         <label className="space-y-1.5">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Patient concerns
+            Chief complaint
           </span>
           <textarea
             className="min-h-[72px] w-full rounded-lg border border-border bg-background p-2 text-sm"
@@ -226,10 +236,13 @@ export function RouterSlip({
             onBlur={(e) => set("patientConcerns", e.target.value)}
             data-testid="hyg-slip-concerns"
           />
+          <span className="block text-xs text-muted-foreground">
+            Prints on the note&apos;s S: line.
+          </span>
         </label>
         <label className="space-y-1.5">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Hygiene findings
+            Findings
           </span>
           <textarea
             className="min-h-[72px] w-full rounded-lg border border-border bg-background p-2 text-sm"
@@ -237,6 +250,9 @@ export function RouterSlip({
             onBlur={(e) => set("hygieneFindings", e.target.value)}
             data-testid="hyg-slip-findings"
           />
+          <span className="block text-xs text-muted-foreground">
+            Prints after &ldquo;Findings:&rdquo; on the note.
+          </span>
         </label>
       </div>
 

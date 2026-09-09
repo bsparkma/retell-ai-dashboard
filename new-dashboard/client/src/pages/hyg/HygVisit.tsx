@@ -71,7 +71,9 @@ import {
   type HygVisitPage,
 } from "@/features/hyg/api";
 import { formatClock, formatLength, todayIso, visibleFlags } from "@/features/hyg/day";
+import { suggestVisitType } from "@shared/hyg/noteTemplates";
 import { RouterSlip } from "@/features/hyg/visit/RouterSlip";
+import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
 import { StagedWritesTray } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
 import { cn } from "@/lib/utils";
@@ -96,6 +98,37 @@ function Chip({ label, tone }: { label: string; tone: "alert" | "unknown" }) {
       {label}
     </span>
   );
+}
+
+/**
+ * The visit type, pre-picked from the appointment when it maps cleanly.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THIS ONLY EVER TOUCHES THE DRAFT, AND A STORED ANSWER ALWAYS WINS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * When the appointment type reads cleanly the type comes up already chosen and
+ * marked `auto`, and the form says where it came from — that is most of the
+ * "eight taps" this slice is for.
+ *
+ * It is NOT saved on its own. A GET creates no visit row (see the header
+ * above), and auto-saving a suggestion would leave a visit behind for every
+ * card somebody merely glanced at. It rides in the draft and is stored with
+ * her first real edit.
+ *
+ * A slip that already carries a `visitType` is returned untouched: her answer
+ * is never re-derived from an appointment label, not even when they disagree.
+ * `suggestVisitType` is the same function the backend parity tests state the
+ * whole mapping with — one rule, not two.
+ */
+function withSuggestedType(slip: HygSlip, appointment: HygVisitPage["appointment"]): HygSlip {
+  if (slip.visitType !== null) return slip;
+  const suggested = suggestVisitType({
+    apptTypeLabel: appointment.apptTypeLabel,
+    isNewPatient: appointment.isNewPatient,
+  });
+  return suggested === null
+    ? slip
+    : { ...slip, visitType: suggested, visitTypeSource: "auto" };
 }
 
 function VisitHeader({ page }: { page: HygVisitPage }) {
@@ -191,7 +224,9 @@ export default function HygVisit() {
       try {
         const next = await fetchVisit(office, aptNum, date, signal);
         setPage(next);
-        setDraft(next.visit ? next.visit.slip : emptySlip());
+        setDraft(
+          withSuggestedType(next.visit ? next.visit.slip : emptySlip(), next.appointment),
+        );
         setError(null);
       } catch (err) {
         if (signal?.aborted) return;
@@ -246,7 +281,9 @@ export default function HygVisit() {
         if (!page.visit) await openVisit(office, aptNum, date);
         const res = await fn();
         adopt(res);
-        setDraft(res.visit.slip);
+        // Through the same helper: adding a treatment item before touching the
+        // slip must not silently un-pick the visit type she can see.
+        setDraft(withSuggestedType(res.visit.slip, page.appointment));
       } catch (err) {
         if (err instanceof HygApiError) setError(err);
       } finally {
@@ -395,6 +432,12 @@ export default function HygVisit() {
 
   const items = page.visit?.items ?? [];
   const staged = page.visit?.stagedWrites ?? [];
+  // Recomputed for the form's own wording ("chosen from the appointment type"),
+  // from the appointment this page already fetched. It never overrides `draft`.
+  const suggestion = suggestVisitType({
+    apptTypeLabel: page.appointment.apptTypeLabel,
+    isNewPatient: page.appointment.isNewPatient,
+  });
 
   return (
     <div className="p-6" data-testid="hyg-visit">
@@ -425,6 +468,12 @@ export default function HygVisit() {
 
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-6">
+          <VisitNoteFields
+            slip={draft}
+            doctorOptions={page.doctorOptions}
+            suggestion={suggestion}
+            onChange={onSlipChange}
+          />
           <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
           <TreatmentItems
             items={items}

@@ -94,6 +94,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: visit(),
     recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
     handoffCategory: "Restorative" as const,
+    doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
   });
 
   return {
@@ -108,6 +109,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: visit(),
       recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
       handoffCategory: "Restorative" as const,
+      doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
     })),
     openVisit: vi.fn(async () => mutation()),
     addTreatmentItem: vi.fn(async (_o: string, _a: number, input: Record<string, unknown>) => {

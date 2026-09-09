@@ -61,6 +61,19 @@ import { cn } from "@/lib/utils";
 
 const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors";
 
+/**
+ * One line of a preview, shaped like the line that goes in the chart.
+ *
+ * A BLANK LINE KEEPS ITS HEIGHT. The auto-note templates separate S, O, A and P
+ * with empty lines, and an empty `<li>` collapses to nothing — so the note she
+ * reads here would run together while the note that lands in Open Dental has
+ * paragraphs. The bytes were always the same; this makes the SHAPE the same,
+ * which is the half a person actually checks.
+ */
+function previewLineClass(line: string): string {
+  return cn(line.startsWith("  ") && "pl-3", line.trim() === "" && "h-3");
+}
+
 const KIND_LABELS: Record<StagedWriteKind, string> = {
   router: "Routing slip",
   perio: "Perio chart",
@@ -150,7 +163,7 @@ function ConfirmSend({
                       <div className="text-xs">{write.summary}</div>
                       <ul className="mt-1.5 space-y-0.5 text-xs">
                         {write.preview.map((line, i) => (
-                          <li key={i} className={cn(line.startsWith("  ") && "pl-3")}>
+                          <li key={i} className={previewLineClass(line)}>
                             {line.trim()}
                           </li>
                         ))}
@@ -343,7 +356,7 @@ export function StagedWritesTray({
                   data-testid={`hyg-staged-preview-${kind}`}
                 >
                   {write.preview.map((line, i) => (
-                    <li key={i} className={cn(line.startsWith("  ") && "pl-3")}>
+                    <li key={i} className={previewLineClass(line)}>
                       {line.trim()}
                     </li>
                   ))}

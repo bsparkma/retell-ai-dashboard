@@ -53,6 +53,25 @@
  * asserts every composed line is inside the safe set.
  *
  * ═════════════════════════════════════════════════════════════════════════════
+ * THE NOTE IS THE PRACTICE'S OWN AUTO NOTE (H1 slice 8)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * When the slip carries a `visitType`, the `note` kind renders that visit
+ * type's SOAP template from `shared/hyg/noteTemplates.ts` — the practice's own
+ * Open Dental auto note, re-stated as data — and the treatment block and the
+ * typed-name block ride along after it. That is the whole point of the slice:
+ * filling in the visit IS writing the clinic note, so nobody documents twice.
+ *
+ * WHEN `visitType` IS NULL, THE OLD GENERIC NOTE IS WHAT COMPOSES. Not a
+ * refusal, and not a guessed template: a hygienist who has not said which visit
+ * this is still gets a note that says what she recorded. Choosing a template
+ * for her would be choosing which sentences go in somebody's chart.
+ *
+ * The RENDERER is in the shared file rather than here for the same reason the
+ * contract is shared: the form draws its chip rows from the same template that
+ * prints them, so a row she can fill in and a row the note prints cannot drift
+ * apart.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
  * WHAT IS NOT HERE
  * ═════════════════════════════════════════════════════════════════════════════
  * `perio` is a kind in the contract's vocabulary and composes to NOTHING in
@@ -136,6 +155,50 @@ function itemLine(item) {
   // hygienist proposed it" are different claims to put in front of a patient.
   parts.push(item.status);
   return parts.join(' · ');
+}
+
+/**
+ * The practice's own name for a visit type, for the summary line.
+ * @param {string} visitType
+ * @returns {string}
+ */
+function visitTypeLabel(visitType) {
+  return contract.VISIT_TYPE_LABELS[visitType] || visitType;
+}
+
+/**
+ * The SOAP note for this visit's type, rendered from the practice's template.
+ *
+ * Everything here is a straight read of the stored slip. The RENDERER lives in
+ * the shared contract (`shared/hyg/noteTemplates.ts`) rather than in this file
+ * because the FORM generates its chip rows from the same templates — one
+ * definition, so a row she can fill in is a row the note prints.
+ *
+ * `recallMonths` is the slip's own next-visit interval and is NOT defaulted to
+ * the template's hardcoded six. An interval nobody set is a sentence nobody
+ * said.
+ *
+ * @param {{ slip: Record<string, any> }} visit
+ * @returns {string[]}
+ */
+function noteTemplateLines(visit) {
+  const slip = visit.slip || {};
+  const next = slip.nextVisit || {};
+  return contract.renderVisitNote({
+    visitType: slip.visitType,
+    fields: slip.noteFields || {},
+    // The slip has ONE box for what the patient came in about, and the
+    // templates call it the chief complaint. Two boxes asking the same question
+    // and only one of them reaching the chart would be the worse design.
+    chiefComplaint: typeof slip.patientConcerns === 'string' ? slip.patientConcerns : '',
+    findings: typeof slip.hygieneFindings === 'string' ? slip.hygieneFindings : '',
+    rtc: typeof slip.rtc === 'string' ? slip.rtc : '',
+    doneToday: Array.isArray(slip.doneToday) ? slip.doneToday : [],
+    xrayTypes: Array.isArray(slip.xrayTypes) ? slip.xrayTypes : [],
+    productsDispensed: Array.isArray(slip.productsDispensed) ? slip.productsDispensed : [],
+    recallMonths: typeof next.intervalMonths === 'number' ? next.intervalMonths : null,
+    perioChartUpdated: slip.perioChartUpdated ?? null,
+  });
 }
 
 /**
@@ -232,7 +295,7 @@ function recordsLines(items, recordsStatus) {
  *   `unavailable` — this kind is not built yet. `empty` — there is genuinely
  *   nothing to send, which is a refusal rather than an empty envelope.
  */
-function composeRaw(kind, { visit, items, actor }) {
+function composeRaw(kind, { visit, items, actor, signature }) {
   const slip = visit.slip || {};
   const dateLabel = visit.visitDate || 'today';
 
@@ -266,17 +329,32 @@ function composeRaw(kind, { visit, items, actor }) {
   }
 
   if (kind === 'note') {
-    const lines = [...slipLines(visit)];
+    // THE TEMPLATE, WHEN SHE HAS SAID WHICH ONE. A null visitType composes the
+    // generic note this module wrote before templates existed — see the header.
+    const lines = slip.visitType ? noteTemplateLines(visit) : [...slipLines(visit)];
     if (items.length > 0) {
+      // A blank line first when a template ran, so the treatment block reads as
+      // its own section rather than as one more graded row.
+      if (slip.visitType) lines.push('');
       lines.push(`Treatment identified today (${items.length}):`);
       for (const item of items) lines.push('  ' + itemLine(item));
     }
-    // THE NAME BLOCK, AND IT IS NOT A SIGNATURE. See the header.
+    // THE TYPED-NAME BLOCK. Her name and licence and the office's supervising
+    // doctors, from backend/config/hygStaff.js — never from a component, never
+    // from another office, and never with a licence number we do not have.
+    const block = Array.isArray(signature) ? signature.filter((l) => Boolean(l)) : [];
+    if (block.length > 0) {
+      lines.push('');
+      for (const l of block) lines.push(l);
+    }
+    // AND IT IS NOT A SIGNATURE. See the header.
     const nameBlock = `${NAME_BLOCK_PREFIX} ${actor}. Unsigned.`;
     lines.push(nameBlock);
     return {
       title: 'Visit note',
-      summary: `An unsigned note for ${dateLabel}, with a typed name block`,
+      summary: slip.visitType
+        ? `An unsigned ${visitTypeLabel(slip.visitType)} note for ${dateLabel}`
+        : `An unsigned note for ${dateLabel}, with a typed name block`,
       preview: lines,
       payload: {
         kind: 'note',
@@ -287,6 +365,9 @@ function composeRaw(kind, { visit, items, actor }) {
         // confirmed and the thing that goes to Open Dental carry the same fact.
         isSigned: false,
         nameBlock,
+        // WHICH template produced these words, stored beside them so a question
+        // a month from now is answerable from the row rather than re-derived.
+        visitType: slip.visitType ?? null,
         text: lines.join('\n'),
       },
     };
@@ -358,7 +439,12 @@ function composeRaw(kind, { visit, items, actor }) {
  * are the same bytes, which is what "the preview IS the write" means.
  *
  * @param {'router'|'perio'|'note'|'tc-handoff'} kind
- * @param {{ visit: Record<string, any>, items: Record<string, any>[], actor: string }} ctx
+ * @param {{ visit: Record<string, any>, items: Record<string, any>[], actor: string,
+ *           signature?: string[] }} ctx
+ *   `signature` is the office's typed-name block, built by the ROUTE from
+ *   backend/config/hygStaff.js. It is passed in rather than read here so this
+ *   module stays pure — and so a test can state what a note says without an
+ *   office registry.
  */
 function compose(kind, ctx) {
   const composed = composeRaw(kind, ctx);
@@ -386,6 +472,8 @@ module.exports = {
   composeRaw,
   NAME_BLOCK_PREFIX,
   // Exported for tests and for the route's records/handoff summary.
+  noteTemplateLines,
+  visitTypeLabel,
   teethLabel,
   itemLine,
   slipLines,

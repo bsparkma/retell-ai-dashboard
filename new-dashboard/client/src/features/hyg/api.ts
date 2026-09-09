@@ -320,6 +320,8 @@ export const HygVisitPageSchema = z.object({
   visit: HygVisitSchema.nullable(),
   recordsNeeded: z.array(z.string()),
   handoffCategory: HandoffCategorySchema,
+  /** This office's supervising doctors, for the note's exam clause. */
+  doctorOptions: z.array(z.string()),
 });
 export type HygVisitPage = z.infer<typeof HygVisitPageSchema>;
 
@@ -329,6 +331,7 @@ export const HygVisitMutationSchema = z.object({
   visit: HygVisitSchema,
   recordsNeeded: z.array(z.string()),
   handoffCategory: HandoffCategorySchema,
+  doctorOptions: z.array(z.string()),
 });
 export type HygVisitMutation = z.infer<typeof HygVisitMutationSchema>;
 

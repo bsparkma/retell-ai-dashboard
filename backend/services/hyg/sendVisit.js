@@ -76,6 +76,16 @@ const PAYLOAD_SCHEMAS = {
       patNum: contract.z.number().int().positive(),
       isSigned: contract.z.literal(false),
       nameBlock: contract.z.string().min(1),
+      /**
+       * WHICH auto-note template composed this, or null for the generic note.
+       *
+       * `.optional()` because a row staged before slice 8 has no such key and a
+       * strict schema would turn it into a refusal to send a note somebody has
+       * already read and approved. `.nullable()` because "no template" is a
+       * real answer. Inert to the write itself — `odWriter` sends `text` — so
+       * it is provenance, and it is validated rather than merely tolerated.
+       */
+      visitType: contract.VisitTypeSchema.nullable().optional(),
       text: contract.z.string().min(1).max(60000),
     })
     .strict(),
