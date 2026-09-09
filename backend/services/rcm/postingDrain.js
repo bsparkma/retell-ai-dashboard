@@ -205,6 +205,20 @@ const BLOCK_REASONS = Object.freeze({
 const SKIP_ALREADY_RECEIVED = 'already_received_matching';
 
 /**
+ * The two line statuses the paired CHECK constraint binds to `skip_reason`.
+ *
+ * Migration `1787120000000` requires the pairing in BOTH directions:
+ *
+ *     (status IN ('skipped','skipped_already_posted') AND skip_reason IS NOT NULL)
+ *  OR (status NOT IN ('skipped','skipped_already_posted') AND skip_reason IS NULL)
+ *
+ * Named here because `persistLine` now enforces the second half for every
+ * caller, and a list the database and the code both read from one place cannot
+ * drift apart.
+ */
+const SKIP_STATUSES = Object.freeze(['skipped', 'skipped_already_posted']);
+
+/**
  * The two ways a takeback may be written, mirrored from the approval gate.
  *
  * Duplicated as a constant rather than imported so this service does not depend
@@ -1615,6 +1629,40 @@ async function persistLine(pool, queueLineId, patch) {
   if (patch.odClaimPaymentNum !== undefined) put('od_claim_payment_num', patch.odClaimPaymentNum);
   if (patch.lastError !== undefined) put('last_error', patch.lastError);
   if (patch.skipReason !== undefined) put('skip_reason', patch.skipReason);
+
+  /*
+   * ─── THE SKIP PAIRING IS ENFORCED BY THE WRITER, NOT BY EACH CALLER ───────
+   *
+   * A line MOVING OFF the skip family takes its reason with it. The reason
+   * explains a status; carrying it past the status it explained is what the
+   * database refuses, and there is no caller for whom leaving it behind is the
+   * right answer.
+   *
+   * W-9 and W-15 were the same defect found twice, a fortnight apart, because
+   * the first fix guarded the call site that happened to manifest instead of
+   * the function every call site goes through. The two sites still unguarded
+   * after that — `claimproc_written` on a later `write` decision and `failed`
+   * on a `conflict` — are legalised here, because both are a run DECIDING that
+   * the skip no longer describes the line. That is a real transition and it
+   * should be expressible.
+   *
+   * WHAT THIS DOES NOT DO IS LEGALISE AN ACCIDENT. It only guarantees no site
+   * can emit a row the database will reject; whether a status SHOULD leave the
+   * skip family stays each site's decision, made in its own code. The
+   * `attached` branch does not want this transition at all — see its own
+   * comment — and the check-stamping loop's `skippedThisRun` guard stays for
+   * the same reason.
+   *
+   * An explicit `skipReason` in the patch always wins: a caller setting both
+   * columns knows what it is doing.
+   */
+  if (
+    patch.status !== undefined &&
+    patch.skipReason === undefined &&
+    !SKIP_STATUSES.includes(String(patch.status))
+  ) {
+    put('skip_reason', null);
+  }
   if (patch.readback !== undefined) {
     put('readback', patch.readback === null ? null : JSON.stringify(patch.readback));
     sets.push('readback_at = now()');
@@ -1862,11 +1910,35 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
             'cannot be written here. Nothing was sent for this line.',
           'recoupment'
         );
-        throw new OdWriteError(
+        /*
+         * `alreadyBlocked` — THE ROW IS ALREADY IN ITS HONEST FINAL STATE.
+         *
+         * This is the only site in the module that blocks a row and then
+         * throws, and the outer catch's job is to finalise a row that has NOT
+         * yet been finalised. Without this flag the catch overwrites a
+         * deliberate `blocked` + `no_adj_type` with `partially_posted` and no
+         * reason at all — a less honest state, and one
+         * `rcm_posting_queue_blocked_reason_check` refuses outright, so on real
+         * Postgres the refusal threw a second error on top of itself.
+         *
+         * Found by the 2026-09-09 constraint sweep once `FakeRcmDb` learned the
+         * constraint. Roland carries the adjustment type, which is why the walk
+         * never met it; valley's Category-1 list has not been read, and valley
+         * is the next office to be switched on.
+         */
+        const refusal = new OdWriteError(
           'no recoupment adjustment type in this practice',
           'OD_NO_ADJ_TYPE',
           { status: 0, retryable: false }
         );
+        /*
+         * Set here rather than passed in: `OdWriteError`'s constructor keeps
+         * `status`, `retryable` and `detail` and drops anything else, and
+         * widening a class the whole transport shares for one caller's use
+         * would put a drain concern in an Open Dental type.
+         */
+        refusal.alreadyBlocked = true;
+        throw refusal;
       }
 
       const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
@@ -2574,6 +2646,19 @@ async function drainRow(ctx, queueId) {
   const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
   const decisions = new Map();
+  /*
+   * WHICH LINES ARE STILL IN THE SKIP FAMILY WHEN THIS RUN IS DONE WITH THEM.
+   *
+   * Filled by the claimproc-writes step, read by the check-stamping step, and a
+   * SET rather than a re-derivation because the two steps know different halves
+   * of the answer. A line is in here when this run decided to skip it, or when
+   * it was ALREADY skipped by an earlier run and this run merely adopted the
+   * check the chart had attached to it (W-15).
+   *
+   * The stamping step cannot work this out for itself: `plan.lines` was read
+   * before any decision was made, so its statuses are the previous attempt's.
+   */
+  const staysSkipped = new Set();
   /** Every distinct check number the chart already shows on our own lines. */
   const adoptable = new Set();
   let postedTotalCents = 0;
@@ -2836,6 +2921,7 @@ async function drainRow(ctx, queueId) {
           // Already Received with our exact amounts. Recorded as its own state
           // with its own reason — see the migration's note on why this is not
           // folded into `skipped`.
+          staysSkipped.add(line.queueLineId);
           await persistLine(pool, line.queueLineId, {
             status: 'skipped_already_posted',
             skipReason: SKIP_ALREADY_RECEIVED,
@@ -2846,11 +2932,42 @@ async function drainRow(ctx, queueId) {
         }
 
         if (decision.action === 'attached') {
-          // On a check already. Never PUT again (test 11) and never re-billed.
+          /*
+           * On a check already. Never PUT again (test 11) and never re-billed.
+           *
+           * ── W-15: A LINE ALREADY IN THE SKIP FAMILY KEEPS ITS SKIP ────────
+           *
+           * Writing `status: 'paid'` here is what refused the walk's first
+           * press on 2026-09-09, and it is W-9's defect in this branch rather
+           * than a new one: the row still carried the `skip_reason` an earlier
+           * attempt wrote, and the paired constraint refuses that combination.
+           *
+           * It surfaced only on the fourth attempt because `decideLineAction`
+           * re-reads the chart every run and the chart had changed underneath
+           * it. When the money was on the claimproc but no check existed yet,
+           * the decision was `skip`; once the check existed and was attached,
+           * the same line decided `attached`. The line walked from one branch
+           * to its sibling, and the sibling had not been fixed.
+           *
+           * `persistLine` now clears `skip_reason` for any DELIBERATE move off
+           * the skip family, so this would no longer throw — but a legal row is
+           * not the same as an honest one. This attempt did not pay the line
+           * and did not stop skipping it; it ADOPTED a number the chart already
+           * held. So the status and the reason stay, `paid_at` stays null, and
+           * only the check number is written. Exactly W-9's semantics.
+           *
+           * `line.status` rather than the `decisions` map, and the difference
+           * from W-9 is the point: there the skip was decided by THIS run and
+           * the loaded row was stale, so `decisions` was the only truth. Here
+           * the skip was written by an EARLIER run, so the loaded row IS the
+           * truth — and each line gets exactly one decision per run, so it
+           * cannot have been skipped by this one.
+           */
+          const alreadySkipped = SKIP_STATUSES.includes(String(line.status));
+          if (alreadySkipped) staysSkipped.add(line.queueLineId);
           await persistLine(pool, line.queueLineId, {
-            status: 'paid',
+            ...(alreadySkipped ? {} : { status: 'paid', paidAt: true }),
             odClaimPaymentNum: decision.checkNum,
-            paidAt: true,
             lastError: null,
           });
           postedTotalCents += line.intendedInsPayAmtCents;
@@ -3210,14 +3327,16 @@ async function drainRow(ctx, queueId) {
        * stamped: this attempt did not pay the line, an earlier one did, and
        * that attempt's `claimproc_written_at` is still the honest timestamp.
        *
-       * `decisions` rather than `line.status`: `plan.lines` was read BEFORE the
-       * claimproc-writes step ran, so the in-memory status is the previous
-       * attempt's and would miss the skip this run just made.
+       * `staysSkipped` rather than `line.status`: `plan.lines` was read BEFORE
+       * the claimproc-writes step ran, so the in-memory status is the previous
+       * attempt's and would miss the skip this run just made. And rather than
+       * `decisions` alone, which was the guard until W-15 — that missed the
+       * line an earlier run skipped and this run found already ATTACHED to a
+       * check, whose decision is `attached`, not `skip`. Stamping it `paid`
+       * here would have undone the skip the branch above deliberately kept.
        */
-      const skippedThisRun = decisions.get(line.queueLineId)?.action === 'skip';
-
       await persistLine(pool, line.queueLineId, {
-        ...(skippedThisRun ? {} : { status: 'paid', paidAt: true }),
+        ...(staysSkipped.has(line.queueLineId) ? {} : { status: 'paid', paidAt: true }),
         odClaimPaymentNum: claimPaymentNum,
         lastError: null,
       });
@@ -3534,6 +3653,15 @@ async function drainRow(ctx, queueId) {
      * rewriting that status — `attachEobDocuments` handles its own failures on
      * its own columns and never throws to here.
      */
+    /*
+     * A ROW THAT REFUSED ITSELF IS ALREADY FINISHED. See `alreadyBlocked` above:
+     * finalising it again would replace a named refusal with a vaguer state.
+     */
+    if (err && err.alreadyBlocked === true) {
+      console.error(`[rcm/drain] ${office} plan ${queueId} blocked at ${step}: ${err.message}`);
+      return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_ADJ_TYPE, detail: err.message };
+    }
+
     const touchedChart = [
       'claimproc_writes',
       'claim_receipts',

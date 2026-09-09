@@ -2013,6 +2013,23 @@ test('the adjustment path REFUSES when the practice has no such adjustment type'
     'and it is NEVER promoted to the irreversible path — nobody authorised that'
   );
   assert.ok(result.outcomes[0]);
+
+  /*
+   * W-17 — THE REFUSAL KEEPS ITS OWN STATE.
+   *
+   * This is the only site that blocks a row and then throws, and the outer
+   * catch's job is to finalise a row that has NOT been finalised. It used to
+   * overwrite this deliberate `blocked` + `no_adj_type` with `partially_posted`
+   * and no reason — a vaguer state, and one
+   * `rcm_posting_queue_blocked_reason_check` refuses outright, so against real
+   * Postgres an honest refusal threw a second error on top of itself.
+   *
+   * Invisible until the 2026-09-09 sweep taught `FakeRcmDb` the constraint:
+   * the assertion above passed either way, because the reason survived in the
+   * row while the STATUS moved out from under it.
+   */
+  assert.equal(row.status, 'blocked', 'the block is not overwritten by the catch');
+  assert.equal(result.outcomes[0].status, 'blocked');
 });
 
 test('a MIXED plan writes a check for the positive lines ONLY', async () => {
@@ -3312,4 +3329,118 @@ test('W-10: a plan with NO lines is still refused as empty', () => {
   });
   assert.equal(blocked && blocked.reason, postingDrain.BLOCK_REASONS.PLAN_EMPTY);
   assert.match(blocked.detail, /no lines at all/);
+});
+
+/**
+ * W-15 — THE PRESS THE WALK MADE ON 2026-09-09, AND WHAT IT MET.
+ *
+ * The first press after W-10 shipped cleared `checkPreconditions` for the first
+ * time since the kill test, entered `claimproc_writes`, and was refused there by
+ * the SAME check constraint W-9 was about — written from the `attached` branch
+ * instead of the check-stamping loop.
+ *
+ * It surfaced only on the fourth attempt because `decideLineAction` re-reads the
+ * chart every run and the chart had changed underneath it: money on the
+ * claimproc but no check yet decides `skip`; money AND a check decides
+ * `attached`. The line walked from one branch to its sibling.
+ *
+ * Driven entirely through real runs. The one direct mutation is attaching a
+ * check to the fixture chart between runs 2 and 3 — which is not a contrivance
+ * but §8's own window and rule 4's own scenario: *"created by an earlier attempt
+ * that died before it could record the number."* That is the state the live plan
+ * was in.
+ */
+test('W-15: a skipped line the chart later shows ATTACHED keeps its skip and adopts the check', async () => {
+  const db = seedPlan(new FakeRcmDb());
+
+  // Run 1 — killed after the claimproc PUT lands.
+  const dying = odFixture({ dieAfterWrites: 1 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+
+  // Run 2 — resumes, SKIPS the line off the chart, then dies at the check POST.
+  const stalling = odFixture({ dieAfterWrites: 1 });
+  stalling.rows = dying.rows;
+  const second = await postingDrain.drainOffice(ctxFor(db, stalling));
+  assert.equal(second.outcomes[0].status, 'partially_posted', JSON.stringify(second.outcomes[0]));
+
+  const afterSkip = db.table('rcm_posting_queue_line')[0];
+  assert.equal(afterSkip.status, 'skipped_already_posted');
+  assert.equal(afterSkip.skip_reason, 'already_received_matching');
+  assert.equal(afterSkip.od_claim_payment_num ?? null, null, 'no check recorded yet');
+
+  /*
+   * The check POST landed and the response was lost. The chart now carries a
+   * check this plan has never heard of — §8's window, and what the walk met.
+   */
+  const CHECK = 21491;
+  for (const row of stalling.rows.claimProcs) {
+    if (Number(row.ClaimNum) === 53648) row.ClaimPaymentNum = CHECK;
+  }
+
+  // Run 3 — the press. Every line now decides `attached`.
+  const revived = odFixture();
+  revived.rows = stalling.rows;
+  const third = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.equal(third.outcomes[0].status, 'posted', JSON.stringify(third.outcomes[0]));
+
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'skipped_already_posted', 'the skip is kept, not overwritten');
+  assert.equal(line.skip_reason, 'already_received_matching', 'and so is its reason');
+  assert.equal(Number(line.od_claim_payment_num), CHECK, 'the number the chart held is adopted');
+  assert.equal(
+    line.paid_at ?? null,
+    null,
+    'this attempt adopted a number; it did not pay the line'
+  );
+
+  // EXACTLY ONE CHECK, and it is the one that was already there.
+  const checkNums = new Set(odCheckNums(revived).filter((n) => n > 0));
+  assert.equal(checkNums.size, 1, `the chart carries ${checkNums.size} checks`);
+  assert.equal([...checkNums][0], CHECK, 'no second check was minted');
+
+  // ZERO Open Dental writes. There was nothing left to write, only to record.
+  assert.deepEqual(
+    revived.writesIssued(),
+    [],
+    `the healing press wrote to Open Dental: ${revived.writesIssued().join(' | ')}`
+  );
+});
+
+/**
+ * The other half of the ruling: a DELIBERATE move off the skip family is legal,
+ * and `persistLine` is what makes it so.
+ *
+ * A line an earlier run skipped, whose chart amounts then change under it,
+ * decides `conflict` on the next run and is persisted `failed`. That is a real
+ * transition — the run has decided the skip no longer describes the line — and
+ * it must produce a row with NO reason left behind, rather than throwing.
+ */
+test('W-15: a skipped line that later CONFLICTS moves off the skip family with its reason cleared', async () => {
+  const db = seedPlan(new FakeRcmDb());
+
+  const dying = odFixture({ dieAfterWrites: 1 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+
+  const stalling = odFixture({ dieAfterWrites: 1 });
+  stalling.rows = dying.rows;
+  await postingDrain.drainOffice(ctxFor(db, stalling));
+  assert.equal(db.table('rcm_posting_queue_line')[0].status, 'skipped_already_posted');
+
+  // Somebody edited the chart: the line no longer carries our amounts.
+  for (const row of stalling.rows.claimProcs) {
+    if (Number(row.ClaimNum) === 53648) row.InsPayAmt = 999.0;
+  }
+
+  const revived = odFixture();
+  revived.rows = stalling.rows;
+  const third = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.notEqual(third.outcomes[0].status, 'posted', JSON.stringify(third.outcomes[0]));
+
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'failed', 'the conflict moves it off the skip family');
+  assert.equal(
+    line.skip_reason ?? null,
+    null,
+    'and persistLine takes the reason with it — otherwise the constraint refuses the row'
+  );
 });
