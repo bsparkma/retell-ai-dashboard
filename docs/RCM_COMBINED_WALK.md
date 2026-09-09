@@ -1638,3 +1638,39 @@ as well rather than adding a third.
 
 **No code written. Awaiting PM.**
 
+---
+
+## 18. W-16 — the screen presented a crash as a measurement
+
+**Logged by PM ruling, 2026-09-09. Overhaul-critical.**
+
+After press 1 refused, the Posting screen showed the plan as *"Partly posted"*
+and rendered `last_error` inside the box headed **"what the chart says —
+measured out of Open Dental."** The text in that box was:
+
+> `new row for relation "rcm_posting_queue_line" violates check constraint
+> "rcm_posting_queue_line_skip_reason_check"`
+
+That is not a measurement. Nothing was measured — the run threw at
+`claimproc_writes`, four steps before the reconciliation read, and
+[§17.3](#173-open-dental-did-not-change) shows Open Dental was never touched.
+The chart was **right**, and the screen said the chart was the problem.
+
+**The column is doing two jobs.** `last_error` carries both *"the chart
+disagreed with us"* and *"the run failed before it could look"*, and the screen
+renders both under a heading that only the first one earns. A biller reading it
+is being pointed at a correct ledger and told to fix it.
+
+**On real data those five steps end with somebody editing a chart that was
+already right** — and unlike a posting error, a hand-correction to a correct
+ledger has nothing to reconcile against afterwards. That is why this is
+overhaul-critical rather than cosmetic.
+
+**The fix is a distinction, not a wording change.** The screen must be able to
+tell a MEASURED disagreement from a run that stopped before measuring, and say so
+in different words. The evidence for the distinction already exists on the row:
+`reconciled_at` is null and `drain_step` names where it stopped — a run that
+never reached `reconcile` has, by definition, measured nothing.
+
+Not fixed here. Carried to the overhaul with the other display work.
+
