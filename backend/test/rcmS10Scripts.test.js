@@ -253,24 +253,26 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
    * below exists to prevent.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  // FOUR walks so far. The list GROWS by a set per walk; it is never rewritten,
-  // because an id Open Dental has issued is never reissued.
+  // FIVE walks so far - the combined walk's kill test was unwound 2026-09-09.
+  // The list GROWS by a set per walk; it is never rewritten, because an id Open
+  // Dental has issued is never reissued.
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.claims],
-    [53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833]
+    [53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833, 53900, 53901]
   );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.procedures],
-    [406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433]
+    [406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433, 406875, 406876]
   );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.claimProcs],
-    [535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599]
+    [535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599, 536170, 536171]
   );
 
   for (const id of [
     53784, 53785, 406124, 406125, 535194, 535195, 53830, 53831, 535592,
     53832, 53833, 406432, 406433, 535598, 535599,
+    53900, 53901, 406875, 406876, 536170, 536171,
   ]) {
     assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
     for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
@@ -333,7 +335,7 @@ test('the spent-id screen refuses a manifest older than the last walk retired', 
   );
   assert.ok(refusal, 'a stale manifest must be refused even when no id collides');
   assert.match(refusal, /BEFORE the most recent/);
-  assert.match(refusal, /2026-08-30/);
+  assert.match(refusal, /2026-09-09/);
 });
 
 test('the spent-id screen refuses a manifest with no createdAt at all', () => {
@@ -373,8 +375,11 @@ test('WALK_SPENT_RECORDED_AT moves whenever the spent list grows', () => {
   const T = require(path.join(SCRIPTS, FILES.targets));
   const at = Date.parse(T.WALK_SPENT_RECORDED_AT);
   assert.ok(Number.isFinite(at), 'it must be a parseable ISO instant');
-  assert.ok(at >= Date.parse('2026-08-30T00:00:00.000Z'), 'mini-walk 3 is recorded');
-  assert.equal(T.WALK_SPENT_IDS.claims.length, 8, 'four walks, two claims each');
+  assert.ok(
+    at >= Date.parse('2026-09-09T18:26:23.310Z'),
+    'the combined walk kill test is recorded'
+  );
+  assert.equal(T.WALK_SPENT_IDS.claims.length, 10, 'five walks, two claims each');
 });
 
 test('rcm-s10-835.js CONSULTS the screen before it writes anything', () => {
@@ -1437,7 +1442,7 @@ test('the reseed screen accepts BOTH designated patients and refuses anything el
   assert.match(SOURCES.reseed.screen({ office: 'roland', targets: [] }).error, /names no targets/);
 });
 
-test('the reseed ids the 2026-09-01 run created are NOT denied — the unwind must reach them', () => {
+test('a PENDING reseed id is reachable; a SPENT one is denied — the rule, both ways', () => {
   /*
    * The trap `RESEED_PENDING_AT_UNWIND`'s own header describes, asserted rather
    * than trusted. Those seven claims are LIVE and this script is the only thing
@@ -1449,10 +1454,21 @@ test('the reseed ids the 2026-09-01 run created are NOT denied — the unwind mu
     for (const id of RESEED.RESEED_PENDING_AT_UNWIND[bucket]) {
       assert.ok(!DENY.includes(id), `${bucket} ${id} is live and must be reachable`);
     }
+    /*
+     * The other half, and the half that only became assertable once a reseed had
+     * actually been unwound: the moment a row is removed its id MOVES to
+     * RESEED_SPENT_IDS and becomes denied, because a manifest naming a row that
+     * no longer exists did not come from a prep run.
+     */
+    for (const id of RESEED.RESEED_SPENT_IDS[bucket]) {
+      assert.ok(DENY.includes(id), `${bucket} ${id} is retired and must be denied`);
+    }
   }
-  // The seven the walk-prep is about, named so a silent renumbering is caught.
+  // The seven, named so a silent renumbering is caught. Unwound 2026-09-09, so
+  // they are SPENT now and nothing is pending.
+  assert.deepEqual([...RESEED.RESEED_PENDING_AT_UNWIND.claims], []);
   assert.deepEqual(
-    [...RESEED.RESEED_PENDING_AT_UNWIND.claims],
+    [...RESEED.RESEED_SPENT_IDS.claims],
     [53857, 53858, 53859, 53861, 53862, 53863, 53864]
   );
 });
@@ -2511,13 +2527,20 @@ function bothAdjTypes() {
  */
 function candidateTarget(overrides = {}) {
   return {
-    procNum: 406657,
-    claimNum: 53863,
-    claimProcNum: 535780,
+    /*
+     * FICTIONAL, like every other id in this file. An earlier draft used the
+     * combined walk's real numbers (claim 53863 / proc 406657 / AdjNum 19157);
+     * the moment those were retired onto RESEED_SPENT_IDS the deny-list did its
+     * job and skipped the target, and six tests went red for the right reason.
+     * A fixture that borrows a live id has a shelf life.
+     */
+    procNum: 900101,
+    claimNum: 900102,
+    claimProcNum: 900103,
     patNum: 12828,
     paidCents: 2900,
     serviceDate: '2026-09-01',
-    candidateAdjNum: 19157,
+    candidateAdjNum: 900157,
     ...overrides,
   };
 }
@@ -2526,10 +2549,10 @@ function candidateTarget(overrides = {}) {
 function odWithTakeback(adjOverrides = {}) {
   return fakeOd({
     payment: null,
-    claimProc: { ClaimProcNum: 535780, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
-    claim: { ClaimNum: 53863, ClaimStatus: 'W' },
-    procedure: { ProcNum: 406657, ProcStatus: 'C' },
-    adjustment: { AdjNum: 19157, AdjAmt: -29, PatNum: 12828, AdjType: 12, ...adjOverrides },
+    claimProc: { ClaimProcNum: 900103, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900102, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900101, ProcStatus: 'C' },
+    adjustment: { AdjNum: 900157, AdjAmt: -29, PatNum: 12828, AdjType: 12, ...adjOverrides },
   });
 }
 
@@ -2560,7 +2583,7 @@ test('(a) a corroborated candidate makes the dry run PLAN the reversal', async (
   const dry = lines.filter((l) => l.includes('[dry run]'));
   assert.ok(dry.some((l) => l.includes('POST /adjustments')), dry.join('\n'));
   // And the rest of the target is planned too — the reversal is first, not instead.
-  assert.ok(dry.some((l) => l.includes('DELETE /claims/53863')), dry.join('\n'));
+  assert.ok(dry.some((l) => l.includes('DELETE /claims/900102')), dry.join('\n'));
   // `unwindTarget`'s own dry-run gate short-circuits ABOVE the io.write seam, so
   // a caller whose writer does not implement dry run still cannot write.
   assert.deepEqual(plan.planned, [], 'the write seam was never reached');
@@ -2630,7 +2653,7 @@ test('a single-resource adjustment read is refused by the fake, as it is live', 
   // back to answering a call Open Dental refuses, and every reversal test above
   // becomes a statement about the fake's invention rather than the API.
   const od = odWithTakeback();
-  const one = await od.get('/adjustments/19157');
+  const one = await od.get('/adjustments/900157');
   assert.equal(one.ok, false);
   assert.equal(one.status, 400);
   assert.match(one.error, /PatNum is required/);
@@ -2638,7 +2661,7 @@ test('a single-resource adjustment read is refused by the fake, as it is live', 
   const list = await od.get('/adjustments', { PatNum: 12828 });
   assert.equal(list.ok, true);
   assert.equal(list.data.length, 1);
-  assert.equal(list.data[0].AdjNum, 19157);
+  assert.equal(list.data[0].AdjNum, 900157);
 });
 
 for (const [why, adj] of [
@@ -2697,17 +2720,17 @@ test('the candidate lookup is keyed BY the manifest, and two answers refuse', as
   const asked = [];
   const query = async (sql, params) => {
     asked.push({ sql, params });
-    return { rows: [{ od_adjustment_num: '19157' }] };
+    return { rows: [{ od_adjustment_num: '900157' }] };
   };
 
   const targets = [candidateTarget({ candidateAdjNum: undefined })];
   const found = await attachReversalCandidates(query, 'roland', targets);
 
   assert.equal(found, 1);
-  assert.equal(targets[0].candidateAdjNum, 19157, 'attached to the in-memory target');
+  assert.equal(targets[0].candidateAdjNum, 900157, 'attached to the in-memory target');
   assert.deepEqual(
     asked[0].params,
-    ['roland', 535780, 53863],
+    ['roland', 900103, 900102],
     'the office and the MANIFEST\u2019s own claimproc and claim are the key'
   );
   assert.match(asked[0].sql, /od_adjustment_num IS NOT NULL/);
