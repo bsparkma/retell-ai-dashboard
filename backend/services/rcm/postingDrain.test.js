@@ -3315,6 +3315,81 @@ test('W-10: a plan with NO lines is still refused as empty', () => {
 });
 
 /**
+ * W-15 — THE PRESS THE WALK MADE ON 2026-09-09, AND WHAT IT MET.
+ *
+ * The first press after W-10 shipped cleared `checkPreconditions` for the first
+ * time since the kill test, entered `claimproc_writes`, and was refused there by
+ * the SAME check constraint W-9 was about — written from the `attached` branch
+ * instead of the check-stamping loop.
+ *
+ * It surfaced only on the fourth attempt because `decideLineAction` re-reads the
+ * chart every run and the chart had changed underneath it: money on the
+ * claimproc but no check yet decides `skip`; money AND a check decides
+ * `attached`. The line walked from one branch to its sibling.
+ *
+ * Driven entirely through real runs. The one direct mutation is attaching a
+ * check to the fixture chart between runs 2 and 3 — which is not a contrivance
+ * but §8's own window and rule 4's own scenario: *"created by an earlier attempt
+ * that died before it could record the number."* That is the state the live plan
+ * was in.
+ */
+test('W-15: a skipped line the chart later shows ATTACHED keeps its skip and adopts the check', async () => {
+  const db = seedPlan(new FakeRcmDb());
+
+  // Run 1 — killed after the claimproc PUT lands.
+  const dying = odFixture({ dieAfterWrites: 1 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+
+  // Run 2 — resumes, SKIPS the line off the chart, then dies at the check POST.
+  const stalling = odFixture({ dieAfterWrites: 1 });
+  stalling.rows = dying.rows;
+  const second = await postingDrain.drainOffice(ctxFor(db, stalling));
+  assert.equal(second.outcomes[0].status, 'partially_posted', JSON.stringify(second.outcomes[0]));
+
+  const afterSkip = db.table('rcm_posting_queue_line')[0];
+  assert.equal(afterSkip.status, 'skipped_already_posted');
+  assert.equal(afterSkip.skip_reason, 'already_received_matching');
+  assert.equal(afterSkip.od_claim_payment_num ?? null, null, 'no check recorded yet');
+
+  /*
+   * The check POST landed and the response was lost. The chart now carries a
+   * check this plan has never heard of — §8's window, and what the walk met.
+   */
+  const CHECK = 21491;
+  for (const row of stalling.rows.claimProcs) {
+    if (Number(row.ClaimNum) === 53648) row.ClaimPaymentNum = CHECK;
+  }
+
+  // Run 3 — the press. Every line now decides `attached`.
+  const revived = odFixture();
+  revived.rows = stalling.rows;
+  const third = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.equal(third.outcomes[0].status, 'posted', JSON.stringify(third.outcomes[0]));
+
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'skipped_already_posted', 'the skip is kept, not overwritten');
+  assert.equal(line.skip_reason, 'already_received_matching', 'and so is its reason');
+  assert.equal(Number(line.od_claim_payment_num), CHECK, 'the number the chart held is adopted');
+  assert.equal(
+    line.paid_at ?? null,
+    null,
+    'this attempt adopted a number; it did not pay the line'
+  );
+
+  // EXACTLY ONE CHECK, and it is the one that was already there.
+  const checkNums = new Set(odCheckNums(revived).filter((n) => n > 0));
+  assert.equal(checkNums.size, 1, `the chart carries ${checkNums.size} checks`);
+  assert.equal([...checkNums][0], CHECK, 'no second check was minted');
+
+  // ZERO Open Dental writes. There was nothing left to write, only to record.
+  assert.deepEqual(
+    revived.writesIssued(),
+    [],
+    `the healing press wrote to Open Dental: ${revived.writesIssued().join(' | ')}`
+  );
+});
+
+/**
  * The other half of the ruling: a DELIBERATE move off the skip family is legal,
  * and `persistLine` is what makes it so.
  *

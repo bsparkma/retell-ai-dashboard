@@ -2622,6 +2622,19 @@ async function drainRow(ctx, queueId) {
   const grouped = groupByClaim(ordinaryLines);
   /** @type {Map<string, {action: string, checkNum?: number}>} */
   const decisions = new Map();
+  /*
+   * WHICH LINES ARE STILL IN THE SKIP FAMILY WHEN THIS RUN IS DONE WITH THEM.
+   *
+   * Filled by the claimproc-writes step, read by the check-stamping step, and a
+   * SET rather than a re-derivation because the two steps know different halves
+   * of the answer. A line is in here when this run decided to skip it, or when
+   * it was ALREADY skipped by an earlier run and this run merely adopted the
+   * check the chart had attached to it (W-15).
+   *
+   * The stamping step cannot work this out for itself: `plan.lines` was read
+   * before any decision was made, so its statuses are the previous attempt's.
+   */
+  const staysSkipped = new Set();
   /** Every distinct check number the chart already shows on our own lines. */
   const adoptable = new Set();
   let postedTotalCents = 0;
@@ -2884,6 +2897,7 @@ async function drainRow(ctx, queueId) {
           // Already Received with our exact amounts. Recorded as its own state
           // with its own reason — see the migration's note on why this is not
           // folded into `skipped`.
+          staysSkipped.add(line.queueLineId);
           await persistLine(pool, line.queueLineId, {
             status: 'skipped_already_posted',
             skipReason: SKIP_ALREADY_RECEIVED,
@@ -2894,11 +2908,42 @@ async function drainRow(ctx, queueId) {
         }
 
         if (decision.action === 'attached') {
-          // On a check already. Never PUT again (test 11) and never re-billed.
+          /*
+           * On a check already. Never PUT again (test 11) and never re-billed.
+           *
+           * ── W-15: A LINE ALREADY IN THE SKIP FAMILY KEEPS ITS SKIP ────────
+           *
+           * Writing `status: 'paid'` here is what refused the walk's first
+           * press on 2026-09-09, and it is W-9's defect in this branch rather
+           * than a new one: the row still carried the `skip_reason` an earlier
+           * attempt wrote, and the paired constraint refuses that combination.
+           *
+           * It surfaced only on the fourth attempt because `decideLineAction`
+           * re-reads the chart every run and the chart had changed underneath
+           * it. When the money was on the claimproc but no check existed yet,
+           * the decision was `skip`; once the check existed and was attached,
+           * the same line decided `attached`. The line walked from one branch
+           * to its sibling, and the sibling had not been fixed.
+           *
+           * `persistLine` now clears `skip_reason` for any DELIBERATE move off
+           * the skip family, so this would no longer throw — but a legal row is
+           * not the same as an honest one. This attempt did not pay the line
+           * and did not stop skipping it; it ADOPTED a number the chart already
+           * held. So the status and the reason stay, `paid_at` stays null, and
+           * only the check number is written. Exactly W-9's semantics.
+           *
+           * `line.status` rather than the `decisions` map, and the difference
+           * from W-9 is the point: there the skip was decided by THIS run and
+           * the loaded row was stale, so `decisions` was the only truth. Here
+           * the skip was written by an EARLIER run, so the loaded row IS the
+           * truth — and each line gets exactly one decision per run, so it
+           * cannot have been skipped by this one.
+           */
+          const alreadySkipped = SKIP_STATUSES.includes(String(line.status));
+          if (alreadySkipped) staysSkipped.add(line.queueLineId);
           await persistLine(pool, line.queueLineId, {
-            status: 'paid',
+            ...(alreadySkipped ? {} : { status: 'paid', paidAt: true }),
             odClaimPaymentNum: decision.checkNum,
-            paidAt: true,
             lastError: null,
           });
           postedTotalCents += line.intendedInsPayAmtCents;
@@ -3258,14 +3303,16 @@ async function drainRow(ctx, queueId) {
        * stamped: this attempt did not pay the line, an earlier one did, and
        * that attempt's `claimproc_written_at` is still the honest timestamp.
        *
-       * `decisions` rather than `line.status`: `plan.lines` was read BEFORE the
-       * claimproc-writes step ran, so the in-memory status is the previous
-       * attempt's and would miss the skip this run just made.
+       * `staysSkipped` rather than `line.status`: `plan.lines` was read BEFORE
+       * the claimproc-writes step ran, so the in-memory status is the previous
+       * attempt's and would miss the skip this run just made. And rather than
+       * `decisions` alone, which was the guard until W-15 — that missed the
+       * line an earlier run skipped and this run found already ATTACHED to a
+       * check, whose decision is `attached`, not `skip`. Stamping it `paid`
+       * here would have undone the skip the branch above deliberately kept.
        */
-      const skippedThisRun = decisions.get(line.queueLineId)?.action === 'skip';
-
       await persistLine(pool, line.queueLineId, {
-        ...(skippedThisRun ? {} : { status: 'paid', paidAt: true }),
+        ...(staysSkipped.has(line.queueLineId) ? {} : { status: 'paid', paidAt: true }),
         odClaimPaymentNum: claimPaymentNum,
         lastError: null,
       });
