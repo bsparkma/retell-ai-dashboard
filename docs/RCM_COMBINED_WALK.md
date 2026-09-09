@@ -1431,3 +1431,94 @@ re-blocks identically at zero cost — no Open Dental call, nothing written. The
 takeback cannot post until W-12 has a ruling.
 
 **Awaiting PM. No fix written.**
+
+---
+
+## 16. The class fix ships, and both plans clear their preconditions
+
+### 16.1 PR #157 — merged and deployed — [CC], 2026-09-09
+
+| | |
+| --- | --- |
+| PR | **#157** — *Fix the reversal-lane predicate class* |
+| Base | `develop` (`d4c916c`) |
+| PR check | `build-test` **pass**, 3m30s |
+| Merge commit | **`903d3d5`** |
+| Commits | `41ab889` (W-12), `7896239` (W-10), `f250d77` (the lying 409), `9b9935a` (the §17 sweep) |
+| Diff | 7 files, +570 / −20 |
+
+**The first deploy attempt failed on nothing.** `az acr build` crashed inside its
+own log-tailing — `get_log_sas_url` returned a non-JSON body and the CLI died on
+`JSONDecodeError` — so GitHub marked `publish` failed and skipped `migrate` and
+`deploy`. The build was healthy: ACR run `cdav` was still *Running* when the CLI
+gave up, and both `carein-backend:903d3d5` and `carein-caddy:903d3d5` landed in
+the registry. Re-running the failed jobs completed it. **Worth recognising rather
+than debugging** — a green ACR run behind a red `publish` step is a CLI streaming
+failure, not a build failure.
+
+**Three layers:**
+
+| Layer | Evidence |
+| --- | --- |
+| pipeline | `staging-cd` run **`34356899519`** on `903d3d5` — `build-test` ✓ `publish` ✓ `migrate` ✓ `deploy` ✓ |
+| revision | **`ca-carein-backend--0000168`**, image `acrcareincore.azurecr.io/carein-backend:903d3d5`, `latestReadyRevisionName`, mode `Single`, ingress **100%**, scale `min = max = 1`, `RCM_DRAIN_STEP_DELAY_MS` **absent** |
+| live predicate | Both fixes present in `/app` (`componentSignIsWrong`, `This plan has no lines at all`) **and exercised** — see §16.2 |
+
+### 16.2 Both plans pass `checkPreconditions` on the deployed build
+
+Run **inside the container**, against the rows `loadPlan` actually returns, with
+`odWritesDisabled: false` and `snapshotVersion: 2` read the same way the drain
+reads them. This is the predicate that refused both presses.
+
+**S10A — `ae114999` (W-10):**
+
+| | |
+| --- | --- |
+| plan | `blocked`, `is_recoupment: false`, `od_claim_payment_num` **21491**, intended **100** |
+| line 1 | `skipped_already_posted` / `already_received_matching`, claimproc **536170**, claim **53900**, insPay `100`, writeOff `0`, ded `0` |
+| **`checkPreconditions`** | **`null`** — was `plan_empty` |
+
+**R3 — `573bb9f6` (W-12):**
+
+| | |
+| --- | --- |
+| plan | `blocked`, `is_recoupment: **true**`, no check, intended **−2900** |
+| line 1 | `pending`, claimproc **535780**, claim **53863**, insPay `-2900`, **writeOff `-600`**, `is_supplemental: true`, path `adjustment` |
+| **`checkPreconditions`** | **`null`** — was `negative_intent` on that `-600` |
+
+The `-600` is still there and still negative. The guard now reads it as the
+mirror it is, on a lane that never writes it.
+
+### 16.3 The deposit check — all four clear
+
+Ordered before anything else, because a check swept into a deposit cannot be
+removed by the unwind. Read live off Open Dental:
+
+| Check | Amount | CheckDate | `DepositNum` |
+| --- | --- | --- | --- |
+| **21461** | $164.80 | 2026-09-01 | **0** |
+| **21462** | $640.00 | 2026-09-01 | **0** |
+| **21490** | $29.00 | 2026-09-03 | **0** |
+| **21491** | $1.00 | 2026-08-29 | **0** |
+
+Nothing has been swept since 9/4. The teardown path is intact.
+
+### 16.4 The two presses, handed over
+
+| # | Press | Expected |
+| --- | --- | --- |
+| **1** | Posting → the **`S10A-53832`** $1.00 check → **Post** | Heals to `posted`, reconciled. Line keeps `skipped_already_posted` and gains check **21491**. **Zero Open Dental writes** — nothing left to write, only to record. |
+| **2** | Posting → the Cigna **`RS-330415`** −$29.00 check → **Post** | One **−$29.00** adjustment on **12828** under *insurance deductions from previous payments*, AdjType by name. **No new check** — R3 is a pure recoupment. |
+
+**Approve is NOT pressed on R3.** It is already approved — plan `573bb9f6`
+exists and is waiting. Pressing Approve again is what produced W-11's misleading
+409, and [§15](#15-w-12--the-approve-succeeded-the-drain-refused-a-mirrored-write-off)
+is why.
+
+### 16.5 PM rulings carried forward
+
+| | Ruling |
+| --- | --- |
+| **W-13** | Reword, keep refusing. Rides the fix-before-shadow batch. **This branch is not reopened.** |
+| **W-14** | Deferred to fix-before-shadow beside W-7 — same family, and scoring changes do not happen mid-walk. **Logged, not dropped.** |
+
