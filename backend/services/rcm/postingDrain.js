@@ -205,6 +205,20 @@ const BLOCK_REASONS = Object.freeze({
 const SKIP_ALREADY_RECEIVED = 'already_received_matching';
 
 /**
+ * The two line statuses the paired CHECK constraint binds to `skip_reason`.
+ *
+ * Migration `1787120000000` requires the pairing in BOTH directions:
+ *
+ *     (status IN ('skipped','skipped_already_posted') AND skip_reason IS NOT NULL)
+ *  OR (status NOT IN ('skipped','skipped_already_posted') AND skip_reason IS NULL)
+ *
+ * Named here because `persistLine` now enforces the second half for every
+ * caller, and a list the database and the code both read from one place cannot
+ * drift apart.
+ */
+const SKIP_STATUSES = Object.freeze(['skipped', 'skipped_already_posted']);
+
+/**
  * The two ways a takeback may be written, mirrored from the approval gate.
  *
  * Duplicated as a constant rather than imported so this service does not depend
@@ -1615,6 +1629,40 @@ async function persistLine(pool, queueLineId, patch) {
   if (patch.odClaimPaymentNum !== undefined) put('od_claim_payment_num', patch.odClaimPaymentNum);
   if (patch.lastError !== undefined) put('last_error', patch.lastError);
   if (patch.skipReason !== undefined) put('skip_reason', patch.skipReason);
+
+  /*
+   * ─── THE SKIP PAIRING IS ENFORCED BY THE WRITER, NOT BY EACH CALLER ───────
+   *
+   * A line MOVING OFF the skip family takes its reason with it. The reason
+   * explains a status; carrying it past the status it explained is what the
+   * database refuses, and there is no caller for whom leaving it behind is the
+   * right answer.
+   *
+   * W-9 and W-15 were the same defect found twice, a fortnight apart, because
+   * the first fix guarded the call site that happened to manifest instead of
+   * the function every call site goes through. The two sites still unguarded
+   * after that — `claimproc_written` on a later `write` decision and `failed`
+   * on a `conflict` — are legalised here, because both are a run DECIDING that
+   * the skip no longer describes the line. That is a real transition and it
+   * should be expressible.
+   *
+   * WHAT THIS DOES NOT DO IS LEGALISE AN ACCIDENT. It only guarantees no site
+   * can emit a row the database will reject; whether a status SHOULD leave the
+   * skip family stays each site's decision, made in its own code. The
+   * `attached` branch does not want this transition at all — see its own
+   * comment — and the check-stamping loop's `skippedThisRun` guard stays for
+   * the same reason.
+   *
+   * An explicit `skipReason` in the patch always wins: a caller setting both
+   * columns knows what it is doing.
+   */
+  if (
+    patch.status !== undefined &&
+    patch.skipReason === undefined &&
+    !SKIP_STATUSES.includes(String(patch.status))
+  ) {
+    put('skip_reason', null);
+  }
   if (patch.readback !== undefined) {
     put('readback', patch.readback === null ? null : JSON.stringify(patch.readback));
     sets.push('readback_at = now()');

@@ -3313,3 +3313,42 @@ test('W-10: a plan with NO lines is still refused as empty', () => {
   assert.equal(blocked && blocked.reason, postingDrain.BLOCK_REASONS.PLAN_EMPTY);
   assert.match(blocked.detail, /no lines at all/);
 });
+
+/**
+ * The other half of the ruling: a DELIBERATE move off the skip family is legal,
+ * and `persistLine` is what makes it so.
+ *
+ * A line an earlier run skipped, whose chart amounts then change under it,
+ * decides `conflict` on the next run and is persisted `failed`. That is a real
+ * transition — the run has decided the skip no longer describes the line — and
+ * it must produce a row with NO reason left behind, rather than throwing.
+ */
+test('W-15: a skipped line that later CONFLICTS moves off the skip family with its reason cleared', async () => {
+  const db = seedPlan(new FakeRcmDb());
+
+  const dying = odFixture({ dieAfterWrites: 1 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+
+  const stalling = odFixture({ dieAfterWrites: 1 });
+  stalling.rows = dying.rows;
+  await postingDrain.drainOffice(ctxFor(db, stalling));
+  assert.equal(db.table('rcm_posting_queue_line')[0].status, 'skipped_already_posted');
+
+  // Somebody edited the chart: the line no longer carries our amounts.
+  for (const row of stalling.rows.claimProcs) {
+    if (Number(row.ClaimNum) === 53648) row.InsPayAmt = 999.0;
+  }
+
+  const revived = odFixture();
+  revived.rows = stalling.rows;
+  const third = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.notEqual(third.outcomes[0].status, 'posted', JSON.stringify(third.outcomes[0]));
+
+  const line = db.table('rcm_posting_queue_line')[0];
+  assert.equal(line.status, 'failed', 'the conflict moves it off the skip family');
+  assert.equal(
+    line.skip_reason ?? null,
+    null,
+    'and persistLine takes the reason with it — otherwise the constraint refuses the row'
+  );
+});
