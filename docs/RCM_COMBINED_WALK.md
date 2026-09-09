@@ -677,6 +677,29 @@ The 429 throttle is real and separate — it fires after roughly ten exec calls 
 short window and clears on its own. Both were hit during this walk and the two look
 nothing alike in the output; do not treat a `ClusterExecFailure` as a throttle.
 
+### W-18 · The unwind reported `already done` for a step it had never been given an input to attempt
+
+Full account in [§22](#22-w-18--the-unwind-cannot-reverse-the-takeback-it-just-watched-happen);
+the fix in [§23](#23-the-fix-and-the-bare-manifest-comes-off).
+
+The teardown's reversal step is gated on `target.odAdjustmentNum`, a field the
+**prep** writes. The takeback's AdjNum is minted by the **drain**, days later, at
+post time. The field has therefore never once been populated, the step has never
+once run, and what it printed instead — on all seven targets — was **`already
+done`**.
+
+Severity: **overhaul-critical.** `DELETE /adjustments` does not exist (G6), so an
+adjustment on a real ledger can be undone only by an offsetting one. That is
+exactly what this step is for, and exactly what it could not do for anything the
+drain wrote. On real data a takeback posted in error would have no reversal path
+through the operational script that exists to reverse it.
+
+**Handed to the overhaul brief's principle 5 family**, with
+[W-16](#18-w-16--the-screen-presented-a-crash-as-a-measurement): *a tool that
+reports a state it never measured.* W-16 rendered a crash as a measurement out of
+Open Dental; W-18 reported completion for work it never had the input to attempt.
+The brief itself is not in this repository, so the tag travels here.
+
 ---
 
 ## 7. Teardown numbers
@@ -782,6 +805,15 @@ mid-sequence, exactly as intended.
 7. Still open from the runbook itself, and **not this walk's job**: a biller can
    currently approve a recoupment (#120 canon). **That closes before the first real
    drain, not before shadow.**
+8. **W-18** — fixed on `fix/rcm-unwind-takeback-reversal`, awaiting PM review
+   before it runs against target F. The finding itself goes to the overhaul brief's
+   principle 5 family beside W-16.
+9. **The switch audit records no value.** `audit_log` carries one `UPDATE
+   rcm_office_settings` row per flip with `prior_state: null` and no column for the
+   new setting, so the four rows this walk produced are indistinguishable from one
+   another. "When was posting switched off" is answerable from `drain_updated_at`;
+   "who turned it **on**, and when" is not answerable from `audit_log` at all.
+   [§22.1](#221-the-switch-verified-on-the-row--2026-09-09t180514z).
 
 ---
 
@@ -2031,7 +2063,7 @@ wrong with no tool that will fix it.
 Same family as [W-16](#18-w-16--the-screen-presented-a-crash-as-a-measurement):
 the tooling reports a state it never measured. **Overhaul-critical.**
 
-### 22.6 Unverified, and it changes the fix
+### 22.6 Unverified, and it changes the fix — *answered in [§23.1](#231-the-unanswered-question-answered)*
 
 Whether Roland has a `+` "insurance adjustment" AdjType at all is **not known** —
 the probe hit the `az containerapp exec` 429 throttle and was not retried. The
@@ -2059,3 +2091,122 @@ remedy is a different one.
 unwind without weakening safety property #1, and on whether to run the six clean
 reseed targets and the bare manifest now or hold the whole teardown until the
 reversal works.
+
+---
+
+## 23. The fix, and the bare manifest comes off
+
+PM rulings on W-18, 2026-09-09: the six clean reseed targets and the bare
+manifest run now; **target F is held as one atomic piece** until the reversal
+works; the AdjType question is answered first; the corroborated-handoff design is
+approved; the script change lands in a reviewed commit with tests.
+
+### 23.1 The unanswered question, answered
+
+Roland's own definitions, read live at `2026-09-09T18:2xZ` (the earlier attempt
+hit the `az exec` 429 and was retried after it cleared):
+
+| Purpose | Required sign | Resolved by name | DefNum |
+| --- | --- | --- | --- |
+| `recoupment` | `-` | "Insurance deductions from previous payments" | **477** |
+| `recoupment_reversal` | `+` | **"Insurance Adjustment"** | **260** |
+
+**The `+` type exists, so nothing has to be created in Open Dental.** DefNum 260
+is the same one Spike 0b test 8 used to net a reversal to zero — the pairing the
+unwind's own header cites. Roland's list carries 38 adjustment types; two are
+unsigned (`452`, `483`) and `pickAdjType` accepts an unsigned row, but neither is
+named "insurance adjustment", so nothing was resolved on a shrug.
+
+### 23.2 The bare manifest — executed, `2026-09-09T18:26:23Z`
+
+The kill-test manifest is a separate file naming only 53900/53901, carries no
+takeback, and never touches target F. It ran on the deployed script, unchanged.
+
+```
+-- TARGET A: ProcNum=406875 ClaimNum=53900 ClaimProcNum=536170 --
+   read: Status="Received" InsPayAmt=1 WriteOff=0 ClaimPaymentNum=21491
+   DELETE /claimpayments/21491 -> 200    read-back: 404 gone
+   PUT    /claims/53900       -> 200    read-back: ClaimStatus="W"
+   PUT    /claimprocs/536170  -> 200    read-back: NotReceived, 0, 0
+   DELETE /claims/53900       -> 200    read-back: 404 gone
+   DELETE /procedurelogs/406875 -> 200  read-back: ProcStatus="D"  (G12)
+
+-- TARGET B: ProcNum=406876 ClaimNum=53901 ClaimProcNum=536171 --
+   1-3 already done   DELETE claim -> 404 gone   DELETE proc -> "D"
+
+PatNum 12827   before $155.00   after $154.00   delta -$1.00
+claims 6 -> 4 (back to the prep baseline)   soft-deleted procedures 10 -> 12
+```
+
+**$154.00 is exactly what [§9.2](#92-the-kill-target-has-to-be-rebuilt)
+predicted.** Every write read back. Checks 21461/21462/21490 are untouched;
+**21491 is now deleted** and belongs on `WALK_SPENT_IDS`, not the reseed list.
+
+### 23.3 Why the six could not run alongside it
+
+`--reseed` has no per-target selection, and it must not have one: argv is a closed
+set of boolean flags precisely so that **no token on the command line can ever
+name a row**. So there is no way to run six of seven targets by hand, and the
+honest way to hold target F is to make F hold itself — which is what the fix does.
+A target whose reversal refuses aborts before its first `DELETE`, the mechanism
+the un-receive read-back has always used.
+
+Sequenced accordingly: bare now, the six under the fixed script once it is
+reviewed. Neither ordering changes the end state — the two manifests name disjoint
+ids — so nothing is lost by the wait, and the alternative was half-dismantling F.
+
+### 23.4 The fix — `fix/rcm-unwind-takeback-reversal`
+
+| | |
+| --- | --- |
+| Branch | `fix/rcm-unwind-takeback-reversal` off `origin/develop` (`f9f813a`) |
+| Commits | `968c2fd` (the handoff), `67cdb6c` (the tests) |
+| Tests | `node --test` **2405 pass / 0 fail / 3 skipped**; `rcmS10Scripts.test.js` 100/100 |
+
+**Scope still comes from the manifest.** The lookup key is the manifest target's
+own `office_id`, `od_claim_proc_num` and `od_claim_num`, so the query cannot
+return a line the manifest does not already name and no row in the posting queue
+can nominate itself as something to delete. Safety property 1 is reworded to say
+*scope*, and a new property 8 states the handoff.
+
+**The candidate is corroborated before it means anything** — three facts, all
+derived from the manifest target and this office's own definitions, none from the
+candidate row:
+
+| Fact | Checked against |
+| --- | --- |
+| `PatNum` | the target's `patNum` |
+| `AdjAmt` | `-(target.paidCents / 100)` — the target's takeback **mirrored** |
+| `AdjType` | the `-` recoupment type resolved **by name** from this practice |
+
+A number the *manifest* carries skips corroboration: it is the prep's own record
+and needs no second opinion. Only the app database's offer is checked, because the
+app database is not the authority here and must not become one by being believed.
+
+**A candidate that fails holds the whole target.** `refused`, `aborted = true`,
+return before the first write — the remaining steps stay `blocked`, so the table
+cannot read as progress on a claim nothing was done to.
+
+**A step with no input reports `not run`.** Never `already done`. Two existing
+assertions were pinning the dishonest label and were changed; that is the point of
+the commit, not collateral.
+
+**The candidate read failing refuses the RUN, not a target.** Every other read
+here answers a question about one target. This one answers *"does this target
+carry a takeback at all"*, and a run that cannot answer it cannot tell a claim
+that has none from one whose takeback it merely failed to look for. Fail closed.
+
+**No environment input.** An earlier draft took `RCM_UNWIND_TENANT_ID`; it was
+removed. The file's own test asserts it reads nothing from `process.env`, and a
+knob that could point corroboration at the wrong practice is worse than a refusal.
+More than one tenant in the registry is now a loud refusal.
+
+### 23.5 State
+
+| | |
+| --- | --- |
+| Roland posting | **OFF**, verified on the row |
+| 12827 | `$154.00`, 4 claims, 12 soft-deleted procs — bare manifest done |
+| 12828 | `-$29.00`, 3 claims — **held**, AdjNum 19157 live |
+| Reseed manifest | intact, nothing retired, `RESEED_SPENT_IDS` untouched |
+| Owed | PM review of the branch, then `--reseed` for the six + F |
