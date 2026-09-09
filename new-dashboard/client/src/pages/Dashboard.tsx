@@ -35,6 +35,8 @@ export default function Dashboard() {
     avgDurationSec: number;
   } | null>(null);
   const [analyticsError, setAnalyticsError] = useState(false);
+  /** Same distinction as `analyticsError`: did the recent-calls read FAIL, or was it empty? */
+  const [recentCallsError, setRecentCallsError] = useState(false);
 
   const pendingCallbacks = callbacks.filter(c => c.status === "pending");
   const confirmedApts = todayAppointments.filter(a => a.status === "confirmed");
@@ -47,11 +49,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     setAnalyticsError(false);
+    setRecentCallsError(false);
     setLoading(true);
     const today = new Date().toISOString().split("T")[0];
     Promise.all([
       api.getCallbacks().then(setCallbacks).catch(() => setCallbacks([])),
-      api.getUnifiedCalls({ limit: 10 }).then(({ calls }) => setRecentCalls(calls)).catch(() => setRecentCalls([])),
+      api.getUnifiedCalls({ limit: 10 })
+        .then(({ calls }) => setRecentCalls(calls))
+        .catch((err) => {
+          console.error("[Dashboard] failed to load recent calls", err);
+          setRecentCalls([]);
+          setRecentCallsError(true);
+        }),
       api.getAnalyticsSummary({ days: 1 }).then((res) => {
         const filtered = res.hourlyVolume.filter((h) => {
           const match = h.hour.match(/^(\d+)(AM|PM)$/);
@@ -91,7 +100,9 @@ export default function Dashboard() {
   const stats = [
     {
       label: "Today's Calls",
-      value: analyticsError && !todayKpis ? "—" : (todayKpis?.totalCalls ?? recentCalls.length),
+      // The recentCalls fallback is only honest when that read actually succeeded —
+      // otherwise its length is 0 and the tile would assert "no calls today".
+      value: analyticsError && !todayKpis ? "—" : (todayKpis?.totalCalls ?? (recentCallsError ? "—" : recentCalls.length)),
       sub: loading ? "Loading..." : analyticsError && !todayKpis ? "Unavailable" : todayKpis ? `${todayKpis.aiHandled} AI handled` : `${recentCalls.filter(c => c.source === "retell").length} AI handled`,
       icon: PhoneCall,
       color: "teal",
@@ -246,6 +257,12 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
+              {recentCallsError && (
+                // Never let a failed read render as a tidy empty panel.
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  Couldn't load recent calls.
+                </p>
+              )}
               {recentCalls.slice(0, 5).map((call) => (
                 <Link key={call.id} href={`/calls/${call.id}`}>
                   <div className="flex items-center gap-3 py-1.5 hover:bg-muted/40 rounded-md px-1 transition-colors cursor-pointer">
