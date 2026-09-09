@@ -1915,3 +1915,147 @@ it could not:
 Four refusals on one claim, in four different layers, and each one only visible
 once the layer in front of it cleared.
 
+
+---
+
+## 22. W-18 — the unwind cannot reverse the takeback it just watched happen
+
+**The walk is STOPPED here, before any `--execute`.** Posting is off, both presses
+are read back clean, and the `--reseed` dry run refuses to reach one of its own
+teardown numbers. Nothing has been written.
+
+### 22.1 The switch, verified on the row — `2026-09-09T18:05:14Z`
+
+Beau's screenshot is a promise; this is the read-back.
+
+```
+roland   drain_enabled: false   drain_updated_at: 2026-09-09T18:00:33.459Z   by admin@carein.ai
+valley   drain_enabled: false   drain_updated_at: null                       (never switched on)
+```
+
+`audit_log` carries **four** `UPDATE rcm_office_settings` rows for the whole walk,
+all `roland`, all `SUCCESS`, all `admin@carein.ai` — `2026-09-03T02:22:48.921Z`,
+`2026-09-03T03:09:18.861Z`, `2026-09-04T01:19:16.610Z`, and today's OFF at
+`2026-09-09T18:00:33.464Z` (`audit_id 9a1b4b3c-…`). See [§2.5](#2-two-pre-flight-findings-before-a-single-step-ran).
+
+> Worth noting for the overhaul, not a blocker: the audit row records **that** the
+> posting row changed, never **to what**. `prior_state` is `null` and no column
+> carries the new value, so "when was posting switched off" is answerable from
+> `drain_updated_at` but "who turned it *on*, and when" is not answerable from
+> `audit_log` alone — the four rows are indistinguishable from each other.
+
+### 22.2 The capture — 12827 at `2026-09-09T18:06:30Z`
+
+```
+charges (ProcStatus "C")   $1558.00      claims: 53857, 53859, 53862, 53864, 53900, 53901
+insurance paid             -$571.80      checks referenced: 21461, 21462, 21491
+write-offs                 -$830.00      10 soft-deleted procedure rows excluded
+adjustments                  -$1.20      Spike 0b residue: claimproc 533930, adj 19109-19112
+------------------------------------
+PATIENT BALANCE             $155.00
+```
+
+$155.00 is exactly the $154.00 [§9.2](#92-the-kill-target-has-to-be-rebuilt)
+predicted for the bare unwind, plus the $1.00 kill-test net still on the chart.
+That part is right.
+
+### 22.3 What the dry run said
+
+```
+-- TARGET F: ProcNum=406657 ClaimNum=53863 ClaimProcNum=535780 --
+   0. reversal     nothing to reverse - this target carries no takeback adjustment
+   read: Status="Received" InsPayAmt=29 WriteOff=6 ClaimPaymentNum=21490
+
+-- BALANCE AFTER (unchanged - dry run) - PatNum 12828 -----------------
+   PATIENT BALANCE                  -$29.00
+   claims: 3   soft-deleted procedures excluded: 0
+
+-- STEPS -------------------------------------------------------------
+   step                          A             B    ...  F             G
+   POST offsetting adjustment    already done  ...       already done  already done
+```
+
+**`already done`, on all seven, for a step that has never run.** 12828 would land
+at **−$29.00**, not the `$0.00` this walk owes it.
+
+### 22.4 Why — and it is the safety property working, not failing
+
+The reversal step is gated on one field:
+
+```js
+if (Number(target.odAdjustmentNum) > 0) {          // rcm-s11-unwind.js:633
+```
+
+`target` comes from the manifest and **from nowhere else** — safety property #1,
+the one that makes this the only file in the repo allowed to `DELETE` from a
+chart:
+
+> *"IDS COME FROM THE MANIFEST AND FROM NOWHERE ELSE. Not argv, not env, not a
+> fresh read of the patient's claims. … An unwind that takes ids from an argument
+> is one typo away from deleting a real patient's claim, and 'the operator will be
+> careful' is not a safety property."*
+
+`odAdjustmentNum` is written by the **prep**, for adjustments the prep itself
+creates. The takeback's adjustment is written by the **drain**, at post time. The
+manifest target for R3-1 was written `2026-09-01T20:28:51.870Z`:
+
+```json
+{ "key": "R3-1", "remittance": "R3", "patNum": 12828, "procCode": "D0220",
+  "billedCents": 3500, "allowedCents": 2900, "paidCents": 2900,
+  "procNum": 406657, "claimNum": 53863, "claimProcNum": 535780,
+  "serviceDate": "2026-09-01", "createdAt": "2026-09-01T20:28:51.870Z" }
+```
+
+**No `odAdjustmentNum`, and nothing ever adds one.** AdjNum 19157 was created
+eight days later, at `2026-09-09T17:26:19Z`. The drain recorded it — the app's own
+`rcm_posting_queue_line.od_adjustment_num` reads `19157` — but there is no path
+from the app database back into the manifest the unwind trusts.
+
+So the reversal machinery is **inert**, and always has been. It is worse than one
+skipped step: `needsReversal` gates the whole AdjType resolution on the same field
+(`rcm-s11-unwind.js:1205`), so on this run the script does not even ask whether
+Roland *has* a `+` "insurance adjustment" type. The step whose header reads *"THE
+TAKEBACK'S ADJUSTMENT — REVERSED, NEVER DELETED"* has never once had an input,
+and no test caught it because until 17:26 today no takeback had ever been posted.
+
+### 22.5 Why this is not "just a test-chart cosmetic"
+
+`DELETE /adjustments` does not exist (G6). An adjustment written to a real
+patient's ledger can be undone **only** by an offsetting adjustment — which is
+precisely what this step exists to do, and precisely what it cannot do for
+anything the drain wrote. On real data, a takeback posted in error has **no
+reversal path through the operational script that exists to reverse it**, and the
+first person to discover that would be a biller looking at a chart that is $29
+wrong with no tool that will fix it.
+
+Same family as [W-16](#18-w-16--the-screen-presented-a-crash-as-a-measurement):
+the tooling reports a state it never measured. **Overhaul-critical.**
+
+### 22.6 Unverified, and it changes the fix
+
+Whether Roland has a `+` "insurance adjustment" AdjType at all is **not known** —
+the probe hit the `az containerapp exec` 429 throttle and was not retried. The
+drain resolved the `-` side by name today (DefNum 477, *"Insurance deductions from
+previous payments"*), which says nothing about the `+` side. This is exactly the
+per-office AdjType preflight the PM made a standing rule after
+[§19](#19-the-writer-fix-ships-and-the-decision-is-attached-before-anyone-presses),
+now pointing at the reversal type instead of the recoupment one. It must be
+answered before any fix is designed, because if the answer is NONE then no
+offsetting adjustment can be booked in this practice by any caller and the
+remedy is a different one.
+
+### 22.7 State right now
+
+| | |
+| --- | --- |
+| Roland posting | **OFF**, verified on the row |
+| Writes issued this session | **none** — dry run only |
+| 12827 | `$155.00`, 6 claims, 10 soft-deleted procs |
+| 12828 | `-$29.00`, 3 claims, 0 soft-deleted procs — AdjNum **19157** live |
+| Both manifests | intact, nothing retired, `RESEED_SPENT_IDS` untouched |
+| The unwind | fully resumable from any partial state; nothing is lost by waiting |
+
+**Owed to the PM:** a ruling on how the drain's `od_adjustment_num` reaches the
+unwind without weakening safety property #1, and on whether to run the six clean
+reseed targets and the bare manifest now or hold the whole teardown until the
+reversal works.
