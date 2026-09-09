@@ -565,6 +565,27 @@ async function stepPause(ctx, step) {
  * }} ctx
  * @returns {{ reason: string, detail: string }|null}
  */
+/**
+ * Does this line's write-off or deductible point the way its LANE points?
+ *
+ * The payment lane writes positive components and a negative one is a parse
+ * defect. The takeback lane writes NEITHER component, and its figures mirror the
+ * chart, so a negative one is expected and a POSITIVE one is the anomaly.
+ *
+ * `NaN` (an absent field) is false on both branches, which is what the raw
+ * `< 0` comparison did before this existed. Absent stays absent, not refused.
+ *
+ * @param {{ intendedWriteOffCents: number, intendedDedAppliedCents: number,
+ *           isSupplemental?: boolean }} line
+ * @returns {boolean}
+ */
+function componentSignIsWrong(line) {
+  const writeOff = Number(line.intendedWriteOffCents);
+  const deductible = Number(line.intendedDedAppliedCents);
+  if (line.isSupplemental === true) return writeOff > 0 || deductible > 0;
+  return writeOff < 0 || deductible < 0;
+}
+
 function checkPreconditions(ctx) {
   const { queue, lines, claims, office } = ctx;
 
@@ -715,19 +736,48 @@ function checkPreconditions(ctx) {
     }
   }
 
-  // -- No line may carry a negative component. -------------------------------
+  // -- No line may carry a component pointing AGAINST ITS OWN LANE. ----------
   //
-  // `intended_ins_pay_amt_cents` was covered by the recoupment pass above; write
-  // -off and deductible are checked here for their own sake. A negative
-  // write-off is not a recoupment, it is a parse defect, and Open Dental would
-  // take it without complaint.
-  const badLine = lines.find(
-    (l) => Number(l.intendedWriteOffCents) < 0 || Number(l.intendedDedAppliedCents) < 0
-  );
+  // W-12, found live on the combined walk 2026-09-09. This refused R3 with
+  // `negative_intent` over `intended_write_off_cents: -600` — the exact mirror
+  // of the $6.00 write-off the reversal was undoing. The comment that stood
+  // here conceded the asymmetry in its own words: the PAYMENT was exempted for
+  // the recoupment lane a few guards up, and the write-off was then checked
+  // "for its own sake", as though the lane made no difference to what a sign
+  // means.
+  //
+  // Two things were wrong with that.
+  //
+  // A precondition may refuse only over figures its lane will WRITE, and
+  // neither takeback path writes these. `drainTakebacks` sends
+  // `amountCents: line.intendedInsPayAmtCents` to `POST /adjustments`, and
+  // `insPayAmtCents: line.intendedInsPayAmtCents` to
+  // `POST /claimprocs/Supplemental`. `intendedWriteOffCents` reaches Open
+  // Dental through the ORDINARY claimproc PUT alone, which a takeback line
+  // never takes — so this was refusing a plan over a number its own lane would
+  // have ignored.
+  //
+  // And on a reversal a negated component is the EXPECTED SHAPE. W = B − A over
+  // two negated figures is negated; that is what mirroring the chart's write-off
+  // looks like, not a parse defect.
+  //
+  // SO THE RULE IS MIRRORED RATHER THAN DROPPED, and the guard stays closed on
+  // both lanes. The payment lane still refuses a negative; the takeback lane
+  // refuses a POSITIVE. Both say the same thing — *this component does not point
+  // the way its lane points* — and a same-signed figure on a reversal, which is
+  // the parse defect this check was really written for, is still a refusal.
+  //
+  // The lane is read from the LINE, not the plan, so a MIXED remittance holds
+  // each of its lines to its own rule.
+  const badLine = lines.find((l) => componentSignIsWrong(l));
   if (badLine) {
     return {
       reason: BLOCK_REASONS.NEGATIVE_INTENT,
-      detail: `Line ${badLine.position} carries a negative write-off or deductible.`,
+      detail:
+        badLine.isSupplemental === true
+          ? `Line ${badLine.position} is a takeback carrying a POSITIVE write-off or ` +
+            'deductible, which does not mirror the chart it reverses.'
+          : `Line ${badLine.position} carries a negative write-off or deductible.`,
     };
   }
 

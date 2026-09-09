@@ -419,6 +419,16 @@ test('D-6: a confirmed takeback naming its path passes every precondition', () =
             {
               ...goodCtx().lines[0],
               intendedInsPayAmtCents: -1500,
+              /*
+               * MIRRORED, and it did not used to be. This line inherited
+               * `intendedWriteOffCents: 6000` from the ordinary fixture, which
+               * no real reversal can produce: a reversal negates every
+               * component, so its write-off is ≤ 0. W-12's guard is mirrored
+               * per lane and refuses a POSITIVE component on a takeback, so the
+               * old value made this test assert that a physically impossible
+               * line was drainable.
+               */
+              intendedWriteOffCents: -6000,
               isSupplemental: true,
               recoupmentPath: path,
             },
