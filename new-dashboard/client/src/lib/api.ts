@@ -1026,9 +1026,16 @@ export interface BackendCallback {
 // Normalizers: map backend shape to UI-friendly shape (mock-compatible)
 // ---------------------------------------------------------------------------
 
-function extractNameFromText(transcript?: string, summary?: string): string | null {
+// `unknown`, not `string`, and deliberately so. These two values come straight off
+// the wire from the call store, where a zero-length Retell call can land a
+// `transcript` of `[]`. An empty array is TRUTHY, so a bare `if (transcript)`
+// waved it through to `.match()` and threw TypeError — which rejected the whole
+// `calls.map()` and blanked the worklist for every office (2026-09-03 → 09-09).
+// A TS annotation on untrusted backend data is a wish; the typeof guards below
+// are the actual contract, and `unknown` is what forces them to stay.
+function extractNameFromText(transcript?: unknown, summary?: unknown): string | null {
   // Try summary first
-  if (summary) {
+  if (typeof summary === "string" && summary) {
     const summaryPatterns = [
       /(?:patient|caller),\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})(?:,|\s+(?:called|requested|asked|provided|said)\b)/,
       /(?:patient|caller)\s+named\s+([A-Z][a-zA-Z.'-]+(?:\s+[A-Z][a-zA-Z.'-]+){0,2})\b/,
@@ -1047,7 +1054,7 @@ function extractNameFromText(transcript?: string, summary?: string): string | nu
     }
   }
   // Try transcript
-  if (transcript) {
+  if (typeof transcript === "string" && transcript) {
     const transcriptPatterns = [
       /(?:my name is|i'm|this is|i am)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,
       /(?:call me|name's|it's)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/i,

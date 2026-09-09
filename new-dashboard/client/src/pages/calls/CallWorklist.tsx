@@ -100,6 +100,16 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const { office, offices, selected: selectedOffice } = useOffice();
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
   const [loading, setLoading] = useState(true);
+  /**
+   * Did the last load FAIL, as opposed to succeeding with nothing to show?
+   *
+   * These are different sentences and the UI must not say the reassuring one when
+   * the true one is "we could not load your calls". This state exists because the
+   * catch below used to be `.catch(() => setCalls([]))` — a silent swallow that
+   * rendered a clean "No calls match the current filters" over a rejected request.
+   * One malformed row blanked the worklist for six days with nothing in the console.
+   */
+  const [loadError, setLoadError] = useState(false);
   const [syncing, setSyncing] = useState(false);
   /** Freshness caption data (null until the first /sync-status read lands). */
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
@@ -130,12 +140,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
   const load = useCallback(() => {
     setLoading(true);
+    setLoadError(false);
     api.getUnifiedCalls({ limit: 1000, office_id: office === ALL_OFFICES ? undefined : office })
       .then(({ calls: list, mangoWorklistMode: mode }) => {
         setCalls(list);
         setMangoWorklistMode(mode);
       })
-      .catch(() => setCalls([]))
+      .catch((err) => {
+        // Loud, then honest. A failure that leaves no trace in the console is a
+        // failure nobody can diagnose from a screenshot.
+        console.error("[CallWorklist] failed to load calls", err);
+        setCalls([]);
+        setLoadError(true);
+      })
       .finally(() => setLoading(false));
   }, [office]);
 
@@ -656,7 +673,8 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
         <CardHeader className="pb-3 border-b">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base font-semibold">
-              {visibleCalls.length} {view === "needs" ? "to work" : "calls"}
+              {/* A count of 0 next to "couldn't load" would assert something we don't know. */}
+              {loadError ? "Calls" : `${visibleCalls.length} ${view === "needs" ? "to work" : "calls"}`}
             </CardTitle>
             <span className="text-xs text-muted-foreground">
               {sortDir === "oldest" ? "Oldest first" : "Newest first"}
@@ -676,6 +694,19 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
 
           {loading ? (
             <div className="text-center py-12 text-muted-foreground text-sm">Loading calls…</div>
+          ) : loadError ? (
+            // Checked BEFORE both empty states on purpose: a failed load must never
+            // borrow the copy of a successful one that simply had nothing to show.
+            <div className="text-center py-12">
+              <AlertTriangle size={30} className="mx-auto mb-2 text-destructive opacity-70" />
+              <p className="text-sm font-medium">Couldn't load calls.</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                This is a load failure, not an empty worklist — your calls are still there.
+              </p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={load}>
+                <RefreshCw size={13} className="mr-1.5" /> Try again
+              </Button>
+            </div>
           ) : !officeOdConnected && visibleCalls.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <PlugZap size={30} className="mx-auto mb-2 opacity-40" />
