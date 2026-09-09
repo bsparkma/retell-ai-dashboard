@@ -1674,3 +1674,97 @@ never reached `reconcile` has, by definition, measured nothing.
 
 Not fixed here. Carried to the overhaul with the other display work.
 
+---
+
+## 19. The writer fix ships, and the decision is `attached` before anyone presses
+
+### 19.1 PR #158 — merged, deployed — [CC], 2026-09-09
+
+| | |
+| --- | --- |
+| PR | **#158** — *Fix the skip-reason pairing at its writer, and sweep the constraints* |
+| PR check | `build-test` **pass**, 3m20s |
+| Merge commit | **`f9f813a`** |
+| Commits | `ab0cc60` (writer invariant), `beae911` (attached branch + `staysSkipped`), `1955747` (fake + W-17), `af7e1e6` (§18 sweep table) |
+
+**The deploy went red on a throttle, after it had already worked.**
+`az containerapp update` returned `ERROR: Too Many Requests` from ARM **while
+polling for completion** — the update itself applied, and revision `0000169` was
+created at `16:34:03` with the right image. GitHub marked the job failed, which
+skipped *"Deploy caddy"* and the pipeline's own verification step.
+
+**Some of that throttle is mine.** Today's verification has made a lot of ARM
+calls against this subscription — `exec`, `show`, `revision list` — and they land
+on the same limiter as the deploy. Spacing them is now part of how I work a walk
+day, not an afterthought.
+
+That is the second run in a row where an Azure CLI failure was a REPORTING
+failure rather than a real one — first `az acr build` crashing in its own log
+tailing, now this. **The rule that falls out: on a red Azure step, check what the
+resource actually says before re-running anything.** Both times the work had
+landed.
+
+**Caddy was left on `903d3d5`**, and that is cosmetic here rather than a risk:
+`git diff 903d3d5..f9f813a -- new-dashboard/ client/ frontend/` is **empty**, so
+the SPA those two images build is byte-identical. The failed job was re-run to
+bring the tag into line regardless — a drifting tag is a trap for whoever reads it
+next.
+
+**Three layers, verified by hand because the pipeline's own step was skipped:**
+
+| Layer | Evidence |
+| --- | --- |
+| pipeline | run `34376692061` on `f9f813a` — `build-test` ✓ `publish` ✓ `migrate` ✓; `deploy` red on the ARM throttle, re-run |
+| revision | **`ca-carein-backend--0000169`**, image `carein-backend:f9f813a`, `latestReadyRevisionName`, ingress **100%**, `Healthy` / `RunningAtMaxScale`, scale `1/1`, no delay env |
+| live behaviour | all three fixes present in `/app` — `staysSkipped`, the `persistLine` invariant, `alreadyBlocked` — and the decision probed live (§19.2) |
+
+### 19.2 Read-only pre-press verification — `2026-09-09T16:37:53Z` / `16:38:20Z`
+
+**S10A `ae114999`** — `partially_posted`, check `21491` on the queue row, intended
+`100`; line 1 `skipped_already_posted` / `already_received_matching`, claimproc
+`536170`, no check on the line yet. **`checkPreconditions` → PASS.**
+
+**And the decision itself, run against the live chart:**
+
+```
+DECISION  claimproc 536170  action: attached  check: 21491
+          lineStatus: skipped_already_posted
+          chart: InsPayAmt 1, ClaimPaymentNum 21491
+```
+
+**`attached` on a line that is already `skipped_already_posted` is exactly the
+combination that refused the last press.** It is now the case `beae911` handles:
+the skip and its reason stay, the line adopts `21491`, `paid_at` stays null, and
+the stamping step's `staysSkipped` keeps it that way a few steps later.
+
+Expected path of the press, end to end: enters `claimproc_writes` → decides
+`attached`, keeps the skip, adopts 21491 → claim already `R` with our note, PUT
+skipped → check already on the queue row, no POST → reconcile matches → B2
+confirms → `document_attach` returns `none` (raw EDI, no PDF) → **`posted`,
+reconciled, ZERO Open Dental writes.**
+
+**R3 `573bb9f6`** — `blocked`, `is_recoupment: true`, intended `-2900`; line 1
+`pending`, claimproc `535780`, insPay `-2900`, writeOff `-600`, path `adjustment`.
+**`checkPreconditions` → PASS.** Expected: one **−$29.00** adjustment on 12828
+under *insurance deductions from previous payments*, **no new check**.
+
+### 19.3 Deposits, re-confirmed
+
+| Check | Amount | `DepositNum` |
+| --- | --- | --- |
+| 21461 | $164.80 | **0** |
+| 21462 | $640.00 | **0** |
+| 21490 | $29.00 | **0** |
+| 21491 | $1.00 | **0** |
+
+### 19.4 The presses are sequenced this time
+
+Press 1, **stop**, [CC] reads the heal off the chart, then press 2. W-9 and W-15
+were stacked behind one another and the second was only visible once the first
+cleared; one press at a time is what stops the next one being blamed on the last.
+
+Beau's script also carries the [W-16](#18-w-16--the-screen-presented-a-crash-as-a-measurement)
+warning in plain terms: if the *"what the chart says"* box shows a sentence after
+an early stop, **it is not measuring anything, and nothing in Open Dental gets
+hand-corrected.**
+
