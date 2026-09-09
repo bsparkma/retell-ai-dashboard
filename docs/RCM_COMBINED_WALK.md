@@ -847,10 +847,16 @@ mid-sequence, exactly as intended.
    before it runs against target F. The finding itself goes to the overhaul brief's
    principle 5 family beside W-16.
 9. **W-19** — the switch audit records no value. Overhaul, with the display family.
-10. **W-20** — the unwind's reversal step reads `GET /adjustments/{AdjNum}`, which
-    does not exist. **Blocks the teardown of target F.** Awaiting a PM ruling on
-    whether the unwind reuses the drain's `readAdjustmentsForPatient` or keeps its
-    own list read.
+10. **W-20** — CLOSED. PR #160: the unwind keeps its own plural-only read; both
+    fakes now model the refusal. See §25.
+11. **The reversal's read log prints a path shape that no longer exists** —
+    `read: /adjustments/19157`. The call is the list read; only the label is
+    stale. §25.6.
+12. **Open Dental timed out three times in seven minutes** on 2026-09-09 around
+    `20:16`–`20:23`, at the transport's 30s ceiling. The unwind refused correctly
+    every time. The drain faces the same ceiling, and a biller would see a plan
+    stop halfway with nothing saying the cause was the network rather than their
+    data. §25.3.
 
 ---
 
@@ -2358,3 +2364,164 @@ own list read?** Reuse means an operational teardown script takes a dependency o
 module code it is meant to be able to clean up after; its own read means the
 proven pattern exists twice. The tests also need a fake that refuses the shape
 the real API refuses — otherwise the next one of these lands the same way.
+
+---
+
+## 25. The teardown — both patients home, and the first takeback reversed
+
+PM rulings on W-20: the unwind keeps its own read; fixing the fake is the real
+fix; numbering ratified; then run the dry run and, if target F's plan matched,
+run it live without waiting.
+
+### 25.1 The fix — PR #160, merged
+
+| | |
+| --- | --- |
+| Branch | `fix/rcm-unwind-plural-adjustments` off `origin/develop` (`8c56daf`) |
+| Commits | `be130ba` (the plural-only read), `4f5e66e` (both fakes) |
+| Merged | `34428f7` · staging `ca-carein-backend--0000171` · image `34428f7` |
+| Tests | **2406 pass / 0 fail / 3 skipped**; `rcmS10Scripts` 101/101 |
+
+`readAdjustment(io, patNum, adjNum)` — list read, filtered client-side, the
+PatNum taken from the manifest target and never from the row being looked for.
+`odPostingWrites.readAdjustmentsForPatient` is cited as the shared contract and
+**deliberately not imported**: a teardown that depends on the write module it
+exists to clean up after is one a drain refactor can silently break.
+
+Both fakes now model `/adjustments` as plural-only — `400 "PatNum is required."`,
+id segment ignored — with a test asserting the refusal directly. **Tightening the
+shared fake broke no drain test**, which is the negative check that the drain was
+always using the correct shape.
+
+### 25.2 The dry run matched
+
+```
+-- TARGET F: ProcNum=406657 ClaimNum=53863 ClaimProcNum=535780 --
+   read: AdjAmt=-29 PatNum=12828 AdjType=477
+   corroborated: adjustment 19157 is PatNum 12828, -29 (the target's takeback
+                 mirrored) under "Insurance deductions from previous payments" DefNum=477
+   resolved AdjType: "Insurance Adjustment" DefNum=260 (by name, sign +)
+   [dry run] POST /adjustments {"PatNum":12828,"AdjDate":"2026-09-01","AdjAmt":29,
+                                "AdjType":260,"AdjNote":"CareIN S10 walk unwind: ..."}
+   [dry run] DELETE /claimpayments/21490 ... PUT ... DELETE /claims/53863 ...
+```
+
+### 25.3 The live run took three passes, and every stop was Open Dental
+
+**Pass 1, `20:16:36Z`.** Five targets finished. Two stopped:
+
+| | Where | What Open Dental said |
+| --- | --- | --- |
+| **F** | before any write | `definitions read for Category 1 failed (0): timeout of 30000ms exceeded` → both AdjTypes null → corroboration could not check the `-` type → **refused, held whole** |
+| **D** | after `DELETE /procedurelogs/406655 -> 200` | read-back `-> 0 ProcStatus="undefined"` — the read-back itself timed out, so **G2 could not confirm** and the step refused to call itself done |
+
+Neither is a logic defect and **neither wrote anything it could not prove.** F is
+the held-target behaviour from #159 meeting a real failure and doing exactly what
+it was built for: it did not guess an AdjType, and it did not dismantle a claim
+whose takeback was unaccounted for.
+
+**Pass 2, `20:23:19Z`.** Aborted on its *first* read —
+`GET /procedurelogs failed (0): timeout of 30000ms exceeded` — before any target.
+Nothing written.
+
+Three 30-second timeouts in a row is a condition, not a coincidence, so the API
+was measured rather than retried blindly:
+
+```
+defs-cat1     200   930ms  n=39
+procs-12828   200  1132ms  n=14
+procs-12827   200   614ms  n=17
+adj-12828     200   426ms  n=1
+```
+
+Healthy. The window was roughly `20:16`-`20:23`. **Worth carrying to the
+overhaul:** on a slow day the drain faces the same 30s ceiling, and a biller
+would see a plan stop halfway with no indication that the cause was the network
+rather than their data.
+
+**Pass 3, `20:26Z`.** D read `already done` at every step — including
+`ProcStatus is already "D"`, which confirms pass 1's DELETE had in fact landed
+and only its read-back was lost. And F ran:
+
+```
+-- TARGET F --
+   corroborated: adjustment 19157 is PatNum 12828, -29 ... DefNum=477
+   resolved AdjType: "Insurance Adjustment" DefNum=260 (by name, sign +)
+   POST /adjustments -> 201
+   read-back: AdjNum 19158 AdjAmt=29   net -29 + 29 = 0
+   DELETE /claimpayments/21490 -> 200   read-back 404 gone
+   PUT /claims/53863 -> 200             read-back ClaimStatus="W"
+   PUT /claimprocs/535780 -> 200        read-back NotReceived, 0, 0
+   DELETE /claims/53863 -> 200          read-back 404 gone
+   DELETE /procedurelogs/406657 -> 200  read-back ProcStatus="D"  (G12)
+```
+
+**The first takeback this system ever posted is now the first it has reversed.**
+The proof is not "a row exists" but that the pair nets to zero, on the right
+patient, under the right type — the three facts, all three checked.
+
+### 25.4 The numbers, read independently — `2026-09-09T20:33:59Z`
+
+Not the script's own print. A separate read of both charts:
+
+```
+PAT 12827  claims=0  adjSum=-1.20  procs=17  D=16
+  19109 -1.00 t12 | 19110 +1.00 t260 | 19111 -3.20 t12 | 19112 +2.00 t260   (Spike 0b residue)
+PAT 12828  claims=0  adjSum= 0.00  procs=14  D=3
+  19157 -29.00 t477  ProcNum 0     the takeback
+  19158 +29.00 t260  ProcNum 0     its reversal
+```
+
+| | Owed | Read back | |
+| --- | --- | --- | --- |
+| 12827 balance | `-$0.20` | **`-$0.20`** | OK |
+| 12827 claims | 0 | **0** | OK |
+| 12827 soft-deleted procs | 14 | **16** | see below |
+| 12828 balance | `$0.00` | **`$0.00`** | OK |
+| 12828 claims | 0 | **0** | OK |
+| 12828 soft-deleted procs | 3 | **3** | OK |
+| 12828 offsetting pair on the ledger | present | **19157 + 19158, netting 0** | OK |
+
+**The 16 is right and the 14 is stale.** §7.2's figure was set before §9.2 rebuilt
+the kill target on 2026-09-04. `14 = 10 baseline + 4 reseed procs on 12827`; the
+two the kill test created (`406875`, `406876`) were soft-deleted by the bare
+unwind and are the difference. No money is involved — the balance excludes `"D"`
+rows, which is why it prints one.
+
+And the balance reconciles exactly: 12827 has **one** live procedure left, the
+Spike 0b residue's `$1.00` charge, against residue adjustments netting `-$1.20`.
+`1.00 - 1.20 = -0.20`.
+
+### 25.5 The ids are retired
+
+`chore/rcm-retire-walk-ids` (`8d5d32f`). The seven reseed targets moved off
+`RESEED_PENDING_AT_UNWIND` onto `RESEED_SPENT_IDS` with
+`RESEED_SPENT_RECORDED_AT = 2026-09-09T20:28:11.452Z`; the kill test's two joined
+`WALK_SPENT_IDS` with `WALK_SPENT_RECORDED_AT = 2026-09-09T18:26:23.310Z`.
+
+Checks **21461 / 21462 / 21490 / 21491** are recorded in **prose**, not as list
+members — `rcm-s10-targets.js` already states why: the manifest shape is
+`{procNum, claimNum, claimProcNum}` and has no field for a check, so *"a future
+manifest must never name them"* cannot apply to one, and a `checks` bucket would
+be a deny-list nothing reads.
+
+**`53860` / `406653` / `406654` are BURNED and went on neither list.** Never
+created, never unwound, permanently denied in their own list.
+
+Two tests flipped direction rather than being relaxed — a pending id must be
+reachable **and** a spent one must be denied, and the screen must now **refuse**
+the manifest it previously had to accept. That transition only became assertable
+once a reseed had actually been unwound.
+
+> **One more of mine.** The W-18 fixtures had borrowed the walk's real numbers
+> (claim 53863, proc 406657, AdjNum 19157). Retiring those ids made the deny-list
+> skip the target and six tests went red — for exactly the right reason. Moved to
+> the fictional 900xxx range the rest of the file uses. A fixture that borrows a
+> live id has a shelf life, and this file's own header says so.
+
+### 25.6 Still owed, and small
+
+The reversal step's read log still prints `read: /adjustments/19157` — the shape
+of a path that does not exist. The call underneath it is now the list read; only
+the label is stale. Cosmetic, but this walk has been about transcripts that
+describe what actually happened, so it is a follow-up rather than a shrug.
