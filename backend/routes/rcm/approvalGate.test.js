@@ -492,10 +492,54 @@ test('approving twice never enqueues the same claim twice', async () => {
     // screen. It is a refusal that names the state instead.
     assert.equal(again.status, 409);
     assert.equal(again.body.code, 'NOTHING_APPROVABLE');
-    assert.match(again.body.error, /already queued/i);
+    /*
+     * NAMES THE PLAN, not just the state. "Already queued" was true and
+     * unusable; W-12's walk showed a biller re-pressing Approve on a remittance
+     * whose plan had already been made and had stopped for a different reason
+     * entirely. The sentence now says which plan and what it is doing.
+     */
+    assert.equal(again.body.alreadyApproved, true);
+    assert.match(again.body.error, /already been approved/i);
+    const planId = db.table('rcm_posting_queue')[0].queue_id;
+    assert.match(again.body.error, new RegExp(`plan ${String(planId).split('-')[0]}`));
 
     assert.equal(db.table('rcm_posting_queue').length, 1, 'one plan');
     assert.equal(db.table('rcm_posting_queue_line').length, 1, 'one line');
+  });
+});
+
+test('a second Approve over a BLOCKED plan quotes the drain, not a generic refusal', async () => {
+  /*
+   * THE 409 THAT SENT A BILLER ROUND A LOOP, 2026-09-09.
+   *
+   * R3's Approve succeeded, its plan was created, and the drain 23 seconds
+   * later blocked. The claim was then `alreadyQueued`, so `postable` was empty
+   * and the next press was refused with *"The takeback on this remittance
+   * cannot be posted yet"* — which reads as "not ready", so it was pressed
+   * again. Nothing on that refusal named a failing check, because a claim
+   * leaves the postable set through `alreadyQueued` without anything going red.
+   */
+  const db = seed(new FakeRcmDb());
+  await withApp({ db }, async (app) => {
+    assert.equal((await approve(app)).status, 200);
+
+    const plan = db.table('rcm_posting_queue')[0];
+    plan.status = 'blocked';
+    plan.last_error = 'Line 1 carries a negative write-off or deductible.';
+
+    const again = await approve(app);
+    assert.equal(again.status, 409);
+    assert.equal(again.body.code, 'NOTHING_APPROVABLE');
+    assert.equal(again.body.alreadyApproved, true);
+    assert.match(again.body.error, /is blocked: Line 1 carries a negative write-off/);
+    assert.match(again.body.error, /Nothing was changed by this press/);
+
+    // And the claim list it carries still names no failing check — which is
+    // exactly why the sentence had to do the work.
+    assert.deepEqual(
+      (again.body.claims || []).flatMap((c) => (c.checks || []).filter((x) => !x.passed)),
+      []
+    );
   });
 });
 

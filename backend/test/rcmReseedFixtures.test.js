@@ -51,6 +51,7 @@ const { parse835 } = require('../services/rcm/eraParser');
 const claimMatch = require('../services/rcm/claimMatch');
 const odClaimReads = require('../services/rcm/odClaimReads');
 const lineDecisions = require('../services/rcm/lineDecisions');
+const postingDrain = require('../services/rcm/postingDrain');
 
 const T = require('../scripts/rcm/reseed-targets');
 const gen = require('../scripts/rcm/reseed-835');
@@ -681,4 +682,133 @@ test('a stale manifest is refused — by a named spent id, and by being older th
       /RETIRED id/
     );
   }
+});
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * W-12 — THE DRAIN REFUSED THE REVERSAL OVER A NUMBER ITS LANE NEVER WRITES.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Found live on the combined walk, 2026-09-09. R3's approve SUCCEEDED and the
+ * Post 23 seconds later blocked on `negative_intent` — *"Line 1 carries a
+ * negative write-off or deductible"* — because the reversal's line carries
+ * `intended_write_off_cents: -600`, the mirror of the $6.00 write-off it undoes.
+ *
+ * Neither takeback path writes that field: the adjustment path sends
+ * `amountCents: intendedInsPayAmtCents` and the supplemental path sends
+ * `insPayAmtCents: intendedInsPayAmtCents`. The refusal was over a number the
+ * lane would have ignored.
+ *
+ * NO HAND-BUILT ROWS. The money comes from `parse835` on R3's real body, and
+ * the write-off from `lineDecisions.lineMoney` — the same derivation the
+ * approve uses to fill `intended_write_off_cents`. A test that typed `-600`
+ * would still pass if the parser changed its mind about the sign.
+ */
+function reversalQueueLineFromParser() {
+  const { bodies } = generateBodies();
+  const claim = parse835(bodies.R3).claims[0];
+  assert.equal(claim.isReversal, true, 'R3 must parse as a reversal');
+
+  const procedure = claim.procedures[0];
+  const money = lineDecisions.lineMoney({
+    billedCents: procedure.billedCents,
+    allowedCents: procedure.allowedCents,
+    paidCents: procedure.paidCents,
+  });
+
+  return {
+    claim,
+    procedure,
+    money,
+    line: {
+      queueLineId: 'line-1',
+      officeId: 'roland',
+      position: 1,
+      odClaimProcNum: 535780,
+      odClaimNum: 53863,
+      claimId: 'claim-1',
+      // Exactly the three columns approveRecoupment fills, from the parser.
+      intendedInsPayAmtCents: procedure.paidCents,
+      intendedWriteOffCents: money.contractualWriteOffCents,
+      intendedDedAppliedCents: procedure.deductibleCents,
+      isSupplemental: true,
+      recoupmentPath: 'adjustment',
+      status: 'pending',
+    },
+  };
+}
+
+function recoupmentCtx(line) {
+  return {
+    queue: {
+      queueId: 'queue-1',
+      officeId: 'roland',
+      status: 'approved',
+      isRecoupment: true,
+      intendedTotalCents: line.intendedInsPayAmtCents,
+    },
+    lines: [line],
+    claims: [
+      {
+        claimId: 'claim-1',
+        officeId: 'roland',
+        odMatchStatus: 'confirmed',
+        odClaimNum: 53863,
+        postingQueueId: 'queue-1',
+        snapshotVersion: 2,
+      },
+    ],
+    office: 'roland',
+    odWritesDisabled: false,
+    snapshotVersion: 2,
+  };
+}
+
+test('W-12: a parser-produced reversal is NOT blocked for its mirrored write-off', () => {
+  const { line, money, procedure } = reversalQueueLineFromParser();
+
+  assert.ok(
+    money.contractualWriteOffCents < 0,
+    `the fixture must actually exercise the bug — write-off came out ` +
+      `${money.contractualWriteOffCents}, which is not negative`
+  );
+  assert.ok(procedure.paidCents < 0, 'a reversal takes money back');
+
+  const blocked = postingDrain.checkPreconditions(recoupmentCtx(line));
+  assert.equal(
+    blocked,
+    null,
+    `a mirrored takeback must reach the chart, got ${JSON.stringify(blocked)}`
+  );
+});
+
+test('W-12: a takeback carrying a POSITIVE write-off is still refused', () => {
+  /*
+   * FAIL CLOSED. Dropping the check on this lane rather than mirroring it would
+   * let a same-signed parse defect through — a "reversal" whose components point
+   * the way a payment's do. That is the defect the guard was written for and it
+   * stays a refusal.
+   */
+  const { line } = reversalQueueLineFromParser();
+  const blocked = postingDrain.checkPreconditions(
+    recoupmentCtx({ ...line, intendedWriteOffCents: 600 })
+  );
+  assert.equal(blocked && blocked.reason, postingDrain.BLOCK_REASONS.NEGATIVE_INTENT);
+  assert.match(blocked.detail, /POSITIVE write-off/);
+});
+
+test('W-12: the ORDINARY lane still refuses a negative write-off, unchanged', () => {
+  const { line } = reversalQueueLineFromParser();
+  const ordinary = {
+    ...line,
+    isSupplemental: false,
+    recoupmentPath: null,
+    intendedInsPayAmtCents: 2900,
+  };
+  const ctx = recoupmentCtx(ordinary);
+  ctx.queue.isRecoupment = false;
+  ctx.queue.intendedTotalCents = 2900;
+
+  const blocked = postingDrain.checkPreconditions(ctx);
+  assert.equal(blocked && blocked.reason, postingDrain.BLOCK_REASONS.NEGATIVE_INTENT);
+  assert.match(blocked.detail, /negative write-off or deductible/);
 });

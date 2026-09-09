@@ -5033,3 +5033,101 @@ changes · prod.
 **Prepared but not enabled:** valley posting. §9 is discharged on all three
 prerequisites bar the 7115 end-to-end itself; the flip is one line and lands with
 the §10.5 transcript.
+
+---
+
+## 17. The reversal-lane sweep — every signed-money predicate in the posting path
+
+Ordered by the PM on 2026-09-09, after **three** defects in one week turned out to
+share a root: *a predicate written for the payment lane reading a reversal's
+negated figures as an error.* The point of the table is to fix the class once
+rather than meet the next one at the next press.
+
+Two questions were asked of every predicate:
+
+1. **Does it fire on mirrored-negative figures?**
+2. **Does its lane even write the field it refuses over?** (PM ruling: a
+   precondition may refuse only over figures its lane will write.)
+
+### 17.1 The three that were wrong
+
+| | Predicate | Where | Field | Verdict |
+| --- | --- | --- | --- | --- |
+| **W-6** | `pairLines` billed delta | `claimMatch.js:1112` | `billedCents` vs `feeBilledCents` | **fired wrongly** — `-3500 − 3500 = -7000` → `od_fee_disagrees` → red → gate refused. **FIXED** `7647dd1` |
+| **W-10** | `plan_empty` | `postingDrain.js:752` | line `status` (same class, not a money field) | **fired wrongly** — every line skipped read as "no lines". **FIXED** on this branch |
+| **W-12** | `negative_intent`, carrier components | `postingDrain.js:724` | `intendedWriteOffCents`, `intendedDedAppliedCents` | **fired wrongly, over a field its lane never writes.** **FIXED** on this branch |
+
+### 17.2 Exempt by design — the sign IS the question
+
+| Predicate | Where | Why it is right |
+| --- | --- | --- |
+| `carriesTakeback` detector | `postingDrain.js:602-604` | Firing on a negative is its whole job: it asks *is this a takeback*, three independent ways. |
+| `isTakeback` / `isTakebackRemittance` | `claimMatch.js:595-597` | Same question, one definition, shared with the gate. |
+| `NOT_REVERSAL` / `NOT_RECOUPMENT` | `approvalGate.js:491-497` | D-6 **swaps** them for `RECOUPMENT_CONFIRMED` on the recoupment lane rather than dropping them — a harder condition, not a smaller set. |
+| `TAKEBACK_ACKNOWLEDGED` | `approvalGate.js:125` | The D-11 amendment PARTITIONS `reversal_not_postable` and `negative_total_payment` onto the takeback lane instead of filtering them. |
+
+### 17.3 Pass — sign-symmetric, or the takeback lane never reaches them
+
+| Predicate | Where | Why it is safe |
+| --- | --- | --- |
+| `PLAN_TOTAL_MISMATCH` | `postingDrain.js:771` | Equality of two sums. Negating both sides changes nothing. |
+| `CLAIM_TOTALS_AGREE` | `approvalGate.js:816` | Same shape. |
+| `batchBalanced` | `approvalGate.js:1113` | `total − PLB − Σpaid`, signed throughout. R3 balanced at `0`. |
+| `lineDecisions.lineMoney` | `lineDecisions.js:301` | `W = B − A`, `R = A − P`. Pure subtraction: negated inputs give negated outputs, which is the mirror. |
+| `checkTypedRecoupmentTotal`, `formatRecoupmentTotal` | `approvalGate.js:1486-1533` | Handle the sign explicitly — the typed phrase for R3 is `-29.00`. |
+| `TAKEBACK_EXCEEDS_PAYMENT` | `claimMatch.js:683-685` | Already `Math.abs` on **both** sides. This is the one predicate that was written mirror-aware from the start. |
+| `isReversibleLine` | `claimMatch.js` | `insPayAmtCents !== 0` — sign-agnostic on purpose. |
+| `CLAIMPROC_NOT_ALREADY_PLANNED` | `approvalGate.js:702` | Lane-aware already, via `PLAN_STATUSES_RELEASED_FOR_REVERSAL`. |
+| `negative_intent`, DECIDED write-off | `postingDrain.js:747` | A takeback can never carry one: the gate refuses a decided write-off on the reversal lane (`writeOffOnTakeback`). Unreachable, and a negative *decision* is wrong on either lane. |
+| `decideLineAction` | `postingDrain.js:815` | Reached only through `grouped = groupByClaim(ordinaryLines)`. Takeback lines never enter it. |
+| eligible-total re-verify, `reconcileCheck` | `postingDrain.js:2445+` | Both computed over `ordinaryLines`. Takebacks are excluded by construction. |
+| `confirmLineFor` decided `> 0`, `decidesAnything` | `postingDrain.js:1250, 2413` | Zero on a pure takeback, for the reason above. |
+| `figures.adjustmentCents <= 0` | `postingDrain.js:3206` | The office-write-off adjustment step, ordinary lane. |
+| `odAmount`, `odInsEstimate` | `claimMatch.js:448, 480` | Read **Open Dental's own** values, where `-1` is a documented sentinel. Nothing to do with the remittance's sign. |
+| `attachedCheckNum > 0` | `odPostingWrites.js:653` | An Open Dental id, not money. |
+
+### 17.4 FLAGGED — found by the sweep, deliberately NOT changed
+
+Both are reported rather than fixed, because the ruling that authorises the
+class fix does not cleanly reach them and each deserves its own decision.
+
+#### W-13 — `NOT_PATIENT_RESPONSIBILITY_ONLY` asks a payment-lane question on both lanes
+
+`approvalGate.js:303` — `totalPaidCents <= 0 && patientBalanceCents > 0`.
+
+On a takeback the first half is **true by construction** (every figure is
+negated), so the condition collapses to *"does the patient owe anything"*, and
+the sentence it prints — *"the carrier paid nothing and the whole balance is the
+patient's"* — is flatly untrue: the carrier is taking money back.
+
+**It cannot fire on a fully-mirrored reversal**, and that is why this is a
+report and not a fix. `patient_balance_cents` is `totalDeductibleCents +
+totalCopayCents` (`eraIngest.js:298`), both negated on a mirror, so the second
+half is false. R3 came out at exactly `0`. Firing needs a payer that reports PR
+as a **positive** amount on a `CLP02=22` claim — a non-mirrored reversal.
+
+**And the ruling says non-mirrored anomalies stay refusals.** So the refusal is
+arguably correct and only its *sentence* is wrong. Changing the outcome would
+loosen the lane; changing the wording alone is a decision about copy for a case
+nobody has observed. **PM to rule.** Recommended: reword, keep refusing.
+
+#### W-14 — a reversal is matched with no money evidence at all
+
+`claimMatch.js:886` — `unknownLines === 0 && ourBilledCents > 0 && odBilledCents > 0`.
+
+On a reversal `ourBilledCents` is negative, so the guard is false and **no
+billed-amount tag is awarded either way**. The reversal loses
+`BILLED_AMOUNT_MATCH` (worth score) *and* `BILLED_AMOUNT_MISMATCH` (a
+disqualifier). R3 still scored 95/HIGH on claim-number, name, date, codes and
+line count.
+
+**The disqualifier is the half that matters**, and losing it is fail-OPEN: a
+reversal pointed at the wrong claim keeps a signal that would have caught it.
+The fix is the same `Math.abs` mirroring as W-6.
+
+**Not done here** because it is not a refusal, so the ruling's principle does not
+reach it — and because awarding the MATCH tag raises reversal scores, which
+changes which claims are confidently matched. That is a behavioural change to
+matching and wants its own ruling. **PM to rule.** Recommended: mirror it, for
+the disqualifier.
+
