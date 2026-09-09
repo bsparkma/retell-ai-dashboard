@@ -5131,3 +5131,97 @@ changes which claims are confidently matched. That is a behavioural change to
 matching and wants its own ruling. **PM to rule.** Recommended: mirror it, for
 the disqualifier.
 
+---
+
+## 18. The constraint sweep — which columns may legally change together
+
+Ordered by the PM on 2026-09-09 after W-15, on the axis
+[§17](#17-the-reversal-lane-sweep--every-signed-money-predicate-in-the-posting-path)
+missed. That sweep asked *does a predicate misread a negative number* — a question
+about **signs**. W-9 and W-15 are not sign defects: they are a writer moving one
+column out from under another that the database binds it to. So this one asks
+**which columns may legally change together, and does every writer know it.**
+
+**53 CHECK constraints on `rcm_*`. 24 are single-column** (`status IN (…)`, the
+office check, an enum) and cannot be broken by a partial update — a writer either
+supplies a legal value or it does not. **29 are multi-column**, and those are the
+sweep's surface.
+
+### 18.1 The two tables the drain writes mid-flight
+
+`rcm_posting_queue_line` has exactly **three** writers: two INSERTs in
+`approvalGate` that set every column at once, and `persistLine` — the single
+UPDATE. `rcm_posting_queue` has `claimRow`, `releaseRow`, `withdrawRow`,
+`blockRow`, `finalizeRow`, `persistStep` and two targeted single-column UPDATEs.
+
+| Constraint | Columns | How it is held |
+| --- | --- | --- |
+| `…_line_skip_reason_check` | `status`, `skip_reason` | **WRITER INVARIANT** — `persistLine` clears the reason on any deliberate move off the skip family. Was per-site, which is how W-9 and W-15 both happened. **Modelled in `FakeRcmDb`.** |
+| `…_line_recoupment_shape_check` | `recoupment_path`, `is_supplemental` | Both are INSERT-only; `persistLine` writes neither. **Structurally safe.** Modelled. |
+| `…_line_recoupment_ids_check` | `od_adjustment_num`, `recoupment_path`, `od_supplemental_claim_proc_num` | `persistLine` writes both ids, `recoupment_path` is immutable. **Site-handled** — `drainTakebacks` writes each id only inside its own path's branch. NOT writer-enforced; recorded as such. Modelled. |
+| `…_line_writeoff_adj_check` | `od_writeoff_adjustment_num`, `decided_write_off_cents` | `persistLine` writes the id, the figure is INSERT-only. **Site-handled** — only the write-off step writes it, and only for lines carrying a decision. Modelled. |
+| `…_line_decided_check` | `decided_write_off_cents`, `decided_reason`, `decided_by` | `persistLine` writes none of the three. INSERT-only, all together. **Structurally safe.** |
+| `…_queue_blocked_reason_check` | `status`, `blocked_reason` | **Site-handled, and it was the model to copy** — `claimRow`, `releaseRow` and `withdrawRow` each carry `blocked_reason = NULL` in the same statement. `finalizeRow` was the fourth writer and the only one that could meet a stale reason. **See W-17.** Modelled. |
+| `…_queue_posted_proof_check` | `status`, `reconciled_at`, `od_claim_payment_num`, `requires_check` | `finalizeRow` writes status, `reconciled_at` and the check number in ONE statement; `requires_check` and `od_claim_payment_num` also have single-column UPDATEs, but both run while the row is `posting`, and the constraint only bites at `posted`. **Structurally safe.** Modelled. |
+| `…_queue_withdrawn_check` | `status` + four `withdrawn_*` | One writer, `withdrawRow`, sets all five together. **Structurally safe.** |
+| `…_queue_withdrawn_no_money_check` | `status`, `od_claim_payment_num`, `reconciled_at`, `posted_total_cents` | Same writer; the route refuses `posted`/`partially_posted` before reaching it. **Structurally safe.** |
+| `…_document_attached_proof_check` | `status`, `od_doc_num`, `attached_at` | One writer, `attachEobDocuments`'s `record()`, sets them together. **Structurally safe.** |
+
+### 18.2 W-17 — found by the sweep, not by a press
+
+**`finalizeRow` could meet a row that was already `blocked`, and overwrite it.**
+
+Exactly one site in the module blocks a row and then throws — the recoupment
+lane's refusal when a practice has no *"Insurance deductions from previous
+payments"* adjustment type. The outer catch then finalised the row
+`partially_posted` with `blocked_reason` still on it:
+
+- a **less honest state** than the one the refusal deliberately wrote, with the
+  named reason gone from the status it explained;
+- and a row `rcm_posting_queue_blocked_reason_check` **refuses outright**, so
+  against real Postgres an honest refusal threw a second error on top of itself.
+
+The other six `blockRow` sites return cleanly and never meet this.
+
+**Roland carries that adjustment type, which is why the walk never met it.**
+Valley's Category-1 list has not been read, and valley is the next office to be
+switched on.
+
+Fixed by letting the refusal say it is already final — the row keeps `blocked`
+and its reason — rather than by teaching `finalizeRow` to clear the column,
+which would have made the illegal row legal and the vaguer state permanent.
+
+**It was invisible before this sweep.** The existing test asserted
+`blocked_reason === 'no_adj_type'` and passed either way: the reason survived in
+the row while the STATUS moved out from under it. Only the constraint could see
+the disagreement, and `FakeRcmDb` did not know the constraint.
+
+### 18.3 The other nineteen
+
+Outside the two drain tables, on `rcm_claims`, `rcm_payment_batches`,
+`rcm_procedure_lines`, `rcm_procedure_adjustments`, `rcm_eob_uploads` and
+`rcm_office_settings`. Every one of them is an **attribution or provenance
+pairing** — *"if this happened, say who and when"* — of the shape
+`(a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL)`:
+
+`rcm_claims_reviewed_attribution_check`, `…_od_match_attribution_check`,
+`…_od_claim_num_confirmed_check`, `…_approval_check`,
+`…_approved_is_confirmed_check`, `…_confirmed_verdict_check`,
+`rcm_payment_batches_approval_attempt_check`, `…_parked_check`,
+`…_set_aside_check`, `…_comparison_check`,
+`rcm_procedure_lines_decision_attribution_check`, `…_decision_reason_check`,
+`rcm_procedure_adjustments_scope_line_check`,
+`rcm_eob_uploads_ocr_provenance_check`,
+`rcm_office_settings_drain_evidence_check`, `…_writeoff_adjtype_check`.
+
+**Each is written by a single statement that sets the whole group together** —
+the confirm, the approve, the park, the set-aside, the comparison, the line
+decision. None is reachable by a partial update from a second writer, which is
+what makes them a different risk class from the drain's.
+
+**They are NOT modelled in `FakeRcmDb`,** and that is deliberate: a constraint no
+test can reach is a comment rather than a guard, and modelling all of them would
+put twenty predicates in the fake to catch nothing. The four added are the ones a
+drain test can actually reach. **If a later slice gives any of these a second
+writer, it moves into §18.1's class and wants modelling then.**
+
