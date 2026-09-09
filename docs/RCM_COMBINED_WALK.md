@@ -1831,3 +1831,87 @@ of distinct `od_claim_payment_num` on this plan's lines is **1**, because the
 number is finally on the line — which is what `9af7668` documented and what the
 query could not see while the UPDATE that wrote it was being refused.
 
+---
+
+## 21. Press 2 — the first live takeback
+
+Pressed `2026-09-09T17:26:05.320Z`, finished `17:26:19.500Z` — **14 seconds**.
+Read back `17:26:37.992Z` and `17:27:10.550Z`.
+
+### 21.1 The plan
+
+| | Value |
+| --- | --- |
+| `status` | **`posted`** |
+| `drain_step` | `document_attach` |
+| `attempt_count` | 2 |
+| `reconciled_at` | `2026-09-09T17:26:19.499Z` |
+| `od_claim_payment_num` | **`null` — NO CHECK WAS CREATED** |
+| `posted_total_cents` | **`-2900`** = `intended_total_cents` |
+| `last_error` / `blocked_reason` | `null` / `null` |
+
+A pure recoupment posts with **no check at all**, and the migration relaxed the
+`posted` proof for exactly this row: `reconciled_at` is required, and the
+takeback's own read-back is what supplies it.
+
+### 21.2 The line, and its read-back
+
+| | Value |
+| --- | --- |
+| `status` | **`recouped`** |
+| `recoupment_path` | **`adjustment`** — the reversible one |
+| `od_adjustment_num` | **`19157`** |
+| `od_supplemental_claim_proc_num` | **`null`** — the irreversible path was never taken |
+| `paid_at` | `2026-09-09T17:26:19.485Z` |
+
+The G2 read-back, stored on the row:
+
+```
+sent  { AdjAmt: -29, PatNum: 12828, AdjType: 477, AdjDate: '2026-09-01' }
+read  { AdjAmt: -29, AdjNum: 19157, AdjType: 477 }
+agreed: true    mismatches: []
+```
+
+### 21.3 The chart
+
+**The AdjType, resolved BY NAME from Roland's own Category-1 list:**
+
+```
+DefNum 477  →  "Insurance deductions from previous payments"
+```
+
+**Exactly one adjustment on 12828:**
+
+| `AdjNum` | Amount | Type | Date | `ProcNum` |
+| --- | --- | --- | --- | --- |
+| **19157** | **−$29.00** | 477 | 2026-09-01 | `0` |
+
+`ProcNum 0` is right: a recoupment adjustment posts to the **patient's ledger**,
+not to a procedure.
+
+**And the claim it reverses is untouched:**
+
+| | State | `SecDateTEdit` |
+| --- | --- | --- |
+| claimproc **535780** | `Received`, `InsPayAmt 29`, `WriteOff 6`, `ClaimPaymentNum 21490` | **`2026-09-03 19:58:11`** |
+
+That timestamp is Beau's 4a hand-post, not today. The takeback moved money on the
+ledger and left the claim alone — which is the whole reason the adjustment path
+exists, and why D-6 makes it the default over the supplemental.
+
+### 21.4 What this closes
+
+**The takeback lane has now run end to end for the first time.** Before this walk
+it could not:
+
+| | Where it stopped | Fixed by |
+| --- | --- | --- |
+| the match | `-3500 − 3500 = -7000` → `od_fee_disagrees` → red verdict → gate refused | **W-6** — `7647dd1` |
+| the gate | the stored snapshot froze the wrong delta; the fix is not retroactive | re-match, [§14](#14-the-takeback-gate-goes-green--cc-2026-09-09) |
+| the screen | a second Approve press returned a 409 that read as "not ready" | **W-11** / the truthful 409 — `f250d77` |
+| the drain | `negative_intent` on a mirrored `-600` write-off its own lane never writes | **W-12** — `41ab889` |
+| **now** | — | **posted, −$29.00 on the ledger** |
+
+Four refusals on one claim, in four different layers, and each one only visible
+once the layer in front of it cleared.
+
