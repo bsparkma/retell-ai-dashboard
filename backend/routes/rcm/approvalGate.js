@@ -241,6 +241,96 @@ const TERMINAL_QUEUE_STATUSES = Object.freeze([
 const PLAN_STATUSES_RELEASED_FOR_REVERSAL = Object.freeze(['posted', 'withdrawn']);
 
 /**
+ * Plan statuses in a biller's words, for the sentence below.
+ *
+ * A local map rather than `postingDrain.QUEUE_STATUS_LABEL`: the gate does not
+ * import the drain and should not start, and three words are not worth a
+ * dependency edge between the two halves of the module.
+ */
+const PLAN_STATUS_WORDS = Object.freeze({
+  approved: 'approved and waiting to post',
+  posting: 'posting right now',
+  posted: 'posted',
+  partially_posted: 'stopped part-way',
+  failed: 'failed',
+  blocked: 'blocked',
+});
+
+/**
+ * The truth behind a `NOTHING_APPROVABLE` whose claims all passed their checks.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE 409 THAT SENT A BILLER ROUND A LOOP
+ * ─────────────────────────────────────────────────────────────────────────────
+ * On 2026-09-09 a takeback's Approve SUCCEEDED, its plan was created, and the
+ * drain 23 seconds later blocked on a precondition. The claim was then
+ * `alreadyQueued`, so `postable` was empty and the NEXT press was refused with
+ * *"The takeback on this remittance cannot be posted yet."* — which reads as
+ * "the takeback is not ready", so it was pressed again. And again.
+ *
+ * The claim list on that refusal carried **no failing check at all**: a claim
+ * leaves the postable set through `alreadyQueued` without anything going red,
+ * and `withheld` deliberately excludes those rows. So the screen had nothing to
+ * name and said the only generic thing it had.
+ *
+ * This reads the plan those claims are on and says what it is actually doing.
+ * "Already approved; plan X is blocked: <the drain's own sentence>" is an
+ * instruction — go and look at the Posting screen — where the old wording was
+ * an invitation to press the button that had already worked.
+ *
+ * PLAN IDS ARE SHORTENED to their first segment. A biller matches them against
+ * the Posting screen by eye, and a full uuid in a sentence is a wall.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} office
+ * @param {Array<{ postingQueueId?: string|null }>} claims  the LOADED rows, not
+ *        the evaluations — `evaluateClaim` does not carry `postingQueueId` out.
+ * @returns {Promise<string|null>} null when no claim is on a plan
+ */
+async function alreadyApprovedMessage(client, office, claims) {
+  const queueIds = [
+    ...new Set(
+      (claims || [])
+        .filter((c) => c && c.postingQueueId)
+        .map((c) => String(c.postingQueueId))
+    ),
+  ];
+  if (queueIds.length === 0) return null;
+
+  /*
+   * ONE STATEMENT PER PLAN, not an `= ANY(...)`. A remittance has exactly one
+   * posting plan (`rcm_posting_queue` is unique on `(office_id,
+   * remittance_key)`), so this loop runs once in every real case and twice at
+   * the outside — and the single-id form is the shape every other read of this
+   * table already uses.
+   */
+  const rows = [];
+  for (const queueId of queueIds) {
+    const found = await client.query(
+      `SELECT queue_id, status, last_error FROM rcm_posting_queue ` +
+        `WHERE office_id = $1 AND queue_id = $2`,
+      [office, queueId]
+    );
+    if (found.rows.length > 0) rows.push(found.rows[0]);
+  }
+  if (rows.length === 0) return null;
+
+  const described = rows.map((row) => {
+    const short = String(row.queue_id).split('-')[0];
+    const status = PLAN_STATUS_WORDS[row.status] || row.status;
+    // The drain's own sentence, when it left one. It is the only text that says
+    // WHY, and it is written for a biller already.
+    return row.last_error ? `plan ${short} is ${status}: ${row.last_error}` : `plan ${short} is ${status}`;
+  });
+
+  return (
+    'This remittance has already been approved, so there is nothing left to approve — ' +
+    `${described.join('; ')}. Nothing was changed by this press. ` +
+    'Open the Posting screen to finish it.'
+  );
+}
+
+/**
  * What to tell a biller whose claim cannot join an already-run plan.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -1587,14 +1677,16 @@ async function runApproval(req, office, batchId, actor) {
        * what to fix in the same breath as being told nothing happened.
        */
       if (verdict.postable.length === 0) {
+        const already = await alreadyApprovedMessage(client, office, loaded.claims);
         await client.query('ROLLBACK');
         throw new ApprovalError(
           'NOTHING_APPROVABLE',
           409,
-          verdict.alreadyQueued.length > 0
-            ? 'Everything on this remittance that can be posted is already queued; the rest is withheld.'
-            : 'Nothing on this remittance can be posted yet.',
-          { claims: verdict.claims }
+          already ||
+            (verdict.alreadyQueued.length > 0
+              ? 'Everything on this remittance that can be posted is already queued; the rest is withheld.'
+              : 'Nothing on this remittance can be posted yet.'),
+          { claims: verdict.claims, alreadyApproved: Boolean(already) }
         );
       }
 
@@ -2035,12 +2127,13 @@ async function approveRecoupment(req, office, batchId, actor, confirmation) {
       }
 
       if (verdict.postable.length === 0) {
+        const already = await alreadyApprovedMessage(client, office, loaded.claims);
         await client.query('ROLLBACK');
         throw new ApprovalError(
           'NOTHING_APPROVABLE',
           409,
-          'The takeback on this remittance cannot be posted yet.',
-          { claims: verdict.claims }
+          already || 'The takeback on this remittance cannot be posted yet.',
+          { claims: verdict.claims, alreadyApproved: Boolean(already) }
         );
       }
 

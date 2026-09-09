@@ -1474,6 +1474,15 @@ function respondToApprovalError(req, res, office, err, batchId, resourceType = '
    */
   if (typeof err.queueStatus === 'string') body.queueStatus = err.queueStatus;
   /*
+   * W-12's walk. A `NOTHING_APPROVABLE` can mean two opposite things — nothing
+   * is READY, or everything is already DONE — and on 2026-09-09 a biller met
+   * the second wearing the first's words and pressed Approve three times. The
+   * sentence now says which, and this is the machine-readable half of it so a
+   * screen can send the biller to the Posting page instead of the button she
+   * has already pressed.
+   */
+  if (typeof err.alreadyApproved === 'boolean') body.alreadyApproved = err.alreadyApproved;
+  /*
    * Slice 6d. On a typed-confirmation mismatch the screen must be able to show
    * the phrase again — a dialog that says "wrong" without saying what was
    * wanted is a dialog somebody guesses at. `expected` is the same string the
