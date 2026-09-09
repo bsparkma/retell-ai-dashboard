@@ -1259,9 +1259,20 @@ class FakeOd {
     if (path === '/claims') {
       return { ok: true, status: 200, data: this.filtered('claims', params, 'PatNum') };
     }
-    // Slice 6d — the two read-backs. `?PatNum=` is honoured here; the callers
-    // re-filter anyway, which is the behaviour under test.
-    if (path === '/adjustments') {
+    /*
+     * Slice 6d — the two read-backs. `?PatNum=` is honoured here; the callers
+     * re-filter anyway, which is the behaviour under test.
+     *
+     * W-20: `/adjustments` is PLURAL-ONLY and `PatNum` is MANDATORY. Live, both
+     * `GET /adjustments` and `GET /adjustments/19157` answer **400 "PatNum is
+     * required."** — the id segment is not an address, it is ignored. Modelled
+     * here so a single-resource read fails in a test exactly as it fails against
+     * a chart, which is the only reason a green suite means anything.
+     */
+    if (path === '/adjustments' || path.startsWith('/adjustments/')) {
+      if (params.PatNum === undefined) {
+        return { ok: false, status: 400, data: null, error: 'PatNum is required.' };
+      }
       return { ok: true, status: 200, data: this.filtered('adjustments', params, 'PatNum') };
     }
     if (path === '/documents') {

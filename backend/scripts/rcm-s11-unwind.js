@@ -538,6 +538,58 @@ const STEP_LABELS = Object.freeze({
 const UNRECEIVED_STATUS = 'W';
 
 /**
+ * ONE adjustment, read the only way Open Dental offers one (W-20).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `/adjustments` IS PLURAL-ONLY. THERE IS NO SINGLE-RESOURCE READ.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `GET /adjustments/19157` answers **400 "PatNum is required."** — the path
+ * segment is not an address, it is ignored, and the API asks for the patient it
+ * always wanted. Verified live 2026-09-09T19:11:16Z against Roland.
+ *
+ * This step used the single-resource shape from the day it was written and had
+ * never once executed against a chart, so nothing ever exercised the read. It
+ * took fixing W-18 — which gave the step its first input — to reach it.
+ *
+ * `services/rcm/odPostingWrites.js` -> `readAdjustmentsForPatient` is the SHARED
+ * CONTRACT this follows: list read, filter re-checked client-side, the row found
+ * by AdjNum rather than by "the newest", because two takebacks on one patient
+ * would make "newest" a race. It is deliberately NOT imported. A teardown that
+ * depends on the write module it exists to clean up after is a teardown a drain
+ * refactor can silently break, and the one script in this repository allowed to
+ * DELETE from a chart does not get to fail that way. The contract is shared; the
+ * code is not.
+ *
+ * The PatNum comes from the MANIFEST TARGET, never from the row being looked for
+ * — which is also what makes the corroboration below mean anything: a row is
+ * checked against a patient that was already known, not against its own.
+ *
+ * @param {{ get: Function }} io
+ * @param {number} patNum
+ * @param {number} adjNum
+ * @returns {Promise<{ ok: boolean, status: number, data: Record<string, unknown>|null, error?: string }>}
+ */
+async function readAdjustment(io, patNum, adjNum) {
+  const res = await io.get('/adjustments', { PatNum: patNum });
+  if (!res.ok) {
+    return { ok: false, status: res.status, data: null, error: res.error || '' };
+  }
+  const rows = Array.isArray(res.data) ? res.data : [];
+  const hit = rows.find(
+    (r) => r && Number(r.AdjNum) === Number(adjNum) && Number(r.PatNum) === Number(patNum)
+  );
+  if (!hit) {
+    return {
+      ok: false,
+      status: 404,
+      data: null,
+      error: `AdjNum ${adjNum} is not among PatNum ${patNum}'s ${rows.length} adjustment(s)`,
+    };
+  }
+  return { ok: true, status: 200, data: hit };
+}
+
+/**
  * Does the app database's candidate actually describe THIS manifest target's
  * takeback? Returns null when it does, or the reason it does not.
  *
@@ -807,17 +859,39 @@ async function unwindTarget(io, target) {
   const candidateAdjNum = Number(target.candidateAdjNum) > 0 ? Number(target.candidateAdjNum) : 0;
   const adjNum = manifestAdjNum || candidateAdjNum;
 
+  /*
+   * The read below is BY PATIENT (W-20), so the patient has to be known before
+   * it can happen. It comes from the manifest — the reseed's targets carry one
+   * each, and `main()` stamps the walk manifest's single top-level `patNum` onto
+   * its targets for exactly this. An adjustment with no patient to look under is
+   * a refusal, not a lookup with a guess in it.
+   */
+  const readPatNum = Number(target.patNum);
+
+  if (adjNum > 0 && !(Number.isFinite(readPatNum) && readPatNum > 0)) {
+    steps.reversal = 'failed';
+    aborted = true;
+    io.log(
+      `   0. reversal     FAILED — adjustment ${adjNum} is named for this target but the ` +
+        'manifest gives it no patient, and `/adjustments` can only be read by PatNum.'
+    );
+    return { steps, aborted };
+  }
+
   if (adjNum > 0) {
     if (denied(adjNum)) {
       steps.reversal = 'skipped';
       io.log(`   0. reversal     SKIPPED — adjustment ${adjNum} is on the deny-list`);
     } else {
-      const orig = await io.get(`/adjustments/${adjNum}`);
+      const orig = await readAdjustment(io, readPatNum, adjNum);
       if (!orig.ok) {
         // A reversal we cannot price is a reversal we must not guess at.
         steps.reversal = 'failed';
         aborted = true;
-        io.log(`   0. reversal     FAILED — GET /adjustments/${adjNum} -> ${orig.status}`);
+        io.log(
+          `   0. reversal     FAILED — GET /adjustments?PatNum=${readPatNum} -> ${orig.status}` +
+            `${orig.error ? ` (${orig.error})` : ''}`
+        );
       } else {
         const origAmt = Number(orig.data?.AdjAmt);
         const patNum = Number(orig.data?.PatNum);
@@ -916,11 +990,11 @@ async function unwindTarget(io, target) {
              * it started.
              */
             const newNum = Number(r.data?.AdjNum);
-            const back = await io.get(`/adjustments/${newNum}`);
+            const back = await readAdjustment(io, readPatNum, newNum);
             const backAmt = Number(back.data?.AdjAmt);
             const net = origAmt + backAmt;
             io.log(
-              `   read-back: /adjustments/${newNum} AdjAmt=${backAmt}  ` +
+              `   read-back: AdjNum ${newNum} AdjAmt=${backAmt}  ` +
                 `net ${origAmt} + ${backAmt} = ${net}`
             );
             /*
@@ -1333,6 +1407,21 @@ async function main() {
   const patNums = screened.patNums;
 
   /*
+   * THE WALK MANIFEST CARRIES ONE PATIENT AT THE TOP, NOT ONE PER TARGET.
+   *
+   * `readAdjustment` reads by PatNum (W-20), so every target needs one. The
+   * reseed's targets each carry their own; the walk's share a single top-level
+   * `patNum`, which the screen has already resolved into `patNums`. Stamping it
+   * on is a completion, not a guess, and it is guarded on there being exactly
+   * ONE patient so it can never smear one chart's number across another's rows.
+   */
+  if (patNums.length === 1) {
+    for (const t of manifest.targets || []) {
+      if (!(Number(t.patNum) > 0)) t.patNum = patNums[0];
+    }
+  }
+
+  /*
    * SAFETY 2 — the deny-list, applied to the manifest BEFORE anything is issued.
    *
    * Not a warning and not a skip: if the residue is in the manifest, the manifest
@@ -1642,6 +1731,7 @@ module.exports = {
   unwindTarget,
   corroborateCandidate,
   attachReversalCandidates,
+  readAdjustment,
   balanceOf,
   balancesOf,
   cents,
