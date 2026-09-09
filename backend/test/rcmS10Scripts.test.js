@@ -1129,10 +1129,32 @@ function fakeOd(seed) {
     calls,
     writes,
     minted,
-    async get(p) {
+    async get(p, params) {
       calls.push(`GET ${p}`);
-      const m = p.match(/^\/adjustments\/(\d+)$/);
-      if (m && minted.has(Number(m[1]))) return found(minted.get(Number(m[1])));
+
+      /*
+       * W-20 — `/adjustments` IS PLURAL-ONLY, AND THIS FAKE NOW SAYS SO.
+       *
+       * Live: `GET /adjustments/19157` -> **400 "PatNum is required."** The id
+       * segment is ignored; the API wants the patient. This fake used to route
+       * anything matching /^\/adjustments/ to its stored row, so it answered a
+       * call the real system refuses — and six tests written against the
+       * reversal step passed while the live read 400'd.
+       *
+       * Third occurrence of the same class (FakeRcmDb accepting
+       * `od_patient_office`, #114, was the last). **A fake that accepts what the
+       * real system refuses is a defect in the fake**, not a convenience: the
+       * green suite is then a statement about the fake's invention.
+       */
+      if (/^\/adjustments/.test(p)) {
+        const patNum = params && Number(params.PatNum);
+        if (!Number.isFinite(patNum) || patNum <= 0) {
+          return { ok: false, status: 400, data: null, error: 'PatNum is required.' };
+        }
+        const all = [...(rows.adjustment ? [rows.adjustment] : []), ...minted.values()];
+        return found(all.filter((r) => Number(r.PatNum) === patNum));
+      }
+
       const key = route(p);
       return key && rows[key] ? found(rows[key]) : missing;
     },
@@ -2296,6 +2318,9 @@ function reversalTarget(overrides = {}) {
     procNum: 900001,
     claimNum: 900002,
     claimProcNum: 900003,
+    // W-20: `/adjustments` reads by PatNum, so a target carrying an adjustment
+    // has to name the patient it is on. A real manifest target always does.
+    patNum: 12827,
     serviceDate: '2026-03-01',
     odAdjustmentNum: 88001,
     ...overrides,
@@ -2572,8 +2597,51 @@ test('(b) no `+` AdjType is a LOUD refusal that writes nothing', async () => {
   );
 });
 
+test('(c) a candidate on another patient cannot even be READ, let alone reversed', async () => {
+  // W-20 made the read scoped: `GET /adjustments?PatNum=<the manifest's patient>`.
+  // So a candidate sitting on a different chart is not rejected by corroboration
+  // — it is unreachable, which is the stronger property. Corroboration's own
+  // PatNum check stays as the client-side re-filter this module always applies
+  // to a list filter it did not prove.
+  const od = odWithTakeback({ PatNum: 12827 });
+  const plan = planner();
+  const lines = [];
+
+  const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: plan.write, log: (l) => lines.push(l), execute: true, ...bothAdjTypes() },
+    candidateTarget()
+  );
+
+  assert.equal(steps.reversal, 'failed', lines.join('\n'));
+  assert.equal(aborted, true, 'and the target is held whole');
+  assert.deepEqual(plan.planned, [], 'not one step was issued');
+  assert.ok(
+    lines.some((l) => l.includes('is not among PatNum 12828')),
+    'it says the AdjNum is not on the patient it looked under: ' + lines.join('\n')
+  );
+  assert.ok(
+    od.calls.some((c) => c === 'GET /adjustments'),
+    'and it read the LIST, never /adjustments/{id}: ' + od.calls.join(' | ')
+  );
+});
+
+test('a single-resource adjustment read is refused by the fake, as it is live', async () => {
+  // The guard on the guard. If this ever passes with 200, the fake has drifted
+  // back to answering a call Open Dental refuses, and every reversal test above
+  // becomes a statement about the fake's invention rather than the API.
+  const od = odWithTakeback();
+  const one = await od.get('/adjustments/19157');
+  assert.equal(one.ok, false);
+  assert.equal(one.status, 400);
+  assert.match(one.error, /PatNum is required/);
+
+  const list = await od.get('/adjustments', { PatNum: 12828 });
+  assert.equal(list.ok, true);
+  assert.equal(list.data.length, 1);
+  assert.equal(list.data[0].AdjNum, 19157);
+});
+
 for (const [why, adj] of [
-  ['the wrong patient', { PatNum: 12827 }],
   ['the wrong amount', { AdjAmt: -35 }],
   ['the wrong AdjType', { AdjType: 260 }],
 ]) {
