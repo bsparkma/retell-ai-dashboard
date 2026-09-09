@@ -3,6 +3,17 @@
 Branch `feature/hyg-timezone-today`, off `origin/develop` at `d4c916c`.
 Worktree `C:\Users\beau\carein-wt\hyg-timezone-today`.
 
+> **Branch is PUSHED. The PR is not** — auto mode refused `gh pr create`. Beau, paste:
+>
+> ```bash
+> cd "C:/Users/beau/carein-wt/hyg-timezone-today"
+> gh pr create --base develop --head feature/hyg-timezone-today \
+>   --title "Resolve the hygiene day in the office's timezone, not the device's" \
+>   --body-file docs/reports/feature-hyg-timezone-today.md
+> ```
+>
+> (`gh pr edit` is broken repo-wide — to change the body afterwards use `gh api -X PATCH`.)
+
 ---
 
 ## Sighting 1: the failing test, named — and it is NOT a timezone bug
