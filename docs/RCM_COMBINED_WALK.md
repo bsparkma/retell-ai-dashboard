@@ -700,6 +700,44 @@ reports a state it never measured.* W-16 rendered a crash as a measurement out o
 Open Dental; W-18 reported completion for work it never had the input to attempt.
 The brief itself is not in this repository, so the tag travels here.
 
+### W-19 · The switch audit records THAT posting changed, never to what
+
+`audit_log` carries one `UPDATE rcm_office_settings` row per flip, with
+`prior_state: null` and no column for the new value. The four rows this walk
+produced are therefore indistinguishable from one another.
+
+*"When was posting last switched off"* is answerable — from
+`rcm_office_settings.drain_updated_at`, which is why that column was split from
+`updated_at` in the first place. *"Who turned it ON, and when"* is **not
+answerable from `audit_log` at all**, and that is the question an incident asks.
+[§22.1](#221-the-switch-verified-on-the-row--2026-09-09t180514z).
+
+Not a blocker for shadow. Overhaul work, with the display family.
+
+### W-20 · `GET /adjustments/{AdjNum}` does not exist — the never-run step also carried an unproven read
+
+Found by the first dry run that ever reached the reversal step, on merged code
+(`8c56daf`), after [W-18](#w-18--the-unwind-reported-already-done-for-a-step-it-had-never-been-given-an-input-to-attempt)
+finally gave it an input. Full account in [§24](#24-w-20--the-step-ran-at-last-and-the-read-underneath-it-was-never-real).
+
+```
+GET /adjustments/19157        -> 400  "PatNum is required."
+GET /adjustments?PatNum=12828 -> 200  n=1
+                                 {AdjNum:19157, AdjAmt:-29, AdjType:477, PatNum:12828, ProcNum:0}
+```
+
+`/adjustments` is **plural-only**: the path segment is ignored and Open Dental
+demands `PatNum`. The drain has always known this — `readAdjustmentsForPatient`
+reads the list and re-filters client-side, with a header saying so. The unwind's
+reversal step, written at the same time and **never once executed against a
+chart**, used the single-resource shape instead. W-18 hid it; nothing else could
+have found it.
+
+Same class as the `od_patient_office` column FakeRcmDb accepted (#114): the test
+fake routes `/^\/adjustments/` to its stored row for **both** shapes, so it
+answered a call the real API refuses. A fake more permissive than the thing it
+stands in for does not catch this, and did not.
+
 ---
 
 ## 7. Teardown numbers
@@ -808,12 +846,11 @@ mid-sequence, exactly as intended.
 8. **W-18** — fixed on `fix/rcm-unwind-takeback-reversal`, awaiting PM review
    before it runs against target F. The finding itself goes to the overhaul brief's
    principle 5 family beside W-16.
-9. **The switch audit records no value.** `audit_log` carries one `UPDATE
-   rcm_office_settings` row per flip with `prior_state: null` and no column for the
-   new setting, so the four rows this walk produced are indistinguishable from one
-   another. "When was posting switched off" is answerable from `drain_updated_at`;
-   "who turned it **on**, and when" is not answerable from `audit_log` at all.
-   [§22.1](#221-the-switch-verified-on-the-row--2026-09-09t180514z).
+9. **W-19** — the switch audit records no value. Overhaul, with the display family.
+10. **W-20** — the unwind's reversal step reads `GET /adjustments/{AdjNum}`, which
+    does not exist. **Blocks the teardown of target F.** Awaiting a PM ruling on
+    whether the unwind reuses the drain's `readAdjustmentsForPatient` or keeps its
+    own list read.
 
 ---
 
@@ -2210,3 +2247,114 @@ More than one tenant in the registry is now a loud refusal.
 | 12828 | `-$29.00`, 3 claims — **held**, AdjNum 19157 live |
 | Reseed manifest | intact, nothing retired, `RESEED_SPENT_IDS` untouched |
 | Owed | PM review of the branch, then `--reseed` for the six + F |
+
+---
+
+## 24. W-20 — the step ran at last, and the read underneath it was never real
+
+PM rulings on #159: approved as-is, both commits, both judgment calls; the
+sequencing deviation ratified — all seven targets run under the fixed script,
+`--reseed` keeps its closed flag set. Merged, deployed, dry run first, **and run
+live only if the plan matches**. It does not, so nothing was run.
+
+### 24.1 One correction on the instruction
+
+The ruling said to pull the merged commit to *"the workstation clone the unwind
+runs from"*. **There is no such clone.** `rcm-s10-inventory.js`'s own header:
+*"Running it from a workstation is not an option: `kv-carein-staging` is in a
+different Entra tenant from a workstation `az` token (`AKV10032: Invalid
+issuer`)."* Roland's customer key is resolved from Key Vault by the app's own
+loader and never leaves the container.
+
+So "reviewed, merged code" was satisfied the only way it can be: merge → staging
+builds the image → run inside it. Same guarantee, enforced by the pipeline.
+
+```
+#159 merged                develop = 8c56daf
+staging-cd 34392134238     success
+revision ca-carein-backend--0000170   image carein-backend:8c56daf   traffic 100
+in-container source        grep -c attachReversalCandidates -> 3
+```
+
+### 24.2 The handoff works
+
+```
+    reversal candidates: 1 of 7 target(s) carry a takeback adjustment in the posting queue
+    reversal AdjType:   "Insurance Adjustment" DefNum=260 — by name, sign +
+    recoupment AdjType (for corroboration only):
+                        "Insurance deductions from previous payments" DefNum=477 — by name, sign -
+
+-- TARGET A ... 0. reversal   not run — no input: neither the manifest nor the
+                              posting queue names a takeback adjustment for this target
+```
+
+Exactly one candidate, on the one target that has a takeback. Both AdjTypes
+resolved by name. The other six report **`not run`**, the honest label W-18 bought.
+
+### 24.3 And then it read
+
+```
+-- TARGET F: ProcNum=406657 ClaimNum=53863 ClaimProcNum=535780 --
+   0. reversal     FAILED — GET /adjustments/19157 -> 400
+```
+
+Probed directly, `2026-09-09T19:11:16Z`:
+
+```
+GET /adjustments/19157        -> 400  "PatNum is required."
+GET /adjustments?PatNum=12828 -> 200  n=1
+                                 {AdjNum:19157, AdjAmt:-29, AdjType:477,
+                                  PatNum:12828, AdjDate:"2026-09-01", ProcNum:0}
+```
+
+**`/adjustments` is plural-only.** The `{AdjNum}` path segment is not a resource
+address — it is ignored, and Open Dental asks for the `PatNum` it always wanted.
+The row itself is fine, is exactly what corroboration needs, and is one list read
+away.
+
+The drain has always done it correctly. `odPostingWrites.readAdjustmentsForPatient`:
+
+> *"Read back through `GET /adjustments?PatNum=` — a LIST endpoint, so the filter
+> is re-checked client-side like every other list read in this module. The new
+> AdjNum is found by id rather than by 'the newest row', because two takebacks on
+> one patient in one drain would make 'newest' a race."*
+
+The unwind's reversal step was written at the same time, against the same API,
+and used the single-resource shape. It has **never once executed against a
+chart** — that is W-18 — so nothing has ever exercised the read. W-18 was not
+one defect in front of another; it was a defect *concealing* one, and the second
+was only ever findable by fixing the first.
+
+### 24.4 My tests passed, and should not have
+
+`fakeOd`'s router sends anything matching `/^\/adjustments/` to its stored row,
+so it answers **both** shapes. My six new tests drove the reversal step through a
+fake that accepts a call the real API refuses — and I inherited the
+single-resource read without checking it against `docs/OD_API_CONTRACT.md` or
+against the module doing the same job forty lines away.
+
+*"Plural-only resources"* is a recorded gotcha from Slice 5's OD reads. I did not
+apply it. This is the same shape as FakeRcmDb accepting `od_patient_office`
+(#114): **a fake more permissive than the real thing does not catch the
+difference, and a green suite says nothing about the half the fake invented.**
+
+### 24.5 Nothing was written
+
+Dry run, and F aborted before its first write — which is the held-target
+behaviour #159 added, working, on the first defect it met.
+
+| | |
+| --- | --- |
+| Roland posting | **OFF** |
+| 12827 | `$154.00`, 4 claims, 12 D-procs |
+| 12828 | `-$29.00`, 3 claims — held, AdjNum 19157 live |
+| Written this session | the bare manifest only |
+
+### 24.6 Owed
+
+A ruling on the fix, because it is a design question and not only a typo:
+**does the unwind reuse `odPostingWrites.readAdjustmentsForPatient`, or keep its
+own list read?** Reuse means an operational teardown script takes a dependency on
+module code it is meant to be able to clean up after; its own read means the
+proven pattern exists twice. The tests also need a fake that refuses the shape
+the real API refuses — otherwise the next one of these lands the same way.
