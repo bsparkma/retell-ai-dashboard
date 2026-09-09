@@ -669,12 +669,31 @@ function checkPreconditions(ctx) {
     };
   }
 
-  // -- The plan must have something to do. -----------------------------------
-  const actionable = lines.filter((l) => l.status !== 'skipped' && l.status !== 'skipped_already_posted');
-  if (lines.length === 0 || actionable.length === 0) {
+  // -- The plan must have something to do — AND A SKIPPED LINE IS NOT NOTHING.
+  //
+  // W-10, found live on the combined walk 2026-09-04. This used to refuse any
+  // plan whose every line was `skipped` or `skipped_already_posted`, on the
+  // reading that a line needing no chart write is a line needing nothing. That
+  // is false, and it stranded a real plan permanently.
+  //
+  // The plan the kill test interrupted came back with its one line
+  // `skipped_already_posted` — correctly, the money was already on the chart —
+  // and it still owed the check number on that line, a reconcile, the B2
+  // patient-total confirmation and a finalise to `posted`. All of it sits BELOW
+  // this guard, so the drain could never reach the work it had left. Pressing
+  // Post re-blocked here every time, `recheck` refuses anything but `posted` and
+  // `partially_posted`, and the startup sweep re-homes only `posting` — so
+  // nothing in the system could move it.
+  //
+  // `plan_empty` now means what it says: nothing to do AT ALL. A plan with no
+  // lines still refuses, and so does one whose line names no claim (below). An
+  // unreconciled plan that HAS lines always has work, whatever their statuses,
+  // and the steps below decide what — including adopting a check an earlier
+  // attempt created rather than minting a second (rule 4).
+  if (lines.length === 0) {
     return {
       reason: BLOCK_REASONS.PLAN_EMPTY,
-      detail: 'This plan has no postable lines.',
+      detail: 'This plan has no lines at all.',
     };
   }
 

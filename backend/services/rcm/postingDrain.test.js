@@ -3216,3 +3216,100 @@ test('B2: a plan approved BEFORE the promise column falls back, and says nothing
     ['chart_differs_from_decision']
   );
 });
+
+/**
+ * W-10 — THE STRAND THE W-9 FIX DID NOT REACH, 2026-09-04 / 2026-09-09.
+ *
+ * `checkPreconditions` refused any plan whose every line was skipped as
+ * `plan_empty` — *"This plan has no postable lines"* — before the drain reached
+ * a single one of the steps that had work left. On the walk that meant a plan
+ * whose money was correctly and singly on the chart could not be finished by
+ * any press: Post re-blocked here, `recheck` refuses anything but `posted` and
+ * `partially_posted`, and the startup sweep re-homes only `posting`.
+ *
+ * It is not a kill-test artefact. It is reachable whenever a resume skips every
+ * line and then stops for some OTHER reason — which is what these two tests
+ * build, one per kill window, by chaining two real interruptions:
+ *
+ *   run 1  dies in the window under test, leaving the chart part-written;
+ *   run 2  resumes, SKIPS every line off the chart, and dies at the check;
+ *   run 3  is the press that used to be refused as empty.
+ *
+ * NO HAND-BUILT ROWS ANYWHERE. Run 3 reads the rows runs 1 and 2 actually
+ * persisted, and `checkPreconditions` is put in front of the loader's own output
+ * rather than a literal.
+ */
+/*
+ * `stallAfter` is how many writes run 2 still has to make BEFORE the check, and
+ * it differs per window because a resume skips whatever run 1 already landed.
+ * Killed after the claimproc PUT, run 2 still owes the claim PUT, so the check
+ * is its second write; killed after the claim PUT, the check is its first.
+ */
+for (const { name, dieAfter, stallAfter } of [
+  { name: 'after the claimproc PUT', dieAfter: 1, stallAfter: 1 },
+  { name: 'after the claim PUT (the worst window)', dieAfter: 2, stallAfter: 0 },
+]) {
+  test(`W-10: a plan whose every line is skipped still has work — killed ${name}`, async () => {
+    const db = seedPlan(new FakeRcmDb());
+
+    const dying = odFixture({ dieAfterWrites: dieAfter });
+    await postingDrain.drainOffice(ctxFor(db, dying));
+
+    // Run 2 resumes onto the same chart and dies at the check POST, so every
+    // line is left `skipped_already_posted` with the plan still unfinished.
+    const stalling = odFixture({ dieAfterWrites: stallAfter });
+    stalling.rows = dying.rows;
+    const second = await postingDrain.drainOffice(ctxFor(db, stalling));
+    assert.equal(second.outcomes[0].status, 'partially_posted', JSON.stringify(second.outcomes[0]));
+
+    const lines = db.table('rcm_posting_queue_line');
+    assert.ok(lines.length > 0, 'the fixture must have lines');
+    assert.ok(
+      lines.every((l) => String(l.status).startsWith('skipped')),
+      `every line must be skipped for this to exercise W-10, got ` +
+        `${lines.map((l) => l.status).join(', ')}`
+    );
+
+    /*
+     * THE PREDICATE ITSELF, over the rows the runs above really wrote. This is
+     * the assertion that fails on the old code, with `plan_empty`.
+     */
+    const plan = await postingDrain.loadPlan(db, 'roland', db.table('rcm_posting_queue')[0].queue_id);
+    assert.equal(
+      postingDrain.checkPreconditions({
+        queue: plan.queue,
+        lines: plan.lines,
+        claims: plan.claims,
+        office: 'roland',
+        odWritesDisabled: false,
+        snapshotVersion: 2,
+      }),
+      null,
+      'an unreconciled plan that has lines always has work'
+    );
+
+    // And the press completes it.
+    const revived = odFixture();
+    revived.rows = stalling.rows;
+    const third = await postingDrain.drainOffice(ctxFor(db, revived));
+    assert.equal(third.outcomes[0].status, 'posted', JSON.stringify(third.outcomes[0]));
+
+    const checkNums = new Set(odCheckNums(revived).filter((n) => n > 0));
+    assert.equal(
+      checkNums.size,
+      1,
+      `the chart carries ${checkNums.size} distinct checks: ${[...checkNums].join(', ')}`
+    );
+  });
+}
+
+test('W-10: a plan with NO lines is still refused as empty', () => {
+  const base = goodCtx();
+  const blocked = postingDrain.checkPreconditions({
+    ...base,
+    lines: [],
+    queue: { ...base.queue, intendedTotalCents: 0 },
+  });
+  assert.equal(blocked && blocked.reason, postingDrain.BLOCK_REASONS.PLAN_EMPTY);
+  assert.match(blocked.detail, /no lines at all/);
+});
