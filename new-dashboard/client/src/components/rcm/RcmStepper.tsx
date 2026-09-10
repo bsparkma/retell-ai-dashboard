@@ -93,6 +93,28 @@ export default function RcmStepper({
   onAction,
   /** Which step this screen IS, so the stepper can mark "you are here". */
   here,
+  /**
+   * THE PAGE IS RENDERING THIS CTA ITSELF, SO THE RAIL MUST NOT (S3, W-11).
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * WHY AN OPT-OUT AND NOT A REDESIGN
+   * ─────────────────────────────────────────────────────────────────────────
+   * The check's own page hoisted the next verb into its header, where the two
+   * quiet actions beside it already were. That left the rail printing a SECOND
+   * copy of the same button a few hundred pixels lower — and on a check whose
+   * next step is `match`, two buttons both reading *Match it up*, which is the
+   * precise duplication W-11's one-match-verb rule exists to delete.
+   *
+   * It is opt-IN to hiding, defaulting to false, so the claim screen and the
+   * Posting screen keep the rail exactly as it was built. `flow.cta` is still
+   * computed in one place and still rendered once; only WHERE moved, and only
+   * on the page that asked.
+   *
+   * A page passing this takes on the CTA's whole contract — the label, the
+   * disabled state AND the reason — because a blocked next step with no
+   * explanation is what `DisabledReason` exists to make impossible.
+   */
+  hideCta = false,
   testId = "rcm-stepper",
 }: {
   flow: RcmFlow;
@@ -103,6 +125,7 @@ export default function RcmStepper({
    */
   onAction?: Partial<Record<RcmAction, () => void>>;
   here?: StepView["step"];
+  hideCta?: boolean;
   testId?: string;
 }) {
   return (
@@ -127,7 +150,7 @@ export default function RcmStepper({
           1024px without wrapping into illegibility. */}
       <Notes flow={flow} />
 
-      {flow.cta && <Cta cta={flow.cta} onAction={onAction} />}
+      {flow.cta && !hideCta && <Cta cta={flow.cta} onAction={onAction} />}
     </section>
   );
 }
