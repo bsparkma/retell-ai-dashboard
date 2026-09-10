@@ -851,9 +851,13 @@ describe("the dead end", () => {
     expect(screen.getByTestId("match-guidance-set-aside").getAttribute("href")).toBe(
       "/rcm/remittances/b-1",
     );
-    expect(screen.getByTestId("match-guidance-bring-in").getAttribute("href")).toBe(
-      "/rcm/bring-in",
-    );
+    /*
+     * D-18 moved the upload surface back onto Today, so this points there and
+     * carries `?add=1` — the parameter Today reads to scroll *Get work in* into
+     * view. The test id keeps its name: it is a machine slug, and renaming it
+     * would churn every screenshot and selector for no reader's benefit.
+     */
+    expect(screen.getByTestId("match-guidance-bring-in").getAttribute("href")).toBe("/rcm?add=1");
   });
 
   it("names the act without linking to a check it was not told about", async () => {

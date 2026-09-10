@@ -595,9 +595,14 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
     dump("stagec-01-today");
   });
 
-  it("stagec-02-bring-in — six sources, three of them not yet", async () => {
+  it("stagec-02-get-work-in — the two drop zones, on Today (D-18)", async () => {
     /*
-     * The upload stamps are RELATIVE, because "Brought in recently" is a
+     * WAS `stagec-02-bring-in`. Slice 2 deleted that page: the two upload panels
+     * are back on Today and the four tiles that could not be pressed are gone.
+     * The shot is kept rather than dropped because it is the picture of the
+     * module's one door, and the door still exists — it moved.
+     *
+     * The upload stamps are RELATIVE, because each panel's own recent list is a
      * seven-practice-day window and a frozen 2026-03 date would fall out of it
      * whenever these shots are re-taken. Everything else here stays fixed, so
      * the pictures are stable.
@@ -639,7 +644,16 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
         officeId: "roland",
         filename: "synthetic-eob-scan.pdf",
         fileSizeBytes: 220000,
-        status: "processed",
+        /*
+         * `extracted`, NOT `processed`. `EOB_UPLOAD_STATUSES` holds four values
+         * and `processed` is not one of them — it is the ERA lane's word. The
+         * old Bring in page merged both lanes into a table of its own that
+         * mapped the string loosely, so the invented value never showed; the EOB
+         * panel indexes `STATUS_CHIP` directly and a fifth value throws. Tests
+         * are excluded from `pnpm run check` (tsconfig.json), so nothing but
+         * rendering it was ever going to catch this.
+         */
+        status: "extracted",
         message: null,
         resultClaimId: null,
         resultBatchId: "b-2",
@@ -648,11 +662,14 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
       },
     ];
 
-    const BringIn = (await import("@/pages/rcm/BringIn")).default;
-    renderAt(<BringIn />, "/rcm/bring-in");
-    await screen.findByTestId("bring-in-tiles");
-    await waitFor(() => expect(screen.getByTestId("bring-in-recent-row-era-u-1-b-1")).toBeTruthy());
-    dump("stagec-02-bring-in");
+    const RcmToday = (await import("@/pages/rcm/RcmToday")).default;
+    renderAt(<RcmToday />, "/rcm?add=1");
+    await screen.findByTestId("rcm-get-work-in-roland");
+    // Both lanes' own recent lists have settled — the shot is of a live door,
+    // not of two spinners.
+    await waitFor(() => expect(screen.getByTestId("rcm-era-list-roland")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-list-roland")).toBeTruthy());
+    dump("stagec-02-get-work-in");
   });
 
   it("stagec-03-checks-waiting-on — whose move it is, per row", async () => {

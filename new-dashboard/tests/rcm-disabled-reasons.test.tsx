@@ -366,12 +366,16 @@ import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
 import PostingQueue from "@/pages/rcm/PostingQueue";
 /*
- * SLICE 1 OF THE UI OVERHAUL widened the scan. These three were the module's
- * unscanned screens, and Today is the one a biller spends her morning on — the
- * worst possible place for a greyed control with nothing beside it.
+ * SLICE 1 OF THE UI OVERHAUL widened the scan. These were the module's unscanned
+ * screens, and Today is the one a biller spends her morning on — the worst
+ * possible place for a greyed control with nothing beside it.
+ *
+ * SLICE 2 removed the third, `BringIn`: D-18 put the two upload panels back on
+ * Today and deleted that page. The COVERAGE did not go with it — the panels
+ * carry the paused-cap controls this scan exists for, and the two Today cases
+ * below now render them, so the same greyed buttons are still walked.
  */
 import RcmToday from "@/pages/rcm/RcmToday";
-import BringIn from "@/pages/rcm/BringIn";
 import TakebackSop from "@/pages/rcm/TakebackSop";
 import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
@@ -542,13 +546,15 @@ describe("no RCM screen greys a control without saying why", () => {
   });
 
   it("the one upload door, before a file is chosen", async () => {
-    renderAt(<BringIn />, "/rcm/bring-in");
     /*
-     * No `findBy` anchor: this page's own panels settle synchronously and the
-     * scan only needs the tree to exist. `waitFor` on the scan itself would
-     * hide a control that appears late, which is the opposite of the point.
+     * THE DOOR IS ON TODAY AGAIN (D-18), so this renders Today and waits for
+     * the section rather than for a page that no longer exists. The scan is
+     * unchanged and so is what it is looking for: the two upload panels carry
+     * the cap-paused controls, and a greyed *Upload* with no sentence beside it
+     * is exactly the failure this whole file was written for.
      */
-    await waitFor(() => expect(document.body.textContent).not.toBe(""));
+    renderAt(<RcmToday />, "/rcm?add=1");
+    await screen.findByTestId("rcm-get-work-in-roland");
     expect(unexplainedDisabledControls()).toEqual([]);
   });
 
