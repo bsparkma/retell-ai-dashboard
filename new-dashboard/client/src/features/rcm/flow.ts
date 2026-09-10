@@ -100,13 +100,14 @@ import type {
   OdMatchStatus,
   PostingQueueLabel,
   PostingQueueRow,
+  RcmOfficeId,
   Remittance,
   RemittanceClaim,
   WorkbenchClaim,
 } from "@/features/rcm/api";
 import { matchStatusLabel, money } from "@/features/rcm/format";
 import { blockedCopy, withdrawnCopy } from "@/features/rcm/posting";
-import { officeDay } from "@/features/rcm/time";
+import { officeDay, officeStamp } from "@/features/rcm/time";
 
 export const RCM_STEPS = ["upload", "match", "review", "post", "deposit"] as const;
 export type RcmStep = (typeof RCM_STEPS)[number];
@@ -179,8 +180,15 @@ const TITLES: Record<RcmStep, string> = {
   match: "Match it up",
   // Look at it AND say yes. See the fold ruling in the header.
   review: "Check it over",
-  // ONE verb: the write to Open Dental, and nothing else.
-  post: "Post",
+  /*
+   * ONE verb: the write to Open Dental, and nothing else.
+   *
+   * Named in full because "Post" alone is ambiguous at a dental front desk —
+   * a payment is posted to a ledger, a note is posted to a chart, and the rail
+   * has to say WHICH. It is also the replacement the plain-language guard
+   * names for the word this step used to carry.
+   */
+  post: "Post to Open Dental",
   deposit: "Deposit",
 };
 
@@ -379,7 +387,16 @@ export function claimStateLine(claim: WorkbenchClaim): ClaimStateLine {
  * function reads them rather than inferring a posting state the server never
  * claimed.
  */
-export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]): RcmFlow {
+export function remittanceFlow(
+  remittance: Remittance,
+  rows: RemittanceClaim[],
+  /**
+   * What the SCREEN knows that the remittance does not: whether posting is
+   * switched off for this practice. Optional, and absent means "not asked" —
+   * never "posting is on".
+   */
+  ctx: { shadowMode?: boolean } = {},
+): RcmFlow {
   const batchId = remittance.batchId;
   const total = rows.length;
   const reasons = new Set(remittance.attentionReasons);
@@ -393,14 +410,24 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
   const queued = rows.filter((c) => c.postingQueueId);
 
   // ── Add the check ─────────────────────────────────────────────────────────
+  /*
+   * WHEN it was read, not only THAT it was.
+   *
+   * A step marked done with no date is a claim the reader has to take on
+   * trust; the day CareIN took the file in is the fact behind the tick, and it
+   * is the one a biller cross-checks against the carrier's own paperwork. The
+   * day is APPENDED rather than substituted, so a check with no `createdAt`
+   * loses the date and keeps the sentence rather than rendering a gap.
+   */
+  const readOn = remittance.createdAt ? officeDay(remittance.createdAt, remittance.officeId) : null;
   const upload = view(
     "upload",
     "done",
-    remittance.source === "eob"
-      ? "Read from an EOB PDF."
+    (remittance.source === "eob"
+      ? "EOB PDF read"
       : remittance.source === "835"
-        ? "Parsed from the carrier's 835 file."
-        : "This check is in CareIN.",
+        ? "The carrier's 835 file read"
+        : "This check is in CareIN") + (readOn ? ` ${readOn}.` : "."),
     "/rcm/remittances",
   );
 
@@ -440,9 +467,14 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     match = view(
       "match",
       "done",
-      `${claims(confirmed.length)} tied to a claim in Open Dental${
-        noCandidate.length > 0 ? ` · ${noCandidate.length} with nothing to tie to` : ""
-      }.`,
+      // "All N claims found" only when NONE was left over. A check with three
+      // tied and one with nothing to tie to is not "all found", and the
+      // leftover is the half a biller has to act on.
+      noCandidate.length === 0
+        ? `All ${claims(confirmed.length)} found in Open Dental.`
+        : `${claims(confirmed.length)} tied to a claim in Open Dental · ${
+            noCandidate.length
+          } with nothing to tie to.`,
       confirmed[0] ? claimHref(confirmed[0].claimId, batchId) : null,
     );
   }
@@ -461,6 +493,9 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     stillMatching: undecided.length > 0 || unmatched.length > 0,
     firstUnreviewed: unreviewed[0] ?? null,
     batchId,
+    approvedBy: remittance.approvalAttemptedBy,
+    approvedAt: remittance.approvalAttemptedAt,
+    office: remittance.officeId,
   });
 
   // ── Post ──────────────────────────────────────────────────────────────────
@@ -469,6 +504,7 @@ export function remittanceFlow(remittance: Remittance, rows: RemittanceClaim[]):
     postedAmountCents: remittance.postedAmountCents,
     isPosted: observations.has("claims_posted") || remittance.status === "posted",
     postingFailed: reasons.has("posting_failed"),
+    shadowMode: ctx.shadowMode,
   });
 
   const steps = oneCurrent([upload, match, review, post, DEPOSIT]);
@@ -515,8 +551,23 @@ function reviewStep(f: {
   stillMatching: boolean;
   firstUnreviewed: RemittanceClaim | null;
   batchId: string;
+  /**
+   * WHO said yes, and when. Both nullable, and each is dropped on its own —
+   * "Approved by somebody at 4:12pm" and "Approved by Dana" are both honest,
+   * and inventing either half to complete the sentence is not.
+   */
+  approvedBy: string | null;
+  approvedAt: string | null;
+  office: RcmOfficeId;
 }): StepView {
   const here = remittanceHref(f.batchId);
+  /** " · Approved by Dana, 4:12pm" — omitted entirely when nobody is recorded. */
+  const approver =
+    f.approvedBy || f.approvedAt
+      ? ` Approved${f.approvedBy ? ` by ${f.approvedBy}` : ""}${
+          f.approvedAt ? `, ${officeStamp(f.approvedAt, f.office)}` : ""
+        }.`
+      : "";
 
   if (f.total === 0) return view("review", "todo", null, here);
 
@@ -545,7 +596,7 @@ function reviewStep(f: {
       ? view(
           "review",
           "done",
-          `All ${claims(f.total)} checked over and approved.`,
+          `All ${claims(f.total)} checked over and approved.${approver}`,
           here,
         )
       : view(
@@ -610,6 +661,16 @@ function postStep(f: {
   postedAmountCents: number;
   isPosted: boolean;
   postingFailed: boolean;
+  /**
+   * Posting is switched off for this practice.
+   *
+   * It changes the SENTENCE and never the STATE. The step is still `current` —
+   * the check really is approved and really is waiting — because reading it as
+   * blocked would put a red mark on a rail where nothing is wrong and nothing
+   * is hers to fix. Absent (the default) means the screen did not ask, so
+   * nothing is said either way.
+   */
+  shadowMode?: boolean;
 }): StepView {
   const here = "/rcm/posting";
 
@@ -633,7 +694,9 @@ function postStep(f: {
     return view(
       "post",
       "current",
-      "Ready to post. Nothing has been written to Open Dental yet.",
+      f.shadowMode
+        ? "Switched off while shadow mode is on. Nothing has been written to Open Dental."
+        : "Ready to post. Nothing has been written to Open Dental yet.",
       here,
     );
   }
@@ -831,9 +894,14 @@ export function postStepFor(row: PostingQueueRow): StepView {
       return view(
         "post",
         "done",
-        row.odClaimPaymentNum
-          ? `Open Dental check #${row.odClaimPaymentNum}, confirmed in Open Dental.`
-          : "Posted, and confirmed in Open Dental.",
+        // "Done at <time>" is the evidence behind the tick. `finishedAt` is the
+        // only honest source for it and it is nullable, so the clause is
+        // appended when the server sent one and dropped when it did not.
+        (row.odClaimPaymentNum
+          ? `Open Dental check #${row.odClaimPaymentNum}, confirmed in Open Dental`
+          : "Posted, and confirmed in Open Dental") +
+          (row.finishedAt ? `. Done at ${officeStamp(row.finishedAt, row.office)}` : "") +
+          ".",
         here,
       );
     case "running":

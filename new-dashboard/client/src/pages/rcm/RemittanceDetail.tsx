@@ -298,7 +298,13 @@ export default function RemittanceDetailPage() {
   }
 
   const { remittance: r, claims, office } = state.data;
-  const flow = remittanceFlow(r, claims);
+  /*
+   * The rail is told about the posting switch, so its `post` step can say
+   * "switched off while shadow mode is on" instead of "ready to post" — the
+   * same fact the banner below explains at length, in one line, where the
+   * reader is already looking.
+   */
+  const flow = remittanceFlow(r, claims, { shadowMode });
   /*
    * THIS CHECK'S POSTING, if it has one.
    *
