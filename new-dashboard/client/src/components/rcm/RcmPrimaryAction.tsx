@@ -62,6 +62,27 @@ export default function RcmPrimaryAction({
   testId?: string;
 }) {
   const handler = cta.action ? onAction?.[cta.action] : undefined;
+  /*
+   * W-2 · THE NOTE IS NOT PRINTED TWICE.
+   *
+   * The fallback branch — a verb this page cannot fire and nowhere to send
+   * anybody — renders `cta.note` AS the disabled reason, because the note is the
+   * only honest explanation there is for it. The caption below then printed the
+   * same sentence a second time, one line under itself:
+   *
+   *     Approving happens on the check, where the whole check is approved at once.
+   *     Approving happens on the check, where the whole check is approved at once.
+   *
+   * Reachable today on a reviewed claim opened without `?from=` — a bookmark or
+   * a pasted link, which the claim screen explicitly supports. The combined walk
+   * saw the same shape on the check's Post step (W-2) before S3 gave the header
+   * the only copy of the CTA.
+   *
+   * So the caption is suppressed exactly when the reason above it already IS the
+   * caption. `noteShown` is one boolean rather than a second condition inlined
+   * below, so the two can never drift apart.
+   */
+  const noteIsTheReason = !cta.disabled && !handler && !cta.href;
   const solid =
     "inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-60";
   const dead =
@@ -107,7 +128,7 @@ export default function RcmPrimaryAction({
         </>
       )}
 
-      {!cta.disabled && cta.note && (
+      {!cta.disabled && !noteIsTheReason && cta.note && (
         <span
           className="max-w-xs text-xs text-muted-foreground sm:text-right"
           data-testid={`${testId}-note`}
