@@ -97,8 +97,12 @@ import {
 import { money, stamp } from "@/features/rcm/format";
 import { checkDetail, checkTitle, checkWhy } from "@/features/rcm/checks";
 import { decisionsWithClaim, rollUp, rollUpSentence } from "@/features/rcm/rollup";
+import { standing, standingLine, type ApprovalStanding, type ClaimTicks } from "@/features/rcm/standing";
+import { isTakebackOnly } from "@/features/rcm/takeback";
 import { officeStamp } from "@/features/rcm/time";
 import { useOffice } from "@/contexts/OfficeContext";
+import { elapsedLabel } from "@/lib/odHealth";
+import type { OfficeConfig } from "@/lib/api";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type State =
@@ -109,7 +113,14 @@ type State =
 export default function ApproveCheck() {
   const [, params] = useRoute("/rcm/remittances/:id/approve");
   const batchId = params?.id ?? "";
-  const { office: selected } = useOffice();
+  /*
+   * The roster is already in hand — `OfficeProvider` loads it for the picker on
+   * every page — and it carries each office's last Open Dental probe. That is
+   * the ONLY reason this screen can say anything about reachability: it is a
+   * fact the client already holds, not a read this page invented for a line of
+   * copy. See `OdReachable`.
+   */
+  const { office: selected, offices } = useOffice();
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [approving, setApproving] = useState(false);
@@ -230,10 +241,29 @@ export default function ApproveCheck() {
   const roll = rollUp(p.claims);
   const decisions = decisionsWithClaim(p.claims);
   const verdict = rollUpSentence(roll, money);
+  /**
+   * WHERE THE CHECK STANDS — and the source of BOTH the headline and the ticks.
+   *
+   * W-1: those were two computations. The greyed button chose its sentence from
+   * `postableCount === 0`, which is as true of a finished check as of a blocked
+   * one, and printed "the list above says what each claim is waiting for" over
+   * three claims of green ticks. `standing()` walks the gate's answer once and
+   * reports both, so the two can no longer disagree. See its header.
+   */
+  const st = standing(p.claims);
+  const ticksByClaim = new Map(st.claims.map((c) => [c.claimId, c]));
   /** What the carrier paid, per claim, from the check's own bundle. */
   const paidByClaim = new Map(detail.claims.map((c) => [c.claimId, c.totalPaidCents]));
   /** How many claims nobody has looked for in Open Dental yet. */
   const unmatchedCount = detail.claims.filter((c) => c.odMatchStatus === "not_run").length;
+  /**
+   * W-5. EVERY claim on this check is the carrier taking money back.
+   *
+   * Read off the claims this page already loads — see `features/rcm/takeback.ts`
+   * for what counts and why the predicate is its own rather than borrowed from
+   * `NO_ACTION_REASONS`.
+   */
+  const takebackOnly = isTakebackOnly(detail.claims);
 
   const canPress = p.canApprove && p.postableCount > 0 && p.balanced;
 
@@ -256,442 +286,760 @@ export default function ApproveCheck() {
         {money(r.totalAmountCents)} · {RCM_OFFICE_LABELS[office]}
       </p>
 
-      {/* ═══ 1. THE MONEY, PER PATIENT ═════════════════════════════════════ */}
-      <section className="mt-8" data-testid="approve-rollup">
-        <h2
-          className="text-lg font-semibold tracking-tight text-foreground"
-          style={{ fontFamily: "Sora, sans-serif" }}
-        >
-          What each patient will owe
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          One row per claim, and a total. Every figure here is the same one the claim's own screen
-          shows — this page adds them up and computes nothing of its own.
-        </p>
+      {/*
+        ══════════════════════════════════════════════════════════════════════
+        ARTBOARD I: THE MONEY ON THE LEFT, WHAT THE APP CHECKED ON THE RIGHT
+        ══════════════════════════════════════════════════════════════════════
+        Two columns at a width that can hold them, one under the other below it.
+        `2xl`, not `xl`: the app's sidebar takes ~16rem, so at a 1280 viewport the
+        left column would squeeze the five-column money table (min 46rem) into a
+        horizontal scroll — the one table on this page that must read at a glance.
+        The order of the ARGUMENT is unchanged — money, then what the office
+        absorbed, then the machine's conditions — and so is the reading order on
+        a narrow screen. What the columns buy on a wide one is that the person
+        reading the write-offs can see, beside them, whether anything the gate
+        applied is still failing, without a scroll between the two.
 
-        <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full min-w-[46rem] text-sm">
-            <thead>
-              <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2 text-left font-semibold">Patient</th>
-                <th className="px-3 py-2 text-right font-semibold">Carrier paid</th>
-                <th className="px-3 py-2 text-right font-semibold">Office write-off</th>
-                <th className="px-3 py-2 text-right font-semibold">EOB says</th>
-                <th className="px-3 py-2 text-right font-semibold">Patient will owe</th>
-              </tr>
-            </thead>
-            <tbody>
-              {roll.rows.map((row) => (
-                <tr
-                  key={row.claimId}
-                  className="border-b border-border last:border-b-0"
-                  data-testid={`approve-rollup-row-${row.claimId}`}
-                >
-                  <td className="px-4 py-2">
-                    <div className="text-sm text-foreground">{row.patientName}</div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      #{row.claimNumber}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
-                    {money(paidByClaim.get(row.claimId) ?? 0)}
-                  </td>
-                  {row.verdict ? (
-                    <>
-                      <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
-                        {row.verdict.decidedWriteOffCents === 0
-                          ? "—"
-                          : money(row.verdict.decidedWriteOffCents)}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
-                        {money(row.verdict.eobPatientCents)}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
-                        {money(row.verdict.projectedPatientCents)}
-                      </td>
-                    </>
-                  ) : (
-                    /*
-                     * NOT JUDGED IS NOT ZERO. A claim whose snapshot is in an
-                     * older shape carries no verdict, and printing "$0.00" for
-                     * it would understate what is about to post.
-                     */
-                    <td
-                      className="px-3 py-2 text-right text-xs text-amber-800 dark:text-amber-300"
-                      colSpan={3}
-                      data-testid={`approve-rollup-unjudged-${row.claimId}`}
-                    >
-                      Not judged — open the claim and match it up again
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-border bg-muted/30" data-testid="approve-rollup-total">
-                <td className="px-4 py-2 text-sm font-semibold text-foreground">
-                  {roll.judged} of {roll.rows.length} claim{roll.rows.length === 1 ? "" : "s"}
-                </td>
-                <td className="px-3 py-2" />
-                <td
-                  className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
-                  data-testid="approve-total-writeoff"
-                >
-                  {roll.decidedWriteOffCents === 0 ? "—" : money(roll.decidedWriteOffCents)}
-                </td>
-                <td
-                  className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
-                  data-testid="approve-total-eob"
-                >
-                  {money(roll.eobPatientCents)}
-                </td>
-                <td
-                  className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
-                  data-testid="approve-total-projected"
-                >
-                  {money(roll.projectedPatientCents)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-
-        {roll.unjudged > 0 && (
-          <p
-            className="mt-2 text-xs text-amber-800 dark:text-amber-300"
-            data-testid="approve-unjudged-note"
-          >
-            {roll.unjudged} claim{roll.unjudged === 1 ? "" : "s"} on this check carr
-            {roll.unjudged === 1 ? "ies" : "y"} no patient-responsibility verdict and contribute
-            {roll.unjudged === 1 ? "s" : ""} nothing to the total above. That is a gap in the
-            total, not a zero.
-          </p>
-        )}
-      </section>
-
-      {/* ═══ 2. WHAT THE OFFICE ABSORBED ═══════════════════════════════════ */}
-      <section className="mt-8" data-testid="approve-decisions">
-        <h2
-          className="text-lg font-semibold tracking-tight text-foreground"
-          style={{ fontFamily: "Sora, sans-serif" }}
-        >
-          The lines the office chose to absorb
-        </h2>
-
-        {decisions.length === 0 ? (
-          <p className="mt-1 text-sm text-muted-foreground" data-testid="approve-decisions-none">
-            None. Every patient on this check is being billed exactly what the EOB says they owe.
-          </p>
-        ) : (
-          <>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Each of these is money this practice is choosing not to collect. Whoever recorded the
-              decision is named beside it, because pressing the button below is accepting their
-              judgement as well as your own.
+        The per-claim lists and the button stay FULL WIDTH underneath: a
+        condition list per claim is long, and squeezing it into a side column
+        would push the one press on this page below everything.
+      */}
+      <div
+        className="mt-8 grid items-start gap-8 2xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]"
+        data-testid="approve-columns"
+      >
+        <div className="min-w-0">
+          {/* ═══ 1. THE MONEY, PER PATIENT ═════════════════════════════════════ */}
+          <section data-testid="approve-rollup">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              What each patient will owe
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              One row per claim, and a total. Every figure here is the same one the claim's own screen
+              shows — this page adds them up and computes nothing of its own.
             </p>
-            <div className="mt-3 overflow-x-auto rounded-xl border border-amber-200 bg-amber-50/40 dark:border-amber-900/60 dark:bg-amber-950/15">
-              <table className="w-full min-w-[44rem] text-sm">
+
+            <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-card">
+              <table className="w-full min-w-[46rem] text-sm">
                 <thead>
-                  <tr className="border-b border-amber-200 text-xs uppercase tracking-wide text-muted-foreground dark:border-amber-900/60">
+                  <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-2 text-left font-semibold">Patient</th>
-                    <th className="px-3 py-2 text-left font-semibold">Line</th>
-                    <th className="px-3 py-2 text-right font-semibold">Amount</th>
-                    <th className="px-3 py-2 text-left font-semibold">Reason</th>
-                    <th className="px-3 py-2 text-left font-semibold">Decided by</th>
+                    <th className="px-3 py-2 text-right font-semibold">Carrier paid</th>
+                    <th className="px-3 py-2 text-right font-semibold">Office write-off</th>
+                    <th className="px-3 py-2 text-right font-semibold">EOB says</th>
+                    <th className="px-3 py-2 text-right font-semibold">Patient will owe</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {decisions.map((d, i) => (
+                  {roll.rows.map((row) => (
                     <tr
-                      key={`${d.claimNumber}-${d.decision.lineId ?? i}`}
-                      className="border-b border-amber-200/60 last:border-b-0 dark:border-amber-900/40"
-                      data-testid={`approve-decision-${d.decision.lineId ?? i}`}
+                      key={row.claimId}
+                      className="border-b border-border last:border-b-0"
+                      data-testid={`approve-rollup-row-${row.claimId}`}
                     >
-                      <td className="px-4 py-2 text-sm text-foreground">{d.patientName}</td>
-                      <td className="px-3 py-2 font-mono text-sm text-foreground">
-                        {d.decision.code}
+                      <td className="px-4 py-2">
+                        <div className="text-sm text-foreground">{row.patientName}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          #{row.claimNumber}
+                        </div>
                       </td>
-                      <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-foreground">
-                        {money(d.decision.amountCents)}
+                      <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
+                        {money(paidByClaim.get(row.claimId) ?? 0)}
                       </td>
-                      <td className="px-3 py-2 text-sm text-foreground">
-                        {/* The server's own label for the slug. A reason it
-                            cannot label renders as the slug, which is a bug
-                            report rather than a bug nobody notices. */}
-                        {d.decision.reasonLabel ?? d.decision.reason ?? (
-                          <span className="text-rose-700 dark:text-rose-400">
-                            nothing recorded
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">
-                        {/*
-                          A NAME AND AN INSTANT. This is the half that makes the
-                          reviewer/approver split honest — see the header.
-                        */}
-                        {d.decision.decidedBy ?? "not recorded"}
-                        {d.decision.decidedAt
-                          ? ` · ${officeStamp(d.decision.decidedAt, office)}`
-                          : ""}
-                      </td>
+                      {row.verdict ? (
+                        <>
+                          <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
+                            {row.verdict.decidedWriteOffCents === 0
+                              ? "—"
+                              : money(row.verdict.decidedWriteOffCents)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
+                            {money(row.verdict.eobPatientCents)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
+                            {money(row.verdict.projectedPatientCents)}
+                          </td>
+                        </>
+                      ) : (
+                        /*
+                         * NOT JUDGED IS NOT ZERO. A claim whose snapshot is in an
+                         * older shape carries no verdict, and printing "$0.00" for
+                         * it would understate what is about to post.
+                         */
+                        <td
+                          className="px-3 py-2 text-right text-xs text-amber-800 dark:text-amber-300"
+                          colSpan={3}
+                          data-testid={`approve-rollup-unjudged-${row.claimId}`}
+                        >
+                          Not judged — open the claim and match it up again
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-border bg-muted/30" data-testid="approve-rollup-total">
+                    <td className="px-4 py-2 text-sm font-semibold text-foreground">
+                      {roll.judged} of {roll.rows.length} claim{roll.rows.length === 1 ? "" : "s"}
+                    </td>
+                    <td className="px-3 py-2" />
+                    <td
+                      className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
+                      data-testid="approve-total-writeoff"
+                    >
+                      {roll.decidedWriteOffCents === 0 ? "—" : money(roll.decidedWriteOffCents)}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
+                      data-testid="approve-total-eob"
+                    >
+                      {money(roll.eobPatientCents)}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground"
+                      data-testid="approve-total-projected"
+                    >
+                      {money(roll.projectedPatientCents)}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground" data-testid="approve-freeze-note">
-              Approving is what freezes these decisions — up until then any of them can be changed
-              on the claim's own screen. Afterwards a correction is a job for Open Dental.
-            </p>
-          </>
-        )}
-      </section>
 
-      {/* ═══ 3. WHAT THE APP CHECKED ═══════════════════════════════════════ */}
-      <section className="mt-8" data-testid="approve-checks">
-        <h2
-          className="text-lg font-semibold tracking-tight text-foreground"
-          style={{ fontFamily: "Sora, sans-serif" }}
-        >
-          What the app checked
-        </h2>
-        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Every condition, per claim, run before anything is pressed — so a claim that will be held
-          back is one you can go and fix rather than one you discover by pressing a button.
-        </p>
+            {roll.unjudged > 0 && (
+              <p
+                className="mt-2 text-xs text-amber-800 dark:text-amber-300"
+                data-testid="approve-unjudged-note"
+              >
+                {roll.unjudged} claim{roll.unjudged === 1 ? "" : "s"} on this check carr
+                {roll.unjudged === 1 ? "ies" : "y"} no patient-responsibility verdict and contribute
+                {roll.unjudged === 1 ? "s" : ""} nothing to the total above. That is a gap in the
+                total, not a zero.
+              </p>
+            )}
+          </section>
 
-        {/*
-          RUN THE MATCH FIRST — §15.2's third finding.
-          On a fresh check most of the ✗ marks below clear on one press, and the
-          walk showed somebody reading all of them before finding it. One line,
-          only while it is true, with the way to it in it.
-
-          It LINKS rather than acting: Match all claims lives on the check, and a
-          second control that ran the same Open Dental-heavy sweep from a second
-          page is exactly the duplication this stage is removing.
-        */}
-        {unmatchedCount > 0 && (
-          <div
-            className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm"
-            data-testid="approval-match-first"
-          >
-            <span className="text-foreground">
-              <strong className="font-semibold">Match it up first</strong> — most of these clear on
-              their own. {unmatchedCount} claim{unmatchedCount === 1 ? " has" : "s have"} not been
-              looked for in Open Dental yet.
-            </span>
-            <Link
-              href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
-              data-testid="approval-run-match"
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          {/* ═══ 2. WHAT THE OFFICE ABSORBED ═══════════════════════════════════ */}
+          <section className="mt-8" data-testid="approve-decisions">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
             >
-              Match all claims on the check
-              <ChevronRight size={11} />
-            </Link>
-          </div>
-        )}
+              {/*
+                THE COUNT IN THE HEADING, because it is the first thing somebody
+                accepting another person's write-offs needs to know: how many she
+                is about to put her name under. Zero keeps the plain heading and
+                says "None." underneath — "The 0 lines" is not a sentence.
+              */}
+              {decisions.length === 0
+                ? "The lines the office chose to absorb"
+                : decisions.length === 1
+                  ? "The one line the office chose to absorb"
+                  : `The ${decisions.length} lines the office chose to absorb`}
+            </h2>
 
-        <div className="mt-3 divide-y divide-border rounded-xl border border-border bg-card">
-          {p.claims.map((claim) => (
-            <ClaimChecklist key={claim.claimId} claim={claim} batchId={batchId} />
-          ))}
-        </div>
-      </section>
-
-      {/* ═══ THE VERDICT, THE BUTTON, AND THE LAST WORD ════════════════════ */}
-      <section className="mt-8 rounded-xl border-2 border-border bg-card p-5" data-testid="approve-decide">
-        <p
-          className={`text-base font-medium ${
-            verdict.canApprove ? "text-foreground" : "text-rose-700 dark:text-rose-400"
-          }`}
-          data-testid="approve-verdict-sentence"
-        >
-          {verdict.sentence}
-        </p>
-        {/* THE REGISTER, SAID OUT LOUD. Before a post this is a PROJECTION and
-            may never wear a confirmation's words. See `rollUpSentence`. */}
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-verdict-register">
-          That is what this check says will happen. It becomes a measured figure only after the
-          money is in Open Dental and CareIN has asked the chart what the patient owes.
-        </p>
-
-        <p className="mt-3 text-sm text-muted-foreground" data-testid="approve-counts">
-          {p.postableCount} of {p.claims.length} claim{p.claims.length === 1 ? "" : "s"} can be
-          approved
-          {p.withheldCount > 0 ? ` · ${p.withheldCount} not ready yet` : ""}
-          {p.queuedCount > 0 ? ` · ${p.queuedCount} already approved` : ""}
-        </p>
-
-        {error && (
-          <div
-            className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
-            data-testid="approve-error"
-          >
-            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-            <div>
-              <div>{error}</div>
-              {refused.length > 0 && (
-                <ul className="mt-1 space-y-0.5 text-xs">
-                  {refused
-                    .filter((c) => !c.postable)
-                    .map((c) => (
-                      <li key={c.claimId}>
-                        {c.patientName} · #{c.claimNumber} —{" "}
-                        {c.alreadyQueued ? "already approved" : c.failed.join(", ")}
-                      </li>
-                    ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
-
-        {result && (
-          <div
-            className="mt-3 rounded-md border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-sm dark:border-emerald-900 dark:bg-emerald-950/20"
-            data-testid="approve-result"
-          >
-            <div className="flex items-center gap-2 font-medium text-foreground">
-              <Check size={15} className="text-emerald-600 dark:text-emerald-400" />
-              {result.queued.length} claim{result.queued.length === 1 ? "" : "s"} approved —{" "}
-              {money(result.intendedTotalCents)}
-            </div>
-            {/* THE SERVER'S OWN SENTENCE, not a paraphrase of it. It is exactly
-                true today and the place that changes it should be the place that
-                knows. */}
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-honest-state">
-              {result.note}
-            </p>
-            {/*
-              PARTIAL SUCCESS IS REAL SUCCESS — and the half that did NOT go is
-              named, per claim, with every condition that stopped it. A result
-              that reported only the queued half would make a nine-of-ten
-              approve look like a ten-of-ten one.
-            */}
-            {result.withheld.length > 0 && (
-              <div className="mt-3" data-testid="approve-withheld">
-                <div className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                  Not ready yet — {result.withheld.length} claim
-                  {result.withheld.length === 1 ? " was" : "s were"} left off
+            {decisions.length === 0 ? (
+              <p className="mt-1 text-sm text-muted-foreground" data-testid="approve-decisions-none">
+                None. Every patient on this check is being billed exactly what the EOB says they owe.
+              </p>
+            ) : (
+              <>
+                <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+                  Each of these is money this practice is choosing not to collect. Whoever recorded the
+                  decision is named beside it, because pressing the button below is accepting their
+                  judgement as well as your own.
+                </p>
+                <div className="mt-3 overflow-x-auto rounded-xl border border-amber-200 bg-amber-50/40 dark:border-amber-900/60 dark:bg-amber-950/15">
+                  <table className="w-full min-w-[44rem] text-sm">
+                    <thead>
+                      <tr className="border-b border-amber-200 text-xs uppercase tracking-wide text-muted-foreground dark:border-amber-900/60">
+                        <th className="px-4 py-2 text-left font-semibold">Patient</th>
+                        <th className="px-3 py-2 text-left font-semibold">Line</th>
+                        <th className="px-3 py-2 text-right font-semibold">Amount</th>
+                        <th className="px-3 py-2 text-left font-semibold">Reason</th>
+                        <th className="px-3 py-2 text-left font-semibold">Decided by</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {decisions.map((d, i) => (
+                        <tr
+                          key={`${d.claimNumber}-${d.decision.lineId ?? i}`}
+                          className="border-b border-amber-200/60 last:border-b-0 dark:border-amber-900/40"
+                          data-testid={`approve-decision-${d.decision.lineId ?? i}`}
+                        >
+                          <td className="px-4 py-2 text-sm text-foreground">{d.patientName}</td>
+                          <td className="px-3 py-2 font-mono text-sm text-foreground">
+                            {d.decision.code}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-foreground">
+                            {money(d.decision.amountCents)}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-foreground">
+                            {/* The server's own label for the slug. A reason it
+                                cannot label renders as the slug, which is a bug
+                                report rather than a bug nobody notices. */}
+                            {d.decision.reasonLabel ?? d.decision.reason ?? (
+                              <span className="text-rose-700 dark:text-rose-400">
+                                nothing recorded
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">
+                            {/*
+                              A NAME AND AN INSTANT. This is the half that makes the
+                              reviewer/approver split honest — see the header.
+                            */}
+                            {d.decision.decidedBy ?? "not recorded"}
+                            {d.decision.decidedAt
+                              ? ` · ${officeStamp(d.decision.decidedAt, office)}`
+                              : ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-                <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
-                  {result.withheld.map((w) => (
-                    <li key={w.claimId}>
-                      <span className="text-foreground">{w.patientName}</span> · #{w.claimNumber}
-                      <ul className="ml-3 list-disc">
-                        {w.checks
-                          .filter((c) => !c.passed)
-                          .map((c) => (
-                            <li key={c.code}>
-                              {c.label}
-                              {c.detail ? ` — ${c.detail}` : ""}
-                            </li>
-                          ))}
-                      </ul>
+                <p className="mt-2 text-xs text-muted-foreground" data-testid="approve-freeze-note">
+                  Approving is what freezes these decisions — up until then any of them can be changed
+                  on the claim's own screen. Afterwards a correction is a job for Open Dental.
+                </p>
+              </>
+            )}
+          </section>
+        </div>
+
+        <div className="min-w-0">
+          {/*
+            ══════════════════════════════════════════════════════════════════════
+            W-5 · EVERY CLAIM HERE IS A TAKEBACK, SO THIS PAGE HAS NOTHING TO OFFER
+            ══════════════════════════════════════════════════════════════════════
+            The ordinary approve gate refuses a takeback by construction and always
+            will — authorising one means typing its amount on its own panel (D-6).
+            A check whose every claim is a reversal therefore renders, on this page,
+            a list of failing conditions with an instruction under each, none of
+            which can ever clear, because the whole check belongs to a different
+            control on a different screen.
+
+            The combined walk watched that happen and called it W-5. So a
+            takeback-only check gets ONE sentence and ONE way out, and the failure
+            list is not drawn at all: a wall of red a person cannot act on teaches
+            her that red here does not mean anything.
+
+            A MIXED check keeps every word of the old behaviour. It has claims that
+            can be approved normally, and the list is exactly what she needs for
+            them — see `isTakebackOnly`.
+          */}
+          {takebackOnly && (
+            <section
+              className="rounded-xl border-2 border-amber-400 bg-amber-50/60 p-5 dark:border-amber-800 dark:bg-amber-950/25"
+              data-testid="approve-takeback-only"
+            >
+              <p className="text-base font-medium text-foreground" data-testid="approve-takeback-line">
+                {detail.claims.length === 1
+                  ? "The one claim on this check is the carrier taking money back, and a takeback is never approved here — it is authorised on the check itself, by typing the amount."
+                  : `All ${detail.claims.length} claims on this check are the carrier taking money back, and a takeback is never approved here — it is authorised on the check itself, by typing the amount.`}
+              </p>
+              <Link
+                href={`/rcm/remittances/${encodeURIComponent(batchId)}#takeback`}
+                data-testid="approve-takeback-go"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-foreground px-4 py-2 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+              >
+                Take me to the takeback
+                <ChevronRight size={13} />
+              </Link>
+            </section>
+          )}
+
+          {/* ═══ 3. WHAT THE APP CHECKED ═══════════════════════════════════════ */}
+          {!takebackOnly && (
+            <section data-testid="approve-checks">
+              <h2
+                className="text-lg font-semibold tracking-tight text-foreground"
+                style={{ fontFamily: "Sora, sans-serif" }}
+              >
+                What the app checked
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Every condition the gate applied, across{" "}
+                {st.total === 1 ? "the one claim" : `all ${st.total} claims`}, run before anything is
+                pressed — so a claim that will be held back is one you can go and fix rather than one you
+                discover by pressing a button. Which claim each one is about is below.
+              </p>
+
+              {/*
+                ══════════════════════════════════════════════════════════════════════
+                THE CHECKLIST IS THE GATE'S OWN CONDITIONS. THERE IS NO SECOND LIST.
+                ══════════════════════════════════════════════════════════════════════
+                `standing()` builds these rows by walking the checks the SERVER sent on
+                each claim of THIS check. Nothing here enumerates conditions: a code
+                the response does not carry does not appear, and one it carries that
+                this build has never seen appears under the gate's own label.
+
+                That rule is the whole point. A hardcoded checklist is a list of
+                promises about what was verified, and the day the gate stops applying
+                one of them the screen goes on promising it — on the last page before
+                an irreversible press, which is the worst place in this product for a
+                reassurance to be stale.
+
+                It is a ROLL-UP, not a replacement: the per-claim lists below are
+                unchanged and still say which claim each failure is on. This says how
+                each condition stands across the whole check, which is the question
+                somebody about to approve all of it is actually asking.
+              */}
+              <OdReachable office={office} offices={offices} />
+
+              {st.conditions.length > 0 && (
+                <ul
+                  className="mt-3 divide-y divide-border rounded-xl border border-border bg-card"
+                  data-testid="approve-conditions"
+                >
+                  {st.conditions.map((c) => (
+                    <li
+                      key={c.code}
+                      className="flex items-start gap-2 px-4 py-2 text-xs"
+                      data-testid={`approve-condition-${c.code}`}
+                      data-passed={c.passed ? "true" : "false"}
+                    >
+                      {c.passed ? (
+                        <Check
+                          size={13}
+                          className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+                        />
+                      ) : (
+                        <X size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      )}
+                      <div className={c.passed ? "text-muted-foreground" : "text-foreground"}>
+                        <span className={c.passed ? "" : "font-medium"}>{checkTitle(c.sample)}</span>
+                        <span className="text-muted-foreground">
+                          {" — "}
+                          {checkDetail(c.sample)}
+                        </span>
+                        {/*
+                          WHO IT FAILED ON. A condition marked ✗ across a twelve-claim
+                          check is unactionable until it says which claims — and the
+                          per-claim lists below are where she fixes it, so this names
+                          them rather than repeating their conditions.
+                        */}
+                        {!c.passed && (
+                          <p
+                            className="mt-0.5 text-muted-foreground"
+                            data-testid={`approve-condition-who-${c.code}`}
+                          >
+                            {c.failedClaims} of {c.passedClaims + c.failedClaims} claim
+                            {c.passedClaims + c.failedClaims === 1 ? "" : "s"} —{" "}
+                            {c.failedOn.map((f) => `${f.patientName} #${f.claimNumber}`).join(", ")}
+                          </p>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
+
+      {!takebackOnly && (
+        <>
+          {/* ═══ CLAIM BY CLAIM — where each failure is fixed ═══════════════════ */}
+          <section className="mt-8" data-testid="approve-claims">
+            <h2
+              className="text-lg font-semibold tracking-tight text-foreground"
+              style={{ fontFamily: "Sora, sans-serif" }}
+            >
+              Claim by claim
+            </h2>
+            {/*
+              RUN THE MATCH FIRST — §15.2's third finding.
+              On a fresh check most of the ✗ marks below clear on one press, and the
+              walk showed somebody reading all of them before finding it. One line,
+              only while it is true, with the way to it in it.
+
+              It LINKS rather than acting: Match all claims lives on the check, and a
+              second control that ran the same Open Dental-heavy sweep from a second
+              page is exactly the duplication this stage is removing.
+            */}
+            {unmatchedCount > 0 && (
+              <div
+                className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm"
+                data-testid="approval-match-first"
+              >
+                <span className="text-foreground">
+                  <strong className="font-semibold">Match it up first</strong> — most of these clear on
+                  their own. {unmatchedCount} claim{unmatchedCount === 1 ? " has" : "s have"} not been
+                  looked for in Open Dental yet.
+                </span>
+                <Link
+                  href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                  data-testid="approval-run-match"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                >
+                  Match all claims on the check
+                  <ChevronRight size={11} />
+                </Link>
               </div>
             )}
 
-            {/*
-              A PERSON'S NAME, NOT AN ADDRESS — and the SERVER says so now.
+            <div className="mt-3 divide-y divide-border rounded-xl border border-border bg-card">
+              {p.claims.map((claim) => (
+                <ClaimChecklist
+                  key={claim.claimId}
+                  claim={claim}
+                  /*
+                    THE TICKS COME FROM `standing()`, THE SAME CALL THE HEADLINE
+                    CAME FROM — W-1's test pin. This row's chip used to count
+                    `claim.checks.filter(...)` on its own, which agreed with the
+                    sentence under the button by coincidence rather than by
+                    construction.
+                  */
+                  ticks={ticksByClaim.get(claim.claimId) ?? null}
+                  batchId={batchId}
+                />
+              ))}
+            </div>
+          </section>
 
-              C-3 resolved this in the browser, because the route returned the
-              crosswalk key (an email, for anyone the platform minted a row for)
-              and the only case a client could answer honestly was the signed-in
-              person's own. C-3b item 2 moved it to where it belongs: `/approve`
-              runs `describeActors` like every other attributed field in the
-              module, so `approvedBy` arrives already spelled the way a person
-              says it — for colleagues too, not just for whoever is looking.
-
-              So this prints what the server sent. `personName` is deliberately
-              NOT called here any more; it stays in format.ts for the responses
-              that still send a key.
-            */}
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-attribution">
-              Approved by {result.approvedBy} · {stamp(new Date().toISOString())}
+          {/* ═══ THE VERDICT, THE BUTTON, AND THE LAST WORD ════════════════════ */}
+          <section className="mt-8 rounded-xl border-2 border-border bg-card p-5" data-testid="approve-decide">
+            <p
+              className={`text-base font-medium ${
+                verdict.canApprove ? "text-foreground" : "text-rose-700 dark:text-rose-400"
+              }`}
+              data-testid="approve-verdict-sentence"
+            >
+              {verdict.sentence}
             </p>
-            <Link
-              href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
-              data-testid="approve-back-after"
-              className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
-            >
-              Back to the check
-              <ChevronRight size={13} />
-            </Link>
-          </div>
-        )}
+            {/* THE REGISTER, SAID OUT LOUD. Before a post this is a PROJECTION and
+                may never wear a confirmation's words. See `rollUpSentence`. */}
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-verdict-register">
+              That is what this check says will happen. It becomes a measured figure only after the
+              money is in Open Dental and CareIN has asked the chart what the patient owes.
+            </p>
 
-        {!result && (
-          <div className="mt-4 flex flex-col items-start gap-1">
-            <button
-              onClick={onApprove}
-              disabled={!canPress || approving}
-              data-testid="approve-button"
-              className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
-                canPress
-                  ? "bg-foreground text-background hover:bg-foreground/90"
-                  : "cursor-not-allowed bg-foreground/10 text-muted-foreground"
-              } disabled:opacity-60`}
-            >
-              {approving ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : p.canApprove ? (
-                <ShieldCheck size={15} />
-              ) : (
-                <Lock size={15} />
-              )}
-              {approving
-                ? "Approving…"
-                : p.postableCount > 0
-                  ? `Yes — approve ${p.postableCount} claim${p.postableCount === 1 ? "" : "s"}`
-                  : "Approve this check"}
-            </button>
+            <p className="mt-3 text-sm text-muted-foreground" data-testid="approve-counts">
+              {p.postableCount} of {p.claims.length} claim{p.claims.length === 1 ? "" : "s"} can be
+              approved
+              {p.withheldCount > 0 ? ` · ${p.withheldCount} not ready yet` : ""}
+              {p.queuedCount > 0 ? ` · ${p.queuedCount} already approved` : ""}
+            </p>
 
-            {/* WHY IT CANNOT BE PRESSED — always, specifically, and RENDERED
-                rather than hovered: the practice reads these screens on a tablet
-                at the front desk, where there is no hover. */}
-            {!p.canApprove ? (
-              <DisabledReason testId="approve-needs-permission">
-                Approving needs posting permission ({p.approveRequires}). Ask an approver to press
-                it — they will see this same page.
-              </DisabledReason>
-            ) : !p.balanced ? (
-              <DisabledReason tone="warn" testId="approve-unbalanced">
-                This check does not balance — {money(p.differenceCents)} unaccounted. Nothing on it
-                can be approved until that is sorted out.
-              </DisabledReason>
-            ) : p.postableCount === 0 ? (
-              <DisabledReason testId="approve-nothing-postable">
-                Nothing on this check can be approved yet — the list above says what each claim is
-                waiting for.
-              </DisabledReason>
-            ) : approving ? (
-              <DisabledReason testId="approve-in-flight">
-                Approving — this lines the check up to post; it writes no chart note.
-              </DisabledReason>
-            ) : (
-              <span className="text-xs text-muted-foreground">
-                Lines this check up to post. Nothing reaches Open Dental until somebody presses
-                Post to Open Dental on the check itself.
-              </span>
+            {error && (
+              <div
+                className="mt-3 flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                data-testid="approve-error"
+              >
+                <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                <div>
+                  <div>{error}</div>
+                  {refused.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-xs">
+                      {refused
+                        .filter((c) => !c.postable)
+                        .map((c) => (
+                          <li key={c.claimId}>
+                            {c.patientName} · #{c.claimNumber} —{" "}
+                            {c.alreadyQueued ? "already approved" : c.failed.join(", ")}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             )}
 
-            <p className="mt-3 text-sm font-medium text-foreground" data-testid="approve-last-moment">
-              This is the last moment anything can be changed.
-            </p>
-            <Link
-              href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
-              data-testid="approve-go-back"
-              className="text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
-            >
-              Take me back to the check without approving
-            </Link>
-          </div>
-        )}
-      </section>
+            {result && (
+              <div
+                className="mt-3 rounded-md border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-sm dark:border-emerald-900 dark:bg-emerald-950/20"
+                data-testid="approve-result"
+              >
+                <div className="flex items-center gap-2 font-medium text-foreground">
+                  <Check size={15} className="text-emerald-600 dark:text-emerald-400" />
+                  {result.queued.length} claim{result.queued.length === 1 ? "" : "s"} approved —{" "}
+                  {money(result.intendedTotalCents)}
+                </div>
+                {/* THE SERVER'S OWN SENTENCE, not a paraphrase of it. It is exactly
+                    true today and the place that changes it should be the place that
+                    knows. */}
+                <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-honest-state">
+                  {result.note}
+                </p>
+                {/*
+                  PARTIAL SUCCESS IS REAL SUCCESS — and the half that did NOT go is
+                  named, per claim, with every condition that stopped it. A result
+                  that reported only the queued half would make a nine-of-ten
+                  approve look like a ten-of-ten one.
+                */}
+                {result.withheld.length > 0 && (
+                  <div className="mt-3" data-testid="approve-withheld">
+                    <div className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                      Not ready yet — {result.withheld.length} claim
+                      {result.withheld.length === 1 ? " was" : "s were"} left off
+                    </div>
+                    <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+                      {result.withheld.map((w) => (
+                        <li key={w.claimId}>
+                          <span className="text-foreground">{w.patientName}</span> · #{w.claimNumber}
+                          <ul className="ml-3 list-disc">
+                            {w.checks
+                              .filter((c) => !c.passed)
+                              .map((c) => (
+                                <li key={c.code}>
+                                  {c.label}
+                                  {c.detail ? ` — ${c.detail}` : ""}
+                                </li>
+                              ))}
+                          </ul>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/*
+                  A PERSON'S NAME, NOT AN ADDRESS — and the SERVER says so now.
+
+                  C-3 resolved this in the browser, because the route returned the
+                  crosswalk key (an email, for anyone the platform minted a row for)
+                  and the only case a client could answer honestly was the signed-in
+                  person's own. C-3b item 2 moved it to where it belongs: `/approve`
+                  runs `describeActors` like every other attributed field in the
+                  module, so `approvedBy` arrives already spelled the way a person
+                  says it — for colleagues too, not just for whoever is looking.
+
+                  So this prints what the server sent. `personName` is deliberately
+                  NOT called here any more; it stays in format.ts for the responses
+                  that still send a key.
+                */}
+                <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-attribution">
+                  Approved by {result.approvedBy} · {stamp(new Date().toISOString())}
+                </p>
+                <Link
+                  href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                  data-testid="approve-back-after"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+                >
+                  Back to the check
+                  <ChevronRight size={13} />
+                </Link>
+              </div>
+            )}
+
+            {!result && (
+              <div className="mt-4 flex flex-col items-start gap-1">
+                <button
+                  onClick={onApprove}
+                  disabled={!canPress || approving}
+                  data-testid="approve-button"
+                  className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
+                    canPress
+                      ? "bg-foreground text-background hover:bg-foreground/90"
+                      : "cursor-not-allowed bg-foreground/10 text-muted-foreground"
+                  } disabled:opacity-60`}
+                >
+                  {approving ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : p.canApprove ? (
+                    <ShieldCheck size={15} />
+                  ) : (
+                    <Lock size={15} />
+                  )}
+                  {/*
+                    ONE SENTENCE, AND IT IS THE ANSWER TO A QUESTION.
+
+                    The page asks *"Before you say yes."* and this is yes. It
+                    carries no count, deliberately: the count is on
+                    `approve-counts` three lines above, in a line that also says
+                    what is being left off, and putting a number on the button
+                    made the press read as an arithmetic result rather than as
+                    an endorsement of everything on this page.
+                  */}
+                  {approving ? "Approving…" : "Yes — this check is right"}
+                </button>
+
+                {/* WHY IT CANNOT BE PRESSED — always, specifically, and RENDERED
+                    rather than hovered: the practice reads these screens on a tablet
+                    at the front desk, where there is no hover. */}
+                {!p.canApprove ? (
+                  <DisabledReason testId="approve-needs-permission">
+                    Approving needs posting permission ({p.approveRequires}). Ask an approver to press
+                    it — they will see this same page.
+                  </DisabledReason>
+                ) : !p.balanced ? (
+                  <DisabledReason tone="warn" testId="approve-unbalanced">
+                    This check does not balance — {money(p.differenceCents)} unaccounted. Nothing on it
+                    can be approved until that is sorted out.
+                  </DisabledReason>
+                ) : p.postableCount === 0 ? (
+                  /*
+                    W-1. THE SENTENCE COMES FROM `standing()`, NOT FROM A COUNT.
+
+                    `postableCount === 0` is true of a blocked check and equally
+                    true of a finished one, and this branch used to print the
+                    blocked sentence for both — under three claims of green
+                    ticks, on the walk that found it. `standingLine` is a total
+                    function over the four states, so the two cannot collapse
+                    again, and it reads the SAME walk of the SAME claims the
+                    ticks above came out of.
+                  */
+                  <DisabledReason
+                    testId={
+                      st.state === "all_approved"
+                        ? "approve-already-approved"
+                        : "approve-nothing-postable"
+                    }
+                  >
+                    {standingLine(st) ?? "Nothing on this check can be approved yet."}
+                  </DisabledReason>
+                ) : approving ? (
+                  <DisabledReason testId="approve-in-flight">
+                    Approving — this lines the check up to post; it writes no chart note.
+                  </DisabledReason>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    Lines this check up to post. Nothing reaches Open Dental until somebody presses
+                    Post to Open Dental on the check itself.
+                  </span>
+                )}
+
+                {/*
+                  W-1's OTHER HALF: A FINISHED CHECK NEEDS A WAY FORWARD.
+
+                  On the walk, a check with every claim approved left the reader
+                  on a dead page: a greyed button, a sentence that was wrong, and
+                  no route onward, so she left and hunted for the Posting screen.
+                  Rendered ONLY in the one state where it is true, and it points
+                  at the check's own page, where the Post step already is —
+                  there is no second place to post one check.
+                */}
+                {st.state === "all_approved" && (
+                  <Link
+                    href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                    data-testid="approve-onward-post"
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+                  >
+                    Take me to the check to post it
+                    <ChevronRight size={13} />
+                  </Link>
+                )}
+
+                {/*
+                  ── AND THE WAY BACK, AS A CONTROL RATHER THAN A LINK ─────────
+                  A secondary button beside the primary one: the two are the two
+                  answers to the question in the headline, and the page should
+                  not make the second one look like a footnote to the first.
+
+                  ─────────────────────────────────────────────────────────────
+                  NEITHER THIS NOR THE CAPTION RENDERS ON A FINISHED CHECK
+                  ─────────────────────────────────────────────────────────────
+                  When every claim is already approved, approving has ALREADY
+                  frozen the decisions (D-14) — so "go back and change something"
+                  offers a change nothing on the claim screens will accept, and
+                  "this is the last moment anything can be changed" describes a
+                  moment that has passed. That is W-1's defect in a second
+                  sentence: a static caption that cannot tell a blocked check
+                  from a done one. The way forward above replaces both, and the
+                  breadcrumb at the top is still the way back.
+                */}
+                {st.state !== "all_approved" && (
+                  <>
+                    <Link
+                      href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                      data-testid="approve-go-back"
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      <ArrowLeft size={14} />
+                      Go back and change something
+                    </Link>
+
+                    {/*
+                      THE CAPTION UNDER BOTH, AND IT SAYS WHAT THE PRESS COSTS.
+
+                      W-1's other half: the sentence now names the step on the
+                      other side of it, so somebody who says yes knows where the
+                      check goes next rather than finding out by hunting for the
+                      Posting screen.
+                    */}
+                    <p
+                      className="mt-2 text-sm font-medium text-foreground"
+                      data-testid="approve-last-moment"
+                    >
+                      This is the last moment anything can be changed. After it, the decisions are
+                      frozen and the check moves to Post.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * "Open Dental is reachable — answered 3m ago."
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT IS THE ONE LINE HERE THAT IS NOT ONE OF THE GATE'S CONDITIONS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The gate does not probe Open Dental. It reads what a match stored, judges it,
+ * and refuses; whether the practice's server is answering right now is a
+ * separate question with a separate answer, and it is the question somebody
+ * about to approve a check actually has — because the posting that follows is
+ * the step that needs the chart to be there.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT COSTS NOTHING, AND THAT IS WHY IT IS ALLOWED TO BE HERE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `OfficeProvider` already loads the roster for the office picker on every
+ * screen, and each entry carries its office's last probe (`odHealth`). So this
+ * renders a fact the browser is ALREADY holding. It fires no request, and if it
+ * had needed one it would not have been built: a reassurance is not worth an
+ * Open Dental call on the page before an approval, and RCM shares one credential
+ * slot with the voice module (D-8).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "NOT ASKED YET" RENDERS AS NOTHING, NEVER AS "FINE"
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Before the first probe lands there is no freshness fact to state, so there is
+ * no line — the same rule `lib/odHealth.ts` holds for the picker. A green line
+ * asserting reachability the client never observed would be exactly the kind of
+ * comfort this module keeps deleting.
+ */
+function OdReachable({ office, offices }: { office: RcmOfficeId; offices: OfficeConfig[] }) {
+  const entry = offices.find((o) => o.officeId === office);
+  const health = entry?.odHealth ?? null;
+  if (!health || health.status === "unknown") return null;
+
+  const answered = elapsedLabel(health.lastCheckedAt);
+  const down = health.status === "down";
+
+  return (
+    <p
+      className={`mt-3 flex items-start gap-2 rounded-lg border px-4 py-2 text-xs ${
+        down
+          ? "border-amber-300 bg-amber-50/60 text-amber-900 dark:border-amber-900 dark:bg-amber-950/25 dark:text-amber-300"
+          : "border-border bg-card text-muted-foreground"
+      }`}
+      data-testid="approve-od-reachable"
+      data-status={health.status}
+    >
+      {down ? (
+        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+      ) : (
+        <Check size={13} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      )}
+      <span>
+        {down
+          ? "Open Dental is not answering this practice right now. Approving still works — nothing here touches a chart — but the check cannot be posted until it is back."
+          : `Open Dental is reachable${answered ? ` — answered ${answered} ago` : ""}.`}
+      </span>
+    </p>
   );
 }
 
@@ -732,12 +1080,28 @@ function BackToCheck({ batchId }: { batchId: string }) {
  * list every condition when opened: on those two there is no failure to lead
  * with, and the full list IS the content.
  */
-function ClaimChecklist({ claim, batchId }: { claim: ApprovalClaim; batchId: string }) {
+function ClaimChecklist({
+  claim,
+  ticks,
+  batchId,
+}: {
+  claim: ApprovalClaim;
+  /**
+   * This claim's row out of `standing()`. Null only if a caller ever renders a
+   * claim the walk did not see, which this page cannot do — the counts then
+   * fall back to the rows actually rendered rather than printing nothing.
+   */
+  ticks: ClaimTicks | null;
+  batchId: string;
+}) {
   const [open, setOpen] = useState(!claim.postable && !claim.alreadyQueued);
   /** Has she asked to see the ones that passed? Only ever on a not-ready claim. */
   const [showPassed, setShowPassed] = useState(false);
   const failed = claim.checks.filter((c) => !c.passed);
   const passed = claim.checks.filter((c) => c.passed);
+  /* The COUNTS are the standing walk's; the LISTS are this claim's own rows. */
+  const failedCount = ticks ? ticks.failed : failed.length;
+  const passedCount = ticks ? ticks.passed : passed.length;
   /*
    * The only case with a failure worth leading with. A postable or already
    * approved claim has none, so it keeps the full list exactly as it was.
@@ -773,7 +1137,7 @@ function ClaimChecklist({ claim, batchId }: { claim: ApprovalClaim; batchId: str
             ? "Approved"
             : claim.postable
               ? "Ready to post"
-              : `Not ready yet · ${failed.length} check${failed.length === 1 ? "" : "s"} did not pass`}
+              : `Not ready yet · ${failedCount} check${failedCount === 1 ? "" : "s"} did not pass`}
         </span>
       </button>
 
@@ -802,7 +1166,7 @@ function ClaimChecklist({ claim, batchId }: { claim: ApprovalClaim; batchId: str
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
                 <Check size={12} className="text-emerald-600 dark:text-emerald-400" />
-                {passed.length} check{passed.length === 1 ? "" : "s"} passed
+                {passedCount} check{passedCount === 1 ? "" : "s"} passed
               </button>
               {showPassed && (
                 <ul

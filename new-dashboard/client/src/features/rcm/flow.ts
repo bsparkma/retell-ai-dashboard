@@ -716,7 +716,35 @@ function postStep(f: {
  * asserting something nobody told it, which is the one thing every other refusal
  * in this module is careful not to do.
  */
-export function claimFlow(claim: WorkbenchClaim, batchId: string | null): RcmFlow {
+export function claimFlow(
+  claim: WorkbenchClaim,
+  batchId: string | null,
+  /**
+   * WHY THIS CLAIM CANNOT BE APPROVED, when the verdict says it cannot (S4).
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * IT GREYS THE APPROVE CTA AND NOTHING ELSE
+   * ───────────────────────────────────────────────────────────────────────────
+   * A red verdict is a refusal the GATE will make: `PATIENT_RESPONSIBILITY_MATCHES`
+   * fails on exactly the claims `verdictFor()` calls red, and the approve route
+   * holds that claim back whatever this rail draws. So offering "Approve for
+   * posting" as a live next click on a red claim is the rail's own advice being
+   * wrong — the next click is fixing the line the verdict names.
+   *
+   * It is passed in rather than read off `claim.verdict` because `WorkbenchClaim`
+   * carries no verdict: the list shape deliberately does not, and giving this
+   * function a field only one of its two callers can supply would make the rail
+   * behave differently depending on which read fed it. The claim SCREEN has the
+   * verdict; it hands over the one sentence.
+   *
+   * NOTHING ELSE MOVES. The match step, the review step, the post step and every
+   * evidence line are untouched — a red claim still gets checked over, and the
+   * check is still reachable from the breadcrumb, the rail's first step and the
+   * workbench's own "approving happens on the check" line. Only the button that
+   * would have promised something changes.
+   */
+  approveBlockedReason: string | null = null,
+): RcmFlow {
   const back = batchId ? remittanceHref(batchId) : "/rcm/remittances";
   const here = claimHref(claim.claimId, batchId);
 
@@ -780,16 +808,28 @@ export function claimFlow(claim: WorkbenchClaim, batchId: string | null): RcmFlo
       );
 
   const steps = oneCurrent([upload, match, review, post, DEPOSIT]);
-  return {
-    steps,
-    cta: ctaFor(steps, {
-      batchId,
-      claimId: claim.claimId,
-      odClaimNum: claim.odClaimNum,
-      queued: claim.postingQueueId ? 1 : 0,
-      reviewedHere: claim.reviewedAt != null,
-    }),
-  };
+  const cta = ctaFor(steps, {
+    batchId,
+    claimId: claim.claimId,
+    odClaimNum: claim.odClaimNum,
+    queued: claim.postingQueueId ? 1 : 0,
+    reviewedHere: claim.reviewedAt != null,
+  });
+
+  /*
+   * ONLY THE APPROVE CTA, and only when it is the one being offered.
+   *
+   * `ctaFor` returns the first live step's verb, so on an unread claim it is
+   * "Mark checked over" — a verb a red verdict does not block and must not be
+   * seen to. The guard is the LABEL's own condition: the review step, on a claim
+   * that has already been read here.
+   */
+  const blocked =
+    approveBlockedReason && cta && cta.step === "review" && claim.reviewedAt != null
+      ? { ...cta, disabled: true, reason: approveBlockedReason }
+      : cta;
+
+  return { steps, cta: blocked };
 }
 
 /**
