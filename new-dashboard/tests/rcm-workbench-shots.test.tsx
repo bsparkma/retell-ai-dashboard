@@ -411,6 +411,7 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
 import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
+import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -807,8 +808,15 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       differenceCents: 0,
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    /*
+     * RETARGETED IN S4. These four rendered <RemittanceDetail /> and waited for
+     * `approval-panel`. Stage C retired that panel — approving became its own
+     * page, `/rcm/remittances/:id/approve`, rendering the SAME preview through
+     * the SAME `approveRemittance` — so the shots now photograph the page where
+     * the checklist and the button actually are.
+     */
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
     // Open the passing claim too, so the shot shows both states expanded.
     fireEvent.click(screen.getByTestId("approval-toggle-c-1"));
     await waitFor(() => screen.getByTestId("approval-checks-c-1"));
@@ -860,8 +868,16 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       },
     );
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    /*
+     * RETARGETED IN S4. These four rendered <RemittanceDetail /> and waited for
+     * `approval-panel`. Stage C retired that panel — approving became its own
+     * page, `/rcm/remittances/:id/approve`, rendering the SAME preview through
+     * the SAME `approveRemittance` — so the shots now photograph the page where
+     * the checklist and the button actually are.
+     */
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
+    await screen.findByTestId("approve-nothing-postable");
     dump("approve-02-refused");
     shotState.approveError = null;
   });
@@ -913,8 +929,15 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       note: "Queued for posting — nothing has been written to Open Dental yet.",
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    /*
+     * RETARGETED IN S4. These four rendered <RemittanceDetail /> and waited for
+     * `approval-panel`. Stage C retired that panel — approving became its own
+     * page, `/rcm/remittances/:id/approve`, rendering the SAME preview through
+     * the SAME `approveRemittance` — so the shots now photograph the page where
+     * the checklist and the button actually are.
+     */
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
     fireEvent.click(screen.getByTestId("approve-button"));
     await waitFor(() => screen.getByTestId("approve-result"));
     dump("approve-03-partial");
@@ -939,8 +962,16 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
       differenceCents: 0,
     };
 
-    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await screen.findByTestId("approval-panel");
+    /*
+     * RETARGETED IN S4. These four rendered <RemittanceDetail /> and waited for
+     * `approval-panel`. Stage C retired that panel — approving became its own
+     * page, `/rcm/remittances/:id/approve`, rendering the SAME preview through
+     * the SAME `approveRemittance` — so the shots now photograph the page where
+     * the checklist and the button actually are.
+     */
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
+    await screen.findByTestId("approve-needs-permission");
     dump("approve-04-reviewer");
   });
 });
