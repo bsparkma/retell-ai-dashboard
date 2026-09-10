@@ -42,6 +42,7 @@ import {
   getRemittance,
   isRcmOfficeId,
   matchClaim,
+  parkRemittance,
   RcmApiError,
   reviewClaim,
   setLineDecision,
@@ -57,6 +58,7 @@ import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
 import MatchAnywayConfirm from "@/components/rcm/MatchAnywayConfirm";
 import { claimNumberAgrees, disagreements } from "@/features/rcm/matchWords";
+import { verdictBlock } from "@/features/rcm/verdictBlock";
 
 /**
  * The three tones, as one map read by one element.
@@ -151,6 +153,18 @@ export default function ClaimMatchPage() {
    * prevent.
    */
   const [pendingConfirm, setPendingConfirm] = useState<number | null>(null);
+  /**
+   * SAVE FOR TOMORROW, from the bench header.
+   *
+   * Three fields rather than a union because all three are read at once by the
+   * one control: whether the request is in flight, whether it landed, and what
+   * the server said if it did not. `saved` is not reset by a reload — parking
+   * is a fact about the CHECK, and this page never re-reads the check's own row,
+   * so forgetting it here would offer to save something already saved.
+   */
+  const [parking, setParking] = useState(false);
+  const [parked, setParked] = useState(false);
+  const [parkError, setParkError] = useState<string | null>(null);
 
   /** Same office resolution as the remittance detail — see the note there. */
   const load = useCallback(() => {
@@ -438,6 +452,32 @@ export default function ClaimMatchPage() {
     }
   }
 
+  /**
+   * Put the whole CHECK down until tomorrow, from the claim she is standing on.
+   *
+   * The same `POST /remittances/:id/park` the check's own page calls — no second
+   * endpoint, no claim-level variant of parking, and the same reversal (opening
+   * the check un-parks it). Only reachable when `?from=` named the check.
+   */
+  async function saveForTomorrow(batchId: string) {
+    setParking(true);
+    setParkError(null);
+    try {
+      await parkRemittance(office, batchId);
+      setParked(true);
+    } catch (err) {
+      // The server's own sentence. A refusal here is a permission answer far
+      // more often than a failure, and it is the only thing she can act on.
+      setParkError(
+        err instanceof RcmApiError || err instanceof Error
+          ? err.message
+          : "That could not be saved.",
+      );
+    } finally {
+      setParking(false);
+    }
+  }
+
   async function markReviewed() {
     setBusy("review");
     setNotice(null);
@@ -500,8 +540,16 @@ export default function ClaimMatchPage() {
       {/* The same five steps as the check and the Posting screen, scoped to
           this one claim. `post` reads `unknown` rather than "no": this screen can
           see that the check was approved and cannot see whether it was posted. */}
+      {/*
+        THE APPROVE CTA CARRIES THE VERDICT'S REFUSAL (S4).
+
+        A red verdict is the gate's refusal arriving early: the approve route
+        holds exactly these claims back. `verdictBlock` turns the first problem
+        into one sentence naming the code, and `claimFlow` greys the approve verb
+        with it. Every other step is untouched — see the note on the parameter.
+      */}
       <RcmStepper
-        flow={claimFlow(claim, fromBatchId)}
+        flow={claimFlow(claim, fromBatchId, verdictBlock(claim.verdict ?? null)?.reason ?? null)}
         here="match"
         onAction={{
           "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
@@ -662,6 +710,17 @@ export default function ClaimMatchPage() {
         decideBlockedBy={decideBlockedBy}
         fromBatchId={fromBatchId}
         siblings={pager}
+        /* Only when the URL says which check this is — see the prop's note. */
+        park={
+          fromBatchId
+            ? {
+                onPark: () => void saveForTomorrow(fromBatchId),
+                busy: parking,
+                saved: parked,
+                error: parkError,
+              }
+            : null
+        }
         onRunMatch={runMatch}
         onReview={markReviewed}
         onConfirm={confirmMatch}
