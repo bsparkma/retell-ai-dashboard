@@ -767,8 +767,11 @@ describe("the remittance list", () => {
      * a local panel is the assertion; the one-surface invariant itself is
      * pinned in `rcm-shell.test.tsx`.
      *
-     * CHANGED BY STAGE C: that surface is `/rcm/bring-in`, a page of its own
-     * (ruling D-16), rather than a section on Today reached by `?add=1`.
+     * CHANGED BY STAGE C to `/rcm/bring-in`, a page of its own (D-16), and
+     * CHANGED BACK BY SLICE 2 (D-18) to Today's *Get work in*, reached by
+     * `?add=1`. Which page holds the door is a product decision that has been
+     * revisited twice; that there is one of it, and that this page links to it
+     * rather than growing its own, is what the assertion is actually for.
      */
     state.remittances = [];
     state.needsAttentionCount = 0;
@@ -779,7 +782,7 @@ describe("the remittance list", () => {
     expect(empty.textContent).toContain("Nothing has come in for Roland yet");
 
     const cta = screen.getByTestId("remittances-empty-upload-roland");
-    expect(cta.getAttribute("href")).toBe("/rcm/bring-in");
+    expect(cta.getAttribute("href")).toBe("/rcm?add=1");
     // And nothing on this page uploads anything itself.
     expect(screen.queryByTestId("remittance-upload-panels")).toBeNull();
   });

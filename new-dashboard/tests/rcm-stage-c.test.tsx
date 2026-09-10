@@ -365,14 +365,41 @@ describe("Today answers in sentences", () => {
     );
   });
 
-  it("has NO file input anywhere — the door is a card that navigates (D-16)", async () => {
+  it("carries the door itself, below the work rather than above it (D-18)", async () => {
+    /*
+     * REVERSED BY SLICE 2, AND THE REPLACEMENT ASSERTION IS THE INTERESTING
+     * PART.
+     *
+     * D-16 pushed the panels off this page and this test pinned their absence.
+     * D-18 brings them back, so pinning "no file input" would now pin the wrong
+     * thing. What has to stay true is the ORDER: Stage A's failure was never
+     * that the panels were here, it was that they were FIRST — a biller opening
+     * the screen that tells her what is waiting on her met two file inputs and a
+     * cost breaker before she met a single check.
+     *
+     * So this asserts document order instead: what came in, then get work in,
+     * then the statistics. A future tidy that floats the drop zones back to the
+     * top goes red, which is the failure worth catching.
+     */
     state.checks = [check()];
     const RcmToday = (await import("@/pages/rcm/RcmToday")).default;
     const view = renderAt(<RcmToday />, "/rcm");
 
-    const card = await screen.findByTestId("rcm-get-work-in");
-    expect(card.getAttribute("href")).toBe("/rcm/bring-in");
-    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(0);
+    const door = await screen.findByTestId("rcm-get-work-in-roland");
+    expect(view.container.querySelectorAll('input[type="file"]').length).toBeGreaterThan(0);
+
+    const arrivals = screen.getByTestId("rcm-what-came-in-roland");
+    expect(
+      Boolean(arrivals.compareDocumentPosition(door) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "the drop zones are above 'what came in' again",
+    ).toBe(true);
+
+    // …and the statistics are last of all. Work first, numbers after.
+    const stats = screen.getByTestId("rcm-stats-roland");
+    expect(
+      Boolean(door.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "the statistics are above the work",
+    ).toBe(true);
   });
 
   it("finishing the evening feels like finishing, with the numbers", async () => {
@@ -404,9 +431,16 @@ describe("Today answers in sentences", () => {
 
     const empty = await screen.findByTestId("rcm-arrivals-none-ever-roland");
     expect(empty.textContent).toContain("Nothing has come in");
-    expect(screen.getByTestId("rcm-arrivals-none-ever-add-roland").getAttribute("href")).toBe(
-      "/rcm/bring-in",
-    );
+    /*
+     * A BUTTON, NOT A LINK, SINCE D-18. The door is further down THIS page, so
+     * there is nowhere to navigate to and an `href` would be a lie about what
+     * pressing it does. The test asserts the honest shape: no href, and the
+     * thing it scrolls to is on the page with it.
+     */
+    const cta = screen.getByTestId("rcm-arrivals-none-ever-add-roland");
+    expect(cta.tagName).toBe("BUTTON");
+    expect(cta.getAttribute("href")).toBeNull();
+    expect(screen.getByTestId("rcm-get-work-in-roland")).toBeTruthy();
   });
 });
 
@@ -467,6 +501,18 @@ describe("the Checks list says whose move it is", () => {
         "A takeback — money the carrier is reclaiming",
       ),
     );
+
+    /*
+     * AND THE AMOUNT KEEPS ITS SIGN (slice 2's item 3).
+     *
+     * The sentence and the figure are two independent readings of the same
+     * fact, and a takeback is the one row where they could disagree in a way
+     * that costs money: "$54.00" beside "money the carrier is reclaiming" reads
+     * as an incoming payment somebody has mislabelled. `money()` renders a
+     * negative through `toLocaleString`, so this pins the rendered string rather
+     * than trusting the helper.
+     */
+    expect(screen.getByTestId("remittance-row-b-1").textContent).toContain("-$54.00");
   });
 
   /* ── C-3b item 1 — and WHO is on the check ─────────────────────────────── */

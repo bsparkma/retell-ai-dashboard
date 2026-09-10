@@ -94,6 +94,52 @@ export function officeStamp(iso: string | null | undefined, office?: RcmOfficeId
 }
 
 /**
+ * TODAY, SPELLED OUT, IN THE PRACTICE'S ZONE.
+ *
+ * The date under Today's greeting. It reads the office zone rather than the
+ * browser's for the same reason every other stamp on these screens does: a
+ * manager checking in from a laptop set to Eastern at 11:20pm Central is being
+ * told about the practice's Tuesday, not their own Wednesday, and a header that
+ * disagreed with every row beneath it would be the worst place of all to have
+ * that argument.
+ */
+export function todayLongDate(now: Date = new Date(), office?: RcmOfficeId): string {
+  return now.toLocaleDateString("en-US", {
+    timeZone: zoneFor(office),
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+/**
+ * "Good morning" / "Good afternoon" / "Good evening", by the PRACTICE's clock.
+ *
+ * Same reason as the date above, and it matters more here: a biller finishing at
+ * 6pm Central greeted with "Good morning" because the server or the browser
+ * thinks otherwise reads as software that does not know what day it is, which is
+ * an unhelpful first impression for a screen about to propose writing to charts.
+ *
+ * The boundaries are the ordinary ones — noon and 5pm — and nothing hangs on
+ * them: this is a courtesy, not a fact anybody acts on.
+ */
+export function greetingFor(now: Date = new Date(), office?: RcmOfficeId): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zoneFor(office),
+      hour: "numeric",
+      hour12: false,
+    }).format(now),
+  );
+  // `hour12: false` yields 24 for midnight in some runtimes; both readings are
+  // "the small hours", and both belong to the morning.
+  const h = Number.isNaN(hour) ? 9 : hour % 24;
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+/**
  * An ISO instant → 'YYYY-MM-DD' in the practice's zone.
  *
  * The sortable, comparable form — what "posted this week" counts over. Built

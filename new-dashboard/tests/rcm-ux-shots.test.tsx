@@ -787,7 +787,13 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
 
     renderAt(<RcmToday />, "/rcm");
     await screen.findByTestId("rcm-left-off-roland");
-    await waitFor(() => expect(screen.getByTestId("rcm-get-work-in")).toBeTruthy());
+    /*
+     * `rcm-get-work-in-roland`, not `rcm-get-work-in`. D-18 turned the door from
+     * ONE card at the bottom of the page into a section INSIDE each practice's
+     * card, so the id carries the office — a two-office practice has two of
+     * these and a bare id could not say which one had rendered.
+     */
+    await waitFor(() => expect(screen.getByTestId("rcm-get-work-in-roland")).toBeTruthy());
     dump("shell-01-today");
   });
 

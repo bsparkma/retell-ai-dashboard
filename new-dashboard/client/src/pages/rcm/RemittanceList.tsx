@@ -262,9 +262,14 @@ export default function RemittanceList() {
             to know where uploading lives — and it NAVIGATES to Today's
             "Get work in", which is the module's only upload surface.
             `?add=1` scrolls it into view on arrival.
+
+            IT POINTED AT `/rcm/bring-in` FOR ONE STAGE. D-18 moved the surface
+            back to Today and this link followed it. What did NOT change is the
+            rule: this page never grows a file input of its own, whichever page
+            happens to hold the one that exists.
           */}
           <Link
-            href="/rcm/bring-in"
+            href="/rcm?add=1"
             data-testid="remittance-upload-toggle"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
@@ -583,7 +588,7 @@ function OfficeRemittances({
                 posted to a chart.
               </p>
               <Link
-                href="/rcm/bring-in"
+                href="/rcm?add=1"
                 data-testid={`remittances-empty-upload-${office}`}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
               >
@@ -842,16 +847,30 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         Amber weight means somebody owes an action; grey means nothing is
         outstanding, or it is somebody else's. A takeback is the one that is
         never grey, whatever else is true about the row.
+
+        IT WRAPS. IT MUST NEVER TRUNCATE.
+        ───────────────────────────────────────────────────────────────────
+        It did, and the practice owner's screen read *You — 1 claim to ch*.
+        The cell exists to say whose move it is and what the move is; cut at
+        "ch" it has spent a whole column saying neither.
+
+        The ellipsis is honest on an IDENTIFIER — the payer and check-number
+        cells above still truncate, because a name is recognisable from its
+        first characters and the rest is lookup. It is dishonest on prose,
+        where the clipped half is the half carrying the verb. So the row grows.
+
+        The `title` went with the truncation. It carried the full sentence
+        precisely because the sentence was clipped, and a tooltip repeating
+        text already on screen is noise a screen reader reads twice.
       */}
       <div className="min-w-0">
         <span
-          className={`block truncate text-xs ${
+          className={`block break-words text-xs ${
             waiting.urgent
               ? "font-medium text-amber-800 dark:text-amber-300"
               : "text-muted-foreground"
           }`}
           data-testid={`remittance-waiting-${r.batchId}`}
-          title={waiting.waitingOn}
         >
           {waiting.waitingOn}
         </span>

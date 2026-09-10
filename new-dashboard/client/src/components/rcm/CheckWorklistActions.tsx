@@ -57,6 +57,24 @@
  * out-of-flow positioning and the claim list follows it in document order —
  * rather than by measuring pixels, which would pass on a layout that had gone
  * wrong in a browser nobody ran the test in.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SLICE 2: EACH PANEL IS ANCHORED TO *ITS OWN* BUTTON, BY GRID COLUMN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Both panels used to open full-width under the whole row, so a reader watching
+ * the page change saw one box appear in the same place whichever button she had
+ * pressed — a moment of "did I press the right one?" every single time, on the
+ * one control here that is hard to explain afterwards.
+ *
+ * The row is now a GRID, and the panel starts in the column of the button that
+ * raised it: *Save for tomorrow* opens from the first column, *Set aside* from
+ * the second, each spanning to the right edge so there is room for the copy. Its
+ * left edge lines up with its button, which is the whole of what "anchored"
+ * buys — the eye follows the press.
+ *
+ * This is layout, not positioning: `col-start` is still ordinary in-flow grid
+ * placement, so every word of the paragraph above still holds and the structural
+ * test still passes unchanged.
  */
 import { useState } from "react";
 import { AlertTriangle, Bookmark, BookmarkX, Loader2, Undo2, XCircle } from "lucide-react";
@@ -166,48 +184,49 @@ export default function CheckWorklistActions({
 
   // ── The ordinary case: two quiet actions ──────────────────────────────────
   return (
-    <section className="mt-4" data-testid="check-worklist-actions">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => {
-            setError(null);
-            setDialog(dialog === "park" ? null : "park");
-          }}
-          aria-expanded={dialog === "park"}
-          data-testid="check-park"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-        >
-          <Bookmark size={14} />
-          Save for tomorrow
-        </button>
-        <button
-          onClick={() => {
-            setError(null);
-            setDialog(dialog === "aside" ? null : "aside");
-          }}
-          aria-expanded={dialog === "aside"}
-          data-testid="check-set-aside"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <BookmarkX size={14} />
-          Set aside
-        </button>
-        <span className="text-xs text-muted-foreground">
-          Neither one writes anything to Open Dental.
-        </span>
-      </div>
+    <section
+      className="mt-4 grid items-start gap-2 sm:grid-cols-[max-content_max-content_minmax(0,1fr)]"
+      data-testid="check-worklist-actions"
+    >
+      <button
+        onClick={() => {
+          setError(null);
+          setDialog(dialog === "park" ? null : "park");
+        }}
+        aria-expanded={dialog === "park"}
+        data-testid="check-park"
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+      >
+        <Bookmark size={14} />
+        Save for tomorrow
+      </button>
+      <button
+        onClick={() => {
+          setError(null);
+          setDialog(dialog === "aside" ? null : "aside");
+        }}
+        aria-expanded={dialog === "aside"}
+        data-testid="check-set-aside"
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <BookmarkX size={14} />
+        Set aside
+      </button>
+      <span className="self-center text-xs text-muted-foreground">
+        Neither one writes anything to Open Dental.
+      </span>
 
-      {/* ── Save for tomorrow ──────────────────────────────────────────────── */}
+      {/* ── Save for tomorrow — anchored under its own button (column 1) ───── */}
       {dialog === "park" && (
         <div
-          className="mt-2 rounded-lg border border-border bg-card p-3"
+          className="rounded-lg border border-border bg-card p-3 sm:col-span-3 sm:col-start-1"
           data-testid="check-park-dialog"
         >
           <p className="text-sm text-muted-foreground">
             Nothing is lost and nothing is hidden. This check stays in every queue it is in —
-            saving it only puts it at the top of Today, under{" "}
-            <strong>Where you left off</strong>, with your line on it. Opening it again puts it
-            back on the ordinary pile.
+            saving it only puts it at the top of <strong>Today</strong>, under{" "}
+            <strong>Where you left off</strong>, with your line on it. It comes back in one
+            click, from there or by opening it.
           </p>
           <label className="mt-2 block text-xs font-medium text-foreground" htmlFor="park-note">
             A line to yourself (optional)
@@ -244,10 +263,10 @@ export default function CheckWorklistActions({
         </div>
       )}
 
-      {/* ── Set aside ─────────────────────────────────────────────────────── */}
+      {/* ── Set aside — anchored under ITS own button (column 2) ───────────── */}
       {dialog === "aside" && (
         <div
-          className="mt-2 rounded-lg border border-border bg-card p-3"
+          className="rounded-lg border border-border bg-card p-3 sm:col-span-2 sm:col-start-2"
           data-testid="check-set-aside-dialog"
         >
           <p className="text-sm text-muted-foreground">
@@ -255,9 +274,9 @@ export default function CheckWorklistActions({
               This says nobody is coming back to it.
             </strong>{" "}
             It goes out of the attention counts and off Today, and it stops being work anybody is
-            expected to finish. Nothing is deleted, nothing is written to a chart, and you or
-            anybody else can put it back in one click — it keeps its own tab so it is always
-            findable.
+            expected to finish. Nothing is deleted and nothing is written to a chart. It is
+            reversible: it comes back from the <strong>Set aside</strong> tab on Checks, in one
+            click, still carrying the reason you give it here.
           </p>
           <fieldset className="mt-2">
             <legend className="text-xs font-medium text-foreground">Why?</legend>

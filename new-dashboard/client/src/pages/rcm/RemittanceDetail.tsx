@@ -1000,9 +1000,24 @@ function Stat({
  * approval gate judges on. This row renders it verbatim and computes nothing.
  * A green cell beside a red claim is a shape the code cannot produce.
  *
- * The sentence can be long. It is truncated to one line with the whole of it on
- * the cell's `title`, and the claim's own screen is one click away — a cell that
- * wrapped to four lines would undo the scanning the column exists for.
+ * THE SENTENCE CAN BE LONG, AND IT WRAPS RATHER THAN CLIPPING.
+ *
+ * It used to be truncated to one line with the whole of it on the cell's
+ * `title`, on the reasoning that a cell wrapping to four lines would undo the
+ * scanning the column exists for. That traded away the wrong thing. Round 1 of
+ * PR #167 caught two cousins of this cell on the practice owner's own screen —
+ * *The carrier is reclaiming money. It i…* and *You — 1 claim to ch* — and the
+ * scanning a clipped cell preserves is scanning of text that has stopped saying
+ * anything. A column whose job is a sentence may not cut itself off mid-word.
+ *
+ * A `title` is not the escape hatch either: it needs a mouse, it never appears
+ * on a touch screen, and it is the wrong place for the only copy of a sentence
+ * about whether a patient owes money.
+ *
+ * So the row grows. The identifier cells beside it — patient name, claim number
+ * — still truncate, and rightly: a name is recognisable from its first
+ * characters and the rest is a lookup, whereas the clipped half of a sentence is
+ * the half carrying the verb.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE LINE TABLE IS STILL HERE, STILL BEHIND A TOGGLE
@@ -1107,9 +1122,10 @@ function ClaimTriageRow({
         {/* ── WHERE THE PATIENT STANDS ───────────────────────────────────── */}
         <div className="min-w-0" data-testid={`claim-stands-${claim.claimId}`}>
           {verdict ? (
+            /* Wraps, never truncates — see the header. The `title` went with
+               the clipping it existed to compensate for. */
             <span
-              title={verdict.sentence}
-              className={`block truncate text-xs ${
+              className={`block break-words text-xs ${
                 verdict.state === "red"
                   ? "font-medium text-rose-700 dark:text-rose-400"
                   : verdict.state === "amber"
