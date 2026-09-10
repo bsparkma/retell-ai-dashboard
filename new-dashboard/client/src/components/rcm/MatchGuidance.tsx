@@ -173,7 +173,7 @@ export default function MatchGuidance({
               </Link>
             )}
             <Link
-              href="/rcm/bring-in"
+              href="/rcm?add=1"
               data-testid="match-guidance-bring-in"
               className="text-xs font-medium text-foreground underline underline-offset-4"
             >

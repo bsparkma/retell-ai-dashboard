@@ -262,9 +262,14 @@ export default function RemittanceList() {
             to know where uploading lives — and it NAVIGATES to Today's
             "Get work in", which is the module's only upload surface.
             `?add=1` scrolls it into view on arrival.
+
+            IT POINTED AT `/rcm/bring-in` FOR ONE STAGE. D-18 moved the surface
+            back to Today and this link followed it. What did NOT change is the
+            rule: this page never grows a file input of its own, whichever page
+            happens to hold the one that exists.
           */}
           <Link
-            href="/rcm/bring-in"
+            href="/rcm?add=1"
             data-testid="remittance-upload-toggle"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
@@ -583,7 +588,7 @@ function OfficeRemittances({
                 posted to a chart.
               </p>
               <Link
-                href="/rcm/bring-in"
+                href="/rcm?add=1"
                 data-testid={`remittances-empty-upload-${office}`}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
               >
