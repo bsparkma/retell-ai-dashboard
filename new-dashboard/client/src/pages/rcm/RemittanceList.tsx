@@ -91,8 +91,6 @@ import {
 } from "@/features/rcm/api";
 import {
   attentionLabel,
-  batchStatusLabel,
-  batchStatusTone,
   day,
   money,
   SOURCE_LABELS,
@@ -100,6 +98,7 @@ import {
 } from "@/features/rcm/format";
 import {
   CHECK_TABS,
+  checkChip,
   FILTER_COPY,
   isWorklistFilter,
   matchesFilter,
@@ -108,6 +107,7 @@ import {
   type WorklistFilter,
 } from "@/features/rcm/worklist";
 import { waitingFor } from "@/features/rcm/waitingOn";
+import { shadowFor, useRcmShadow } from "@/features/rcm/shadowMode";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type Filter = WorklistFilter;
@@ -704,12 +704,24 @@ function OfficeRemittances({
 
 function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remittance: Remittance }) {
   /*
+   * THE POSTING SWITCH, which this list previously never asked about.
+   *
+   * Today's arrivals table passed `shadowMode` into the same predicate and this
+   * one did not, so an approved check waiting on an administrator read here as
+   * "You — it is ready to approve" — work she could not move. `undefined` while
+   * the read is in flight or has failed is the honest third answer and
+   * `waitingFor` already defines it as "this screen did not ask".
+   */
+  const shadow = useRcmShadow();
+  const shadowMode = shadowFor(shadow, office);
+  /*
    * `office` is passed so the predicate can say "belongs to another office" —
    * the list fans out per practice, so it never fires here, and passing it keeps
    * this row and Today's arrivals row reading the SAME call rather than two that
    * differ by an argument.
    */
-  const waiting = waitingFor(r, { office });
+  const waiting = waitingFor(r, { office, shadowMode });
+  const chip = checkChip(waiting.state);
   return (
     <Link
       href={`/rcm/remittances/${r.batchId}`}
@@ -783,10 +795,28 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         {r.claimCount}
       </span>
 
-      <span
-        className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${batchStatusTone(r.status)}`}
-      >
-        {batchStatusLabel(r.status)}
+      {/*
+        THE CHIP AND THE SENTENCE COME OUT OF ONE CALL.
+
+        This was `batchStatusLabel(r.status)` — the ingestion pipeline's words
+        (*Held for review*, *Balanced*, *Open*) sitting inches from a *Waiting
+        on* cell computed from a different predicate entirely, so a row could
+        read "Ready" next to "You — 4 claims to check over". Both now read out
+        of the `waitingFor()` above, and the chip's words are the tab labels
+        themselves (`CHECK_CHIPS`).
+
+        A row in a state with no chip renders an empty cell rather than a
+        seventh word — the sentence beside it is already the full answer.
+      */}
+      <span className="min-w-0">
+        {chip && (
+          <span
+            className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${chip.tone}`}
+            data-testid={`remittance-chip-${r.batchId}`}
+          >
+            {chip.label}
+          </span>
+        )}
       </span>
 
 {/*

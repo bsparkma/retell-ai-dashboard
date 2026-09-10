@@ -77,8 +77,6 @@ import {
 } from "@/features/rcm/api";
 import { isRcmOfficeId } from "@/features/rcm/api";
 import {
-  batchStatusLabel,
-  batchStatusTone,
   day,
   isBlockingReason,
   lineFlagLabel,
@@ -96,6 +94,7 @@ import {
 import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { claimHref, remittanceFlow } from "@/features/rcm/flow";
 import { waitingFor } from "@/features/rcm/waitingOn";
+import { checkChip } from "@/features/rcm/worklist";
 import { describePlbAdjustment } from "@/features/rcm/plb";
 
 import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
@@ -305,6 +304,7 @@ export default function RemittanceDetailPage() {
    * reader is already looking.
    */
   const flow = remittanceFlow(r, claims, { shadowMode });
+  const headerChip = checkChip(waitingFor(r, { office, shadowMode }).state);
   /*
    * THIS CHECK'S POSTING, if it has one.
    *
@@ -407,12 +407,25 @@ export default function RemittanceDetailPage() {
             >
               {r.payer}
             </h1>
-            <span
-              className={`rounded-full px-2 py-0.5 text-xs font-medium ${batchStatusTone(r.status)}`}
-              data-testid="remittance-status"
-            >
-              {batchStatusLabel(r.status)}
-            </span>
+            {/*
+              ONE CHIP VOCABULARY. This was `batchStatusLabel(r.status)` — the
+              ingestion pipeline's words — which meant the check's own page and
+              the list you opened it from named its state differently. Both now
+              read `checkChip(waitingFor(...).state)`, so the chip a biller
+              clicked and the chip she lands on are the same six words.
+
+              A state with no chip (a takeback, another office's check, nothing
+              outstanding) renders none — the rail and the panels below say it
+              in full, and a badge cannot.
+            */}
+            {headerChip && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${headerChip.tone}`}
+                data-testid="remittance-status"
+              >
+                {headerChip.label}
+              </span>
+            )}
             {r.source && (
               <span
                 title={SOURCE_TITLES[r.source]}
