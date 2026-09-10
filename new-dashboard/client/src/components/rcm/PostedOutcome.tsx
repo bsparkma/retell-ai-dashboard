@@ -65,6 +65,7 @@ import {
 import { money } from "@/features/rcm/format";
 import { officeStamp } from "@/features/rcm/time";
 import { claimHref } from "@/features/rcm/flow";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 /** First-seen order, no duplicates. `[...new Set()]` needs downlevelIteration. */
 function unique(values: string[]): string[] {
@@ -450,7 +451,8 @@ export function StuckAfterPosting({
         </ol>
 
         {/* ── THE RE-CHECK. A READ, and the label says so. ────────────────── */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-start gap-2">
+          <div className="flex flex-col items-start gap-1">
           <button
             onClick={recheck}
             disabled={checking || restingFor > 0}
@@ -468,11 +470,24 @@ export function StuckAfterPosting({
                 ? `Asked just now — ready again in ${restingFor}s`
                 : "Check it again"}
           </button>
-          <span className="text-xs text-muted-foreground">
-            {restingFor > 0
-              ? "Each look asks Open Dental twice, over the one connection the rest of CareIN shares."
-              : "Reads the chart and writes nothing to it."}
-          </span>
+          {/*
+            THE COOLDOWN IS THE REASON, so it is marked as one. The other half
+            of this sentence is an ordinary note about an ENABLED button, which
+            is why the two registers are split rather than one span changing
+            its mind about which it is.
+          */}
+          {restingFor > 0 && (
+            <DisabledReason testId="stuck-recheck-reason">
+              Each look asks Open Dental twice, over the one connection the rest of CareIN
+              shares.
+            </DisabledReason>
+          )}
+          </div>
+          {restingFor === 0 && (
+            <span className="text-xs text-muted-foreground">
+              Reads the chart and writes nothing to it.
+            </span>
+          )}
         </div>
 
         {checkError && (

@@ -72,6 +72,7 @@ import {
   type SetAsideReason,
 } from "@/features/rcm/api";
 import { officeDay } from "@/features/rcm/time";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 /** The same ceiling the server enforces (`MAX_WORKLIST_NOTE`). */
 const MAX_NOTE = 500;
@@ -299,22 +300,35 @@ export default function CheckWorklistActions({
             className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
           />
           <div className="mt-2 flex gap-2">
-            <button
-              onClick={() =>
-                run("aside", () =>
-                  setAsideRemittance(office, r.batchId, reason, note.trim() || undefined),
-                )
-              }
-              // The server refuses this combination anyway; disabling it here
-              // means somebody meets the rule while they can still act on it
-              // rather than after a round trip.
-              disabled={busy !== null || (reason === "other" && note.trim().length === 0)}
-              data-testid="check-set-aside-confirm"
-              className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {busy === "aside" && <Loader2 size={14} className="animate-spin" />}
-              Set it aside
-            </button>
+            <div className="flex flex-col items-start gap-1">
+              <button
+                onClick={() =>
+                  run("aside", () =>
+                    setAsideRemittance(office, r.batchId, reason, note.trim() || undefined),
+                  )
+                }
+                // The server refuses this combination anyway; disabling it here
+                // means somebody meets the rule while they can still act on it
+                // rather than after a round trip.
+                disabled={busy !== null || (reason === "other" && note.trim().length === 0)}
+                data-testid="check-set-aside-confirm"
+                className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy === "aside" && <Loader2 size={14} className="animate-spin" />}
+                Set it aside
+              </button>
+              {/*
+                MOVED IN BESIDE THE BUTTON. The same sentence used to sit below
+                the whole row, which reads fine and is two ancestors too far
+                away for the scan to tie it to the control it explains.
+              */}
+              {reason === "other" && note.trim().length === 0 && (
+                <DisabledReason testId="check-set-aside-needs-note">
+                  “Something else” needs your own words — that is the whole of what makes
+                  it readable to whoever finds this check later.
+                </DisabledReason>
+              )}
+            </div>
             <button
               onClick={() => setDialog(null)}
               className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
@@ -322,12 +336,7 @@ export default function CheckWorklistActions({
               Cancel
             </button>
           </div>
-          {reason === "other" && note.trim().length === 0 && (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="check-set-aside-needs-note">
-              “Something else” needs your own words — that is the whole of what makes it readable
-              to whoever finds this check later.
-            </p>
-          )}
+
           {error && <Problem message={error} />}
         </div>
       )}

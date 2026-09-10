@@ -590,15 +590,27 @@ function WithdrawPanel({
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        disabled={!canWrite}
-        title={canWrite ? undefined : "Retiring a check needs posting permission"}
-        className="mt-2 text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
-        data-testid={`posting-withdraw-open-${row.queueId}`}
-      >
-        This check will never post — retire it
-      </button>
+      <div className="mt-2 flex flex-col items-start gap-1">
+        <button
+          onClick={() => setOpen(true)}
+          disabled={!canWrite}
+          className="text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
+          data-testid={`posting-withdraw-open-${row.queueId}`}
+        >
+          This check will never post — retire it
+        </button>
+        {/*
+          THIS WAS A `title`, WHICH IS NOT A REASON ON A TABLET.
+          The practice reads these screens at the front desk and there is no
+          hover there, so the one explanation for a greyed control was
+          unreachable by the people who meet it. Printed now, like every other.
+        */}
+        {!canWrite && (
+          <DisabledReason testId={`posting-withdraw-open-reason-${row.queueId}`}>
+            Retiring a check needs posting permission. Ask an approver.
+          </DisabledReason>
+        )}
+      </div>
     );
   }
 
@@ -651,15 +663,25 @@ function WithdrawPanel({
           {error}
         </p>
       )}
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          onClick={submit}
-          disabled={busy || note.trim().length < 3}
-          className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
-          data-testid={`posting-withdraw-submit-${row.queueId}`}
-        >
-          {busy ? "Retiring…" : "Retire this check"}
-        </button>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="flex flex-col items-start gap-1">
+          <button
+            onClick={submit}
+            disabled={busy || note.trim().length < 3}
+            className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+            data-testid={`posting-withdraw-submit-${row.queueId}`}
+          >
+            {busy ? "Retiring…" : "Retire this check"}
+          </button>
+          {/* Retiring is irreversible, so the note is the only record of why.
+              A greyed button with no reason reads as a broken one. */}
+          {!busy && note.trim().length < 3 && (
+            <DisabledReason testId={`posting-withdraw-needs-note-${row.queueId}`}>
+              Say why in a line first — retiring cannot be undone, and this note is
+              the only record of the decision.
+            </DisabledReason>
+          )}
+        </div>
         <button
           onClick={() => {
             setOpen(false);

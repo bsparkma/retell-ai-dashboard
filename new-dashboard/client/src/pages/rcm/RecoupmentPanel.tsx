@@ -67,6 +67,7 @@ import {
 import type { RemittanceClaim } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import { NO_ACTION_REASONS } from "@/features/rcm/format";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -476,18 +477,24 @@ export function RecoupmentPanel({
             walk: a disabled control with no reason is indistinguishable from a
             broken one.
           */}
+          {/*
+            THE SAME SENTENCES, THROUGH THE COMPONENT THAT CARRIES THE MARKER.
+            They were plain <p>s, so they said why to a reader and were
+            invisible to `rcm-disabled-reasons.test.tsx` — which means the rule
+            held here by hand and nothing would have noticed it lapsing.
+          */}
           {!checklist.canApprove ? (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="recoupment-needs-permission">
+            <DisabledReason testId="recoupment-needs-permission">
               Approving a takeback needs posting permission ({checklist.approveRequires}).
-            </p>
+            </DisabledReason>
           ) : !checklist.balanced ? (
-            <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+            <DisabledReason tone="warn">
               This remittance does not balance, so nothing on it can be approved yet.
-            </p>
+            </DisabledReason>
           ) : !phraseMatches ? (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="recoupment-awaiting-phrase">
+            <DisabledReason testId="recoupment-awaiting-phrase">
               Type the amount above exactly as it is shown to enable this.
-            </p>
+            </DisabledReason>
           ) : null}
         </div>
       </div>

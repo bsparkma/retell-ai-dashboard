@@ -59,6 +59,7 @@ import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
 import { agreement, differences } from "@/features/rcm/matchWords";
 import { day, money } from "@/features/rcm/format";
 import { remittanceHref } from "@/features/rcm/flow";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 export interface MatchGuidanceProps {
   snapshot: MatchSnapshot | null;
@@ -413,14 +414,24 @@ function CandidateSummary({
         </ul>
       )}
 
-      <button
-        onClick={onConfirm}
-        disabled={busy || linked}
-        data-testid={`match-guidance-pick-${c.odClaimNum}`}
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
-      >
-        {linked ? "Linked" : "This is the one"}
-      </button>
+      <div className="mt-2 flex flex-col items-start gap-1">
+        <button
+          onClick={onConfirm}
+          disabled={busy || linked}
+          data-testid={`match-guidance-pick-${c.odClaimNum}`}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          {linked ? "Linked" : "This is the one"}
+        </button>
+        {/* A label that changes to "Linked" tells a reader who was watching.
+            It does not tell one who arrived after the fact, and it is not a
+            reason anything can enforce. */}
+        {linked && (
+          <DisabledReason testId={`match-guidance-linked-${c.odClaimNum}`}>
+            Already tied to this claim. Look again to change it.
+          </DisabledReason>
+        )}
+      </div>
     </div>
   );
 }

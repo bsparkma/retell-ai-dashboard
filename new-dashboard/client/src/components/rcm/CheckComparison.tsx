@@ -56,6 +56,7 @@ import {
 } from "@/features/rcm/api";
 import { comparisonReasonLabel, tallySentence } from "@/features/rcm/comparison";
 import { officeStamp } from "@/features/rcm/time";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 /** The longest line the server will take, mirrored so the box says so first. */
 const MAX_NOTE = 500;
@@ -493,9 +494,9 @@ function DifferedForm({
           Never mind
         </button>
         {!ready && (
-          <span className="text-xs text-muted-foreground" data-testid="comparison-form-hint">
+          <DisabledReason testId="comparison-form-hint">
             Pick what was off and say it in a line.
-          </span>
+          </DisabledReason>
         )}
       </div>
     </div>
