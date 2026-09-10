@@ -1003,7 +1003,15 @@ describe("the remittance detail", () => {
     expect(approve.disabled).toBe(false);
     // CHANGED BY STAGE C: the button answers the page's own question
     // ("Before you say yes.") rather than restating the step it is in.
-    expect(approve.textContent).toContain("Yes — approve 1 claim");
+    //
+    // CHANGED AGAIN BY S4: and it answers it WITHOUT a count. The number of
+    // claims is on `approve-counts` three lines above, in the line that also
+    // says what is being left off; on the button it made the press read as an
+    // arithmetic result rather than as an endorsement of the whole page.
+    expect(approve.textContent).toContain("Yes — this check is right");
+    expect(screen.getByTestId("approve-counts").textContent).toContain(
+      "1 of 2 claims can be approved",
+    );
   });
 
   it("a reviewer sees the same checklist and a disabled button naming the tier", async () => {

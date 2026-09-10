@@ -1030,7 +1030,13 @@ export default function RemittanceDetailPage() {
         It sits OUTSIDE the stepper deliberately: the stepper describes the
         ordinary path a remittance walks, and a takeback is not a step on it.
       */}
-      <div className="mt-4">
+      {/*
+        `id` so the approve page can send a takeback-only check straight here
+        (W-5). An in-page anchor rather than a route: the panel has never had a
+        URL of its own, and giving it one would be a second place a takeback is
+        authorised from.
+      */}
+      <div className="mt-4" id="takeback">
         <RecoupmentPanel
           office={office}
           batchId={r.batchId}
