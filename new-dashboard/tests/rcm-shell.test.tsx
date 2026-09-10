@@ -536,6 +536,106 @@ describe("there is exactly one place to add a check", () => {
   });
 });
 
+// ─── Sentence columns wrap; identifier columns truncate ──────────────────────
+
+/**
+ * The takeback sentences, in full. Both are the exact strings `waitingFor()`
+ * returns for a takeback, read from the module rather than retyped — a hardcoded
+ * copy here would keep passing after somebody reworded the real one.
+ */
+const TAKEBACK_NEXT = "The carrier is reclaiming money. It is authorised on its own.";
+const TAKEBACK_WAITING_ON = "A takeback — money the carrier is reclaiming";
+
+/**
+ * ASSERTING THE MECHANISM, NOT JUST THE TEXT — and this is the whole point.
+ *
+ * jsdom applies no CSS and performs no layout. `textContent` on a cell carrying
+ * `truncate` is the FULL sentence, because the ellipsis is painted by the
+ * browser and never enters the DOM. So a test that only read `textContent`
+ * would have passed green through the entire life of this bug, while the
+ * practice owner was looking at *The carrier is reclaiming money. It i…* on his
+ * own screen.
+ *
+ * What actually clips is the class, so the class is what this checks — on the
+ * cell AND on every ancestor up to the row, since a `truncate` one level up
+ * clips a child that has none of its own.
+ */
+const CLIPPING = /\b(truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+)\b/;
+
+function expectWrapsInFull(cell: HTMLElement, sentence: string, rowTestId: string) {
+  // 1. The whole sentence is present — nothing upstream shortened it.
+  expect(cell.textContent).toBe(sentence);
+
+  // 2. Nothing between the text and the row clips it.
+  for (let el: HTMLElement | null = cell; el; el = el.parentElement) {
+    const cls = typeof el.className === "string" ? el.className : "";
+    expect(cls, `${el.tagName}.${cls} clips the sentence`).not.toMatch(CLIPPING);
+    if (el.dataset.testid === rowTestId) break;
+  }
+
+  // 3. No `title` standing in for the missing half. A tooltip needs a mouse,
+  //    never appears on a touch screen, and is the wrong home for the only copy
+  //    of a sentence about money.
+  expect(cell.getAttribute("title")).toBeNull();
+}
+
+describe("a column whose job is a sentence never cuts itself off", () => {
+  /** A takeback: the longest sentence either column renders, and the one seen cut. */
+  const takeback = () => check({ totalAmountCents: -5400 });
+
+  it("Today's What happens next renders the takeback sentence whole", async () => {
+    state.checks = [takeback()];
+    const RcmToday = (await import("@/pages/rcm/RcmToday")).default;
+    renderAt(<RcmToday />, "/rcm");
+
+    const cell = await screen.findByTestId("rcm-arrival-next-b-1");
+    expectWrapsInFull(cell, TAKEBACK_NEXT, "rcm-arrival-b-1");
+  });
+
+  it("Checks' Waiting on renders the takeback sentence whole", async () => {
+    state.checks = [takeback()];
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const cell = await screen.findByTestId("remittance-waiting-b-1");
+    expectWrapsInFull(cell, TAKEBACK_WAITING_ON, "remittance-row-b-1");
+  });
+
+  it("keeps both sentences the ones the module actually computes", async () => {
+    /*
+     * The two constants above are asserted against `waitingFor()` itself, so a
+     * reworded sentence fails HERE — one obvious line — rather than turning the
+     * two rendering tests above into a puzzle about which layer changed.
+     */
+    const { waitingFor } = await import("@/features/rcm/waitingOn");
+    const waiting = waitingFor(takeback() as never, { office: "roland" });
+    expect(waiting.next).toBe(TAKEBACK_NEXT);
+    expect(waiting.waitingOn).toBe(TAKEBACK_WAITING_ON);
+  });
+
+  it("still truncates the IDENTIFIER cells beside them", async () => {
+    /*
+     * The other half of the rule, and the reason this is not "never truncate
+     * anything". An ellipsis is honest on a payer name or a check number: it is
+     * recognisable from its first characters and the rest is a lookup. It is
+     * dishonest on prose, where the clipped half carries the verb.
+     *
+     * Without this, "fix the truncation" reads as licence to strip `truncate`
+     * everywhere and let one long payer name push a table sideways.
+     */
+    state.checks = [takeback()];
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+
+    const row = await screen.findByTestId("remittance-row-b-1");
+    const payer = [...row.querySelectorAll("span")].find(
+      (el) => el.textContent === "SYNTHETIC DENTAL",
+    );
+    expect(payer, "the payer cell moved").toBeTruthy();
+    expect(payer!.className).toMatch(/\btruncate\b/);
+  });
+});
+
 // ─── The Checks page, after the upload move ──────────────────────────────────
 
 describe("Checks renders four tabs and no way to upload", () => {

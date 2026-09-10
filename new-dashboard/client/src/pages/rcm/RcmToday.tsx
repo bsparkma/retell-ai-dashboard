@@ -885,8 +885,14 @@ function LeftOffRow({
           somebody typed reads differently from a sentence the product composed,
           and the quotes are what say which one this is. When there is no note,
           the composed fallback is not quoted.
+
+          AND IT WRAPS. Both branches are sentences — hers, or `startedNote`'s
+          "Approve was pressed by … and this check still needs somebody" — and a
+          note somebody wrote to herself is the last thing on this page that
+          should arrive with its ending cut off. Same rule as the arrivals
+          table's *What happens next*; see the long note there.
         */}
-        <span className="w-full truncate text-xs text-muted-foreground">
+        <span className="w-full break-words text-xs text-muted-foreground">
           {kind === "parked" ? (
             r.parkedNote ? (
               <span data-testid={`rcm-left-off-note-${r.batchId}`}>“{r.parkedNote}”</span>
@@ -1005,8 +1011,33 @@ function Arrivals({ office, today }: { office: RcmOfficeId; today: Today | null 
                 <span className="text-right font-mono text-xs tabular-nums text-muted-foreground">
                   {r.claimCount}
                 </span>
+                {/*
+                  THIS CELL WRAPS. IT MUST NEVER TRUNCATE.
+                  ───────────────────────────────────────────────────────────
+                  It did, and the practice owner's screen read *The carrier is
+                  reclaiming money. It i…* — a takeback announced by half a
+                  sentence, cut mid-word, with the half that says what to do
+                  about it on the other side of the ellipsis.
+
+                  A column whose job is a SENTENCE may not cut itself off. The
+                  ellipsis is an honest device for an identifier — a payer name
+                  or a check number is recognisable from its first characters
+                  and the rest is lookup — and a dishonest one for prose, where
+                  the clipped half is the half carrying the verb.
+
+                  So the row grows instead. `min-w-0` lets the grid track shrink
+                  below the sentence's natural width (without it a long sentence
+                  pushes the whole row wide rather than wrapping), and
+                  `break-words` catches the pathological case of a single
+                  unbroken token longer than the column.
+
+                  The `title` that used to carry the full text is gone with the
+                  truncation: it existed only because the cell was clipped, and
+                  a tooltip repeating text already fully on screen is noise a
+                  screen reader reads twice.
+                */}
                 <span
-                  className={`truncate text-xs ${
+                  className={`min-w-0 break-words text-xs ${
                     waiting.urgent ? "font-medium text-foreground" : "text-muted-foreground"
                   }`}
                   data-testid={`rcm-arrival-next-${r.batchId}`}

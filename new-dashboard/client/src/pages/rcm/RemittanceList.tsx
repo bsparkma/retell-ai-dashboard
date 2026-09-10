@@ -847,16 +847,30 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         Amber weight means somebody owes an action; grey means nothing is
         outstanding, or it is somebody else's. A takeback is the one that is
         never grey, whatever else is true about the row.
+
+        IT WRAPS. IT MUST NEVER TRUNCATE.
+        ───────────────────────────────────────────────────────────────────
+        It did, and the practice owner's screen read *You — 1 claim to ch*.
+        The cell exists to say whose move it is and what the move is; cut at
+        "ch" it has spent a whole column saying neither.
+
+        The ellipsis is honest on an IDENTIFIER — the payer and check-number
+        cells above still truncate, because a name is recognisable from its
+        first characters and the rest is lookup. It is dishonest on prose,
+        where the clipped half is the half carrying the verb. So the row grows.
+
+        The `title` went with the truncation. It carried the full sentence
+        precisely because the sentence was clipped, and a tooltip repeating
+        text already on screen is noise a screen reader reads twice.
       */}
       <div className="min-w-0">
         <span
-          className={`block truncate text-xs ${
+          className={`block break-words text-xs ${
             waiting.urgent
               ? "font-medium text-amber-800 dark:text-amber-300"
               : "text-muted-foreground"
           }`}
           data-testid={`remittance-waiting-${r.batchId}`}
-          title={waiting.waitingOn}
         >
           {waiting.waitingOn}
         </span>
