@@ -1218,10 +1218,15 @@ describe("the remittance detail", () => {
   });
 
   it("reports what a batch match did, per claim", async () => {
+    /*
+     * S3 / W-11: the page-level match button IS the flow CTA now — one verb,
+     * in the header, named by `flow.ts`. `match-all-claims` was the second copy
+     * of it and is gone; `rcm-cta` is the one that remains.
+     */
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("rcm-cta")).toBeTruthy());
 
-    fireEvent.click(screen.getByTestId("match-all-claims"));
+    fireEvent.click(screen.getByTestId("rcm-cta"));
 
     await waitFor(() => expect(state.batchMatched).toBe(1));
     await waitFor(() =>
@@ -1245,8 +1250,8 @@ describe("the remittance detail", () => {
     };
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
-    fireEvent.click(screen.getByTestId("match-all-claims"));
+    await waitFor(() => expect(screen.getByTestId("rcm-cta")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("rcm-cta"));
 
     const stopped = await screen.findByTestId("match-out-of-time");
     expect(stopped.textContent).toContain("90-second budget");
