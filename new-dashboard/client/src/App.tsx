@@ -35,6 +35,7 @@ import ClaimMatch from "./pages/rcm/ClaimMatch";
 import PostingQueue from "./pages/rcm/PostingQueue";
 import TakebackSop from "./pages/rcm/TakebackSop";
 import { SlotMarkersProvider } from "./features/slotMarkers";
+import { RcmShadowProvider } from "./features/rcm/shadowMode";
 import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
 import TcCaseView from "./pages/tc/TcCaseView";
@@ -233,6 +234,12 @@ function App() {
             <RequireAuth>
               <ModuleProvider>
                 <OfficeProvider>
+                  {/* The RCM posting switch, read once per office in scope
+                      and handed to the header pill and every RCM screen —
+                      see features/rcm/shadowMode.tsx. It sits ABOVE the
+                      router because the pill it feeds lives in the shell's
+                      header, not on any one page. */}
+                  <RcmShadowProvider>
                   <SlotMarkersProvider>
                     {/* Renders nothing until a confirmed accepted transition
                         fires it (TC only). */}
@@ -241,6 +248,7 @@ function App() {
                       <Router />
                     </WinCelebrationProvider>
                   </SlotMarkersProvider>
+                  </RcmShadowProvider>
                 </OfficeProvider>
               </ModuleProvider>
             </RequireAuth>

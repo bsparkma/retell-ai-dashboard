@@ -4,7 +4,7 @@
  * Sidebar: 240px fixed, navy background, teal active indicators
  */
 import { useState, useEffect, useCallback } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearchParams } from "wouter";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,7 +46,8 @@ import {
   Receipt,
   ScrollText,
   Banknote,
-  Upload,
+  Archive,
+  EyeOff,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -56,8 +57,9 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute } from "@/features/tc/officeScope";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
-import { canVisit } from "@/lib/permissions";
+import { can, canVisit } from "@/lib/permissions";
 import { officeHealthDisplay } from "@/lib/odHealth";
+import { useRcmShadow } from "@/features/rcm/shadowMode";
 import type { ModuleId } from "@/lib/modules";
 
 const LOGO_URL = "/carein-logo.webp";
@@ -145,15 +147,16 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       items: [
         { path: "/rcm", label: "Today", icon: Receipt },
         { path: "/rcm/remittances", label: "Checks", icon: ScrollText },
-        /* THE ONE UPLOAD DOOR, first-class and after Checks (ruling D-16). */
-        { path: "/rcm/bring-in", label: "Bring in", icon: Upload },
-        /* "Posting history", not "Posting": this screen reports what HAS
-           happened across the practice. The working screens are above it — the
-           PM ruling is to keep it and demote it, because it is where an
-           office-wide post lives, where a stuck run is retried, and where
-           anybody debugging at 9pm looks. Deleting a debugging surface to tidy
-           a nav is not a trade this module makes. */
-        { path: "/rcm/posting", label: "Posting history", icon: Banknote },
+        /* SET ASIDE is a TAB, reached by a query parameter — deliberately not a
+           route of its own. The Checks page already reads `?view=` and follows
+           it while mounted (RemittanceList), so this is the existing mechanism
+           rather than a second one: no new route, no new page, and the link is
+           the same one somebody can paste to a colleague.
+
+           `view=set_aside` is the SERVER'S name for the population
+           (REMITTANCE_VIEWS in routes/rcm/remittances.js), so the parameter is
+           spelled the server's way and only the nav label is a person's. */
+        { path: "/rcm/remittances?view=set_aside", label: "Set aside", icon: Archive },
         { path: "/rcm/sop/takeback", label: "Takeback SOP", icon: BookOpen },
       ],
     },
@@ -229,19 +232,71 @@ const PLATFORM_GROUP: NavGroup = {
 };
 
 /**
+ * POSTING HISTORY — in the nav for an administrator, and reachable by URL for
+ * everybody.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS NOT IN `ROUTE_PERMISSIONS`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * That map is the obvious place and it is the wrong one: `App.tsx` feeds the
+ * SAME map to `canVisit` to bounce an unauthorized deep link back to the user's
+ * home. Adding `/rcm/posting: admin.all` there would not demote the screen, it
+ * would DELETE it for a biller — and this is the screen where an office-wide
+ * post lives, where a stuck posting is retried, and where anybody debugging at
+ * 9pm looks. The PM ruling was to demote it, not to take it away.
+ *
+ * So it is appended after the permission filter, exactly as `PLATFORM_GROUP`
+ * is and for the mirror-image reason: that one is gated on a tier `canVisit`
+ * would wave through, this one is hidden from a nav `canVisit` must keep
+ * letting people INTO. Both are UX only — every endpoint behind the page is
+ * gated server-side regardless, and typing the URL still works.
+ */
+const RCM_POSTING_HISTORY: NavItem = {
+  path: "/rcm/posting",
+  label: "Posting history",
+  icon: Banknote,
+};
+
+/**
  * Longest-prefix active match so "/tc/hygiene" doesn't light up while the
  * user is on "/tc/hygiene/inbox". "/tc" only matches exactly, except it also
  * claims case-detail pages (they belong to Pipeline).
  */
-function activeNavPath(location: string, groups: NavGroup[]): string | null {
+export function activeNavPath(
+  location: string,
+  groups: NavGroup[],
+  /** The current query string, without the "?". Only query-bearing items use it. */
+  search = "",
+): string | null {
+  const current = new URLSearchParams(search);
   let best: string | null = null;
   for (const group of groups) {
     for (const { path } of group.items) {
-      const matches =
-        path === "/tc"
-          ? location === path || location.startsWith("/tc/cases")
-          : location === path || location.startsWith(`${path}/`);
-      if (matches && (best === null || path.length > best.length)) best = path;
+      /*
+       * A NAV ITEM MAY CARRY A QUERY — "Set aside" is `/rcm/remittances?view=
+       * set_aside`, a tab on the Checks page rather than a route of its own.
+       *
+       * Two items then share one pathname, so the pathname alone cannot decide
+       * which is lit. The rule: an item's query must be a SUBSET of the
+       * address bar's. On `?view=set_aside` both items match and the longer
+       * (query-bearing) one wins by the existing longest-wins rule; on the bare
+       * page only Checks matches, which is why Checks does not go dark when
+       * somebody opens the Set aside tab — it is still the page they are on.
+       */
+      const [pathname, query = ""] = path.split("?");
+      const pathMatches =
+        pathname === "/tc"
+          ? location === pathname || location.startsWith("/tc/cases")
+          : location === pathname || location.startsWith(`${pathname}/`);
+      if (!pathMatches) continue;
+      // `forEach` rather than spreading the iterator: this bundle's tsconfig
+      // target does not permit iterating URLSearchParams directly.
+      let queryMatches = true;
+      new URLSearchParams(query).forEach((v, k) => {
+        if (current.get(k) !== v) queryMatches = false;
+      });
+      if (!queryMatches) continue;
+      if (best === null || path.length > best.length) best = path;
     }
   }
   return best;
@@ -269,6 +324,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // outage is visible in the collapsed control rather than only in the dropdown.
   const selectedOfficeHealth = selected ? officeHealthDisplay(selected) : null;
   const [officeDropOpen, setOfficeDropOpen] = useState(false);
+  /** The RCM posting switch, read once by the provider in App.tsx. */
+  const shadow = useRcmShadow();
   // DentaFlow SHARED_ROUTES port: routes whose content isn't scoped by the
   // office picker hide it entirely (pages that still need one office prompt
   // inline via <TcOfficeGate />).
@@ -284,6 +341,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   /** Reachable but throttling us — a passing condition, not an outage. */
   const [isBusy, setIsBusy] = useState(false);
   const userEmail = auth.status === "authenticated" ? auth.user.email : undefined;
+  /** The display name from /auth/me. Blank reads as absent, never as a name. */
+  const userName =
+    auth.status === "authenticated" && auth.user.name.trim() !== "" ? auth.user.name : undefined;
 
   // Connectivity probe.
   //
@@ -340,11 +400,26 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // /auth/me is still in flight, which hides it for a moment rather than
   // flashing it at someone who turns out not to hold it.
   const isSuperAdmin = auth.status === "authenticated" && auth.user.isSuperAdmin === true;
+  /*
+   * Posting history rides on `admin.all` — the same action the Admin nav item
+   * already uses, so no new permission was invented for this. `can()` reads
+   * false while /auth/me is in flight, which hides the item for a moment
+   * rather than flashing it at somebody who turns out not to hold it.
+   */
+  const showPostingHistory = navModule === "rcm" && can(permissions, "admin.all");
   const navGroups = [
-    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions),
+    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions).map((g) =>
+      showPostingHistory && g.title === "Revenue Cycle"
+        ? { ...g, items: [...g.items, RCM_POSTING_HISTORY] }
+        : g,
+    ),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
-  const activePath = activeNavPath(location, navGroups);
+  // wouter's `location` is the pathname only, so the query — which is what
+  // tells the Set aside tab from the Checks page it lives on — is read
+  // separately.
+  const [navSearch] = useSearchParams();
+  const activePath = activeNavPath(location, navGroups, navSearch.toString());
 
   // Only offer a module this user has at least one page in. The practice's
   // entitlement still decides what EXISTS (`modules` comes from /auth/me); this
@@ -599,8 +674,27 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0" style={{ backgroundColor: "var(--sidebar-primary)" }}>
               FD
             </div>
+            {/*
+              WHO IS SIGNED IN, AND WHERE THEY ARE LOOKING.
+
+              This said "Front Desk" — a hardcoded string, the same for every
+              person in the practice. On an RCM screen that is not cosmetic:
+              every approve and every posting is attributed to a named human,
+              and the chip above the sign-out button was the one place the app
+              claimed to say who that was and did not.
+
+              `auth.user.name` is already in the /auth/me payload and already
+              required by `parseAuthUser`, so nothing server-side changed. It
+              falls back to the old label only when auth has not settled.
+            */}
             <div className="min-w-0 flex-1 text-left">
-              <div className="text-xs font-medium truncate" style={{ color: "var(--sidebar-foreground)" }}>Front Desk</div>
+              <div
+                className="text-xs font-medium truncate"
+                style={{ color: "var(--sidebar-foreground)" }}
+                data-testid="sidebar-user-name"
+              >
+                {userName ?? "Front Desk"}
+              </div>
               <div className="text-xs truncate" style={{ color: "oklch(0.55 0.015 250)" }}>{selectedOfficeName}</div>
             </div>
             <ChevronDown
@@ -633,6 +727,52 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
 
           <div className="flex items-center gap-2 ml-auto">
+            {/*
+              ── RCM header chrome ────────────────────────────────────────────
+              Two things, on RCM screens only, and both are about not having to
+              remember something while working money.
+
+              IDENTITY. "Dana · Roland" — who is signed in, and whose chart this
+              screen would write to. Every approve and every posting is
+              attributed to a named human and scoped to one practice, and those
+              are exactly the two facts that were nowhere on an RCM screen. The
+              name is dropped, not faked, when auth has not settled; the office
+              reads "All Offices" when the picker is wide, which is the honest
+              answer rather than a practice nobody chose.
+            */}
+            {isRcmRoute && userName && (
+              <span
+                className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:inline-flex"
+                data-testid="rcm-header-identity"
+              >
+                <span className="font-medium text-foreground">{userName}</span>
+                <span aria-hidden>·</span>
+                <span>{selectedOfficeName}</span>
+              </span>
+            )}
+            {/*
+              THE SHADOW PILL. Posting is switched off for this practice, and
+              that stays true across every screen in the module — so it is
+              header chrome rather than a banner one page happens to carry.
+              A biller can otherwise work a whole check, approve it, and only
+              find out at the last step that nothing was going anywhere.
+
+              It renders ONLY on a definite `true`. An office still loading, or
+              one whose posting-queue read failed or 403'd, is `undefined` and
+              says nothing — see features/rcm/shadowMode.tsx. The full
+              explanation (what is safe, what changes, who can switch it on)
+              stays on ShadowModeBanner; this is the persistent reminder, and it
+              is deliberately the shorter of the two.
+            */}
+            {isRcmRoute && shadow.any && (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                data-testid="rcm-shadow-pill"
+              >
+                <EyeOff size={12} className="shrink-0" aria-hidden />
+                Shadow mode — nothing is sent to Open Dental yet
+              </span>
+            )}
             {/* Case search palette (⌘K) — TC surfaces only; it searches TC
                 cases, so it stays out of the Voice header. */}
             {isTcRoute && <TcGlobalSearch />}

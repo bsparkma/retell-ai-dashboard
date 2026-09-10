@@ -1,11 +1,16 @@
 /**
  * WHERE AM I, AND WHAT IS THE NEXT CLICK.
  *
- * The same seven steps on every remittance-scoped screen — the remittance, the
- * claim, and a posting plan's expanded detail — so a biller who has learned the
+ * The same five steps on every remittance-scoped screen — the remittance, the
+ * claim, and one posting's expanded detail — so a biller who has learned the
  * shape once has learned all three.
  *
- *   Upload → Match → Confirm → Review → Approve → Post → Deposit
+ *   Add the check → Match it up → Check it over → Post to Open Dental → Deposit
+ *
+ * DEPOSIT IS ALWAYS DRAWN, ALWAYS LAST, AND ALWAYS GREY. It is not built (see
+ * `flow.ts`), and omitting it on the screens that cannot reach it would make
+ * the rail a different length in different places — which is the one thing a
+ * shape learned once must never do. Its evidence line is its caption.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT THE MARKS MEAN
@@ -168,15 +173,30 @@ function Step({ step, last, isHere }: { step: StepView; last: boolean; isHere: b
 }
 
 /**
- * What the live step and every blocked step have to say.
+ * ONE EVIDENCE LINE PER STEP — the fact behind the mark.
  *
- * Blocked steps are always shown, in order. The current step is shown too, so
- * the page never leaves "where am I" to be inferred from a filled dot alone.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY EVERY STEP AND NOT ONLY THE LIVE ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This used to print only the blocked, current and unknown steps. A DONE step
+ * was a green tick and nothing else, which asks the reader to take the tick on
+ * trust — and a tick nobody can check is exactly the shape of the honest-states
+ * failures this module keeps deleting. *"All 4 claims found in Open Dental"*
+ * and *"Approved by Dana, 4:12pm"* are what make the tick auditable from the
+ * rail instead of from three screens away.
+ *
+ * OMITTED, NEVER FAKED. A step whose evidence nobody recorded carries
+ * `detail: null` and prints no line at all — see `flow.ts`, where every clause
+ * that depends on a nullable stamp is appended rather than substituted. A rail
+ * with four lines under it and a fifth silently missing is telling the truth;
+ * one with five lines where the fifth was invented is not.
+ *
+ * Deposit is drawn and not built, so its line is its caption — "Coming soon".
+ * It renders in the muted tone with everything else rather than as a warning:
+ * nothing is wrong, the step simply does not exist yet.
  */
 function Notes({ flow }: { flow: RcmFlow }) {
-  const notable = flow.steps.filter(
-    (s) => (s.state === "blocked" || s.state === "current" || s.state === "unknown") && s.detail,
-  );
+  const notable = flow.steps.filter((s) => s.detail);
   if (notable.length === 0) return null;
 
   return (
@@ -187,16 +207,30 @@ function Notes({ flow }: { flow: RcmFlow }) {
           className="flex items-start gap-1.5"
           data-testid={`step-note-${s.step}`}
         >
+          {/*
+            The step's own name leads the line, so a five-line block reads as a
+            list of steps rather than as a paragraph. A BLOCKED step keeps the
+            rose it has on the rail; a step that is neither blocked nor the one
+            you are on is dimmed, so "where am I" survives the extra lines.
+          */}
           <span
             className={`mt-0.5 shrink-0 font-semibold ${
-              s.state === "blocked" ? "text-rose-700 dark:text-rose-400" : "text-foreground"
+              s.state === "blocked"
+                ? "text-rose-700 dark:text-rose-400"
+                : s.state === "current"
+                  ? "text-foreground"
+                  : "text-muted-foreground"
             }`}
           >
             {s.title}
           </span>
           <span
             className={
-              s.state === "blocked" ? "text-rose-700 dark:text-rose-400" : "text-muted-foreground"
+              s.state === "blocked"
+                ? "text-rose-700 dark:text-rose-400"
+                : s.state === "unavailable"
+                  ? "text-muted-foreground/70"
+                  : "text-muted-foreground"
             }
           >
             {s.detail}

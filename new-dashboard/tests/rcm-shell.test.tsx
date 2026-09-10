@@ -337,26 +337,80 @@ describe("the module is ordered around the day", () => {
   it("puts Today first and lands /rcm on it", async () => {
     const items = await rcmNavItems();
     /*
-     * CHANGED BY STAGE C. Two things moved and the reasons are different:
+     * CHANGED BY THE UI OVERHAUL, SLICE 1. Four items, and three of the moves
+     * have different reasons:
      *
-     *   BRING IN is new and first-class after Checks — the module's one upload
-     *   surface became a page of its own (ruling D-16), because Today is what a
-     *   biller reads to find out what is waiting on her and it opened with two
-     *   drop zones in front of that.
+     *   SET ASIDE joins the nav as a TAB, not a route — `?view=set_aside` on
+     *   the Checks page. It is the one queue a biller goes looking for by name
+     *   and could previously only reach by noticing a tab.
      *
-     *   POSTING → POSTING HISTORY. The design dropped the screen; the PM ruling
-     *   is to keep it, demote it below the working screens, and rename it
-     *   honestly. It is where an office-wide post lives, where a stuck run is
-     *   retried, and where anybody debugging at 9pm looks.
+     *   BRING IN leaves the nav. It is NOT deleted and NOT unreachable: the
+     *   route, the page and the one-upload-surface rule are untouched, and
+     *   Today's empty state and the Checks page's own button both still
+     *   navigate to it. The test below still pins that it is the only page in
+     *   the module that may import an upload panel. Where the upload door lives
+     *   in the shell is slice 2's question.
+     *
+     *   POSTING HISTORY leaves the nav for everybody except an administrator —
+     *   see RCM_POSTING_HISTORY in DashboardLayout, which appends it AFTER the
+     *   permission filter precisely so the route stays reachable by URL for a
+     *   biller who is debugging.
      */
     expect(items.map((i) => i.label)).toEqual([
       "Today",
       "Checks",
-      "Bring in",
-      "Posting history",
+      "Set aside",
       "Takeback SOP",
     ]);
     expect(items[0].path).toBe("/rcm");
+  });
+
+  it("reaches Set aside by a query parameter on the Checks page, not a new route", async () => {
+    const items = await rcmNavItems();
+    const setAside = items.find((i) => i.label === "Set aside")!;
+    /*
+     * The pathname must be the Checks page — a route of its own would be a
+     * second list to keep in step with the first — and the parameter must be
+     * the SERVER's name for the population, because RemittanceList feeds
+     * `?view=` straight to the route as `view=`.
+     */
+    const [pathname, query] = setAside.path.split("?");
+    expect(pathname).toBe("/rcm/remittances");
+    expect(new URLSearchParams(query).get("view")).toBe("set_aside");
+  });
+
+  it("keeps Posting history out of the nav for a biller and in it for an admin", async () => {
+    const { visibleNav } = await import("@/components/DashboardLayout");
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const src = readFileSync(
+      resolve(__dirname, "../client/src/components/DashboardLayout.tsx"),
+      "utf8",
+    );
+    /*
+     * THE POINT OF THIS TEST is the second half. Demoting the screen must not
+     * delete it: `App.tsx` bounces an unauthorized deep link using the SAME
+     * `canVisit` the nav filters with, so putting `/rcm/posting` in
+     * ROUTE_PERMISSIONS would 403 a biller out of the screen where a stuck
+     * posting is retried. It is appended after the filter instead.
+     */
+    const { ROUTE_PERMISSIONS, canVisit } = await import("@/lib/permissions");
+    expect(Object.keys(ROUTE_PERMISSIONS)).not.toContain("/rcm/posting");
+    expect(canVisit(["rcm.read"], "/rcm/posting")).toBe(true);
+
+    // It is gated on admin.all — the action the Admin nav item already uses,
+    // so no new permission was invented for a nav tidy.
+    expect(src).toMatch(/showPostingHistory =[\s\S]*?can\(permissions, "admin\.all"\)/);
+
+    // And it is genuinely absent from the declared group, so the only way it
+    // reaches the sidebar is that append.
+    // Any lucide icon will do — `visibleNav` filters on `path` alone.
+    const { Receipt } = await import("lucide-react");
+    const groups = [
+      { title: "Revenue Cycle", items: (await rcmNavItems()).map((i) => ({ ...i, icon: Receipt })) },
+    ];
+    const labels = visibleNav(groups, ["rcm.read"]).flatMap((g) => g.items.map((i) => i.label));
+    expect(labels).not.toContain("Posting history");
   });
 
   it("renames Remittances to Checks in the nav — the word used at the desk", async () => {

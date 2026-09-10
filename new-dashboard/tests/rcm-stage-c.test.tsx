@@ -387,8 +387,15 @@ describe("Today answers in sentences", () => {
     renderAt(<RcmToday />, "/rcm");
 
     const done = await screen.findByTestId("rcm-arrivals-all-done-roland");
-    expect(done.textContent).toContain("That's everything for tonight");
-    expect(done.textContent).toContain("1 check on file here");
+    expect(done.textContent).toContain("You’re done for tonight.");
+    /*
+     * THE NUMBERS NOW LIVE IN A CARD, and which lines it carries depends on
+     * what the page can evidence. Nothing posted in this fixture, so the
+     * fallback line is the one that renders — see `summariseTonight`, which
+     * omits a line rather than approximating it.
+     */
+    expect(screen.getByTestId("rcm-tonight-onfile-roland").textContent).toBe("1");
+    expect(done.textContent).toContain("on file, all worked through");
   });
 
   it("a first evening points at the door rather than saying nothing", async () => {
