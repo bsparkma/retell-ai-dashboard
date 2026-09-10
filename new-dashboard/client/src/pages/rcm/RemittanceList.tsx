@@ -605,14 +605,32 @@ function OfficeRemittances({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {state.total} check{state.total === 1 ? "" : "s"} in this practice.
                   </p>
-                  <button
-                    onClick={() => setFilter("all")}
-                    data-testid={`remittances-empty-see-all-${office}`}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-                  >
-                    See all of them
-                    <ArrowRight size={13} />
-                  </button>
+                  {/*
+                    TWO EXITS, not one. "See all of them" answers "is anything
+                    here at all"; Today answers "then what should I be doing" —
+                    and they are different questions. A reader who has just been
+                    told a queue is empty is either checking her filter or
+                    finished for the evening, and one button can only serve the
+                    first of those.
+                  */}
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      onClick={() => setFilter("all")}
+                      data-testid={`remittances-empty-see-all-${office}`}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      See all of them
+                      <ArrowRight size={13} />
+                    </button>
+                    <Link
+                      href="/rcm"
+                      data-testid={`remittances-empty-today-${office}`}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      Back to Today
+                      <ArrowRight size={13} />
+                    </Link>
+                  </div>
                 </>
               )}
             </>
