@@ -43,11 +43,21 @@
  * NO NEW ENDPOINT. `listPostingQueue` with `limit: 1` is the read
  * `RemittanceDetail` was already making for exactly these two flags — the rows
  * are not wanted, they belong to the posting history screen.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AND IT ONLY ASKS WHEN THE TENANT HAS THE MODULE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This provider is app-wide, because the pill lives in the shell's header
+ * rather than on any one page. That also means it mounts for a voice-only
+ * tenant, where `/api/rcm` is behind `requireModule('rcm')` and fails closed —
+ * so every one of those reads was a guaranteed 403, and an AUDITED one. The
+ * entitlement check in the effect is what makes an app-wide mount honest.
  */
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { listPostingQueue, type RcmOfficeId } from "@/features/rcm/api";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
+import { useModule } from "@/contexts/ModuleContext";
 
 export interface RcmShadowState {
   /**
@@ -88,6 +98,31 @@ export function useRcmShadow(): RcmShadowState {
 
 export function RcmShadowProvider({ children }: { children: ReactNode }) {
   const scope = useRcmOfficeScope();
+  /*
+   * ENTITLEMENT GATES THE FETCH, not just the render.
+   *
+   * This provider is mounted app-wide so the pill can live in the shell header,
+   * which means it also mounts for a voice-only tenant and for every session
+   * that will never open an RCM screen. Without this gate it fired
+   * `listPostingQueue` for every RCM-shaped office in the roster on EVERY such
+   * session — and `/api/rcm` is behind `requireModule('rcm')`, which fails
+   * closed. So each of those was a guaranteed 403: a wasted round trip, and an
+   * audited one, logged against a user who did nothing wrong.
+   *
+   * `useModule()` is the context the shell already reads for this
+   * (ModuleProvider is an ancestor here); its `modules` list is the tenant's
+   * `/auth/me` entitlement narrowed to what the SPA can render, via
+   * `entitledModuleIds`. NO NEW FETCH AND NO NEW ENDPOINT — the answer was
+   * already in memory.
+   *
+   * STILL LOADING READS AS NOT ENTITLED. While `/auth/me` is in flight the list
+   * is empty, so nothing is fetched and every office stays `undefined`. That is
+   * the same direction the rest of this file leans: `undefined` says nothing,
+   * and the pill simply does not render for a moment rather than a request
+   * going out on a guess.
+   */
+  const { modules } = useModule();
+  const entitled = modules.some((m) => m.id === "rcm");
   const [byOffice, setByOffice] = useState<Partial<Record<RcmOfficeId, boolean>>>({});
 
   // The offices in scope as a stable string, so the effect below re-runs when
@@ -96,6 +131,7 @@ export function RcmShadowProvider({ children }: { children: ReactNode }) {
   const key = scope.offices.join(",");
 
   useEffect(() => {
+    if (!entitled) return;
     if (scope.offices.length === 0) return;
     let cancelled = false;
     for (const office of scope.offices) {
@@ -129,7 +165,11 @@ export function RcmShadowProvider({ children }: { children: ReactNode }) {
     // Keyed on `key`, not on `scope.offices`: the array identity changes every
     // render and would re-fetch both practices on each one. (This repo has no
     // eslint, so the exhaustive-deps rule is a convention here, not a check.)
-  }, [key]);
+    //
+    // `entitled` joins the deps so a session that resolves its modules AFTER
+    // the office roster still fetches once the answer arrives, rather than
+    // staying silent because the first run happened a tick too early.
+  }, [key, entitled]);
 
   const value = useMemo<RcmShadowState>(
     () => ({
