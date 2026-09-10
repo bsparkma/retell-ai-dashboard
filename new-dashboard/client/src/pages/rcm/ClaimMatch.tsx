@@ -55,6 +55,8 @@ import { claimFlow, claimStateLine, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
+import MatchAnywayConfirm from "@/components/rcm/MatchAnywayConfirm";
+import { claimNumberAgrees, disagreements } from "@/features/rcm/matchWords";
 
 /**
  * The three tones, as one map read by one element.
@@ -135,6 +137,20 @@ export default function ClaimMatchPage() {
    */
   const [notice, setNotice] = useState<{ tone: "ok" | "warn" | "bad"; text: string } | null>(null);
   const [note, setNote] = useState("");
+  /**
+   * THE NAMED-DIFFERENCE CONFIRM, PENDING (W-7 / ruling Q2).
+   *
+   * Holds the ClaimNum somebody asked to link while the interstitial below is on
+   * screen. Null means no question is outstanding.
+   *
+   * It is STATE ON THIS PAGE rather than inside either panel because BOTH
+   * confirm affordances — the guidance card at the top and the candidate cards
+   * in the workbench — call this page's one `confirm`. A gate living inside one
+   * of them would be a gate the other walks around, and "the workbench route
+   * bypasses the warning" is exactly the shape of defect this ruling exists to
+   * prevent.
+   */
+  const [pendingConfirm, setPendingConfirm] = useState<number | null>(null);
 
   /** Same office resolution as the remittance detail — see the note there. */
   const load = useCallback(() => {
@@ -324,9 +340,50 @@ export default function ClaimMatchPage() {
     }
   }
 
-  async function confirm(odClaimNum: number) {
+  /**
+   * ASK BEFORE LINKING, WHEN NOTHING VOUCHES FOR THE LINK — W-7 / ruling Q2.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ONE GATE, IN FRONT OF THE ONE CONFIRM
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `confirmMatch` is what every affordance on this screen calls: the guidance
+   * card's *Yes, that's the one*, its per-candidate *This is the one*, and the
+   * workbench's own candidate buttons further down. They all arrive here, which
+   * is why the gate is here and not in a panel.
+   *
+   * WHEN IT ASKS. Only when the carrier's claim number does not agree with the
+   * candidate's ClaimNum — the server's own `CLAIM_NUMBER_MATCH` evidence tag,
+   * never a comparison written here (see `claimNumberAgrees`). That covers both
+   * halves of the ruling: a remittance whose claim number names a DIFFERENT
+   * chart claim, and one that carried no claim number to check at all.
+   *
+   * A match whose claim number DOES agree goes straight through, unchanged. The
+   * ceremony is reserved for the case that earns it; an interstitial on every
+   * confirmation is one people learn to dismiss without reading, which would
+   * make the screen less safe than it is now rather than more.
+   *
+   * FAIL CLOSED ON A CANDIDATE WE CANNOT SEE. A ClaimNum that is not in the
+   * snapshot in hand — a forced re-run, a record from an older shape — cannot be
+   * checked, and "we could not verify it" is asked about, never waved through.
+   */
+  function confirmMatch(odClaimNum: number) {
+    const candidate = snapshot?.candidates.find((c) => c.odClaimNum === odClaimNum) ?? null;
+    if (candidate && claimNumberAgrees(candidate)) {
+      void writeConfirmation(odClaimNum);
+      return;
+    }
+    setNotice(null);
+    setPendingConfirm(odClaimNum);
+  }
+
+  /**
+   * The act itself. Reached directly when the claim number agrees, and through
+   * the interstitial when it does not — ONE route, ONE audit row either way.
+   */
+  async function writeConfirmation(odClaimNum: number) {
     setBusy("confirm");
     setNotice(null);
+    setPendingConfirm(null);
     try {
       await confirmClaimMatch(office, claimId, odClaimNum);
       setNotice({ tone: "ok", text: `Linked to Open Dental claim ${odClaimNum}.` });
@@ -518,6 +575,49 @@ export default function ClaimMatchPage() {
       )}
 
       {/*
+        ── THE NAMED-DIFFERENCE CONFIRM (W-7 / ruling Q2) ──────────────────────
+        Raised by `confirmMatch` above, from whichever affordance was pressed.
+
+        RENDERED HERE, ABOVE THE EVIDENCE, AND NOT OVER IT. It is in the normal
+        flow — no overlay, no portal — so the identity columns, the candidate
+        cards and the line pairs a person is being asked to judge stay on the
+        page underneath. The component scrolls itself into view and puts the
+        focus on its DECLINE button, which is how a press raised from a card
+        three screens down still lands in front of the reader.
+      */}
+      {pendingConfirm !== null && (
+        <MatchAnywayConfirm
+          odClaimNum={pendingConfirm}
+          /* The claim-number line first, then the same differences the card
+             below prints. `disagreements` returns at least the claim-number
+             line for any candidate that reached this panel; a ClaimNum missing
+             from the snapshot entirely leaves the one honest line saying it
+             could not be checked. */
+          differences={(() => {
+            const candidate =
+              snapshot?.candidates.find((c) => c.odClaimNum === pendingConfirm) ?? null;
+            return candidate
+              ? disagreements(candidate, {
+                  claimNumber: claim.claimNumber,
+                  serviceDate: claim.serviceDate,
+                  billedCents: claim.totalBilledCents,
+                  patientName: claim.patientName,
+                })
+              : [
+                  {
+                    kind: "claimNumber" as const,
+                    phrase: `this app cannot check the carrier's claim number against Open Dental claim ${pendingConfirm} — the match that offered it is not the one on screen`,
+                    notable: true,
+                  },
+                ];
+          })()}
+          busy={busy !== null}
+          onConfirm={() => void writeConfirmation(pendingConfirm)}
+          onCancel={() => setPendingConfirm(null)}
+        />
+      )}
+
+      {/*
         ── MATCH IT UP, IN WORDS (Stage C, §5) ─────────────────────────────────
         Above the workbench and NOT inside it: the candidate cards below are
         unchanged (§12 — the workbench body is a separate PR), and they are the
@@ -531,6 +631,10 @@ export default function ClaimMatchPage() {
       <MatchGuidance
         snapshot={snapshot}
         eob={{
+          /* The carrier's own claim number — CLP01. The one field that settles
+             a match on its own, so it travels with the other three rather than
+             being looked up separately by whatever needs it. */
+          claimNumber: claim.claimNumber,
           serviceDate: claim.serviceDate,
           billedCents: claim.totalBilledCents,
           patientName: claim.patientName,
@@ -538,7 +642,7 @@ export default function ClaimMatchPage() {
         confirmedClaimNum={claim.odClaimNum}
         busy={busy !== null || claim.odMatchStatus === "confirmed"}
         fromBatchId={fromBatchId}
-        onConfirm={confirm}
+        onConfirm={confirmMatch}
         onShowOthers={() => {
           document
             .querySelector('[data-testid^="candidate-"]')
@@ -560,7 +664,7 @@ export default function ClaimMatchPage() {
         siblings={pager}
         onRunMatch={runMatch}
         onReview={markReviewed}
-        onConfirm={confirm}
+        onConfirm={confirmMatch}
         onDecide={decide}
         documentHref={documentHref(office, data.claim.provenance?.uploadId)}
       />
