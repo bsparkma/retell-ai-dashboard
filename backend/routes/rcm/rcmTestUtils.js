@@ -199,6 +199,56 @@ const CHECK_CONSTRAINTS = Object.freeze({
         return skipped === hasReason;
       },
     },
+    /*
+     * The 2026-09-09 constraint sweep added the four below. Only the
+     * skip/reason pairing had ever been modelled, and that gap is what let W-9
+     * and W-15 write an illegal row and go green twice.
+     *
+     * Each is transcribed from its migration, and each is one a drain test can
+     * actually reach — a constraint the fake cannot reach is a comment, not a
+     * guard, so the sweep's table records those as read rather than modelling
+     * them here.
+     */
+    {
+      // 1787260000000 — a path belongs only to a takeback line.
+      name: 'rcm_posting_queue_line_recoupment_shape_check',
+      ok: (row) => row.recoupment_path == null || row.is_supplemental === true,
+    },
+    {
+      // 1787260000000 — each takeback id belongs to the path that produced it.
+      name: 'rcm_posting_queue_line_recoupment_ids_check',
+      ok: (row) =>
+        (row.od_adjustment_num == null || row.recoupment_path === 'adjustment') &&
+        (row.od_supplemental_claim_proc_num == null ||
+          row.recoupment_path === 'supplemental'),
+    },
+    {
+      // 1787700000000 — a booked write-off adjustment needs a decided figure.
+      name: 'rcm_posting_queue_line_writeoff_adj_check',
+      ok: (row) =>
+        row.od_writeoff_adjustment_num == null || Number(row.decided_write_off_cents || 0) !== 0,
+    },
+  ],
+  rcm_posting_queue: [
+    {
+      /*
+       * 1787120000000 — the queue's OWN pairing, and the one the line table
+       * should have been written like. Every site that moves a plan off
+       * `blocked` clears the reason in the same statement: `claimRow`,
+       * `releaseRow` and `withdrawRow` all carry `blocked_reason = NULL`.
+       */
+      name: 'rcm_posting_queue_blocked_reason_check',
+      ok: (row) => (String(row.status) === 'blocked') === (row.blocked_reason != null),
+    },
+    {
+      // 1787260000000's widened form — a pure-recoupment plan posts with no
+      // check, so the proof is `reconciled_at` plus `requires_check = false`.
+      name: 'rcm_posting_queue_posted_proof_check',
+      ok: (row) =>
+        String(row.status) !== 'posted' ||
+        (row.reconciled_at != null &&
+          (row.od_claim_payment_num != null || row.requires_check === false)),
+    },
   ],
 });
 
@@ -1209,9 +1259,20 @@ class FakeOd {
     if (path === '/claims') {
       return { ok: true, status: 200, data: this.filtered('claims', params, 'PatNum') };
     }
-    // Slice 6d — the two read-backs. `?PatNum=` is honoured here; the callers
-    // re-filter anyway, which is the behaviour under test.
-    if (path === '/adjustments') {
+    /*
+     * Slice 6d — the two read-backs. `?PatNum=` is honoured here; the callers
+     * re-filter anyway, which is the behaviour under test.
+     *
+     * W-20: `/adjustments` is PLURAL-ONLY and `PatNum` is MANDATORY. Live, both
+     * `GET /adjustments` and `GET /adjustments/19157` answer **400 "PatNum is
+     * required."** — the id segment is not an address, it is ignored. Modelled
+     * here so a single-resource read fails in a test exactly as it fails against
+     * a chart, which is the only reason a green suite means anything.
+     */
+    if (path === '/adjustments' || path.startsWith('/adjustments/')) {
+      if (params.PatNum === undefined) {
+        return { ok: false, status: 400, data: null, error: 'PatNum is required.' };
+      }
       return { ok: true, status: 200, data: this.filtered('adjustments', params, 'PatNum') };
     }
     if (path === '/documents') {

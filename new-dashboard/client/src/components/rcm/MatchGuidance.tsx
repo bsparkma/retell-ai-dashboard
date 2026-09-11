@@ -56,14 +56,27 @@
 import { Building2, CheckCircle2, Info, Search } from "lucide-react";
 import { Link } from "wouter";
 import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
-import { agreement, differences } from "@/features/rcm/matchWords";
-import { day, money } from "@/features/rcm/format";
+import { agreement, differences, likelihood } from "@/features/rcm/matchWords";
+import { CONFIDENCE_TONE, day, money } from "@/features/rcm/format";
 import { remittanceHref } from "@/features/rcm/flow";
+import DisabledReason from "@/components/rcm/DisabledReason";
 
 export interface MatchGuidanceProps {
   snapshot: MatchSnapshot | null;
   /** What the CARRIER sent, for the comparison. */
-  eob: { serviceDate: string | null; billedCents: number | null; patientName: string | null };
+  eob: {
+    /**
+     * The carrier's own claim number (CLP01), for the agreement sentence.
+     *
+     * Optional so a caller that genuinely has none is expressible; the sentence
+     * simply does not name the field, exactly as it does not name a date nobody
+     * sent. It is NEVER defaulted to a placeholder.
+     */
+    claimNumber?: string | null;
+    serviceDate: string | null;
+    billedCents: number | null;
+    patientName: string | null;
+  };
   /** Already linked? Then this block reports rather than offers. */
   confirmedClaimNum: number | null;
   /** Disabled while another action is in flight. */
@@ -172,7 +185,7 @@ export default function MatchGuidance({
               </Link>
             )}
             <Link
-              href="/rcm/bring-in"
+              href="/rcm?add=1"
               data-testid="match-guidance-bring-in"
               className="text-xs font-medium text-foreground underline underline-offset-4"
             >
@@ -336,8 +349,57 @@ export default function MatchGuidance({
           {candidates.length - 3} more below, with the full evidence for each.
         </p>
       )}
+
+      <NeitherOfThese fromBatchId={fromBatchId} />
       <Footer />
     </section>
+  );
+}
+
+/**
+ * "NEITHER OF THESE?" — the honest fallback.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THERE IS NO CLAIM SEARCH IN THIS LANE, AND THIS DOES NOT INVENT ONE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The obvious thing to put here is a search box: type a name, pick the claim,
+ * link it. `/api/rcm` has no patient or claim search to put behind one — every
+ * read on this lane is keyed by an id the app already holds, and Stage C §15.1c
+ * names the missing search as an open backend ask. The searches that DO exist
+ * live in other modules, behind their own entitlement gates, and reaching into
+ * one of them from here would put a chart lookup on a route this practice may
+ * not be entitled to at all.
+ *
+ * So this says what is true and names the move that works. A dead search box
+ * that returns nothing, or one wired to another module's endpoint, would both
+ * be worse than a sentence: the first wastes the one minute somebody had, and
+ * the second is a PHI read through a door nobody opened for it.
+ *
+ * IT IS THE SAME ADVICE THE DEAD-END GIVES, deliberately — a biller who has read
+ * one of these screens has read both, and "the claim is not in Open Dental" has
+ * one answer whether the search returned nothing or returned the wrong things.
+ */
+function NeitherOfThese({ fromBatchId }: { fromBatchId: string | null }) {
+  return (
+    <div
+      className="mt-3 rounded-lg border border-border bg-background p-3"
+      data-testid="match-guidance-neither"
+    >
+      <p className="text-sm font-medium text-foreground">Neither of these?</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        If this claim isn&rsquo;t in Open Dental at all, save the check for tomorrow and enter the
+        claim first. Then match it up again and it will be here.
+      </p>
+      {fromBatchId && (
+        <Link
+          href={remittanceHref(fromBatchId)}
+          data-testid="match-guidance-neither-park"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+        >
+          Go to the check to save it for tomorrow
+        </Link>
+      )}
+    </div>
   );
 }
 
@@ -388,7 +450,26 @@ function CandidateSummary({
       className="rounded-lg border border-border bg-background p-3"
       data-testid={`match-guidance-candidate-${c.odClaimNum}`}
     >
-      <div className="font-mono text-sm font-medium text-foreground">ClaimNum {c.odClaimNum}</div>
+      {/*
+        LIKELY / POSSIBLE — the scorer's own band, in two words.
+
+        `likelihood()` reads `c.confidence`, which the SERVER computed from its
+        published bands. This card invents no cutoff, re-ranks nothing and hides
+        nothing; the raw `HIGH · 82` chip is still on the full candidate card in
+        the workbench below, for anybody querying the ranking. What changes here
+        is only that the first thing read is a word rather than a band name.
+      */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          data-testid={`match-guidance-likelihood-${c.odClaimNum}`}
+          className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${CONFIDENCE_TONE[c.confidence]}`}
+        >
+          {likelihood(c)}
+        </span>
+        <span className="font-mono text-sm font-medium text-foreground">
+          ClaimNum {c.odClaimNum}
+        </span>
+      </div>
       <div className="mt-0.5 truncate text-xs text-muted-foreground">
         {c.od.patientName ?? "Unknown patient"} · {c.od.dateService ? day(c.od.dateService) : "no date"}{" "}
         · {money(c.od.billedCents)}
@@ -413,14 +494,24 @@ function CandidateSummary({
         </ul>
       )}
 
-      <button
-        onClick={onConfirm}
-        disabled={busy || linked}
-        data-testid={`match-guidance-pick-${c.odClaimNum}`}
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
-      >
-        {linked ? "Linked" : "This is the one"}
-      </button>
+      <div className="mt-2 flex flex-col items-start gap-1">
+        <button
+          onClick={onConfirm}
+          disabled={busy || linked}
+          data-testid={`match-guidance-pick-${c.odClaimNum}`}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          {linked ? "Linked" : "This is the one"}
+        </button>
+        {/* A label that changes to "Linked" tells a reader who was watching.
+            It does not tell one who arrived after the fact, and it is not a
+            reason anything can enforce. */}
+        {linked && (
+          <DisabledReason testId={`match-guidance-linked-${c.odClaimNum}`}>
+            Already tied to this claim. Look again to change it.
+          </DisabledReason>
+        )}
+      </div>
     </div>
   );
 }

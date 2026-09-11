@@ -501,6 +501,7 @@ import RcmToday from "@/pages/rcm/RcmToday";
 import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
+import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import PostingQueue from "@/pages/rcm/PostingQueue";
 import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
@@ -619,7 +620,15 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     await screen.findByTestId("rcm-stepper");
-    await screen.findByTestId("approval-match-first");
+    /*
+     * RETARGETED IN S4. This waited for `approval-match-first`, the "match it up
+     * first" hint that lived in the approval PANEL on this page. Stage C moved
+     * approving to its own page (`/rcm/remittances/:id/approve`) and the hint
+     * went with it; on this screen the same instruction is now the header's one
+     * next-click, which W-11 made the only page-level match verb. Waiting on
+     * that is waiting on the thing this shot is a picture of.
+     */
+    await waitFor(() => expect(screen.getByTestId("rcm-cta").textContent).toContain("Match it up"));
     dump("ux-02-remittance-fresh");
   });
 
@@ -659,12 +668,61 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     await screen.findByTestId("rcm-stepper");
-    await screen.findByTestId("approval-panel");
-    // Open the checklist so the pass copy is in frame — this is the shot that
-    // shows a passing SNAPSHOT_CURRENT no longer printing a failure sentence.
+    /*
+     * RETARGETED IN S4. This waited for `approval-panel` and opened a claim's
+     * checklist inside it. Stage C retired the panel: approving is a page of its
+     * own, and what THIS screen shows one click from approving is the link to
+     * it. The checklist half of the shot — a passing SNAPSHOT_CURRENT printing
+     * its pass copy rather than the gate's leftover failure sentence — moved with
+     * the checklist, to `ux-03b-approve-ready` below.
+     */
+    await screen.findByTestId("approve-open-page");
+    dump("ux-03-remittance-ready");
+  });
+
+  it("ux-03b-approve-ready — the checklist, and a passing SNAPSHOT_CURRENT's own words", async () => {
+    shots.remittance = remit({ attentionReasons: [], attentionObservations: [] });
+    shots.claims = [
+      claim({
+        odMatchStatus: "confirmed",
+        odClaimNum: 53784,
+        reviewedAt: "2026-08-26T01:05:00.000Z",
+        reviewedBy: "biller@example.invalid",
+        odMatchConfirmedAt: "2026-08-26T01:00:00.000Z",
+      }),
+    ];
+    shots.preview = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        {
+          claimId: "c-1",
+          claimNumber: "CLM-88120",
+          patientName: "Stedi Test 2",
+          postable: true,
+          alreadyQueued: false,
+          failed: [],
+          checks: CHECKS_READY,
+        },
+      ],
+      postableCount: 1,
+      withheldCount: 0,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
+    // Open the checklist so the pass copy is in frame.
     fireEvent.click(screen.getByTestId("approval-toggle-c-1"));
     await screen.findByTestId("check-detail-SNAPSHOT_CURRENT");
-    dump("ux-03-remittance-ready");
+    expect(screen.getByTestId("check-detail-SNAPSHOT_CURRENT").textContent).not.toContain(
+      "not among the candidates",
+    );
+    dump("ux-03b-approve-ready");
   });
 
   it("ux-04-claim-confirmed — the breadcrumb, and why the other candidate is grey", async () => {
@@ -688,6 +746,14 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
 
     renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
     await screen.findByTestId("back-to-remittance");
+    /*
+     * RETARGETED IN S4. Stage C-3 folded the candidate list to one open card at
+     * a time — after a link, the LINKED one — so the other candidate is a
+     * one-line row until somebody opens it. Nothing is hidden (the fold is not a
+     * filter), and the shot's question, "why is the other candidate grey", is
+     * answered by opening it exactly as a biller would.
+     */
+    fireEvent.click(await screen.findByTestId("candidate-row-53785"));
     await screen.findByTestId("confirm-reason-53785");
     dump("ux-04-claim-confirmed");
   });
@@ -787,7 +853,13 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
 
     renderAt(<RcmToday />, "/rcm");
     await screen.findByTestId("rcm-left-off-roland");
-    await waitFor(() => expect(screen.getByTestId("rcm-get-work-in")).toBeTruthy());
+    /*
+     * `rcm-get-work-in-roland`, not `rcm-get-work-in`. D-18 turned the door from
+     * ONE card at the bottom of the page into a section INSIDE each practice's
+     * card, so the id carries the office — a two-office practice has two of
+     * these and a bare id could not say which one had rendered.
+     */
+    await waitFor(() => expect(screen.getByTestId("rcm-get-work-in-roland")).toBeTruthy());
     dump("shell-01-today");
   });
 
@@ -1151,5 +1223,167 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
     await waitFor(() => expect(screen.getByTestId("verdict-problems")).toBeTruthy());
     dump("bench-07-confirmed-stuck");
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // S4 — the bench's deltas, and "Before you say yes"
+  // ══════════════════════════════════════════════════════════════════════════
+
+  it("s4-01-bench-red — the code named, the approve verb greyed with ITS reason, the row flagged", async () => {
+    shots.claim = confirmedClaim({
+      verdict: {
+        state: "red",
+        register: "projection",
+        eobPatientCents: 48000,
+        projectedPatientCents: 48000,
+        decidedWriteOffCents: 0,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [
+          {
+            kind: "od_fee_disagrees",
+            code: "D2740",
+            lineId: "l-1",
+            detail: "D2740 was billed $1,200.00 on the remittance and $1,150.00 in Open Dental",
+          },
+        ],
+        sentence: "Patient's number can't be trusted yet — D2740 does not line up with Open Dental.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    await screen.findByTestId("verdict-copy-bar");
+    await screen.findByTestId("chart-line-why-533930");
+    await waitFor(() => expect(screen.getByTestId("rcm-cta-reason")).toBeTruthy());
+    dump("s4-01-bench-red");
+  });
+
+  it("s4-02-bench-amber-chip — the decision as it was stored, with who and when", async () => {
+    shots.claim = confirmedClaim({
+      lines: [
+        { ...LINE, patientRemainderCents: 0, paidCents: 90000 },
+        {
+          ...XRAY_LINE,
+          decision: "office_writeoff",
+          decisionReason: "xrays_bitewings",
+          decidedBy: "Billing User",
+          decidedAt: "2026-08-30T14:20:00.000Z",
+        },
+      ],
+      verdict: {
+        state: "amber",
+        register: "projection",
+        eobPatientCents: 3000,
+        projectedPatientCents: 0,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [
+          {
+            lineId: "pl-2",
+            code: "D0274",
+            amountCents: 3000,
+            reason: "xrays_bitewings",
+            reasonLabel: "X-rays — bitewings",
+            decidedBy: "Billing User",
+            decidedAt: "2026-08-30T14:20:00.000Z",
+          },
+        ],
+        problems: [],
+        sentence: "Patient will owe $0.00 — $30.00 below the EOB because you wrote off D0274.",
+      },
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    await screen.findByTestId("verdict-decision-pl-2");
+    await screen.findByTestId("claim-park");
+    dump("s4-02-bench-amber-chip");
+  });
+
+  it("s4-03-approve-all-approved — W-1: already approved, and a way forward", async () => {
+    // An approved claim is a matched, checked-over one — the fixture says so, or
+    // the picture would carry a "match it up first" hint no approved check shows.
+    shots.claims = [
+      claim({
+        odMatchStatus: "confirmed",
+        odClaimNum: 53784,
+        reviewedAt: "2026-08-29T20:00:00.000Z",
+        postingQueueId: "q-1",
+      }),
+    ];
+    shots.preview = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        {
+          claimId: "c-1",
+          claimNumber: "CLM-88120",
+          patientName: "Stedi Test 2",
+          postable: false,
+          alreadyQueued: true,
+          failed: [],
+          checks: CHECKS_READY,
+          verdict: {
+            state: "green",
+            register: "projection",
+            eobPatientCents: 45000,
+            projectedPatientCents: 45000,
+            decidedWriteOffCents: 0,
+            contractualWriteOffCents: 30000,
+            decisions: [],
+            problems: [],
+            sentence: "Patient will owe $450.00 once posted — matches the EOB.",
+          },
+        },
+      ],
+      postableCount: 0,
+      withheldCount: 0,
+      queuedCount: 1,
+      balanced: true,
+      differenceCents: 0,
+    };
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("approve-already-approved");
+    await screen.findByTestId("approve-onward-post");
+    dump("s4-03-approve-all-approved");
+  });
+
+  it("s4-04-approve-takeback-only — W-5: one sentence and one route", async () => {
+    shots.remittance = remit({ totalAmountCents: -2900 });
+    shots.claims = [
+      claim({
+        claimNumber: "CLM-88121",
+        totalPaidCents: -2900,
+        needsReviewReasons: ["reversal_not_postable"],
+      }),
+    ];
+    shots.preview = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [
+        {
+          claimId: "c-1",
+          claimNumber: "CLM-88121",
+          patientName: "Stedi Test 2",
+          postable: false,
+          alreadyQueued: false,
+          failed: ["NOT_RECOUPMENT"],
+          checks: CHECKS_READY.map((c) =>
+            c.code === "NOT_RECOUPMENT"
+              ? { ...c, passed: false, detail: "the remittance moves -2900 cents" }
+              : c,
+          ),
+        },
+      ],
+      postableCount: 0,
+      withheldCount: 1,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("approve-takeback-only");
+    dump("s4-04-approve-takeback-only");
   });
 });

@@ -377,14 +377,21 @@ test('pending-at-unwind ids are recorded, and never also on the spent deny-list'
     );
   }
 
-  // One id per target, in every bucket. A short list is a lost row.
-  assert.equal(pending.claims.length, T.TARGETS.length);
-  assert.equal(pending.procedures.length, T.TARGETS.length);
-  assert.equal(pending.claimProcs.length, T.TARGETS.length);
+  /*
+   * The 2026-09-01 reseed was UNWOUND on 2026-09-09, so the ids have made the
+   * move this constant's header describes: pending is empty, spent carries one
+   * per target. Whichever list holds them, it is exactly one list.
+   */
+  assert.equal(pending.claims.length, 0, 'nothing is live');
+  assert.equal(pending.procedures.length, 0);
+  assert.equal(pending.claimProcs.length, 0);
+  assert.equal(spent.claims.length, T.TARGETS.length);
+  assert.equal(spent.procedures.length, T.TARGETS.length);
+  assert.equal(spent.claimProcs.length, T.TARGETS.length);
 
   // And nothing may be double-counted inside a bucket.
   for (const bucket of ['claims', 'procedures', 'claimProcs']) {
-    assert.equal(new Set(pending[bucket]).size, pending[bucket].length, `${bucket} has a duplicate`);
+    assert.equal(new Set(spent[bucket]).size, spent[bucket].length, `${bucket} has a duplicate`);
   }
 
   /*
@@ -394,11 +401,10 @@ test('pending-at-unwind ids are recorded, and never also on the spent deny-list'
    */
   const manifest = {
     createdAt: new Date().toISOString(),
-    targets: pending.claims.map((claimNum) => ({ claimNum })),
+    targets: spent.claims.map((claimNum) => ({ claimNum })),
   };
-  assert.equal(
+  assert.ok(
     T.screenManifestForSpentIds(manifest),
-    null,
-    'a manifest naming the live reseed claims must still be accepted'
+    'a manifest naming the RETIRED reseed claims must now be refused'
   );
 });

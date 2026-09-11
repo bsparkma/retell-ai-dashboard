@@ -28,24 +28,54 @@
  *                               decides that, once, and the Checks page's
  *                               *Waiting on* column is the same computation in
  *                               the other register.
- *   3. GET WORK IN              ONE CARD, which navigates to Bring in.
+ *   3. GET WORK IN              TWO DROP ZONES, on this page.
  *
  * and only then how the week went. Stats are below the work because a number is
  * something you look at once a day and a queue is something you work.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE UPLOAD PANELS ARE GONE FROM THIS PAGE (ruling D-16)
+ * THE UPLOAD PANELS ARE BACK ON THIS PAGE (ruling D-18)
  * ─────────────────────────────────────────────────────────────────────────────
- * Stage A ended the two-doors problem by putting the one door HERE. That was
- * right about the count and wrong about the room: Today is what a biller reads
- * to find out what is waiting on her, and it opened with two drop zones and a
- * cost breaker in front of it.
+ * They have moved twice, and the third position is the one that survives, so it
+ * is worth writing down why rather than leaving the next reader to assume it
+ * moved by taste.
  *
- * The door is now `/rcm/bring-in`, first-class in the nav, and this page has a
- * card that goes there. Still exactly one upload surface —
- * `tests/rcm-shell.test.tsx` reads the source of every RCM page and fails if a
- * second one grows one. `/rcm?add=1` — the link Stage A's Checks page used — is
- * honoured by redirecting, so a bookmark still lands somewhere useful.
+ *   STAGE A  put them at the TOP of Today. The count was right — one door — and
+ *            the room was wrong: a biller opening the screen that tells her what
+ *            is waiting on her met two file inputs and a cost breaker before she
+ *            met a single check.
+ *
+ *   STAGE C  moved them to `/rcm/bring-in`, a page of their own with six source
+ *            tiles, three of which could not be pressed. That fixed the top of
+ *            Today and bought a second problem: adding a check — the act that
+ *            starts every other act in this module — became a navigation, to a
+ *            page half of which was a menu of things the product cannot do.
+ *
+ *   D-18     puts them back on Today, BELOW the work rather than above it. The
+ *            ORDER is the whole fix: what is waiting on you, what came in, and
+ *            THEN somewhere to add more. A biller with nothing to add scrolls
+ *            past it; a biller holding a file finds it without leaving the
+ *            screen she opened.
+ *
+ * The not-yet tiles are DROPPED, not relocated. A tile naming a thing the
+ * product cannot do earns its space only on a page devoted to sources, and there
+ * is no such page now.
+ *
+ * ONE UPLOAD SURFACE STILL. The invariant did not change — only which page holds
+ * it. `tests/rcm-shell.test.tsx` reads the source of every RCM page and fails if
+ * a second one imports a panel. `/rcm?add=1` — the link the Checks page and the
+ * matching guidance use — scrolls the section into view on arrival, and
+ * `/rcm/bring-in` still answers, by redirecting here.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SAVED FOR TOMORROW NOW COMES BACK IN ONE CLICK
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Parking was reversible from the day it shipped — opening the check un-parks it
+ * — but the only way to do it was to OPEN the check, which is the one thing a
+ * biller triaging this card does not want to do four times. So a saved row
+ * carries *Bring it back to tonight* beside the pick-up button: the same
+ * `unparkRemittance` call the check's own page fires, from the card she is
+ * already reading.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * "WHERE DID I LEAVE OFF" IS TWO HONEST SIGNALS, NOT ONE INFERRED ONE
@@ -82,8 +112,8 @@
  * `setAsideCount` come back from the SERVER over the whole office, so those two
  * carry no caveat at all.
  */
-import { useEffect, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import {
   AlertCircle,
   ArrowRight,
@@ -96,14 +126,17 @@ import {
   Search,
   ShieldCheck,
   Stethoscope,
+  Undo2,
   Upload,
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
 import {
   getRemittance,
   listPostingQueue,
   listRemittances,
+  unparkRemittance,
   RcmApiError,
   RCM_OFFICE_LABELS,
   type PostingQueuePage,
@@ -111,10 +144,12 @@ import {
   type Remittance,
   type RemittanceClaim,
 } from "@/features/rcm/api";
+import EobUploadPanel from "./EobUploadPanel";
+import EraUploadPanel from "./EraUploadPanel";
 import { money, withinLastDays } from "@/features/rcm/format";
 import { blockedCopy, SHADOW_MODE_COPY } from "@/features/rcm/posting";
 import { remittanceHref } from "@/features/rcm/flow";
-import { officeDay } from "@/features/rcm/time";
+import { greetingFor, officeDay, officeDayKey, todayLongDate } from "@/features/rcm/time";
 import { nextActionFor, PICK_UP_LABEL, type NextAction } from "@/features/rcm/nextAction";
 import { waitingFor } from "@/features/rcm/waitingOn";
 import {
@@ -158,6 +193,16 @@ interface Today {
   arrivals: Remittance[];
   postedThisWeek: number;
   postedCents: number;
+  /**
+   * TONIGHT, not this week — the all-done card's own numbers.
+   *
+   * "Tonight" is the PRACTICE's day (`officeDayKey`), not the reader's browser
+   * day. A biller finishing at 11pm Central and a manager checking from a
+   * laptop set to Eastern must be told about the same evening, and only the
+   * office's own boundary gives them that.
+   */
+  postedTonight: number;
+  postedTonightCents: number;
   stuckPostings: number;
   /** The commonest reason a posting is stuck, in biller words. */
   topBlocker: string | null;
@@ -177,22 +222,54 @@ type LoadState =
   | { kind: "loaded"; today: Today }
   | { kind: "failed"; message: string };
 
+/**
+ * WHERE THE *GET WORK IN* SECTION LIVES IN THE DOCUMENT.
+ *
+ * A plain element id rather than a ref threaded through three components: the
+ * arrivals empty state, an arriving `?add=1`, and — one day — a link from
+ * anywhere else all want to put the same section on screen, and an id is the one
+ * handle all three can hold without the page inventing a context to pass it in.
+ *
+ * It is per office because the section is: each practice gets its own two drop
+ * zones, and scrolling to "the" one on a two-office screen would be a coin flip.
+ */
+function getWorkInId(office: RcmOfficeId): string {
+  return `rcm-get-work-in-${office}`;
+}
+
+/** Put a practice's drop zones on screen. Used by the link AND by the button. */
+function scrollToGetWorkIn(office: RcmOfficeId): void {
+  document.getElementById(getWorkInId(office))?.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+}
+
 export default function RcmToday() {
   const scope = useRcmOfficeScope();
   const { reload } = useOffice();
-  const [, navigate] = useLocation();
+  const auth = useAuth();
 
   /**
-   * `/rcm?add=1` is Stage A's link to the old *Get work in* section.
+   * `/rcm?add=1` — the Checks page's *Add a check*, the matching guidance's
+   * *bring the check in*, and any bookmark from before Stage C.
    *
-   * The section is a page now, so the link REDIRECTS rather than scrolling to
-   * something that is not there. A bookmark that silently did nothing would be
-   * indistinguishable from a broken page.
+   * It SCROLLS rather than navigates, because the section is on this page again
+   * (D-18). The first scoped office wins: on a one-office practice that is the
+   * only answer, and on a two-office one the top of the section is where a
+   * reader can see both.
+   *
+   * The delay is the same 60ms the Bring in page used, and for the same reason:
+   * the section renders on the first paint but the office cards above it settle
+   * a tick later, and scrolling before they do lands short.
    */
+  const first = scope.offices[0];
   useEffect(() => {
+    if (!first) return;
     if (!window.location.search.includes("add=1")) return;
-    navigate("/rcm/bring-in", { replace: true });
-  }, [navigate]);
+    const t = window.setTimeout(() => scrollToGetWorkIn(first), 60);
+    return () => window.clearTimeout(t);
+  }, [first]);
 
   if (scope.loading) {
     return (
@@ -226,14 +303,32 @@ export default function RcmToday() {
 
   return (
     <div className="p-6" data-testid="rcm-today">
+      {/*
+        THE GREETING AND THE DATE.
+        ─────────────────────────────────────────────────────────────────────
+        A heading reading "Today" told a reader nothing she did not already
+        know from having clicked Today. The date does one useful thing: it is
+        the practice's own, so somebody reading this from a laptop in another
+        timezone at 11pm can see at a glance which evening every row below
+        belongs to. See `todayLongDate`.
+
+        The name is the person signed in, and is DROPPED rather than guessed at
+        when the session has not resolved — "Good morning," with a comma and
+        nothing after it is worse than "Good morning." on its own.
+      */}
       <h1
         className="text-2xl font-bold tracking-tight text-foreground"
         style={{ fontFamily: "Sora, sans-serif" }}
+        data-testid="rcm-today-greeting"
       >
-        Today
+        {greetingFor()}
+        {auth.status === "authenticated" && firstName(auth.user.name)
+          ? `, ${firstName(auth.user.name)}`
+          : ""}
       </h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Carrier payments, from the check that arrived to the money on the chart.
+      <p className="mt-1 text-sm text-muted-foreground" data-testid="rcm-today-date">
+        {todayLongDate()} · carrier payments, from the check that arrived to the money on the
+        chart.
       </p>
 
       {/* THE FLOW, SAID ONCE AT THE TOP. The same five the rail draws on every
@@ -259,46 +354,31 @@ export default function RcmToday() {
           body="None of this practice's offices are set up for revenue cycle work yet."
         />
       ) : (
-        <>
-          <div className="mt-6 space-y-8" data-testid="rcm-office-cards">
-            {scope.offices.map((office) => (
-              <OfficeToday key={office} office={office} />
-            ))}
-          </div>
-
-          {/* ── 3. GET WORK IN ─────────────────────────────────────────────
-              ONE CARD, and it navigates. The module's upload surface is a page
-              of its own (ruling D-16) — see the header, and
-              `tests/rcm-shell.test.tsx`, which fails if this page ever grows a
-              file input again. */}
-          <Link
-            href="/rcm/bring-in"
-            data-testid="rcm-get-work-in"
-            className="group mt-10 flex items-start gap-3 rounded-xl border border-border bg-card p-5 transition-colors hover:border-foreground/25 hover:bg-muted/40"
-          >
-            <Upload size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
-            <div>
-              <h2
-                className="text-lg font-semibold tracking-tight text-foreground"
-                style={{ fontFamily: "Sora, sans-serif" }}
-              >
-                Get work in
-              </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                An 835, a scanned EOB, a payer portal download — every way a carrier payment
-                arrives, in one place. What you add becomes a <strong>proposal</strong>: claims and
-                procedure lines waiting for a person. Nothing added is posted to a patient chart.
-              </p>
-            </div>
-            <ArrowRight
-              size={16}
-              className="ml-auto mt-1 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-            />
-          </Link>
-        </>
+        <div className="mt-6 space-y-8" data-testid="rcm-office-cards">
+          {scope.offices.map((office) => (
+            <OfficeToday key={office} office={office} />
+          ))}
+        </div>
       )}
     </div>
   );
+}
+
+/**
+ * The name to greet somebody by.
+ *
+ * The first word of `AuthUser.name`, which is a STAFF name — never a patient's.
+ * A name that is one word is used whole; an empty one yields empty, and the
+ * caller drops the comma with it rather than printing a dangling one.
+ *
+ * TYPED `string`, GUARDED ANYWAY. `/auth/me` is external data and this is the
+ * greeting on the module's landing screen: a session whose payload omits `name`
+ * must produce "Good morning", not a blank page. The vitest fixtures build a
+ * user without one, which is exactly the shape a real thin session has.
+ */
+function firstName(name: string | null | undefined): string {
+  if (typeof name !== "string") return "";
+  return name.trim().split(/\s+/)[0] ?? "";
 }
 
 /**
@@ -344,6 +424,8 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
 
   const today = state.kind === "loaded" ? state.today : null;
   const stuckTotal = today ? today.counts.blocked + today.stuckPostings : null;
+  /** Re-read this practice after something on the page changed it. */
+  const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
   return (
     <section
@@ -393,10 +475,13 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
       ) : (
         <>
           {/* ── 1. WHERE DID I LEAVE OFF ─────────────────────────────────── */}
-          <LeftOff office={office} today={today} />
+          <LeftOff office={office} today={today} onChanged={reload} />
 
           {/* ── 2. WHAT CAME IN ──────────────────────────────────────────── */}
           <Arrivals office={office} today={today} />
+
+          {/* ── 3. GET WORK IN ───────────────────────────────────────────── */}
+          <GetWorkIn office={office} />
 
           {/* ── HOW IT STANDS — below the work, on purpose ───────────────── */}
           <h3
@@ -527,6 +612,62 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
 }
 
 /**
+ * "Get work in" — the module's one upload surface, back on Today (D-18).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TWO DROP ZONES, AND THE DIFFERENCE BETWEEN THEM IS THE POINT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * An 835 is parsed; every figure on it is exactly what the carrier sent, so a
+ * bad file can be malformed but it cannot be MISREAD. A PDF is read by a model,
+ * and every figure it produces is a proposal somebody checks. Those are not two
+ * flavours of upload, they are two different promises about the numbers, and a
+ * biller choosing between them is choosing how much she will have to verify.
+ *
+ * So the two zones say which is which, in one line each, above the panels
+ * themselves. The panels are UNCHANGED — this section chooses where they sit
+ * and nothing else. A zone that re-implemented an upload would be a second
+ * ingest path wearing a new label.
+ *
+ * A PAYER PORTAL DOWNLOAD IS THE EOB ZONE. Stage C gave it a tile of its own,
+ * because that is where a biller looks for it, and pointed it at the very same
+ * endpoint. With the tiles gone the honest thing is to NAME it in the EOB
+ * zone's line rather than leave somebody holding a portal PDF wondering whether
+ * this product has a place for it.
+ */
+function GetWorkIn({ office }: { office: RcmOfficeId }) {
+  return (
+    <section className="mt-8 scroll-mt-6" id={getWorkInId(office)} data-testid={`rcm-get-work-in-${office}`}>
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+        <Upload size={14} />
+        Get work in
+      </h3>
+      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+        Whatever you add here becomes a <strong>proposal</strong> — claims and procedure lines
+        waiting for a person. Nothing added is posted to a patient chart.
+      </p>
+
+      <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div data-testid={`rcm-drop-era-${office}`}>
+          <p className="mb-1.5 text-xs font-medium text-foreground">
+            An 835 file from the carrier — <span className="font-normal text-muted-foreground">reads itself; every figure is exactly what was sent.</span>
+          </p>
+          <EraUploadPanel office={office} />
+        </div>
+        <div data-testid={`rcm-drop-eob-${office}`}>
+          <p className="mb-1.5 text-xs font-medium text-foreground">
+            A scanned EOB or a payer portal download —{" "}
+            <span className="font-normal text-muted-foreground">
+              read by a model, so every figure needs your eyes.
+            </span>
+          </p>
+          <EobUploadPanel office={office} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
  * WHAT A STARTED ROW SAYS ABOUT ITSELF.
  *
  * Two facts can put a check here and they are different sentences. The newer one
@@ -561,7 +702,16 @@ function startedNote(r: Remittance, office: RcmOfficeId): string {
  * state. An empty "where you left off" every morning is furniture, and the
  * section below it — what came in — is the honest first thing on a clean desk.
  */
-function LeftOff({ office, today }: { office: RcmOfficeId; today: Today | null }) {
+function LeftOff({
+  office,
+  today,
+  onChanged,
+}: {
+  office: RcmOfficeId;
+  today: Today | null;
+  /** Re-read the practice, so the card and every count below move together. */
+  onChanged: () => void;
+}) {
   /**
    * The claim bundles for the cards on screen, keyed by check.
    *
@@ -629,6 +779,7 @@ function LeftOff({ office, today }: { office: RcmOfficeId; today: Today | null }
             remittance={r}
             kind={kind}
             action={nextActionFor(r, claims[r.batchId] ?? null)}
+            onChanged={onChanged}
           />
         ))}
       </ul>
@@ -663,12 +814,40 @@ function LeftOffRow({
   remittance: r,
   kind,
   action,
+  onChanged,
 }: {
   office: RcmOfficeId;
   remittance: Remittance;
   kind: "parked" | "started";
   action: NextAction;
+  onChanged: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Un-save, from the card.
+   *
+   * A REFUSAL IS SHOWN, not swallowed. Everything else on this card is a
+   * convenience that can fail silently because the card still says something
+   * true without it; this one is a press, and a press that appears to do nothing
+   * is the honest-states rule broken in the smallest possible way.
+   */
+  async function bringBack() {
+    setBusy(true);
+    setError(null);
+    try {
+      await unparkRemittance(office, r.batchId);
+      onChanged();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "That could not be brought back — try it again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <li
       data-testid={`rcm-left-off-row-${r.batchId}`}
@@ -700,17 +879,35 @@ function LeftOffRow({
         <span className="font-mono text-xs tabular-nums text-muted-foreground">
           {money(r.totalAmountCents)}
         </span>
-        <span className="w-full truncate text-xs text-muted-foreground">
-          {kind === "parked"
-            ? (r.parkedNote ??
+        {/*
+          HER OWN LINE, IN QUOTATION MARKS — the same treatment the set-aside
+          banner gives a reason note, and for the same reason: a sentence
+          somebody typed reads differently from a sentence the product composed,
+          and the quotes are what say which one this is. When there is no note,
+          the composed fallback is not quoted.
+
+          AND IT WRAPS. Both branches are sentences — hers, or `startedNote`'s
+          "Approve was pressed by … and this check still needs somebody" — and a
+          note somebody wrote to herself is the last thing on this page that
+          should arrive with its ending cut off. Same rule as the arrivals
+          table's *What happens next*; see the long note there.
+        */}
+        <span className="w-full break-words text-xs text-muted-foreground">
+          {kind === "parked" ? (
+            r.parkedNote ? (
+              <span data-testid={`rcm-left-off-note-${r.batchId}`}>“{r.parkedNote}”</span>
+            ) : (
               `Saved${r.parkedBy ? ` by ${r.parkedBy}` : ""}${
                 r.parkedAt ? ` on ${officeDay(r.parkedAt, office)}` : ""
-              }`)
-            : startedNote(r, office)}
+              }`
+            )
+          ) : (
+            startedNote(r, office)
+          )}
         </span>
       </div>
 
-      {/* THE NEXT THING, BY NAME, AND ONE BUTTON THAT GOES TO IT. */}
+      {/* THE NEXT THING, BY NAME, AND THE BUTTONS THAT ACT ON IT. */}
       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
         <span
           className="text-xs font-medium text-foreground"
@@ -718,15 +915,43 @@ function LeftOffRow({
         >
           {action.sentence}
         </span>
-        <Link
-          href={action.href}
-          data-testid={`rcm-pick-up-${r.batchId}`}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-        >
-          {PICK_UP_LABEL}
-          <ArrowRight size={12} />
-        </Link>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {/*
+            ONLY ON A SAVED ROW. A started check was never put down on purpose,
+            so there is nothing to bring back from — and a button that un-does
+            something nobody did is a control with no meaning.
+          */}
+          {kind === "parked" && (
+            <button
+              type="button"
+              onClick={bringBack}
+              disabled={busy}
+              data-testid={`rcm-bring-back-${r.batchId}`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Undo2 size={12} />}
+              Bring it back to tonight
+            </button>
+          )}
+          <Link
+            href={action.href}
+            data-testid={`rcm-pick-up-${r.batchId}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            {PICK_UP_LABEL}
+            <ArrowRight size={12} />
+          </Link>
+        </div>
       </div>
+
+      {error && (
+        <p
+          className="mt-1.5 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`rcm-bring-back-error-${r.batchId}`}
+        >
+          {error}
+        </p>
+      )}
     </li>
   );
 }
@@ -786,8 +1011,33 @@ function Arrivals({ office, today }: { office: RcmOfficeId; today: Today | null 
                 <span className="text-right font-mono text-xs tabular-nums text-muted-foreground">
                   {r.claimCount}
                 </span>
+                {/*
+                  THIS CELL WRAPS. IT MUST NEVER TRUNCATE.
+                  ───────────────────────────────────────────────────────────
+                  It did, and the practice owner's screen read *The carrier is
+                  reclaiming money. It i…* — a takeback announced by half a
+                  sentence, cut mid-word, with the half that says what to do
+                  about it on the other side of the ellipsis.
+
+                  A column whose job is a SENTENCE may not cut itself off. The
+                  ellipsis is an honest device for an identifier — a payer name
+                  or a check number is recognisable from its first characters
+                  and the rest is lookup — and a dishonest one for prose, where
+                  the clipped half is the half carrying the verb.
+
+                  So the row grows instead. `min-w-0` lets the grid track shrink
+                  below the sentence's natural width (without it a long sentence
+                  pushes the whole row wide rather than wrapping), and
+                  `break-words` catches the pathological case of a single
+                  unbroken token longer than the column.
+
+                  The `title` that used to carry the full text is gone with the
+                  truncation: it existed only because the cell was clipped, and
+                  a tooltip repeating text already fully on screen is noise a
+                  screen reader reads twice.
+                */}
                 <span
-                  className={`truncate text-xs ${
+                  className={`min-w-0 break-words text-xs ${
                     waiting.urgent ? "font-medium text-foreground" : "text-muted-foreground"
                   }`}
                   data-testid={`rcm-arrival-next-${r.batchId}`}
@@ -826,39 +1076,142 @@ function EmptyArrivals({ office, today }: { office: RcmOfficeId; today: Today })
         <p className="mt-2 text-sm font-medium text-foreground">
           Nothing has come in for {RCM_OFFICE_LABELS[office]} yet
         </p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Add a carrier's 835 or an EOB and it is read into a proposal. Nothing is posted to a
-          chart on its own.
+        <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
+          This is where a carrier&rsquo;s payments land. Add an 835 file or an EOB PDF and CareIN
+          reads it into one check per payment, finds each claim in Open Dental, and works out what
+          the carrier paid, what it wrote off, and what the patient is left owing. All of that is a
+          proposal you read and change before anything happens to it.
         </p>
-        <Link
-          href="/rcm/bring-in"
+        {/*
+          A BUTTON, NOT A LINK — the drop zones are further down THIS page now
+          (D-18), so there is nowhere to navigate to. It scrolls, which is the
+          honest verb for what it does.
+        */}
+        <button
+          type="button"
+          onClick={() => scrollToGetWorkIn(office)}
           data-testid={`rcm-arrivals-none-ever-add-${office}`}
           className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
         >
           <Upload size={14} />
           Bring one in
-        </Link>
+        </button>
+        {/*
+          THE FOOTER IS THE POINT OF THE WHOLE MODULE, and a first-run reader is
+          exactly who needs it. Somebody meeting this screen for the first time
+          is being asked to feed a carrier's file to software that can write to
+          patients' charts, and every hesitation about doing that is answered by
+          one sentence. It is a footer rather than a paragraph because it stays
+          true on every visit, not only this one.
+        */}
+        <p
+          className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground"
+          data-testid={`rcm-arrivals-none-ever-safety-${office}`}
+        >
+          Nothing you do here reaches Open Dental until you say so.
+        </p>
       </div>
     );
   }
 
+  /*
+   * FINISHED, WITH THE NUMBERS.
+   *
+   * "You're done" on its own reads like a screen that failed to load, so it
+   * carries a small summary of the evening. Every line is computed from data
+   * this page ALREADY holds, and each is dropped on its own when it is not
+   * there — a card with two lines is honest; a card with a fourth line invented
+   * to balance the layout is not. See `summariseTonight`.
+   */
+  const summary = summariseTonight(today);
   return (
     <div
       className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50/50 p-6 text-center dark:border-emerald-900/60 dark:bg-emerald-950/15"
       data-testid={`rcm-arrivals-all-done-${office}`}
     >
       <PartyPopper size={20} className="mx-auto text-emerald-600 dark:text-emerald-400" />
-      <p className="mt-2 text-sm font-medium text-foreground">That's everything for tonight</p>
+      <p className="mt-2 text-sm font-medium text-foreground">You&rsquo;re done for tonight.</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        {today.postedThisWeek > 0
-          ? `${today.postedThisWeek} check${today.postedThisWeek === 1 ? "" : "s"} posted this week — ${money(today.postedCents)}, every one confirmed in Open Dental afterwards.`
-          : "Nothing is waiting on anybody at this practice."}
+        Nothing at {RCM_OFFICE_LABELS[office]} is waiting on anybody.
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {today.total} check{today.total === 1 ? "" : "s"} on file here, all worked through.
-      </p>
+
+      {summary.length > 0 && (
+        <dl
+          className="mx-auto mt-4 w-fit min-w-[15rem] space-y-1 rounded-lg border border-border bg-card px-4 py-3 text-left"
+          data-testid={`rcm-tonight-summary-${office}`}
+        >
+          {summary.map((line) => (
+            <div key={line.label} className="flex items-baseline justify-between gap-6 text-xs">
+              <dt className="text-muted-foreground">{line.label}</dt>
+              <dd
+                className="font-mono font-semibold tabular-nums text-foreground"
+                data-testid={`rcm-tonight-${line.testId}-${office}`}
+              >
+                {line.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
     </div>
   );
+}
+
+interface SummaryLine {
+  label: string;
+  value: string;
+  testId: string;
+}
+
+/**
+ * The evening, in the lines this page can actually evidence.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS HERE, AND WHAT IS DELIBERATELY NOT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The design asked for four lines. Two of them have no client-side source and
+ * are therefore ABSENT rather than approximated:
+ *
+ *   WRITTEN OFF BY THE OFFICE lives on `PostingQueueLine.intendedWriteOffCents`
+ *   — per LINE, and the posting rows this page reads carry no lines. Summing
+ *   something else and labelling it "written off" would put a number a biller
+ *   might quote to a patient beside a word it does not mean.
+ *
+ *   YOU STARTED AT would need a session start, and nothing records one. The
+ *   earliest posting that FINISHED tonight is a different fact wearing the same
+ *   sentence, and it would be wrong on the commonest evening of all — one where
+ *   she worked for an hour and posted nothing.
+ *
+ * Both are written up as backend asks in the PR rather than guessed at here.
+ */
+export function summariseTonight(today: Today): SummaryLine[] {
+  const lines: SummaryLine[] = [];
+  if (today.postedTonight > 0) {
+    lines.push({
+      label: "Checks finished tonight",
+      value: String(today.postedTonight),
+      testId: "finished",
+    });
+    lines.push({
+      label: "Money accounted for",
+      value: money(today.postedTonightCents),
+      testId: "money",
+    });
+  }
+  /*
+   * The fallback, and it is not a consolation prize: on an evening where
+   * nothing posted — every check matched, checked over, and left for an
+   * administrator to switch posting on — "12 checks on file, all worked
+   * through" is the true summary of it, and the count is the reassurance.
+   */
+  if (lines.length === 0 && today.total > 0) {
+    lines.push({
+      label: `Check${today.total === 1 ? "" : "s"} on file, all worked through`,
+      value: String(today.total),
+      testId: "onfile",
+    });
+  }
+  return lines;
 }
 
 /** One work state: its count, its name, and where it goes. */
@@ -928,6 +1281,19 @@ export function summarise(
   const postedRecently = queue.rows.filter(
     (r) => r.status === "posted" && withinLastDays(r.finishedAt, WEEK_DAYS, now),
   );
+  /*
+   * The subset that finished TODAY in the practice's own timezone. Narrowed
+   * from `postedRecently` rather than from `queue.rows`, so both numbers are
+   * about the same population and cannot disagree about what "posted" means.
+   */
+  const nowIso = now.toISOString();
+  const postedTonight = postedRecently.filter((r) => {
+    // Each row is compared against "now" IN ITS OWN OFFICE'S day, so the two
+    // keys can never be taken from two different boundaries. A row with no
+    // finishedAt yields null and is excluded rather than counted as today.
+    const key = officeDayKey(r.finishedAt, r.office);
+    return key !== null && key === officeDayKey(nowIso, r.office);
+  });
 
   /*
    * THE COMMONEST REASON A POSTING IS STUCK, not the first one seen.
@@ -1010,6 +1376,8 @@ export function summarise(
       .slice(0, ARRIVALS_LIMIT),
     postedThisWeek: postedRecently.length,
     postedCents: postedRecently.reduce((sum, r) => sum + r.postedTotalCents, 0),
+    postedTonight: postedTonight.length,
+    postedTonightCents: postedTonight.reduce((sum, r) => sum + r.postedTotalCents, 0),
     stuckPostings: queue.byStatus.blocked,
     topBlocker: topReason ? (blockedCopy(topReason)?.label ?? null) : null,
     /*

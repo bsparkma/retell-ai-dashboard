@@ -25,7 +25,33 @@
  * bottom, which is precisely the thing being prevented.
  *
  * A `title` attribute does NOT count. The practice reads these screens on a
- * tablet at the front desk and there is no hover on a tablet.
+ * tablet at the front desk and there is no hover on a tablet. Slice 1 of the UI
+ * overhaul found one of these still standing on the posting screen's "retire
+ * it" affordance, where the ONLY explanation for a greyed control was a tooltip
+ * the people who meet it cannot reach.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A PRECONDITION NEEDS A REASON. BEING IN FLIGHT DOES NOT.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Two different things put `disabled` on a button and only one of them is what
+ * this rule is about:
+ *
+ *   A PRECONDITION — no permission, an unbalanced check, a note not typed yet,
+ *   a cooldown still running, a candidate already tied. The control is greyed
+ *   and will stay greyed until somebody does something, and WHICH something is
+ *   exactly what a reader cannot infer. These carry a `DisabledReason`.
+ *
+ *   ITS OWN REQUEST IN FLIGHT — `disabled={busy}` for the half-second the
+ *   button is saving. The label has already changed to "Retiring…" beside a
+ *   spinner, it clears on its own, and nobody is stuck. Marking these would put
+ *   a line of explanation under every control in the module for a state that
+ *   ends before it can be read, which trains people to ignore the ones that
+ *   matter.
+ *
+ * The scan cannot tell the two apart — it walks the DOM, and both look the same
+ * there. What keeps it honest is that each case below renders the screen in the
+ * state where a PRECONDITION bites, so an in-flight button is not in the tree
+ * at all when the scan runs.
  *
  * NO NETWORK, NO PHI. Every payer, patient and figure is synthetic.
  */
@@ -339,6 +365,18 @@ import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
 import ApproveCheck from "@/pages/rcm/ApproveCheck";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
 import PostingQueue from "@/pages/rcm/PostingQueue";
+/*
+ * SLICE 1 OF THE UI OVERHAUL widened the scan. These were the module's unscanned
+ * screens, and Today is the one a biller spends her morning on — the worst
+ * possible place for a greyed control with nothing beside it.
+ *
+ * SLICE 2 removed the third, `BringIn`: D-18 put the two upload panels back on
+ * Today and deleted that page. The COVERAGE did not go with it — the panels
+ * carry the paused-cap controls this scan exists for, and the two Today cases
+ * below now render them, so the same greyed buttons are still walked.
+ */
+import RcmToday from "@/pages/rcm/RcmToday";
+import TakebackSop from "@/pages/rcm/TakebackSop";
 import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -484,6 +522,52 @@ describe("no RCM screen greys a control without saying why", () => {
     expect(screen.getByTestId("posting-drain-reason-roland").textContent).toContain(
       "Nothing waiting to post.",
     );
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  /*
+   * ── THE SCREENS SLICE 1 ADDED TO THE SCAN ──────────────────────────────
+   *
+   * The rule is the same and so is the scan; only the coverage is new. Each is
+   * rendered as a READER — the tier that meets the most refusals — and in the
+   * state where something would be greyed if anything is.
+   */
+  it("Today, where a biller spends the morning", async () => {
+    renderAt(<RcmToday />, "/rcm");
+    await screen.findByTestId("rcm-today");
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("Today with nothing on it — the first-run empty state", async () => {
+    fixtures.remittances = [];
+    renderAt(<RcmToday />, "/rcm");
+    await screen.findByTestId("rcm-today");
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("the one upload door, before a file is chosen", async () => {
+    /*
+     * THE DOOR IS ON TODAY AGAIN (D-18), so this renders Today and waits for
+     * the section rather than for a page that no longer exists. The scan is
+     * unchanged and so is what it is looking for: the two upload panels carry
+     * the cap-paused controls, and a greyed *Upload* with no sentence beside it
+     * is exactly the failure this whole file was written for.
+     */
+    renderAt(<RcmToday />, "/rcm?add=1");
+    await screen.findByTestId("rcm-get-work-in-roland");
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("the takeback SOP — reference, and it must not grow a dead button", async () => {
+    renderAt(<TakebackSop />, "/rcm/sop/takeback");
+    await waitFor(() => expect(document.body.textContent).not.toBe(""));
+    expect(unexplainedDisabledControls()).toEqual([]);
+  });
+
+  it("the Checks list on an empty filter, where both ways out live", async () => {
+    fixtures.remittances = [];
+    renderAt(<RemittanceList />, "/rcm/remittances", "?view=set_aside");
+    await screen.findByTestId("remittances-roland");
     expect(unexplainedDisabledControls()).toEqual([]);
   });
 

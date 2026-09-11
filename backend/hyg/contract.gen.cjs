@@ -14813,16 +14813,17 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z3 = __importStar(require_external());
-    exports2.z = z3;
+    var z4 = __importStar(require_external());
+    exports2.z = z4;
     __exportStar(require_external(), exports2);
-    exports2.default = z3;
+    exports2.default = z4;
   }
 });
 
 // ../backend/hyg/contract.entry.ts
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
+  CORRECTED_OPTION_SPELLINGS: () => CORRECTED_OPTION_SPELLINGS,
   DONE_TODAY_OPTIONS: () => DONE_TODAY_OPTIONS,
   DX_LABELS: () => DX_LABELS,
   DxCodeSchema: () => DxCodeSchema,
@@ -14850,7 +14851,12 @@ __export(contract_entry_exports, {
   HygWarningSchema: () => HygWarningSchema,
   MOTIVATION_LABELS: () => MOTIVATION_LABELS,
   MotivationCodeSchema: () => MotivationCodeSchema,
+  NOTE_CONTROLS: () => NOTE_CONTROLS,
+  NOTE_TEMPLATES: () => NOTE_TEMPLATES,
   NextVisitSchema: () => NextVisitSchema,
+  NoteControlIdSchema: () => NoteControlIdSchema,
+  NoteFieldSchema: () => NoteFieldSchema,
+  NoteFreeFieldSchema: () => NoteFreeFieldSchema,
   OFFICE_IDS: () => OFFICE_IDS,
   OfficeIdSchema: () => OfficeIdSchema,
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
@@ -14876,32 +14882,466 @@ __export(contract_entry_exports, {
   TreatmentItemUpdateRequestSchema: () => TreatmentItemUpdateRequestSchema,
   TreatmentPrioritySchema: () => TreatmentPrioritySchema,
   TreatmentStatusSchema: () => TreatmentStatusSchema,
+  VISIT_TYPES: () => VISIT_TYPES,
+  VISIT_TYPE_AUTONOTE: () => VISIT_TYPE_AUTONOTE,
+  VISIT_TYPE_LABELS: () => VISIT_TYPE_LABELS,
+  VisitTypeSchema: () => VisitTypeSchema,
+  VisitTypeSourceSchema: () => VisitTypeSourceSchema,
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod2.ZodError,
+  ZodError: () => import_zod3.ZodError,
+  controlLabel: () => controlLabel,
+  controlsFor: () => controlsFor,
   deriveCategory: () => deriveCategory,
+  emptyNoteField: () => emptyNoteField,
   emptySlip: () => emptySlip,
+  fieldText: () => fieldText,
+  freeFieldsFor: () => freeFieldsFor,
+  hasPerioChartLine: () => hasPerioChartLine,
+  isAnswered: () => isAnswered,
+  isChildVisit: () => isChildVisit,
   isOfficeId: () => isOfficeId,
   recordsNeededFor: () => recordsNeededFor,
-  z: () => import_zod2.z
+  renderVisitNote: () => renderVisitNote,
+  slipNoteField: () => slipNoteField,
+  suggestVisitType: () => suggestVisitType,
+  z: () => import_zod3.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
 // shared/hyg/contract.ts
+var import_zod2 = __toESM(require_zod(), 1);
+
+// shared/hyg/noteTemplates.ts
 var import_zod = __toESM(require_zod(), 1);
-var OfficeIdSchema = import_zod.z.enum(["roland", "valley"]);
+var VisitTypeSchema = import_zod.z.enum([
+  "adult_prophy_np",
+  "adult_prophy_recall",
+  "child_prophy_np",
+  "child_prophy_recall",
+  "perio_maint"
+]);
+var VISIT_TYPES = VisitTypeSchema.options;
+var VISIT_TYPE_LABELS = {
+  adult_prophy_np: "Adult Prophy NP",
+  adult_prophy_recall: "Adult Prophy Recall",
+  child_prophy_np: "Child Prophy NP",
+  child_prophy_recall: "Child Prophy Recall",
+  perio_maint: "Perio Maint"
+};
+var VISIT_TYPE_AUTONOTE = {
+  adult_prophy_np: "Adult Prophy NP",
+  adult_prophy_recall: "Adult Prophy Recall",
+  child_prophy_np: "Child Prophy NP",
+  child_prophy_recall: "Child Prophy Recall",
+  perio_maint: "Perio Maint"
+};
+function isChildVisit(type) {
+  return type === "child_prophy_np" || type === "child_prophy_recall";
+}
+var VisitTypeSourceSchema = import_zod.z.enum(["auto", "manual"]);
+var NoteControlIdSchema = import_zod.z.enum([
+  "oh",
+  "perioStatus",
+  "perioClass",
+  "boneLoss",
+  "plaque",
+  "calculus",
+  "subCalculus",
+  "supraCalculus",
+  "bleeding",
+  "stain",
+  "mallampati",
+  "ste",
+  "hte",
+  "pedBehavior",
+  "drs"
+]);
+var PLAQUE_OPTIONS = ["Minimal", "Moderate", "Heavy", "none"];
+var BLEEDING_OPTIONS = ["Minimal", "Moderate", "Heavy", "None"];
+var CALCULUS_OPTIONS = ["Slight", "Moderate", "Heavy", "None"];
+var NOTE_CONTROLS = {
+  oh: { descript: "OH", label: "OH", options: ["Good", "Fair", "Poor"], multi: false },
+  perioStatus: {
+    descript: "Perio Status",
+    label: "Perio status",
+    options: ["WNL", "Mild", "Moderate", "Severe"],
+    multi: false
+  },
+  perioClass: {
+    descript: "Perio Class",
+    label: "Perio Class",
+    options: ["WNL", "Mild", "Moderate", "Severe", "Advanced"],
+    multi: true
+  },
+  boneLoss: {
+    descript: "Bone Loss",
+    label: "Bone Loss",
+    options: ["WNL(1-2mm)", "Mild (3-4mm)", "Moderate (5-6 mm)", "Severe (6+mm)"],
+    multi: false
+  },
+  plaque: { descript: "Plaque", label: "Plaque", options: PLAQUE_OPTIONS, multi: false },
+  calculus: { descript: "Calculus", label: "Calculus", options: CALCULUS_OPTIONS, multi: false },
+  subCalculus: {
+    descript: "Calculus",
+    label: "Sub Calculus",
+    options: CALCULUS_OPTIONS,
+    multi: false
+  },
+  supraCalculus: {
+    descript: "Calculus",
+    label: "Supra Calculus",
+    options: CALCULUS_OPTIONS,
+    multi: false
+  },
+  bleeding: { descript: "Bleeding", label: "Bleeding", options: BLEEDING_OPTIONS, multi: false },
+  stain: { descript: "Stain", label: "Stain", options: CALCULUS_OPTIONS, multi: false },
+  mallampati: {
+    descript: "Mallampati",
+    label: "Mallampati",
+    options: ["Class 1", "Class 2", "Class 3", "Class 4"],
+    multi: false
+  },
+  ste: {
+    descript: "STE",
+    label: "STE",
+    options: [
+      "Inflammation/bleeding Mild",
+      "Inflammation/bleeding Moderate",
+      "Inflammation/bleeding Severe",
+      "WNL"
+    ],
+    multi: true
+  },
+  hte: {
+    descript: "HTE",
+    label: "HTE",
+    options: ["RD", "XD", "Demineralization", "WNL"],
+    multi: true
+  },
+  pedBehavior: {
+    descript: "Pediatric Behavior",
+    label: "Pediatric behavior",
+    options: [
+      "1- uncooperative/combative",
+      "2- somewhat uncooperative",
+      "3- somewhat cooperative",
+      "4- fantastic"
+    ],
+    multi: true
+  },
+  /**
+   * The doctor who examined. Its OPTIONS ARE EMPTY HERE ON PURPOSE — they are
+   * the office's own supervising doctors, and a name in a shared file is a name
+   * that ends up in the wrong practice's chart note. `backend/config/hygStaff.js`
+   * holds them per office and the form is handed them at runtime.
+   */
+  drs: { descript: "Drs", label: "Doctor", options: [], multi: true }
+};
+var CORRECTED_OPTION_SPELLINGS = {
+  "Inflamamtion/bleeding Severe": "Inflammation/bleeding Severe",
+  Advaced: "Advanced"
+};
+var NoteFieldSchema = import_zod.z.object({
+  /** Picked options, verbatim. Empty means nobody answered. */
+  grades: import_zod.z.array(import_zod.z.string().min(1).max(80)).max(8),
+  /** The free text after the grade. `Lower ant and U post`. */
+  detail: import_zod.z.string().max(200)
+}).strict();
+function emptyNoteField() {
+  return { grades: [], detail: "" };
+}
+function isAnswered(field) {
+  if (!field) return false;
+  return field.grades.length > 0 || field.detail.trim().length > 0;
+}
+function fieldText(field) {
+  if (!field) return "";
+  const grades = field.grades.join(", ");
+  const detail = field.detail.trim();
+  if (grades && detail) return `${grades} ${detail}`;
+  return grades || detail;
+}
+var NoteFreeFieldSchema = import_zod.z.enum(["chiefComplaint", "findings", "rtc"]);
+function assessment(exam, fluoride, findings = true) {
+  return { t: "assessment", exam, fluoride, findings };
+}
+var NOTE_TEMPLATES = {
+  adult_prophy_np: {
+    visitType: "adult_prophy_np",
+    autoNote: "Adult Prophy NP",
+    lines: [
+      {
+        t: "subjective",
+        text: "Patient presents for new pt appointment.",
+        ccLabel: "Chief complaint"
+      },
+      { t: "blank" },
+      { t: "objective", same: false },
+      { t: "blank" },
+      assessment("comp", false),
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "control", id: "oh" },
+      { t: "control", id: "perioStatus" },
+      { t: "control", id: "boneLoss" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "control", id: "mallampati" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  adult_prophy_recall: {
+    visitType: "adult_prophy_recall",
+    autoNote: "Adult Prophy Recall",
+    lines: [
+      {
+        t: "subjective",
+        text: "Patient presents for recall appointment.",
+        ccLabel: "Chief complaint"
+      },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      assessment("periodic", false),
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      // The recall note asks for fewer rows than the new-patient one. That is
+      // the practice's own choice and it is not this file's to "improve".
+      { t: "control", id: "perioStatus", label: "Perio" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "control", id: "mallampati" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  child_prophy_np: {
+    visitType: "child_prophy_np",
+    autoNote: "Child Prophy NP",
+    lines: [
+      {
+        t: "subjective",
+        text: "Patient presents for new pt appointment.",
+        ccLabel: "Chief complaint"
+      },
+      { t: "blank" },
+      { t: "objective", same: false },
+      { t: "blank" },
+      assessment("comp", true),
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "control", id: "oh" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "blank" },
+      { t: "control", id: "pedBehavior" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  child_prophy_recall: {
+    visitType: "child_prophy_recall",
+    autoNote: "Child Prophy Recall",
+    lines: [
+      {
+        t: "subjective",
+        text: "Patient presents for recall appointment.",
+        ccLabel: "Chief complaint"
+      },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      assessment("periodic", true),
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "control", id: "oh" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "blank" },
+      { t: "control", id: "pedBehavior" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  perio_maint: {
+    visitType: "perio_maint",
+    autoNote: "Perio Maint",
+    lines: [
+      {
+        t: "subjective",
+        text: "Patient presents for perio maintenance appointment.",
+        ccLabel: "CC"
+      },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      // No doctor clause: the source template has no exam sentence in it.
+      assessment(null, false, false),
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "control", id: "perioClass" },
+      { t: "perioChart" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "subCalculus" },
+      { t: "control", id: "supraCalculus" },
+      { t: "control", id: "boneLoss" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "control", id: "mallampati", label: "Mallampati class" },
+      // Its A: line has no Findings slot, and dropping what a hygienist typed is
+      // worse than one extra line. So the box gets its own line here instead.
+      { t: "free", field: "findings", label: "Findings" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  }
+};
+function controlsFor(visitType) {
+  const ids = [];
+  for (const l of NOTE_TEMPLATES[visitType].lines) {
+    if (l.t === "control") ids.push(l.id);
+    if (l.t === "assessment") {
+      ids.push("ste", "hte");
+      if (l.exam !== null) ids.push("drs");
+    }
+  }
+  return ids;
+}
+function controlLabel(visitType, id) {
+  for (const l of NOTE_TEMPLATES[visitType].lines) {
+    if (l.t === "control" && l.id === id) return l.label ?? NOTE_CONTROLS[id].label;
+  }
+  return NOTE_CONTROLS[id].label;
+}
+function hasPerioChartLine(visitType) {
+  return NOTE_TEMPLATES[visitType].lines.some((l) => l.t === "perioChart");
+}
+function freeFieldsFor(visitType) {
+  const out = [];
+  for (const l of NOTE_TEMPLATES[visitType].lines) {
+    if (l.t === "subjective") out.push("chiefComplaint");
+    if (l.t === "assessment" && l.findings) out.push("findings");
+    if (l.t === "free" && !out.includes(l.field)) out.push(l.field);
+  }
+  return out;
+}
+function suggestVisitType(input) {
+  const raw = (input.apptTypeLabel ?? "").toLowerCase().trim();
+  if (raw === "") return null;
+  const label = ` ${raw.replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const has = (needle) => label.includes(` ${needle} `);
+  if (label.includes(" perio ") && (has("maint") || has("maintenance") || has("pm"))) {
+    return "perio_maint";
+  }
+  if (has("pm") && !has("prophy")) return "perio_maint";
+  const child = has("child") || has("ped") || has("peds") || has("pedo") || has("kid");
+  const adult = has("adult");
+  if (child === adult) return null;
+  const np = has("np") || label.includes(" new pt ") || label.includes(" new patient ");
+  const recall = has("rc") || has("recall") || has("recare");
+  let newPatient = null;
+  if (np && !recall) newPatient = true;
+  else if (recall && !np) newPatient = false;
+  else if (!np && !recall) newPatient = input.isNewPatient;
+  if (newPatient === null) return null;
+  if (child) return newPatient ? "child_prophy_np" : "child_prophy_recall";
+  return newPatient ? "adult_prophy_np" : "adult_prophy_recall";
+}
+function labelled(label, value) {
+  return `${label}: ${value}`;
+}
+var FREE_FIELD_READERS = {
+  chiefComplaint: (i) => i.chiefComplaint,
+  findings: (i) => i.findings,
+  rtc: (i) => i.rtc
+};
+function renderVisitNote(input) {
+  const template = NOTE_TEMPLATES[input.visitType];
+  const out = [];
+  const field = (id) => input.fields[id];
+  for (const l of template.lines) {
+    switch (l.t) {
+      case "text":
+        out.push(l.text);
+        break;
+      case "blank":
+        out.push("");
+        break;
+      case "subjective":
+        out.push(`S:  ${l.text}  ${labelled(l.ccLabel, input.chiefComplaint.trim())}`);
+        break;
+      case "objective":
+        out.push(`O:  Reviewed medical history with patient.${l.same ? "  Same" : ""}`);
+        if (input.xrayTypes.length > 0) {
+          out.push(`    Radiographs taken: ${input.xrayTypes.join(", ")}`);
+        }
+        break;
+      case "assessment": {
+        const parts = [
+          `A:   ${labelled("STE", fieldText(field("ste")))}`,
+          labelled("HTE", fieldText(field("hte")))
+        ];
+        const fluoride = l.fluoride && input.doneToday.includes("fluoride");
+        parts.push(`Polished, flossed, scaled as needed${fluoride ? ", FL2TX" : ""}.`);
+        if (l.exam !== null) {
+          const drs = fieldText(field("drs"));
+          parts.push(`${drs ? `Dr. ${drs}` : "Dr."} performed ${l.exam} exam.`);
+        }
+        if (l.findings) parts.push(labelled("Findings", input.findings.trim()));
+        out.push(parts.join("  "));
+        break;
+      }
+      case "plan":
+        out.push(
+          input.recallMonths === null ? "P:  Return for Recall" : `P:  Return for Recall in ${input.recallMonths} months`
+        );
+        if (input.productsDispensed.length > 0) {
+          out.push(`    Products dispensed: ${input.productsDispensed.join(", ")}`);
+        }
+        break;
+      case "perioChart":
+        if (input.perioChartUpdated === "yes") out.push("Perio chart updated");
+        else if (input.perioChartUpdated === "no") out.push("Perio chart NOT updated");
+        else out.push(labelled("Perio chart updated", ""));
+        break;
+      case "control":
+        out.push(labelled(l.label ?? NOTE_CONTROLS[l.id].label, fieldText(field(l.id))));
+        break;
+      case "free":
+        out.push(labelled(l.label, FREE_FIELD_READERS[l.field](input).trim()));
+        break;
+    }
+  }
+  return out;
+}
+
+// shared/hyg/contract.ts
+var OfficeIdSchema = import_zod2.z.enum(["roland", "valley"]);
 var OFFICE_IDS = OfficeIdSchema.options;
 function isOfficeId(value) {
   return OfficeIdSchema.safeParse(value).success;
 }
-var TreatmentPrioritySchema = import_zod.z.enum(["urgent", "preventative", "cosmetic"]);
+var TreatmentPrioritySchema = import_zod2.z.enum(["urgent", "preventative", "cosmetic"]);
 var TREATMENT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
   cosmetic: "Cosmetic"
 };
-var TreatmentCategorySchema = import_zod.z.enum([
+var TreatmentCategorySchema = import_zod2.z.enum([
   "Restorative",
   "Endo",
   "Surgery",
@@ -14911,10 +15351,10 @@ var TreatmentCategorySchema = import_zod.z.enum([
   "Cosmetic",
   "Other"
 ]);
-var TreatmentStatusSchema = import_zod.z.enum(["proposed", "watch", "confirmed", "scheduled"]);
-var ToothSurfaceSchema = import_zod.z.enum(["DB", "B", "MB", "DL", "L", "ML"]);
-var ToothSurfaceLabelSchema = import_zod.z.enum(["M", "O", "D", "B", "L"]);
-var DxCodeSchema = import_zod.z.enum([
+var TreatmentStatusSchema = import_zod2.z.enum(["proposed", "watch", "confirmed", "scheduled"]);
+var ToothSurfaceSchema = import_zod2.z.enum(["DB", "B", "MB", "DL", "L", "ML"]);
+var ToothSurfaceLabelSchema = import_zod2.z.enum(["M", "O", "D", "B", "L"]);
+var DxCodeSchema = import_zod2.z.enum([
   "I",
   "D",
   "RD",
@@ -14958,7 +15398,7 @@ var DX_LABELS = {
   UE: "Unesthetic",
   GR: "Gingival recession"
 };
-var MotivationCodeSchema = import_zod.z.enum([
+var MotivationCodeSchema = import_zod2.z.enum([
   "FF",
   "R",
   "esthetic",
@@ -14976,7 +15416,7 @@ var MOTIVATION_LABELS = {
   insurance: "Insurance renewal / benefit",
   other: "Other"
 };
-var HandoffCategorySchema = import_zod.z.enum([
+var HandoffCategorySchema = import_zod2.z.enum([
   "Restorative",
   "Perio",
   "Ortho",
@@ -14984,28 +15424,28 @@ var HandoffCategorySchema = import_zod.z.enum([
   "Implant",
   "Other"
 ]);
-var TreatmentItemSchema = import_zod.z.object({
-  id: import_zod.z.string().min(1),
-  teeth: import_zod.z.union([import_zod.z.array(import_zod.z.number().int()), import_zod.z.literal("mouth")]),
+var TreatmentItemSchema = import_zod2.z.object({
+  id: import_zod2.z.string().min(1),
+  teeth: import_zod2.z.union([import_zod2.z.array(import_zod2.z.number().int()), import_zod2.z.literal("mouth")]),
   /** e.g. "Comp", "Crown", "RC", "EX", "IMP", "Ortho", "Aligners". */
-  code: import_zod.z.string().min(1),
+  code: import_zod2.z.string().min(1),
   category: TreatmentCategorySchema,
-  surfaces: import_zod.z.array(ToothSurfaceLabelSchema).optional(),
-  dx: import_zod.z.array(DxCodeSchema),
-  dxNote: import_zod.z.string().optional(),
+  surfaces: import_zod2.z.array(ToothSurfaceLabelSchema).optional(),
+  dx: import_zod2.z.array(DxCodeSchema),
+  dxNote: import_zod2.z.string().optional(),
   priority: TreatmentPrioritySchema,
-  motivation: import_zod.z.array(MotivationCodeSchema),
-  motivationNote: import_zod.z.string().optional(),
+  motivation: import_zod2.z.array(MotivationCodeSchema),
+  motivationNote: import_zod2.z.string().optional(),
   status: TreatmentStatusSchema,
-  crownType: import_zod.z.enum(["initial", "replacement"]).optional(),
-  prosthesis: import_zod.z.object({ newOrReplacement: import_zod.z.enum(["new", "replacement"]), years: import_zod.z.string().optional() }).optional(),
-  scheduleNext: import_zod.z.boolean(),
-  note: import_zod.z.string().optional(),
-  photos: import_zod.z.array(import_zod.z.string()),
+  crownType: import_zod2.z.enum(["initial", "replacement"]).optional(),
+  prosthesis: import_zod2.z.object({ newOrReplacement: import_zod2.z.enum(["new", "replacement"]), years: import_zod2.z.string().optional() }).optional(),
+  scheduleNext: import_zod2.z.boolean(),
+  note: import_zod2.z.string().optional(),
+  photos: import_zod2.z.array(import_zod2.z.string()),
   /** Free-form markers, e.g. "post-ortho". */
-  tags: import_zod.z.array(import_zod.z.string()).optional(),
-  createdBy: import_zod.z.string(),
-  createdAt: import_zod.z.string()
+  tags: import_zod2.z.array(import_zod2.z.string()).optional(),
+  createdBy: import_zod2.z.string(),
+  createdAt: import_zod2.z.string()
 });
 var HANDOFF_CATEGORY_PRIORITY = [
   "Ortho",
@@ -15040,47 +15480,47 @@ function deriveCategory(items) {
   for (const item of items) present.add(handoffCategoryFor(item));
   return HANDOFF_CATEGORY_PRIORITY.find((c) => present.has(c)) ?? "Other";
 }
-var StagedWriteKindSchema = import_zod.z.enum(["router", "perio", "note", "tc-handoff"]);
-var StagedWriteStateSchema = import_zod.z.enum([
+var StagedWriteKindSchema = import_zod2.z.enum(["router", "perio", "note", "tc-handoff"]);
+var StagedWriteStateSchema = import_zod2.z.enum([
   "Draft",
   "Staged",
   "Sending",
   "Written",
   "Failed"
 ]);
-var HygDayScopeSchema = import_zod.z.enum(["hygiene", "all"]);
+var HygDayScopeSchema = import_zod2.z.enum(["hygiene", "all"]);
 var HYG_DAY_SCOPES = HygDayScopeSchema.options;
-var FlagSourceSchema = import_zod.z.enum(["od", "not_read"]);
-var HygDayFlagsSchema = import_zod.z.object({
-  premed: import_zod.z.boolean().nullable(),
-  medicalAlerts: import_zod.z.boolean().nullable(),
-  allergies: import_zod.z.boolean().nullable(),
-  lastPerioDate: import_zod.z.string().nullable(),
-  xraysDue: import_zod.z.boolean().nullable(),
-  examNeeded: import_zod.z.boolean().nullable(),
-  openTcCase: import_zod.z.boolean().nullable()
+var FlagSourceSchema = import_zod2.z.enum(["od", "not_read"]);
+var HygDayFlagsSchema = import_zod2.z.object({
+  premed: import_zod2.z.boolean().nullable(),
+  medicalAlerts: import_zod2.z.boolean().nullable(),
+  allergies: import_zod2.z.boolean().nullable(),
+  lastPerioDate: import_zod2.z.string().nullable(),
+  xraysDue: import_zod2.z.boolean().nullable(),
+  examNeeded: import_zod2.z.boolean().nullable(),
+  openTcCase: import_zod2.z.boolean().nullable()
 });
-var HygIdentityStateSchema = import_zod.z.enum([
+var HygIdentityStateSchema = import_zod2.z.enum([
   "resolved",
   "pending",
   "unavailable",
   "no_patient"
 ]);
-var HygOperatorySchema = import_zod.z.object({
-  opNum: import_zod.z.number().int(),
-  name: import_zod.z.string().nullable(),
-  abbrev: import_zod.z.string().nullable(),
-  isHygiene: import_zod.z.boolean().nullable(),
-  itemOrder: import_zod.z.number().int().nullable()
+var HygOperatorySchema = import_zod2.z.object({
+  opNum: import_zod2.z.number().int(),
+  name: import_zod2.z.string().nullable(),
+  abbrev: import_zod2.z.string().nullable(),
+  isHygiene: import_zod2.z.boolean().nullable(),
+  itemOrder: import_zod2.z.number().int().nullable()
 });
-var HygAppointmentSchema = import_zod.z.object({
-  aptNum: import_zod.z.number().int().nullable(),
+var HygAppointmentSchema = import_zod2.z.object({
+  aptNum: import_zod2.z.number().int().nullable(),
   /**
    * MEANINGLESS WITHOUT `office`. PatNum numbering restarts in every Open
    * Dental database: 7115 is the valley test patient and a different, real
    * person in roland. Nothing may carry one of these without the office beside it.
    */
-  patNum: import_zod.z.number().int().nullable(),
+  patNum: import_zod2.z.number().int().nullable(),
   /**
    * WHY the name and the flags are or are not here. See HygIdentityStateSchema
    * — `patientName: null` alone cannot tell "still loading" from "we asked and
@@ -15088,48 +15528,48 @@ var HygAppointmentSchema = import_zod.z.object({
    */
   identity: HygIdentityStateSchema,
   /** Null when the patient record could not be read. Never "Unknown Patient". */
-  patientName: import_zod.z.string().nullable(),
+  patientName: import_zod2.z.string().nullable(),
   /** Open Dental local time, `YYYY-MM-DD HH:mm:ss`. Not a UTC instant. */
-  start: import_zod.z.string().nullable(),
+  start: import_zod2.z.string().nullable(),
   /** Null when the appointment carries no Pattern. Never a fabricated 30. */
-  lengthMin: import_zod.z.number().int().nullable(),
-  opNum: import_zod.z.number().int().nullable(),
-  opName: import_zod.z.string().nullable(),
+  lengthMin: import_zod2.z.number().int().nullable(),
+  opNum: import_zod2.z.number().int().nullable(),
+  opName: import_zod2.z.string().nullable(),
   /** The APPOINTMENT's own hygiene flag — authoritative for "is this a hygiene visit". */
-  isHygiene: import_zod.z.boolean().nullable(),
+  isHygiene: import_zod2.z.boolean().nullable(),
   /** The CHAIR's hygiene flag. Can disagree with the above; both are carried. */
-  opIsHygiene: import_zod.z.boolean().nullable(),
-  provNum: import_zod.z.number().int().nullable(),
-  provHyg: import_zod.z.number().int().nullable(),
-  providerName: import_zod.z.string().nullable(),
-  apptTypeLabel: import_zod.z.string().nullable(),
+  opIsHygiene: import_zod2.z.boolean().nullable(),
+  provNum: import_zod2.z.number().int().nullable(),
+  provHyg: import_zod2.z.number().int().nullable(),
+  providerName: import_zod2.z.string().nullable(),
+  apptTypeLabel: import_zod2.z.string().nullable(),
   /**
    * The RESOLVED confirmation string Open Dental ships beside the DefNum
    * ("Confirmed", "In Treatment Room"). The DefNum itself is per-office and is
    * deliberately not in this contract — nothing may compare one across offices.
    */
-  confirmedStatus: import_zod.z.string().nullable(),
-  aptStatus: import_zod.z.string().nullable(),
-  isNewPatient: import_zod.z.boolean().nullable(),
+  confirmedStatus: import_zod2.z.string().nullable(),
+  aptStatus: import_zod2.z.string().nullable(),
+  isNewPatient: import_zod2.z.boolean().nullable(),
   flags: HygDayFlagsSchema
 });
-var HygWarningSchema = import_zod.z.object({
-  resource: import_zod.z.string(),
-  message: import_zod.z.string(),
-  detail: import_zod.z.string().nullable()
+var HygWarningSchema = import_zod2.z.object({
+  resource: import_zod2.z.string(),
+  message: import_zod2.z.string(),
+  detail: import_zod2.z.string().nullable()
 });
-var HygDayStatsSchema = import_zod.z.object({
+var HygDayStatsSchema = import_zod2.z.object({
   /** Requests spent on list endpoints — appointments, operatories, types, providers. */
-  odListReads: import_zod.z.number().int(),
+  odListReads: import_zod2.z.number().int(),
   /** `GET /patients/{PatNum}` requests actually issued. One second each. */
-  odPatientReads: import_zod.z.number().int(),
+  odPatientReads: import_zod2.z.number().int(),
   /** Distinct patients this day needed named, after the fan-out cap. */
-  patientsRequested: import_zod.z.number().int(),
+  patientsRequested: import_zod2.z.number().int(),
   /** Answered from a fresh cached record — no Open Dental request at all. */
-  patientCacheHits: import_zod.z.number().int(),
+  patientCacheHits: import_zod2.z.number().int(),
   /** Collapsed into an identical read already in flight — also no request. */
-  patientCacheDeduped: import_zod.z.number().int(),
-  durationMs: import_zod.z.number().int(),
+  patientCacheDeduped: import_zod2.z.number().int(),
+  durationMs: import_zod2.z.number().int(),
   /**
    * Wall clock per PHASE — `appointments`, `operatories`, `labels`,
    * `identities`. A total says the day was slow; these say which read was, and
@@ -15138,18 +15578,18 @@ var HygDayStatsSchema = import_zod.z.object({
    * Optional because the fill endpoint reports the same stats shape without
    * phases: it has only one.
    */
-  phaseMs: import_zod.z.record(import_zod.z.string(), import_zod.z.number().int()).optional()
+  phaseMs: import_zod2.z.record(import_zod2.z.string(), import_zod2.z.number().int()).optional()
 });
-var HygDayResponseSchema = import_zod.z.object({
-  success: import_zod.z.literal(true),
+var HygDayResponseSchema = import_zod2.z.object({
+  success: import_zod2.z.literal(true),
   office: OfficeIdSchema,
-  officeName: import_zod.z.string(),
-  date: import_zod.z.string(),
-  operatories: import_zod.z.array(HygOperatorySchema),
-  appointments: import_zod.z.array(HygAppointmentSchema),
-  warnings: import_zod.z.array(HygWarningSchema),
-  flagSources: import_zod.z.record(import_zod.z.string(), FlagSourceSchema),
-  excludedByStatus: import_zod.z.number().int(),
+  officeName: import_zod2.z.string(),
+  date: import_zod2.z.string(),
+  operatories: import_zod2.z.array(HygOperatorySchema),
+  appointments: import_zod2.z.array(HygAppointmentSchema),
+  warnings: import_zod2.z.array(HygWarningSchema),
+  flagSources: import_zod2.z.record(import_zod2.z.string(), FlagSourceSchema),
+  excludedByStatus: import_zod2.z.number().int(),
   /** Which appointments this read was asked to serve. See HygDayScopeSchema. */
   scope: HygDayScopeSchema,
   /**
@@ -15164,11 +15604,11 @@ var HygDayResponseSchema = import_zod.z.object({
    * These appointments carry no PatNum, no name and no audit row: a patient
    * this response did not serve was not disclosed.
    */
-  excludedByScope: import_zod.z.number().int(),
+  excludedByScope: import_zod2.z.number().int(),
   /** The SCHEDULE is incomplete — an appointment is missing from this payload. */
-  truncated: import_zod.z.boolean(),
+  truncated: import_zod2.z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
-  patientNamesTruncated: import_zod.z.boolean(),
+  patientNamesTruncated: import_zod2.z.boolean(),
   /**
    * How many appointments are still waiting for a name.
    *
@@ -15178,37 +15618,37 @@ var HygDayResponseSchema = import_zod.z.object({
    * not, which is what keeps a patient Open Dental will never answer for from
    * becoming a spinner nobody can end.
    */
-  identitiesPending: import_zod.z.number().int(),
+  identitiesPending: import_zod2.z.number().int(),
   /** What this read cost. See HygDayStatsSchema. */
   stats: HygDayStatsSchema
 });
-var HygIdentitySchema = import_zod.z.object({
-  patNum: import_zod.z.number().int(),
+var HygIdentitySchema = import_zod2.z.object({
+  patNum: import_zod2.z.number().int(),
   /** Still nullable: Open Dental can hold a record with neither name half. */
-  patientName: import_zod.z.string().nullable(),
-  premed: import_zod.z.boolean().nullable(),
-  medicalAlerts: import_zod.z.boolean().nullable()
+  patientName: import_zod2.z.string().nullable(),
+  premed: import_zod2.z.boolean().nullable(),
+  medicalAlerts: import_zod2.z.boolean().nullable()
 });
-var HygDayIdentitiesResponseSchema = import_zod.z.object({
-  success: import_zod.z.literal(true),
+var HygDayIdentitiesResponseSchema = import_zod2.z.object({
+  success: import_zod2.z.literal(true),
   office: OfficeIdSchema,
-  date: import_zod.z.string(),
+  date: import_zod2.z.string(),
   scope: HygDayScopeSchema,
-  patients: import_zod.z.array(HygIdentitySchema),
+  patients: import_zod2.z.array(HygIdentitySchema),
   /** PatNums Open Dental would not answer for. Waiting will not help. */
-  unavailable: import_zod.z.array(import_zod.z.number().int()),
+  unavailable: import_zod2.z.array(import_zod2.z.number().int()),
   /** Still unnamed after this batch. Zero means the day is fully named. */
-  pending: import_zod.z.number().int(),
+  pending: import_zod2.z.number().int(),
   stats: HygDayStatsSchema
 });
-var HygErrorSchema = import_zod.z.object({
-  success: import_zod.z.literal(false),
-  error: import_zod.z.string(),
-  code: import_zod.z.string().optional(),
+var HygErrorSchema = import_zod2.z.object({
+  success: import_zod2.z.literal(false),
+  error: import_zod2.z.string(),
+  code: import_zod2.z.string().optional(),
   /** The precise odOffices reason behind an OFFICE_NOT_READY. */
-  reason: import_zod.z.string().optional(),
-  office: import_zod.z.string().optional(),
-  date: import_zod.z.string().optional()
+  reason: import_zod2.z.string().optional(),
+  office: import_zod2.z.string().optional(),
+  date: import_zod2.z.string().optional()
 });
 var HYG_ERROR_CODES = [
   "INVALID_OFFICE",
@@ -15220,20 +15660,20 @@ var HYG_ERROR_CODES = [
   "AUDIT_FAILED",
   "INTERNAL_ERROR"
 ];
-var YesNoSchema = import_zod.z.enum(["yes", "no"]);
-var RecordStatusSchema = import_zod.z.enum(["needed", "on_file", "taken_today"]);
+var YesNoSchema = import_zod2.z.enum(["yes", "no"]);
+var RecordStatusSchema = import_zod2.z.enum(["needed", "on_file", "taken_today"]);
 var RECORD_STATUS_LABELS = {
   needed: "Needed",
   on_file: "On file",
   taken_today: "Taken today"
 };
-var ExamStatusSchema = import_zod.z.enum(["needed_today", "completed", "not_due"]);
+var ExamStatusSchema = import_zod2.z.enum(["needed_today", "completed", "not_due"]);
 var EXAM_STATUS_LABELS = {
   needed_today: "Needed today",
   completed: "Completed",
   not_due: "Not due"
 };
-var PerioStageSchema = import_zod.z.enum([
+var PerioStageSchema = import_zod2.z.enum([
   "health",
   "gingivitis",
   "stage_i",
@@ -15249,7 +15689,7 @@ var PERIO_STAGE_LABELS = {
   stage_iii: "Stage III",
   stage_iv: "Stage IV"
 };
-var PerioGradeSchema = import_zod.z.enum(["a", "b", "c"]);
+var PerioGradeSchema = import_zod2.z.enum(["a", "b", "c"]);
 var DONE_TODAY_OPTIONS = [
   { id: "prophy", label: "Prophy" },
   { id: "srp-ur", label: "SRP UR" },
@@ -15262,32 +15702,80 @@ var DONE_TODAY_OPTIONS = [
   { id: "polish", label: "Polish" }
 ];
 var XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"];
-var NextVisitSchema = import_zod.z.object({
-  type: import_zod.z.string().max(120).nullable(),
-  intervalMonths: import_zod.z.number().int().min(1).max(24).nullable(),
-  lengthMin: import_zod.z.number().int().min(5).max(240).nullable(),
-  withDoctor: import_zod.z.boolean()
+var NextVisitSchema = import_zod2.z.object({
+  type: import_zod2.z.string().max(120).nullable(),
+  intervalMonths: import_zod2.z.number().int().min(1).max(24).nullable(),
+  lengthMin: import_zod2.z.number().int().min(5).max(240).nullable(),
+  withDoctor: import_zod2.z.boolean()
 }).strict();
-var HygSlipSchema = import_zod.z.object({
+var HygSlipSchema = import_zod2.z.object({
   /** Chip ids from DONE_TODAY_OPTIONS. */
-  doneToday: import_zod.z.array(import_zod.z.string().min(1).max(60)),
-  doneTodayNote: import_zod.z.string().max(4e3),
-  xrayTypes: import_zod.z.array(import_zod.z.string().min(1).max(20)),
+  doneToday: import_zod2.z.array(import_zod2.z.string().min(1).max(60)),
+  doneTodayNote: import_zod2.z.string().max(4e3),
+  xrayTypes: import_zod2.z.array(import_zod2.z.string().min(1).max(20)),
   examStatus: ExamStatusSchema.nullable(),
   perioStage: PerioStageSchema.nullable(),
   perioGrade: PerioGradeSchema.nullable(),
-  patientConcerns: import_zod.z.string().max(4e3),
-  hygieneFindings: import_zod.z.string().max(4e3),
+  patientConcerns: import_zod2.z.string().max(4e3),
+  hygieneFindings: import_zod2.z.string().max(4e3),
   nextVisit: NextVisitSchema,
   /** A reminder when unanswered. NEVER a gate. See the note above. */
   recareScheduled: YesNoSchema.nullable(),
   /** A reminder when unanswered. NEVER a gate. See the note above. */
   txEnteredInOd: YesNoSchema.nullable(),
-  frontDeskNote: import_zod.z.string().max(4e3),
-  financialNote: import_zod.z.string().max(4e3),
-  productsDispensed: import_zod.z.array(import_zod.z.string().min(1).max(120)),
+  frontDeskNote: import_zod2.z.string().max(4e3),
+  financialNote: import_zod2.z.string().max(4e3),
+  productsDispensed: import_zod2.z.array(import_zod2.z.string().min(1).max(120)),
   /** Keyed by the record label RECORDS_MATRIX produces. */
-  recordsStatus: import_zod.z.record(import_zod.z.string(), RecordStatusSchema)
+  recordsStatus: import_zod2.z.record(import_zod2.z.string(), RecordStatusSchema),
+  // ─────────────────────────────────────────────────────────────────────────
+  // THE CLINIC NOTE (H1 slice 8)
+  // ─────────────────────────────────────────────────────────────────────────
+  //
+  // ⚠️ EVERY FIELD BELOW CARRIES A `.default()`, AND THAT IS LOAD-BEARING. ⚠️
+  //
+  // The slip is one jsonb column, and `visitStore.readSlip` reports a slip
+  // this build cannot parse as an EMPTY one. A required field added here
+  // would therefore make every visit saved before this branch — a slip a
+  // hygienist is half way through filling in, right now — read back blank.
+  // A default makes an older row parse and gain the new keys instead, which
+  // is why this slice needs no migration at all. `hyg-contract.test.ts` pins
+  // exactly that: yesterday's slip JSON must still parse.
+  /**
+   * Which of the practice's five hygiene auto notes this visit writes.
+   *
+   * `null` means nobody has picked one, and a null composes the generic note
+   * this module wrote before templates existed rather than guessing a
+   * template. A wrong template is a wrong chart note.
+   */
+  visitType: VisitTypeSchema.nullable().default(null),
+  /**
+   * Whether the type above was suggested from the appointment or chosen by
+   * hand. Stored so the form can SAY which, rather than presenting a guess as
+   * a decision somebody made.
+   */
+  visitTypeSource: VisitTypeSourceSchema.nullable().default(null),
+  /**
+   * The graded rows, keyed by NoteControlId.
+   *
+   * A record rather than fourteen named fields, for the same reason
+   * `recordsStatus` is one: the set of rows is decided by the TEMPLATE, and a
+   * template that gains a row must not need a schema change to store its
+   * answer. An id this build does not know is carried, not dropped — the
+   * renderer only ever asks for the ids its own template names.
+   */
+  noteFields: import_zod2.z.record(import_zod2.z.string(), NoteFieldSchema).default({}),
+  /** `RTC: ` — the return-to-clinic line every one of the templates ends on. */
+  rtc: import_zod2.z.string().max(4e3).default(""),
+  /**
+   * Perio Maint's `Perio chart updated` line.
+   *
+   * A yes/no rather than the source template's flat assertion: perio charting
+   * is not built (H4), so CareIN cannot know, and a note that claims a chart
+   * was updated when it was not is exactly the kind of sentence this module
+   * exists to not write.
+   */
+  perioChartUpdated: YesNoSchema.nullable().default(null)
 }).strict();
 function emptySlip() {
   return {
@@ -15305,26 +15793,34 @@ function emptySlip() {
     frontDeskNote: "",
     financialNote: "",
     productsDispensed: [],
-    recordsStatus: {}
+    recordsStatus: {},
+    visitType: null,
+    visitTypeSource: null,
+    noteFields: {},
+    rtc: "",
+    perioChartUpdated: null
   };
+}
+function slipNoteField(slip, id) {
+  return slip.noteFields[id] ?? emptyNoteField();
 }
 var TreatmentItemInputSchema = TreatmentItemSchema.omit({
   id: true,
   createdBy: true,
   createdAt: true
 }).strict();
-var VisitUpsertRequestSchema = import_zod.z.object({ slip: HygSlipSchema }).strict();
+var VisitUpsertRequestSchema = import_zod2.z.object({ slip: HygSlipSchema }).strict();
 var TreatmentItemCreateRequestSchema = TreatmentItemInputSchema;
 var TreatmentItemUpdateRequestSchema = TreatmentItemInputSchema.partial();
-var StagedWriteCreateRequestSchema = import_zod.z.object({ kind: StagedWriteKindSchema }).strict();
-var StagedWriteSchema = import_zod.z.object({
-  id: import_zod.z.string().min(1),
+var StagedWriteCreateRequestSchema = import_zod2.z.object({ kind: StagedWriteKindSchema }).strict();
+var StagedWriteSchema = import_zod2.z.object({
+  id: import_zod2.z.string().min(1),
   kind: StagedWriteKindSchema,
   state: StagedWriteStateSchema,
-  title: import_zod.z.string(),
-  summary: import_zod.z.string(),
+  title: import_zod2.z.string(),
+  summary: import_zod2.z.string(),
   /** The lines a hygienist reads before confirming. Slice 3 sends exactly these. */
-  preview: import_zod.z.array(import_zod.z.string()),
+  preview: import_zod2.z.array(import_zod2.z.string()),
   /**
    * A fingerprint of `preview`, computed by the server.
    *
@@ -15334,69 +15830,80 @@ var StagedWriteSchema = import_zod.z.object({
    * between the preview and the confirm — her own edit in another tab, a second
    * device — would send words nobody approved.
    */
-  previewFingerprint: import_zod.z.string(),
+  previewFingerprint: import_zod2.z.string(),
   /** Why it failed, when it did. Null in every other state. */
-  errorMessage: import_zod.z.string().nullable(),
+  errorMessage: import_zod2.z.string().nullable(),
   /**
    * What Open Dental (or TC) minted, once it landed: `Document 4711`,
    * `Case 8f3c…`. Null until then. A pointer a person can follow — the
    * difference between "it was sent" and "here is where it went".
    */
-  writtenRef: import_zod.z.string().nullable(),
-  stagedBy: import_zod.z.string().nullable(),
-  stagedAt: import_zod.z.string().nullable(),
-  sentBy: import_zod.z.string().nullable(),
-  sentAt: import_zod.z.string().nullable(),
-  updatedAt: import_zod.z.string()
+  writtenRef: import_zod2.z.string().nullable(),
+  stagedBy: import_zod2.z.string().nullable(),
+  stagedAt: import_zod2.z.string().nullable(),
+  sentBy: import_zod2.z.string().nullable(),
+  sentAt: import_zod2.z.string().nullable(),
+  updatedAt: import_zod2.z.string()
 });
-var HygVisitSchema = import_zod.z.object({
-  visitId: import_zod.z.string().min(1),
+var HygVisitSchema = import_zod2.z.object({
+  visitId: import_zod2.z.string().min(1),
   office: OfficeIdSchema,
-  aptNum: import_zod.z.number().int(),
+  aptNum: import_zod2.z.number().int(),
   /** MEANINGLESS WITHOUT `office` — see HygAppointmentSchema. */
-  patNum: import_zod.z.number().int(),
-  visitDate: import_zod.z.string().nullable(),
+  patNum: import_zod2.z.number().int(),
+  visitDate: import_zod2.z.string().nullable(),
   slip: HygSlipSchema,
-  items: import_zod.z.array(TreatmentItemSchema),
-  stagedWrites: import_zod.z.array(StagedWriteSchema),
-  createdBy: import_zod.z.string(),
-  createdAt: import_zod.z.string(),
-  updatedBy: import_zod.z.string().nullable(),
-  updatedAt: import_zod.z.string()
+  items: import_zod2.z.array(TreatmentItemSchema),
+  stagedWrites: import_zod2.z.array(StagedWriteSchema),
+  createdBy: import_zod2.z.string(),
+  createdAt: import_zod2.z.string(),
+  updatedBy: import_zod2.z.string().nullable(),
+  updatedAt: import_zod2.z.string()
 });
-var HygVisitResponseSchema = import_zod.z.object({
-  success: import_zod.z.literal(true),
+var HygVisitResponseSchema = import_zod2.z.object({
+  success: import_zod2.z.literal(true),
   visit: HygVisitSchema,
   /** Every record the proposed treatments need, from RECORDS_MATRIX. */
-  recordsNeeded: import_zod.z.array(import_zod.z.string()),
+  recordsNeeded: import_zod2.z.array(import_zod2.z.string()),
   /** The handoff category deriveCategory() computes from the items. */
-  handoffCategory: HandoffCategorySchema
+  handoffCategory: HandoffCategorySchema,
+  /**
+   * THIS OFFICE's supervising doctors, for the note's `Dr. ___ performed`
+   * clause (H1 slice 8).
+   *
+   * Sent by the server, from `backend/config/hygStaff.js`, keyed on the office
+   * of the STORED VISIT. It is a response field rather than a constant in the
+   * client bundle because a doctor's name is per-practice, and a name compiled
+   * into a component is a name that gets rendered for the wrong one.
+   */
+  doctorOptions: import_zod2.z.array(import_zod2.z.string())
 });
-var SendConfirmationSchema = import_zod.z.object({
+var SendConfirmationSchema = import_zod2.z.object({
   kind: StagedWriteKindSchema,
-  previewFingerprint: import_zod.z.string().min(1).max(200)
+  previewFingerprint: import_zod2.z.string().min(1).max(200)
 }).strict();
-var SendVisitRequestSchema = import_zod.z.object({ confirm: import_zod.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
-var SendOutcomeSchema = import_zod.z.object({
+var SendVisitRequestSchema = import_zod2.z.object({ confirm: import_zod2.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
+var SendOutcomeSchema = import_zod2.z.object({
   kind: StagedWriteKindSchema,
   state: StagedWriteStateSchema,
   /** Present when it landed. */
-  writtenRef: import_zod.z.string().nullable(),
+  writtenRef: import_zod2.z.string().nullable(),
   /** Present when it did not. Never empty when the state is Failed. */
-  errorMessage: import_zod.z.string().nullable(),
+  errorMessage: import_zod2.z.string().nullable(),
   /** The precise reason, for a screen that wants to switch on it. */
-  code: import_zod.z.string().nullable()
+  code: import_zod2.z.string().nullable()
 });
-var HygSendResponseSchema = import_zod.z.object({
-  success: import_zod.z.literal(true),
+var HygSendResponseSchema = import_zod2.z.object({
+  success: import_zod2.z.literal(true),
   visit: HygVisitSchema,
-  recordsNeeded: import_zod.z.array(import_zod.z.string()),
+  recordsNeeded: import_zod2.z.array(import_zod2.z.string()),
   handoffCategory: HandoffCategorySchema,
+  doctorOptions: import_zod2.z.array(import_zod2.z.string()),
   /** One entry per confirmed kind, in the order they were attempted. */
-  outcomes: import_zod.z.array(SendOutcomeSchema),
+  outcomes: import_zod2.z.array(SendOutcomeSchema),
   /** Counts, not a verdict. `written + failed` is what was attempted. */
-  written: import_zod.z.number().int(),
-  failed: import_zod.z.number().int()
+  written: import_zod2.z.number().int(),
+  failed: import_zod2.z.number().int()
 });
 var HYG_VISIT_ERROR_CODES = [
   "INVALID_APT_NUM",
@@ -15467,9 +15974,10 @@ function recordsNeededFor(items) {
 }
 
 // ../backend/hyg/contract.entry.ts
-var import_zod2 = __toESM(require_zod());
+var import_zod3 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  CORRECTED_OPTION_SPELLINGS,
   DONE_TODAY_OPTIONS,
   DX_LABELS,
   DxCodeSchema,
@@ -15497,7 +16005,12 @@ var import_zod2 = __toESM(require_zod());
   HygWarningSchema,
   MOTIVATION_LABELS,
   MotivationCodeSchema,
+  NOTE_CONTROLS,
+  NOTE_TEMPLATES,
   NextVisitSchema,
+  NoteControlIdSchema,
+  NoteFieldSchema,
+  NoteFreeFieldSchema,
   OFFICE_IDS,
   OfficeIdSchema,
   PERIO_STAGE_LABELS,
@@ -15523,13 +16036,29 @@ var import_zod2 = __toESM(require_zod());
   TreatmentItemUpdateRequestSchema,
   TreatmentPrioritySchema,
   TreatmentStatusSchema,
+  VISIT_TYPES,
+  VISIT_TYPE_AUTONOTE,
+  VISIT_TYPE_LABELS,
+  VisitTypeSchema,
+  VisitTypeSourceSchema,
   VisitUpsertRequestSchema,
   XRAY_OPTIONS,
   YesNoSchema,
   ZodError,
+  controlLabel,
+  controlsFor,
   deriveCategory,
+  emptyNoteField,
   emptySlip,
+  fieldText,
+  freeFieldsFor,
+  hasPerioChartLine,
+  isAnswered,
+  isChildVisit,
   isOfficeId,
   recordsNeededFor,
+  renderVisitNote,
+  slipNoteField,
+  suggestVisitType,
   z
 });

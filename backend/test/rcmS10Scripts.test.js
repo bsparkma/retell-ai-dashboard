@@ -253,24 +253,26 @@ test('the ids the 2026-08-25 walk spent are denied, in their OWN bucket', () => 
    * below exists to prevent.
    */
   const T = require(path.join(SCRIPTS, FILES.targets));
-  // FOUR walks so far. The list GROWS by a set per walk; it is never rewritten,
-  // because an id Open Dental has issued is never reissued.
+  // FIVE walks so far - the combined walk's kill test was unwound 2026-09-09.
+  // The list GROWS by a set per walk; it is never rewritten, because an id Open
+  // Dental has issued is never reissued.
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.claims],
-    [53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833]
+    [53784, 53785, 53805, 53806, 53830, 53831, 53832, 53833, 53900, 53901]
   );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.procedures],
-    [406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433]
+    [406124, 406125, 406272, 406273, 406430, 406431, 406432, 406433, 406875, 406876]
   );
   assert.deepEqual(
     [...T.WALK_SPENT_IDS.claimProcs],
-    [535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599]
+    [535194, 535195, 535348, 535349, 535592, 535593, 535598, 535599, 536170, 536171]
   );
 
   for (const id of [
     53784, 53785, 406124, 406125, 535194, 535195, 53830, 53831, 535592,
     53832, 53833, 406432, 406433, 535598, 535599,
+    53900, 53901, 406875, 406876, 536170, 536171,
   ]) {
     assert.ok(DENY_ROLAND.includes(id), `${id} must be on the deny-list`);
     for (const bucket of Object.values(T.SPIKE_0B_RESIDUE)) {
@@ -333,7 +335,7 @@ test('the spent-id screen refuses a manifest older than the last walk retired', 
   );
   assert.ok(refusal, 'a stale manifest must be refused even when no id collides');
   assert.match(refusal, /BEFORE the most recent/);
-  assert.match(refusal, /2026-08-30/);
+  assert.match(refusal, /2026-09-09/);
 });
 
 test('the spent-id screen refuses a manifest with no createdAt at all', () => {
@@ -373,8 +375,11 @@ test('WALK_SPENT_RECORDED_AT moves whenever the spent list grows', () => {
   const T = require(path.join(SCRIPTS, FILES.targets));
   const at = Date.parse(T.WALK_SPENT_RECORDED_AT);
   assert.ok(Number.isFinite(at), 'it must be a parseable ISO instant');
-  assert.ok(at >= Date.parse('2026-08-30T00:00:00.000Z'), 'mini-walk 3 is recorded');
-  assert.equal(T.WALK_SPENT_IDS.claims.length, 8, 'four walks, two claims each');
+  assert.ok(
+    at >= Date.parse('2026-09-09T18:26:23.310Z'),
+    'the combined walk kill test is recorded'
+  );
+  assert.equal(T.WALK_SPENT_IDS.claims.length, 10, 'five walks, two claims each');
 });
 
 test('rcm-s10-835.js CONSULTS the screen before it writes anything', () => {
@@ -1129,10 +1134,32 @@ function fakeOd(seed) {
     calls,
     writes,
     minted,
-    async get(p) {
+    async get(p, params) {
       calls.push(`GET ${p}`);
-      const m = p.match(/^\/adjustments\/(\d+)$/);
-      if (m && minted.has(Number(m[1]))) return found(minted.get(Number(m[1])));
+
+      /*
+       * W-20 — `/adjustments` IS PLURAL-ONLY, AND THIS FAKE NOW SAYS SO.
+       *
+       * Live: `GET /adjustments/19157` -> **400 "PatNum is required."** The id
+       * segment is ignored; the API wants the patient. This fake used to route
+       * anything matching /^\/adjustments/ to its stored row, so it answered a
+       * call the real system refuses — and six tests written against the
+       * reversal step passed while the live read 400'd.
+       *
+       * Third occurrence of the same class (FakeRcmDb accepting
+       * `od_patient_office`, #114, was the last). **A fake that accepts what the
+       * real system refuses is a defect in the fake**, not a convenience: the
+       * green suite is then a statement about the fake's invention.
+       */
+      if (/^\/adjustments/.test(p)) {
+        const patNum = params && Number(params.PatNum);
+        if (!Number.isFinite(patNum) || patNum <= 0) {
+          return { ok: false, status: 400, data: null, error: 'PatNum is required.' };
+        }
+        const all = [...(rows.adjustment ? [rows.adjustment] : []), ...minted.values()];
+        return found(all.filter((r) => Number(r.PatNum) === patNum));
+      }
+
       const key = route(p);
       return key && rows[key] ? found(rows[key]) : missing;
     },
@@ -1236,7 +1263,10 @@ test('the unwind un-receives the claim BEFORE reverting the claimproc', async ()
 
   assert.equal(aborted, false, 'the whole target should complete');
   assert.deepEqual(steps, {
-    reversal: 'already done',
+    // W-18: this target never carried a takeback, so the step never ran. It did
+    // not "complete" — reporting that it had is what hid a broken step for an
+    // entire walk.
+    reversal: 'not run',
     payment: 'done',
     unreceive: 'done',
     line: 'done',
@@ -1412,7 +1442,7 @@ test('the reseed screen accepts BOTH designated patients and refuses anything el
   assert.match(SOURCES.reseed.screen({ office: 'roland', targets: [] }).error, /names no targets/);
 });
 
-test('the reseed ids the 2026-09-01 run created are NOT denied — the unwind must reach them', () => {
+test('a PENDING reseed id is reachable; a SPENT one is denied — the rule, both ways', () => {
   /*
    * The trap `RESEED_PENDING_AT_UNWIND`'s own header describes, asserted rather
    * than trusted. Those seven claims are LIVE and this script is the only thing
@@ -1424,10 +1454,21 @@ test('the reseed ids the 2026-09-01 run created are NOT denied — the unwind mu
     for (const id of RESEED.RESEED_PENDING_AT_UNWIND[bucket]) {
       assert.ok(!DENY.includes(id), `${bucket} ${id} is live and must be reachable`);
     }
+    /*
+     * The other half, and the half that only became assertable once a reseed had
+     * actually been unwound: the moment a row is removed its id MOVES to
+     * RESEED_SPENT_IDS and becomes denied, because a manifest naming a row that
+     * no longer exists did not come from a prep run.
+     */
+    for (const id of RESEED.RESEED_SPENT_IDS[bucket]) {
+      assert.ok(DENY.includes(id), `${bucket} ${id} is retired and must be denied`);
+    }
   }
-  // The seven the walk-prep is about, named so a silent renumbering is caught.
+  // The seven, named so a silent renumbering is caught. Unwound 2026-09-09, so
+  // they are SPENT now and nothing is pending.
+  assert.deepEqual([...RESEED.RESEED_PENDING_AT_UNWIND.claims], []);
   assert.deepEqual(
-    [...RESEED.RESEED_PENDING_AT_UNWIND.claims],
+    [...RESEED.RESEED_SPENT_IDS.claims],
     [53857, 53858, 53859, 53861, 53862, 53863, 53864]
   );
 });
@@ -1596,7 +1637,9 @@ test('the unwind on an already-unwound target issues zero writes', async () => {
   assert.equal(aborted, false);
   assert.deepEqual(od.writes, [], 'a second pass must issue nothing');
   for (const step of Object.keys(steps)) {
-    assert.equal(steps[step], 'already done', `${step} should report already done`);
+    // `reversal` is the one step that had no input to be already done WITH.
+    const want = step === 'reversal' ? 'not run' : 'already done';
+    assert.equal(steps[step], want, `${step} should report ${want}`);
   }
 });
 
@@ -2291,6 +2334,9 @@ function reversalTarget(overrides = {}) {
     procNum: 900001,
     claimNum: 900002,
     claimProcNum: 900003,
+    // W-20: `/adjustments` reads by PatNum, so a target carrying an adjustment
+    // has to name the patient it is on. A real manifest target always does.
+    patNum: 12827,
     serviceDate: '2026-03-01',
     odAdjustmentNum: 88001,
     ...overrides,
@@ -2453,4 +2499,246 @@ test('a target that already carries a reversal does not post a second one', asyn
 
   assert.equal(steps.reversal, 'already done');
   assert.ok(!od.writes.includes('POST /adjustments'), 'reversing twice moves the ledger the wrong way');
+});
+
+
+// ─── W-18: the candidate handoff, driven ─────────────────────────────────────
+//
+// The reversal step existed, was correct, and had never once run: it was gated
+// on `odAdjustmentNum`, which the PREP writes, while the takeback's AdjNum is
+// minted by the DRAIN days later. Seven targets reported `already done` for a
+// POST none of them had ever been handed an input for. These pin the handoff
+// that closes it and, more importantly, the refusals that keep it narrow.
+
+/** A `+` reversal type and the `-` recoupment type a candidate is checked against. */
+function bothAdjTypes() {
+  const odOfficeConfig = require('../services/rcm/odOfficeConfig');
+  const config = configWithReversalType();
+  return {
+    reversalAdjType: odOfficeConfig.pickAdjType(config, 'recoupment_reversal'),
+    recoupmentAdjType: { defNum: 12, name: 'Insurance deductions from previous payments' },
+  };
+}
+
+/**
+ * A target as the manifest actually carries one — `patNum` and `paidCents` are
+ * what corroboration is measured against — with the AdjNum arriving the way the
+ * drain's does: as a candidate, not from the prep.
+ */
+function candidateTarget(overrides = {}) {
+  return {
+    /*
+     * FICTIONAL, like every other id in this file. An earlier draft used the
+     * combined walk's real numbers (claim 53863 / proc 406657 / AdjNum 19157);
+     * the moment those were retired onto RESEED_SPENT_IDS the deny-list did its
+     * job and skipped the target, and six tests went red for the right reason.
+     * A fixture that borrows a live id has a shelf life.
+     */
+    procNum: 900101,
+    claimNum: 900102,
+    claimProcNum: 900103,
+    patNum: 12828,
+    paidCents: 2900,
+    serviceDate: '2026-09-01',
+    candidateAdjNum: 900157,
+    ...overrides,
+  };
+}
+
+/** An Open Dental holding the takeback exactly as the live one did. */
+function odWithTakeback(adjOverrides = {}) {
+  return fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 900103, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 900102, ClaimStatus: 'W' },
+    procedure: { ProcNum: 900101, ProcStatus: 'C' },
+    adjustment: { AdjNum: 900157, AdjAmt: -29, PatNum: 12828, AdjType: 12, ...adjOverrides },
+  });
+}
+
+/** A write seam that plans rather than issues, the way `--execute`-less runs do. */
+function planner() {
+  const planned = [];
+  return {
+    planned,
+    async write(verb, p, body) {
+      planned.push(`${verb} ${p}`);
+      return { ok: true, status: 0, dryRun: true, body };
+    },
+  };
+}
+
+test('(a) a corroborated candidate makes the dry run PLAN the reversal', async () => {
+  const od = odWithTakeback();
+  const plan = planner();
+  const lines = [];
+
+  const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: plan.write, log: (l) => lines.push(l), execute: false, ...bothAdjTypes() },
+    candidateTarget()
+  );
+
+  assert.equal(steps.reversal, 'pending', lines.join('\n'));
+  assert.equal(aborted, false, 'a corroborated candidate does not hold the target');
+  const dry = lines.filter((l) => l.includes('[dry run]'));
+  assert.ok(dry.some((l) => l.includes('POST /adjustments')), dry.join('\n'));
+  // And the rest of the target is planned too — the reversal is first, not instead.
+  assert.ok(dry.some((l) => l.includes('DELETE /claims/900102')), dry.join('\n'));
+  // `unwindTarget`'s own dry-run gate short-circuits ABOVE the io.write seam, so
+  // a caller whose writer does not implement dry run still cannot write.
+  assert.deepEqual(plan.planned, [], 'the write seam was never reached');
+
+  const said = lines.find((l) => l.includes('corroborated:'));
+  assert.ok(said, 'the transcript says what it corroborated, not just that it did');
+  assert.match(said, /PatNum 12828/);
+  assert.match(said, /Insurance deductions from previous payments/);
+});
+
+test('(b) no `+` AdjType is a LOUD refusal that writes nothing', async () => {
+  const od = odWithTakeback();
+  const plan = planner();
+  const lines = [];
+
+  const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    {
+      get: od.get,
+      write: plan.write,
+      log: (l) => lines.push(l),
+      execute: true,
+      reversalAdjType: null, // the practice has no '+' "insurance adjustment"
+      recoupmentAdjType: bothAdjTypes().recoupmentAdjType,
+    },
+    candidateTarget()
+  );
+
+  assert.equal(steps.reversal, 'failed');
+  assert.equal(aborted, true, 'and the whole target is held');
+  assert.deepEqual(plan.planned, [], 'nothing was issued or planned');
+  assert.ok(
+    lines.some((l) => /no .\+. "insurance adjustment"/.test(l)),
+    'it says WHY, in the practice\u2019s own terms: ' + lines.join('\n')
+  );
+});
+
+test('(c) a candidate on another patient cannot even be READ, let alone reversed', async () => {
+  // W-20 made the read scoped: `GET /adjustments?PatNum=<the manifest's patient>`.
+  // So a candidate sitting on a different chart is not rejected by corroboration
+  // — it is unreachable, which is the stronger property. Corroboration's own
+  // PatNum check stays as the client-side re-filter this module always applies
+  // to a list filter it did not prove.
+  const od = odWithTakeback({ PatNum: 12827 });
+  const plan = planner();
+  const lines = [];
+
+  const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: plan.write, log: (l) => lines.push(l), execute: true, ...bothAdjTypes() },
+    candidateTarget()
+  );
+
+  assert.equal(steps.reversal, 'failed', lines.join('\n'));
+  assert.equal(aborted, true, 'and the target is held whole');
+  assert.deepEqual(plan.planned, [], 'not one step was issued');
+  assert.ok(
+    lines.some((l) => l.includes('is not among PatNum 12828')),
+    'it says the AdjNum is not on the patient it looked under: ' + lines.join('\n')
+  );
+  assert.ok(
+    od.calls.some((c) => c === 'GET /adjustments'),
+    'and it read the LIST, never /adjustments/{id}: ' + od.calls.join(' | ')
+  );
+});
+
+test('a single-resource adjustment read is refused by the fake, as it is live', async () => {
+  // The guard on the guard. If this ever passes with 200, the fake has drifted
+  // back to answering a call Open Dental refuses, and every reversal test above
+  // becomes a statement about the fake's invention rather than the API.
+  const od = odWithTakeback();
+  const one = await od.get('/adjustments/900157');
+  assert.equal(one.ok, false);
+  assert.equal(one.status, 400);
+  assert.match(one.error, /PatNum is required/);
+
+  const list = await od.get('/adjustments', { PatNum: 12828 });
+  assert.equal(list.ok, true);
+  assert.equal(list.data.length, 1);
+  assert.equal(list.data[0].AdjNum, 900157);
+});
+
+for (const [why, adj] of [
+  ['the wrong amount', { AdjAmt: -35 }],
+  ['the wrong AdjType', { AdjType: 260 }],
+]) {
+  test(`(c) a candidate on ${why} is REFUSED and the target is held whole`, async () => {
+    const od = odWithTakeback(adj);
+    const plan = planner();
+    const lines = [];
+
+    const { steps, aborted } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+      { get: od.get, write: plan.write, log: (l) => lines.push(l), execute: true, ...bothAdjTypes() },
+      candidateTarget()
+    );
+
+    assert.equal(steps.reversal, 'refused', lines.join('\n'));
+    assert.equal(aborted, true);
+    assert.deepEqual(plan.planned, [], 'not one step of this target was issued');
+    // Every other step stays at its initial `blocked`, so the table cannot read
+    // as progress on a target nothing was done to.
+    assert.equal(steps.claim, 'blocked');
+    assert.equal(steps.procedure, 'blocked');
+    assert.ok(
+      lines.some((l) => l.includes('HELD ENTIRELY')),
+      'the operator is told the target was held, not skipped'
+    );
+  });
+}
+
+test('a target with no takeback reports `not run`, never `already done`', async () => {
+  const od = fakeOd({
+    payment: null,
+    claimProc: { ClaimProcNum: 535780, Status: 'NotReceived', InsPayAmt: 0, ClaimPaymentNum: 0 },
+    claim: { ClaimNum: 53863, ClaimStatus: 'W' },
+    procedure: { ProcNum: 406657, ProcStatus: 'C' },
+    adjustment: null,
+  });
+  const plan = planner();
+  const lines = [];
+
+  const { steps } = await require(path.join(SCRIPTS, FILES.unwind)).unwindTarget(
+    { get: od.get, write: plan.write, log: (l) => lines.push(l), execute: false, ...bothAdjTypes() },
+    candidateTarget({ candidateAdjNum: undefined })
+  );
+
+  assert.equal(steps.reversal, 'not run', 'the W-18 label: no input is not completion');
+  assert.notEqual(steps.reversal, 'already done');
+  assert.ok(lines.some((l) => l.includes('no input')), lines.join('\n'));
+});
+
+test('the candidate lookup is keyed BY the manifest, and two answers refuse', async () => {
+  const { attachReversalCandidates } = require(path.join(SCRIPTS, FILES.unwind));
+
+  /** Records what it was asked, so the key can be asserted rather than assumed. */
+  const asked = [];
+  const query = async (sql, params) => {
+    asked.push({ sql, params });
+    return { rows: [{ od_adjustment_num: '900157' }] };
+  };
+
+  const targets = [candidateTarget({ candidateAdjNum: undefined })];
+  const found = await attachReversalCandidates(query, 'roland', targets);
+
+  assert.equal(found, 1);
+  assert.equal(targets[0].candidateAdjNum, 900157, 'attached to the in-memory target');
+  assert.deepEqual(
+    asked[0].params,
+    ['roland', 900103, 900102],
+    'the office and the MANIFEST\u2019s own claimproc and claim are the key'
+  );
+  assert.match(asked[0].sql, /od_adjustment_num IS NOT NULL/);
+
+  // Two different takebacks against one line: no basis to choose, so it refuses.
+  const twoRows = async () => ({ rows: [{ od_adjustment_num: 1 }, { od_adjustment_num: 2 }] });
+  await assert.rejects(
+    () => attachReversalCandidates(twoRows, 'roland', [candidateTarget({ candidateAdjNum: undefined })]),
+    /no basis for choosing/
+  );
 });

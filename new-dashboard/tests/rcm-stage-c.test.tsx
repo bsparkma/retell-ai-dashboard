@@ -271,7 +271,9 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       if (!row) throw new real.RcmApiError("no such check", 404, "REMITTANCE_NOT_FOUND");
       return {
         office,
-        remittance: { ...row, plbAdjustments: [], plans: [] },
+        // S5: a check may carry its postings, so the shadow worksheet's
+        // approved-only rule can be exercised. Empty unless a test says so.
+        remittance: { ...row, plbAdjustments: [], plans: (row.plans as unknown[] | undefined) ?? [] },
         claims: state.claims,
       };
     }),
@@ -280,6 +282,9 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       return state.approval;
     }),
     listPostingQueue: vi.fn(async () => state.queue ?? QUEUE),
+    getComparisonTally: vi.fn(async () => {
+      throw new real.RcmApiError("none", 404, "NOT_FOUND");
+    }),
     getRecoupmentPreview: vi.fn(async () => {
       throw new real.RcmApiError("none", 404, "NOT_FOUND");
     }),
@@ -365,14 +370,41 @@ describe("Today answers in sentences", () => {
     );
   });
 
-  it("has NO file input anywhere — the door is a card that navigates (D-16)", async () => {
+  it("carries the door itself, below the work rather than above it (D-18)", async () => {
+    /*
+     * REVERSED BY SLICE 2, AND THE REPLACEMENT ASSERTION IS THE INTERESTING
+     * PART.
+     *
+     * D-16 pushed the panels off this page and this test pinned their absence.
+     * D-18 brings them back, so pinning "no file input" would now pin the wrong
+     * thing. What has to stay true is the ORDER: Stage A's failure was never
+     * that the panels were here, it was that they were FIRST — a biller opening
+     * the screen that tells her what is waiting on her met two file inputs and a
+     * cost breaker before she met a single check.
+     *
+     * So this asserts document order instead: what came in, then get work in,
+     * then the statistics. A future tidy that floats the drop zones back to the
+     * top goes red, which is the failure worth catching.
+     */
     state.checks = [check()];
     const RcmToday = (await import("@/pages/rcm/RcmToday")).default;
     const view = renderAt(<RcmToday />, "/rcm");
 
-    const card = await screen.findByTestId("rcm-get-work-in");
-    expect(card.getAttribute("href")).toBe("/rcm/bring-in");
-    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(0);
+    const door = await screen.findByTestId("rcm-get-work-in-roland");
+    expect(view.container.querySelectorAll('input[type="file"]').length).toBeGreaterThan(0);
+
+    const arrivals = screen.getByTestId("rcm-what-came-in-roland");
+    expect(
+      Boolean(arrivals.compareDocumentPosition(door) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "the drop zones are above 'what came in' again",
+    ).toBe(true);
+
+    // …and the statistics are last of all. Work first, numbers after.
+    const stats = screen.getByTestId("rcm-stats-roland");
+    expect(
+      Boolean(door.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "the statistics are above the work",
+    ).toBe(true);
   });
 
   it("finishing the evening feels like finishing, with the numbers", async () => {
@@ -387,8 +419,15 @@ describe("Today answers in sentences", () => {
     renderAt(<RcmToday />, "/rcm");
 
     const done = await screen.findByTestId("rcm-arrivals-all-done-roland");
-    expect(done.textContent).toContain("That's everything for tonight");
-    expect(done.textContent).toContain("1 check on file here");
+    expect(done.textContent).toContain("You’re done for tonight.");
+    /*
+     * THE NUMBERS NOW LIVE IN A CARD, and which lines it carries depends on
+     * what the page can evidence. Nothing posted in this fixture, so the
+     * fallback line is the one that renders — see `summariseTonight`, which
+     * omits a line rather than approximating it.
+     */
+    expect(screen.getByTestId("rcm-tonight-onfile-roland").textContent).toBe("1");
+    expect(done.textContent).toContain("on file, all worked through");
   });
 
   it("a first evening points at the door rather than saying nothing", async () => {
@@ -397,9 +436,16 @@ describe("Today answers in sentences", () => {
 
     const empty = await screen.findByTestId("rcm-arrivals-none-ever-roland");
     expect(empty.textContent).toContain("Nothing has come in");
-    expect(screen.getByTestId("rcm-arrivals-none-ever-add-roland").getAttribute("href")).toBe(
-      "/rcm/bring-in",
-    );
+    /*
+     * A BUTTON, NOT A LINK, SINCE D-18. The door is further down THIS page, so
+     * there is nowhere to navigate to and an `href` would be a lie about what
+     * pressing it does. The test asserts the honest shape: no href, and the
+     * thing it scrolls to is on the page with it.
+     */
+    const cta = screen.getByTestId("rcm-arrivals-none-ever-add-roland");
+    expect(cta.tagName).toBe("BUTTON");
+    expect(cta.getAttribute("href")).toBeNull();
+    expect(screen.getByTestId("rcm-get-work-in-roland")).toBeTruthy();
   });
 });
 
@@ -460,6 +506,18 @@ describe("the Checks list says whose move it is", () => {
         "A takeback — money the carrier is reclaiming",
       ),
     );
+
+    /*
+     * AND THE AMOUNT KEEPS ITS SIGN (slice 2's item 3).
+     *
+     * The sentence and the figure are two independent readings of the same
+     * fact, and a takeback is the one row where they could disagree in a way
+     * that costs money: "$54.00" beside "money the carrier is reclaiming" reads
+     * as an incoming payment somebody has mislabelled. `money()` renders a
+     * negative through `toLocaleString`, so this pins the rendered string rather
+     * than trusting the helper.
+     */
+    expect(screen.getByTestId("remittance-row-b-1").textContent).toContain("-$54.00");
   });
 
   /* ── C-3b item 1 — and WHO is on the check ─────────────────────────────── */
@@ -740,13 +798,58 @@ describe("shadow mode explains itself and carries the worksheet", () => {
 
     const banner = await screen.findByTestId("shadow-mode-banner");
     expect(banner.textContent).toContain("Posting is switched off");
-    expect(banner.textContent).toContain("Everything you do here still counts");
-    expect(banner.textContent).toContain("the same button posts these checks");
-    expect(screen.getByTestId("shadow-who-can").textContent).toContain("Who can switch this on?");
+    /*
+     * CHANGED BY S5 (artboard M) — the copy, not the four things it says.
+     * What is true (everything but sending to Open Dental), that it is ON
+     * PURPOSE, what is safe (decisions saved), what changes (approved checks
+     * ready to go), and who can switch it on.
+     */
+    expect(banner.textContent).toContain(
+      "You can do everything on this check except send it to Open Dental — and that's on purpose.",
+    );
+    expect(banner.textContent).toContain("Your decisions are all saved.");
+    expect(banner.textContent).toContain(
+      "the checks you've already approved will be ready to go",
+    );
+    // A DISCLOSURE, and its answer names the same Admin → Office the labels
+    // test holds the copy to.
+    const who = screen.getByTestId("shadow-who-can");
+    expect(who.tagName).toBe("DETAILS");
+    expect(who.textContent).toContain("Who can switch this on?");
+    expect(screen.getByTestId("shadow-who-can-answer").textContent).toContain(
+      "An administrator, under Admin → Office.",
+    );
+  });
+
+  it("shows no worksheet until somebody has approved the check", async () => {
+    // S5: "what this app would have done" is a record of an APPROVED check.
+    // Before the approve the figures are still being decided on the claims.
+    state.checks = [check()];
+    state.claims = [claim()];
+    state.queue = { ...QUEUE, postingEnabled: true, drainEnabled: false };
+    state.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [approvalClaim()],
+      postableCount: 1,
+      withheldCount: 0,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+
+    const RemittanceDetail = (await import("@/pages/rcm/RemittanceDetail")).default;
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    await screen.findByTestId("shadow-mode-banner");
+    expect(screen.queryByTestId("shadow-would-have-done")).toBeNull();
   });
 
   it("carries the same roll-up the approve page shows, and it is printable", async () => {
-    state.checks = [check()];
+    // S5: on an APPROVED check in shadow — see the test above.
+    state.checks = [check({ plans: [{ queueId: "q-1", status: "approved" }] })];
     state.claims = [claim()];
     state.queue = { ...QUEUE, postingEnabled: true, drainEnabled: false };
     state.approval = {

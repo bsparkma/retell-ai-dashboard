@@ -24,6 +24,7 @@ import {
   DxCodeSchema,
   HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
+  HygSlipSchema,
   MOTIVATION_LABELS,
   MotivationCodeSchema,
   OFFICE_IDS,
@@ -33,6 +34,7 @@ import {
   TreatmentPrioritySchema,
   TreatmentStatusSchema,
   deriveCategory,
+  emptySlip,
   isOfficeId,
   type HandoffCategory,
   type TreatmentCategory,
@@ -401,5 +403,78 @@ describe("the day response contract matches the backend that builds it", () => {
     for (const [key, schema] of Object.entries(flags.shape)) {
       expect(schema.safeParse(null).success, `${key} must accept null`).toBe(true);
     }
+  });
+});
+
+/**
+ * THE SLIP GAINED FIVE FIELDS AND NO MIGRATION (H1 slice 8).
+ *
+ * The slip is one jsonb column and `visitStore.readSlip` reports a slip this
+ * build cannot parse as an EMPTY one — the honest answer to "we cannot read
+ * what was stored". That makes a REQUIRED new field a data-loss bug rather
+ * than a schema change: every visit saved before this branch, including one a
+ * hygienist is half way through filling in, would read back blank.
+ *
+ * Every new field therefore carries a `.default()`, and this is the test that
+ * says so out loud.
+ */
+describe("a slip written before the note fields existed", () => {
+  /** Exactly what slice 2 stored, key for key. Do not add to it. */
+  const SLICE_2_SLIP = {
+    doneToday: ["prophy"],
+    doneTodayNote: "",
+    xrayTypes: ["BW-4"],
+    examStatus: "completed",
+    perioStage: "gingivitis",
+    perioGrade: null,
+    patientConcerns: "Cold sensitivity upper right.",
+    hygieneFindings: "",
+    nextVisit: { type: null, intervalMonths: 6, lengthMin: 60, withDoctor: false },
+    recareScheduled: null,
+    txEnteredInOd: null,
+    frontDeskNote: "",
+    financialNote: "",
+    productsDispensed: [],
+    recordsStatus: { "Pre-op PA": "taken_today" },
+  };
+
+  it("still parses, and keeps every word somebody typed", () => {
+    const parsed = HygSlipSchema.safeParse(SLICE_2_SLIP);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.patientConcerns).toBe("Cold sensitivity upper right.");
+    expect(parsed.data.doneToday).toEqual(["prophy"]);
+    expect(parsed.data.recordsStatus["Pre-op PA"]).toBe("taken_today");
+  });
+
+  it("gains the new fields as UNANSWERED, never as a guess", () => {
+    const parsed = HygSlipSchema.parse(SLICE_2_SLIP);
+    // A null visit type composes the generic note. An old row must not be
+    // silently assigned a template nobody chose for it.
+    expect(parsed.visitType).toBeNull();
+    expect(parsed.visitTypeSource).toBeNull();
+    expect(parsed.noteFields).toEqual({});
+    expect(parsed.rtc).toBe("");
+    expect(parsed.perioChartUpdated).toBeNull();
+  });
+
+  it("is what emptySlip() produces too, so the two cannot drift", () => {
+    expect(Object.keys(HygSlipSchema.parse(SLICE_2_SLIP)).sort()).toEqual(
+      Object.keys(emptySlip()).sort(),
+    );
+  });
+
+  it("still refuses a key nobody declared", () => {
+    // `.strict()` is the reason a typo is a 400 naming the key rather than a
+    // field that silently vanishes. Adding defaults must not have relaxed it.
+    expect(HygSlipSchema.safeParse({ ...SLICE_2_SLIP, visitTyp: "perio_maint" }).success).toBe(
+      false,
+    );
+  });
+
+  it("refuses a visit type that is not one of the five", () => {
+    expect(HygSlipSchema.safeParse({ ...SLICE_2_SLIP, visitType: "srp_upper" }).success).toBe(
+      false,
+    );
   });
 });

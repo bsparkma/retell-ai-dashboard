@@ -36,6 +36,20 @@
  */
 import { z } from "zod";
 
+// The auto-note vocabulary lives in its own file and is imported here, ONE
+// DIRECTION ONLY: the slip needs to know what a visit type and a graded row
+// are; noteTemplates.ts knows nothing about slips. It is deliberately NOT
+// re-exported from here — `backend/hyg/contract.entry.ts` exports both files
+// side by side, and exporting a name twice is an esbuild error rather than a
+// convenience.
+import {
+  emptyNoteField,
+  NoteFieldSchema,
+  VisitTypeSchema,
+  VisitTypeSourceSchema,
+  type NoteField,
+} from "./noteTemplates";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Offices
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,6 +791,56 @@ export const HygSlipSchema = z
     productsDispensed: z.array(z.string().min(1).max(120)),
     /** Keyed by the record label RECORDS_MATRIX produces. */
     recordsStatus: z.record(z.string(), RecordStatusSchema),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // THE CLINIC NOTE (H1 slice 8)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // ⚠️ EVERY FIELD BELOW CARRIES A `.default()`, AND THAT IS LOAD-BEARING. ⚠️
+    //
+    // The slip is one jsonb column, and `visitStore.readSlip` reports a slip
+    // this build cannot parse as an EMPTY one. A required field added here
+    // would therefore make every visit saved before this branch — a slip a
+    // hygienist is half way through filling in, right now — read back blank.
+    // A default makes an older row parse and gain the new keys instead, which
+    // is why this slice needs no migration at all. `hyg-contract.test.ts` pins
+    // exactly that: yesterday's slip JSON must still parse.
+
+    /**
+     * Which of the practice's five hygiene auto notes this visit writes.
+     *
+     * `null` means nobody has picked one, and a null composes the generic note
+     * this module wrote before templates existed rather than guessing a
+     * template. A wrong template is a wrong chart note.
+     */
+    visitType: VisitTypeSchema.nullable().default(null),
+    /**
+     * Whether the type above was suggested from the appointment or chosen by
+     * hand. Stored so the form can SAY which, rather than presenting a guess as
+     * a decision somebody made.
+     */
+    visitTypeSource: VisitTypeSourceSchema.nullable().default(null),
+    /**
+     * The graded rows, keyed by NoteControlId.
+     *
+     * A record rather than fourteen named fields, for the same reason
+     * `recordsStatus` is one: the set of rows is decided by the TEMPLATE, and a
+     * template that gains a row must not need a schema change to store its
+     * answer. An id this build does not know is carried, not dropped — the
+     * renderer only ever asks for the ids its own template names.
+     */
+    noteFields: z.record(z.string(), NoteFieldSchema).default({}),
+    /** `RTC: ` — the return-to-clinic line every one of the templates ends on. */
+    rtc: z.string().max(4000).default(""),
+    /**
+     * Perio Maint's `Perio chart updated` line.
+     *
+     * A yes/no rather than the source template's flat assertion: perio charting
+     * is not built (H4), so CareIN cannot know, and a note that claims a chart
+     * was updated when it was not is exactly the kind of sentence this module
+     * exists to not write.
+     */
+    perioChartUpdated: YesNoSchema.nullable().default(null),
   })
   .strict();
 export type HygSlip = z.infer<typeof HygSlipSchema>;
@@ -805,7 +869,24 @@ export function emptySlip(): HygSlip {
     financialNote: "",
     productsDispensed: [],
     recordsStatus: {},
+    visitType: null,
+    visitTypeSource: null,
+    noteFields: {},
+    rtc: "",
+    perioChartUpdated: null,
   };
+}
+
+/**
+ * One graded row of a slip, however it is stored.
+ *
+ * `noteFields` is a record, so a row nobody has touched is genuinely absent
+ * rather than present-and-empty. Everything that reads one goes through here so
+ * "missing" and "answered with nothing" are the same shape to a caller and the
+ * difference is never a crash.
+ */
+export function slipNoteField(slip: HygSlip, id: string): NoteField {
+  return slip.noteFields[id] ?? emptyNoteField();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -931,6 +1012,16 @@ export const HygVisitResponseSchema = z.object({
   recordsNeeded: z.array(z.string()),
   /** The handoff category deriveCategory() computes from the items. */
   handoffCategory: HandoffCategorySchema,
+  /**
+   * THIS OFFICE's supervising doctors, for the note's `Dr. ___ performed`
+   * clause (H1 slice 8).
+   *
+   * Sent by the server, from `backend/config/hygStaff.js`, keyed on the office
+   * of the STORED VISIT. It is a response field rather than a constant in the
+   * client bundle because a doctor's name is per-practice, and a name compiled
+   * into a component is a name that gets rendered for the wrong one.
+   */
+  doctorOptions: z.array(z.string()),
 });
 export type HygVisitResponse = z.infer<typeof HygVisitResponseSchema>;
 
@@ -990,6 +1081,7 @@ export const HygSendResponseSchema = z.object({
   visit: HygVisitSchema,
   recordsNeeded: z.array(z.string()),
   handoffCategory: HandoffCategorySchema,
+  doctorOptions: z.array(z.string()),
   /** One entry per confirmed kind, in the order they were attempted. */
   outcomes: z.array(SendOutcomeSchema),
   /** Counts, not a verdict. `written + failed` is what was attempted. */

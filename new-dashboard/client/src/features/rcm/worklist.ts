@@ -41,6 +41,7 @@
  * exactly two places: `set_aside`, and `all`.
  */
 import type { Remittance } from "@/features/rcm/api";
+import type { WaitingState } from "@/features/rcm/waitingOn";
 
 export const WORKLIST_FILTERS = [
   "attention",
@@ -161,6 +162,82 @@ export const FILTER_COPY: Record<WorklistFilter, FilterCopy> = {
     empty: "No checks yet. Add one from Today.",
   },
 };
+
+/**
+ * THE ONE CHIP VOCABULARY — six states, and a row may wear no chip at all.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS REPLACED THE SERVER'S STATUS ON A LIST ROW
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A check row used to wear `batchStatusLabel(r.status)` — *Held for review*,
+ * *Ready*, *Balanced*, *Open* — which is the ingestion pipeline's vocabulary,
+ * not a biller's. It sat inches from a *Waiting on* cell computed from an
+ * entirely different predicate, so one row could read "Ready" beside "You — 4
+ * claims to check over". Two vocabularies about one check, disagreeing in the
+ * same glance.
+ *
+ * So the chip and the sentence now come from the SAME `waitingFor()` call, and
+ * the chip's words are the SAME STRINGS the tabs are labelled with — read out
+ * of `FILTER_COPY` rather than retyped, so a tab and the chip that fills it
+ * cannot drift apart. Renaming a tab renames every chip in that state, once.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * FOUR STATES DELIBERATELY GET NO CHIP
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `takeback`, `shadow`, `other_office` and `nothing` return null. Each of them
+ * is a SENTENCE — "money the carrier is reclaiming", "posting is switched off",
+ * "belongs to another office" — and a chip is four words wide. Squeezing one
+ * into a badge would either lie by abbreviation or invent a seventh word for a
+ * vocabulary whose whole point is that it has six. The *Waiting on* cell beside
+ * it already says the thing in full, so the honest chip is no chip.
+ *
+ * TONE CARRIES WEIGHT, NEVER CONTENT. Amber is the one a person owes an action
+ * on right now; green is ready to go; everything else is ordinary work in
+ * progress. A reader who cannot see colour loses nothing — the words are the
+ * whole message.
+ */
+export interface CheckChip {
+  label: string;
+  /** Tailwind classes. Weight only — the label is what says what is true. */
+  tone: string;
+}
+
+const NEUTRAL = "bg-muted text-muted-foreground";
+
+/**
+ * Keyed by `WaitingState`, so the compiler is what keeps this exhaustive: a new
+ * state added to `waitingOn.ts` is a type error here until somebody decides,
+ * explicitly, whether it wears a chip. `Record`, not `Partial<Record>` — a
+ * state with no chip says so with `null` rather than by being forgotten.
+ */
+export const CHECK_CHIPS: Record<WaitingState, CheckChip | null> = {
+  review: { label: FILTER_COPY.review.label, tone: NEUTRAL },
+  match: { label: FILTER_COPY.match.label, tone: NEUTRAL },
+  stuck: {
+    label: FILTER_COPY.blocked.label,
+    tone: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+  },
+  approve: {
+    label: FILTER_COPY.approve.label,
+    tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  },
+  /* The one label with no tab behind it — nothing filters to "posted" — so it
+     is written here and nowhere else. The tick is part of the word: it is the
+     only state in the set that is finished, and it should read finished. */
+  posted: { label: "✓ Posted", tone: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300" },
+  set_aside: { label: FILTER_COPY.set_aside.label, tone: NEUTRAL },
+
+  // ── No chip. See the header. ──
+  takeback: null,
+  shadow: null,
+  other_office: null,
+  nothing: null,
+};
+
+/** The chip for a row in this state, or null when the sentence carries it. */
+export function checkChip(state: WaitingState): CheckChip | null {
+  return CHECK_CHIPS[state];
+}
 
 /**
  * Does this check belong in that state?

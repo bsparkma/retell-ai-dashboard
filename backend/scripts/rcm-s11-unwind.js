@@ -130,8 +130,9 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * SAFETY PROPERTIES — enforced in code, pinned by test/rcmS10Scripts.test.js
  * ─────────────────────────────────────────────────────────────────────────────
- *   1. IDS COME FROM THE MANIFEST AND FROM NOWHERE ELSE. Not argv, not env, not
- *      a fresh read of the patient's claims. The command line carries a closed
+ *   1. SCOPE COMES FROM THE MANIFEST AND FROM NOWHERE ELSE. Not argv, not env,
+ *      not a fresh read of the patient's claims. (Property 8 adds one CORROBORATED
+ *      value to a target the manifest already names; it can never add a target.) The command line carries a closed
  *      set of BOOLEAN FLAGS and nothing else — no token on it is ever parsed as
  *      a number, a path or an id, and an unrecognised one is a refusal. An
  *      unwind that takes ids from an argument is one typo away from deleting a
@@ -151,6 +152,16 @@
  *      200 that did not take would send two DELETEs at a still-Received claim.
  *   7. RESUMABLE. Every step reads before it writes and reports `already done`
  *      rather than re-issuing. The script is safe to run from any partial state.
+ *   8. THE POSTING QUEUE IS CONSULTED, NEVER OBEYED (W-18). The drain's
+ *      `od_adjustment_num` is the only fact about a target this manifest cannot
+ *      contain, because the prep writes the manifest days before the drain mints
+ *      the adjustment. It arrives as a CANDIDATE, looked up BY the manifest
+ *      target's own claimproc and claim — so property 1 is untouched, no row can
+ *      nominate itself — and it is corroborated against the manifest (patient,
+ *      the target's paid amount mirrored) and against this office's own
+ *      definitions (the `-` recoupment type, by name) before it may mean
+ *      anything. A candidate that does not corroborate HOLDS THE WHOLE TARGET.
+ *      A step with no input reports `not run`, never `already done`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT CANNOT BE UNWOUND
@@ -527,6 +538,203 @@ const STEP_LABELS = Object.freeze({
 const UNRECEIVED_STATUS = 'W';
 
 /**
+ * ONE adjustment, read the only way Open Dental offers one (W-20).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `/adjustments` IS PLURAL-ONLY. THERE IS NO SINGLE-RESOURCE READ.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `GET /adjustments/19157` answers **400 "PatNum is required."** — the path
+ * segment is not an address, it is ignored, and the API asks for the patient it
+ * always wanted. Verified live 2026-09-09T19:11:16Z against Roland.
+ *
+ * This step used the single-resource shape from the day it was written and had
+ * never once executed against a chart, so nothing ever exercised the read. It
+ * took fixing W-18 — which gave the step its first input — to reach it.
+ *
+ * `services/rcm/odPostingWrites.js` -> `readAdjustmentsForPatient` is the SHARED
+ * CONTRACT this follows: list read, filter re-checked client-side, the row found
+ * by AdjNum rather than by "the newest", because two takebacks on one patient
+ * would make "newest" a race. It is deliberately NOT imported. A teardown that
+ * depends on the write module it exists to clean up after is a teardown a drain
+ * refactor can silently break, and the one script in this repository allowed to
+ * DELETE from a chart does not get to fail that way. The contract is shared; the
+ * code is not.
+ *
+ * The PatNum comes from the MANIFEST TARGET, never from the row being looked for
+ * — which is also what makes the corroboration below mean anything: a row is
+ * checked against a patient that was already known, not against its own.
+ *
+ * @param {{ get: Function }} io
+ * @param {number} patNum
+ * @param {number} adjNum
+ * @returns {Promise<{ ok: boolean, status: number, data: Record<string, unknown>|null, error?: string }>}
+ */
+async function readAdjustment(io, patNum, adjNum) {
+  const res = await io.get('/adjustments', { PatNum: patNum });
+  if (!res.ok) {
+    return { ok: false, status: res.status, data: null, error: res.error || '' };
+  }
+  const rows = Array.isArray(res.data) ? res.data : [];
+  const hit = rows.find(
+    (r) => r && Number(r.AdjNum) === Number(adjNum) && Number(r.PatNum) === Number(patNum)
+  );
+  if (!hit) {
+    return {
+      ok: false,
+      status: 404,
+      data: null,
+      error: `AdjNum ${adjNum} is not among PatNum ${patNum}'s ${rows.length} adjustment(s)`,
+    };
+  }
+  return { ok: true, status: 200, data: hit };
+}
+
+/**
+ * Does the app database's candidate actually describe THIS manifest target's
+ * takeback? Returns null when it does, or the reason it does not.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY A CANDIDATE IS CHECKED AND A MANIFEST NUMBER IS NOT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The prep writes the manifest, so a number in it is this operation's own
+ * record. The posting queue is written by the drain, which serves the whole
+ * module — its rows are true, but they are true about the drain's world, not
+ * about this teardown's. Believing one without checking would quietly make the
+ * app database a second authority over what a DELETE script touches, and the
+ * first time the two disagreed the disagreement would be resolved silently, in
+ * a patient's ledger.
+ *
+ * The three facts are all derived from the manifest target and from this
+ * office's OWN definitions. None comes from the candidate row.
+ *
+ *   PatNum   the adjustment must sit on the patient the target names.
+ *   AdjAmt   it must be the target's paid amount MIRRORED. A takeback of a
+ *            $29.00 payment is -$29.00 and nothing else; an adjustment for some
+ *            other sum on the right patient is some other event.
+ *   AdjType  it must be the `-` recoupment type resolved BY NAME from this
+ *            practice's list — never a DefNum written down anywhere.
+ *
+ * @param {{ patNum?: unknown, paidCents?: unknown }} target
+ * @param {Record<string, unknown>|undefined} adj  the row as Open Dental returned it
+ * @param {{ defNum: number, name: string }|null|undefined} recoupType
+ * @returns {string|null}
+ */
+function corroborateCandidate(target, adj, recoupType) {
+  const wantPat = Number(target && target.patNum);
+  if (!Number.isFinite(wantPat) || wantPat <= 0) {
+    return 'the manifest target names no patient, so there is nothing to corroborate it against';
+  }
+  const paidCents = Number(target && target.paidCents);
+  if (!Number.isFinite(paidCents) || paidCents === 0) {
+    return 'the manifest target records no paid amount, so the expected takeback cannot be derived';
+  }
+  if (!recoupType || !Number(recoupType.defNum)) {
+    return (
+      "this practice has no '-' recoupment AdjType resolvable by name, so the candidate's own " +
+      'type cannot be checked'
+    );
+  }
+
+  const patNum = Number(adj && adj.PatNum);
+  if (patNum !== wantPat) {
+    return `it sits on PatNum ${patNum}, not the target's patient ${wantPat}`;
+  }
+  const amt = Number(adj && adj.AdjAmt);
+  const wantAmt = -(paidCents / 100);
+  if (!Number.isFinite(amt) || cents(amt) !== cents(wantAmt)) {
+    return `its AdjAmt ${amt} is not the target's takeback mirrored (${wantAmt})`;
+  }
+  const type = Number(adj && adj.AdjType);
+  if (type !== Number(recoupType.defNum)) {
+    return (
+      `its AdjType ${type} is not "${recoupType.name}" (DefNum ${recoupType.defNum}), the ` +
+      "'-' recoupment type this practice resolves by name"
+    );
+  }
+  return null;
+}
+
+/**
+ * Hand the drain's `od_adjustment_num` to the unwind — as a candidate, per
+ * target, keyed by the manifest.
+ *
+ * THE LOOKUP KEY IS THE MANIFEST'S, WHICH IS WHAT KEEPS SCOPE WHERE IT WAS.
+ * The query cannot return a claimproc the manifest does not already name, so no
+ * row in the posting queue can nominate itself as a target. The database is
+ * being asked one question about a target that already exists — "did the drain
+ * write a takeback against this line" — and is answering nothing else.
+ *
+ * TWO ANSWERS IS A REFUSAL, not a first-row-wins. If one claimproc carries two
+ * different takeback adjustments, an unwind has no basis for choosing, and
+ * choosing wrong writes a permanent offsetting row against the wrong event.
+ *
+ * The candidate is attached to the IN-MEMORY target only. The manifest file on
+ * disk is never rewritten: it is the record of what the prep created, and a
+ * teardown that edits its own authority has none.
+ *
+ * @param {(sql: string, params: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>} query
+ * @param {string} office
+ * @param {Array<Record<string, unknown>>} targets
+ * @returns {Promise<number>} how many targets gained a candidate
+ */
+async function attachReversalCandidates(query, office, targets) {
+  let found = 0;
+  for (const t of targets || []) {
+    const claimProcNum = Number(t && t.claimProcNum);
+    const claimNum = Number(t && t.claimNum);
+    if (!Number.isFinite(claimProcNum) || claimProcNum <= 0) continue;
+    if (!Number.isFinite(claimNum) || claimNum <= 0) continue;
+
+    const res = await query(
+      'SELECT DISTINCT od_adjustment_num FROM rcm_posting_queue_line ' +
+        'WHERE office_id = $1 AND od_claim_proc_num = $2 AND od_claim_num = $3 ' +
+        'AND od_adjustment_num IS NOT NULL',
+      [office, claimProcNum, claimNum]
+    );
+    const rows = (res && res.rows) || [];
+    if (rows.length === 0) continue;
+    if (rows.length > 1) {
+      throw new Error(
+        `claimproc ${claimProcNum} on claim ${claimNum} carries ${rows.length} different takeback ` +
+          'adjustments in the posting queue. An unwind has no basis for choosing between them.'
+      );
+    }
+    t.candidateAdjNum = Number(rows[0].od_adjustment_num);
+    found += 1;
+  }
+  return found;
+}
+
+/**
+ * A `query(sql, params)` against this deployment's tenant database, resolved
+ * through the platform registry so no connection string is ever handled — or
+ * printed — by an operator running a teardown.
+ *
+ * EXACTLY ONE TENANT, OR NOTHING. Not an env var naming one — this file takes
+ * no input from the environment at all, and a knob pointing corroboration at
+ * the wrong practice is a worse failure than not running. More than one tenant
+ * is a loud refusal that somebody extends deliberately, having thought about
+ * which posting queue answers for this manifest.
+ *
+ * @returns {Promise<(sql: string, params: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>>}
+ */
+async function appDbQuery() {
+  const registry = require('../platform/registry');
+  const { getTenantPool } = require('../platform/tenantDb');
+
+  const tenants = await registry.listTenants();
+  if (!Array.isArray(tenants) || tenants.length !== 1) {
+    const n = Array.isArray(tenants) ? tenants.length : 0;
+    throw new Error(
+      `the control plane lists ${n} tenant(s), and this unwind reads the posting queue of ` +
+        'exactly one. Which queue answers for this manifest is a decision, not a default.'
+    );
+  }
+  const pool = await getTenantPool(tenants[0].tenant_id);
+  return (sql, params) => pool.query(sql, params);
+}
+
+/**
  * Unwind ONE target, resumably.
  *
  * Split out of `main()` and given its I/O rather than reaching for it, so the
@@ -630,22 +838,97 @@ async function unwindTarget(io, target) {
    * minus type would double the deduction while reporting success, and the
    * read-back below would be the only thing that noticed.
    */
-  if (Number(target.odAdjustmentNum) > 0) {
-    const adjNum = Number(target.odAdjustmentNum);
+  /*
+   * WHICH ADJUSTMENT, AND WHERE THE NUMBER IS ALLOWED TO COME FROM (W-18).
+   *
+   * The manifest stays the sole authority for SCOPE — every target unwound here
+   * is one the prep recorded creating, and nothing below can add another. But
+   * the takeback's AdjNum is not something the prep is able to know: the prep
+   * writes the manifest BEFORE the walk, and the drain mints the adjustment days
+   * later, at post time. `odAdjustmentNum` has therefore never once been
+   * populated, and the step it gates has never once run.
+   *
+   * So `rcm_posting_queue_line.od_adjustment_num` enters as a CANDIDATE, looked
+   * up BY the manifest target's own claimproc and claim — a row the manifest
+   * does not name can never introduce itself — and it is CORROBORATED against
+   * both the manifest and Open Dental below before it is allowed to mean
+   * anything. A candidate that does not corroborate is a loud refusal that holds
+   * the entire target, never a skip.
+   */
+  const manifestAdjNum = Number(target.odAdjustmentNum) > 0 ? Number(target.odAdjustmentNum) : 0;
+  const candidateAdjNum = Number(target.candidateAdjNum) > 0 ? Number(target.candidateAdjNum) : 0;
+  const adjNum = manifestAdjNum || candidateAdjNum;
+
+  /*
+   * The read below is BY PATIENT (W-20), so the patient has to be known before
+   * it can happen. It comes from the manifest — the reseed's targets carry one
+   * each, and `main()` stamps the walk manifest's single top-level `patNum` onto
+   * its targets for exactly this. An adjustment with no patient to look under is
+   * a refusal, not a lookup with a guess in it.
+   */
+  const readPatNum = Number(target.patNum);
+
+  if (adjNum > 0 && !(Number.isFinite(readPatNum) && readPatNum > 0)) {
+    steps.reversal = 'failed';
+    aborted = true;
+    io.log(
+      `   0. reversal     FAILED — adjustment ${adjNum} is named for this target but the ` +
+        'manifest gives it no patient, and `/adjustments` can only be read by PatNum.'
+    );
+    return { steps, aborted };
+  }
+
+  if (adjNum > 0) {
     if (denied(adjNum)) {
       steps.reversal = 'skipped';
       io.log(`   0. reversal     SKIPPED — adjustment ${adjNum} is on the deny-list`);
     } else {
-      const orig = await io.get(`/adjustments/${adjNum}`);
+      const orig = await readAdjustment(io, readPatNum, adjNum);
       if (!orig.ok) {
         // A reversal we cannot price is a reversal we must not guess at.
         steps.reversal = 'failed';
         aborted = true;
-        io.log(`   0. reversal     FAILED — GET /adjustments/${adjNum} -> ${orig.status}`);
+        io.log(
+          `   0. reversal     FAILED — GET /adjustments?PatNum=${readPatNum} -> ${orig.status}` +
+            `${orig.error ? ` (${orig.error})` : ''}`
+        );
       } else {
         const origAmt = Number(orig.data?.AdjAmt);
         const patNum = Number(orig.data?.PatNum);
         io.log(`   read: /adjustments/${adjNum} AdjAmt=${origAmt} PatNum=${patNum} AdjType=${orig.data?.AdjType}`);
+
+        /*
+         * CORROBORATION — only for a candidate. A number the MANIFEST carries is
+         * already the prep's own record and needs no second opinion; a number
+         * the app database offered does, because the app database is not the
+         * authority here and must not become one by being believed.
+         *
+         * Three facts, all derived from the manifest target and from this
+         * office's own definitions, none of them from the candidate itself.
+         */
+        const uncorroborated =
+          manifestAdjNum > 0 ? null : corroborateCandidate(target, orig.data, io.recoupmentAdjType);
+        if (uncorroborated) {
+          steps.reversal = 'refused';
+          aborted = true;
+          io.log(
+            `   0. reversal     REFUSED — the posting queue offered adjustment ${adjNum} for this ` +
+              `target, but ${uncorroborated}.`
+          );
+          io.log(
+            '                   Nothing was written and this target is HELD ENTIRELY: an ' +
+              'adjustment that cannot be identified is not one to reverse, and a claim whose ' +
+              'takeback is unaccounted for is not one to dismantle.'
+          );
+          return { steps, aborted };
+        }
+        if (manifestAdjNum === 0) {
+          io.log(
+            `   corroborated: adjustment ${adjNum} is PatNum ${patNum}, ${origAmt} (the target's ` +
+              `takeback mirrored) under "${io.recoupmentAdjType.name}" ` +
+              `DefNum=${io.recoupmentAdjType.defNum}`
+          );
+        }
 
         if (!Number.isFinite(origAmt) || origAmt === 0) {
           steps.reversal = 'failed';
@@ -707,11 +990,11 @@ async function unwindTarget(io, target) {
              * it started.
              */
             const newNum = Number(r.data?.AdjNum);
-            const back = await io.get(`/adjustments/${newNum}`);
+            const back = await readAdjustment(io, readPatNum, newNum);
             const backAmt = Number(back.data?.AdjAmt);
             const net = origAmt + backAmt;
             io.log(
-              `   read-back: /adjustments/${newNum} AdjAmt=${backAmt}  ` +
+              `   read-back: AdjNum ${newNum} AdjAmt=${backAmt}  ` +
                 `net ${origAmt} + ${backAmt} = ${net}`
             );
             /*
@@ -748,8 +1031,17 @@ async function unwindTarget(io, target) {
       }
     }
   } else {
-    steps.reversal = 'already done';
-    io.log('   0. reversal     nothing to reverse — this target carries no takeback adjustment');
+    /*
+     * `not run`, NEVER `already done`. A step that was never given an input did
+     * not complete, and saying it did is precisely how W-18 survived a whole
+     * walk: seven targets reported `already done` for a POST none of them had
+     * ever been handed an adjustment to offset.
+     */
+    steps.reversal = 'not run';
+    io.log(
+      '   0. reversal     not run — no input: neither the manifest nor the posting queue ' +
+        'names a takeback adjustment for this target'
+    );
   }
 
   if (aborted) return { steps, aborted };
@@ -1115,6 +1407,21 @@ async function main() {
   const patNums = screened.patNums;
 
   /*
+   * THE WALK MANIFEST CARRIES ONE PATIENT AT THE TOP, NOT ONE PER TARGET.
+   *
+   * `readAdjustment` reads by PatNum (W-20), so every target needs one. The
+   * reseed's targets each carry their own; the walk's share a single top-level
+   * `patNum`, which the screen has already resolved into `patNums`. Stamping it
+   * on is a completion, not a guess, and it is guarded on there being exactly
+   * ONE patient so it can never smear one chart's number across another's rows.
+   */
+  if (patNums.length === 1) {
+    for (const t of manifest.targets || []) {
+      if (!(Number(t.patNum) > 0)) t.patNum = patNums[0];
+    }
+  }
+
+  /*
    * SAFETY 2 — the deny-list, applied to the manifest BEFORE anything is issued.
    *
    * Not a warning and not a skip: if the residue is in the manifest, the manifest
@@ -1190,6 +1497,39 @@ async function main() {
   for (const b of before) printBalance('BEFORE', b);
 
   /*
+   * ─── SAFETY 4 — THE CANDIDATE HANDOFF, AND WHY IT FAILS THE WHOLE RUN ─────
+   *
+   * The posting queue is asked, once, whether the drain wrote a takeback against
+   * any line this manifest names. It cannot widen the manifest — the lookup key
+   * is the manifest target's own claimproc and claim.
+   *
+   * A failure here refuses the RUN, not a target. Every other read in this
+   * script answers a question about one target and can therefore fail one
+   * target; this one answers "does this target carry a takeback at all", and a
+   * run that cannot answer it cannot tell a claim with no takeback from a claim
+   * whose takeback it simply failed to look for. Proceeding on that would
+   * dismantle the second kind, which is exactly the W-18 failure this handoff
+   * exists to close. Fail closed.
+   */
+  try {
+    const query = await appDbQuery();
+    const withCandidates = await attachReversalCandidates(query, office, manifest.targets || []);
+    console.log(
+      `    reversal candidates: ${withCandidates} of ${(manifest.targets || []).length} target(s) ` +
+        'carry a takeback adjustment in the posting queue'
+    );
+  } catch (err) {
+    console.error(
+      'REFUSED: the posting queue could not be read, so this run cannot tell whether any target\n' +
+        '  carries a takeback adjustment. A claim whose takeback was never looked for must not be\n' +
+        '  dismantled — that is W-18. Nothing was read past this point and nothing was written.\n' +
+        `  ${err && err.message ? err.message : err}`
+    );
+    process.exitCode = 7;
+    return;
+  }
+
+  /*
    * ─── THE REVERSAL ADJTYPE, RESOLVED ONCE, BY NAME ─────────────────────────
    *
    * Resolved here rather than per target, because five paced reads of a
@@ -1202,17 +1542,40 @@ async function main() {
    * it must never do is proceed with a guess.
    */
   let reversalAdjType = null;
-  const needsReversal = (manifest.targets || []).some((t) => Number(t.odAdjustmentNum) > 0);
+  let recoupmentAdjType = null;
+  /*
+   * A CANDIDATE COUNTS AS "needs a reversal" TOO. Gating this on the manifest
+   * field alone is the second half of W-18: the definitions read was skipped on
+   * exactly the runs that turned out to need it, so the script never even asked
+   * whether the practice HAD a reversal type.
+   */
+  const needsReversal = (manifest.targets || []).some(
+    (t) => Number(t.odAdjustmentNum) > 0 || Number(t.candidateAdjNum) > 0
+  );
   if (needsReversal) {
     try {
       const resolved = await odOfficeConfig.resolvePostingConfig(get, office);
       reversalAdjType = odOfficeConfig.pickAdjType(resolved.config, 'recoupment_reversal');
+      /*
+       * The `-` type is resolved for CORROBORATION, not to write with. Nothing
+       * in this script posts a deduction; it reads one back and checks that the
+       * candidate was booked under the type this practice calls a recoupment.
+       */
+      recoupmentAdjType = odOfficeConfig.pickAdjType(resolved.config, 'recoupment');
       console.log(
         reversalAdjType
           ? `    reversal AdjType: "${reversalAdjType.name}" DefNum=${reversalAdjType.defNum} ` +
               `— resolved from ${office}'s OWN definitions, by name, sign +`
           : `    reversal AdjType: NONE — ${office} has no '+' "insurance adjustment". ` +
               'Any target needing a reversal will refuse.'
+      );
+      console.log(
+        recoupmentAdjType
+          ? `    recoupment AdjType (for corroboration only): "${recoupmentAdjType.name}" ` +
+              `DefNum=${recoupmentAdjType.defNum} — by name, sign -`
+          : `    recoupment AdjType: NONE — ${office} has no '-' recoupment type, so no ` +
+              'candidate from the posting queue can be corroborated. Any target carrying one ' +
+              'will refuse.'
       );
     } catch (err) {
       console.log(
@@ -1274,6 +1637,7 @@ async function main() {
       log: (line) => console.log(line),
       execute,
       reversalAdjType,
+      recoupmentAdjType,
     };
     const outcome = await unwindTarget(io, target);
     results.push({ label, target, ...outcome });
@@ -1365,6 +1729,9 @@ if (require.main === module) {
 module.exports = {
   main,
   unwindTarget,
+  corroborateCandidate,
+  attachReversalCandidates,
+  readAdjustment,
   balanceOf,
   balancesOf,
   cents,

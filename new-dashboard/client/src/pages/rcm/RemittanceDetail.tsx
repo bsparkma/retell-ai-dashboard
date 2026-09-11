@@ -56,8 +56,8 @@ import {
   ExternalLink,
   Info,
   Loader2,
-  RefreshCw,
   ScanLine,
+  Search,
   ShieldCheck,
 } from "lucide-react";
 import {
@@ -65,6 +65,7 @@ import {
   getApprovalPreview,
   getRemittance,
   listPostingQueue,
+  matchClaim,
   matchRemittance,
   RcmApiError,
   unparkRemittance,
@@ -77,8 +78,6 @@ import {
 } from "@/features/rcm/api";
 import { isRcmOfficeId } from "@/features/rcm/api";
 import {
-  batchStatusLabel,
-  batchStatusTone,
   day,
   isBlockingReason,
   lineFlagLabel,
@@ -96,21 +95,27 @@ import {
 import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { claimHref, remittanceFlow } from "@/features/rcm/flow";
 import { waitingFor } from "@/features/rcm/waitingOn";
+import { checkChip } from "@/features/rcm/worklist";
 import { describePlbAdjustment } from "@/features/rcm/plb";
+import { matchRunSummary } from "@/features/rcm/matchWords";
 
 import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
+import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
 import PostThisCheck from "@/components/rcm/PostThisCheck";
 import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
 import CheckComparison from "@/components/rcm/CheckComparison";
 import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import { useOffice } from "@/contexts/OfficeContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
 
 export default function RemittanceDetailPage() {
   const [, params] = useRoute("/rcm/remittances/:id");
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
+  const auth = useAuth();
 
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -155,6 +160,16 @@ export default function RemittanceDetailPage() {
    * true and never merely because a read is slow.
    */
   const [shadowMode, setShadowMode] = useState(false);
+  /**
+   * RE-MATCHING ONE CLAIM, FROM ITS OWN ROW (W-11).
+   *
+   * The claim id in flight, and the last outcome, keyed by claim. Per-claim and
+   * not per-page on purpose: this act names one row, and an outcome reported in
+   * a page-level banner would leave a reader working out which of nine rows it
+   * was about.
+   */
+  const [rematching, setRematching] = useState<string | null>(null);
+  const [rematchNote, setRematchNote] = useState<{ claimId: string; text: string } | null>(null);
 
   /**
    * Which office's remittance this is.
@@ -288,7 +303,7 @@ export default function RemittanceDetailPage() {
   if (state.kind === "failed") {
     return (
       <div className="p-6" data-testid="remittance-error">
-        <BackLink />
+        <Breadcrumb title={null} />
         <div className="mt-4 rounded-xl border border-dashed border-border bg-card p-8 text-center">
           <div className="text-sm font-medium text-foreground">Could not open this check</div>
           <p className="mt-1 text-sm text-muted-foreground">{state.message}</p>
@@ -298,7 +313,14 @@ export default function RemittanceDetailPage() {
   }
 
   const { remittance: r, claims, office } = state.data;
-  const flow = remittanceFlow(r, claims);
+  /*
+   * The rail is told about the posting switch, so its `post` step can say
+   * "switched off while shadow mode is on" instead of "ready to post" — the
+   * same fact the banner below explains at length, in one line, where the
+   * reader is already looking.
+   */
+  const flow = remittanceFlow(r, claims, { shadowMode });
+  const headerChip = checkChip(waitingFor(r, { office, shadowMode }).state);
   /*
    * THIS CHECK'S POSTING, if it has one.
    *
@@ -328,6 +350,22 @@ export default function RemittanceDetailPage() {
    * claim. A claim the preview did not judge is ABSENT rather than mapped to a
    * neutral value — the table renders those two cases as different sentences.
    */
+  /**
+   * MAY THIS PERSON RELEASE A CONFIRMED MATCH? (D-9)
+   *
+   * Re-running a CONFIRMED claim sends `force: true`, which NULLs
+   * `od_claim_num` — the column the posting reads to pick a chart claim. A
+   * `reviewer` holds `rcm.queue` and may run a match all day; releasing a
+   * decision they could not have made is not theirs.
+   *
+   * UI HIDING ONLY, exactly as on the claim screen: the server refuses with
+   * 403 FORCE_REQUIRES_WRITE whatever this button does. The two screens read the
+   * same permission so a control cannot be offered in one place and refused in
+   * the other.
+   */
+  const mayRelease =
+    auth.status !== "authenticated" || auth.user.isSuperAdmin || can(auth.user.permissions, "rcm.write");
+
   const verdictByClaim = new Map<string, ClaimVerdict>(
     (preview?.claims ?? [])
       .filter((c): c is typeof c & { verdict: ClaimVerdict } => c.verdict != null)
@@ -365,6 +403,54 @@ export default function RemittanceDetailPage() {
       ?.focus({ preventScroll: true });
   }
 
+  /**
+   * MATCH THIS ONE CLAIM AGAIN — W-11's re-match, at the row that names it.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SAME ENDPOINT, SAME PARAMS, DIFFERENT PLACE AND A DIFFERENT NAME
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `matchClaim(office, claimId, force ? { force: true } : {})` — byte for byte
+   * what the claim screen's own button sends, with `force` set exactly when the
+   * claim is already confirmed, which is the one case where re-running releases
+   * a decision rather than repeating a search.
+   *
+   * Nothing about the ACT moved. What moved is WHERE it is offered and what it
+   * is called: a page-level control that re-matched "the check" could not say
+   * which claim it would release, and a row can.
+   *
+   * It reads Open Dental and writes to no chart, like every other match on this
+   * page.
+   */
+  async function rematchClaim(claim: RemittanceClaim) {
+    const force = claim.odMatchStatus === "confirmed";
+    setRematching(claim.claimId);
+    setRematchNote(null);
+    try {
+      const result = await matchClaim(office, claim.claimId, force ? { force: true } : {});
+      const found = result.snapshot.candidates.length;
+      setRematchNote({
+        claimId: claim.claimId,
+        text:
+          result.status === "no_candidate"
+            ? "Looked again — Open Dental still has nothing this app is willing to offer for it."
+            : `Looked again — ${found} possible claim${found === 1 ? "" : "s"} in Open Dental. Nothing is linked; open the claim to pick one.`,
+      });
+      load();
+    } catch (err) {
+      // The server's own sentence, at the row it is about. A refusal is not a
+      // page-level failure and does not get to blank the check.
+      setRematchNote({
+        claimId: claim.claimId,
+        text:
+          err instanceof RcmApiError || err instanceof Error
+            ? err.message
+            : "That claim could not be matched again.",
+      });
+    } finally {
+      setRematching(null);
+    }
+  }
+
   async function runBatchMatch() {
     setMatching(true);
     setMatchError(null);
@@ -389,9 +475,19 @@ export default function RemittanceDetailPage() {
 
   return (
     <div className="p-6" data-testid="rcm-remittance-detail">
-      <BackLink />
+      <Breadcrumb title={r.payer} />
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/*
+        ── Header (S3, §1) ─────────────────────────────────────────────────────
+        Breadcrumb · the check · what it is worth, when it came in and how many
+        claims are on it · the three actions.
+
+        THE MONEY LINE IS NEW AND THE IDENTIFIER LINE STAYED. They answer
+        different questions — "is this the check I am looking for" is a check
+        number, and "how big a job is this" is a total and a claim count — and
+        the second one used to be answerable only by reading four cards and
+        counting rows.
+      */}
       <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -401,12 +497,25 @@ export default function RemittanceDetailPage() {
             >
               {r.payer}
             </h1>
-            <span
-              className={`rounded-full px-2 py-0.5 text-xs font-medium ${batchStatusTone(r.status)}`}
-              data-testid="remittance-status"
-            >
-              {batchStatusLabel(r.status)}
-            </span>
+            {/*
+              ONE CHIP VOCABULARY. This was `batchStatusLabel(r.status)` — the
+              ingestion pipeline's words — which meant the check's own page and
+              the list you opened it from named its state differently. Both now
+              read `checkChip(waitingFor(...).state)`, so the chip a biller
+              clicked and the chip she lands on are the same six words.
+
+              A state with no chip (a takeback, another office's check, nothing
+              outstanding) renders none — the rail and the panels below say it
+              in full, and a badge cannot.
+            */}
+            {headerChip && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${headerChip.tone}`}
+                data-testid="remittance-status"
+              >
+                {headerChip.label}
+              </span>
+            )}
             {r.source && (
               <span
                 title={SOURCE_TITLES[r.source]}
@@ -419,33 +528,69 @@ export default function RemittanceDetailPage() {
               {RCM_OFFICE_LABELS[office]}
             </span>
           </div>
+          {/*
+            WHAT THIS CHECK IS WORTH, WHEN IT CAME IN, AND HOW BIG A JOB IT IS.
+
+            "Received" is the DEPOSIT DATE — the date on the carrier's payment,
+            the same value the Checks list prints in its Date column. Dropped
+            entirely when the remittance carries none, never replaced with the
+            day CareIN happened to read the file: those are two different facts
+            and only one of them is the carrier's.
+
+            The claim count is `claims.length` — the rows actually rendered
+            below — rather than the stored `claimCount`. A header that counted
+            one population while the table drew another is the defect Slice 6a
+            fixed on the Checks page, and it is not worth re-introducing for a
+            field that is already in hand.
+          */}
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="check-summary">
+            <span className="font-mono font-semibold text-foreground">
+              {money(r.totalAmountCents)}
+            </span>
+            {r.depositDate && (
+              <span title="The date on the carrier's payment."> · received {day(r.depositDate)}</span>
+            )}
+            {" · "}
+            {claims.length} {claims.length === 1 ? "claim" : "claims"}
+          </p>
           <p className="mt-1 font-mono text-sm text-muted-foreground">
             {r.paymentMethod === "eft" ? "EFT" : "Check"}{" "}
-            {r.checkNumber || r.eftNumber || r.traceNumber || "—"} · {day(r.depositDate)}
+            {r.checkNumber || r.eftNumber || r.traceNumber || "—"}
           </p>
         </div>
 
-        <div className="flex flex-col items-end gap-1">
-          <button
-            onClick={runBatchMatch}
-            disabled={matching}
-            data-testid="match-all-claims"
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-60"
-          >
-            {matching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            {matching ? "Matching…" : "Match all claims"}
-          </button>
+        {/*
+          ── THE NEXT CLICK, ONCE ────────────────────────────────────────────
+          W-11, ONE MATCH VERB. This header used to carry a *Match all claims*
+          button while the rail below carried its own CTA reading *Match it up* —
+          two controls, two names, one act, and a biller had no way to know they
+          were the same press.
+
+          There is now exactly ONE page-level verb and `flow.ts` names it: on a
+          check waiting to be matched it reads *Match it up* and fires the batch
+          match; on one waiting to be approved it links to the approve screen.
+          The rail is told not to draw a second copy (`hideCta`), and re-running
+          a single claim moved to that claim's own row, where it says which claim
+          it means.
+        */}
+        <div className="flex flex-col items-start gap-1 sm:items-end">
+          {flow.cta && (
+            <RcmPrimaryAction
+              cta={flow.cta}
+              onAction={{
+                "run-match": runBatchMatch,
+                approve: goToApprovalGate,
+                drain: goToPostPanel,
+              }}
+              busy={matching}
+              busyLabel="Matching…"
+            />
+          )}
           {matching && (
             <DisabledReason testId="match-in-flight">
               A match is running. It reads Open Dental and writes nothing.
             </DisabledReason>
           )}
-
-          {/*
-            SLICE 6b: the Approve button now lives in ApprovalPanel below, beside
-            the checklist that explains it. A control whose precondition is three
-            screens away from it is a control people press hopefully.
-          */}
         </div>
       </div>
 
@@ -463,24 +608,35 @@ export default function RemittanceDetailPage() {
         have to name one of two steps the page really is. The rail's own current
         dot and the CTA below it already answer "where am I" without picking.
       */}
+      {/* SAVE FOR TOMORROW · SET ASIDE — the two quiet header actions.
+
+          Above the rail rather than below it, beside the primary verb they are
+          the alternatives to: the header asks "what happens to this check now",
+          and "not today" is one of the three answers to it.
+
+          The component is UNCHANGED. Its two panels still open anchored to their
+          own buttons, in the normal flow, pushing the page down — Stage C §8's
+          rule that neither may cover the claim list still holds, and holds more
+          easily from up here. */}
+      <CheckWorklistActions office={office} remittance={r} onChanged={load} />
+
       <RcmStepper
         flow={flow}
-        onAction={{
-          "run-match": runBatchMatch,
-          // NEITHER of these is a second button. Both real controls are on this
-          // page already, below the checklist that explains them; the rail takes
-          // you to whichever one is next and puts the focus there. Two controls
-          // that both approve — or both post — would be exactly the confusion
-          // this slice exists to remove.
-          approve: goToApprovalGate,
-          drain: goToPostPanel,
-        }}
-      />
+        /*
+          THE RAIL DOES NOT DRAW THE CTA ON THIS PAGE (W-11).
 
-      {/* SAVE FOR TOMORROW · SET ASIDE. Directly under the rail, because they
-          are answers to the same question it asks — "what is next on this one" —
-          and one honest answer is "not today". */}
-      <CheckWorklistActions office={office} remittance={r} onChanged={load} />
+          `flow.cta` is rendered ONCE, in the header above, by
+          `RcmPrimaryAction` — with the same label, the same disabled state, the
+          same reason and the same note. Drawing it here as well is what put two
+          buttons reading "Match it up" and "Match all claims" on one screen.
+
+          The five steps and their evidence lines are untouched. No `onAction`
+          map is passed either: with nothing here to fire the verbs, handing the
+          rail three callbacks it can never reach would be wiring that reads as
+          live and is not.
+        */
+        hideCta
+      />
 
       {/*
         ── REMITTANCE-LEVEL FLAGS ──────────────────────────────────────────────
@@ -660,11 +816,38 @@ export default function RemittanceDetailPage() {
           className="mt-4 rounded-xl border border-border bg-card px-4 py-3 text-sm"
           data-testid="batch-match-result"
         >
-          <div className="flex items-center gap-2 font-medium text-foreground">
-            <Info size={14} />
-            Matched {matchResult.matched.length} claim
-            {matchResult.matched.length === 1 ? "" : "s"} against Open Dental
-          </div>
+          {/*
+            ── WHAT IT DID, AND WHAT IT LEFT ALONE (W-11) ────────────────────
+            This line used to read "Matched {N} claims against Open Dental" with
+            N = the LENGTH of the results array — which counts the claims
+            somebody had already confirmed, the ones Open Dental has nothing
+            for, and the ones that failed outright, right alongside the ones it
+            matched. A run that examined nine and matched none reported nine.
+
+            `matchRunSummary` splits the two halves and attaches the reason to
+            each count, from the same response. It is not a softer sentence; it
+            is a different sentence, and the difference is that this one is true.
+          */}
+          {(() => {
+            const summary = matchRunSummary(matchResult);
+            return (
+              <div
+                className="flex items-start gap-2 font-medium text-foreground"
+                data-testid="batch-match-summary"
+              >
+                <Info size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {summary.did}
+                  {summary.leftAlone.length > 0 && (
+                    <span className="font-normal text-muted-foreground">
+                      {" · "}
+                      {summary.leftAlone.join(" · ")}
+                    </span>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
           <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
             {matchResult.matched.map((row) => (
               <li key={row.claimId}>
@@ -733,6 +916,10 @@ export default function RemittanceDetailPage() {
           batchId={r.batchId}
           nextClaimId={nextUnfinishedClaimId}
           remaining={unfinishedCount}
+          /* S5's deposit card: the carrier's own check total, as the bank would
+             see it — not the posted total, which a provider-level adjustment
+             can make differ. */
+          checkAmountCents={r.totalAmountCents}
         />
       )}
 
@@ -748,7 +935,15 @@ export default function RemittanceDetailPage() {
         shadow mode", it is not set up, and its postings say so per row.
       */}
       {shadowMode && preview && (
-        <ShadowModeBanner office={office} claims={preview.claims} />
+        <ShadowModeBanner
+          office={office}
+          claims={preview.claims}
+          /* S5 (artboard M): the worksheet is a record of what the app WOULD
+             have posted, so it appears once somebody has approved the check —
+             before that the figures are still being decided. */
+          approved={plan != null}
+          paidByClaim={new Map(claims.map((c) => [c.claimId, c.totalPaidCents]))}
+        />
       )}
 
       {/*
@@ -847,7 +1042,13 @@ export default function RemittanceDetailPage() {
         It sits OUTSIDE the stepper deliberately: the stepper describes the
         ordinary path a remittance walks, and a takeback is not a step on it.
       */}
-      <div className="mt-4">
+      {/*
+        `id` so the approve page can send a takeback-only check straight here
+        (W-5). An in-page anchor rather than a route: the panel has never had a
+        URL of its own, and giving it one would be a second place a takeback is
+        authorised from.
+      */}
+      <div className="mt-4" id="takeback">
         <RecoupmentPanel
           office={office}
           batchId={r.batchId}
@@ -907,6 +1108,14 @@ export default function RemittanceDetailPage() {
               /* `null` = the gate has not answered yet; `true` = it answered and
                  this claim was not in it, which is a different sentence. */
               judged={preview === null ? null : verdictByClaim.has(claim.claimId)}
+              /* W-11's re-match, wired to the SAME endpoint the claim screen
+                 uses. Disabled while any match is in flight — the batch run
+                 reads the same rate-limited Open Dental credential. */
+              onRematch={() => void rematchClaim(claim)}
+              rematching={rematching === claim.claimId}
+              matchBusy={matching || rematching !== null}
+              mayRelease={mayRelease}
+              rematchNote={rematchNote?.claimId === claim.claimId ? rematchNote.text : null}
               open={expanded.has(claim.claimId)}
               onToggle={() =>
                 setExpanded((prev) => {
@@ -924,15 +1133,52 @@ export default function RemittanceDetailPage() {
   );
 }
 
-function BackLink() {
+/**
+ * WHERE THIS PAGE SITS — S3, §1.
+ *
+ * A back arrow reading "All checks" answers "how do I leave", which is not the
+ * same question as "where am I". The two steps above this check are the two nav
+ * items a biller already clicks — *Today* and *Checks* — and they are named with
+ * the SAME words the sidebar uses, so the trail and the nav cannot teach two
+ * vocabularies for one place.
+ *
+ * The last crumb is the check itself and is NOT a link: a breadcrumb whose final
+ * item navigates to the page you are on is a control that appears to do
+ * something and does nothing.
+ *
+ * `title` degrades honestly — a check with no payer recorded renders the trail
+ * and stops, rather than printing a placeholder that reads like a payer.
+ */
+function Breadcrumb({ title }: { title: string | null }) {
   return (
-    <Link
-      href="/rcm/remittances"
-      className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+    <nav
+      aria-label="Where this check sits"
+      className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground"
+      data-testid="check-breadcrumb"
     >
-      <ArrowLeft size={14} />
-      All checks
-    </Link>
+      <ArrowLeft size={14} className="shrink-0" aria-hidden />
+      <Link href="/rcm" className="underline-offset-4 transition-colors hover:text-foreground hover:underline">
+        Today
+      </Link>
+      <span aria-hidden className="text-muted-foreground/50">
+        ›
+      </span>
+      <Link
+        href="/rcm/remittances"
+        data-testid="check-breadcrumb-checks"
+        className="underline-offset-4 transition-colors hover:text-foreground hover:underline"
+      >
+        Checks
+      </Link>
+      {title && (
+        <>
+          <span aria-hidden className="text-muted-foreground/50">
+            ›
+          </span>
+          <span className="max-w-[16rem] truncate font-medium text-foreground">{title}</span>
+        </>
+      )}
+    </nav>
   );
 }
 
@@ -981,9 +1227,24 @@ function Stat({
  * approval gate judges on. This row renders it verbatim and computes nothing.
  * A green cell beside a red claim is a shape the code cannot produce.
  *
- * The sentence can be long. It is truncated to one line with the whole of it on
- * the cell's `title`, and the claim's own screen is one click away — a cell that
- * wrapped to four lines would undo the scanning the column exists for.
+ * THE SENTENCE CAN BE LONG, AND IT WRAPS RATHER THAN CLIPPING.
+ *
+ * It used to be truncated to one line with the whole of it on the cell's
+ * `title`, on the reasoning that a cell wrapping to four lines would undo the
+ * scanning the column exists for. That traded away the wrong thing. Round 1 of
+ * PR #167 caught two cousins of this cell on the practice owner's own screen —
+ * *The carrier is reclaiming money. It i…* and *You — 1 claim to ch* — and the
+ * scanning a clipped cell preserves is scanning of text that has stopped saying
+ * anything. A column whose job is a sentence may not cut itself off mid-word.
+ *
+ * A `title` is not the escape hatch either: it needs a mouse, it never appears
+ * on a touch screen, and it is the wrong place for the only copy of a sentence
+ * about whether a patient owes money.
+ *
+ * So the row grows. The identifier cells beside it — patient name, claim number
+ * — still truncate, and rightly: a name is recognisable from its first
+ * characters and the rest is a lookup, whereas the clipped half of a sentence is
+ * the half carrying the verb.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE LINE TABLE IS STILL HERE, STILL BEHIND A TOGGLE
@@ -996,6 +1257,11 @@ function ClaimTriageRow({
   batchId,
   verdict,
   judged,
+  onRematch,
+  rematching,
+  matchBusy,
+  mayRelease,
+  rematchNote,
   open,
   onToggle,
 }: {
@@ -1004,6 +1270,16 @@ function ClaimTriageRow({
   batchId: string;
   /** The gate's own verdict for this claim, or null. */
   verdict: ClaimVerdict | null;
+  /** Run the match again for THIS claim. See `rematchClaim` above. */
+  onRematch: () => void;
+  /** This row's own run is in flight. */
+  rematching: boolean;
+  /** Any match is in flight, including the whole-check one. */
+  matchBusy: boolean;
+  /** D-9: releasing a CONFIRMED match needs `rcm.write`. */
+  mayRelease: boolean;
+  /** What this row's last run said, or null. */
+  rematchNote: string | null;
   /**
    * `null` — the gate has not answered yet.
    * `false` — it answered and had nothing to say about this claim.
@@ -1076,7 +1352,7 @@ function ClaimTriageRow({
             {claim.postingQueueId && (
               <span
                 className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-                title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
+                title="A person approved this claim for posting."
                 data-testid={`claim-queued-${claim.claimId}`}
               >
                 Approved
@@ -1088,14 +1364,18 @@ function ClaimTriageRow({
         {/* ── WHERE THE PATIENT STANDS ───────────────────────────────────── */}
         <div className="min-w-0" data-testid={`claim-stands-${claim.claimId}`}>
           {verdict ? (
+            /* Wraps, never truncates — see the header. The `title` went with
+               the clipping it existed to compensate for.
+               All three states carry the verdict banners' own tones: green,
+               amber and red are reserved for the verdict and states, and a
+               matching claim IS a verdict. Only the unjudged row stays quiet. */
             <span
-              title={verdict.sentence}
-              className={`block truncate text-xs ${
+              className={`block break-words text-xs ${
                 verdict.state === "red"
                   ? "font-medium text-rose-700 dark:text-rose-400"
                   : verdict.state === "amber"
                     ? "text-amber-800 dark:text-amber-300"
-                    : "text-muted-foreground"
+                    : "text-emerald-700 dark:text-emerald-400"
               }`}
             >
               {verdict.sentence}
@@ -1117,6 +1397,61 @@ function ClaimTriageRow({
           Open
           <ChevronRight size={11} />
         </Link>
+      </div>
+
+      {/*
+        ── MATCH THIS CLAIM AGAIN — W-11 ──────────────────────────────────────
+        The re-match left the page level, where it could only offer to re-run
+        "the check", and became a row action that names the claim it means.
+
+        FULL WIDTH, UNDER THE GRID, rather than squeezed into the 5.5rem action
+        column: the label has to carry the word "again" and the word "claim" to
+        be worth moving here at all, and a label that had to be shortened to fit
+        would have arrived back where it started.
+
+        RELEASING A CONFIRMED MATCH IS THE WRITE TIER'S ACT (D-9), and a reviewer
+        gets the reason rather than a control that 403s.
+      */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1 border-t border-border px-4 pb-2 pt-2">
+        <div className="flex flex-col items-start gap-1">
+          <button
+            onClick={onRematch}
+            disabled={matchBusy || (claim.odMatchStatus === "confirmed" && !mayRelease)}
+            data-testid={`rematch-claim-${claim.claimId}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {rematching ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <Search size={11} />
+            )}
+            Match this claim again
+          </button>
+          {claim.odMatchStatus === "confirmed" && !mayRelease ? (
+            <DisabledReason testId={`rematch-reason-${claim.claimId}`}>
+              This claim is already tied to a chart claim, and un-tying it needs posting
+              permission. Ask an approver.
+            </DisabledReason>
+          ) : matchBusy && !rematching ? (
+            <DisabledReason testId={`rematch-reason-${claim.claimId}`}>
+              A match is already running. It reads Open Dental and writes nothing.
+            </DisabledReason>
+          ) : null}
+        </div>
+        {claim.odMatchStatus === "confirmed" && mayRelease && (
+          <p className="max-w-md pt-0.5 text-xs text-muted-foreground">
+            This one is already tied to a chart claim. Matching it again replaces that and un-ties
+            it; the confirmation stays in the audit trail.
+          </p>
+        )}
+        {rematchNote && (
+          <p
+            className="basis-full text-xs text-muted-foreground"
+            data-testid={`rematch-note-${claim.claimId}`}
+          >
+            {rematchNote}
+          </p>
+        )}
       </div>
 
       {/* Review reasons — the flags Slices 4 and 5 wrote and nothing rendered. */}

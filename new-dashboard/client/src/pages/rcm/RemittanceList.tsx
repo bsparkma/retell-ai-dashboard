@@ -91,8 +91,6 @@ import {
 } from "@/features/rcm/api";
 import {
   attentionLabel,
-  batchStatusLabel,
-  batchStatusTone,
   day,
   money,
   SOURCE_LABELS,
@@ -100,6 +98,7 @@ import {
 } from "@/features/rcm/format";
 import {
   CHECK_TABS,
+  checkChip,
   FILTER_COPY,
   isWorklistFilter,
   matchesFilter,
@@ -108,6 +107,7 @@ import {
   type WorklistFilter,
 } from "@/features/rcm/worklist";
 import { waitingFor } from "@/features/rcm/waitingOn";
+import { shadowFor, useRcmShadow } from "@/features/rcm/shadowMode";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 type Filter = WorklistFilter;
@@ -262,9 +262,14 @@ export default function RemittanceList() {
             to know where uploading lives — and it NAVIGATES to Today's
             "Get work in", which is the module's only upload surface.
             `?add=1` scrolls it into view on arrival.
+
+            IT POINTED AT `/rcm/bring-in` FOR ONE STAGE. D-18 moved the surface
+            back to Today and this link followed it. What did NOT change is the
+            rule: this page never grows a file input of its own, whichever page
+            happens to hold the one that exists.
           */}
           <Link
-            href="/rcm/bring-in"
+            href="/rcm?add=1"
             data-testid="remittance-upload-toggle"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
@@ -583,7 +588,7 @@ function OfficeRemittances({
                 posted to a chart.
               </p>
               <Link
-                href="/rcm/bring-in"
+                href="/rcm?add=1"
                 data-testid={`remittances-empty-upload-${office}`}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
               >
@@ -605,14 +610,32 @@ function OfficeRemittances({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {state.total} check{state.total === 1 ? "" : "s"} in this practice.
                   </p>
-                  <button
-                    onClick={() => setFilter("all")}
-                    data-testid={`remittances-empty-see-all-${office}`}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-                  >
-                    See all of them
-                    <ArrowRight size={13} />
-                  </button>
+                  {/*
+                    TWO EXITS, not one. "See all of them" answers "is anything
+                    here at all"; Today answers "then what should I be doing" —
+                    and they are different questions. A reader who has just been
+                    told a queue is empty is either checking her filter or
+                    finished for the evening, and one button can only serve the
+                    first of those.
+                  */}
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      onClick={() => setFilter("all")}
+                      data-testid={`remittances-empty-see-all-${office}`}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      See all of them
+                      <ArrowRight size={13} />
+                    </button>
+                    <Link
+                      href="/rcm"
+                      data-testid={`remittances-empty-today-${office}`}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      Back to Today
+                      <ArrowRight size={13} />
+                    </Link>
+                  </div>
                 </>
               )}
             </>
@@ -704,12 +727,24 @@ function OfficeRemittances({
 
 function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remittance: Remittance }) {
   /*
+   * THE POSTING SWITCH, which this list previously never asked about.
+   *
+   * Today's arrivals table passed `shadowMode` into the same predicate and this
+   * one did not, so an approved check waiting on an administrator read here as
+   * "You — it is ready to approve" — work she could not move. `undefined` while
+   * the read is in flight or has failed is the honest third answer and
+   * `waitingFor` already defines it as "this screen did not ask".
+   */
+  const shadow = useRcmShadow();
+  const shadowMode = shadowFor(shadow, office);
+  /*
    * `office` is passed so the predicate can say "belongs to another office" —
    * the list fans out per practice, so it never fires here, and passing it keeps
    * this row and Today's arrivals row reading the SAME call rather than two that
    * differ by an argument.
    */
-  const waiting = waitingFor(r, { office });
+  const waiting = waitingFor(r, { office, shadowMode });
+  const chip = checkChip(waiting.state);
   return (
     <Link
       href={`/rcm/remittances/${r.batchId}`}
@@ -783,10 +818,28 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         {r.claimCount}
       </span>
 
-      <span
-        className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${batchStatusTone(r.status)}`}
-      >
-        {batchStatusLabel(r.status)}
+      {/*
+        THE CHIP AND THE SENTENCE COME OUT OF ONE CALL.
+
+        This was `batchStatusLabel(r.status)` — the ingestion pipeline's words
+        (*Held for review*, *Balanced*, *Open*) sitting inches from a *Waiting
+        on* cell computed from a different predicate entirely, so a row could
+        read "Ready" next to "You — 4 claims to check over". Both now read out
+        of the `waitingFor()` above, and the chip's words are the tab labels
+        themselves (`CHECK_CHIPS`).
+
+        A row in a state with no chip renders an empty cell rather than a
+        seventh word — the sentence beside it is already the full answer.
+      */}
+      <span className="min-w-0">
+        {chip && (
+          <span
+            className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${chip.tone}`}
+            data-testid={`remittance-chip-${r.batchId}`}
+          >
+            {chip.label}
+          </span>
+        )}
       </span>
 
 {/*
@@ -794,16 +847,30 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         Amber weight means somebody owes an action; grey means nothing is
         outstanding, or it is somebody else's. A takeback is the one that is
         never grey, whatever else is true about the row.
+
+        IT WRAPS. IT MUST NEVER TRUNCATE.
+        ───────────────────────────────────────────────────────────────────
+        It did, and the practice owner's screen read *You — 1 claim to ch*.
+        The cell exists to say whose move it is and what the move is; cut at
+        "ch" it has spent a whole column saying neither.
+
+        The ellipsis is honest on an IDENTIFIER — the payer and check-number
+        cells above still truncate, because a name is recognisable from its
+        first characters and the rest is lookup. It is dishonest on prose,
+        where the clipped half is the half carrying the verb. So the row grows.
+
+        The `title` went with the truncation. It carried the full sentence
+        precisely because the sentence was clipped, and a tooltip repeating
+        text already on screen is noise a screen reader reads twice.
       */}
       <div className="min-w-0">
         <span
-          className={`block truncate text-xs ${
+          className={`block break-words text-xs ${
             waiting.urgent
               ? "font-medium text-amber-800 dark:text-amber-300"
               : "text-muted-foreground"
           }`}
           data-testid={`remittance-waiting-${r.batchId}`}
-          title={waiting.waitingOn}
         >
           {waiting.waitingOn}
         </span>

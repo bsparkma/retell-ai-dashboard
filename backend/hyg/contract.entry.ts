@@ -34,6 +34,12 @@
  */
 export * from "../../new-dashboard/shared/hyg/contract";
 export * from "../../new-dashboard/shared/hyg/records";
+// The auto-note templates and their renderer (slice 8). The composer runs
+// `renderVisitNote` server-side and the visit form draws its chip rows from the
+// SAME templates, which is the only way a row she can fill in and a row the note
+// prints cannot drift apart. contract.ts imports from this file but deliberately
+// does not re-export it — exporting a name twice here is an esbuild error.
+export * from "../../new-dashboard/shared/hyg/noteTemplates";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

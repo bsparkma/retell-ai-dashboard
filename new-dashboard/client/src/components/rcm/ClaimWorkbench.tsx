@@ -50,10 +50,11 @@
  * A line whose patient remainder is zero has nothing to decide and renders
  * without the control at all.
  */
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   AlertTriangle,
   Ban,
+  Bookmark,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -89,6 +90,7 @@ import {
 } from "@/features/rcm/format";
 import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { approveHref } from "@/features/rcm/flow";
+import { verdictBlock, type VerdictBlock } from "@/features/rcm/verdictBlock";
 import DisabledReason from "@/components/rcm/DisabledReason";
 
 /**
@@ -121,6 +123,17 @@ export interface ClaimWorkbenchProps {
   fromBatchId: string | null;
   /** Which claim on the check this is, and how to walk to the next one. */
   siblings: { index: number; total: number; prevId: string | null; nextId: string | null } | null;
+  /**
+   * PUT THE WHOLE CHECK DOWN UNTIL TOMORROW, from the bench header.
+   *
+   * Null when the URL did not say which check this claim arrived on — there is
+   * then no check to save, and the control is not rendered rather than rendered
+   * pointing at nothing.
+   *
+   * The PAGE owns the call, because it holds the office and the batch id. This
+   * component owns none of it and only draws the three states it can be in.
+   */
+  park: { onPark: () => void; busy: boolean; saved: boolean; error: string | null } | null;
   onRunMatch: (force: boolean) => void;
   onReview: () => void;
   onConfirm: (odClaimNum: number) => void;
@@ -141,6 +154,7 @@ export default function ClaimWorkbench({
   decideBlockedBy,
   fromBatchId,
   siblings,
+  park,
   onRunMatch,
   onReview,
   onConfirm,
@@ -165,10 +179,28 @@ export default function ClaimWorkbench({
         verdict={verdict}
         identityBlocking={identity?.blocking ?? false}
         confirmedAt={confirmedAt}
+        patientName={claim.patientName}
       />
 
-      {siblings && siblings.total > 1 && (
-        <ClaimPager siblings={siblings} fromBatchId={fromBatchId} />
+      {/*
+        ── THE BENCH HEADER ────────────────────────────────────────────────────
+        Where this claim sits on the check, the way to the one either side of
+        it, and the way to put the whole check down until tomorrow.
+
+        The third is here because of WHEN a biller reaches for it. She is nine
+        claims into a twelve-claim check at 4:55pm; making her navigate back to
+        the check to press *Save for tomorrow* is what stops anybody saving
+        anything, and the panel that would explain it lives two screens away
+        from where she is standing. It is the SAME act and the SAME endpoint the
+        check's own page calls — no second way to park a check, just a second
+        place to reach the one there is.
+
+        It renders whenever there is a check to save OR a claim either side, so
+        a one-claim check still gets the header rather than losing the control
+        because there is nobody to page to.
+      */}
+      {(park || (siblings && siblings.total > 1)) && (
+        <BenchHeader siblings={siblings} fromBatchId={fromBatchId} park={park} />
       )}
 
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -189,6 +221,10 @@ export default function ClaimWorkbench({
           <ChartPanel
             claim={claim}
             chart={chart}
+            /* The red verdict's own problems, so the rail can flag the row the
+               money argument is actually about. Null unless the verdict is
+               red — see `verdictBlock`. */
+            block={verdictBlock(verdict)}
             snapshot={snapshot}
             busy={busy}
             mayRerun={mayRerun}
@@ -230,7 +266,10 @@ function VerdictLine({
   verdict,
   identityBlocking,
   confirmedAt,
+  patientName,
 }: {
+  /** PHI — rendered in the measured register line, never logged. */
+  patientName: string | null;
   verdict: ClaimVerdict | null;
   /**
    * A separate question with a separate answer, and the verdict has to admit it.
@@ -269,6 +308,8 @@ function VerdictLine({
   };
   const Icon =
     verdict.state === "green" ? CheckCircle2 : verdict.state === "amber" ? Info : AlertTriangle;
+  /* What a red verdict means for the copy on this banner. Null unless red. */
+  const block = verdictBlock(verdict);
 
   return (
     <div
@@ -285,21 +326,40 @@ function VerdictLine({
           </p>
 
           {/*
-            AMBER LISTS WHAT WAS DECIDED. The whole point of amber is that the
-            difference is deliberate, and "deliberate" is only true if somebody
-            can read who decided it and why, months later, without opening a
-            second screen.
+            AMBER CARRIES THE DECISION CHIPS. The whole point of amber is that
+            the difference is deliberate, and "deliberate" is only true if
+            somebody can read who decided it and why, months later, without
+            opening a second screen.
+
+            ─────────────────────────────────────────────────────────────────
+            EVERY PART OF A CHIP IS THE STORED DECISION, RENDERED VERBATIM
+            ─────────────────────────────────────────────────────────────────
+            code, amount, reason, name and instant all come off
+            `verdict.decisions[]`, which the server assembled from the four
+            columns the line itself carries. Nothing here re-derives an amount
+            from the line, looks a reason slug up in a second table, or resolves
+            a name — `reasonLabel` and `decidedBy` arrive already spelled the
+            way a person says them. A chip that computed any part of itself
+            could print a different decision from the one that will post.
+
+            Chips rather than list rows: at a glance the question is "how many
+            did we absorb, and how big", and a row of pills answers that before
+            anything is read word by word.
           */}
           {verdict.state === "amber" && verdict.decisions.length > 0 && (
-            <ul className="mt-2 space-y-0.5 text-xs" data-testid="verdict-decisions">
+            <ul className="mt-2 flex flex-wrap gap-1.5 text-xs" data-testid="verdict-decisions">
               {verdict.decisions.map((d, i) => (
-                <li key={d.lineId ?? i} className="flex flex-wrap items-baseline gap-x-1.5">
-                  <span className="font-mono font-medium">{d.code || "—"}</span>
+                <li
+                  key={d.lineId ?? i}
+                  data-testid={`verdict-decision-${d.lineId ?? i}`}
+                  className="flex flex-wrap items-baseline gap-x-1.5 rounded-full border border-current/30 px-2.5 py-1"
+                >
+                  <span className="font-mono font-semibold">{d.code || "—"}</span>
                   <span className="font-mono tabular-nums">{money(d.amountCents)}</span>
                   <span>· {d.reasonLabel ?? d.reason ?? "no reason recorded"}</span>
                   <span className="opacity-75">
-                    · {d.decidedBy ?? "unattributed"}
-                    {d.decidedAt ? ` ${stamp(d.decidedAt)}` : ""}
+                    · decided by {d.decidedBy ?? "somebody unrecorded"}
+                    {d.decidedAt ? `, ${stamp(d.decidedAt)}` : ""}
                   </span>
                 </li>
               ))}
@@ -307,9 +367,20 @@ function VerdictLine({
           )}
 
           {/*
-            RED NAMES THE LINES. A verdict that says the numbers disagree and
-            leaves a biller to find where is a verdict she will learn to skip.
+            RED NAMES THE CODE FIRST, THEN THE LINES.
+
+            A verdict that says the numbers disagree and leaves a biller to find
+            where is a verdict she will learn to skip. The first problem's code
+            leads because it is the thing she has to go and look at; the whole
+            list stays underneath, because a claim can carry more than one.
           */}
+          {block && (
+            <p className="mt-2 text-xs font-semibold" data-testid="verdict-blocking-code">
+              {block.code
+                ? `${block.code} is the line to look at.`
+                : "One line on this claim does not line up."}
+            </p>
+          )}
           {verdict.state === "red" && verdict.problems.length > 0 && (
             <ul className="mt-2 space-y-0.5 text-xs" data-testid="verdict-problems">
               {verdict.problems.map((p, i) => (
@@ -331,6 +402,24 @@ function VerdictLine({
               {verdict.register === "confirmed"
                 ? "The payment is already in the chart. Nothing more posts on this check until this is sorted out."
                 : "This claim cannot be approved until that is resolved."}
+            </p>
+          )}
+
+          {/*
+            THE COPY BAR — why this is a refusal rather than a warning.
+
+            Only on the kinds where the refusal really IS two numbers
+            disagreeing. On the others there is no "two" to agree, and printing
+            it over a write-off with no reason recorded would describe a defect
+            the claim does not have. `verdictBlock` decides which; see its
+            header.
+          */}
+          {block?.copyBar && (
+            <p
+              className="mt-2 rounded-md border border-current/25 px-2.5 py-1.5 text-xs"
+              data-testid="verdict-copy-bar"
+            >
+              {block.copyBar}
             </p>
           )}
 
@@ -394,7 +483,13 @@ function VerdictLine({
 
       {verdict.register === "confirmed" && confirmedAt && (
         <p className="mt-2 text-[11px] opacity-80" data-testid="verdict-confirmed-at">
-          As Open Dental had it {stamp(confirmedAt)}.
+          {/*
+            S5 · THE MEASURED REGISTER, NAMED — the same words the check's own
+            finished screen uses, so a posted claim reads as a measurement on
+            both pages rather than as a figure this app worked out.
+          */}
+          Read out of {patientName ? `${patientName}'s` : "the patient's"} chart after posting,
+          not calculated by this app. As Open Dental had it {stamp(confirmedAt)}.
         </p>
       )}
     </div>
@@ -412,52 +507,118 @@ function Figure({ label, value, strong }: { label: string; value: string; strong
   );
 }
 
-/** Which claim on this check, and the way to the next one. */
-function ClaimPager({
+/**
+ * WHICH CLAIM ON THIS CHECK, THE ONES EITHER SIDE, AND THE WAY TO PUT IT DOWN.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SAVE FOR TOMORROW IS THE CHECK'S ACT, REACHED FROM THE CLAIM
+ * ─────────────────────────────────────────────────────────────────────────────
+ * It calls `parkRemittance` on the check this claim came in on — the SAME
+ * endpoint, the same stamp and the same reversal as the button on the check's
+ * own page. There is no second kind of saving and no claim-level one: parking
+ * is a fact about a check, and inventing a per-claim version of it would give a
+ * biller two things to un-do tomorrow.
+ *
+ * It is rendered only when the URL says which check this is (`?from=`), because
+ * without that there is no check to save and a button that cannot know its own
+ * subject is worse than no button.
+ */
+function BenchHeader({
   siblings,
   fromBatchId,
+  park,
 }: {
-  siblings: NonNullable<ClaimWorkbenchProps["siblings"]>;
+  siblings: ClaimWorkbenchProps["siblings"];
   fromBatchId: string | null;
+  park: ClaimWorkbenchProps["park"];
 }) {
   const href = (id: string) =>
     `/rcm/claims/${encodeURIComponent(id)}${fromBatchId ? `?from=${encodeURIComponent(fromBatchId)}` : ""}`;
+  const paging = siblings !== null && siblings.total > 1;
+
   return (
     <div
-      className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2 text-xs"
+      className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2 text-xs"
       data-testid="claim-pager"
     >
       <span className="text-muted-foreground">
-        Claim {siblings.index + 1} of {siblings.total} on this check
+        {siblings
+          ? `Claim ${siblings.index + 1} of ${siblings.total} on this check`
+          : "This check's claim"}
       </span>
-      <span className="flex items-center gap-2">
-        {siblings.prevId ? (
-          <Link
-            href={href(siblings.prevId)}
-            data-testid="claim-prev"
-            className="rounded border border-border px-2 py-1 font-medium text-foreground hover:bg-muted"
-          >
-            Previous
-          </Link>
-        ) : (
-          <span className="rounded border border-border px-2 py-1 text-muted-foreground/60">
-            Previous
+
+      <span className="flex flex-wrap items-center gap-2">
+        {paging && (
+          <>
+            {siblings.prevId ? (
+              <Link
+                href={href(siblings.prevId)}
+                data-testid="claim-prev"
+                className="rounded border border-border px-2 py-1 font-medium text-foreground hover:bg-muted"
+              >
+                Previous
+              </Link>
+            ) : (
+              <span className="rounded border border-border px-2 py-1 text-muted-foreground/60">
+                Previous
+              </span>
+            )}
+            {siblings.nextId ? (
+              <Link
+                href={href(siblings.nextId)}
+                data-testid="claim-next"
+                className="rounded border border-border px-2 py-1 font-medium text-foreground hover:bg-muted"
+              >
+                Next
+              </Link>
+            ) : (
+              <span className="rounded border border-border px-2 py-1 text-muted-foreground/60">
+                Next
+              </span>
+            )}
+          </>
+        )}
+
+        {park && (
+          <span className="flex flex-wrap items-center gap-2">
+            {/*
+              SAVED IS A STATEMENT, NOT A LABEL THAT FLIPPED.
+
+              Once it has happened the button is gone and the sentence says what
+              is true: the check is on Today under "Where you left off", and
+              opening it un-saves it. A button still offering to save a check
+              that is already saved is the kind of control people press twice
+              and then distrust.
+            */}
+            {park.saved ? (
+              <span
+                className="inline-flex items-center gap-1.5 rounded border border-sky-300 px-2 py-1 font-medium text-sky-800 dark:border-sky-800 dark:text-sky-300"
+                data-testid="claim-parked"
+              >
+                <Bookmark size={12} />
+                Saved for tomorrow — it is at the top of Today
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={park.onPark}
+                disabled={park.busy}
+                data-testid="claim-park"
+                className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {park.busy ? <Loader2 size={12} className="animate-spin" /> : <Bookmark size={12} />}
+                Save for tomorrow
+              </button>
+            )}
           </span>
         )}
-        {siblings.nextId ? (
-          <Link
-            href={href(siblings.nextId)}
-            data-testid="claim-next"
-            className="rounded border border-border px-2 py-1 font-medium text-foreground hover:bg-muted"
-          >
-            Next
-          </Link>
-        ) : (
-          <span className="rounded border border-border px-2 py-1 text-muted-foreground/60">
-            Next
-          </span>
-        )}
       </span>
+
+      {park?.error && (
+        <p className="w-full text-rose-700 dark:text-rose-400" data-testid="claim-park-error">
+          {park.error}
+        </p>
+      )}
     </div>
   );
 }
@@ -688,11 +849,26 @@ function CarrierLine({
         invites somebody to look for a way to enable it.
       */}
       {remainder === 0 ? (
+        /*
+          NOTHING TO DECIDE — AND THE TWO WAYS THAT HAPPENS ARE DIFFERENT FACTS.
+
+          A line the carrier PAID IN FULL and a line that ended at zero because
+          the contract took all of it both leave the patient owing nothing, and
+          only the first is good news. Printing "the carrier paid it in full"
+          over a bundled or fully-adjusted line would be this screen telling a
+          biller money arrived that did not, on the one panel whose whole job is
+          what the carrier actually did.
+
+          So the sentence is chosen by whether a payment landed, and `paidCents`
+          is the server's own figure for that.
+        */
         <p
           className="mt-2 text-xs text-muted-foreground"
           data-testid={`decision-none-${line.lineId}`}
         >
-          Nothing left for the patient on this line.
+          {line.paidCents > 0
+            ? "Nothing to decide — the carrier paid it in full."
+            : "Nothing to decide — this line leaves the patient owing nothing."}
         </p>
       ) : (
         <LineDecisionControl
@@ -1048,6 +1224,7 @@ function IdentityPanel({
 function ChartPanel({
   claim,
   chart,
+  block,
   snapshot,
   busy,
   mayRerun,
@@ -1058,6 +1235,8 @@ function ChartPanel({
 }: {
   claim: ClaimDetailResponse["claim"];
   chart: ClaimDetailResponse["claim"]["chart"];
+  /** A red verdict's problems, keyed by our line. Null when nothing blocks. */
+  block: VerdictBlock | null;
   snapshot: MatchSnapshot | null;
   busy: ClaimWorkbenchProps["busy"];
   mayRerun: boolean;
@@ -1066,6 +1245,29 @@ function ChartPanel({
   onConfirm: (odClaimNum: number) => void;
   rules: ClaimDetailResponse["matchRules"];
 }) {
+  /*
+   * ── WHICH CHART ROW THE REFUSAL IS ABOUT ────────────────────────────────
+   *
+   * The verdict's problems name OUR line ids; this rail is drawn from Open
+   * Dental's ClaimProcNums. The claim's own lines carry both, so the crosswalk
+   * is one walk of an array a person can read, rather than a match on the
+   * procedure code — two lines of the same code on one claim is ordinary, and a
+   * code match would flag the wrong one of them silently.
+   *
+   * The VALUE is the server's own `detail` — "D0220 was billed $35.00 on the
+   * remittance and $30.00 in Open Dental" — so the flag beside the row is the
+   * money explanation itself and not a paraphrase of it.
+   */
+  const flaggedRows = new Map<number, string>();
+  if (block) {
+    for (const line of claim.lines) {
+      const problem = block.byLineId.get(line.lineId);
+      if (problem && line.odClaimProcNum !== null) {
+        flaggedRows.set(line.odClaimProcNum, problem.detail);
+      }
+    }
+  }
+
   return (
     <section data-testid="claim-od-match">
       {/*
@@ -1194,32 +1396,66 @@ function ChartPanel({
               </tr>
             </thead>
             <tbody>
-              {chart.lines.map((l) => (
-                <tr
-                  key={l.odClaimProcNum}
-                  className="border-t border-border"
-                  data-testid={`chart-line-${l.odClaimProcNum}`}
-                >
-                  <td className="px-4 py-1.5">
-                    <span className="font-mono text-foreground">{l.code || "—"}</span>
-                    <span className="ml-1.5 text-muted-foreground">{l.status}</span>
-                  </td>
-                  <td className="px-4 py-1.5 text-right font-mono tabular-nums text-foreground">
-                    {money(l.feeBilledCents)}
-                  </td>
-                  <td className="px-4 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+              {chart.lines.map((l) => {
+                const flagged = flaggedRows.get(l.odClaimProcNum) ?? null;
+                return (
+                  <Fragment key={l.odClaimProcNum}>
+                    <tr
+                      className={`border-t border-border ${
+                        flagged ? "bg-rose-50/70 dark:bg-rose-950/25" : ""
+                      }`}
+                      data-testid={`chart-line-${l.odClaimProcNum}`}
+                      data-flagged={flagged ? "true" : undefined}
+                    >
+                      <td className="px-4 py-1.5">
+                        <span className="font-mono text-foreground">{l.code || "—"}</span>
+                        <span className="ml-1.5 text-muted-foreground">{l.status}</span>
+                      </td>
+                      <td
+                        className={`px-4 py-1.5 text-right font-mono tabular-nums ${
+                          flagged
+                            ? "font-semibold text-rose-800 dark:text-rose-300"
+                            : "text-foreground"
+                        }`}
+                      >
+                        {money(l.feeBilledCents)}
+                      </td>
+                      <td className="px-4 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                        {/*
+                          NULL IS NOT ZERO. Open Dental writes -1 into InsEstTotal to
+                          mean "not calculated", so printing $0.00 here would state a
+                          number nobody computed.
+                        */}
+                        {l.insEstCents == null ? "not calculated" : money(l.insEstCents)}
+                      </td>
+                      <td className="px-4 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                        {money(l.insPayAmtCents)}
+                      </td>
+                    </tr>
                     {/*
-                      NULL IS NOT ZERO. Open Dental writes -1 into InsEstTotal to
-                      mean "not calculated", so printing $0.00 here would state a
-                      number nobody computed.
+                      THE MONEY EXPLANATION, UNDER THE ROW IT IS ABOUT.
+
+                      A second row rather than a cell, because the sentence is
+                      the server's own and wraps — squeezing it into the Line
+                      column would either clip it or wreck four columns of
+                      numbers a biller is comparing by eye.
                     */}
-                    {l.insEstCents == null ? "not calculated" : money(l.insEstCents)}
-                  </td>
-                  <td className="px-4 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
-                    {money(l.insPayAmtCents)}
-                  </td>
-                </tr>
-              ))}
+                    {flagged && (
+                      <tr
+                        className="bg-rose-50/70 dark:bg-rose-950/25"
+                        data-testid={`chart-line-why-${l.odClaimProcNum}`}
+                      >
+                        <td
+                          colSpan={4}
+                          className="px-4 pb-2 text-[11px] text-rose-800 dark:text-rose-300"
+                        >
+                          {flagged}. This is the line the verdict above is about.
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
 

@@ -1,11 +1,16 @@
 /**
  * WHERE AM I, AND WHAT IS THE NEXT CLICK.
  *
- * The same seven steps on every remittance-scoped screen — the remittance, the
- * claim, and a posting plan's expanded detail — so a biller who has learned the
+ * The same five steps on every remittance-scoped screen — the remittance, the
+ * claim, and one posting's expanded detail — so a biller who has learned the
  * shape once has learned all three.
  *
- *   Upload → Match → Confirm → Review → Approve → Post → Deposit
+ *   Add the check → Match it up → Check it over → Post to Open Dental → Deposit
+ *
+ * DEPOSIT IS ALWAYS DRAWN, ALWAYS LAST, AND ALWAYS GREY. It is not built (see
+ * `flow.ts`), and omitting it on the screens that cannot reach it would make
+ * the rail a different length in different places — which is the one thing a
+ * shape learned once must never do. Its evidence line is its caption.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT THE MARKS MEAN
@@ -88,6 +93,28 @@ export default function RcmStepper({
   onAction,
   /** Which step this screen IS, so the stepper can mark "you are here". */
   here,
+  /**
+   * THE PAGE IS RENDERING THIS CTA ITSELF, SO THE RAIL MUST NOT (S3, W-11).
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * WHY AN OPT-OUT AND NOT A REDESIGN
+   * ─────────────────────────────────────────────────────────────────────────
+   * The check's own page hoisted the next verb into its header, where the two
+   * quiet actions beside it already were. That left the rail printing a SECOND
+   * copy of the same button a few hundred pixels lower — and on a check whose
+   * next step is `match`, two buttons both reading *Match it up*, which is the
+   * precise duplication W-11's one-match-verb rule exists to delete.
+   *
+   * It is opt-IN to hiding, defaulting to false, so the claim screen and the
+   * Posting screen keep the rail exactly as it was built. `flow.cta` is still
+   * computed in one place and still rendered once; only WHERE moved, and only
+   * on the page that asked.
+   *
+   * A page passing this takes on the CTA's whole contract — the label, the
+   * disabled state AND the reason — because a blocked next step with no
+   * explanation is what `DisabledReason` exists to make impossible.
+   */
+  hideCta = false,
   testId = "rcm-stepper",
 }: {
   flow: RcmFlow;
@@ -98,6 +125,7 @@ export default function RcmStepper({
    */
   onAction?: Partial<Record<RcmAction, () => void>>;
   here?: StepView["step"];
+  hideCta?: boolean;
   testId?: string;
 }) {
   return (
@@ -122,7 +150,7 @@ export default function RcmStepper({
           1024px without wrapping into illegibility. */}
       <Notes flow={flow} />
 
-      {flow.cta && <Cta cta={flow.cta} onAction={onAction} />}
+      {flow.cta && !hideCta && <Cta cta={flow.cta} onAction={onAction} />}
     </section>
   );
 }
@@ -168,15 +196,30 @@ function Step({ step, last, isHere }: { step: StepView; last: boolean; isHere: b
 }
 
 /**
- * What the live step and every blocked step have to say.
+ * ONE EVIDENCE LINE PER STEP — the fact behind the mark.
  *
- * Blocked steps are always shown, in order. The current step is shown too, so
- * the page never leaves "where am I" to be inferred from a filled dot alone.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY EVERY STEP AND NOT ONLY THE LIVE ONE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This used to print only the blocked, current and unknown steps. A DONE step
+ * was a green tick and nothing else, which asks the reader to take the tick on
+ * trust — and a tick nobody can check is exactly the shape of the honest-states
+ * failures this module keeps deleting. *"All 4 claims found in Open Dental"*
+ * and *"Approved by Dana, 4:12pm"* are what make the tick auditable from the
+ * rail instead of from three screens away.
+ *
+ * OMITTED, NEVER FAKED. A step whose evidence nobody recorded carries
+ * `detail: null` and prints no line at all — see `flow.ts`, where every clause
+ * that depends on a nullable stamp is appended rather than substituted. A rail
+ * with four lines under it and a fifth silently missing is telling the truth;
+ * one with five lines where the fifth was invented is not.
+ *
+ * Deposit is drawn and not built, so its line is its caption — "Coming soon".
+ * It renders in the muted tone with everything else rather than as a warning:
+ * nothing is wrong, the step simply does not exist yet.
  */
 function Notes({ flow }: { flow: RcmFlow }) {
-  const notable = flow.steps.filter(
-    (s) => (s.state === "blocked" || s.state === "current" || s.state === "unknown") && s.detail,
-  );
+  const notable = flow.steps.filter((s) => s.detail);
   if (notable.length === 0) return null;
 
   return (
@@ -187,16 +230,30 @@ function Notes({ flow }: { flow: RcmFlow }) {
           className="flex items-start gap-1.5"
           data-testid={`step-note-${s.step}`}
         >
+          {/*
+            The step's own name leads the line, so a five-line block reads as a
+            list of steps rather than as a paragraph. A BLOCKED step keeps the
+            rose it has on the rail; a step that is neither blocked nor the one
+            you are on is dimmed, so "where am I" survives the extra lines.
+          */}
           <span
             className={`mt-0.5 shrink-0 font-semibold ${
-              s.state === "blocked" ? "text-rose-700 dark:text-rose-400" : "text-foreground"
+              s.state === "blocked"
+                ? "text-rose-700 dark:text-rose-400"
+                : s.state === "current"
+                  ? "text-foreground"
+                  : "text-muted-foreground"
             }`}
           >
             {s.title}
           </span>
           <span
             className={
-              s.state === "blocked" ? "text-rose-700 dark:text-rose-400" : "text-muted-foreground"
+              s.state === "blocked"
+                ? "text-rose-700 dark:text-rose-400"
+                : s.state === "unavailable"
+                  ? "text-muted-foreground/70"
+                  : "text-muted-foreground"
             }
           >
             {s.detail}
@@ -215,6 +272,27 @@ function Cta({
   onAction?: Partial<Record<RcmAction, () => void>>;
 }) {
   const handler = cta.action ? onAction?.[cta.action] : undefined;
+  /*
+   * W-2 · THE NOTE IS NOT PRINTED TWICE.
+   *
+   * The fallback branch — a verb this page cannot fire and nowhere to send
+   * anybody — renders `cta.note` AS the disabled reason, because the note is the
+   * only honest explanation there is for it. The caption below then printed the
+   * same sentence a second time, one line under itself:
+   *
+   *     Approving happens on the check, where the whole check is approved at once.
+   *     Approving happens on the check, where the whole check is approved at once.
+   *
+   * Reachable today on a reviewed claim opened without `?from=` — a bookmark or
+   * a pasted link, which the claim screen explicitly supports. The combined walk
+   * saw the same shape on the check's Post step (W-2) before S3 gave the header
+   * the only copy of the CTA.
+   *
+   * So the caption is suppressed exactly when the reason above it already IS the
+   * caption. `noteShown` is one boolean rather than a second condition inlined
+   * below, so the two can never drift apart.
+   */
+  const noteIsTheReason = !cta.disabled && !handler && !cta.href;
   const solid =
     "inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90";
   const dead =
@@ -261,7 +339,7 @@ function Cta({
         </>
       )}
 
-      {!cta.disabled && cta.note && (
+      {!cta.disabled && !noteIsTheReason && cta.note && (
         <span className="text-xs text-muted-foreground" data-testid="rcm-cta-note">
           {cta.note}
         </span>

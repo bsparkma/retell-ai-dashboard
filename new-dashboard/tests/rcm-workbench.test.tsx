@@ -767,8 +767,11 @@ describe("the remittance list", () => {
      * a local panel is the assertion; the one-surface invariant itself is
      * pinned in `rcm-shell.test.tsx`.
      *
-     * CHANGED BY STAGE C: that surface is `/rcm/bring-in`, a page of its own
-     * (ruling D-16), rather than a section on Today reached by `?add=1`.
+     * CHANGED BY STAGE C to `/rcm/bring-in`, a page of its own (D-16), and
+     * CHANGED BACK BY SLICE 2 (D-18) to Today's *Get work in*, reached by
+     * `?add=1`. Which page holds the door is a product decision that has been
+     * revisited twice; that there is one of it, and that this page links to it
+     * rather than growing its own, is what the assertion is actually for.
      */
     state.remittances = [];
     state.needsAttentionCount = 0;
@@ -779,7 +782,7 @@ describe("the remittance list", () => {
     expect(empty.textContent).toContain("Nothing has come in for Roland yet");
 
     const cta = screen.getByTestId("remittances-empty-upload-roland");
-    expect(cta.getAttribute("href")).toBe("/rcm/bring-in");
+    expect(cta.getAttribute("href")).toBe("/rcm?add=1");
     // And nothing on this page uploads anything itself.
     expect(screen.queryByTestId("remittance-upload-panels")).toBeNull();
   });
@@ -1000,7 +1003,15 @@ describe("the remittance detail", () => {
     expect(approve.disabled).toBe(false);
     // CHANGED BY STAGE C: the button answers the page's own question
     // ("Before you say yes.") rather than restating the step it is in.
-    expect(approve.textContent).toContain("Yes — approve 1 claim");
+    //
+    // CHANGED AGAIN BY S4: and it answers it WITHOUT a count. The number of
+    // claims is on `approve-counts` three lines above, in the line that also
+    // says what is being left off; on the button it made the press read as an
+    // arithmetic result rather than as an endorsement of the whole page.
+    expect(approve.textContent).toContain("Yes — this check is right");
+    expect(screen.getByTestId("approve-counts").textContent).toContain(
+      "1 of 2 claims can be approved",
+    );
   });
 
   it("a reviewer sees the same checklist and a disabled button naming the tier", async () => {
@@ -1215,10 +1226,15 @@ describe("the remittance detail", () => {
   });
 
   it("reports what a batch match did, per claim", async () => {
+    /*
+     * S3 / W-11: the page-level match button IS the flow CTA now — one verb,
+     * in the header, named by `flow.ts`. `match-all-claims` was the second copy
+     * of it and is gone; `rcm-cta` is the one that remains.
+     */
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("rcm-cta")).toBeTruthy());
 
-    fireEvent.click(screen.getByTestId("match-all-claims"));
+    fireEvent.click(screen.getByTestId("rcm-cta"));
 
     await waitFor(() => expect(state.batchMatched).toBe(1));
     await waitFor(() =>
@@ -1242,8 +1258,8 @@ describe("the remittance detail", () => {
     };
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
-    await waitFor(() => expect(screen.getByTestId("match-all-claims")).toBeTruthy());
-    fireEvent.click(screen.getByTestId("match-all-claims"));
+    await waitFor(() => expect(screen.getByTestId("rcm-cta")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("rcm-cta"));
 
     const stopped = await screen.findByTestId("match-out-of-time");
     expect(stopped.textContent).toContain("90-second budget");

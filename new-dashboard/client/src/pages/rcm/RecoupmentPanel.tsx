@@ -67,6 +67,9 @@ import {
 import type { RemittanceClaim } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import { NO_ACTION_REASONS } from "@/features/rcm/format";
+import DisabledReason from "@/components/rcm/DisabledReason";
+import PermanentPathConfirm from "@/components/rcm/PermanentPathConfirm";
+import AlreadyApproved from "@/components/rcm/AlreadyApproved";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -156,6 +159,19 @@ export function RecoupmentPanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RecoupmentApprovalResult | null>(null);
+  /**
+   * W-4. Somebody reached for the PERMANENT path and has not answered the
+   * confirm yet. While this is true the radio has NOT moved — `path` is still
+   * whatever it was. See `PermanentPathConfirm`.
+   */
+  const [confirmingPermanent, setConfirmingPermanent] = useState(false);
+  /**
+   * The server's answer was "this is already approved" (W-12). Held apart from
+   * `error` because it is not a failure, and because it retires the button: a
+   * refusal that says "already done" beside a button inviting another press is
+   * how the walk's biller pressed Approve three times.
+   */
+  const [alreadyApproved, setAlreadyApproved] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -267,6 +283,58 @@ export function RecoupmentPanel({
     ),
   );
 
+  /*
+   * ── S4 · THE TYPED FIELD IS DEAD UNTIL THE TAKEBACK IS MATCHED ────────────
+   *
+   * A takeback has to be tied to an Open Dental claim before it can be
+   * authorised — the write comes off a payment already posted against a chart
+   * claim, so without a ClaimNum there is nothing for the money to come out of,
+   * and the server refuses on `MATCH_CONFIRMED` whatever is typed.
+   *
+   * The field was enterable anyway. Somebody could read the amount, type it
+   * carefully, minus sign and all, press the button and be refused — effort
+   * invited only to die, on the one control in this module whose whole purpose
+   * is to make a person slow down and concentrate. Spending that attention on a
+   * request that could never succeed is how a deliberate friction becomes a
+   * thing people learn to resent.
+   *
+   * So the field is disabled with its reason beside it until every takeback
+   * claim on this check is linked.
+   *
+   * NOTHING ABOUT THE CONFIRMATION ITSELF MOVES. `phraseMatches` is the same
+   * comparison against the same server-rendered string, `canSubmit` carries the
+   * same three conditions, the radio still defaults to the server's `defaultPath`
+   * and `POST /approve-recoupment` still recomputes the total and re-applies its
+   * own gate. A disabled input changes what a person can spend effort on; it
+   * changes nothing about what is allowed.
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * WHICH CLAIMS, AND WHY THE GATE'S OWN ANSWER IS THE ONE READ
+   * ───────────────────────────────────────────────────────────────────────────
+   * This checklist evaluates EVERY claim on the check, not only the reversals —
+   * so "is it matched" has to be asked of the takebacks alone, or a mixed check
+   * would grey the field because some ordinary claim nobody has looked at yet is
+   * unmatched.
+   *
+   * `RECOUPMENT_CONFIRMED` is the gate's own answer to "is this one a takeback":
+   * it is added to every claim on this path and passes only for the reversals
+   * (`approvalGate.js` — the D-6 swap). Reading it, rather than re-deriving the
+   * question from review reasons here, is what stops this panel forming a second
+   * opinion about which claims it is talking about.
+   *
+   * A response with no `RECOUPMENT_CONFIRMED` on it at all is an older shape this
+   * build cannot read, and it gates NOTHING — a field greyed by a fact we could
+   * not establish would be the honest-states rule broken in the friendly
+   * direction, which is still broken.
+   */
+  const takebackRows = checklist.claims.filter((c) =>
+    c.checks.some((check) => check.code === "RECOUPMENT_CONFIRMED" && check.passed),
+  );
+  const unmatchedTakebacks = takebackRows.filter(
+    (c) => !c.checks.some((check) => check.code === "MATCH_CONFIRMED" && check.passed),
+  );
+  const matched = unmatchedTakebacks.length === 0;
+
   const phraseMatches = typed.trim() === checklist.typedTotalExpected;
   const canSubmit = checklist.canApprove && checklist.balanced && phraseMatches && !submitting;
 
@@ -280,6 +348,14 @@ export function RecoupmentPanel({
         onApproved?.();
       })
       .catch((err) => {
+        /*
+         * ALREADY APPROVED IS AN ANSWER, NOT A FAILURE (W-12). It retires the
+         * button and says where the approved check went — see AlreadyApproved.
+         */
+        if (err instanceof RcmApiError && err.alreadyApproved) {
+          setAlreadyApproved(true);
+          return;
+        }
         /*
          * The server's refusal wins over anything this screen believed. If it
          * says the phrase was wrong, it also says what it wanted — show that
@@ -405,7 +481,23 @@ export function RecoupmentPanel({
                 className="mt-0.5"
                 value={p}
                 checked={path === p}
-                onChange={() => setPath(p)}
+                /*
+                  W-4. THE PERMANENT PATH IS NEVER ONE CLICK AWAY.
+                  Reaching for it opens the confirm below and leaves `path`
+                  exactly where it was; the radio is controlled, so React puts
+                  the dot back. Only the confirm's consequence-labelled button
+                  moves it. The adjustment — the reversible one — switches back
+                  on a single click, because moving AWAY from the irreversible
+                  choice should never cost anything.
+                */
+                onChange={() => {
+                  if (p === "supplemental" && path !== "supplemental") {
+                    setConfirmingPermanent(true);
+                    return;
+                  }
+                  setConfirmingPermanent(false);
+                  setPath(p);
+                }}
                 data-testid={`recoupment-path-${p}`}
               />
               <span>
@@ -415,6 +507,16 @@ export function RecoupmentPanel({
             </label>
           ))}
         </fieldset>
+
+        {confirmingPermanent && (
+          <PermanentPathConfirm
+            onConfirm={() => {
+              setConfirmingPermanent(false);
+              setPath("supplemental");
+            }}
+            onCancel={() => setConfirmingPermanent(false)}
+          />
+        )}
 
         {path === "supplemental" && (
           <p
@@ -447,13 +549,24 @@ export function RecoupmentPanel({
         </label>
         <input
           id="recoupment-confirm"
-          className="mt-1 w-40 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm"
+          className="mt-1 w-40 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm disabled:cursor-not-allowed disabled:opacity-60"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
+          disabled={!matched}
           autoComplete="off"
           spellCheck={false}
           data-testid="recoupment-confirm-input"
         />
+        {!matched && (
+          <DisabledReason tone="warn" testId="recoupment-needs-match">
+            {unmatchedTakebacks.length === 1
+              ? `${unmatchedTakebacks[0].patientName}'s claim is not linked to an Open Dental claim yet.`
+              : `${unmatchedTakebacks.length} of these claims are not linked to an Open Dental claim yet.`}{" "}
+            Match {unmatchedTakebacks.length === 1 ? "it" : "them"} up first — a takeback comes off
+            a payment already posted against a chart claim, so until then there is nothing for the
+            money to come out of.
+          </DisabledReason>
+        )}
 
         {error && (
           <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="recoupment-error">
@@ -461,11 +574,15 @@ export function RecoupmentPanel({
           </p>
         )}
 
+        {alreadyApproved ? (
+          /* THE BUTTON IS RETIRED, not greyed: there is nothing left to press. */
+          <AlreadyApproved testId="recoupment-already-approved" />
+        ) : (
         <div className="mt-3">
           <button
             type="button"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!canSubmit || confirmingPermanent}
             className="rounded-md bg-amber-700 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-amber-800"
             data-testid="recoupment-approve-button"
           >
@@ -476,20 +593,31 @@ export function RecoupmentPanel({
             walk: a disabled control with no reason is indistinguishable from a
             broken one.
           */}
+          {/*
+            THE SAME SENTENCES, THROUGH THE COMPONENT THAT CARRIES THE MARKER.
+            They were plain <p>s, so they said why to a reader and were
+            invisible to `rcm-disabled-reasons.test.tsx` — which means the rule
+            held here by hand and nothing would have noticed it lapsing.
+          */}
           {!checklist.canApprove ? (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="recoupment-needs-permission">
+            <DisabledReason testId="recoupment-needs-permission">
               Approving a takeback needs posting permission ({checklist.approveRequires}).
-            </p>
+            </DisabledReason>
           ) : !checklist.balanced ? (
-            <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+            <DisabledReason tone="warn">
               This remittance does not balance, so nothing on it can be approved yet.
-            </p>
+            </DisabledReason>
           ) : !phraseMatches ? (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="recoupment-awaiting-phrase">
+            <DisabledReason testId="recoupment-awaiting-phrase">
               Type the amount above exactly as it is shown to enable this.
-            </p>
+            </DisabledReason>
+          ) : confirmingPermanent ? (
+            <DisabledReason testId="recoupment-awaiting-path">
+              Answer the question about the permanent way above first.
+            </DisabledReason>
           ) : null}
         </div>
+        )}
       </div>
     </div>
   );

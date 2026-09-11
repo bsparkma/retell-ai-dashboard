@@ -46,13 +46,36 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     ...real,
     recheckPosting: vi.fn(async (_office: string, queueId: string) => {
       recheckCalls.push(queueId);
+      /*
+       * STILL NOT RIGHT, on purpose. S5 takes the stuck panel DOWN when a
+       * re-check comes back clean (pinned in rcm-ui-s5.test.tsx), and this
+       * suite is about the button resting and lifting — so the answer it gets
+       * keeps the panel, and the button, on screen.
+       */
       return {
         office: "roland" as const,
         queueId,
-        agreed: true,
+        status: "partially_posted" as const,
+        agreed: false,
         checkedAt: "2026-03-05T19:10:00.000Z",
-        claims: [],
+        claims: [
+          {
+            claimId: "c-1",
+            odClaimNum: 53648,
+            verdict: {
+              state: "red",
+              register: "confirmed",
+              sentence: "Open Dental says the patient owes $60.00 — this check said $0.00.",
+            },
+          },
+        ],
       };
+    }),
+    // The claim read the measured branch makes. Failing it is fine here — the
+    // panel falls back to the server's sentence — and keeps this suite about
+    // the button.
+    getClaim: vi.fn(async () => {
+      throw new real.RcmApiError("none", 404, "CLAIM_NOT_FOUND");
     }),
   };
 });
@@ -61,8 +84,8 @@ import { StuckAfterPosting } from "@/components/rcm/PostedOutcome";
 import type { PostingQueueDetail } from "@/features/rcm/api";
 
 // ─── Fixture ─────────────────────────────────────────────────────────────────
-// A check whose payment landed and whose patient portion did not, which is the
-// only state this screen is ever shown in.
+// A check whose payment landed and whose patient portion did not — the
+// MEASURED branch, the only one that carries the re-check.
 
 const DETAIL = {
   office: "roland",
@@ -76,7 +99,9 @@ const DETAIL = {
     withdrawnReason: null,
     withdrawnNote: null,
     withdrawnAt: null,
-    step: null,
+    // S5 · W-16: the re-check exists only on the MEASURED branch, which is
+    // the run that stopped at `confirm_patient`.
+    step: "confirm_patient",
     isRecoupment: false,
     documentAttachStatus: "none",
     carrierEobDate: "2026-03-01",

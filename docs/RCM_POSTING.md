@@ -5033,3 +5033,195 @@ changes · prod.
 **Prepared but not enabled:** valley posting. §9 is discharged on all three
 prerequisites bar the 7115 end-to-end itself; the flip is one line and lands with
 the §10.5 transcript.
+
+---
+
+## 17. The reversal-lane sweep — every signed-money predicate in the posting path
+
+Ordered by the PM on 2026-09-09, after **three** defects in one week turned out to
+share a root: *a predicate written for the payment lane reading a reversal's
+negated figures as an error.* The point of the table is to fix the class once
+rather than meet the next one at the next press.
+
+Two questions were asked of every predicate:
+
+1. **Does it fire on mirrored-negative figures?**
+2. **Does its lane even write the field it refuses over?** (PM ruling: a
+   precondition may refuse only over figures its lane will write.)
+
+### 17.1 The three that were wrong
+
+| | Predicate | Where | Field | Verdict |
+| --- | --- | --- | --- | --- |
+| **W-6** | `pairLines` billed delta | `claimMatch.js:1112` | `billedCents` vs `feeBilledCents` | **fired wrongly** — `-3500 − 3500 = -7000` → `od_fee_disagrees` → red → gate refused. **FIXED** `7647dd1` |
+| **W-10** | `plan_empty` | `postingDrain.js:752` | line `status` (same class, not a money field) | **fired wrongly** — every line skipped read as "no lines". **FIXED** on this branch |
+| **W-12** | `negative_intent`, carrier components | `postingDrain.js:724` | `intendedWriteOffCents`, `intendedDedAppliedCents` | **fired wrongly, over a field its lane never writes.** **FIXED** on this branch |
+
+### 17.2 Exempt by design — the sign IS the question
+
+| Predicate | Where | Why it is right |
+| --- | --- | --- |
+| `carriesTakeback` detector | `postingDrain.js:602-604` | Firing on a negative is its whole job: it asks *is this a takeback*, three independent ways. |
+| `isTakeback` / `isTakebackRemittance` | `claimMatch.js:595-597` | Same question, one definition, shared with the gate. |
+| `NOT_REVERSAL` / `NOT_RECOUPMENT` | `approvalGate.js:491-497` | D-6 **swaps** them for `RECOUPMENT_CONFIRMED` on the recoupment lane rather than dropping them — a harder condition, not a smaller set. |
+| `TAKEBACK_ACKNOWLEDGED` | `approvalGate.js:125` | The D-11 amendment PARTITIONS `reversal_not_postable` and `negative_total_payment` onto the takeback lane instead of filtering them. |
+
+### 17.3 Pass — sign-symmetric, or the takeback lane never reaches them
+
+| Predicate | Where | Why it is safe |
+| --- | --- | --- |
+| `PLAN_TOTAL_MISMATCH` | `postingDrain.js:771` | Equality of two sums. Negating both sides changes nothing. |
+| `CLAIM_TOTALS_AGREE` | `approvalGate.js:816` | Same shape. |
+| `batchBalanced` | `approvalGate.js:1113` | `total − PLB − Σpaid`, signed throughout. R3 balanced at `0`. |
+| `lineDecisions.lineMoney` | `lineDecisions.js:301` | `W = B − A`, `R = A − P`. Pure subtraction: negated inputs give negated outputs, which is the mirror. |
+| `checkTypedRecoupmentTotal`, `formatRecoupmentTotal` | `approvalGate.js:1486-1533` | Handle the sign explicitly — the typed phrase for R3 is `-29.00`. |
+| `TAKEBACK_EXCEEDS_PAYMENT` | `claimMatch.js:683-685` | Already `Math.abs` on **both** sides. This is the one predicate that was written mirror-aware from the start. |
+| `isReversibleLine` | `claimMatch.js` | `insPayAmtCents !== 0` — sign-agnostic on purpose. |
+| `CLAIMPROC_NOT_ALREADY_PLANNED` | `approvalGate.js:702` | Lane-aware already, via `PLAN_STATUSES_RELEASED_FOR_REVERSAL`. |
+| `negative_intent`, DECIDED write-off | `postingDrain.js:747` | A takeback can never carry one: the gate refuses a decided write-off on the reversal lane (`writeOffOnTakeback`). Unreachable, and a negative *decision* is wrong on either lane. |
+| `decideLineAction` | `postingDrain.js:815` | Reached only through `grouped = groupByClaim(ordinaryLines)`. Takeback lines never enter it. |
+| eligible-total re-verify, `reconcileCheck` | `postingDrain.js:2445+` | Both computed over `ordinaryLines`. Takebacks are excluded by construction. |
+| `confirmLineFor` decided `> 0`, `decidesAnything` | `postingDrain.js:1250, 2413` | Zero on a pure takeback, for the reason above. |
+| `figures.adjustmentCents <= 0` | `postingDrain.js:3206` | The office-write-off adjustment step, ordinary lane. |
+| `odAmount`, `odInsEstimate` | `claimMatch.js:448, 480` | Read **Open Dental's own** values, where `-1` is a documented sentinel. Nothing to do with the remittance's sign. |
+| `attachedCheckNum > 0` | `odPostingWrites.js:653` | An Open Dental id, not money. |
+
+### 17.4 FLAGGED — found by the sweep, deliberately NOT changed
+
+Both are reported rather than fixed, because the ruling that authorises the
+class fix does not cleanly reach them and each deserves its own decision.
+
+#### W-13 — `NOT_PATIENT_RESPONSIBILITY_ONLY` asks a payment-lane question on both lanes
+
+`approvalGate.js:303` — `totalPaidCents <= 0 && patientBalanceCents > 0`.
+
+On a takeback the first half is **true by construction** (every figure is
+negated), so the condition collapses to *"does the patient owe anything"*, and
+the sentence it prints — *"the carrier paid nothing and the whole balance is the
+patient's"* — is flatly untrue: the carrier is taking money back.
+
+**It cannot fire on a fully-mirrored reversal**, and that is why this is a
+report and not a fix. `patient_balance_cents` is `totalDeductibleCents +
+totalCopayCents` (`eraIngest.js:298`), both negated on a mirror, so the second
+half is false. R3 came out at exactly `0`. Firing needs a payer that reports PR
+as a **positive** amount on a `CLP02=22` claim — a non-mirrored reversal.
+
+**And the ruling says non-mirrored anomalies stay refusals.** So the refusal is
+arguably correct and only its *sentence* is wrong. Changing the outcome would
+loosen the lane; changing the wording alone is a decision about copy for a case
+nobody has observed. **PM to rule.** Recommended: reword, keep refusing.
+
+#### W-14 — a reversal is matched with no money evidence at all
+
+`claimMatch.js:886` — `unknownLines === 0 && ourBilledCents > 0 && odBilledCents > 0`.
+
+On a reversal `ourBilledCents` is negative, so the guard is false and **no
+billed-amount tag is awarded either way**. The reversal loses
+`BILLED_AMOUNT_MATCH` (worth score) *and* `BILLED_AMOUNT_MISMATCH` (a
+disqualifier). R3 still scored 95/HIGH on claim-number, name, date, codes and
+line count.
+
+**The disqualifier is the half that matters**, and losing it is fail-OPEN: a
+reversal pointed at the wrong claim keeps a signal that would have caught it.
+The fix is the same `Math.abs` mirroring as W-6.
+
+**Not done here** because it is not a refusal, so the ruling's principle does not
+reach it — and because awarding the MATCH tag raises reversal scores, which
+changes which claims are confidently matched. That is a behavioural change to
+matching and wants its own ruling. **PM to rule.** Recommended: mirror it, for
+the disqualifier.
+
+---
+
+## 18. The constraint sweep — which columns may legally change together
+
+Ordered by the PM on 2026-09-09 after W-15, on the axis
+[§17](#17-the-reversal-lane-sweep--every-signed-money-predicate-in-the-posting-path)
+missed. That sweep asked *does a predicate misread a negative number* — a question
+about **signs**. W-9 and W-15 are not sign defects: they are a writer moving one
+column out from under another that the database binds it to. So this one asks
+**which columns may legally change together, and does every writer know it.**
+
+**53 CHECK constraints on `rcm_*`. 24 are single-column** (`status IN (…)`, the
+office check, an enum) and cannot be broken by a partial update — a writer either
+supplies a legal value or it does not. **29 are multi-column**, and those are the
+sweep's surface.
+
+### 18.1 The two tables the drain writes mid-flight
+
+`rcm_posting_queue_line` has exactly **three** writers: two INSERTs in
+`approvalGate` that set every column at once, and `persistLine` — the single
+UPDATE. `rcm_posting_queue` has `claimRow`, `releaseRow`, `withdrawRow`,
+`blockRow`, `finalizeRow`, `persistStep` and two targeted single-column UPDATEs.
+
+| Constraint | Columns | How it is held |
+| --- | --- | --- |
+| `…_line_skip_reason_check` | `status`, `skip_reason` | **WRITER INVARIANT** — `persistLine` clears the reason on any deliberate move off the skip family. Was per-site, which is how W-9 and W-15 both happened. **Modelled in `FakeRcmDb`.** |
+| `…_line_recoupment_shape_check` | `recoupment_path`, `is_supplemental` | Both are INSERT-only; `persistLine` writes neither. **Structurally safe.** Modelled. |
+| `…_line_recoupment_ids_check` | `od_adjustment_num`, `recoupment_path`, `od_supplemental_claim_proc_num` | `persistLine` writes both ids, `recoupment_path` is immutable. **Site-handled** — `drainTakebacks` writes each id only inside its own path's branch. NOT writer-enforced; recorded as such. Modelled. |
+| `…_line_writeoff_adj_check` | `od_writeoff_adjustment_num`, `decided_write_off_cents` | `persistLine` writes the id, the figure is INSERT-only. **Site-handled** — only the write-off step writes it, and only for lines carrying a decision. Modelled. |
+| `…_line_decided_check` | `decided_write_off_cents`, `decided_reason`, `decided_by` | `persistLine` writes none of the three. INSERT-only, all together. **Structurally safe.** |
+| `…_queue_blocked_reason_check` | `status`, `blocked_reason` | **Site-handled, and it was the model to copy** — `claimRow`, `releaseRow` and `withdrawRow` each carry `blocked_reason = NULL` in the same statement. `finalizeRow` was the fourth writer and the only one that could meet a stale reason. **See W-17.** Modelled. |
+| `…_queue_posted_proof_check` | `status`, `reconciled_at`, `od_claim_payment_num`, `requires_check` | `finalizeRow` writes status, `reconciled_at` and the check number in ONE statement; `requires_check` and `od_claim_payment_num` also have single-column UPDATEs, but both run while the row is `posting`, and the constraint only bites at `posted`. **Structurally safe.** Modelled. |
+| `…_queue_withdrawn_check` | `status` + four `withdrawn_*` | One writer, `withdrawRow`, sets all five together. **Structurally safe.** |
+| `…_queue_withdrawn_no_money_check` | `status`, `od_claim_payment_num`, `reconciled_at`, `posted_total_cents` | Same writer; the route refuses `posted`/`partially_posted` before reaching it. **Structurally safe.** |
+| `…_document_attached_proof_check` | `status`, `od_doc_num`, `attached_at` | One writer, `attachEobDocuments`'s `record()`, sets them together. **Structurally safe.** |
+
+### 18.2 W-17 — found by the sweep, not by a press
+
+**`finalizeRow` could meet a row that was already `blocked`, and overwrite it.**
+
+Exactly one site in the module blocks a row and then throws — the recoupment
+lane's refusal when a practice has no *"Insurance deductions from previous
+payments"* adjustment type. The outer catch then finalised the row
+`partially_posted` with `blocked_reason` still on it:
+
+- a **less honest state** than the one the refusal deliberately wrote, with the
+  named reason gone from the status it explained;
+- and a row `rcm_posting_queue_blocked_reason_check` **refuses outright**, so
+  against real Postgres an honest refusal threw a second error on top of itself.
+
+The other six `blockRow` sites return cleanly and never meet this.
+
+**Roland carries that adjustment type, which is why the walk never met it.**
+Valley's Category-1 list has not been read, and valley is the next office to be
+switched on.
+
+Fixed by letting the refusal say it is already final — the row keeps `blocked`
+and its reason — rather than by teaching `finalizeRow` to clear the column,
+which would have made the illegal row legal and the vaguer state permanent.
+
+**It was invisible before this sweep.** The existing test asserted
+`blocked_reason === 'no_adj_type'` and passed either way: the reason survived in
+the row while the STATUS moved out from under it. Only the constraint could see
+the disagreement, and `FakeRcmDb` did not know the constraint.
+
+### 18.3 The other nineteen
+
+Outside the two drain tables, on `rcm_claims`, `rcm_payment_batches`,
+`rcm_procedure_lines`, `rcm_procedure_adjustments`, `rcm_eob_uploads` and
+`rcm_office_settings`. Every one of them is an **attribution or provenance
+pairing** — *"if this happened, say who and when"* — of the shape
+`(a IS NULL AND b IS NULL) OR (a IS NOT NULL AND b IS NOT NULL)`:
+
+`rcm_claims_reviewed_attribution_check`, `…_od_match_attribution_check`,
+`…_od_claim_num_confirmed_check`, `…_approval_check`,
+`…_approved_is_confirmed_check`, `…_confirmed_verdict_check`,
+`rcm_payment_batches_approval_attempt_check`, `…_parked_check`,
+`…_set_aside_check`, `…_comparison_check`,
+`rcm_procedure_lines_decision_attribution_check`, `…_decision_reason_check`,
+`rcm_procedure_adjustments_scope_line_check`,
+`rcm_eob_uploads_ocr_provenance_check`,
+`rcm_office_settings_drain_evidence_check`, `…_writeoff_adjtype_check`.
+
+**Each is written by a single statement that sets the whole group together** —
+the confirm, the approve, the park, the set-aside, the comparison, the line
+decision. None is reachable by a partial update from a second writer, which is
+what makes them a different risk class from the drain's.
+
+**They are NOT modelled in `FakeRcmDb`,** and that is deliberate: a constraint no
+test can reach is a comment rather than a guard, and modelling all of them would
+put twenty predicates in the fake to catch nothing. The four added are the ones a
+drain test can actually reach. **If a later slice gives any of these a second
+writer, it moves into §18.1's class and wants modelling then.**
+
