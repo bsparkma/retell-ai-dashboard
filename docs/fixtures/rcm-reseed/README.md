@@ -1,20 +1,27 @@
 # The four reseed 835s
 
-> **Status, 2026-09-01: generated and present.** All seven claims exist on
-> Roland's chart, and the four files below were written by `reseed-835.js` from
-> `/data/rcm-reseed/roland/rcm-reseed-manifest.json` (`complete: true`) on
-> staging revision `0000150`. The committed copies were regenerated on a
-> workstation with `--out` and are **byte-identical** to the container's.
+> **Status, 2026-09-11: regenerated against a fresh reseed.** The 2026-09-09
+> combined-walk teardown unwound the first set, so the ClaimNums these files
+> carried (`53857`–`53864`) are retired and can never come back. A second reseed
+> ran on staging revision `0000180`; all seven claims exist on Roland's chart
+> again under **new** ClaimNums, and the four files below were rewritten by
+> `reseed-835.js` from `/data/rcm-reseed/roland/rcm-reseed-manifest.json`
+> (`complete: true`, `createdAt` `2026-09-11T22:33:41.125Z`). The committed
+> copies were regenerated on a workstation with `--out` and are
+> **byte-identical** to the container's.
+>
+> The previous manifest is retired in place as
+> `rcm-reseed-manifest.2026-09-01.spent.json`.
 >
 > **Only the upload remains** — /rcm → Bring in, signed in as `admin` or
 > `office`. See `docs/RCM_POSTING.md` §10.8.
 
 | File | Payer · check | Claims | BPR02 |
 | --- | --- | --- | --- |
-| `rcm-reseed-835-R1.txt` | Delta Dental of Oklahoma · `RS-104477` | 53857, 53858, 53859 | $164.80 |
-| `rcm-reseed-835-R2.txt` | MetLife Dental · `RS-889021` | 53861, 53862 | $640.00 |
-| `rcm-reseed-835-R3.txt` | Cigna Dental · `RS-330415` | 53863 | −$29.00 |
-| `rcm-reseed-835-R4.txt` | Cigna Dental · `RS-330416` | 53864 | $88.00 |
+| `rcm-reseed-835-R1.txt` | Delta Dental of Oklahoma · `RS-104477` | 53967, 53968, 53969 | $164.80 |
+| `rcm-reseed-835-R2.txt` | MetLife Dental · `RS-889021` | 53970, 53971 | $640.00 |
+| `rcm-reseed-835-R3.txt` | Cigna Dental · `RS-330415` | 53972 | −$29.00 |
+| `rcm-reseed-835-R4.txt` | Cigna Dental · `RS-330416` | 53973 | $88.00 |
 
 ## Regenerating them
 
@@ -86,6 +93,16 @@ R1, R2 and R4 can go up in any order. **R3 goes last, and only after its claim
 has actually posted.** A takeback pairs to the *paid* line, so matched before the
 drain the eligible set is empty and the approve refuses `NO_REVERSIBLE_LINES` —
 correctly. If you match it early, re-match after the drain.
+
+> ⚠ **Nothing in this set can post R3's claim.** R1 pays R1-1/R1-2/R1-3, R2 pays
+> R2-1/R2-2, R4 pays R4-1 — R3-1 is paid by none of the four checks, so the
+> sentence above cannot be satisfied from the app. Until a fifth, positive 835
+> exists, R3-1's payment and write-off must be **hand-posted in Open Dental**
+> first. `claimMatch.js` explicitly supports reversing a hand-posted payment, and
+> `rcm-s11-unwind.js` finds the `ClaimPaymentNum` by reading the claimproc, so the
+> teardown still cleans up unaided — **provided no deposit is attached**, or the
+> unwind cannot delete the check. Cost an evening on 2026-09-03; hit again on the
+> 2026-09-11 reseed.
 
 ### R4 is supposed to fail
 
