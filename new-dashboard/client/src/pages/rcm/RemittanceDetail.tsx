@@ -1365,14 +1365,17 @@ function ClaimTriageRow({
         <div className="min-w-0" data-testid={`claim-stands-${claim.claimId}`}>
           {verdict ? (
             /* Wraps, never truncates — see the header. The `title` went with
-               the clipping it existed to compensate for. */
+               the clipping it existed to compensate for.
+               All three states carry the verdict banners' own tones: green,
+               amber and red are reserved for the verdict and states, and a
+               matching claim IS a verdict. Only the unjudged row stays quiet. */
             <span
               className={`block break-words text-xs ${
                 verdict.state === "red"
                   ? "font-medium text-rose-700 dark:text-rose-400"
                   : verdict.state === "amber"
                     ? "text-amber-800 dark:text-amber-300"
-                    : "text-muted-foreground"
+                    : "text-emerald-700 dark:text-emerald-400"
               }`}
             >
               {verdict.sentence}

@@ -722,18 +722,25 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
   });
 
   it("stagec-04-check-triage — where the patient stands, per claim", async () => {
-    state.checks = [check()];
+    // All three verdict tones in one table (PR #171 round 1): the matching
+    // claim's miniature is green, as the verdict banners are.
+    state.checks = [check({ claimCount: 3 })];
     state.claims = [
       claim(),
       claim({ claimId: "c-2", claimNumber: "53712", patientName: "Test, MangoTest", reviewedAt: "2026-03-05T16:00:00.000Z" }),
+      claim({ claimId: "c-3", claimNumber: "900213", reviewedAt: "2026-03-05T16:05:00.000Z" }),
     ];
     state.approval = {
       office: "roland",
       batchId: "b-1",
       canApprove: true,
       approveRequires: "rcm.write",
-      claims: [approvalClaim(), approvalClaim({ claimId: "c-2", claimNumber: "53712", patientName: "Test, MangoTest", verdict: RED, postable: false })],
-      postableCount: 1,
+      claims: [
+        approvalClaim(),
+        approvalClaim({ claimId: "c-2", claimNumber: "53712", patientName: "Test, MangoTest", verdict: RED, postable: false }),
+        approvalClaim({ claimId: "c-3", claimNumber: "900213", verdict: GREEN }),
+      ],
+      postableCount: 2,
       withheldCount: 1,
       queuedCount: 0,
       balanced: true,

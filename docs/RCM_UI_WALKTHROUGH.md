@@ -145,7 +145,13 @@ Now press **Save for tomorrow** at the top of the claim, and go back to **Today*
   more after." — and one button: **Pick up where you left off**. It takes you
   straight to that claim.
 
-Match and check over the rest of R1's claims the same way.
+Match and check over the rest of R1's claims the same way, then go back to R1's page.
+
+**What you should see**
+- In the claims table, **Where the patient stands** repeats each claim's banner
+  sentence in the banner's own colour: a claim that matches the EOB is **green**,
+  an amber claim is amber, a red one red. A claim not matched yet reads
+  "Not judged yet" in plain grey.
 
 ### 8. The office write-off — an amber claim (R2)
 

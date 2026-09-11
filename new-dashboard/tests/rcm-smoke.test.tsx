@@ -61,6 +61,11 @@
  * stays; the amount goes. `PostThisCheck.tsx` now renders the number and an
  * explicit sentence, no amount. Flow 3 asserts both halves.
  *
+ * PR #171 round 1 added three more, each pinned here: the same ruling for a
+ * `blocked` re-press (3.9), the practice's name in the Post reason rather than
+ * its key (1.17 and sweep e), and the matching miniature in the verdict's green
+ * (1.14).
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * RUN A FLOW WHOLE
  * ─────────────────────────────────────────────────────────────────────────────
@@ -1680,10 +1685,14 @@ describe("1 · enter a check, the whole road", () => {
     expect(screen.getByTestId("rcm-cta").textContent).toContain("Match it up");
     expect(within(rail).queryByTestId("rcm-cta")).toBeNull();
 
-    // The miniature says NOT JUDGED rather than guessing at an unmatched claim.
+    // The miniature says NOT JUDGED rather than guessing at an unmatched claim —
+    // and an untouched row stays quiet: no verdict, so none of the verdict tones.
     await waitFor(() =>
       expect(screen.getByTestId(`claim-stands-${C1}`).textContent).toContain("Not judged yet"),
     );
+    const untouched = screen.getByTestId(`claim-stands-${C1}`).querySelector("span")?.className ?? "";
+    expect(untouched).toContain("text-muted-foreground");
+    expect(untouched).not.toMatch(/emerald|amber|rose/);
     sweep(container);
   });
 
@@ -1840,12 +1849,16 @@ describe("1 · enter a check, the whole road", () => {
     await waitFor(() =>
       expect(screen.getByTestId(`claim-stands-${C1}`).textContent).toBe("Will owe $450.00 — matches the EOB."),
     );
-    // The tone is read off the same verdict as the sentence: a matching claim is
-    // quiet — never a warning colour — and an amber one is amber.
+    // The tone is read off the same verdict as the sentence, in the verdict
+    // banners' own colours: a matching claim is GREEN (a verdict, not a quiet
+    // row — PR #171 round 1), and an amber one is amber.
     const greenTone = screen.getByTestId(`claim-stands-${C1}`).querySelector("span")?.className ?? "";
-    expect(greenTone).not.toMatch(/rose|amber/);
+    expect(greenTone).toContain("text-emerald-700");
+    expect(greenTone).not.toMatch(/rose|amber|muted/);
     expect(screen.getByTestId(`claim-stands-${C2}`).textContent).toBe(AMBER_SENTENCE);
-    expect(screen.getByTestId(`claim-stands-${C2}`).querySelector("span")?.className).toMatch(/amber/);
+    const amberTone = screen.getByTestId(`claim-stands-${C2}`).querySelector("span")?.className ?? "";
+    expect(amberTone).toContain("text-amber-800");
+    expect(amberTone).not.toMatch(/emerald|rose|muted/);
     expectWraps(screen.getByTestId(`claim-stands-${C2}`), `claim-card-${C2}`);
     expect(screen.getByTestId("step-note-review").textContent).toContain(
       "All 2 claims checked over. Nothing has been approved yet.",
