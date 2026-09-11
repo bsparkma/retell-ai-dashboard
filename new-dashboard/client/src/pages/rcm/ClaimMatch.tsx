@@ -52,7 +52,7 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { day, MATCH_STATUS_TONE } from "@/features/rcm/format";
-import { claimFlow, claimStateLine, remittanceHref } from "@/features/rcm/flow";
+import { claimFlow, claimHref, claimStateLine, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
@@ -548,14 +548,44 @@ export default function ClaimMatchPage() {
         into one sentence naming the code, and `claimFlow` greys the approve verb
         with it. Every other step is untouched — see the note on the parameter.
       */}
-      <RcmStepper
-        flow={claimFlow(claim, fromBatchId, verdictBlock(claim.verdict ?? null)?.reason ?? null)}
-        here="match"
-        onAction={{
-          "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
-          review: markReviewed,
-        }}
-      />
+      {/*
+        S7 · THE RAIL DOES NOT OFFER A BUTTON TO THE PAGE YOU ARE ON.
+        `claimFlow`'s match CTA reads *Pick the right claim for so-and-so* and
+        links to `claimHref(...)` — which, on this screen, is this screen. A
+        solid button whose entire effect is to stay put is the W-2 class of
+        defect one step along, and on the Phase 0 count it was one of FOUR
+        primary-styled buttons here. When the next click is on this page, the
+        page's own control is the one that gets the paint; the rail still draws
+        the five steps and their evidence, just not a second copy of the verb.
+      */}
+      {(() => {
+        const claimflow = claimFlow(
+          claim,
+          fromBatchId,
+          verdictBlock(claim.verdict ?? null)?.reason ?? null,
+        );
+        const here = claimHref(claim.claimId, fromBatchId);
+        /*
+          The second case: the matching guidance is OFFERING the link, right
+          below the rail. `MatchGuidance` draws its solid *Yes, that's the one*
+          on exactly this condition — candidates in hand and nothing linked yet
+          — and a rail CTA reading *Match it up* above it is an invitation to
+          re-run the search the reader is looking at the result of.
+        */
+        const guidanceIsOffering =
+          claim.odClaimNum === null && (claim.matchSnapshot?.candidates.length ?? 0) > 0;
+        return (
+          <RcmStepper
+            flow={claimflow}
+            here="match"
+            hideCta={claimflow.cta?.href === here || guidanceIsOffering}
+            onAction={{
+              "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
+              review: markReviewed,
+            }}
+          />
+        );
+      })()}
 
       {/*
         ── WHERE THIS CLAIM IS, IN ONE LINE — Stage C-3, item 1 ────────────────

@@ -103,6 +103,7 @@ import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
 import PostThisCheck from "@/components/rcm/PostThisCheck";
+import NextCheck from "@/components/rcm/NextCheck";
 import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
 import CheckComparison from "@/components/rcm/CheckComparison";
 import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
@@ -574,7 +575,43 @@ export default function RemittanceDetailPage() {
           it means.
         */}
         <div className="flex flex-col items-start gap-1 sm:items-end">
-          {flow.cta && (
+          {/*
+            ── S7 · ONE PRIMARY, AND IT IS THE NEXT STEP ─────────────────────
+            Two changes to what this slot draws, both from the Phase 0 count of
+            THREE primary-styled buttons on this one screen:
+
+            1. `flow.cta === null` means every step through Post is done. The
+               slot used to render nothing, and a finished check became a dead
+               end with *Review and approve* as its only solid button — a verb
+               for something already approved. It now carries the next check.
+
+            2. When the CTA's step is `post`, the slot renders NOTHING, because
+               the act itself is on this same page. That CTA never posted
+               anything: it scrolled to `PostThisCheck`. Two solid buttons
+               reading *Post to Open Dental*, one of which is a scroll, is the
+               exact shape W-11 deleted from the match step — it had simply
+               survived one step further down the rail.
+
+            3. A post step this person cannot press — blocked, or held by
+               shadow mode, which is the whole of the next few weeks — is a
+               check this person has FINISHED. Every human decision on it is
+               made and recorded; switching posting on is an administrator's
+               act on another screen. So it takes the next check too, rather
+               than leaving a biller on a screen whose every control is greyed.
+               The greyed Post button and its reason are still on the page, in
+               the post panel and in the rail, twice over.
+
+               Shadow is checked explicitly because the RAIL does not call that
+               step blocked and should not: nothing is wrong, the work is just
+               waiting. `step-post` reads `current` and the CTA reads enabled
+               while the button it scrolls to is refused — which is exactly the
+               state that used to put a solid button on this screen pointing at
+               a greyed one.
+          */}
+          {flow.cta === null ||
+          (flow.cta.step === "post" && (flow.cta.disabled || shadowMode)) ? (
+            <NextCheck office={office} currentBatchId={r.batchId} />
+          ) : flow.cta.step === "post" ? null : (
             <RcmPrimaryAction
               cta={flow.cta}
               onAction={{
@@ -1024,7 +1061,10 @@ export default function RemittanceDetailPage() {
           <Link
             href={`/rcm/remittances/${encodeURIComponent(r.batchId)}/approve`}
             data-testid="approve-open-page"
-            className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+            /* SECONDARY (S7). The header already offers this verb solid, from
+               the top of the page where a new hire looks first. Two solid
+               buttons to one screen is two answers to "what do I press". */
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted"
           >
             <ShieldCheck size={14} />
             Review and approve

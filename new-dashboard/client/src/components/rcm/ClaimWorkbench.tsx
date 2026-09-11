@@ -2011,7 +2011,16 @@ function CandidateCard({
             onClick={onConfirm}
             disabled={disabled || isConfirmed}
             data-testid={`confirm-${c.odClaimNum}`}
-            className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            /*
+              SECONDARY (S7). One of these renders per candidate, and they are
+              co-equal: the app has ranked them and has deliberately not chosen.
+              Painting every one of them solid made a list of alternatives look
+              like a row of recommendations — and on the check page's own count
+              it was three of the four primary-styled buttons on the screen.
+              The one place the app IS confident keeps its solid button, in
+              `MatchGuidance`.
+            */
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
             <CheckCircle2 size={14} />
             {isConfirmed ? "Confirmed" : "This is the one"}

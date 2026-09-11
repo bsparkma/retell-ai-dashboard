@@ -1512,13 +1512,37 @@ function isPrimaryStyled(el: Element): boolean {
   return cls.split(/\s+/).some((t) => PRIMARY_TOKEN.test(t));
 }
 
+/**
+ * AN OPEN IN-FLOW CONFIRM IS ITS OWN SCREEN.
+ *
+ * `MatchAnywayConfirm` (W-7) and `PermanentPathConfirm` (D-17) both present two
+ * co-equal choices and both deliberately paint the DECLINE solid and focus it.
+ * That is the brief's own named exception to one-primary-per-screen, and while
+ * one of them is open the page behind it is not the thing being read. Their
+ * buttons are excluded from the count rather than the rule being loosened, so a
+ * second primary appearing anywhere ELSE while a confirm is open still fails.
+ */
+const IN_FLOW_CONFIRM = /^(match-anyway|recoupment-permanent-confirm)$/;
+
+function insideInFlowConfirm(el: Element): boolean {
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    const id = (n as HTMLElement).dataset?.testid ?? "";
+    if (IN_FLOW_CONFIRM.test(id)) return true;
+  }
+  return false;
+}
+
 function primaryButtons(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>("button, a")).filter(
     (el) =>
       isPrimaryStyled(el) &&
       !el.hasAttribute("disabled") &&
       // A selected tab is painted solid to say WHERE YOU ARE, not what to press.
-      el.getAttribute("role") !== "tab",
+      el.getAttribute("role") !== "tab" &&
+      // Nor is a pressed toggle. The workbench's *Bill the patient* / *Write it
+      // off* pair fills whichever is chosen; that is a state, not a next step.
+      el.getAttribute("aria-pressed") !== "true" &&
+      !insideInFlowConfirm(el),
   );
 }
 
@@ -1615,11 +1639,37 @@ function measure(root: HTMLElement): void {
 }
 
 /**
+ * (f) AT MOST ONE PRIMARY-STYLED CONTROL PER SCREEN — S7, Phase 3.
+ *
+ * "At most", not "exactly", and the difference is a real product fact rather
+ * than a softened rule. Two screens are correct with none:
+ *
+ *   A CANDIDATE LIST. When Open Dental offers more than one claim, the app has
+ *   ranked them and has deliberately NOT chosen — that refusal is the whole of
+ *   `MatchGuidance`'s unsure branch. Painting a recommendation there would be
+ *   the screen asserting something the match never said.
+ *
+ *   A FINISHED CHECK WHOSE NEXT-CHECK READ IS IN FLIGHT. `NextCheck` says
+ *   "Looking for the next check…" rather than drawing a button that may be
+ *   about to become a different button.
+ *
+ * The walk asserts the presence of the expected primary per screen separately,
+ * so "none" can never quietly become the answer everywhere.
+ */
+function tooManyPrimaries(root: HTMLElement): string[] {
+  const found = primaryButtons(root);
+  if (found.length <= 1) return [];
+  return found.map((el) => `${el.tagName.toLowerCase()}[${el.dataset.testid ?? "?"}] "${(el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 48)}"`);
+}
+
+/**
  * THE SWEEP — (a), (c) and (e), over whatever screen is on the page right now.
  * Returns the card families it judged, so a caller can say what was covered.
  */
 function sweep(root: HTMLElement = document.body): string[] {
   measure(root);
+  const primaries = tooManyPrimaries(root);
+  expect(primaries, `more than one primary-styled control (S7 f): ${primaries.join(" + ")}`).toEqual([]);
   expect(unexplainedDisabled(root), "a greyed control with no reason beside it").toEqual([]);
   expect(bannedWordHits(root), "a banned word in rendered text").toEqual([]);
   expect(officeKeyHits(root), "a machine office key in rendered text").toEqual([]);
@@ -2220,6 +2270,19 @@ describe("1 · enter a check, the whole road", () => {
     );
     expect(screen.getByTestId("step-post").dataset.state).toBe("current");
     expect(srv.calls.some((c) => c.startsWith("drainPostingQueue"))).toBe(false);
+
+    /*
+     * S7 · FORWARD MOTION OUT OF A HELD CHECK.
+     *
+     * Every human decision on this check is made; posting is an administrator's
+     * act and it is switched off. Before S7 the screen's one solid button was a
+     * *Post to Open Dental* that scrolled to a greyed *Post to Open Dental*, and
+     * the only ways onward were the breadcrumb and the nav. The one primary is
+     * now the next check — and B, saved for tomorrow, is not offered as one.
+     */
+    const onward = await screen.findByTestId("rcm-next-check-done");
+    expect(onward.textContent).toContain("done for today");
+    expect(screen.queryByTestId("rcm-next-check")).toBeNull();
     expect(sweep(container)).toEqual(expect.arrayContaining(["posting card", "shadow banner"]));
   });
 });
