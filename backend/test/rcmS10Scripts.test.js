@@ -1464,9 +1464,14 @@ test('a PENDING reseed id is reachable; a SPENT one is denied — the rule, both
       assert.ok(DENY.includes(id), `${bucket} ${id} is retired and must be denied`);
     }
   }
-  // The seven, named so a silent renumbering is caught. Unwound 2026-09-09, so
-  // they are SPENT now and nothing is pending.
-  assert.deepEqual([...RESEED.RESEED_PENDING_AT_UNWIND.claims], []);
+  // Both sets named, so a silent renumbering is caught. The 2026-09-01 run was
+  // unwound 2026-09-09 and is SPENT; the 2026-09-11 reseed replaced it and is
+  // LIVE, which is what makes the `!DENY.includes` half above meaningful again —
+  // with nothing pending it was asserting over an empty list.
+  assert.deepEqual(
+    [...RESEED.RESEED_PENDING_AT_UNWIND.claims],
+    [53967, 53968, 53969, 53970, 53971, 53972, 53973]
+  );
   assert.deepEqual(
     [...RESEED.RESEED_SPENT_IDS.claims],
     [53857, 53858, 53859, 53861, 53862, 53863, 53864]
