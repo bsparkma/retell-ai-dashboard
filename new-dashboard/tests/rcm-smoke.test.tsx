@@ -79,9 +79,9 @@
  * Test, MangoTest (12828) — at Roland.
  */
 import * as React from "react";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -1073,6 +1073,7 @@ function addCheck(
 
 function renderAt(ui: React.ReactElement, path: string) {
   const [pathname, search = ""] = path.split("?");
+  lastRenderedPath = path;
   const memory = memoryLocation({ path: pathname, searchPath: search, record: true });
   const view = render(
     <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
@@ -1347,11 +1348,278 @@ function expectWraps(cell: HTMLElement, rowTestId: string) {
   expect(cell.getAttribute("title")).toBeNull();
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// 5f/5g · S7 — THE CLARITY MEASURES
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// S7's acceptance bar is a person, not a state: a new team member, untrained,
+// finds and finishes the day's posting work. A person cannot be asserted, so
+// the two things standing between them and the work are measured instead — HOW
+// MANY WORDS a screen says, and WHETHER exactly one button is the next step.
+//
+// WHAT "PROSE WORDS" MEANS HERE. Names, amounts, dates, codes and ids are the
+// WORK; a screen cannot say fewer of them and still be useful. They are struck
+// out, and what is left — the sentences and labels the product chose to write —
+// is what the budget governs.
+//
+// WHAT THIS CANNOT MEASURE. jsdom has no layout, so there is no fold. The count
+// is over the WHOLE default render, which is a strict superset of what is above
+// the fold: a screen inside its budget here is inside it up there too. The
+// budgets below were therefore set from the measured whole-screen figures in
+// `docs/rcm-s7-inventory.md`, not from the brief's above-the-fold numbers.
+
+/** Set by `renderAt`, read by the sweep to know which screen it is judging. */
+let lastRenderedPath = "";
+
+/** Words that are the WORK, not the product's prose. */
+const NOT_PROSE: RegExp[] = [
+  /^[$(]?-?[\d,]+(\.\d+)?[%)]?$/, // amounts, counts, percentages
+  /^#?\d[\d,.:/-]*$/, // check numbers, claim numbers, times
+  /^[a-z]+-\d[\w-]*$/i, // clm-900201, chk-900101, q-900131
+  /^D\d{4}$/, // procedure codes
+  /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*$/,
+  /^\d{1,2}(:\d{2})?(am|pm)$/i,
+  /^(am|pm|AM|PM)$/,
+];
+
+/**
+ * The proper nouns this world holds. A screen naming the payer, the practice,
+ * the patient or the person who decided is doing its job; none of that is prose
+ * a word diet could remove.
+ */
+const PROPER_NOUNS = new Set(
+  [
+    "Stedi", "Test", "MangoTest", "SYNTHETIC", "DENTAL", "Synthetic", "Dental",
+    "Roland", "Family", "Valley", "Billing", "Person", "Administrator", "CareIN",
+  ].map((w) => w.toLowerCase()),
+);
+
+/** Strip the punctuation a word wears, so "over," and "over" count once. */
+const bareWord = (w: string) => w.replace(/^[^\w$#-]+/, "").replace(/[^\w%)]+$/, "");
+
+/**
+ * WHAT A PERSON ACTUALLY READS on arrival — visible text nodes only.
+ *
+ * Narrower than `renderedProse` in two ways, both deliberate:
+ *
+ *   `title` and `aria-label` are OUT. The banned-word and office-key scans read
+ *   them because a screen reader speaks them; a word BUDGET must not, or the
+ *   Checks page pays for four tab tooltips nobody sees. Moving a sentence into a
+ *   tooltip is not a word diet, and the budget must not reward it.
+ *
+ *   Anything behind a closed disclosure, a `hidden` attribute or `aria-hidden`
+ *   is OUT — that is the whole mechanism Phase 2.4 uses, and if the budget
+ *   counted collapsed text, collapsing would buy nothing.
+ */
+function visibleText(root: HTMLElement): string[] {
+  const out: string[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      for (let el = node.parentElement; el; el = el.parentElement) {
+        if (el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const cls = typeof el.className === "string" ? el.className : "";
+        if (/(^|\s)hidden(\s|$)/.test(cls)) return NodeFilter.FILTER_REJECT;
+        if (el.tagName === "DETAILS" && !el.hasAttribute("open")) {
+          // The summary is the face and stays; the body is behind the click.
+          if (node.parentElement?.closest("summary") === null) return NodeFilter.FILTER_REJECT;
+        }
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n.textContent?.trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function proseWords(root: HTMLElement): string[] {
+  const words: string[] = [];
+  for (const chunk of visibleText(root)) {
+    for (const raw of chunk.split(/\s+/)) {
+      const w = bareWord(raw);
+      if (!w) continue;
+      if (NOT_PROSE.some((re) => re.test(w))) continue;
+      if (PROPER_NOUNS.has(w.toLowerCase())) continue;
+      words.push(w);
+    }
+  }
+  return words;
+}
+
+/**
+ * THE SCREEN'S OWN PROSE — everything except the repeating rows.
+ *
+ * A list screen's word count grows with the DAY, not with the design: twelve
+ * checks say the *Waiting on* sentence twelve times. Budgeting the whole render
+ * would therefore fail a quiet screen on a busy Monday and pass a wordy one on a
+ * Sunday. So the budget governs the CHROME — the page's own headings, ledes,
+ * helper text, legends, empty states and buttons, the words a designer chose
+ * once — and the repeating row/card faces are governed separately, by the ≤ 8
+ * word face rule in sweep (a).
+ *
+ * The rows are removed from a CLONE; nothing on the page is touched.
+ */
+const ROW_TESTID =
+  /^(remittance-row-|rcm-arrival-|rcm-left-off-row-|posting-plan-q-|candidate-row-|candidate-|claim-row-|approve-row-)/;
+
+function chromeProse(root: HTMLElement): string[] {
+  const clone = root.cloneNode(true) as HTMLElement;
+  for (const tr of Array.from(clone.querySelectorAll("tbody tr"))) tr.remove();
+  for (const el of Array.from(clone.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (ROW_TESTID.test(el.dataset.testid ?? "")) el.remove();
+  }
+  return visibleText(clone);
+}
+
+function chromeWords(root: HTMLElement): string[] {
+  const clone = root.cloneNode(true) as HTMLElement;
+  for (const tr of Array.from(clone.querySelectorAll("tbody tr"))) tr.remove();
+  for (const el of Array.from(clone.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (ROW_TESTID.test(el.dataset.testid ?? "")) el.remove();
+  }
+  return proseWords(clone);
+}
+
+/** Everything a person can press or follow on this screen. */
+function clickables(root: HTMLElement): HTMLElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button, a[href], [role="button"], [role="tab"], input[type="file"]',
+    ),
+  );
+}
+
+/**
+ * The buttons that render PRIMARY — solid, filled, "press this one".
+ *
+ * This module does NOT use shadcn's `bg-primary` variant. Its solid is
+ * `bg-foreground text-background` — 25 of them across the RCM pages — plus the
+ * takeback's hand-rolled `bg-amber-700`. Those are the fill a reader's eye
+ * picks out of a screen of outlines and ghosts, so those are what "primary"
+ * means here.
+ *
+ * Matched as a whole class TOKEN, never a substring: `bg-primary/5` is a drop
+ * zone's tint and `bg-foreground/10` a divider, and neither is a button.
+ */
+const PRIMARY_TOKEN = /^(dark:)?bg-(foreground|primary|amber-700|amber-800)$/;
+
+function isPrimaryStyled(el: Element): boolean {
+  const cls = typeof el.className === "string" ? el.className : "";
+  return cls.split(/\s+/).some((t) => PRIMARY_TOKEN.test(t));
+}
+
+function primaryButtons(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>("button, a")).filter(
+    (el) =>
+      isPrimaryStyled(el) &&
+      !el.hasAttribute("disabled") &&
+      // A selected tab is painted solid to say WHERE YOU ARE, not what to press.
+      el.getAttribute("role") !== "tab",
+  );
+}
+
+/**
+ * Which screen is on the page — route first, then the panel that distinguishes
+ * one state of the check page from another. A budget is per SCREEN, and the
+ * check page in its posted, stuck and shadow states is three screens to a
+ * reader even though it is one route.
+ */
+interface ScreenSpec {
+  id: string;
+  label: string;
+  kind: "list" | "flow" | "terminal";
+  /** Prose-word ceiling. `null` while a screen is only being measured. */
+  budget: number | null;
+  note?: string;
+}
+
+const SCREEN_KIND_BUDGET = { list: 80, flow: 130, terminal: 100 } as const;
+
+function screenIdOf(root: HTMLElement): string | null {
+  const path = lastRenderedPath;
+  const has = (id: string) => Boolean(root.querySelector(`[data-testid="${id}"]`));
+  if (path.startsWith("/rcm/posting")) return "activity";
+  if (path.startsWith("/rcm/remittances/") && path.includes("/approve")) {
+    return has("approve-takeback-only") || has("recoupment-panel") ? "takeback-route" : "approve";
+  }
+  if (path.startsWith("/rcm/remittances/")) {
+    if (has("stuck-measured") || has("stuck-stopped")) return "stuck";
+    if (has("posted-outcome")) return "posted";
+    if (has("shadow-would-have-done")) return "shadow-worksheet";
+    return "check";
+  }
+  if (path.startsWith("/rcm/remittances")) return "checks";
+  if (path.startsWith("/rcm/claims/")) return "claim";
+  if (path.startsWith("/rcm/sop/takeback")) return "takeback-sop";
+  if (path.startsWith("/rcm")) return path.includes("add=1") ? "bring-in" : "today";
+  return null;
+}
+
+const SCREENS: Record<string, ScreenSpec> = {
+  today: { id: "today", label: "Today", kind: "list", budget: null },
+  "bring-in": { id: "bring-in", label: "Bring in (Today's upload section)", kind: "list", budget: null },
+  checks: { id: "checks", label: "Checks list", kind: "list", budget: null },
+  check: { id: "check", label: "Check page", kind: "flow", budget: null },
+  /* MATCH AND WORKBENCH ARE ONE SCREEN, not two. `ClaimMatch` renders
+     `MatchGuidance` and `ClaimWorkbench` together, always — see its §5 note.
+     The brief counts them separately; the code has only ever had one page. */
+  claim: { id: "claim", label: "Claim page (Match + Workbench)", kind: "flow", budget: null },
+  approve: { id: "approve", label: "Approve", kind: "flow", budget: null },
+  "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: null },
+  posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: null },
+  stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: null },
+  "shadow-worksheet": { id: "shadow-worksheet", label: "Shadow worksheet", kind: "terminal", budget: null },
+  activity: { id: "activity", label: "Activity / History", kind: "list", budget: null },
+  "takeback-sop": { id: "takeback-sop", label: "Takeback how-to", kind: "flow", budget: null },
+};
+
+/** The worst case seen per screen across the whole walk — the inventory. */
+interface Measure {
+  words: number;
+  chrome: number;
+  actions: number;
+  primaries: number;
+  primaryLabels: string[];
+  seen: number;
+}
+const INVENTORY: Record<string, Measure> = {};
+const CHROME_TEXT: Record<string, string> = {};
+
+function measure(root: HTMLElement): void {
+  const id = screenIdOf(root);
+  if (!id || !SCREENS[id]) return;
+  const prev = INVENTORY[id];
+  const primaries = primaryButtons(root);
+  const next: Measure = {
+    words: Math.max(prev?.words ?? 0, proseWords(root).length),
+    chrome: Math.max(prev?.chrome ?? 0, chromeWords(root).length),
+    actions: Math.max(prev?.actions ?? 0, clickables(root).length),
+    primaries: Math.max(prev?.primaries ?? 0, primaries.length),
+    primaryLabels: [
+      ...new Set([
+        ...(prev?.primaryLabels ?? []),
+        ...primaries.map((b) => (b.textContent ?? "").trim().replace(/\s+/g, " ")),
+      ]),
+    ],
+    seen: (prev?.seen ?? 0) + 1,
+  };
+  INVENTORY[id] = next;
+  if (process.env.RCM_INVENTORY_DUMP) {
+    const text = chromeProse(root).join(" | ");
+    if ((CHROME_TEXT[id] ?? "").length < text.length) CHROME_TEXT[id] = text;
+  }
+}
+
 /**
  * THE SWEEP — (a), (c) and (e), over whatever screen is on the page right now.
  * Returns the card families it judged, so a caller can say what was covered.
  */
 function sweep(root: HTMLElement = document.body): string[] {
+  measure(root);
   expect(unexplainedDisabled(root), "a greyed control with no reason beside it").toEqual([]);
   expect(bannedWordHits(root), "a banned word in rendered text").toEqual([]);
   expect(officeKeyHits(root), "a machine office key in rendered text").toEqual([]);
@@ -2833,4 +3101,60 @@ describe("5e · machine office keys never render", () => {
     // Every frozen key is covered — a third office is a migration, and this scan follows it.
     for (const key of RCM_OFFICE_IDS) expect(OFFICE_KEY.test(`for ${key}.`), key).toBe(true);
   });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6 · THE S7 INVENTORY — written, not asserted
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `RCM_INVENTORY=1 pnpm exec vitest run tests/rcm-smoke.test.tsx` writes
+// `docs/rcm-s7-inventory.md` from what the walk above actually rendered. It is
+// the before/after evidence for the clarity slice, and it is deliberately a
+// SIDE EFFECT of the walk rather than a suite of its own: a screen measured in
+// a state nobody walked to is a screen measured in a state that does not exist.
+
+const INVENTORY_ORDER = [
+  "today",
+  "bring-in",
+  "checks",
+  "check",
+  "claim",
+  "approve",
+  "takeback-route",
+  "posted",
+  "stuck",
+  "shadow-worksheet",
+  "activity",
+  "takeback-sop",
+];
+
+afterAll(() => {
+  if (process.env.RCM_INVENTORY !== "1") return;
+  const lines: string[] = [
+    "| Screen | Kind | Chrome words | Whole-render words | Clickable actions | Primary buttons | Primary label(s) | Renders |",
+    "| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |",
+  ];
+  for (const id of INVENTORY_ORDER) {
+    const spec = SCREENS[id];
+    const m = INVENTORY[id];
+    if (!spec) continue;
+    if (!m) {
+      lines.push(`| ${spec.label} | ${spec.kind} | — | — | — | — | *not reached by the walk* | 0 |`);
+      continue;
+    }
+    const labels = m.primaryLabels.filter(Boolean).map((l) => `“${l}”`).join(" · ") || "—";
+    lines.push(
+      `| ${spec.label} | ${spec.kind} | ${m.chrome} | ${m.words} | ${m.actions} | ${m.primaries} | ${labels} | ${m.seen} |`,
+    );
+  }
+  const out = join(process.cwd(), "..", "docs", "rcm-s7-inventory-measured.md");
+  writeFileSync(out, `${lines.join("\n")}\n`, "utf8");
+  if (!process.env.RCM_INVENTORY_DUMP) return;
+  writeFileSync(
+    join(process.env.RCM_INVENTORY_DUMP, "rcm-s7-chrome-dump.md"),
+    INVENTORY_ORDER.filter((id) => CHROME_TEXT[id])
+      .map((id) => `## ${SCREENS[id]?.label}\n\n${CHROME_TEXT[id]}\n`)
+      .join("\n"),
+    "utf8",
+  );
 });
