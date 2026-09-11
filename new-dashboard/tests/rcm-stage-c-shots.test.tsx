@@ -429,6 +429,8 @@ const state = vi.hoisted(() => ({
   plan: null as Record<string, unknown> | null,
   era: [] as Record<string, unknown>[],
   eob: [] as Record<string, unknown>[],
+  /** S5: the confirmed (measured) verdict per claim, as `GET /claims/:id` serves it. */
+  confirmed: {} as Record<string, Record<string, unknown>>,
 }));
 
 vi.mock("@/contexts/AuthContext", async (importOriginal) => {
@@ -492,6 +494,19 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     getRecoupmentChecklist: vi.fn(async () => {
       throw new real.RcmApiError("none", 404, "NOT_FOUND");
     }),
+    getClaim: vi.fn(async (office: string, claimId: string) => ({
+      office,
+      claim: {
+        claimId,
+        patientName: "Test 2, Stedi",
+        odPatientId: 12827,
+        odClaimNum: 53648,
+        verdict: state.confirmed[claimId],
+        confirmedAt: state.confirmed[claimId] ? "2026-03-05T18:58:00.000Z" : null,
+      },
+      writeoffReasons: [],
+      matchRules: {},
+    })),
     unparkRemittance: vi.fn(async () => ({ batchId: "b-1", parked: false, wasParked: false })),
     matchRemittance: vi.fn(async () => ({ matched: [] })),
     listEraUploads: vi.fn(async (office: string) => ({
@@ -554,6 +569,7 @@ beforeEach(() => {
   state.plan = null;
   state.era = [];
   state.eob = [];
+  state.confirmed = {};
 });
 
 afterEach(cleanup);
@@ -773,11 +789,38 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
     state.claims = [claim({ reviewedAt: "2026-03-05T16:00:00.000Z", postingQueueId: "q-1" })];
     state.approval = APPROVED_PREVIEW;
     state.plan = plan();
+    // S5: the MEASURED verdict the drain recorded — the only figure the
+    // finished screen may quote as what the patient owes.
+    state.confirmed = {
+      "c-1": {
+        state: "amber",
+        register: "confirmed",
+        eobPatientCents: 3000,
+        projectedPatientCents: 0,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [
+          {
+            lineId: "l-2",
+            code: "D0274",
+            amountCents: 3000,
+            reason: "courtesy",
+            reasonLabel: "X-rays — bitewings",
+            decidedBy: "Billing User",
+            decidedAt: "2026-03-05T18:40:00.000Z",
+          },
+        ],
+        problems: [],
+        sentence:
+          "Patient owes $0.00 — $30.00 below the EOB because you wrote off D0274. Confirmed in Open Dental.",
+      },
+    };
 
     const RemittanceDetail = (await import("@/pages/rcm/RemittanceDetail")).default;
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     await screen.findByTestId("rcm-remittance-detail");
     await waitFor(() => expect(screen.getByTestId("posted-landed")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("posted-balance")).toBeTruthy());
     dump("stagec-07-posted");
   });
 
@@ -789,16 +832,34 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
       plan: {
         status: "partially_posted",
         statusLabel: "partially_posted",
+        // S5 · W-16: the MEASURED branch is keyed on the step the run stopped
+        // at, not on reconciledAt (null on both branches).
+        step: "confirm_patient",
         reconciledAt: null,
         lastError:
-          "Open Dental says the patient owes $60.00 on D0274 — this check said $0.00.",
+          "Open Dental says the patient owes $30.00 — this check said $0.00. This needs you before anything else posts. Look at D0274.",
       },
     });
+    state.confirmed = {
+      "c-1": {
+        state: "red",
+        register: "confirmed",
+        eobPatientCents: 3000,
+        projectedPatientCents: 3000,
+        decidedWriteOffCents: 3000,
+        contractualWriteOffCents: 32900,
+        decisions: [],
+        problems: [{ kind: "chart_disagrees", code: "D0274", lineId: "l-2", detail: "D0274 reads $30.00 in Open Dental." }],
+        sentence:
+          "Open Dental says the patient owes $30.00 — this check said $0.00. This needs you before anything else posts. Look at D0274.",
+      },
+    };
 
     const RemittanceDetail = (await import("@/pages/rcm/RemittanceDetail")).default;
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     await screen.findByTestId("rcm-remittance-detail");
     await waitFor(() => expect(screen.getByTestId("stuck-money-landed")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("stuck-consequence").textContent).toContain("only the write-off"));
     dump("stagec-08-stuck");
   });
 
@@ -821,6 +882,8 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
       balanced: true,
       differenceCents: 0,
     };
+    // S5 (artboard M): the worksheet is shown on an APPROVED check in shadow.
+    state.plan = plan({ plan: { status: "approved", statusLabel: "queued", odClaimPaymentNum: null, reconciledAt: null } });
 
     const RemittanceDetail = (await import("@/pages/rcm/RemittanceDetail")).default;
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");

@@ -1153,9 +1153,18 @@ describe("posting one check", () => {
      * reads as a failure.
      */
     expect(screen.getByTestId("posted-landed").textContent).toContain("No EOB to file");
-    // And the register is named: this figure was measured, not calculated.
-    expect(screen.getByTestId("posted-register").textContent).toContain(
-      "Read out of the chart after posting",
+    /*
+     * CHANGED BY S5 — a patient figure is quoted ONLY from a measurement.
+     *
+     * This fixture carries no claims, so there is no confirmed verdict to read,
+     * and the finished screen no longer prints the check's PROMISE under a
+     * "read out of the chart" register it has not earned. It says so instead,
+     * and quotes no balance. The measured case is pinned in rcm-ui-s5.test.tsx.
+     */
+    expect(screen.queryByTestId("posted-register")).toBeNull();
+    expect(screen.queryByTestId("posted-balance")).toBeNull();
+    expect((await screen.findByTestId("posted-unmeasured")).textContent).toContain(
+      "No measured patient figure",
     );
     // And no button at all: there is nothing left to press on a finished check.
     expect(screen.queryByTestId("post-this-check-button")).toBeNull();

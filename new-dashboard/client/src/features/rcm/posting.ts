@@ -265,7 +265,95 @@ export const SHADOW_MODE_COPY = {
   fix:
     "An administrator switches posting on for a practice under Admin → Office. " +
     "Until then nothing here reaches Open Dental.",
+  /**
+   * S5 (artboard M). The banner's own opening, on the check's page.
+   *
+   * "On purpose" is the half that matters. A biller who can do everything except
+   * the last step will otherwise assume the last step is broken — and go looking
+   * for a way round it in Open Dental.
+   */
+  banner:
+    "You can do everything on this check except send it to Open Dental — and that's on " +
+    "purpose. Your decisions are all saved. When posting is switched on, the checks you've " +
+    "already approved will be ready to go.",
+  /**
+   * The answer inside the "Who can switch this on?" disclosure. Names the same
+   * two labels `fix` does, and `rcm-labels.test.ts` holds both to them.
+   */
+  who: "An administrator, under Admin → Office.",
 } as const;
+
+/**
+ * WHILE A POSTING IS RUNNING — the one sentence beside the pressed control (S5).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NO STEP COUNTER, AND WHY
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The press is one held request: the server answers when it has finished (or
+ * run out of time between checks), and nothing streams back in between. A
+ * counter ticking through "step 3 of 7" here would be a clock this screen made
+ * up, dressed as progress it never measured — the W-16 family again, in its
+ * friendliest form. A spinner on its own is the same thing without the words.
+ *
+ * So the control goes quiet, cannot be pressed again, and says the two things
+ * that are true: it takes a while, and walking away costs nothing — the server
+ * owns the run, not this tab.
+ */
+export const POSTING_RUNNING_COPY =
+  "Posting is running — this can take a few minutes. Nothing is lost if you leave this page.";
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * W-16 — WAS ANYTHING MEASURED?
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A `partially_posted` check is one of two very different things:
+ *
+ *   measured  the run reached `confirm_patient`, read every claim back out of
+ *             Open Dental, and the patient's number came back other than this
+ *             check promised. The chart is WRONG and a person fixes it.
+ *   stopped   the run stopped earlier — a crash, a refusal, a check that did not
+ *             carry exactly these lines — before it ever compared a patient's
+ *             balance with anything. Nothing measured the chart, so nothing on
+ *             this screen may tell anybody to change it.
+ *
+ * The combined walk (§18) watched the second rendered as the first: a database
+ * constraint message printed under "what the chart says — measured out of Open
+ * Dental", over a chart that was right. On real data that ends with somebody
+ * hand-editing a correct ledger, and a hand edit to a correct ledger has nothing
+ * to reconcile against afterwards.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THE STEP, AND NOT `reconciledAt`
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `reconciled_at` is NULL in BOTH cases. The drain's measured-disagreement exit
+ * (`postingDrain.js`, the `patient_total_unconfirmed` branch) finalises with
+ * `reconciled: false`, because the column means "this attempt finished clean",
+ * so it cannot tell the two apart. A branch on it would send every real
+ * disagreement down the "nothing was measured" path. (PM ruling, 2026-09-10.)
+ *
+ * The step can: the ONLY way a check is left `partially_posted` with its step at
+ * `confirm_patient` is that branch — a crash at `confirm_patient` is not in the
+ * drain's touched-chart list and finalises `failed`, not `partially_posted`.
+ * Every other `partially_posted` step, including `null`, is `stopped`, which is
+ * the safe direction: the worst it can do is under-instruct.
+ */
+export type StuckKind = "measured" | "stopped";
+
+export function stuckKind(plan: { status: string; step: string | null }): StuckKind | null {
+  if (plan.status !== "partially_posted") return null;
+  return plan.step === "confirm_patient" ? "measured" : "stopped";
+}
+
+/**
+ * Where a stopped run stopped, as the end of a sentence: "while reading the
+ * check back". Built from `STEP_COPY` so the two cannot describe one step two
+ * ways; a step nobody wrote copy for renders as its words rather than as nothing.
+ */
+export function stoppedWhile(step: PostingStep | string | null): string {
+  const words = stepCopy(step);
+  if (!words) return "before it recorded which step it had reached";
+  return `while ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
+}
 
 /**
  * The server's refusal slug for a press made while the switch is off.

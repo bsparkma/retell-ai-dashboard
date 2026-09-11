@@ -43,7 +43,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, FileCheck2, Loader2, Send } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileCheck2, Hourglass, Loader2, Send } from "lucide-react";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import {
   drainPostingQueue,
@@ -54,7 +54,12 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
-import { QUEUE_STATE_COPY, SHADOW_MODE_COPY, queueStateTone } from "@/features/rcm/posting";
+import {
+  POSTING_RUNNING_COPY,
+  QUEUE_STATE_COPY,
+  SHADOW_MODE_COPY,
+  queueStateTone,
+} from "@/features/rcm/posting";
 import { officeStamp } from "@/features/rcm/time";
 import { PostedOutcome, StuckAfterPosting } from "@/components/rcm/PostedOutcome";
 
@@ -89,9 +94,12 @@ export default function PostThisCheck({
   batchId = null,
   nextClaimId = null,
   remaining = 0,
+  checkAmountCents = null,
 }: {
   office: RcmOfficeId;
   queueId: string;
+  /** The carrier's check total, for the finished screen's deposit card (S5). */
+  checkAmountCents?: number | null;
   /** Re-read the check, so its rail and its claims catch up with the chart. */
   onPosted: () => void;
   /**
@@ -195,6 +203,14 @@ export default function PostThisCheck({
   const { plan, canDrain, drainRequires, postingEnabled, drainEnabled } = state.detail;
   const copy = QUEUE_STATE_COPY[plan.statusLabel];
   const postable = POSTABLE.has(plan.status);
+  /*
+   * A RUN IS UNDER WAY — this press, or one the server says owns the check
+   * (`posting`: somebody pressed it and it has not answered yet, from this tab
+   * or another). Either way the control cannot be pressed again, and the one
+   * sentence beside it is the same. See `POSTING_RUNNING_COPY`: no step
+   * counter, because the press is one held request and nothing streams back.
+   */
+  const running = posting || plan.status === "posting";
 
   /*
    * THE ONE REASON, in the order a person can act on it.
@@ -234,22 +250,26 @@ export default function PostThisCheck({
           </span>
         </div>
 
-        {plan.statusLabel === "posted" ? null : postable ? (
+        {plan.statusLabel === "posted" ? null : postable || running ? (
           <div className="flex flex-col items-end gap-1">
             <button
               onClick={press}
-              disabled={posting || reason !== null}
+              /* `running` first: a second press while one is in flight must be
+                 impossible, not merely discouraged. */
+              disabled={running || reason !== null}
               data-testid="post-this-check-button"
               className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              {posting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              {posting ? "Posting…" : "Post to Open Dental"}
+              {running ? <Hourglass size={14} /> : <Send size={14} />}
+              {running ? "Posting is running" : "Post to Open Dental"}
             </button>
-            {/* ADJACENT, never a tooltip. See the header. */}
-            {reason && (
+            {/* ADJACENT, never a tooltip. See the header. The running sentence
+                wins over every other: it is what is true right now. */}
+            {running ? (
+              <DisabledReason testId="post-this-check-running">{POSTING_RUNNING_COPY}</DisabledReason>
+            ) : reason ? (
               <DisabledReason testId="post-this-check-reason">{reason}</DisabledReason>
-            )}
-            {!reason && (
+            ) : (
               <DisabledReason testId="post-this-check-note">
                 Writes this check's payments into patient charts. Only this check.
               </DisabledReason>
@@ -314,6 +334,7 @@ export default function PostThisCheck({
           batchId={batchId}
           nextClaimId={nextClaimId}
           remaining={remaining}
+          checkAmountCents={checkAmountCents}
         />
       ) : plan.status === "partially_posted" ? (
         <StuckAfterPosting detail={state.detail} office={office} batchId={batchId} />
