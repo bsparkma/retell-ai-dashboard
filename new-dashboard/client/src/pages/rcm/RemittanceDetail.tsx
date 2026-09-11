@@ -916,6 +916,10 @@ export default function RemittanceDetailPage() {
           batchId={r.batchId}
           nextClaimId={nextUnfinishedClaimId}
           remaining={unfinishedCount}
+          /* S5's deposit card: the carrier's own check total, as the bank would
+             see it — not the posted total, which a provider-level adjustment
+             can make differ. */
+          checkAmountCents={r.totalAmountCents}
         />
       )}
 
@@ -931,7 +935,15 @@ export default function RemittanceDetailPage() {
         shadow mode", it is not set up, and its postings say so per row.
       */}
       {shadowMode && preview && (
-        <ShadowModeBanner office={office} claims={preview.claims} />
+        <ShadowModeBanner
+          office={office}
+          claims={preview.claims}
+          /* S5 (artboard M): the worksheet is a record of what the app WOULD
+             have posted, so it appears once somebody has approved the check —
+             before that the figures are still being decided. */
+          approved={plan != null}
+          paidByClaim={new Map(claims.map((c) => [c.claimId, c.totalPaidCents]))}
+        />
       )}
 
       {/*
@@ -1340,7 +1352,7 @@ function ClaimTriageRow({
             {claim.postingQueueId && (
               <span
                 className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-                title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
+                title="A person approved this claim for posting."
                 data-testid={`claim-queued-${claim.claimId}`}
               >
                 Approved

@@ -67,6 +67,8 @@ export const PRINT_ONLY_CLASS = "rcm-print-worksheet";
 export default function ShadowModeBanner({
   office,
   claims,
+  approved = false,
+  paidByClaim,
   /** Where an admin would go. Null hides the affordance rather than guessing. */
   settingsHref = "/admin",
 }: {
@@ -77,6 +79,20 @@ export default function ShadowModeBanner({
    * approved yet to say it about.
    */
   claims: readonly ApprovalClaim[];
+  /**
+   * Has somebody approved this check? (S5, artboard M.) The worksheet is "what
+   * this app WOULD have done" — and until the approve, what it would do is
+   * still being decided on the claims below. Defaults to false, so a caller
+   * that does not know shows the state and no table rather than a table of
+   * figures nobody has stood behind yet.
+   */
+  approved?: boolean;
+  /**
+   * What the carrier paid on each claim, from the check's own bundle — the
+   * worksheet's Payment column. The verdict carries no payment figure, and this
+   * is the same number the approve page prints beside it. Absent → a dash.
+   */
+  paidByClaim?: ReadonlyMap<string, number>;
   settingsHref?: string | null;
 }) {
   const roll = rollUp(claims);
@@ -92,37 +108,38 @@ export default function ShadowModeBanner({
           <h2 className="text-base font-semibold text-foreground">
             Posting is switched off for {RCM_OFFICE_LABELS[office]}
           </h2>
-          <p className="mt-1 max-w-3xl text-sm text-foreground">
-            Everything you do here still counts. Matching, checking over, the write-offs you decide
-            and pressing approve are all saved, and they will still be here. The only step that does
-            not run is the last one — nothing on this screen reaches a patient&rsquo;s chart.
-          </p>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            When posting is switched on, the same button posts these checks — the work does not have
-            to be done again.
+          <p className="mt-1 max-w-3xl text-sm text-foreground" data-testid="shadow-banner-body">
+            {SHADOW_MODE_COPY.banner}
           </p>
           {/*
-            WHO CAN SWITCH IT ON. She is not being asked to fix this, and a
-            state with no named owner is one people go looking for a way around.
+            WHO CAN SWITCH IT ON — a disclosure, closed. She is not being asked
+            to fix this, so the answer is one click away rather than a paragraph
+            she has to read past every time; but a state with no named owner is
+            one people go looking for a way around, so the question is always on
+            screen.
           */}
-          <p className="mt-1 text-sm text-muted-foreground" data-testid="shadow-who-can">
-            <strong className="font-medium text-foreground">Who can switch this on?</strong>{" "}
-            {SHADOW_MODE_COPY.fix}{" "}
-            {settingsHref && (
-              <a
-                href={settingsHref}
-                className="font-medium text-foreground underline underline-offset-4"
-                data-testid="shadow-settings-link"
-              >
-                Open Admin
-              </a>
-            )}
-          </p>
+          <details className="mt-2 text-sm" data-testid="shadow-who-can">
+            <summary className="cursor-pointer font-medium text-foreground">
+              Who can switch this on?
+            </summary>
+            <p className="mt-1 text-muted-foreground" data-testid="shadow-who-can-answer">
+              {SHADOW_MODE_COPY.who}{" "}
+              {settingsHref && (
+                <a
+                  href={settingsHref}
+                  className="font-medium text-foreground underline underline-offset-4"
+                  data-testid="shadow-settings-link"
+                >
+                  Open Admin
+                </a>
+              )}
+            </p>
+          </details>
         </div>
       </div>
 
-      {/* ── WHAT THIS APP WOULD HAVE DONE ──────────────────────────────────── */}
-      {roll.rows.length > 0 && (
+      {/* ── WHAT THIS APP WOULD HAVE DONE — once it has been approved ──────── */}
+      {approved && roll.rows.length > 0 && (
         <div className={`mt-4 ${PRINT_ONLY_CLASS}`} data-testid="shadow-would-have-done">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-sm font-semibold text-foreground">
@@ -144,11 +161,16 @@ export default function ShadowModeBanner({
 
           <div className="mt-2 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="w-full min-w-[42rem] text-sm">
+              {/*
+                THE THREE FIGURES A PERSON POSTING BY HAND TYPES OR CHECKS, in
+                the order she meets them in Open Dental: the payment, the
+                office's own write-off, and what the patient ends up owing.
+              */}
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-2 text-left font-semibold">Patient</th>
+                  <th className="px-3 py-2 text-right font-semibold">Payment</th>
                   <th className="px-3 py-2 text-right font-semibold">Office write-off</th>
-                  <th className="px-3 py-2 text-right font-semibold">EOB says</th>
                   <th className="px-3 py-2 text-right font-semibold">Patient would owe</th>
                 </tr>
               </thead>
@@ -165,15 +187,21 @@ export default function ShadowModeBanner({
                         #{row.claimNumber}
                       </div>
                     </td>
+                    {/* THE PAYMENT, from the check's own claim — present whether
+                        or not the claim was judged, because it is the carrier's
+                        figure and not this app's. */}
+                    <td
+                      className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground"
+                      data-testid={`shadow-paid-${row.claimId}`}
+                    >
+                      {paidByClaim?.has(row.claimId) ? money(paidByClaim.get(row.claimId) ?? 0) : "—"}
+                    </td>
                     {row.verdict ? (
                       <>
                         <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
                           {row.verdict.decidedWriteOffCents === 0
                             ? "—"
                             : money(row.verdict.decidedWriteOffCents)}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono text-sm tabular-nums text-muted-foreground">
-                          {money(row.verdict.eobPatientCents)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
                           {money(row.verdict.projectedPatientCents)}
@@ -183,7 +211,7 @@ export default function ShadowModeBanner({
                       // NOT JUDGED IS NOT ZERO — the same rule the approve page
                       // applies, and for the same reason: a blank worksheet cell
                       // is a question, a "$0.00" is a wrong answer.
-                      <td className="px-3 py-2 text-right text-xs text-muted-foreground" colSpan={3}>
+                      <td className="px-3 py-2 text-right text-xs text-muted-foreground" colSpan={2}>
                         Not judged
                       </td>
                     )}
@@ -196,10 +224,12 @@ export default function ShadowModeBanner({
                     {roll.judged} of {roll.rows.length} claim{roll.rows.length === 1 ? "" : "s"}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
-                    {roll.decidedWriteOffCents === 0 ? "—" : money(roll.decidedWriteOffCents)}
+                    {paidByClaim
+                      ? money(roll.rows.reduce((n, row) => n + (paidByClaim.get(row.claimId) ?? 0), 0))
+                      : "—"}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
-                    {money(roll.eobPatientCents)}
+                    {roll.decidedWriteOffCents === 0 ? "—" : money(roll.decidedWriteOffCents)}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular-nums text-foreground">
                     {money(roll.projectedPatientCents)}

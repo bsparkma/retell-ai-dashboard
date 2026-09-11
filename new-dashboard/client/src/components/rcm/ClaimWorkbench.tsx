@@ -179,6 +179,7 @@ export default function ClaimWorkbench({
         verdict={verdict}
         identityBlocking={identity?.blocking ?? false}
         confirmedAt={confirmedAt}
+        patientName={claim.patientName}
       />
 
       {/*
@@ -265,7 +266,10 @@ function VerdictLine({
   verdict,
   identityBlocking,
   confirmedAt,
+  patientName,
 }: {
+  /** PHI — rendered in the measured register line, never logged. */
+  patientName: string | null;
   verdict: ClaimVerdict | null;
   /**
    * A separate question with a separate answer, and the verdict has to admit it.
@@ -479,7 +483,13 @@ function VerdictLine({
 
       {verdict.register === "confirmed" && confirmedAt && (
         <p className="mt-2 text-[11px] opacity-80" data-testid="verdict-confirmed-at">
-          As Open Dental had it {stamp(confirmedAt)}.
+          {/*
+            S5 · THE MEASURED REGISTER, NAMED — the same words the check's own
+            finished screen uses, so a posted claim reads as a measurement on
+            both pages rather than as a figure this app worked out.
+          */}
+          Read out of {patientName ? `${patientName}'s` : "the patient's"} chart after posting,
+          not calculated by this app. As Open Dental had it {stamp(confirmedAt)}.
         </p>
       )}
     </div>

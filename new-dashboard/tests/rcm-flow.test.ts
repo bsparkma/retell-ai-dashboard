@@ -508,8 +508,16 @@ describe("a remittance, state by state", () => {
       expect(stateOf(flow, step), `${step} should be done`).toBe("done");
     }
     expect(stateOf(flow, "post")).toBe("current");
-    // And `post` says only what it is: waiting, with nothing written.
-    expect(detailOf(flow, "post")).toContain("Nothing has been written to Open Dental");
+    /*
+     * CHANGED BY S5 round 1 — `post` says only what it KNOWS: ready, and
+     * waiting. It no longer says "nothing has been written": this rail is built
+     * from the remittance, whose postings carry a status and no attempt count,
+     * and an `approved` status does not prove it (the startup sweep re-queues
+     * an interrupted run as `approved`). The posting's own panel says it where
+     * the attempt count is zero — pinned in rcm-ui-s5.test.tsx.
+     */
+    expect(detailOf(flow, "post")).toBe("Ready to post.");
+    expect(detailOf(flow, "post")).not.toMatch(/nothing (has been|was) (written|sent)/i);
   });
 
   it("an approved check is READY TO POST, and the CTA is the write itself", () => {

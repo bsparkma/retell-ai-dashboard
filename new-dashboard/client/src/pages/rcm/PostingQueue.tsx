@@ -57,17 +57,18 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
+  Hourglass,
   Loader2,
   Lock,
   PlayCircle,
   RefreshCw,
   ShieldAlert,
 } from "lucide-react";
+import { Link } from "wouter";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
 import {
@@ -89,12 +90,16 @@ import {
   blockedCopy,
   withdrawnCopy,
   LINE_STATE_COPY,
+  POSTING_RUNNING_COPY,
   QUEUE_STATE_COPY,
   queueStateTone,
   SHADOW_MODE_COPY,
+  queueHint,
   stepCopy,
+  stoppedWhile,
+  stuckKind,
 } from "@/features/rcm/posting";
-import { planFlow } from "@/features/rcm/flow";
+import { planFlow, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import CopyChip from "@/components/rcm/CopyChip";
@@ -426,12 +431,19 @@ function DrainButton({
   const waiting = page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted;
   const disabled = draining || !page.canDrain || !page.drainEnabled || waiting === 0;
 
-  const reason = !page.canDrain
-    ? `Posting to Open Dental needs ${page.drainRequires}. An approver can press this.`
-    : !page.drainEnabled
-      ? SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
-      : draining
-        ? "A posting is under way. It stops cleanly between checks."
+  /*
+   * S5: WHILE IT RUNS, the one sentence the check page says too — no step
+   * counter (the press is one held request; nothing streams back to count),
+   * and no spinner standing in for an answer. It comes FIRST: the person who
+   * just pressed it is the one reading, and "it is running" is the truest thing
+   * on the screen.
+   */
+  const reason = draining
+    ? POSTING_RUNNING_COPY
+    : !page.canDrain
+      ? `Posting to Open Dental needs ${page.drainRequires}. An approver can press this.`
+      : !page.drainEnabled
+        ? SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
         : waiting === 0
           ? "Nothing waiting to post."
           : null;
@@ -449,14 +461,14 @@ function DrainButton({
         }`}
       >
         {draining ? (
-          <Loader2 size={14} className="animate-spin" />
+          <Hourglass size={14} />
         ) : page.canDrain && page.drainEnabled ? (
           <PlayCircle size={14} />
         ) : (
           <Lock size={14} />
         )}
         {draining
-          ? "Posting…"
+          ? "Posting is running"
           : waiting > 0
             ? `Post ${waiting} to Open Dental`
             : "Post to Open Dental"}
@@ -801,7 +813,9 @@ function PlanCard({
               </span>
             </span>
 
-            <span className="mt-1 block text-sm text-muted-foreground">{copy.hint}</span>
+            <span className="mt-1 block text-sm text-muted-foreground" data-testid={`posting-hint-${row.queueId}`}>
+              {queueHint(row)}
+            </span>
           </span>
         </button>
 
@@ -887,14 +901,31 @@ function PlanCard({
             </div>
           )}
 
-          {(row.status === "failed" || row.status === "partially_posted") && row.lastError && (
-            <div
-              className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300"
-              data-testid={`posting-error-${row.queueId}`}
-            >
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{row.lastError}</span>
-            </div>
+          {/*
+            A FAILED ROW NO LONGER ECHOES `lastError` (S5 round 1). The drain's
+            own text can say "NOTHING was written" — false when it crashed after
+            the check existed. The hint above says where it stopped and why
+            pressing again is safe; that is all this row may claim.
+          */}
+
+          {/*
+            ── PARTLY POSTED: THE W-16 BRANCH, HERE TOO ──────────────────────────
+            This row used to print `lastError` in red whatever put it there — a
+            measured disagreement and a database constraint message looked
+            identical, and on the walk the second was read as the first. The two
+            now say different things, from the same `stuckKind` the check's own
+            page reads:
+
+              stopped   where it stopped, that nothing compared the chart, and
+                        the next posting pass. NOT the run's own error text,
+                        which can carry a chart instruction the stopped branch
+                        must never give.
+              measured  the payment is in, do not re-enter it, the server's own
+                        measured sentence — and the way to the check, where the
+                        numbered steps live.
+          */}
+          {row.status === "partially_posted" && (
+            <PartlyPosted office={office} row={row} />
           )}
 
           <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
@@ -951,6 +982,70 @@ function PlanCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A PARTLY POSTED ROW, on the history screen — the compact half of W-16.
+ *
+ * The full measured screen (the compare, the consequence, the numbered steps
+ * and the re-check) lives on the check's own page, which is where a biller
+ * fixes one check. This is the history's summary of the same fact, and it
+ * links there. The stopped half never names a figure, a fix or the run's error
+ * text — see `stuckKind` in `features/rcm/posting.ts`.
+ */
+function PartlyPosted({ office, row }: { office: RcmOfficeId; row: PostingQueueRow }) {
+  if (stuckKind(row) === "measured") {
+    return (
+      <div
+        className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm dark:border-amber-900/50 dark:bg-amber-950/30"
+        data-testid={`posting-measured-${row.queueId}`}
+      >
+        <p className="flex items-start gap-1.5 font-medium text-emerald-800 dark:text-emerald-300">
+          <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+          <span>
+            The payment did reach Open Dental
+            {row.odClaimPaymentNum != null ? ` as payment #${row.odClaimPaymentNum}` : ""}. Do not
+            enter it again by hand.
+          </span>
+        </p>
+        {/* The server's own MEASURED sentence — on this branch it is, by
+            construction, the confirmation that stopped the check. */}
+        {row.lastError && (
+          <p className="mt-1 text-amber-900 dark:text-amber-200" data-testid={`posting-measured-sentence-${row.queueId}`}>
+            {row.lastError}
+          </p>
+        )}
+        <Link
+          href={remittanceHref(row.batchId)}
+          className="mt-1 inline-block text-xs font-medium text-foreground underline underline-offset-2"
+          data-testid={`posting-measured-open-${row.queueId}`}
+        >
+          Open the check to fix it
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
+      data-testid={`posting-stopped-${row.queueId}`}
+    >
+      <p className="text-foreground">
+        It stopped {stoppedWhile(row.step)}
+        {row.finishedAt ? `, on ${officeDay(row.finishedAt, office)}` : ""} — before it compared any
+        patient&rsquo;s balance with what this check promised. Nothing on this screen is a reason to
+        change a chart.
+      </p>
+      <p className="mt-0.5 text-muted-foreground">
+        {row.odClaimPaymentNum != null
+          ? `Open Dental already holds check #${row.odClaimPaymentNum} from this run — do not enter the payment by hand. `
+          : "Part of it may already be in Open Dental — do not enter the payment by hand. "}
+        Press Post to Open Dental again: posting re-reads Open Dental first and resumes from what the
+        chart shows.
+      </p>
     </div>
   );
 }

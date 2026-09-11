@@ -43,7 +43,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, FileCheck2, Loader2, Send } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileCheck2, Hourglass, Loader2, Send } from "lucide-react";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import {
   drainPostingQueue,
@@ -54,7 +54,14 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
-import { QUEUE_STATE_COPY, SHADOW_MODE_COPY, queueStateTone } from "@/features/rcm/posting";
+import {
+  POSTING_RUNNING_COPY,
+  QUEUE_STATE_COPY,
+  SHADOW_MODE_COPY,
+  blockedCopy,
+  queueHint,
+  queueStateTone,
+} from "@/features/rcm/posting";
 import { officeStamp } from "@/features/rcm/time";
 import { PostedOutcome, StuckAfterPosting } from "@/components/rcm/PostedOutcome";
 
@@ -89,9 +96,12 @@ export default function PostThisCheck({
   batchId = null,
   nextClaimId = null,
   remaining = 0,
+  checkAmountCents = null,
 }: {
   office: RcmOfficeId;
   queueId: string;
+  /** The carrier's check total, for the finished screen's deposit card (S5). */
+  checkAmountCents?: number | null;
   /** Re-read the check, so its rail and its claims catch up with the chart. */
   onPosted: () => void;
   /**
@@ -195,6 +205,14 @@ export default function PostThisCheck({
   const { plan, canDrain, drainRequires, postingEnabled, drainEnabled } = state.detail;
   const copy = QUEUE_STATE_COPY[plan.statusLabel];
   const postable = POSTABLE.has(plan.status);
+  /*
+   * A RUN IS UNDER WAY — this press, or one the server says owns the check
+   * (`posting`: somebody pressed it and it has not answered yet, from this tab
+   * or another). Either way the control cannot be pressed again, and the one
+   * sentence beside it is the same. See `POSTING_RUNNING_COPY`: no step
+   * counter, because the press is one held request and nothing streams back.
+   */
+  const running = posting || plan.status === "posting";
 
   /*
    * THE ONE REASON, in the order a person can act on it.
@@ -234,36 +252,40 @@ export default function PostThisCheck({
           </span>
         </div>
 
-        {plan.statusLabel === "posted" ? null : postable ? (
+        {plan.statusLabel === "posted" ? null : postable || running ? (
           <div className="flex flex-col items-end gap-1">
             <button
               onClick={press}
-              disabled={posting || reason !== null}
+              /* `running` first: a second press while one is in flight must be
+                 impossible, not merely discouraged. */
+              disabled={running || reason !== null}
               data-testid="post-this-check-button"
               className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              {posting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              {posting ? "Posting…" : "Post to Open Dental"}
+              {running ? <Hourglass size={14} /> : <Send size={14} />}
+              {running ? "Posting is running" : "Post to Open Dental"}
             </button>
-            {/* ADJACENT, never a tooltip. See the header. */}
-            {reason && (
+            {/* ADJACENT, never a tooltip. See the header. The running sentence
+                wins over every other: it is what is true right now. */}
+            {running ? (
+              <DisabledReason testId="post-this-check-running">{POSTING_RUNNING_COPY}</DisabledReason>
+            ) : reason ? (
               <DisabledReason testId="post-this-check-reason">{reason}</DisabledReason>
-            )}
-            {!reason && (
+            ) : (
               <DisabledReason testId="post-this-check-note">
                 Writes this check's payments into patient charts. Only this check.
               </DisabledReason>
             )}
           </div>
         ) : (
-          <DisabledReason testId="post-this-check-not-postable">{copy.hint}</DisabledReason>
+          <DisabledReason testId="post-this-check-not-postable">{queueHint(plan)}</DisabledReason>
         )}
       </div>
 
       <p className="mt-1 text-sm text-muted-foreground" data-testid="post-this-check-hint">
         {plan.statusLabel === "posted"
           ? "This check is finished. The money is in Open Dental, and CareIN asked Open Dental for it afterwards and got back exactly these lines."
-          : copy.hint}
+          : queueHint(plan)}
       </p>
 
       {/*
@@ -314,6 +336,7 @@ export default function PostThisCheck({
           batchId={batchId}
           nextClaimId={nextClaimId}
           remaining={remaining}
+          checkAmountCents={checkAmountCents}
         />
       ) : plan.status === "partially_posted" ? (
         <StuckAfterPosting detail={state.detail} office={office} batchId={batchId} />
@@ -350,10 +373,35 @@ export default function PostThisCheck({
         </div>
       )}
 
-      {plan.lastError && plan.statusLabel !== "posted" && plan.status !== "partially_posted" && (
-        <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="post-this-check-last-error">
-          {plan.lastError}
-        </p>
+      {/*
+        S5 round 1 — THE RUN'S OWN TEXT IS NOT ECHOED ON A FAILED OR BLOCKED CHECK.
+        The drain writes sentences like "NOTHING was written" and "No check was
+        created" into `lastError`, and on a check that had an earlier run — or
+        crashed after its check existed — they are false in the direction that
+        invites a hand-entered second payment. A failed check's hint says where
+        it stopped; a blocked one gets the reason's own copy, which this module
+        owns and `rcm-ui-s5.test.tsx` holds free of that claim.
+      */}
+      {plan.status === "blocked" && blockedCopy(plan.blockedReason) ? (
+        <div className="mt-2 text-xs" data-testid="post-this-check-blocked">
+          <p className="font-medium text-amber-800 dark:text-amber-300">
+            {blockedCopy(plan.blockedReason)!.label}
+          </p>
+          <p className="mt-0.5 text-muted-foreground">{blockedCopy(plan.blockedReason)!.fix}</p>
+        </div>
+      ) : (
+        plan.lastError &&
+        plan.statusLabel !== "posted" &&
+        plan.status !== "partially_posted" &&
+        plan.status !== "failed" &&
+        plan.status !== "blocked" &&
+        // A swept run is `approved` again but WAS tried against Open Dental —
+        // a stopped run like the others, so its text is not echoed either.
+        !(plan.status === "approved" && plan.attemptCount > 0) && (
+          <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="post-this-check-last-error">
+            {plan.lastError}
+          </p>
+        )
       )}
 
       <p className="mt-2 text-xs text-muted-foreground">

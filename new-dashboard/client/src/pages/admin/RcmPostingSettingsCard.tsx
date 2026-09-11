@@ -43,6 +43,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
 import { useRcmOfficeScope } from "@/features/rcm/officeScope";
+import { personName } from "@/features/rcm/format";
 import {
   getRcmOfficeSettings,
   setRcmOfficeSettings,
@@ -52,17 +53,34 @@ import {
   type RcmOfficeSettings,
 } from "@/features/rcm/api";
 
-/** When the switch was last moved, in words rather than an ISO string. */
-function lastChanged(settings: RcmOfficeSettings): string {
+/**
+ * When the switch was last moved, in words rather than an ISO string.
+ *
+ * WHO, BY NAME WHERE THIS BROWSER KNOWS IT (S5, item 8). `updatedBy` is the
+ * crosswalk key — for anyone the platform minted a row for, their EMAIL — so
+ * the card read "by admin@…". `personName` turns the signed-in person's own
+ * key into their display name from `/auth/me`, which is the case this card
+ * meets most: the admin reading it is usually the admin who flipped it.
+ *
+ * A colleague's key is printed unchanged: the client has no honest way to know
+ * their name, and the route does not resolve it (`officeSettings.js` returns
+ * the raw key, unlike the comparison summary's `describeActors`). That is a
+ * server fix, reported rather than papered over here.
+ */
+function lastChanged(
+  settings: RcmOfficeSettings,
+  me: { name?: string | null; email?: string | null } | null,
+): string {
   if (!settings.updatedAt) return "Never switched.";
   const when = new Date(settings.updatedAt);
   const stamp = Number.isNaN(when.getTime()) ? settings.updatedAt : when.toLocaleString();
-  // The crosswalk KEY, not an email: it is what the audit trail carries, and
-  // inventing a display name here would be a name nothing else agrees with.
-  return settings.updatedBy ? `Last changed ${stamp} by ${settings.updatedBy}.` : `Last changed ${stamp}.`;
+  const who = personName(settings.updatedBy, me);
+  return who ? `Last changed ${stamp} by ${who}.` : `Last changed ${stamp}.`;
 }
 
 function OfficeRow({ office }: { office: RcmOfficeId }) {
+  const auth = useAuth();
+  const me = auth.status === "authenticated" ? auth.user : null;
   const [settings, setSettings] = useState<RcmOfficeSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -161,7 +179,7 @@ function OfficeRow({ office }: { office: RcmOfficeId }) {
           </span>
         </div>
         <p className="mt-1 text-xs text-muted-foreground" data-testid={`rcm-posting-changed-${office}`}>
-          {lastChanged(settings)}
+          {lastChanged(settings, me)}
         </p>
         {/* THE REASON IS RENDERED, NOT HOVERED — §15.2, finding 4. A disabled
             control with no visible reason reads as a broken one. */}
