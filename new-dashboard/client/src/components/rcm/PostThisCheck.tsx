@@ -58,6 +58,8 @@ import {
   POSTING_RUNNING_COPY,
   QUEUE_STATE_COPY,
   SHADOW_MODE_COPY,
+  blockedCopy,
+  queueHint,
   queueStateTone,
 } from "@/features/rcm/posting";
 import { officeStamp } from "@/features/rcm/time";
@@ -276,14 +278,14 @@ export default function PostThisCheck({
             )}
           </div>
         ) : (
-          <DisabledReason testId="post-this-check-not-postable">{copy.hint}</DisabledReason>
+          <DisabledReason testId="post-this-check-not-postable">{queueHint(plan)}</DisabledReason>
         )}
       </div>
 
       <p className="mt-1 text-sm text-muted-foreground" data-testid="post-this-check-hint">
         {plan.statusLabel === "posted"
           ? "This check is finished. The money is in Open Dental, and CareIN asked Open Dental for it afterwards and got back exactly these lines."
-          : copy.hint}
+          : queueHint(plan)}
       </p>
 
       {/*
@@ -371,10 +373,35 @@ export default function PostThisCheck({
         </div>
       )}
 
-      {plan.lastError && plan.statusLabel !== "posted" && plan.status !== "partially_posted" && (
-        <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="post-this-check-last-error">
-          {plan.lastError}
-        </p>
+      {/*
+        S5 round 1 — THE RUN'S OWN TEXT IS NOT ECHOED ON A FAILED OR BLOCKED CHECK.
+        The drain writes sentences like "NOTHING was written" and "No check was
+        created" into `lastError`, and on a check that had an earlier run — or
+        crashed after its check existed — they are false in the direction that
+        invites a hand-entered second payment. A failed check's hint says where
+        it stopped; a blocked one gets the reason's own copy, which this module
+        owns and `rcm-ui-s5.test.tsx` holds free of that claim.
+      */}
+      {plan.status === "blocked" && blockedCopy(plan.blockedReason) ? (
+        <div className="mt-2 text-xs" data-testid="post-this-check-blocked">
+          <p className="font-medium text-amber-800 dark:text-amber-300">
+            {blockedCopy(plan.blockedReason)!.label}
+          </p>
+          <p className="mt-0.5 text-muted-foreground">{blockedCopy(plan.blockedReason)!.fix}</p>
+        </div>
+      ) : (
+        plan.lastError &&
+        plan.statusLabel !== "posted" &&
+        plan.status !== "partially_posted" &&
+        plan.status !== "failed" &&
+        plan.status !== "blocked" &&
+        // A swept run is `approved` again but WAS tried against Open Dental —
+        // a stopped run like the others, so its text is not echoed either.
+        !(plan.status === "approved" && plan.attemptCount > 0) && (
+          <p className="mt-2 text-xs text-rose-700 dark:text-rose-400" data-testid="post-this-check-last-error">
+            {plan.lastError}
+          </p>
+        )
       )}
 
       <p className="mt-2 text-xs text-muted-foreground">

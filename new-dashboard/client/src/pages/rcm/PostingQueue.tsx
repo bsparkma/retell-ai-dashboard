@@ -57,7 +57,6 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -95,6 +94,7 @@ import {
   QUEUE_STATE_COPY,
   queueStateTone,
   SHADOW_MODE_COPY,
+  queueHint,
   stepCopy,
   stoppedWhile,
   stuckKind,
@@ -813,7 +813,9 @@ function PlanCard({
               </span>
             </span>
 
-            <span className="mt-1 block text-sm text-muted-foreground">{copy.hint}</span>
+            <span className="mt-1 block text-sm text-muted-foreground" data-testid={`posting-hint-${row.queueId}`}>
+              {queueHint(row)}
+            </span>
           </span>
         </button>
 
@@ -899,15 +901,12 @@ function PlanCard({
             </div>
           )}
 
-          {row.status === "failed" && row.lastError && (
-            <div
-              className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-200 bg-rose-50 p-2 text-sm text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300"
-              data-testid={`posting-error-${row.queueId}`}
-            >
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{row.lastError}</span>
-            </div>
-          )}
+          {/*
+            A FAILED ROW NO LONGER ECHOES `lastError` (S5 round 1). The drain's
+            own text can say "NOTHING was written" — false when it crashed after
+            the check existed. The hint above says where it stopped and why
+            pressing again is safe; that is all this row may claim.
+          */}
 
           {/*
             ── PARTLY POSTED: THE W-16 BRANCH, HERE TOO ──────────────────────────

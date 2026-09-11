@@ -266,7 +266,10 @@ describe("the drain's vocabularies", () => {
     const copy = blockedCopy("a_refusal_from_a_later_slice");
     expect(copy).not.toBeNull();
     expect(copy!.label).toBe("a refusal from a later slice");
-    expect(copy!.fix).toMatch(/no Open Dental call was made/);
+    // S5 round 1: readable and actionable, and it no longer claims no Open
+    // Dental call was made — a blocked check can be a re-press of one that wrote.
+    expect(copy!.fix).toMatch(/Somebody has to look at why/);
+    expect(copy!.fix).not.toMatch(/no Open Dental call|nothing was (sent|written)/i);
     // And null in means null out — an unblocked plan shows no chip.
     expect(blockedCopy(null)).toBeNull();
   });

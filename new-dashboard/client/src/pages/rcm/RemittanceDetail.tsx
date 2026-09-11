@@ -1352,7 +1352,7 @@ function ClaimTriageRow({
             {claim.postingQueueId && (
               <span
                 className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-                title="A person approved this claim for posting. Nothing has been written to Open Dental yet."
+                title="A person approved this claim for posting."
                 data-testid={`claim-queued-${claim.claimId}`}
               >
                 Approved

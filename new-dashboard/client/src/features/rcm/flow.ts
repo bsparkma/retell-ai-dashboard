@@ -106,7 +106,7 @@ import type {
   WorkbenchClaim,
 } from "@/features/rcm/api";
 import { matchStatusLabel, money } from "@/features/rcm/format";
-import { blockedCopy, withdrawnCopy } from "@/features/rcm/posting";
+import { blockedCopy, stoppedWhile, POST_AGAIN_SAFE, withdrawnCopy } from "@/features/rcm/posting";
 import { officeDay, officeStamp } from "@/features/rcm/time";
 
 export const RCM_STEPS = ["upload", "match", "review", "post", "deposit"] as const;
@@ -694,9 +694,16 @@ function postStep(f: {
     return view(
       "post",
       "current",
+      /*
+       * S5 round 1: NO "nothing has been written" here. This rail is built
+       * from the remittance, whose postings carry only a status — and an
+       * `approved` status does not prove nothing was written (the startup
+       * sweep re-queues an interrupted run as `approved`). The posting's own
+       * panel, which has the attempt count, says it where it is known.
+       */
       f.shadowMode
-        ? "Switched off while shadow mode is on. Nothing has been written to Open Dental."
-        : "Ready to post. Nothing has been written to Open Dental yet.",
+        ? "Switched off while shadow mode is on. Approved checks wait here."
+        : "Ready to post.",
       here,
     );
   }
@@ -947,7 +954,15 @@ export function postStepFor(row: PostingQueueRow): StepView {
     case "running":
       return view("post", "current", "Posting to Open Dental right now.", here);
     case "queued":
-      return view("post", "current", "Ready to post. Nothing has been written to Open Dental.", here);
+      // Known-unwritten only at zero attempts — see `queueHint`.
+      return view(
+        "post",
+        "current",
+        row.attemptCount === 0
+          ? "Ready to post. Nothing has been written to Open Dental yet."
+          : `Ready to post. An earlier posting run did not finish. ${POST_AGAIN_SAFE}`,
+        here,
+      );
     case "partially_posted":
       return view(
         "post",
@@ -956,11 +971,16 @@ export function postStepFor(row: PostingQueueRow): StepView {
         here,
       );
     case "failed":
+      /*
+       * S5 round 1: where it stopped, and why pressing again is safe — never
+       * "nothing was written" (false when the drain crashes after the check
+       * exists) and never the run's own error text, which can carry the same
+       * claim.
+       */
       return view(
         "post",
         "blocked",
-        row.lastError ??
-          "Nothing was written. Posting again re-reads Open Dental first and starts clean.",
+        `The run stopped ${stoppedWhile(row.step)}. ${POST_AGAIN_SAFE}`,
         here,
       );
     case "withdrawn": {

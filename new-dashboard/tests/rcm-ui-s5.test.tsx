@@ -35,7 +35,15 @@ import { memoryLocation } from "wouter/memory-location";
 
 import type { ClaimVerdict, PostingQueueDetail } from "@/features/rcm/api";
 import { POSTING_STEPS } from "@/features/rcm/api";
-import { POSTING_RUNNING_COPY, SHADOW_MODE_COPY, stoppedWhile, stuckKind } from "@/features/rcm/posting";
+import {
+  POSTING_RUNNING_COPY,
+  SHADOW_MODE_COPY,
+  blockedCopy,
+  queueHint,
+  stoppedWhile,
+  stuckKind,
+} from "@/features/rcm/posting";
+import { postStepFor } from "@/features/rcm/flow";
 import { consequenceSentence, disagreementsOf, type ConfirmedRead } from "@/features/rcm/confirmed";
 
 (globalThis as Record<string, unknown>).React = React;
@@ -1139,6 +1147,130 @@ describe("the takeback procedure leads with the panel", () => {
     );
     // The page that said CareIN would never post one is gone.
     expect(container.textContent).not.toContain("CareIN will not post a takeback");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ROUND 1 · NO FAILED OR STOPPED STATE CLAIMS NOTHING WAS WRITTEN
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The drain marks a run `failed` when it crashes at `office_writeoffs` or
+// `confirm_patient` — after the check exists — so "Nothing was written" on a
+// failed check was false in exactly the direction that invites a second,
+// hand-entered payment. Every failed/stopped rendering path is walked here: the
+// hint, the rail, the check's own panel and the history row — each fed a server
+// `lastError` that CARRIES the claim, so an echo of the run's own text fails too.
+// The claim survives only on an approved check with ZERO attempts (the startup
+// sweep re-queues an interrupted run as `approved` without resetting the count).
+
+const NOTHING_WRITTEN = /nothing (was|has been) (written|sent)|no open dental call|no check was created|starts clean/i;
+const SERVER_CLAIM =
+  "Open Dental's eligible total is 3000 cents. NOTHING was written. No check was created. Nothing was sent.";
+const BLOCK_SLUGS = [
+  "valley_not_enabled",
+  "recoupment_unconfirmed",
+  "no_adj_type",
+  "no_doc_category",
+  "office_config_unresolved",
+  "no_pay_type",
+  "eligible_total_mismatch",
+  "office_mismatch",
+  "plan_empty",
+  "claim_not_confirmed",
+  "claim_not_on_this_plan",
+  "negative_intent",
+  "plan_total_mismatch",
+  "snapshot_superseded",
+  "od_writes_disabled",
+  "writeoff_adjtype_unresolved",
+  "a_reason_from_a_later_slice",
+];
+const ALL_STEPS = [null, ...POSTING_STEPS];
+
+/** Every failed/stopped row this suite walks, each carrying the server's claim. */
+function stoppedRows() {
+  const rows: Record<string, unknown>[] = [];
+  for (const step of ALL_STEPS) {
+    rows.push({ status: "failed", statusLabel: "failed", step, lastError: SERVER_CLAIM });
+    if (step !== "confirm_patient") {
+      rows.push({ status: "partially_posted", statusLabel: "partially_posted", step, lastError: SERVER_CLAIM });
+    }
+  }
+  for (const blockedReason of BLOCK_SLUGS) {
+    rows.push({ status: "blocked", statusLabel: "blocked", step: "resolve_config", blockedReason, lastError: SERVER_CLAIM });
+  }
+  // The swept run: `approved` again, but it HAS been tried against Open Dental.
+  rows.push({ status: "approved", statusLabel: "queued", step: null, attemptCount: 2, lastError: SERVER_CLAIM });
+  return rows;
+}
+
+describe("round 1 · no failed or stopped state renders a nothing-was-written claim", () => {
+  it("the hint and the rail say where it stopped and why pressing again is safe", () => {
+    for (const over of stoppedRows()) {
+      const row = planRow({ attemptCount: 1, ...over }) as never;
+      const label = `${String(over.status)} · ${String(over.step)} · ${String(over.blockedReason ?? "")}`;
+      expect(queueHint(row), `hint ${label}`).not.toMatch(NOTHING_WRITTEN);
+      expect(postStepFor(row).detail ?? "", `rail ${label}`).not.toMatch(NOTHING_WRITTEN);
+    }
+    // THE defect case, in words: a crash after the check existed.
+    const crash = planRow({ status: "failed", statusLabel: "failed", step: "office_writeoffs" }) as never;
+    expect(queueHint(crash)).toBe(
+      "The run stopped while writing the write-offs this office decided on. Press Post again — posting re-reads Open Dental first and starts from what the chart shows.",
+    );
+  });
+
+  it("no blocked reason's copy claims it, including the fail-closed fallback", () => {
+    for (const slug of BLOCK_SLUGS) {
+      const copy = blockedCopy(slug);
+      expect(`${copy?.label} ${copy?.fix}`, slug).not.toMatch(NOTHING_WRITTEN);
+    }
+  });
+
+  it("the check's own panel never renders it — nor echoes the run's text that does", async () => {
+    for (const over of stoppedRows()) {
+      state.detail = detail({ attemptCount: 1, ...over });
+      const view = renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+      const panel = await screen.findByTestId("post-this-check");
+      expect(
+        panel.textContent,
+        `${String(over.status)} · ${String(over.step)} · ${String(over.blockedReason ?? "")}`,
+      ).not.toMatch(NOTHING_WRITTEN);
+      view.unmount();
+    }
+  });
+
+  it("the Posting history never renders it on a failed, blocked, stopped or swept row", async () => {
+    state.auth = ADMIN;
+    const rows = stoppedRows().map((over, i) =>
+      planRow({ queueId: `q-${i}`, batchId: `b-${i}`, attemptCount: 1, ...over }),
+    );
+    state.queue = {
+      office: "roland",
+      rows,
+      byStatus: { approved: 1, posting: 0, posted: 0, failed: 0, partially_posted: 0, blocked: 0, withdrawn: 0 },
+      total: rows.length,
+      limit: 50,
+      offset: 0,
+      canDrain: true,
+      drainRequires: "rcm.post",
+      postingEnabled: true,
+      drainEnabled: true,
+    };
+    const { container } = renderAt(<PostingQueue />, "/rcm/posting");
+    await screen.findByTestId("posting-plan-q-0");
+    expect(container.textContent).not.toMatch(NOTHING_WRITTEN);
+  });
+
+  it("keeps the claim ONLY where it is known: approved, and never tried", async () => {
+    const fresh = planRow({ status: "approved", statusLabel: "queued", step: null, attemptCount: 0, lastError: null }) as never;
+    expect(queueHint(fresh)).toBe("Approved and waiting. Nothing has been written to Open Dental yet.");
+    expect(postStepFor(fresh).detail).toBe("Ready to post. Nothing has been written to Open Dental yet.");
+
+    state.detail = detail({ status: "approved", statusLabel: "queued", step: null, attemptCount: 0, lastError: null, odClaimPaymentNum: null });
+    renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+    expect((await screen.findByTestId("post-this-check-hint")).textContent).toBe(
+      "Approved and waiting. Nothing has been written to Open Dental yet.",
+    );
   });
 });
 

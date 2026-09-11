@@ -624,7 +624,7 @@ function StuckMeasured({
                 Open Dental now says what this check promised.
               </p>
               <p className="mt-1 text-sm text-foreground" data-testid="stuck-resolved-next">
-                Nothing was written by asking, and this check is not finished yet. One press left:{" "}
+                That was only a look, and this check is not finished yet. One press left:{" "}
                 <strong>Post to Open Dental</strong> for this check again — posting re-reads Open
                 Dental first and resumes from what the chart shows. When it finishes, this page shows
                 the finished check.

@@ -22,11 +22,37 @@
  */
 import type { PostingLineStatus, PostingQueueLabel, PostingStep } from "@/features/rcm/api";
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * SAY LESS: "NOTHING WAS WRITTEN" IS SAID ONLY WHERE IT IS KNOWN (S5 round 1)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The failed state used to read "Nothing was written." The drain marks a run
+ * `failed` when it crashes at `office_writeoffs` or `confirm_patient` — both
+ * AFTER the check was created — so in exactly those crashes the sentence was
+ * false, and false in the direction that invites somebody to hand-enter a
+ * payment that already partly exists.
+ *
+ * So no failed or stopped state asserts that nothing was written, sent or
+ * called — not in this file, not in the rail, and not by echoing the run's own
+ * error text (which carries the same claim: "NOTHING was written", "No check
+ * was created"). They say what the client does know — where it stopped — and
+ * why pressing again is safe anyway.
+ *
+ * The claim survives in ONE place: a check approved and waiting whose
+ * `attemptCount` is 0. That count is decremented when a run fails before its
+ * first Open Dental call, and NOT when the startup sweep puts an interrupted
+ * run back to `approved` — so an `approved` row alone does not prove nothing
+ * was written, and zero attempts does. `rcm-ui-s5.test.tsx` pins both halves.
+ */
+export const POST_AGAIN_SAFE =
+  "Press Post again — posting re-reads Open Dental first and starts from what the chart shows.";
+
 /** What a plan's state means, in the words a biller would use. */
 export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: string }> = {
   queued: {
     label: "Ready to post",
-    hint: "Approved and waiting. Nothing has been written to Open Dental.",
+    // The no-writes claim is added by `queueHint` only when it is KNOWN — see above.
+    hint: "Approved and waiting to post.",
   },
   running: {
     label: "Running",
@@ -44,11 +70,11 @@ export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: 
   },
   failed: {
     label: "Failed",
-    hint: "Nothing was written. Posting again re-reads Open Dental first and starts clean.",
+    hint: `The run stopped before it finished. ${POST_AGAIN_SAFE}`,
   },
   blocked: {
     label: "Blocked",
-    hint: "No Open Dental call was made. Somebody has to change something before this can post.",
+    hint: "Posting refused this check. Somebody has to change something before it can post.",
   },
   withdrawn: {
     label: "Retired",
@@ -57,6 +83,31 @@ export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: 
       "it can never be posted from here again.",
   },
 };
+
+/**
+ * THE HINT FOR ONE ROW — `QUEUE_STATE_COPY[label].hint`, made specific where
+ * the row lets it be, and never more confident than the row allows.
+ *
+ *   queued, 0 attempts   the one place "nothing has been written" is KNOWN.
+ *   queued, attempts     the startup sweep re-queued an interrupted run, which
+ *                        may have written. Say so, and why pressing is safe.
+ *   failed               where it stopped, and why pressing is safe.
+ */
+export function queueHint(row: {
+  statusLabel: PostingQueueLabel;
+  step: string | null;
+  attemptCount: number;
+}): string {
+  if (row.statusLabel === "queued") {
+    return row.attemptCount === 0
+      ? "Approved and waiting. Nothing has been written to Open Dental yet."
+      : `Approved and waiting. An earlier posting run did not finish. ${POST_AGAIN_SAFE}`;
+  }
+  if (row.statusLabel === "failed") {
+    return `The run stopped ${stoppedWhile(row.step)}. ${POST_AGAIN_SAFE}`;
+  }
+  return QUEUE_STATE_COPY[row.statusLabel].hint;
+}
 
 export function queueStateTone(label: PostingQueueLabel): string {
   switch (label) {
@@ -100,8 +151,8 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
     label: "A takeback nobody confirmed",
     fix:
       "Money is moving backwards on this check, but it was approved through the ordinary " +
-      "button rather than the takeback panel. Nothing was sent. Open the check and " +
-      "approve the takeback there — it asks you to type the amount first.",
+      "button rather than the takeback panel. Open the check and approve the takeback " +
+      "there — it asks you to type the amount first.",
   },
   no_adj_type: {
     label: "This practice cannot book a reversible takeback",
@@ -132,13 +183,12 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
   eligible_total_mismatch: {
     label: "Open Dental holds money this check does not know about",
     fix:
-      "The claim carries another unposted line, so the check total would not match. The lines " +
-      "are written and the claims are received; no check was created. Resolve the extra line " +
-      "in Open Dental, then post again.",
+      "The claim carries another unposted line, so the check total would not match. Resolve " +
+      "the extra line in Open Dental, then post again.",
   },
   office_mismatch: {
     label: "This check's rows disagree about which practice they belong to",
-    fix: "Nothing was sent. This needs looking at before anything posts.",
+    fix: "This needs looking at before anything posts.",
   },
   plan_empty: {
     label: "There is nothing on this check to post",
@@ -150,7 +200,7 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
   },
   claim_not_on_this_plan: {
     label: "A claim on this check is tied to a different posting",
-    fix: "Nothing was sent. Open the check and approve it again.",
+    fix: "Open the check and approve it again.",
   },
   negative_intent: {
     label: "A line carries a negative write-off or deductible",
@@ -158,7 +208,7 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
   },
   plan_total_mismatch: {
     label: "The lines do not add up to the check's total",
-    fix: "Nothing was sent. Approve the check again so it is rebuilt from the claims.",
+    fix: "Approve the check again so it is rebuilt from the claims.",
   },
   snapshot_superseded: {
     label: "A claim's match was recorded in an older format",
@@ -166,7 +216,7 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
   },
   od_writes_disabled: {
     label: "Open Dental writes are switched off in this environment",
-    fix: "This is a development safety setting. Nothing was sent.",
+    fix: "This is a development safety setting.",
   },
   /*
    * STAGE B2 REPLACED B1's `office_writeoff_not_postable`.
@@ -179,9 +229,8 @@ const BLOCKED_COPY: Record<string, { label: string; fix: string }> = {
   writeoff_adjtype_unresolved: {
     label: "This office's write-off type is not set up in Open Dental",
     fix:
-      "Nothing was sent to Open Dental. Check the adjustment type named in Admin against " +
-      "the list in this practice's Open Dental, then post again. Checks with no office " +
-      "write-off on them are unaffected.",
+      "Check the adjustment type named in Admin against the list in this practice's Open " +
+      "Dental, then post again. Checks with no office write-off on them are unaffected.",
   },
 };
 
@@ -373,7 +422,7 @@ export function blockedCopy(reason: string | null): { label: string; fix: string
       // blank chip on a screen whose job is to say "go do something" is worse
       // than an ugly one.
       label: reason.replace(/_/g, " "),
-      fix: "This check was refused and no Open Dental call was made.",
+      fix: "Posting refused this check. Somebody has to look at why before it can post.",
     }
   );
 }

@@ -159,8 +159,8 @@ export default function CheckWorklistActions({
               </p>
             )}
             <p className="mt-1 text-xs text-muted-foreground">
-              It is out of the attention counts, not out of the records. Nothing about it was
-              deleted and nothing was written to any chart.
+              It is out of the attention counts, not out of the records. Setting it aside
+              deleted nothing and wrote nothing to any chart.
             </p>
           </div>
           <button
