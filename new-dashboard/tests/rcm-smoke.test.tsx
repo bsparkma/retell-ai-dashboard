@@ -2391,6 +2391,47 @@ describe("3 · posting truth, on the check's own page", () => {
     expect(text).not.toMatch(CURRENCY);
     sweep(container);
   });
+
+  /*
+   * A BLOCKED RE-PRESS — the ruling, extended (PR #171 round 1). A refusal
+   * touches neither column, so the earlier run's check number AND its recorded
+   * total are both still on the row. The total is not a current measurement:
+   * the number stays, the figure goes, exactly as on a stopped card. Unlike a
+   * stopped card, the blocked reason's own fix copy IS the remediation, so
+   * REMEDIATION is not asserted here — its sentences are the product's to say.
+   */
+  for (const blockedReason of ["office_config_unresolved", "eligible_total_mismatch", "claim_not_confirmed"]) {
+    for (const withCheck of [true, false]) {
+      it(`3.9 blocked · ${blockedReason} · ${withCheck ? "an earlier check" : "no check"}: the refusal's copy, the number and no figure`, async () => {
+        postingWorld({
+          status: "blocked",
+          statusLabel: "blocked",
+          blockedReason,
+          step: null,
+          attemptCount: 2,
+          // What the earlier run left, which the refusal did not touch.
+          odClaimPaymentNum: withCheck ? CHECK_NO : null,
+          postedTotalCents: withCheck ? 90000 : 0,
+          lastError: SERVER_CLAIM,
+        });
+        const { card, container } = await postCard();
+        expect(within(card).getByTestId("post-this-check-state").textContent).toBe(QUEUE_STATE_COPY.blocked.label);
+        expect(within(card).getByTestId("post-this-check-hint").textContent).toBe(QUEUE_STATE_COPY.blocked.hint);
+        expect(within(card).getByTestId("post-this-check-blocked")).toBeTruthy();
+        const text = card.textContent ?? "";
+        // NO FIGURE OF ANY KIND — the recorded $900.00 is the earlier run's, not a measurement.
+        expect(text).not.toMatch(CURRENCY);
+        expect(text).not.toMatch(NOTHING_WRITTEN);
+        expect(within(card).queryByTestId("post-this-check-last-error")).toBeNull();
+        // THE CHECK NUMBER, EXACTLY WHEN THERE IS ONE.
+        const earlier = within(card).queryByTestId("post-this-check-earlier-check");
+        if (withCheck) expect(earlier?.textContent).toBe(EARLIER_CHECK(CHECK_NO));
+        else expect(earlier).toBeNull();
+        expect(within(card).queryByTestId("post-this-check-proof")).toBeNull();
+        sweep(container);
+      });
+    }
+  }
 });
 
 describe("3 · posting truth, on the Posting history — every row at once", () => {
@@ -2400,6 +2441,16 @@ describe("3 · posting truth, on the Posting history — every row at once", () 
     const rows: Record<string, unknown>[] = [
       { queueId: "q-fresh", status: "approved", statusLabel: "queued", attemptCount: 0 },
       { queueId: "q-swept", status: "approved", statusLabel: "queued", attemptCount: 1, odClaimPaymentNum: CHECK_NO, lastError: SERVER_CLAIM },
+      {
+        queueId: "q-blocked",
+        status: "blocked",
+        statusLabel: "blocked",
+        blockedReason: "office_config_unresolved",
+        attemptCount: 2,
+        odClaimPaymentNum: CHECK_NO,
+        postedTotalCents: 90000,
+        lastError: SERVER_CLAIM,
+      },
       ...FAILED_STEPS.map((step, i) => ({
         queueId: `q-failed-${i}`,
         status: "failed",

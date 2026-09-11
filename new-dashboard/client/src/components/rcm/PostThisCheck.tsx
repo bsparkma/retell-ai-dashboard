@@ -214,8 +214,15 @@ export default function PostThisCheck({
    * counter, because the press is one held request and nothing streams back.
    */
   const running = posting || plan.status === "posting";
-  /** A run that stopped (`failed`) or was swept back to `approved` after trying. */
-  const stoppedRun = plan.status === "failed" || (plan.status === "approved" && plan.attemptCount > 0);
+  /**
+   * A card whose Open Dental check, if it has one, came from an EARLIER run: a
+   * run that stopped (`failed`), one swept back to `approved` after trying, or
+   * a `blocked` re-press. None of them has a current measurement of that check.
+   */
+  const earlierRun =
+    plan.status === "failed" ||
+    plan.status === "blocked" ||
+    (plan.status === "approved" && plan.attemptCount > 0);
 
   /*
    * THE ONE REASON, in the order a person can act on it.
@@ -313,8 +320,12 @@ export default function PostThisCheck({
         $0.00" — a figure nobody measured, on a check that holds the whole
         payment. The number is the do-not-re-enter evidence and stays; no amount
         of any kind is printed on either card. (PM ruling, 2026-09-10.)
+
+        EXTENDED TO `blocked` (PR #171 round 1). A refusal touches neither
+        column, so a blocked re-press still carries the earlier run's check and
+        its recorded total. That total is not a current measurement either.
       */}
-      {plan.odClaimPaymentNum != null && stoppedRun && (
+      {plan.odClaimPaymentNum != null && earlierRun && (
         <div
           className="mt-3 rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground"
           data-testid="post-this-check-earlier-check"
@@ -326,7 +337,7 @@ export default function PostThisCheck({
       {plan.odClaimPaymentNum != null &&
         plan.statusLabel !== "posted" &&
         plan.status !== "partially_posted" &&
-        !stoppedRun && (
+        !earlierRun && (
         <div
           className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/15"
           data-testid="post-this-check-proof"

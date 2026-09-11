@@ -271,9 +271,10 @@ and it is fine. The table is about the sentences under the heading:
 | **Partly posted**, measured | Green first: "The payment did reach Open Dental… Do not enter it again by hand." Then what the app promised against what the chart says. | — |
 | **Posted** | "Confirmed in Open Dental", the Open Dental check number | "will owe", "projection" |
 
-On the check's own page, a failed or re-tried check that already has an Open
-Dental check shows the check **number** — "An Open Dental check #N from an earlier
-run exists. Do not enter this payment again by hand." — and **no amount**.
+On the check's own page, a failed, re-tried or **Blocked** check that already has
+an Open Dental check from an earlier run shows the check **number** — "An Open
+Dental check #N from an earlier run exists. Do not enter this payment again by
+hand." — and **no amount**.
 
 ### 13. When you're done
 
@@ -289,8 +290,9 @@ to the test patients' charts.
 If you see any of these, stop and send a screenshot.
 
 - **A dollar figure on a stopped check** — in what a failed check, a partly posted
-  check that stopped before measuring, or a check put back in line after an
-  interrupted run says about itself. The Open Dental check *number* may appear. An
+  check that stopped before measuring, a check put back in line after an
+  interrupted run, or a **Blocked** check carrying an earlier run's Open Dental
+  check says about itself. The Open Dental check *number* may appear. An
   *amount* may not. (The check's own amount in a page heading or a list is the
   carrier's number and is fine.)
 - **Remediation steps without a measurement** — "correct the line", "add an
