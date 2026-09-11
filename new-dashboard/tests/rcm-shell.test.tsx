@@ -542,8 +542,15 @@ describe("there is exactly one place to add a check", () => {
  * The takeback sentences, in full. Both are the exact strings `waitingFor()`
  * returns for a takeback, read from the module rather than retyped — a hardcoded
  * copy here would keep passing after somebody reworded the real one.
+ *
+ * S7 SPLIT `next` IN TWO. A list row's face is now a phrase of eight words or
+ * fewer and the clause that follows it is `waiting.detail`, printed in full on
+ * the check's own page. The rule this section enforces did NOT change: whatever
+ * the cell holds, it wraps and is never cut off with an ellipsis. So the
+ * constant follows the face, and the detail gets its own assertion below.
  */
-const TAKEBACK_NEXT = "The carrier is reclaiming money. It is authorised on its own.";
+const TAKEBACK_NEXT = "The carrier is reclaiming money.";
+const TAKEBACK_DETAIL = "It is authorised on its own.";
 const TAKEBACK_WAITING_ON = "A takeback — money the carrier is reclaiming";
 
 /**
@@ -611,6 +618,8 @@ describe("a column whose job is a sentence never cuts itself off", () => {
     const waiting = waitingFor(takeback() as never, { office: "roland" });
     expect(waiting.next).toBe(TAKEBACK_NEXT);
     expect(waiting.waitingOn).toBe(TAKEBACK_WAITING_ON);
+    // S7: the second clause is not gone — it moved to the check's own page.
+    expect(waiting.detail).toBe(TAKEBACK_DETAIL);
   });
 
   it("still truncates the IDENTIFIER cells beside them", async () => {

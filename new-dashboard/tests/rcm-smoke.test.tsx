@@ -1300,8 +1300,8 @@ const FAMILIES: Family[] = [
     cards: byTestId(/^rcm-left-off-row-/),
     statesIn: (t) =>
       [
-        /Next: keep checking it over —/.test(t) ? "review" : "",
-        t.includes("Next: every claim is checked over — it needs approving.") ? "approve" : "",
+        /Next: check over |Next: open it to see which claim\./.test(t) ? "review" : "",
+        t.includes("Next: approve this check.") ? "approve" : "",
         t.includes("Nothing is waiting on you here.") ? "none" : "",
       ].filter(Boolean),
   },
@@ -1316,6 +1316,40 @@ const FAMILIES: Family[] = [
     statesIn: (t) => (t.split(SHADOW_MODE_COPY.banner).length - 1 === 1 ? ["shadow"] : []),
   },
 ];
+
+/**
+ * (a2) A LIST ROW'S STATE CELL IS A PHRASE, NOT A SENTENCE — S7, Phase 2.1/2.2.
+ *
+ * The amendment to W-8's sweep, and it AMENDS rather than replaces: (a) still
+ * asserts exactly one state sentence per card, and this adds the face rule on
+ * top of it.
+ *
+ * The three cells below are the ones a person SCANS — one per row, many rows on
+ * a screen — and each carried a full sentence. `waitingFor` now returns the
+ * phrase and the clause separately; the phrase is here and the clause is on the
+ * check's own page (`check-waiting-detail`), which is where somebody who has
+ * decided to act on the row is standing.
+ *
+ * EIGHT PROSE WORDS. Amounts, counts, names, dates and ids do not count — they
+ * are the row's data and a cell cannot say fewer of them. So "3 claims still to
+ * check over" is three prose words, and the rule bites on prose alone.
+ */
+const STATE_CELL = /^(remittance-waiting-|rcm-arrival-next-|rcm-next-action-)/;
+const FACE_WORD_LIMIT = 8;
+
+function overlongCardFaces(root: HTMLElement): string[] {
+  const problems: string[] = [];
+  for (const cell of Array.from(root.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (!STATE_CELL.test(cell.dataset.testid ?? "")) continue;
+    const words = proseWords(cell);
+    if (words.length > FACE_WORD_LIMIT) {
+      problems.push(
+        `${cell.dataset.testid} says ${words.length} prose words: "${(cell.textContent ?? "").trim()}"`,
+      );
+    }
+  }
+  return problems;
+}
 
 function multiStateCards(root: HTMLElement): string[] {
   const problems: string[] = [];
@@ -1674,6 +1708,7 @@ function sweep(root: HTMLElement = document.body): string[] {
   expect(bannedWordHits(root), "a banned word in rendered text").toEqual([]);
   expect(officeKeyHits(root), "a machine office key in rendered text").toEqual([]);
   expect(multiStateCards(root), "a card carrying two state sentences (W-8)").toEqual([]);
+  expect(overlongCardFaces(root), "a list row's state cell reading as a sentence (S7 a2)").toEqual([]);
   return familiesPresent(root);
 }
 
@@ -1934,7 +1969,7 @@ describe("1 · enter a check, the whole road", () => {
     // THE NEXT ACTION, BY NAME — from the check's own claims, which the card read.
     await waitFor(() =>
       expect(screen.getByTestId(`rcm-next-action-${B}`).textContent).toBe(
-        "Next: every claim is checked over — it needs approving.",
+        "Next: approve this check.",
       ),
     );
     expect(screen.getByTestId(`rcm-pick-up-${B}`).getAttribute("href")).toBe(remittanceHref(B));
@@ -2129,7 +2164,7 @@ describe("1 · enter a check, the whole road", () => {
     // A write-off decision is the touch stamp that makes A "started".
     await waitFor(() =>
       expect(screen.getByTestId(`rcm-next-action-${A}`).textContent).toBe(
-        `Next: keep checking it over — ${MANGO.name} is the last one.`,
+        `Next: check over ${MANGO.name} — the last one.`,
       ),
     );
     expect(screen.getByTestId(`rcm-pick-up-${A}`).getAttribute("href")).toBe(claimHref(C2, A));
@@ -2363,9 +2398,21 @@ describe("2 · the takeback lane", () => {
 
     const today = renderAt(<RcmToday />, "/rcm");
     const next = await screen.findByTestId(`rcm-arrival-next-${T}`);
-    expect(next.textContent).toBe("The carrier is reclaiming money. It is authorised on its own.");
+    // S7 · THE FACE IS THE PHRASE. Eight words or fewer on a row that is
+    // scanned; the clause that follows it is on the page the row opens.
+    expect(next.textContent).toBe("The carrier is reclaiming money.");
     expectWraps(next, `rcm-arrival-${T}`);
     sweep(today.container);
+    today.unmount();
+
+    // AND IT IS NOT GONE. The check's own page prints both halves, from the
+    // same `waitingFor` call that picks the chip beside its payer.
+    const check = renderAt(<RemittanceDetail />, `/rcm/remittances/${T}`);
+    const detail = await screen.findByTestId("check-waiting-detail");
+    expect(detail.textContent).toBe(
+      "The carrier is reclaiming money. It is authorised on its own.",
+    );
+    sweep(check.container);
   });
 
   it("2.2 Before you say yes routes it to the takeback panel — never the failure list", async () => {

@@ -114,10 +114,17 @@ export function nextActionFor(
       patientName: first.patientName,
       remaining: todo.length,
       href: claimHref(first.claimId, remittance.batchId),
+      /*
+       * S7 · EIGHT PROSE WORDS OR FEWER. This is a card FACE in a list of up to
+       * four, and `tests/rcm-smoke.test.tsx`'s (a2) sweep fails on a ninth. The
+       * patient's name and the count are the row's data and do not count
+       * against it; "keep checking it over" became "check over", which is the
+       * verb the button under it has always used.
+       */
       sentence:
         todo.length === 1
-          ? `Next: keep checking it over — ${first.patientName} is the last one.`
-          : `Next: keep checking it over — ${first.patientName} is up, ${todo.length - 1} more after.`,
+          ? `Next: check over ${first.patientName} — the last one.`
+          : `Next: check over ${first.patientName} — ${todo.length - 1} more after.`,
     };
   }
 
@@ -132,7 +139,7 @@ export function nextActionFor(
     return {
       kind: "approve",
       href,
-      sentence: "Next: every claim is checked over — it needs approving.",
+      sentence: "Next: approve this check.",
     };
   }
 
@@ -160,14 +167,14 @@ function nextActionFromRow(remittance: Remittance): NextAction {
       patientName: null,
       remaining: null,
       href,
-      sentence: "Next: keep checking it over — open the check to see which claim is up.",
+      sentence: "Next: open it to see which claim.",
     };
   }
   if (remittance.attentionReasons.includes("claims_awaiting_approval")) {
     return {
       kind: "approve",
       href,
-      sentence: "Next: every claim is checked over — it needs approving.",
+      sentence: "Next: approve this check.",
     };
   }
   return { kind: "none", href, sentence: "Nothing is waiting on you here." };

@@ -144,6 +144,7 @@ import {
   type Remittance,
   type RemittanceClaim,
 } from "@/features/rcm/api";
+import Explainer from "@/components/rcm/Explainer";
 import EobUploadPanel from "./EobUploadPanel";
 import EraUploadPanel from "./EraUploadPanel";
 import { money, withinLastDays } from "@/features/rcm/format";
@@ -339,9 +340,13 @@ export default function RcmToday() {
           ? `, ${firstName(auth.user.name)}`
           : ""}
       </h1>
+      {/* S7: the trailing clause — "carrier payments, from the check that
+          arrived to the money on the chart" — described the module to somebody
+          already inside it, one line above a legend that draws the same journey
+          as four words and an arrow. The date stays: it is the PRACTICE's own,
+          which is the one thing this line knows that nothing else does. */}
       <p className="mt-1 text-sm text-muted-foreground" data-testid="rcm-today-date">
-        {todayLongDate()} · carrier payments, from the check that arrived to the money on the
-        chart.
+        {todayLongDate()}
       </p>
 
       {/*
@@ -583,11 +588,15 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
               >
                 {today ? today.setAsideCount : "—"}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {today && today.setAsideCount > 0
-                  ? "Out of the counts above, and one click from being back in them."
-                  : FILTER_COPY.set_aside.empty}
-              </p>
+              {/* The EMPTY sentence stays — an empty panel has to teach (Phase
+                  4). The populated one was a definition and has gone the same
+                  way as the three above: it is under the tabs on the page this
+                  card opens. */}
+              {today && today.setAsideCount === 0 && (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {FILTER_COPY.set_aside.empty}
+                </p>
+              )}
             </Link>
           </div>
 
@@ -622,9 +631,11 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Every one confirmed in Open Dental afterwards, by asking for the check back.
-              </p>
+              {/* S7: "Every one confirmed in Open Dental afterwards, by asking
+                  for the check back" is a true and useful sentence about the
+                  POSTING screen, printed on a card whose only job is to link
+                  there. The posting screen says it, per row, where the rows
+                  are. */}
             </div>
             <ArrowRight size={14} className="ml-auto flex-shrink-0 text-muted-foreground" />
           </Link>
@@ -658,35 +669,82 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
  * this product has a place for it.
  */
 function GetWorkIn({ office }: { office: RcmOfficeId }) {
+  /*
+   * ── S7 · IT OPENS WHEN SOMEBODY IS HOLDING A FILE, AND NOT BEFORE ─────────
+   *
+   * D-18 put these panels below the work rather than above it, and got the
+   * ORDER right. What it left was the cost: two drop zones, two readers'
+   * promises and the proposal paragraph spend about fifty prose words on every
+   * visit to the screen whose job is "where do I start" — for an act most
+   * visits do not perform. 835s arrive on their own; adding one by hand is the
+   * exception, not the morning.
+   *
+   * So the section is a fold, open exactly when somebody came here to use it:
+   * `?add=1` — the Checks page's *Add a check*, the matching guidance's *bring
+   * the check in*, and `/rcm/bring-in`'s redirect — all still land on it, and
+   * the effect above still scrolls it into view.
+   *
+   * D-16 IS UNTOUCHED. There is still exactly one upload surface in this
+   * module; it is one click deep on the same page rather than zero. And it is
+   * a real `<details>`, so the browser opens it without this file being right
+   * about anything.
+   */
+  const openOnArrival =
+    typeof window !== "undefined" && window.location.search.includes("add=1");
   return (
-    <section className="mt-8 scroll-mt-6" id={getWorkInId(office)} data-testid={`rcm-get-work-in-${office}`}>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+    <details
+      open={openOnArrival}
+      className="group mt-8 scroll-mt-6"
+      id={getWorkInId(office)}
+      data-testid={`rcm-get-work-in-${office}`}
+    >
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
         <Upload size={14} />
         Get work in
-      </h3>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-        Whatever you add here becomes a <strong>proposal</strong> — claims and procedure lines
-        waiting for a person. Nothing added is posted to a patient chart.
-      </p>
-
+        <span
+          aria-hidden="true"
+          className="inline-block text-muted-foreground transition-transform group-open:rotate-90"
+        >
+          ›
+        </span>
+      </summary>
+      {/*
+        S7 · THREE EXPLANATIONS BECOME TWO LABELS AND A FOLD.
+        This section spent fifty-five words telling a reader what a proposal is
+        and how each of the two readers works, above two drop zones that are
+        self-evident once labelled. The labels name the file; the difference
+        between the two — one is exact, one needs your eyes — is the thing worth
+        knowing and it is one click away, on both.
+      */}
       <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div data-testid={`rcm-drop-era-${office}`}>
           <p className="mb-1.5 text-xs font-medium text-foreground">
-            An 835 file from the carrier — <span className="font-normal text-muted-foreground">reads itself; every figure is exactly what was sent.</span>
+            An 835 file from the carrier
           </p>
+          <Explainer testId={`rcm-drop-era-why-${office}`} label="What happens to it">
+            <p>Reads itself; every figure is exactly what was sent.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EraUploadPanel office={office} />
         </div>
         <div data-testid={`rcm-drop-eob-${office}`}>
           <p className="mb-1.5 text-xs font-medium text-foreground">
-            A scanned EOB or a payer portal download —{" "}
-            <span className="font-normal text-muted-foreground">
-              read by a model, so every figure needs your eyes.
-            </span>
+            A scanned EOB or a payer portal download
           </p>
+          <Explainer testId={`rcm-drop-eob-why-${office}`} label="What happens to it">
+            <p>Read by a model, so every figure needs your eyes.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EobUploadPanel office={office} />
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -1383,7 +1441,19 @@ function QueueCard({
           className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
         />
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{copy.hint}</p>
+      {/*
+        S7 · THE HINT MOVED TO THE PAGE THIS CARD OPENS.
+        Three of these render side by side, and each carried a full sentence
+        under its number — forty words of definition below three digits, on the
+        screen whose whole job is "where do I start". It could not fold into an
+        `Explainer` here: a disclosure inside a `<Link>` is a control inside a
+        control, which is the shape `rcm-disabled-reasons.test.tsx` bans.
+
+        It did not need to. `FILTER_COPY[filter].hint` is already printed, in
+        full, directly under the tabs on the page each card links to
+        (`remittance-filter-hint`). The sentence is one click away, in the place
+        it describes, which is one level down rather than gone.
+      */}
     </Link>
   );
 }

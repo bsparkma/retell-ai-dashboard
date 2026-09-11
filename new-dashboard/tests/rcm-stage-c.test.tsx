@@ -348,7 +348,7 @@ describe("Today answers in sentences", () => {
     await screen.findByTestId("rcm-left-off-roland");
     await waitFor(() =>
       expect(screen.getByTestId("rcm-next-action-b-1").textContent).toContain(
-        "Second, Synthetic is the last one",
+        "check over Second, Synthetic — the last one",
       ),
     );
     // One button, and it goes STRAIGHT to the claim rather than to the check.

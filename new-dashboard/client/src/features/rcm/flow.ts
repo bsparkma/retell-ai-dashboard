@@ -218,7 +218,10 @@ const DEPOSIT: StepView = {
   step: "deposit",
   title: RCM_STEP_TITLES.deposit,
   state: "unavailable",
-  detail: "Coming soon — recording the practice's deposit against this check.",
+  /* S7: the long form — "Coming soon — recording the practice's deposit against
+     this check" — rendered on every check-flow screen, on every visit, about a
+     feature that does not exist. The step's own title already says Deposit. */
+  detail: "Coming soon.",
   href: null,
 };
 

@@ -108,6 +108,7 @@ import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
 import CheckComparison from "@/components/rcm/CheckComparison";
 import CheckWorklistActions from "@/components/rcm/CheckWorklistActions";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import Explainer from "@/components/rcm/Explainer";
 import { useOffice } from "@/contexts/OfficeContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
@@ -321,7 +322,8 @@ export default function RemittanceDetailPage() {
    * reader is already looking.
    */
   const flow = remittanceFlow(r, claims, { shadowMode });
-  const headerChip = checkChip(waitingFor(r, { office, shadowMode }).state);
+  const waiting = waitingFor(r, { office, shadowMode });
+  const headerChip = checkChip(waiting.state);
   /*
    * THIS CHECK'S POSTING, if it has one.
    *
@@ -558,6 +560,24 @@ export default function RemittanceDetailPage() {
             {r.paymentMethod === "eft" ? "EFT" : "Check"}{" "}
             {r.checkNumber || r.eftNumber || r.traceNumber || "—"}
           </p>
+          {/*
+            ── S7 · WHERE THE LIST ROW'S SECOND CLAUSE WENT ────────────────────
+            Today's arrivals column and the Checks page's *Waiting on* column
+            are both `waitingFor`, and both are LISTS — a row is scanned, so
+            the face is a phrase of eight words or fewer (Phase 2.1). The
+            clause that used to ride along explaining what to do about it is
+            printed here, in full, on the page the row opens: the honest
+            sentence one level down, at the destination it is about, rather
+            than in a tooltip or deleted.
+
+            The SAME `waitingFor` call picks the chip beside the payer, so the
+            chip and this line cannot end up telling one check two stories.
+          */}
+          {waiting.detail && (
+            <p className="mt-1 text-sm text-muted-foreground" data-testid="check-waiting-detail">
+              {waiting.next} {waiting.detail}
+            </p>
+          )}
         </div>
 
         {/*
@@ -736,9 +756,16 @@ export default function RemittanceDetailPage() {
           >
             {r.balance.balanced ? "Balances" : `${money(r.balance.differenceCents)} unaccounted`}
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Check total {r.plbTotalCents !== 0 ? "− PLB " : ""}= sum of claim payments
-          </p>
+          {/* S7 · THE SUM IS SHOWN WHEN IT MATTERS, WHICH IS WHEN IT IS WRONG.
+              "Balances" is the whole answer on a check that balances, and the
+              two numbers it compared are in the two cards immediately to the
+              left. On a check that does NOT balance, what was compared is the
+              first thing a person needs, so it stays. */}
+          {!r.balance.balanced && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Check total {r.plbTotalCents !== 0 ? "− PLB " : ""}= sum of claim payments
+            </p>
+          )}
         </div>
       </div>
 
@@ -1025,7 +1052,28 @@ export default function RemittanceDetailPage() {
         to see how much of it is ready without leaving.
 
         The ACT is untouched: same route, same tier, same gate, same audit row.
+
+        ── S7 · IT GOES AWAY ONCE THERE IS NOTHING LEFT TO APPROVE ────────────
+        On a POSTED check this section still rendered, in full: a heading
+        reading *Check it over, and say yes*, a count reading *0 of 2 claims can
+        be approved · 2 already approved*, a description of the approve screen,
+        and a button offering to go there. Every word of it was true and the
+        whole of it was an invitation to redo something finished — on the one
+        screen whose answer should be "this is done, here is the next one".
+
+        `postableCount === 0 && queuedCount === claims.length` is the exact
+        shape of "every claim on this check is already on a posting", which is
+        what `AlreadyApproved` and the approve page's own honest state say from
+        the other side. While the preview has NOT arrived, or the count is
+        anything else, the section renders as before — a screen that hid the
+        approve door because a read was slow would be worse than a wordy one.
       */}
+      {!(
+        preview &&
+        preview.postableCount === 0 &&
+        preview.claims.length > 0 &&
+        preview.queuedCount === preview.claims.length
+      ) && (
       <section
         id="rcm-approval-gate"
         className="mt-6 scroll-mt-6 rounded-xl border border-border bg-card p-4"
@@ -1052,11 +1100,14 @@ export default function RemittanceDetailPage() {
                 Checking what can be approved…
               </p>
             )}
-            <p className="mt-1 text-xs text-muted-foreground">
-              The next screen shows every figure that will reach Open Dental, every write-off this
-              office chose to absorb, and every condition the app applied — before anything is
-              pressed.
-            </p>
+            {/* S7: a thirty-word description of the next screen, on a card
+                whose count and button already say what the next screen is. */}
+            <Explainer testId="approve-card-what-next" label="What the next screen shows">
+              <p>
+                Every figure that will reach Open Dental, every write-off this office chose to
+                absorb, and every condition the app applied — before anything is pressed.
+              </p>
+            </Explainer>
           </div>
           <Link
             href={`/rcm/remittances/${encodeURIComponent(r.batchId)}/approve`}
@@ -1072,6 +1123,7 @@ export default function RemittanceDetailPage() {
           </Link>
         </div>
       </section>
+      )}
       {/*
         D-6. Rendered BESIDE the ordinary panel rather than inside it, and it
         returns null when this remittance carries no takeback — so a biller
