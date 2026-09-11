@@ -48,6 +48,7 @@ import DisabledReason from "@/components/rcm/DisabledReason";
 import {
   drainPostingQueue,
   getPostingPlan,
+  RCM_OFFICE_LABELS,
   RcmApiError,
   type PostingQueueDetail,
   type PostingQueueStatus,
@@ -213,6 +214,15 @@ export default function PostThisCheck({
    * counter, because the press is one held request and nothing streams back.
    */
   const running = posting || plan.status === "posting";
+  /**
+   * A card whose Open Dental check, if it has one, came from an EARLIER run: a
+   * run that stopped (`failed`), one swept back to `approved` after trying, or
+   * a `blocked` re-press. None of them has a current measurement of that check.
+   */
+  const earlierRun =
+    plan.status === "failed" ||
+    plan.status === "blocked" ||
+    (plan.status === "approved" && plan.attemptCount > 0);
 
   /*
    * THE ONE REASON, in the order a person can act on it.
@@ -226,7 +236,9 @@ export default function PostThisCheck({
     : !postingEnabled
       ? "This practice has not been switched on for posting yet. Its own Open Dental settings have to be read and proven first; the other practice is unaffected."
       : !drainEnabled
-        ? SHADOW_MODE_COPY.reason(office)
+        ? // The practice's NAME — `office` is a machine key, and machine keys
+          // never render. The Posting page passes the same label.
+          SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
         : null;
 
   return (
@@ -298,9 +310,34 @@ export default function PostThisCheck({
         paid a claim twice and nothing here can take it back, and a reassuring
         green box above it is exactly what makes a warning skimmable.
       */}
+      {/*
+        S6 — A STOPPED OR SWEPT RUN KEEPS THE CHECK NUMBER AND LOSES THE AMOUNT.
+
+        The drain crashes to `failed` at `office_writeoffs` and `confirm_patient`
+        AFTER the check exists; it keeps `od_claim_payment_num` and zeroes
+        `posted_total_cents`. The startup sweep re-queues an interrupted run as
+        `approved` the same way. So this block printed "Open Dental check #N
+        $0.00" — a figure nobody measured, on a check that holds the whole
+        payment. The number is the do-not-re-enter evidence and stays; no amount
+        of any kind is printed on either card. (PM ruling, 2026-09-10.)
+
+        EXTENDED TO `blocked` (PR #171 round 1). A refusal touches neither
+        column, so a blocked re-press still carries the earlier run's check and
+        its recorded total. That total is not a current measurement either.
+      */}
+      {plan.odClaimPaymentNum != null && earlierRun && (
+        <div
+          className="mt-3 rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground"
+          data-testid="post-this-check-earlier-check"
+        >
+          An Open Dental check #{plan.odClaimPaymentNum} from an earlier run exists. Do not enter
+          this payment again by hand.
+        </div>
+      )}
       {plan.odClaimPaymentNum != null &&
         plan.statusLabel !== "posted" &&
-        plan.status !== "partially_posted" && (
+        plan.status !== "partially_posted" &&
+        !earlierRun && (
         <div
           className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/15"
           data-testid="post-this-check-proof"
