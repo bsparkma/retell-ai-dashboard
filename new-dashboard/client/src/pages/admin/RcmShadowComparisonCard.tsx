@@ -54,9 +54,18 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { comparisonReasonLabel } from "@/features/rcm/comparison";
+import { personName } from "@/features/rcm/format";
 import { officeStamp } from "@/features/rcm/time";
 
 function OfficeSummary({ office }: { office: RcmOfficeId }) {
+  /*
+   * S5, item 8. `answeredBy` is already a display name wherever `rcm_user_map`
+   * has one (the route runs `describeActors`) and falls back to the crosswalk
+   * key — an email — where it does not. `personName` fixes the one fallback
+   * this browser can answer honestly: the signed-in person's own.
+   */
+  const auth = useAuth();
+  const me = auth.status === "authenticated" ? auth.user : null;
   const [range, setRange] = useState<{ from: string; to: string }>({ from: "", to: "" });
   const [summary, setSummary] = useState<ComparisonSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -217,7 +226,7 @@ function OfficeSummary({ office }: { office: RcmOfficeId }) {
                   </td>
                   <td className="px-2 py-1.5 text-sm text-muted-foreground">{d.note ?? "—"}</td>
                   <td className="px-2 py-1.5 text-xs text-muted-foreground">
-                    {d.answeredBy ? `${d.answeredBy} · ` : ""}
+                    {personName(d.answeredBy, me) ? `${personName(d.answeredBy, me)} · ` : ""}
                     {officeStamp(d.answeredAt, office)}
                     {/* An answer that was changed says so — the newest one is not
                         presented as though it had always been the only one. */}
