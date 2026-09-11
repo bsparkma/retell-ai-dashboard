@@ -104,6 +104,7 @@ import { useOffice } from "@/contexts/OfficeContext";
 import { elapsedLabel } from "@/lib/odHealth";
 import type { OfficeConfig } from "@/lib/api";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import AlreadyApproved from "@/components/rcm/AlreadyApproved";
 
 type State =
   | { kind: "loading" }
@@ -128,6 +129,11 @@ export default function ApproveCheck() {
   const [error, setError] = useState<string | null>(null);
   /** The per-claim reasons a refusal carried, when it carried them. */
   const [refused, setRefused] = useState<ApprovalClaim[]>([]);
+  /**
+   * The server answered "this is already approved" (W-12). Not an error — it
+   * retires the button and points at the Posting screen. See AlreadyApproved.
+   */
+  const [alreadyApproved, setAlreadyApproved] = useState(false);
 
   /**
    * Same office resolution as the check screen: the global picker may be on
@@ -194,7 +200,9 @@ export default function ApproveCheck() {
       load();
     } catch (err) {
       setResult(null);
-      if (err instanceof RcmApiError) {
+      if (err instanceof RcmApiError && err.alreadyApproved) {
+        setAlreadyApproved(true);
+      } else if (err instanceof RcmApiError) {
         setRefused(err.refusedClaims);
         setError(
           err.approveForbidden
@@ -828,7 +836,14 @@ export default function ApproveCheck() {
               </div>
             )}
 
-            {!result && (
+            {/*
+              ALREADY APPROVED — the answer, and the button goes with it. A
+              refusal that says "already done" beside a button inviting another
+              press is how the walk's biller pressed it three times (W-12).
+            */}
+            {alreadyApproved && !result && <AlreadyApproved testId="approve-already-approved" />}
+
+            {!result && !alreadyApproved && (
               <div className="mt-4 flex flex-col items-start gap-1">
                 <button
                   onClick={onApprove}

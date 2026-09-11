@@ -60,6 +60,17 @@ export class RcmApiError extends Error {
     this.details = details;
   }
 
+  /**
+   * W-12's machine-readable half: an approve refused because everything on the
+   * check is ALREADY approved, not because nothing is ready. The server sets
+   * `alreadyApproved: true` on that `NOTHING_APPROVABLE`; a screen that sees it
+   * sends the biller to the Posting screen instead of back to a button she has
+   * already pressed. Strictly `=== true` — an absent flag is not an answer.
+   */
+  get alreadyApproved(): boolean {
+    return this.details.alreadyApproved === true;
+  }
+
   /** This exact remittance has already been processed for this office. */
   get alreadyProcessed(): boolean {
     return this.code === "REMITTANCE_ALREADY_PROCESSED";

@@ -68,6 +68,8 @@ import type { RemittanceClaim } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import { NO_ACTION_REASONS } from "@/features/rcm/format";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import PermanentPathConfirm from "@/components/rcm/PermanentPathConfirm";
+import AlreadyApproved from "@/components/rcm/AlreadyApproved";
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +159,19 @@ export function RecoupmentPanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RecoupmentApprovalResult | null>(null);
+  /**
+   * W-4. Somebody reached for the PERMANENT path and has not answered the
+   * confirm yet. While this is true the radio has NOT moved — `path` is still
+   * whatever it was. See `PermanentPathConfirm`.
+   */
+  const [confirmingPermanent, setConfirmingPermanent] = useState(false);
+  /**
+   * The server's answer was "this is already approved" (W-12). Held apart from
+   * `error` because it is not a failure, and because it retires the button: a
+   * refusal that says "already done" beside a button inviting another press is
+   * how the walk's biller pressed Approve three times.
+   */
+  const [alreadyApproved, setAlreadyApproved] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -334,6 +349,14 @@ export function RecoupmentPanel({
       })
       .catch((err) => {
         /*
+         * ALREADY APPROVED IS AN ANSWER, NOT A FAILURE (W-12). It retires the
+         * button and says where the approved check went — see AlreadyApproved.
+         */
+        if (err instanceof RcmApiError && err.alreadyApproved) {
+          setAlreadyApproved(true);
+          return;
+        }
+        /*
          * The server's refusal wins over anything this screen believed. If it
          * says the phrase was wrong, it also says what it wanted — show that
          * rather than a bare "no".
@@ -458,7 +481,23 @@ export function RecoupmentPanel({
                 className="mt-0.5"
                 value={p}
                 checked={path === p}
-                onChange={() => setPath(p)}
+                /*
+                  W-4. THE PERMANENT PATH IS NEVER ONE CLICK AWAY.
+                  Reaching for it opens the confirm below and leaves `path`
+                  exactly where it was; the radio is controlled, so React puts
+                  the dot back. Only the confirm's consequence-labelled button
+                  moves it. The adjustment — the reversible one — switches back
+                  on a single click, because moving AWAY from the irreversible
+                  choice should never cost anything.
+                */
+                onChange={() => {
+                  if (p === "supplemental" && path !== "supplemental") {
+                    setConfirmingPermanent(true);
+                    return;
+                  }
+                  setConfirmingPermanent(false);
+                  setPath(p);
+                }}
                 data-testid={`recoupment-path-${p}`}
               />
               <span>
@@ -468,6 +507,16 @@ export function RecoupmentPanel({
             </label>
           ))}
         </fieldset>
+
+        {confirmingPermanent && (
+          <PermanentPathConfirm
+            onConfirm={() => {
+              setConfirmingPermanent(false);
+              setPath("supplemental");
+            }}
+            onCancel={() => setConfirmingPermanent(false)}
+          />
+        )}
 
         {path === "supplemental" && (
           <p
@@ -525,11 +574,15 @@ export function RecoupmentPanel({
           </p>
         )}
 
+        {alreadyApproved ? (
+          /* THE BUTTON IS RETIRED, not greyed: there is nothing left to press. */
+          <AlreadyApproved testId="recoupment-already-approved" />
+        ) : (
         <div className="mt-3">
           <button
             type="button"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!canSubmit || confirmingPermanent}
             className="rounded-md bg-amber-700 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-amber-800"
             data-testid="recoupment-approve-button"
           >
@@ -558,8 +611,13 @@ export function RecoupmentPanel({
             <DisabledReason testId="recoupment-awaiting-phrase">
               Type the amount above exactly as it is shown to enable this.
             </DisabledReason>
+          ) : confirmingPermanent ? (
+            <DisabledReason testId="recoupment-awaiting-path">
+              Answer the question about the permanent way above first.
+            </DisabledReason>
           ) : null}
         </div>
+        )}
       </div>
     </div>
   );
