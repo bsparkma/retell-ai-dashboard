@@ -28,6 +28,7 @@
  *                          b. every match run names what it skipped
  *                          c. no banned word · no greyed control without a reason
  *                          d. sentences wrap, identifiers truncate
+ *                          e. no machine office key in rendered text
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THE FAKE SERVER, AND WHAT IT IS ALLOWED TO KNOW
@@ -80,7 +81,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
-import { POSTING_STEPS, type BatchMatchResponse } from "@/features/rcm/api";
+import {
+  POSTING_STEPS,
+  RCM_OFFICE_IDS,
+  RCM_OFFICE_LABELS,
+  type BatchMatchResponse,
+} from "@/features/rcm/api";
 import {
   POST_AGAIN_SAFE,
   QUEUE_STATE_COPY,
@@ -1130,6 +1136,18 @@ function bannedWordHits(root: HTMLElement): string[] {
   return renderedProse(root).filter((t) => BANNED.some((re) => re.test(t)));
 }
 
+/**
+ * (e) MACHINE KEYS NEVER RENDER. `roland` and `valley` are the frozen office
+ * keys; a person reads the practice's name. Case-SENSITIVE on purpose: the
+ * label "Roland" is the right answer, the key "roland" is the leak — which is
+ * exactly what the check page's Post reason printed until PR #171 round 1.
+ */
+const OFFICE_KEY = new RegExp(`\\b(${RCM_OFFICE_IDS.join("|")})\\b`);
+
+function officeKeyHits(root: HTMLElement): string[] {
+  return renderedProse(root).filter((t) => OFFICE_KEY.test(t));
+}
+
 /** (c) The disabled-with-reason scan — `rcm-disabled-reasons.test.tsx`'s rule. */
 function unexplainedDisabled(root: HTMLElement): string[] {
   return Array.from(root.querySelectorAll("[disabled]"))
@@ -1325,12 +1343,13 @@ function expectWraps(cell: HTMLElement, rowTestId: string) {
 }
 
 /**
- * THE SWEEP — (a) and (c), over whatever screen is on the page right now.
+ * THE SWEEP — (a), (c) and (e), over whatever screen is on the page right now.
  * Returns the card families it judged, so a caller can say what was covered.
  */
 function sweep(root: HTMLElement = document.body): string[] {
   expect(unexplainedDisabled(root), "a greyed control with no reason beside it").toEqual([]);
   expect(bannedWordHits(root), "a banned word in rendered text").toEqual([]);
+  expect(officeKeyHits(root), "a machine office key in rendered text").toEqual([]);
   expect(multiStateCards(root), "a card carrying two state sentences (W-8)").toEqual([]);
   return familiesPresent(root);
 }
@@ -1904,7 +1923,11 @@ describe("1 · enter a check, the whole road", () => {
     const { container } = renderAt(<RemittanceDetail />, `/rcm/remittances/${A}`);
     const button = (await screen.findByTestId("post-this-check-button")) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByTestId("post-this-check-reason").textContent).toContain("(shadow mode)");
+    // The practice's NAME, never its key — the same sentence the Posting page prints.
+    const reason = screen.getByTestId("post-this-check-reason").textContent ?? "";
+    expect(reason).toBe(SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS.roland));
+    expect(reason).toBe("Posting is switched off for Roland (shadow mode). Approved checks wait here.");
+    expect(officeKeyHits(screen.getByTestId("post-this-check"))).toEqual([]);
     expect(screen.getByTestId("post-this-check-hint").textContent).toBe(
       "Approved and waiting. Nothing has been written to Open Dental yet.",
     );
@@ -2726,5 +2749,24 @@ describe("5d · sentences wrap, identifiers truncate", () => {
     expect(shell).toContain('describe("a column whose job is a sentence never cuts itself off"');
     expect(shell).toContain('it("still truncates the IDENTIFIER cells beside them"');
     expect(existsSync(join(__dirname, "rcm-shell.test.tsx"))).toBe(true);
+  });
+});
+
+describe("5e · machine office keys never render", () => {
+  it("the key scan is not vacuous — it catches a key in text or an attribute, and lets the name through", () => {
+    const { container } = render(
+      <div>
+        <p>Posting is switched off for roland (shadow mode).</p>
+        <button aria-label="Refresh valley">↻</button>
+        <p>Posting is switched off for {RCM_OFFICE_LABELS.roland} (shadow mode).</p>
+        <p>{RCM_OFFICE_LABELS.valley} is unaffected.</p>
+      </div>,
+    );
+    expect(officeKeyHits(container)).toEqual([
+      "Posting is switched off for roland (shadow mode).",
+      "Refresh valley",
+    ]);
+    // Every frozen key is covered — a third office is a migration, and this scan follows it.
+    for (const key of RCM_OFFICE_IDS) expect(OFFICE_KEY.test(`for ${key}.`), key).toBe(true);
   });
 });

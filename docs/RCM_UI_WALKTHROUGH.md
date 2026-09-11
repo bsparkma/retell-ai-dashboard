@@ -199,10 +199,9 @@ Go back to R1's page.
 - In the step row, **Post to Open Dental** reads "Switched off while shadow mode
   is on. Approved checks wait here." It is not red — nothing is wrong.
 - The **Post to Open Dental** button is grey, and the reason is printed beside it
-  (not in a tooltip): posting is switched off (shadow mode) and approved checks
-  wait here. *Known, logged for a follow-up:* this one sentence prints the office's
-  system name, "roland", where it should say "Roland Family Dental". Nothing else
-  about it is wrong.
+  (not in a tooltip): "Posting is switched off for Roland (shadow mode). Approved
+  checks wait here." — the practice's name, capitalised, the same as the banner
+  below it says.
 - Under it: "Approved and waiting. Nothing has been written to Open Dental yet."
 - A grey banner: "You can do everything on this check except send it to Open
   Dental — and that's on purpose…" with **Who can switch this on?**
@@ -303,6 +302,9 @@ If you see any of these, stop and send a screenshot.
   been written to Open Dental yet."
 - **An email address where a name belongs** — in the header, "decided by",
   "approved by", "checked over by", or on the Admin cards.
+- **A practice's system name** — "roland" or "valley" in lowercase, anywhere a
+  sentence names the practice. It should always read "Roland" (or the full
+  practice name).
 - **Two state sentences on one card** — for example "already approved" beside
   "waiting for", or "Finished" beside "stopped".
 - **A grey button with no reason beside it.** Every button that can't be pressed

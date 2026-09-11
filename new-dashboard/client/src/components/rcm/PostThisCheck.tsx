@@ -48,6 +48,7 @@ import DisabledReason from "@/components/rcm/DisabledReason";
 import {
   drainPostingQueue,
   getPostingPlan,
+  RCM_OFFICE_LABELS,
   RcmApiError,
   type PostingQueueDetail,
   type PostingQueueStatus,
@@ -228,7 +229,9 @@ export default function PostThisCheck({
     : !postingEnabled
       ? "This practice has not been switched on for posting yet. Its own Open Dental settings have to be read and proven first; the other practice is unaffected."
       : !drainEnabled
-        ? SHADOW_MODE_COPY.reason(office)
+        ? // The practice's NAME — `office` is a machine key, and machine keys
+          // never render. The Posting page passes the same label.
+          SHADOW_MODE_COPY.reason(RCM_OFFICE_LABELS[office])
         : null;
 
   return (
