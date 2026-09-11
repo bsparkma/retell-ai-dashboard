@@ -916,6 +916,10 @@ export default function RemittanceDetailPage() {
           batchId={r.batchId}
           nextClaimId={nextUnfinishedClaimId}
           remaining={unfinishedCount}
+          /* S5's deposit card: the carrier's own check total, as the bank would
+             see it — not the posted total, which a provider-level adjustment
+             can make differ. */
+          checkAmountCents={r.totalAmountCents}
         />
       )}
 
@@ -931,7 +935,15 @@ export default function RemittanceDetailPage() {
         shadow mode", it is not set up, and its postings say so per row.
       */}
       {shadowMode && preview && (
-        <ShadowModeBanner office={office} claims={preview.claims} />
+        <ShadowModeBanner
+          office={office}
+          claims={preview.claims}
+          /* S5 (artboard M): the worksheet is a record of what the app WOULD
+             have posted, so it appears once somebody has approved the check —
+             before that the figures are still being decided. */
+          approved={plan != null}
+          paidByClaim={new Map(claims.map((c) => [c.claimId, c.totalPaidCents]))}
+        />
       )}
 
       {/*
