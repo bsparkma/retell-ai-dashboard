@@ -48,15 +48,21 @@ these screens, stop there.
 Open **/rcm**.
 
 **What you should see**
-- A greeting and today's date at the top.
+- A greeting and today's date at the top, and under them the shape of the job in
+  four words: **Bring in › Match › Decide › Post to Open Dental › Deposit (soon)**.
 - In the header: your **name · Roland Family Dental** (your name, not your email
   address) and an amber pill: **Shadow mode — nothing is sent to Open Dental yet**.
-- Lower down, **Get work in**, with two drop zones: one for the carrier's 835
-  file, one for an EOB PDF. This is the only place in RCM you can add a check.
+- The biggest thing on the screen: **N checks need you**, naming the oldest check
+  still waiting, and one button — **Start**. With nothing waiting it reads
+  **You're done for today.** in the same place.
+- Lower down, **Get work in** — a heading you click to open, with two drop zones
+  behind it: one for the carrier's 835 file, one for an EOB PDF. This is still the
+  only place in RCM you can add a check. Any link that says *add a check* opens it
+  for you.
 
 ### 2. Add the test checks
 
-Under **Get work in**, upload **R1**, **R2** and **R4** (the 835 zone). Leave R3
+Open **Get work in** and upload **R1**, **R2** and **R4** (the 835 zone). Leave R3
 for step 11.
 
 **What you should see**
@@ -82,10 +88,10 @@ Open R1.
 
 **What you should see**
 - Under the payer name: the amount · the date received · how many claims.
-- A row of five steps: **Add the check › Match it up › Check it over › Post to
-  Open Dental › Deposit**. Under the row, one line of evidence per step (for
-  example, "The carrier's 835 file read Sep 10."). **Deposit** is grey and says
-  "Coming soon".
+- A row of five steps: **Bring in › Match › Decide › Post to Open Dental ›
+  Deposit** — the same four words the Today screen opened with. Under the row, one
+  line of evidence per step (for example, "The carrier's 835 file read Sep 10.").
+  **Deposit** is grey and says "Coming soon."
 - One button at the top right: **Match it up**. There is no second match button
   anywhere else on the page.
 - In the claims table, the **Where the patient stands** column reads "Not judged
@@ -141,9 +147,8 @@ Now press **Save for tomorrow** at the top of the claim, and go back to **Today*
 
 **What you should see**
 - A **Where you left off** card showing R1, and a sentence naming the next thing
-  by name — for example "Next: keep checking it over — Test, MangoTest is up, 1
-  more after." — and one button: **Pick up where you left off**. It takes you
-  straight to that claim.
+  by name — for example "Next: check over Test, MangoTest — 1 more after." — and
+  one button: **Pick up where you left off**. It takes you straight to that claim.
 
 Match and check over the rest of R1's claims the same way, then go back to R1's page.
 
@@ -209,8 +214,14 @@ Go back to R1's page.
   checks wait here." — the practice's name, capitalised, the same as the banner
   below it says.
 - Under it: "Approved and waiting. Nothing has been written to Open Dental yet."
-- A grey banner: "You can do everything on this check except send it to Open
-  Dental — and that's on purpose…" with **Who can switch this on?**
+- A grey banner headed **Posting is switched off for Roland**, with two things you
+  can open: **What that means for this check** ("You can do everything on this check
+  except send it to Open Dental — and that's on purpose…") and **Who can switch this
+  on?**
+- At the top right, where the other screens put their one button: **Next check**,
+  naming the next check still waiting — or **You're done for today.** Every decision
+  on this check is made; switching posting on is an administrator's job. Nothing on
+  this screen still invites you to approve it.
 - **What this app would have done, if posting were on** — a table: payment, the
   office's write-off, and what each patient would owe. It appears only on an
   approved check.
@@ -228,8 +239,10 @@ Upload **R3** on Today, then find it on **Checks**.
 
 **What you should see**
 - Its **Waiting on** reads "A takeback — money the carrier is reclaiming", whole,
-  never cut off. On Today, its row reads "The carrier is reclaiming money. It is
-  authorised on its own."
+  never cut off. On Today, its row reads "The carrier is reclaiming money." — the
+  rest of that sentence, "It is authorised on its own.", is on the check's own page,
+  under the header. A row in a list carries a phrase; the page it opens carries the
+  sentence.
 
 Open it, then press **Review and approve**.
 
@@ -315,6 +328,18 @@ If you see any of these, stop and send a screenshot.
   practice name).
 - **Two state sentences on one card** — for example "already approved" beside
   "waiting for", or "Finished" beside "stopped".
+- **A sentence where a list wants a phrase.** A row in a list — Today's *What
+  happens next*, the Checks page's *Waiting on* — says eight words or fewer. If
+  one of them reads as two sentences, stop.
+- **Two solid dark buttons on one screen.** Every screen has exactly one thing it
+  wants you to press. The only exception is a question that has stopped you —
+  *Use the permanent way?*, *Match anyway?* — where the two answers are equals on
+  purpose and the safe one is highlighted.
+- **A screen with nothing to press.** A finished check offers **Next check**; an
+  empty queue says **You're done for today.** Neither one leaves you to find the
+  nav.
+- **An empty panel that does not say what will appear.** "Nothing here" on its own
+  reads as a broken screen. It should say what lands there and how.
 - **A grey button with no reason beside it.** Every button that can't be pressed
   says why, next to it — never only in a tooltip.
 - **The old words:** drain, batch, plan, read-back, recoupment, withheld.
