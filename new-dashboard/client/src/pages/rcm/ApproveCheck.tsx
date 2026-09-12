@@ -104,6 +104,7 @@ import { useOffice } from "@/contexts/OfficeContext";
 import { elapsedLabel } from "@/lib/odHealth";
 import type { OfficeConfig } from "@/lib/api";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import Explainer from "@/components/rcm/Explainer";
 import AlreadyApproved from "@/components/rcm/AlreadyApproved";
 
 type State =
@@ -325,10 +326,16 @@ export default function ApproveCheck() {
             >
               What each patient will owe
             </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              One row per claim, and a total. Every figure here is the same one the claim's own screen
-              shows — this page adds them up and computes nothing of its own.
-            </p>
+            {/* S7: a table with a header row and a total row does not need
+                twenty-eight words explaining that it is a table with a header
+                row and a total row. Where the figures come from is the part
+                worth keeping, and it is one click. */}
+            <Explainer testId="approve-money-provenance" label="Where these figures come from">
+              <p>
+                One row per claim, and a total. Every figure here is the same one the claim&rsquo;s
+                own screen shows — this page adds them up and computes nothing of its own.
+              </p>
+            </Explainer>
 
             <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-card">
               <table className="w-full min-w-[46rem] text-sm">
@@ -455,11 +462,21 @@ export default function ApproveCheck() {
               </p>
             ) : (
               <>
-                <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-                  Each of these is money this practice is choosing not to collect. Whoever recorded the
-                  decision is named beside it, because pressing the button below is accepting their
-                  judgement as well as your own.
-                </p>
+                {/* S7. The heading names what these are and the table has a
+                    *Decided by* column; the paragraph explained both, above
+                    them. What it says about ACCEPTING somebody else's judgement
+                    is the part a reader has not already been told, so it stays
+                    — one click down, beside the rest of it. */}
+                <Explainer
+                  testId="approve-decisions-why"
+                  label="What approving these means"
+                >
+                  <p className="max-w-3xl">
+                    Each of these is money this practice is choosing not to collect. Whoever
+                    recorded the decision is named beside it, because pressing the button below is
+                    accepting their judgement as well as your own.
+                  </p>
+                </Explainer>
                 <div className="mt-3 overflow-x-auto rounded-xl border border-amber-200 bg-amber-50/40 dark:border-amber-900/60 dark:bg-amber-950/15">
                   <table className="w-full min-w-[44rem] text-sm">
                     <thead>
@@ -510,10 +527,18 @@ export default function ApproveCheck() {
                     </tbody>
                   </table>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground" data-testid="approve-freeze-note">
-                  Approving is what freezes these decisions — up until then any of them can be changed
-                  on the claim's own screen. Afterwards a correction is a job for Open Dental.
-                </p>
+                {/* S7: the SAME fact the exempt confirm copy beside the button
+                    states — "This is the last moment anything can be changed."
+                    Said twice on one screen, the second time in a paragraph.
+                    The paragraph folds; the sentence beside the button does
+                    not, and must not. */}
+                <Explainer testId="approve-freeze-fold" label="What approving freezes">
+                  <p data-testid="approve-freeze-note">
+                    Approving is what freezes these decisions — up until then any of them can be
+                    changed on the claim&rsquo;s own screen. Afterwards a correction is a job for
+                    Open Dental.
+                  </p>
+                </Explainer>
               </>
             )}
           </section>
@@ -570,12 +595,18 @@ export default function ApproveCheck() {
               >
                 What the app checked
               </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Every condition the gate applied, across{" "}
-                {st.total === 1 ? "the one claim" : `all ${st.total} claims`}, run before anything is
-                pressed — so a claim that will be held back is one you can go and fix rather than one you
-                discover by pressing a button. Which claim each one is about is below.
-              </p>
+              {/* S7: forty-five words above a list of ticks and crosses, most
+                  of them arguing for why the list exists. The list argues for
+                  itself. */}
+              <Explainer testId="approve-conditions-why" label="Why this list is here">
+                <p>
+                  Every condition the gate applied, across{" "}
+                  {st.total === 1 ? "the one claim" : `all ${st.total} claims`}, run before
+                  anything is pressed — so a claim that will be held back is one you can go and fix
+                  rather than one you discover by pressing a button. Which claim each one is about
+                  is below.
+                </p>
+              </Explainer>
 
               {/*
                 ══════════════════════════════════════════════════════════════════════
@@ -723,10 +754,19 @@ export default function ApproveCheck() {
             </p>
             {/* THE REGISTER, SAID OUT LOUD. Before a post this is a PROJECTION and
                 may never wear a confirmation's words. See `rollUpSentence`. */}
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-verdict-register">
-              That is what this check says will happen. It becomes a measured figure only after the
-              money is in Open Dental and CareIN has asked the chart what the patient owes.
-            </p>
+            {/* S7 · THE REGISTER IS IN THE WORDING, NOT IN THIS PARAGRAPH.
+                The sentence above it says "will owe … once this posts", which
+                IS the projection register; `rollUpSentence` guarantees it and
+                `rcm-verdict.test.tsx` pins it. What this paragraph adds is the
+                explanation of the two registers, which is worth having and is
+                not worth thirty words above a button. It stays, whole, one
+                click down, and keeps its test id. */}
+            <Explainer testId="approve-verdict-register-fold" label="Why this is not a measured figure">
+              <p data-testid="approve-verdict-register">
+                That is what this check says will happen. It becomes a measured figure only after
+                the money is in Open Dental and CareIN has asked the chart what the patient owes.
+              </p>
+            </Explainer>
 
             <p className="mt-3 text-sm text-muted-foreground" data-testid="approve-counts">
               {p.postableCount} of {p.claims.length} claim{p.claims.length === 1 ? "" : "s"} can be

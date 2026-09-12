@@ -79,9 +79,9 @@
  * Test, MangoTest (12828) — at Roland.
  */
 import * as React from "react";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -103,6 +103,7 @@ import { matchRunSummary } from "@/features/rcm/matchWords";
 import { standingLine } from "@/features/rcm/standing";
 import { WAITING_STATES, waitingFor, type WaitingContext } from "@/features/rcm/waitingOn";
 import { claimHref, remittanceHref } from "@/features/rcm/flow";
+import { FILTER_COPY, WORKLIST_FILTERS } from "@/features/rcm/worklist";
 
 (globalThis as Record<string, unknown>).React = React;
 
@@ -1073,6 +1074,7 @@ function addCheck(
 
 function renderAt(ui: React.ReactElement, path: string) {
   const [pathname, search = ""] = path.split("?");
+  lastRenderedPath = path;
   const memory = memoryLocation({ path: pathname, searchPath: search, record: true });
   const view = render(
     <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
@@ -1299,8 +1301,8 @@ const FAMILIES: Family[] = [
     cards: byTestId(/^rcm-left-off-row-/),
     statesIn: (t) =>
       [
-        /Next: keep checking it over —/.test(t) ? "review" : "",
-        t.includes("Next: every claim is checked over — it needs approving.") ? "approve" : "",
+        /Next: check over |Next: open it to see which claim\./.test(t) ? "review" : "",
+        t.includes("Next: approve this check.") ? "approve" : "",
         t.includes("Nothing is waiting on you here.") ? "none" : "",
       ].filter(Boolean),
   },
@@ -1315,6 +1317,40 @@ const FAMILIES: Family[] = [
     statesIn: (t) => (t.split(SHADOW_MODE_COPY.banner).length - 1 === 1 ? ["shadow"] : []),
   },
 ];
+
+/**
+ * (a2) A LIST ROW'S STATE CELL IS A PHRASE, NOT A SENTENCE — S7, Phase 2.1/2.2.
+ *
+ * The amendment to W-8's sweep, and it AMENDS rather than replaces: (a) still
+ * asserts exactly one state sentence per card, and this adds the face rule on
+ * top of it.
+ *
+ * The three cells below are the ones a person SCANS — one per row, many rows on
+ * a screen — and each carried a full sentence. `waitingFor` now returns the
+ * phrase and the clause separately; the phrase is here and the clause is on the
+ * check's own page (`check-waiting-detail`), which is where somebody who has
+ * decided to act on the row is standing.
+ *
+ * EIGHT PROSE WORDS. Amounts, counts, names, dates and ids do not count — they
+ * are the row's data and a cell cannot say fewer of them. So "3 claims still to
+ * check over" is three prose words, and the rule bites on prose alone.
+ */
+const STATE_CELL = /^(remittance-waiting-|rcm-arrival-next-|rcm-next-action-)/;
+const FACE_WORD_LIMIT = 8;
+
+function overlongCardFaces(root: HTMLElement): string[] {
+  const problems: string[] = [];
+  for (const cell of Array.from(root.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (!STATE_CELL.test(cell.dataset.testid ?? "")) continue;
+    const words = proseWords(cell);
+    if (words.length > FACE_WORD_LIMIT) {
+      problems.push(
+        `${cell.dataset.testid} says ${words.length} prose words: "${(cell.textContent ?? "").trim()}"`,
+      );
+    }
+  }
+  return problems;
+}
 
 function multiStateCards(root: HTMLElement): string[] {
   const problems: string[] = [];
@@ -1347,15 +1383,467 @@ function expectWraps(cell: HTMLElement, rowTestId: string) {
   expect(cell.getAttribute("title")).toBeNull();
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// 5f/5g · S7 — THE CLARITY MEASURES
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// S7's acceptance bar is a person, not a state: a new team member, untrained,
+// finds and finishes the day's posting work. A person cannot be asserted, so
+// the two things standing between them and the work are measured instead — HOW
+// MANY WORDS a screen says, and WHETHER exactly one button is the next step.
+//
+// WHAT "PROSE WORDS" MEANS HERE. Names, amounts, dates, codes and ids are the
+// WORK; a screen cannot say fewer of them and still be useful. They are struck
+// out, and what is left — the sentences and labels the product chose to write —
+// is what the budget governs.
+//
+// WHAT THIS CANNOT MEASURE. jsdom has no layout, so there is no fold. The count
+// is over the WHOLE default render, which is a strict superset of what is above
+// the fold: a screen inside its budget here is inside it up there too. The
+// budgets below were therefore set from the measured whole-screen figures in
+// `docs/rcm-s7-inventory.md`, not from the brief's above-the-fold numbers.
+
+/** Set by `renderAt`, read by the sweep to know which screen it is judging. */
+let lastRenderedPath = "";
+
+/** Words that are the WORK, not the product's prose. */
+const NOT_PROSE: RegExp[] = [
+  /^[$(]?-?[\d,]+(\.\d+)?[%)]?$/, // amounts, counts, percentages
+  /^#?\d[\d,.:/-]*$/, // check numbers, claim numbers, times
+  /^[a-z]+-\d[\w-]*$/i, // clm-900201, chk-900101, q-900131
+  /^D\d{4}$/, // procedure codes
+  /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*$/,
+  /^\d{1,2}(:\d{2})?(am|pm)$/i,
+  /^(am|pm|AM|PM)$/,
+];
+
+/**
+ * The proper nouns this world holds. A screen naming the payer, the practice,
+ * the patient or the person who decided is doing its job; none of that is prose
+ * a word diet could remove.
+ */
+const PROPER_NOUNS = new Set(
+  [
+    "Stedi", "Test", "MangoTest", "SYNTHETIC", "DENTAL", "Synthetic", "Dental",
+    "Roland", "Family", "Valley", "Billing", "Person", "Administrator", "CareIN",
+  ].map((w) => w.toLowerCase()),
+);
+
+/** Strip the punctuation a word wears, so "over," and "over" count once. */
+const bareWord = (w: string) => w.replace(/^[^\w$#-]+/, "").replace(/[^\w%)]+$/, "");
+
+/**
+ * WHAT A PERSON ACTUALLY READS on arrival — visible text nodes only.
+ *
+ * Narrower than `renderedProse` in two ways, both deliberate:
+ *
+ *   `title` and `aria-label` are OUT. The banned-word and office-key scans read
+ *   them because a screen reader speaks them; a word BUDGET must not, or the
+ *   Checks page pays for four tab tooltips nobody sees. Moving a sentence into a
+ *   tooltip is not a word diet, and the budget must not reward it.
+ *
+ *   Anything behind a closed disclosure, a `hidden` attribute or `aria-hidden`
+ *   is OUT — that is the whole mechanism Phase 2.4 uses, and if the budget
+ *   counted collapsed text, collapsing would buy nothing.
+ */
+function visibleText(root: HTMLElement): string[] {
+  const out: string[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      for (let el = node.parentElement; el; el = el.parentElement) {
+        if (el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const cls = typeof el.className === "string" ? el.className : "";
+        if (/(^|\s)hidden(\s|$)/.test(cls)) return NodeFilter.FILTER_REJECT;
+        if (el.tagName === "DETAILS" && !el.hasAttribute("open")) {
+          // The summary is the face and stays; the body is behind the click.
+          if (node.parentElement?.closest("summary") === null) return NodeFilter.FILTER_REJECT;
+        }
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n.textContent?.trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function proseWords(root: HTMLElement): string[] {
+  const words: string[] = [];
+  for (const chunk of visibleText(root)) {
+    for (const raw of chunk.split(/\s+/)) {
+      const w = bareWord(raw);
+      if (!w) continue;
+      if (NOT_PROSE.some((re) => re.test(w))) continue;
+      if (PROPER_NOUNS.has(w.toLowerCase())) continue;
+      words.push(w);
+    }
+  }
+  return words;
+}
+
+/**
+ * THE SCREEN'S OWN PROSE — everything except the repeating rows.
+ *
+ * A list screen's word count grows with the DAY, not with the design: twelve
+ * checks say the *Waiting on* sentence twelve times. Budgeting the whole render
+ * would therefore fail a quiet screen on a busy Monday and pass a wordy one on a
+ * Sunday. So the budget governs the CHROME — the page's own headings, ledes,
+ * helper text, legends, empty states and buttons, the words a designer chose
+ * once — and the repeating row/card faces are governed separately, by the ≤ 8
+ * word face rule in sweep (a).
+ *
+ * The rows are removed from a CLONE; nothing on the page is touched.
+ */
+const ROW_TESTID =
+  /^(remittance-row-|rcm-arrival-|rcm-left-off-row-|posting-plan-q-|candidate-row-|candidate-|claim-row-|approve-row-)/;
+
+function chromeProse(root: HTMLElement): string[] {
+  const clone = root.cloneNode(true) as HTMLElement;
+  for (const tr of Array.from(clone.querySelectorAll("tbody tr"))) tr.remove();
+  for (const el of Array.from(clone.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (ROW_TESTID.test(el.dataset.testid ?? "")) el.remove();
+  }
+  return visibleText(clone);
+}
+
+function chromeWords(root: HTMLElement): string[] {
+  const clone = root.cloneNode(true) as HTMLElement;
+  for (const tr of Array.from(clone.querySelectorAll("tbody tr"))) tr.remove();
+  for (const el of Array.from(clone.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    if (ROW_TESTID.test(el.dataset.testid ?? "")) el.remove();
+  }
+  return proseWords(clone);
+}
+
+/** Everything a person can press or follow on this screen. */
+function clickables(root: HTMLElement): HTMLElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button, a[href], [role="button"], [role="tab"], input[type="file"]',
+    ),
+  );
+}
+
+/**
+ * The buttons that render PRIMARY — solid, filled, "press this one".
+ *
+ * This module does NOT use shadcn's `bg-primary` variant. Its solid is
+ * `bg-foreground text-background` — 25 of them across the RCM pages — plus the
+ * takeback's hand-rolled `bg-amber-700`. Those are the fill a reader's eye
+ * picks out of a screen of outlines and ghosts, so those are what "primary"
+ * means here.
+ *
+ * Matched as a whole class TOKEN, never a substring: `bg-primary/5` is a drop
+ * zone's tint and `bg-foreground/10` a divider, and neither is a button.
+ */
+const PRIMARY_TOKEN = /^(dark:)?bg-(foreground|primary|amber-700|amber-800)$/;
+
+function isPrimaryStyled(el: Element): boolean {
+  const cls = typeof el.className === "string" ? el.className : "";
+  return cls.split(/\s+/).some((t) => PRIMARY_TOKEN.test(t));
+}
+
+/**
+ * AN OPEN IN-FLOW CONFIRM IS ITS OWN SCREEN.
+ *
+ * `MatchAnywayConfirm` (W-7) and `PermanentPathConfirm` (D-17) both present two
+ * co-equal choices and both deliberately paint the DECLINE solid and focus it.
+ * That is the brief's own named exception to one-primary-per-screen, and while
+ * one of them is open the page behind it is not the thing being read. Their
+ * buttons are excluded from the count rather than the rule being loosened, so a
+ * second primary appearing anywhere ELSE while a confirm is open still fails.
+ */
+const IN_FLOW_CONFIRM = /^(match-anyway|recoupment-permanent-confirm)$/;
+
+function insideInFlowConfirm(el: Element): boolean {
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    const id = (n as HTMLElement).dataset?.testid ?? "";
+    if (IN_FLOW_CONFIRM.test(id)) return true;
+  }
+  return false;
+}
+
+function primaryButtons(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>("button, a")).filter(
+    (el) =>
+      isPrimaryStyled(el) &&
+      !el.hasAttribute("disabled") &&
+      // A selected tab is painted solid to say WHERE YOU ARE, not what to press.
+      el.getAttribute("role") !== "tab" &&
+      // Nor is a pressed toggle. The workbench's *Bill the patient* / *Write it
+      // off* pair fills whichever is chosen; that is a state, not a next step.
+      el.getAttribute("aria-pressed") !== "true" &&
+      !insideInFlowConfirm(el),
+  );
+}
+
+/**
+ * Which screen is on the page — route first, then the panel that distinguishes
+ * one state of the check page from another. A budget is per SCREEN, and the
+ * check page in its posted, stuck and shadow states is three screens to a
+ * reader even though it is one route.
+ */
+interface ScreenSpec {
+  id: string;
+  label: string;
+  kind: "list" | "flow" | "terminal";
+  /** Prose-word ceiling. `null` while a screen is only being measured. */
+  budget: number | null;
+  note?: string;
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE BUDGETS, AND WHY THEY ARE NOT THE BRIEF'S NUMBERS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The S7 brief asks for ABOVE-THE-FOLD budgets: 80 words on a list screen, 130
+ * on a flow screen, 100 on a terminal one. jsdom has no layout and therefore no
+ * fold, so what is measured here is the WHOLE screen's chrome — a strict
+ * superset — and three screens meet the brief's own figure against that harder
+ * measure (Checks, Activity, the takeback route).
+ *
+ * The rest do not, and the brief's own escape hatch is the reason and the
+ * remedy: *"if a budget can't be met because of an exempt block, raise the
+ * budget for that screen in the sweep and note it in the PR."* Every screen
+ * below the line is over it because of exempt safety text, and the note is in
+ * `docs/rcm-s7-inventory.md` §5 and in the PR.
+ *
+ * WHAT A BUDGET IS FOR HERE. Not to hit a number — to stop the words coming
+ * back. Each is the measured figure after this slice, rounded up to the next
+ * ten, so a paragraph added to any of these screens fails this suite and
+ * raising the ceiling is a deliberate, reviewable line in a diff.
+ */
+
+function screenIdOf(root: HTMLElement): string | null {
+  const path = lastRenderedPath;
+  const has = (id: string) => Boolean(root.querySelector(`[data-testid="${id}"]`));
+  if (path.startsWith("/rcm/posting")) return "activity";
+  if (path.startsWith("/rcm/remittances/") && path.includes("/approve")) {
+    return has("approve-takeback-only") || has("recoupment-panel") ? "takeback-route" : "approve";
+  }
+  if (path.startsWith("/rcm/remittances/")) {
+    if (has("stuck-measured") || has("stuck-stopped")) return "stuck";
+    if (has("posted-outcome")) return "posted";
+    if (has("shadow-would-have-done")) return "shadow-worksheet";
+    return "check";
+  }
+  if (path.startsWith("/rcm/remittances")) return "checks";
+  if (path.startsWith("/rcm/claims/")) return "claim";
+  if (path.startsWith("/rcm/sop/takeback")) return "takeback-sop";
+  if (path.startsWith("/rcm")) return path.includes("add=1") ? "bring-in" : "today";
+  return null;
+}
+
+const SCREENS: Record<string, ScreenSpec> = {
+  today: { id: "today", label: "Today", kind: "list", budget: 90 },
+  "bring-in": { id: "bring-in", label: "Bring in (Today's upload section)", kind: "list", budget: null },
+  /*
+   * 100, not the brief's 80, and the reason is a collision between two of this
+   * brief's own phases rather than an exemption.
+   *
+   * POPULATED, this screen says 72 — inside the brief's figure. EMPTY it says
+   * 98, because Phase 4 requires an empty panel to say what will land there and
+   * how, and that costs about twenty words it does not spend when it has rows
+   * to show. The empty state is the worst case, so the budget is the empty
+   * state's.
+   *
+   * This was found by walking to it. Until the 5h cases below existed, no case
+   * in this suite rendered an empty list and the figure was never measured.
+   */
+  checks: { id: "checks", label: "Checks list", kind: "list", budget: 100 },
+  check: { id: "check", label: "Check page", kind: "flow", budget: 480 },
+  /* MATCH AND WORKBENCH ARE ONE SCREEN, not two. `ClaimMatch` renders
+     `MatchGuidance` and `ClaimWorkbench` together, always — see its §5 note.
+     The brief counts them separately; the code has only ever had one page. */
+  claim: { id: "claim", label: "Claim page (Match + Workbench)", kind: "flow", budget: 430 },
+  approve: { id: "approve", label: "Approve", kind: "flow", budget: 230 },
+  "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: 130 },
+  posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: 270 },
+  stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: 510 },
+  "shadow-worksheet": { id: "shadow-worksheet", label: "Shadow worksheet", kind: "terminal", budget: 350 },
+  activity: { id: "activity", label: "Activity / History", kind: "list", budget: 80 },
+  "takeback-sop": { id: "takeback-sop", label: "Takeback how-to", kind: "flow", budget: null },
+};
+
+/** The worst case seen per screen across the whole walk — the inventory. */
+interface Measure {
+  words: number;
+  chrome: number;
+  actions: number;
+  primaries: number;
+  primaryLabels: string[];
+  seen: number;
+}
+const INVENTORY: Record<string, Measure> = {};
+const CHROME_TEXT: Record<string, string> = {};
+
+function measure(root: HTMLElement): void {
+  const id = screenIdOf(root);
+  if (!id || !SCREENS[id]) return;
+  const prev = INVENTORY[id];
+  const primaries = primaryButtons(root);
+  const next: Measure = {
+    words: Math.max(prev?.words ?? 0, proseWords(root).length),
+    chrome: Math.max(prev?.chrome ?? 0, chromeWords(root).length),
+    actions: Math.max(prev?.actions ?? 0, clickables(root).length),
+    primaries: Math.max(prev?.primaries ?? 0, primaries.length),
+    primaryLabels: [
+      ...new Set([
+        ...(prev?.primaryLabels ?? []),
+        ...primaries.map((b) => (b.textContent ?? "").trim().replace(/\s+/g, " ")),
+      ]),
+    ],
+    seen: (prev?.seen ?? 0) + 1,
+  };
+  INVENTORY[id] = next;
+  if (process.env.RCM_INVENTORY_DUMP) {
+    const text = chromeProse(root).join(" | ");
+    if ((CHROME_TEXT[id] ?? "").length < text.length) CHROME_TEXT[id] = text;
+  }
+}
+
+/**
+ * (h) AN EMPTY PANEL SAYS WHAT WILL APPEAR AND HOW — S7, Phase 4.
+ *
+ * A bare negation is the failure this catches. "Nothing is stuck." is true and
+ * leaves a new hire unable to tell whether the panel works, whether anything
+ * will ever land in it, or what would put something there — which is the state
+ * the owner described as *unclear where to go*, arrived at from the other side.
+ *
+ * TWO CONDITIONS, and a panel has to meet both:
+ *
+ *   1. IT IS NOT A BARE NEGATION. More prose than a sentence saying "no".
+ *   2. IT NAMES AN ARRIVAL. A verb out of the vocabulary the product's own
+ *      empty copy already uses — land, appear, show up, arrive, add, bring,
+ *      drop, upload, wait here. The panel's BUTTON LABELS count as its text,
+ *      so *Add a check* and *Bring one in* satisfy it: a button that produces
+ *      the thing is the how, said as a verb.
+ *
+ *      AN EXIT DOES NOT. An earlier draft of this rule accepted any control at
+ *      all, and a panel reading "Nothing needs attention." beside *See all of
+ *      them* and *Back to Today* passed it — two ways OUT of an empty queue and
+ *      not one word about what would ever fill it. That is the exact failure
+ *      this sweep exists for, so the verb is the only test and the buttons
+ *      satisfy it only by saying one.
+ *
+ * WHAT IS NOT AN EMPTY PANEL: a zero on a stat card. Today's *How it stands*
+ * cards print a count and one short line under it; a sentence of instruction
+ * under every zero on that screen is precisely the wordiness Phase 2 removed.
+ * The panel that REPLACES a list is the thing this rule is about, and the
+ * testids below are those panels.
+ */
+/**
+ * The panels themselves, and NOT the controls inside them.
+ *
+ * Anchored on the office key, because an empty panel's own children are named
+ * after it — `remittances-empty-see-all-roland`, `remittances-empty-today-roland`,
+ * `remittances-empty-arrives-roland`. A prefix match judged each of those as a
+ * panel of its own and reported *"See all of them" is a bare negation*, which is
+ * a way out of the panel doing its job, not a panel failing to teach.
+ */
+const EMPTY_PANEL = new RegExp(
+  `^(remittances-empty|posting-empty|rcm-era-empty|rcm-eob-empty|rcm-arrivals-none-ever)-(${RCM_OFFICE_IDS.join("|")})$`,
+);
+
+/**
+ * The verbs the product's own empty copy uses for "this is what turns up".
+ *
+ * Word-boundary anchored, and put here with an explicitly-escaped write rather
+ * than a shell heredoc — a heredoc ate the boundary in this exact literal and
+ * left backspace bytes behind, which is the THIRD time that has happened in
+ * this module. The source looks correct when you read it; `grep -c $'\x08'`
+ * on the file is the only way to see it.
+ */
+const ARRIVAL_VERB =
+  /\b(lands?|landed|appears?|shows? up|arrives?|adds?|brings?|bring|drops?|uploads?|waits? here|puts? it back|becomes a check)\b/i;
+
+/** Longer than a sentence that only says "no". */
+const EMPTY_MIN_WORDS = 8;
+
+function uninstructiveEmpties(root: HTMLElement): string[] {
+  const problems: string[] = [];
+  for (const panel of Array.from(root.querySelectorAll<HTMLElement>("[data-testid]"))) {
+    const id = panel.dataset.testid ?? "";
+    if (!EMPTY_PANEL.test(id)) continue;
+    // A PANEL BEHIND A CLOSED FOLD IS NOT A PANEL ANYBODY IS LOOKING AT. The
+    // two upload panels live inside Today's `Get work in` disclosure, shut
+    // until somebody is holding a file; judging their copy while it is shut
+    // would be judging a screen nobody is on.
+    const visible = visibleText(panel);
+    if (visible.length === 0) continue;
+    const text = visible.join(" ").replace(/\s+/g, " ").trim();
+    const words = proseWords(panel).length;
+    if (words < EMPTY_MIN_WORDS) {
+      problems.push(`${id} is a bare negation (${words} prose words): "${text}"`);
+    } else if (!ARRIVAL_VERB.test(text)) {
+      problems.push(`${id} never says what lands here, or how: "${text}"`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * (g) A SCREEN SAYS NO MORE THAN ITS BUDGET — S7, Phase 2.3.
+ *
+ * Chrome words only (the repeating rows are governed by (a2)'s face rule), and
+ * the budget is `SCREENS[id].budget`. A screen the walk reaches in a state with
+ * no budget yet is skipped rather than failed — a new screen is not a
+ * regression, it is a screen nobody has measured.
+ */
+function overBudget(root: HTMLElement): string[] {
+  const id = screenIdOf(root);
+  const spec = id ? SCREENS[id] : undefined;
+  if (!spec || spec.budget === null) return [];
+  const words = chromeWords(root).length;
+  if (words <= spec.budget) return [];
+  return [`${spec.label} says ${words} prose words; its budget is ${spec.budget}.`];
+}
+
+/**
+ * (f) AT MOST ONE PRIMARY-STYLED CONTROL PER SCREEN — S7, Phase 3.
+ *
+ * "At most", not "exactly", and the difference is a real product fact rather
+ * than a softened rule. Two screens are correct with none:
+ *
+ *   A CANDIDATE LIST. When Open Dental offers more than one claim, the app has
+ *   ranked them and has deliberately NOT chosen — that refusal is the whole of
+ *   `MatchGuidance`'s unsure branch. Painting a recommendation there would be
+ *   the screen asserting something the match never said.
+ *
+ *   A FINISHED CHECK WHOSE NEXT-CHECK READ IS IN FLIGHT. `NextCheck` says
+ *   "Looking for the next check…" rather than drawing a button that may be
+ *   about to become a different button.
+ *
+ * The walk asserts the presence of the expected primary per screen separately,
+ * so "none" can never quietly become the answer everywhere.
+ */
+function tooManyPrimaries(root: HTMLElement): string[] {
+  const found = primaryButtons(root);
+  if (found.length <= 1) return [];
+  return found.map((el) => `${el.tagName.toLowerCase()}[${el.dataset.testid ?? "?"}] "${(el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 48)}"`);
+}
+
 /**
  * THE SWEEP — (a), (c) and (e), over whatever screen is on the page right now.
  * Returns the card families it judged, so a caller can say what was covered.
  */
 function sweep(root: HTMLElement = document.body): string[] {
+  measure(root);
+  const empties = uninstructiveEmpties(root);
+  expect(empties, `an empty panel that teaches nothing (S7 h): ${empties.join(" ")}`).toEqual([]);
+  const over = overBudget(root);
+  expect(over, `a screen over its word budget (S7 g): ${over.join(" ")}`).toEqual([]);
+  const primaries = tooManyPrimaries(root);
+  expect(primaries, `more than one primary-styled control (S7 f): ${primaries.join(" + ")}`).toEqual([]);
   expect(unexplainedDisabled(root), "a greyed control with no reason beside it").toEqual([]);
   expect(bannedWordHits(root), "a banned word in rendered text").toEqual([]);
   expect(officeKeyHits(root), "a machine office key in rendered text").toEqual([]);
   expect(multiStateCards(root), "a card carrying two state sentences (W-8)").toEqual([]);
+  expect(overlongCardFaces(root), "a list row's state cell reading as a sentence (S7 a2)").toEqual([]);
   return familiesPresent(root);
 }
 
@@ -1616,7 +2104,7 @@ describe("1 · enter a check, the whole road", () => {
     // THE NEXT ACTION, BY NAME — from the check's own claims, which the card read.
     await waitFor(() =>
       expect(screen.getByTestId(`rcm-next-action-${B}`).textContent).toBe(
-        "Next: every claim is checked over — it needs approving.",
+        "Next: approve this check.",
       ),
     );
     expect(screen.getByTestId(`rcm-pick-up-${B}`).getAttribute("href")).toBe(remittanceHref(B));
@@ -1811,7 +2299,7 @@ describe("1 · enter a check, the whole road", () => {
     // A write-off decision is the touch stamp that makes A "started".
     await waitFor(() =>
       expect(screen.getByTestId(`rcm-next-action-${A}`).textContent).toBe(
-        `Next: keep checking it over — ${MANGO.name} is the last one.`,
+        `Next: check over ${MANGO.name} — the last one.`,
       ),
     );
     expect(screen.getByTestId(`rcm-pick-up-${A}`).getAttribute("href")).toBe(claimHref(C2, A));
@@ -1952,6 +2440,19 @@ describe("1 · enter a check, the whole road", () => {
     );
     expect(screen.getByTestId("step-post").dataset.state).toBe("current");
     expect(srv.calls.some((c) => c.startsWith("drainPostingQueue"))).toBe(false);
+
+    /*
+     * S7 · FORWARD MOTION OUT OF A HELD CHECK.
+     *
+     * Every human decision on this check is made; posting is an administrator's
+     * act and it is switched off. Before S7 the screen's one solid button was a
+     * *Post to Open Dental* that scrolled to a greyed *Post to Open Dental*, and
+     * the only ways onward were the breadcrumb and the nav. The one primary is
+     * now the next check — and B, saved for tomorrow, is not offered as one.
+     */
+    const onward = await screen.findByTestId("rcm-next-check-done");
+    expect(onward.textContent).toContain("done for today");
+    expect(screen.queryByTestId("rcm-next-check")).toBeNull();
     expect(sweep(container)).toEqual(expect.arrayContaining(["posting card", "shadow banner"]));
   });
 });
@@ -2032,9 +2533,21 @@ describe("2 · the takeback lane", () => {
 
     const today = renderAt(<RcmToday />, "/rcm");
     const next = await screen.findByTestId(`rcm-arrival-next-${T}`);
-    expect(next.textContent).toBe("The carrier is reclaiming money. It is authorised on its own.");
+    // S7 · THE FACE IS THE PHRASE. Eight words or fewer on a row that is
+    // scanned; the clause that follows it is on the page the row opens.
+    expect(next.textContent).toBe("The carrier is reclaiming money.");
     expectWraps(next, `rcm-arrival-${T}`);
     sweep(today.container);
+    today.unmount();
+
+    // AND IT IS NOT GONE. The check's own page prints both halves, from the
+    // same `waitingFor` call that picks the chip beside its payer.
+    const check = renderAt(<RemittanceDetail />, `/rcm/remittances/${T}`);
+    const detail = await screen.findByTestId("check-waiting-detail");
+    expect(detail.textContent).toBe(
+      "The carrier is reclaiming money. It is authorised on its own.",
+    );
+    sweep(check.container);
   });
 
   it("2.2 Before you say yes routes it to the takeback panel — never the failure list", async () => {
@@ -2816,6 +3329,530 @@ describe("5d · sentences wrap, identifiers truncate", () => {
   });
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// 5f/5g · THE S7 SWEEPS CATCH WHAT THEY BAN
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Every sweep above earns its place by failing on the shape it exists to stop.
+// A guard nobody has watched fail is a guard nobody knows is wired up — see
+// PR #123, where a substring test passed on exactly the drift it was written to
+// catch. One negative check per new rule, and one positive beside it so the
+// rule cannot pass by refusing to look.
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SHAPES S7 REMOVED, KEPT VERBATIM SO THE GUARDS CAN BE WATCHED FAILING
+ * ═════════════════════════════════════════════════════════════════════════════
+ * PM ruling, 2026-09-11: every new pin has to be shown failing with its fix
+ * undone, then passing restored. A guard proved only against a synthetic string
+ * proves that the guard runs; a guard proved against the EXACT copy and markup
+ * the slice deleted proves that it would have caught the thing it was written
+ * for. So the pre-S7 shapes live here, word for word, and every negative check
+ * below runs one of them.
+ *
+ * These constants are the only place this wording still exists in the repo.
+ * They are test fixtures, not product copy — nothing renders them.
+ */
+const PRE_S7 = {
+  /** Today's three queue-card definitions + the two upload lanes + the proposal line. */
+  todayChrome: [
+    "Claims nobody has looked for in Open Dental yet. Matching only reads the chart.",
+    "Claims nobody has finished with. A note saying 'nothing to do' is finished work.",
+    "Matched and checked over, waiting for somebody to approve the check and post it.",
+    "Whatever you add here becomes a proposal — claims and procedure lines waiting for a person. Nothing added is posted to a patient chart.",
+    "An 835 file from the carrier — reads itself; every figure is exactly what was sent.",
+    "A scanned EOB or a payer portal download — read by a model, so every figure needs your eyes.",
+    "Every one confirmed in Open Dental afterwards, by asking for the check back.",
+    "Out of the counts above, and one click from being back in them.",
+  ].join(" "),
+  /** The check page's header CTA and its second door to the approve screen. */
+  solid: "inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background",
+  /** The takeback row's face, before the phrase and the clause came apart. */
+  takebackNext: "The carrier is reclaiming money. It is authorised on its own.",
+  /** The resume card's sentence, before it lost its ninth word. */
+  resumeApprove: "Next: every claim is checked over — it needs approving.",
+  /** Three empty panels that said only that they were empty. */
+  emptyAttention: "Nothing needs attention here.",
+  emptyEra: "Nothing uploaded yet.",
+  emptyEob: "No EOB documents uploaded for this office yet.",
+} as const;
+
+describe("5f · at most one primary-styled control per screen", () => {
+  it("FAILS on the check page's pre-S7 header — two solid buttons — and passes on the shipped one", () => {
+    /*
+     * WITH THE FIX UNDONE. Before S7 the check page's header CTA rendered solid
+     * beside a solid *Review and approve*, and on the post step a third solid
+     * that only scrolled to a fourth. This is that markup.
+     */
+    const undone = render(
+      <div>
+        <a className={PRE_S7.solid} data-testid="rcm-cta">Post to Open Dental</a>
+        <a className={PRE_S7.solid} data-testid="approve-open-page">Review and approve</a>
+      </div>,
+    );
+    expect(tooManyPrimaries(undone.container)).toHaveLength(2);
+    cleanup();
+
+    // RESTORED: the header keeps the solid, the second door is an outline.
+    const fixed = render(
+      <div>
+        <a className={PRE_S7.solid} data-testid="rcm-cta">Post to Open Dental</a>
+        <a
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-foreground"
+          data-testid="approve-open-page"
+        >
+          Review and approve
+        </a>
+      </div>,
+    );
+    expect(tooManyPrimaries(fixed.container)).toEqual([]);
+  });
+
+
+  it("catches a second solid button, and lets one through", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const one = render(
+      <div>
+        <button className={solid} data-testid="a">Post to Open Dental</button>
+        <button className="rounded-md border border-border px-3 py-1.5">Save for tomorrow</button>
+      </div>,
+    );
+    expect(tooManyPrimaries(one.container)).toEqual([]);
+    cleanup();
+
+    const two = render(
+      <div>
+        <button className={solid} data-testid="a">Post to Open Dental</button>
+        <button className={solid} data-testid="b">Review and approve</button>
+      </div>,
+    );
+    expect(tooManyPrimaries(two.container)).toHaveLength(2);
+  });
+
+  it("does not count a selected tab, a pressed toggle, a greyed button, or a tint", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const { container } = render(
+      <div>
+        <button className={solid} data-testid="real">Match it up</button>
+        {/* WHERE YOU ARE, not what to press. */}
+        <button role="tab" className={solid}>Needs attention</button>
+        {/* WHICH ONE IS CHOSEN, not what to press. */}
+        <button aria-pressed="true" className="border-foreground bg-foreground text-background">
+          Bill the patient
+        </button>
+        {/* A REFUSAL is never the primary. */}
+        <button disabled className={solid}>Post to Open Dental</button>
+        {/* A drop zone's tint is not a button, and `bg-primary/5` is not `bg-primary`. */}
+        <div className="border-primary bg-primary/5">Drop an 835 here</div>
+      </div>,
+    );
+    expect(tooManyPrimaries(container)).toEqual([]);
+    expect(primaryButtons(container).map((el) => el.dataset.testid)).toEqual(["real"]);
+  });
+
+  it("excludes an open in-flow confirm's own two choices, and nothing else on the page", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const ok = render(
+      <div>
+        <button className={solid} data-testid="page">Match it up</button>
+        <div data-testid="match-anyway">
+          <button className={solid}>Go back and look again</button>
+          <button className="border">Match anyway — no claim number agrees</button>
+        </div>
+      </div>,
+    );
+    expect(tooManyPrimaries(ok.container)).toEqual([]);
+    cleanup();
+
+    // A SECOND PRIMARY ELSEWHERE still fails while a confirm is open.
+    const bad = render(
+      <div>
+        <button className={solid} data-testid="page">Match it up</button>
+        <button className={solid} data-testid="other">Review and approve</button>
+        <div data-testid="recoupment-permanent-confirm">
+          <button className={solid}>Keep the adjustment</button>
+        </div>
+      </div>,
+    );
+    expect(tooManyPrimaries(bad.container)).toHaveLength(2);
+  });
+});
+
+describe("5g · the word budget, and what it counts", () => {
+  /** Enough prose to blow any budget, in one element. */
+  const wordy = (n: number) => Array.from({ length: n }, () => "word").join(" ");
+
+  it("FAILS on Today's pre-S7 chrome, and passes on the shipped screen's figure", () => {
+    /*
+     * WITH THE FIX UNDONE. Today measured 253 prose words and its budget is 90.
+     * The block below is the copy S7 folded or moved, verbatim — on its own,
+     * without a single other word of the page, it is over the ceiling.
+     */
+    lastRenderedPath = "/rcm";
+    const undone = render(<div>{PRE_S7.todayChrome}</div>);
+    const problems = overBudget(undone.container);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("its budget is 90");
+    cleanup();
+
+    // RESTORED: what the shipped screen actually renders is inside it.
+    const fixed = render(<div>{wordy(SCREENS.today.budget ?? 0)}</div>);
+    expect(overBudget(fixed.container)).toEqual([]);
+  });
+
+  it("fires when a screen goes over, and passes when it does not", () => {
+    lastRenderedPath = "/rcm/remittances";
+    const under = render(<div>{wordy(SCREENS.checks.budget ?? 0)}</div>);
+    expect(overBudget(under.container)).toEqual([]);
+    cleanup();
+
+    const over = render(<div>{wordy((SCREENS.checks.budget ?? 0) + 1)}</div>);
+    expect(overBudget(over.container)).toHaveLength(1);
+    expect(overBudget(over.container)[0]).toContain("its budget is");
+  });
+
+  it("counts the work as free and the prose as dear", () => {
+    // Amounts, ids, codes, dates and this world's proper nouns are the WORK.
+    const { container } = render(
+      <div>
+        $1,234.56 900700101 clm-900201 D2740 Sep 8, 2026 7:10 PM 42 100% #900601 Stedi Test 2
+        SYNTHETIC DENTAL Roland Family Dental Billing Person
+      </div>,
+    );
+    expect(proseWords(container)).toEqual([]);
+  });
+
+  it("does NOT count a tooltip, so hiding a sentence in one buys nothing", () => {
+    const { container } = render(
+      <div>
+        <span title="Everything somebody still owes an action on.">Needs attention</span>
+        <button aria-label="Refresh this practice's checks">↻</button>
+      </div>,
+    );
+    // The visible label, and nothing the attributes carry.
+    expect(proseWords(container)).toEqual(["Needs", "attention"]);
+    // …while the banned-word and office-key scans DO still read them.
+    expect(renderedProse(container)).toEqual(
+      expect.arrayContaining(["Everything somebody still owes an action on."]),
+    );
+  });
+
+  it("does not count a closed disclosure's body, and does count an open one's", () => {
+    const closed = render(
+      <details>
+        <summary>Details</summary>
+        <p>{wordy(40)}</p>
+      </details>,
+    );
+    expect(proseWords(closed.container)).toEqual(["Details"]);
+    cleanup();
+
+    const open = render(
+      <details open>
+        <summary>Details</summary>
+        <p>{wordy(40)}</p>
+      </details>,
+    );
+    expect(proseWords(open.container)).toHaveLength(41);
+  });
+});
+
+describe("5h · an empty panel says what will appear, and how", () => {
+  /*
+   * THE SWEEP HAS TO WALK TO AN EMPTY SCREEN, or it is a rule about markup
+   * nobody renders.
+   *
+   * This was found the hard way: with the fix undone — the *what lands here*
+   * line deleted from `RemittanceList`'s empty branch — the whole suite stayed
+   * GREEN, because every other case in it renders a list with rows in it. A
+   * guard that only fires on a fixture is a guard that will not fire on the
+   * product. So the walk now goes somewhere with nothing in it.
+   */
+  it("the real Checks page, with nothing in it, says what would land there", async () => {
+    /*
+     * ONE SET-ASIDE CHECK and nothing else. The practice HOLDS a check, so this
+     * is the filter-empty branch — "this queue is clear" — and not the
+     * never-had-one branch, which is a different panel with its own copy. That
+     * distinction is the one `RemittanceList` calls "three different empties,
+     * and they are not the same news".
+     */
+    resetWorld();
+    addCheck(
+      "chk-900901",
+      {
+        checkNumber: "900700901",
+        traceNumber: "900700901",
+        totalAmountCents: 10000,
+        setAsideAt: "2026-09-08T02:00:00.000Z",
+        setAsideBy: "Billing Person",
+        setAsideReason: "duplicate",
+      },
+      [
+        mkClaim("clm-900901", {
+          claimNumber: "900901",
+          checkNumber: "900700901",
+          odMatchStatus: "confirmed",
+          odClaimNum: 900901,
+          reviewedAt: "2026-09-08T01:00:00.000Z",
+          fixture: { snapshot: null },
+        }),
+      ],
+    );
+    const { container } = renderAt(<RemittanceList />, "/rcm/remittances");
+    const empty = await screen.findByTestId("remittances-empty-roland");
+    expect(empty.textContent).toContain(FILTER_COPY.attention.empty);
+    expect(empty.textContent).toContain(FILTER_COPY.attention.arrives);
+    // The sweep judges it as a panel a reader is actually looking at.
+    expect(uninstructiveEmpties(container)).toEqual([]);
+    sweep(container);
+  });
+
+  it("the real Posting screen, with nothing waiting, says what would put something there", async () => {
+    resetWorld();
+    srv.auth = ADMIN;
+    const { container } = renderAt(<PostingQueue />, "/rcm/posting");
+    const empty = await screen.findByTestId("posting-empty-roland");
+    expect(empty.textContent).toContain("Approve a check and it appears here");
+    expect(uninstructiveEmpties(container)).toEqual([]);
+    sweep(container);
+  });
+
+  it("FAILS on the three pre-S7 empties, and passes on the shipped ones", () => {
+    /*
+     * WITH THE FIX UNDONE. Three panels that said only that they were empty.
+     * A new hire meeting any of them cannot tell whether the panel works,
+     * whether anything will ever land in it, or what would put something there.
+     */
+    for (const [id, copy] of [
+      ["remittances-empty-roland", PRE_S7.emptyAttention],
+      ["rcm-era-empty-roland", PRE_S7.emptyEra],
+      ["rcm-eob-empty-roland", PRE_S7.emptyEob],
+    ] as const) {
+      const undone = render(<div data-testid={id}>{copy}</div>);
+      const problems = uninstructiveEmpties(undone.container);
+      expect(problems, `${id}: "${copy}"`).toHaveLength(1);
+      cleanup();
+    }
+
+    // RESTORED — what each of those three renders today.
+    for (const [id, copy] of [
+      [
+        "remittances-empty-roland",
+        `${FILTER_COPY.attention.empty} ${FILTER_COPY.attention.arrives}`,
+      ],
+      ["rcm-era-empty-roland", "Nothing uploaded yet. Drop an 835 above and it becomes a check."],
+      [
+        "rcm-eob-empty-roland",
+        "No EOB documents uploaded for this office yet. Drop a PDF above and a person checks what it read.",
+      ],
+    ] as const) {
+      const fixed = render(<div data-testid={id}>{copy}</div>);
+      expect(uninstructiveEmpties(fixed.container), id).toEqual([]);
+      cleanup();
+    }
+  });
+
+  it("every filter's empty panel teaches — all eight, not the ones the walk reaches", () => {
+    /*
+     * The sweep above only judges the panels a walk happens to render. This
+     * drives the product's OWN copy for every member of `WORKLIST_FILTERS`, so
+     * a ninth filter, or a reworded empty, is caught the day it is written
+     * rather than the day somebody walks to that tab.
+     */
+    expect(WORKLIST_FILTERS.length).toBe(8);
+    for (const filter of WORKLIST_FILTERS) {
+      const copy = FILTER_COPY[filter];
+      const { container } = render(
+        <div data-testid="remittances-empty-roland">
+          {copy.empty} {copy.arrives}
+        </div>,
+      );
+      expect(uninstructiveEmpties(container), `${filter}: "${copy.empty} ${copy.arrives}"`).toEqual(
+        [],
+      );
+      cleanup();
+    }
+  });
+
+  it("a button that PRODUCES the thing counts; a way out of the screen does not", () => {
+    /*
+     * This pair is the rule's own history. The first draft accepted any control,
+     * and the Checks page's filter-empty panel passed it on *See all of them*
+     * and *Back to Today* — two exits and not one word about what would fill
+     * the queue. That is the failure the sweep exists for, so it now reads the
+     * verbs only, and a button counts by saying one.
+     */
+    const exitsOnly = render(
+      <div data-testid="remittances-empty-roland">
+        <p>Nothing needs attention.</p>
+        <p>1 check in this practice.</p>
+        <button>See all of them</button>
+        <a href="/rcm">Back to Today</a>
+      </div>,
+    );
+    expect(uninstructiveEmpties(exitsOnly.container)).toHaveLength(1);
+    expect(uninstructiveEmpties(exitsOnly.container)[0]).toContain("never says what lands here");
+    cleanup();
+
+    // A button that MAKES one does count — it is the how, said as a verb.
+    const produces = render(
+      <div data-testid="rcm-arrivals-none-ever-roland">
+        <p>Nothing has come in for this practice, and nothing is wrong with that.</p>
+        <button>Bring one in</button>
+      </div>,
+    );
+    expect(uninstructiveEmpties(produces.container)).toEqual([]);
+  });
+
+  it("does not judge a panel that is behind a closed fold", () => {
+    // The two upload panels live inside Today's `Get work in` disclosure.
+    // Shut, they are not a screen anybody is reading.
+    const { container } = render(
+      <details>
+        <summary>Get work in</summary>
+        <div data-testid="rcm-era-empty-roland">{PRE_S7.emptyEra}</div>
+      </details>,
+    );
+    expect(uninstructiveEmpties(container)).toEqual([]);
+    cleanup();
+
+    // Open, it is judged — and that same copy fails.
+    const open = render(
+      <details open>
+        <summary>Get work in</summary>
+        <div data-testid="rcm-era-empty-roland">{PRE_S7.emptyEra}</div>
+      </details>,
+    );
+    expect(uninstructiveEmpties(open.container)).toHaveLength(1);
+  });
+});
+
+describe("5a2 · a list row's state cell is a phrase, not a sentence", () => {
+  it("catches a ninth prose word, and lets the data through", () => {
+    const ok = render(
+      <div data-testid="remittance-waiting-x">You — 3 claims to check over</div>,
+    );
+    expect(overlongCardFaces(ok.container)).toEqual([]);
+    cleanup();
+
+    const bad = render(
+      <div data-testid="rcm-arrival-next-x">
+        The posting did not finish. Open it and it says where it stopped.
+      </div>,
+    );
+    expect(overlongCardFaces(bad.container)).toHaveLength(1);
+    cleanup();
+
+    /*
+     * WITH THE FIX UNDONE — the exact sentence the takeback row carried before
+     * `waitingFor` split the phrase from the clause — and then restored, which
+     * is what `waitingFor` returns today.
+     */
+    const undone = render(
+      <div data-testid="rcm-arrival-next-x">{PRE_S7.takebackNext}</div>,
+    );
+    expect(overlongCardFaces(undone.container)).toHaveLength(1);
+    cleanup();
+
+    const restored = render(
+      <div data-testid="rcm-arrival-next-x">
+        {waitingFor(
+          {
+            batchId: "x",
+            officeId: "roland",
+            totalAmountCents: -100,
+            flags: [],
+            attentionReasons: [],
+            attentionObservations: [],
+            setAsideAt: null,
+            claimCount: 1,
+            queuedClaimCount: 0,
+            unmatchedClaimCount: 0,
+          } as never,
+          {},
+        ).next}
+      </div>,
+    );
+    expect(overlongCardFaces(restored.container)).toEqual([]);
+    cleanup();
+
+    /* And the resume card's sentence, which lost its ninth word the same way. */
+    const resume = render(
+      <div data-testid="rcm-next-action-x">{PRE_S7.resumeApprove}</div>,
+    );
+    expect(overlongCardFaces(resume.container)).toHaveLength(1);
+    cleanup();
+
+    // A cell that is mostly FIGURES is not a wordy cell.
+    const figures = render(
+      <div data-testid="rcm-next-action-x">
+        Next: check over Test, MangoTest — 3 more after.
+      </div>,
+    );
+    expect(overlongCardFaces(figures.container)).toEqual([]);
+  });
+
+  /**
+   * EVERY FACE `waitingFor` CAN PRODUCE, driven through the real function
+   * rather than read off a rendered screen.
+   *
+   * The sweep above only sees the states the walk happens to reach. This one
+   * renders each `next` string into a state cell and puts it through the same
+   * counter, so a wordy sentence added to a branch nobody walks today still
+   * fails on the day it is written.
+   *
+   * `waitingFor`'s branch table is exercised by `WAITING_VOCAB`, whose own
+   * coverage is asserted in 5a — `WAITING_VOCAB.states` is all of
+   * `WAITING_STATES`, so "every sentence" here means every sentence.
+   */
+  it("every sentence `waitingFor` can put on a face is inside the limit", () => {
+    const seen = new Set<string>();
+    for (const [, re] of WAITING_VOCAB.next) {
+      if (seen.has(re.source)) continue;
+      seen.add(re.source);
+    }
+    expect(seen.size).toBeGreaterThan(5);
+
+    const row = {
+      batchId: "x",
+      officeId: "roland",
+      totalAmountCents: 100,
+      flags: [] as string[],
+      attentionReasons: [] as string[],
+      attentionObservations: [] as string[],
+      setAsideAt: null as string | null,
+      claimCount: 4,
+      queuedClaimCount: 0,
+      unmatchedClaimCount: 0,
+    };
+    const cases: [Record<string, unknown>, WaitingContext][] = [
+      [{ ...row, setAsideAt: NOW }, {}],
+      [{ ...row, officeId: "valley" }, { office: "roland" }],
+      [{ ...row, totalAmountCents: -100 }, {}],
+      [{ ...row, attentionReasons: ["posting_failed"] }, {}],
+      [{ ...row, attentionReasons: ["claims_withheld"] }, {}],
+      [{ ...row, queuedClaimCount: 1 }, { shadowMode: true }],
+      [{ ...row }, { confirmedAt: NOW }],
+      [{ ...row, attentionReasons: ["claims_unreviewed"] }, {}],
+      [
+        { ...row, attentionReasons: ["claims_unreviewed"], unmatchedClaimCount: 2 },
+        {},
+      ],
+      [{ ...row, attentionReasons: ["claims_awaiting_approval"] }, {}],
+      [{ ...row, attentionObservations: ["claims_unmatched"], unmatchedClaimCount: 2 }, {}],
+      [{ ...row }, {}],
+    ];
+    for (const [r, ctx] of cases) {
+      const w = waitingFor(r as never, ctx);
+      const { container } = render(
+        <div data-testid="rcm-arrival-next-x">{w.next}</div>,
+      );
+      expect(overlongCardFaces(container), `${w.state}: "${w.next}"`).toEqual([]);
+      cleanup();
+    }
+  });
+});
+
 describe("5e · machine office keys never render", () => {
   it("the key scan is not vacuous — it catches a key in text or an attribute, and lets the name through", () => {
     const { container } = render(
@@ -2833,4 +3870,60 @@ describe("5e · machine office keys never render", () => {
     // Every frozen key is covered — a third office is a migration, and this scan follows it.
     for (const key of RCM_OFFICE_IDS) expect(OFFICE_KEY.test(`for ${key}.`), key).toBe(true);
   });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6 · THE S7 INVENTORY — written, not asserted
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `RCM_INVENTORY=1 pnpm exec vitest run tests/rcm-smoke.test.tsx` writes
+// `docs/rcm-s7-inventory.md` from what the walk above actually rendered. It is
+// the before/after evidence for the clarity slice, and it is deliberately a
+// SIDE EFFECT of the walk rather than a suite of its own: a screen measured in
+// a state nobody walked to is a screen measured in a state that does not exist.
+
+const INVENTORY_ORDER = [
+  "today",
+  "bring-in",
+  "checks",
+  "check",
+  "claim",
+  "approve",
+  "takeback-route",
+  "posted",
+  "stuck",
+  "shadow-worksheet",
+  "activity",
+  "takeback-sop",
+];
+
+afterAll(() => {
+  if (process.env.RCM_INVENTORY !== "1") return;
+  const lines: string[] = [
+    "| Screen | Kind | Chrome words | Whole-render words | Clickable actions | Primary buttons | Primary label(s) | Renders |",
+    "| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |",
+  ];
+  for (const id of INVENTORY_ORDER) {
+    const spec = SCREENS[id];
+    const m = INVENTORY[id];
+    if (!spec) continue;
+    if (!m) {
+      lines.push(`| ${spec.label} | ${spec.kind} | — | — | — | — | *not reached by the walk* | 0 |`);
+      continue;
+    }
+    const labels = m.primaryLabels.filter(Boolean).map((l) => `“${l}”`).join(" · ") || "—";
+    lines.push(
+      `| ${spec.label} | ${spec.kind} | ${m.chrome} | ${m.words} | ${m.actions} | ${m.primaries} | ${labels} | ${m.seen} |`,
+    );
+  }
+  const out = join(process.cwd(), "..", "docs", "rcm-s7-inventory-measured.md");
+  writeFileSync(out, `${lines.join("\n")}\n`, "utf8");
+  if (!process.env.RCM_INVENTORY_DUMP) return;
+  writeFileSync(
+    join(process.env.RCM_INVENTORY_DUMP, "rcm-s7-chrome-dump.md"),
+    INVENTORY_ORDER.filter((id) => CHROME_TEXT[id])
+      .map((id) => `## ${SCREENS[id]?.label}\n\n${CHROME_TEXT[id]}\n`)
+      .join("\n"),
+    "utf8",
+  );
 });

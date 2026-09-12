@@ -124,7 +124,7 @@ describe("what is the next click on this check", () => {
     expect(action.claimId).toBe("c-2");
     expect(action.patientName).toBe("Second, Synthetic");
     expect(action.remaining).toBe(2);
-    expect(action.sentence).toContain("Second, Synthetic is up");
+    expect(action.sentence).toContain("check over Second, Synthetic");
     // The button goes to the CLAIM, carrying where it came from, so the claim
     // screen can offer the way back.
     expect(action.href).toContain("/rcm/claims/c-2");
@@ -136,7 +136,7 @@ describe("what is the next click on this check", () => {
       claim({ claimId: "c-1", reviewedAt: "2026-03-05T10:00:00Z" }),
       claim({ claimId: "c-2", patientName: "Only, Synthetic" }),
     ]);
-    expect(action.sentence).toContain("Only, Synthetic is the last one");
+    expect(action.sentence).toContain("check over Only, Synthetic — the last one");
   });
 
   it("counts an APPROVED claim as finished even with no review stamp", () => {
@@ -157,7 +157,7 @@ describe("what is the next click on this check", () => {
       claim({ claimId: "c-2", reviewedAt: "2026-03-05T10:05:00Z" }),
     ]);
     expect(action.kind).toBe("approve");
-    expect(action.sentence).toContain("needs approving");
+    expect(action.sentence).toContain("approve this check");
     expect(action.href).toBe("/rcm/remittances/b-1");
   });
 
@@ -186,7 +186,7 @@ describe("what is the next click on this check", () => {
     expect(action.claimId).toBeNull();
     expect(action.patientName).toBeNull();
     expect(action.remaining).toBeNull();
-    expect(action.sentence).toContain("open the check to see which claim is up");
+    expect(action.sentence).toContain("open it to see which claim");
     // And it goes to the CHECK, which is the most specific place it can name.
     expect(action.href).toBe("/rcm/remittances/b-1");
   });

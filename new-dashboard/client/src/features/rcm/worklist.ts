@@ -118,48 +118,76 @@ export interface FilterCopy {
   hint: string;
   /** What an empty result means — never a bare "no rows". */
   empty: string;
+  /**
+   * WHAT LANDS HERE, AND HOW — S7, Phase 4.
+   *
+   * `empty` says the queue is clear, which is true and is only half the news.
+   * A new hire reading "Nothing is stuck." cannot tell whether that panel is
+   * working, whether anything will ever appear in it, or what would put
+   * something there. This is the other half, and it is what
+   * `tests/rcm-smoke.test.tsx`'s (h) sweep requires of every empty panel.
+   *
+   * IT IS A SEPARATE FIELD RATHER THAN A LONGER `empty` because the two are
+   * read in different places. Today's *How it stands* cards print `empty`
+   * under a zero — a count of none is not an empty panel, and a card with a
+   * sentence of instruction under every zero is the wordiness S7 removed. The
+   * CHECKS page, which owns the tab, prints both.
+   */
+  arrives: string;
 }
 
 export const FILTER_COPY: Record<WorklistFilter, FilterCopy> = {
   attention: {
     label: "Needs attention",
     hint: "Everything somebody still owes an action on.",
-    empty: "Nothing needs attention here.",
+    /* S7 · AN EMPTY PANEL TEACHES (Phase 4). "Nothing needs attention here."
+       is true and tells a new hire nothing about what will ever appear, or
+       how. A screen that says what is coming is a screen somebody can wait at
+       without wondering whether it is broken. */
+    empty: "Nothing needs attention.",
+    arrives: "A check lands here as soon as somebody owes it an action.",
   },
   match: {
     label: "Waiting to be matched",
     hint: "Claims nobody has looked for in Open Dental yet. Matching only reads the chart.",
     empty: "Every claim has been looked for in Open Dental.",
+    arrives: "A check lands here when it arrives with claims nobody has looked for yet.",
   },
   review: {
     label: "Waiting for your review",
     hint: "Claims nobody has finished with. A note saying 'nothing to do' is finished work.",
     empty: "Every claim has been checked over.",
+    arrives: "A check lands here once its claims are matched and waiting on your eyes.",
   },
   approve: {
     label: "Ready to post",
     hint: "Matched and checked over, waiting for somebody to approve the check and post it.",
     empty: "Nothing is waiting to be approved.",
+    arrives: "A check lands here once every claim on it has been checked over.",
   },
   blocked: {
     label: "Stuck — needs you",
     hint: "A claim was held back at approval, or a posting did not finish.",
     empty: "Nothing is stuck.",
+    arrives: "A check lands here if a claim is held back, or a posting stops part-way.",
   },
   parked: {
     label: "Saved for tomorrow",
     hint: "Checks somebody put down meaning to come back. Opening one puts it back on the pile.",
     empty: "Nothing is saved for tomorrow.",
+    arrives: "Press Save for tomorrow on a check and it waits here until you open it.",
   },
   set_aside: {
     label: "Set aside",
     hint: "Checks nobody is coming back to. They are out of the counts, not out of the records — put any of them back in one click.",
     empty: "Nothing has been set aside.",
+    arrives: "Set a check aside and it waits here, out of the counts and still on file.",
   },
   all: {
     label: "All",
     hint: "Every check this practice has taken in, set-aside ones included.",
-    empty: "No checks yet. Add one from Today.",
+    empty: "No checks yet.",
+    arrives: "Add an 835 file or an EOB PDF under Get work in on Today, and it appears here.",
   },
 };
 

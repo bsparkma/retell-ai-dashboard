@@ -330,7 +330,8 @@ function RecentUploads({
   if (uploads.length === 0) {
     return (
       <p className="mt-3 text-xs text-muted-foreground" data-testid={`rcm-era-empty-${office}`}>
-        Nothing uploaded yet.
+        {/* S7 · Phase 4: what will appear, and how. */}
+        Nothing uploaded yet. Drop an 835 above and it becomes a check.
       </p>
     );
   }

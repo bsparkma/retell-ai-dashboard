@@ -600,6 +600,21 @@ function OfficeRemittances({
             <>
               <p className="mt-2 text-sm text-muted-foreground">{FILTER_COPY[filter].empty}</p>
               {/*
+                S7 · Phase 4 — AN EMPTY PANEL SAYS WHAT WILL APPEAR AND HOW.
+                The line above says the queue is clear, which is half the news.
+                A new hire reading "Nothing is stuck." cannot tell whether the
+                panel works, whether anything will ever land in it, or what
+                would put something there. This is the other half, and the (h)
+                sweep in `tests/rcm-smoke.test.tsx` fails an empty panel without
+                it.
+              */}
+              <p
+                className="mt-1 text-sm text-muted-foreground"
+                data-testid={`remittances-empty-arrives-${office}`}
+              >
+                {FILTER_COPY[filter].arrives}
+              </p>
+              {/*
                 AN EMPTY FILTER ALWAYS OFFERS A WAY OUT (§11).
                 A tab that says "nothing here" and stops is indistinguishable
                 from a broken screen at 6pm. It says how much the practice holds

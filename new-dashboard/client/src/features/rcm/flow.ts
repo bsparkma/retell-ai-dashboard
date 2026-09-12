@@ -15,7 +15,7 @@
  * has to be computed in ONE place, or the three screens will each grow their own
  * opinion and start disagreeing.
  *
- *   Add the check → Match it up → Check it over → Post → Deposit
+ *   Bring in → Match → Decide → Post to Open Dental → Deposit
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * SEVEN BECAME FIVE, AND WHICH TWO FOLDED
@@ -33,7 +33,7 @@
  *   changed is that `match` reads `done` only once every claim is CONFIRMED, so
  *   the fold cannot make an unfinished check look finished.
  *
- *   APPROVE FOLDED INTO REVIEW. "Check it over" carries look-at-it AND
+ *   APPROVE FOLDED INTO REVIEW. "Decide" carries look-at-it AND
  *   say-yes; `post` carries exactly one verb, the write to Open Dental.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -84,8 +84,8 @@
  * THE STEP IDS ARE MACHINE SLUGS AND DID NOT CHANGE
  * ─────────────────────────────────────────────────────────────────────────────
  * `upload | match | review | post | deposit` are the same words they always
- * were. Only `TITLES` — the strings a person reads — is in the biller's
- * vocabulary. `confirm` and `approve` are gone as STEPS; they are untouched as
+ * were. Only `RCM_STEP_TITLES` — the strings a person reads — is in the
+ * biller's vocabulary. `confirm` and `approve` are gone as STEPS; they are untouched as
  * actions, routes, permissions and audit resources.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -170,23 +170,44 @@ export interface RcmFlow {
 /**
  * THE ONLY PLACE A STEP'S NAME IS WRITTEN.
  *
- * "Add the check" rather than "Upload": a biller adds a check to the day's work,
- * and uploading is what the file does on the way. "Match it up" and "Check it
- * over" are the phrases used at the desk. "Post" is the one word that already
- * meant the right thing to everybody.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * S7 · THE NAMES ARE THE OWNER'S OWN FOUR WORDS NOW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The names used to be the phrases used at the desk — "Add the check", "Match
+ * it up", "Check it over". They are good phrases and they were still wrong for
+ * the rail, because the person this rail is FOR has never worked the desk. The
+ * owner describes the job in four words, always in this order:
+ *
+ *     Bring in → Match → Decide → Post
+ *
+ * A rail is a map, not a sentence: a new hire reads it once to learn the shape
+ * of the day, and four words are a shape while four phrases are a paragraph.
+ * So the rail carries the owner's four and the BUTTONS keep their fuller verbs
+ * — "Yes, that's the one", "Mark checked over" — because a stage name and the
+ * act that finishes it are two different things and always were.
+ *
+ * `RCM_STEPS` — `upload | match | review | post | deposit` — is UNCHANGED and
+ * stays that way. It is the machine's name for the step and it is in routes,
+ * props and tests.
+ *
+ * "Bring in" is also not a new word: `/rcm/bring-in`, *Bring one in* and
+ * `match-guidance-bring-in` already say it. The rail was the last place still
+ * calling it something else.
  */
-const TITLES: Record<RcmStep, string> = {
-  upload: "Add the check",
-  match: "Match it up",
+export const RCM_STEP_TITLES: Record<RcmStep, string> = {
+  upload: "Bring in",
+  match: "Match",
   // Look at it AND say yes. See the fold ruling in the header.
-  review: "Check it over",
+  review: "Decide",
   /*
    * ONE verb: the write to Open Dental, and nothing else.
    *
-   * Named in full because "Post" alone is ambiguous at a dental front desk —
-   * a payment is posted to a ledger, a note is posted to a chart, and the rail
-   * has to say WHICH. It is also the replacement the plain-language guard
-   * names for the word this step used to carry.
+   * THE ONE SPINE WORD THAT IS NOT SHORTENED, and deliberately. "Post" alone is
+   * ambiguous at a dental front desk — a payment is posted to a ledger, a note
+   * is posted to a chart, and the rail has to say WHICH. It is also the exact
+   * replacement `tests/rcm-plain-language.test.ts` names for "drain", so
+   * shortening it here would weaken the one guard that keeps that word out.
+   * S7 shortened the other three and left this one whole.
    */
   post: "Post to Open Dental",
   deposit: "Deposit",
@@ -195,9 +216,12 @@ const TITLES: Record<RcmStep, string> = {
 /** The one step that is drawn and is not built. */
 const DEPOSIT: StepView = {
   step: "deposit",
-  title: TITLES.deposit,
+  title: RCM_STEP_TITLES.deposit,
   state: "unavailable",
-  detail: "Coming soon — recording the practice's deposit against this check.",
+  /* S7: the long form — "Coming soon — recording the practice's deposit against
+     this check" — rendered on every check-flow screen, on every visit, about a
+     feature that does not exist. The step's own title already says Deposit. */
+  detail: "Coming soon.",
   href: null,
 };
 
@@ -207,7 +231,7 @@ function view(
   detail: string | null,
   href: string | null = null,
 ): StepView {
-  return { step, title: TITLES[step], state, detail, href };
+  return { step, title: RCM_STEP_TITLES[step], state, detail, href };
 }
 
 const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`);

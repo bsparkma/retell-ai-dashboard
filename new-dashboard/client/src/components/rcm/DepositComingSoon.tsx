@@ -19,6 +19,7 @@
  */
 import { Landmark } from "lucide-react";
 import { money } from "@/features/rcm/format";
+import Explainer from "@/components/rcm/Explainer";
 
 export default function DepositComingSoon({
   checkAmountCents,
@@ -41,10 +42,16 @@ export default function DepositComingSoon({
           Coming soon
         </span>
       </div>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-        Match this check against the bank deposit it arrived in — this app does not do that yet.
-        Until then, keep reconciling deposits the way you do today.
-      </p>
+      {/* S7: the chip above already says "Coming soon". The thirty words under
+          it explaining what the feature WOULD do, and what to keep doing
+          meanwhile, are worth one click and are not worth reading on every
+          finished check. */}
+      <Explainer testId="deposit-coming-soon-why" label="What this will do">
+        <p className="max-w-3xl">
+          Match this check against the bank deposit it arrived in — this app does not do that
+          yet. Until then, keep reconciling deposits the way you do today.
+        </p>
+      </Explainer>
       <dl className="mt-3 grid max-w-sm grid-cols-2 gap-3 text-xs">
         <div>
           <dt className="font-medium uppercase tracking-wide text-muted-foreground">This check</dt>

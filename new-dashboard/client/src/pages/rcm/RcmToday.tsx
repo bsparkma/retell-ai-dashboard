@@ -144,11 +144,12 @@ import {
   type Remittance,
   type RemittanceClaim,
 } from "@/features/rcm/api";
+import Explainer from "@/components/rcm/Explainer";
 import EobUploadPanel from "./EobUploadPanel";
 import EraUploadPanel from "./EraUploadPanel";
 import { money, withinLastDays } from "@/features/rcm/format";
 import { blockedCopy, SHADOW_MODE_COPY } from "@/features/rcm/posting";
-import { remittanceHref } from "@/features/rcm/flow";
+import { RCM_STEP_TITLES, remittanceHref } from "@/features/rcm/flow";
 import { greetingFor, officeDay, officeDayKey, todayLongDate } from "@/features/rcm/time";
 import { nextActionFor, PICK_UP_LABEL, type NextAction } from "@/features/rcm/nextAction";
 import { waitingFor } from "@/features/rcm/waitingOn";
@@ -156,6 +157,7 @@ import {
   countByFilter,
   FILTER_COPY,
   newestParkedFirst,
+  oldestWaitingFirst,
   type WorklistFilter,
 } from "@/features/rcm/worklist";
 
@@ -191,6 +193,18 @@ interface Today {
   started: Remittance[];
   /** The newest arrivals, whatever state they are in. */
   arrivals: Remittance[];
+  /**
+   * THE ONE CHECK THE START BUTTON OPENS — the oldest still waiting on somebody.
+   *
+   * `null` when nothing needs anybody, which is the whole of "you're done for
+   * today" and is a different answer from "we have not looked yet" (`today`
+   * itself being null).
+   *
+   * PARKED CHECKS ARE EXCLUDED. Somebody said on the record that this one is for
+   * tomorrow; a Start button that reopened it would overrule a decision a person
+   * made on purpose. They keep their own card, one section down.
+   */
+  startHere: Remittance | null;
   postedThisWeek: number;
   postedCents: number;
   /**
@@ -326,25 +340,36 @@ export default function RcmToday() {
           ? `, ${firstName(auth.user.name)}`
           : ""}
       </h1>
+      {/* S7: the trailing clause — "carrier payments, from the check that
+          arrived to the money on the chart" — described the module to somebody
+          already inside it, one line above a legend that draws the same journey
+          as four words and an arrow. The date stays: it is the PRACTICE's own,
+          which is the one thing this line knows that nothing else does. */}
       <p className="mt-1 text-sm text-muted-foreground" data-testid="rcm-today-date">
-        {todayLongDate()} · carrier payments, from the check that arrived to the money on the
-        chart.
+        {todayLongDate()}
       </p>
 
-      {/* THE FLOW, SAID ONCE AT THE TOP. The same five the rail draws on every
-          screen below, so the shape is learned before it is needed. */}
+      {/*
+        THE FLOW, SAID ONCE AT THE TOP — the same steps the rail draws on every
+        screen below, so the shape is learned before it is needed.
+
+        S7: it used to be a hand-copied array of four strings sitting a file away
+        from the rail's own names, which is how a legend and the thing it legends
+        drift apart. It reads `RCM_STEP_TITLES` now, so renaming a stage renames
+        it here in the same commit or not at all.
+      */}
       <p
         className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground"
         data-testid="rcm-flow-legend"
       >
-        {["Add the check", "Match it up", "Check it over", "Post"].map((s, i) => (
-          <span key={s} className="flex items-center gap-1.5">
+        {(["upload", "match", "review", "post"] as const).map((step, i) => (
+          <span key={step} className="flex items-center gap-1.5">
             {i > 0 && <span className="text-muted-foreground/40">›</span>}
-            <span className="font-medium text-foreground">{s}</span>
+            <span className="font-medium text-foreground">{RCM_STEP_TITLES[step]}</span>
           </span>
         ))}
         <span className="text-muted-foreground/40">›</span>
-        <span className="italic">Deposit — coming soon</span>
+        <span className="italic">{RCM_STEP_TITLES.deposit} (soon)</span>
       </p>
 
       {scope.offices.length === 0 ? (
@@ -474,6 +499,9 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
         </div>
       ) : (
         <>
+          {/* ── 0. START HERE — the one thing this screen is for ─────────── */}
+          <StartHere office={office} today={today} />
+
           {/* ── 1. WHERE DID I LEAVE OFF ─────────────────────────────────── */}
           <LeftOff office={office} today={today} onChanged={reload} />
 
@@ -560,11 +588,15 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
               >
                 {today ? today.setAsideCount : "—"}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {today && today.setAsideCount > 0
-                  ? "Out of the counts above, and one click from being back in them."
-                  : FILTER_COPY.set_aside.empty}
-              </p>
+              {/* The EMPTY sentence stays — an empty panel has to teach (Phase
+                  4). The populated one was a definition and has gone the same
+                  way as the three above: it is under the tabs on the page this
+                  card opens. */}
+              {today && today.setAsideCount === 0 && (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {FILTER_COPY.set_aside.empty}
+                </p>
+              )}
             </Link>
           </div>
 
@@ -599,9 +631,11 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Every one confirmed in Open Dental afterwards, by asking for the check back.
-              </p>
+              {/* S7: "Every one confirmed in Open Dental afterwards, by asking
+                  for the check back" is a true and useful sentence about the
+                  POSTING screen, printed on a card whose only job is to link
+                  there. The posting screen says it, per row, where the rows
+                  are. */}
             </div>
             <ArrowRight size={14} className="ml-auto flex-shrink-0 text-muted-foreground" />
           </Link>
@@ -635,35 +669,82 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
  * this product has a place for it.
  */
 function GetWorkIn({ office }: { office: RcmOfficeId }) {
+  /*
+   * ── S7 · IT OPENS WHEN SOMEBODY IS HOLDING A FILE, AND NOT BEFORE ─────────
+   *
+   * D-18 put these panels below the work rather than above it, and got the
+   * ORDER right. What it left was the cost: two drop zones, two readers'
+   * promises and the proposal paragraph spend about fifty prose words on every
+   * visit to the screen whose job is "where do I start" — for an act most
+   * visits do not perform. 835s arrive on their own; adding one by hand is the
+   * exception, not the morning.
+   *
+   * So the section is a fold, open exactly when somebody came here to use it:
+   * `?add=1` — the Checks page's *Add a check*, the matching guidance's *bring
+   * the check in*, and `/rcm/bring-in`'s redirect — all still land on it, and
+   * the effect above still scrolls it into view.
+   *
+   * D-16 IS UNTOUCHED. There is still exactly one upload surface in this
+   * module; it is one click deep on the same page rather than zero. And it is
+   * a real `<details>`, so the browser opens it without this file being right
+   * about anything.
+   */
+  const openOnArrival =
+    typeof window !== "undefined" && window.location.search.includes("add=1");
   return (
-    <section className="mt-8 scroll-mt-6" id={getWorkInId(office)} data-testid={`rcm-get-work-in-${office}`}>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+    <details
+      open={openOnArrival}
+      className="group mt-8 scroll-mt-6"
+      id={getWorkInId(office)}
+      data-testid={`rcm-get-work-in-${office}`}
+    >
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
         <Upload size={14} />
         Get work in
-      </h3>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-        Whatever you add here becomes a <strong>proposal</strong> — claims and procedure lines
-        waiting for a person. Nothing added is posted to a patient chart.
-      </p>
-
+        <span
+          aria-hidden="true"
+          className="inline-block text-muted-foreground transition-transform group-open:rotate-90"
+        >
+          ›
+        </span>
+      </summary>
+      {/*
+        S7 · THREE EXPLANATIONS BECOME TWO LABELS AND A FOLD.
+        This section spent fifty-five words telling a reader what a proposal is
+        and how each of the two readers works, above two drop zones that are
+        self-evident once labelled. The labels name the file; the difference
+        between the two — one is exact, one needs your eyes — is the thing worth
+        knowing and it is one click away, on both.
+      */}
       <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div data-testid={`rcm-drop-era-${office}`}>
           <p className="mb-1.5 text-xs font-medium text-foreground">
-            An 835 file from the carrier — <span className="font-normal text-muted-foreground">reads itself; every figure is exactly what was sent.</span>
+            An 835 file from the carrier
           </p>
+          <Explainer testId={`rcm-drop-era-why-${office}`} label="What happens to it">
+            <p>Reads itself; every figure is exactly what was sent.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EraUploadPanel office={office} />
         </div>
         <div data-testid={`rcm-drop-eob-${office}`}>
           <p className="mb-1.5 text-xs font-medium text-foreground">
-            A scanned EOB or a payer portal download —{" "}
-            <span className="font-normal text-muted-foreground">
-              read by a model, so every figure needs your eyes.
-            </span>
+            A scanned EOB or a payer portal download
           </p>
+          <Explainer testId={`rcm-drop-eob-why-${office}`} label="What happens to it">
+            <p>Read by a model, so every figure needs your eyes.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EobUploadPanel office={office} />
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -798,6 +879,112 @@ function LeftOff({
           </>
         )}
       </p>
+    </div>
+  );
+}
+
+/**
+ * "N CHECKS NEED YOU → START" — the dominant thing on this screen (S7, Phase 1).
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS CARD EXISTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The 2026-09-11 inventory measured this page and found SIXTEEN clickable things
+ * and, in the ordinary populated state, ZERO primary buttons — the only solid
+ * button on Today rendered in the empty state, when the practice had never taken
+ * a check in. A new hire opening the screen met sixteen equal-weight links and
+ * nothing saying where to begin, which is exactly the ruling the owner gave:
+ * *unclear where to go*.
+ *
+ * So: one count, one destination, one button. Everything else on the page — what
+ * you left off, what came in, somewhere to add more, how the week went — is
+ * still here, and is now visibly secondary to this.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT OPENS A CHECK, NOT A LIST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The obvious build is a link to `?view=attention`, and it is the wrong one: it
+ * answers "where is the work" with another screen of choices. Start opens the
+ * oldest check still waiting on somebody, by name, so the first click of the day
+ * lands on work rather than on a filter.
+ *
+ * `today.startHere` decides WHICH, in `summarise`, where a test can drive it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE COUNT IS HONEST ABOUT WHAT IT COUNTED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `counts.attention` is computed in the browser over the newest `SCAN_LIMIT`
+ * checks, like the three below it — `/api/rcm/remittances` has no work-state
+ * count for a whole office. On a practice holding more than that, the card says
+ * so in the same words the stats section already uses, rather than presenting a
+ * partial count as a total.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DONE IS A REAL ANSWER AND GETS THE SAME ROOM
+ * ─────────────────────────────────────────────────────────────────────────────
+ * An empty queue renders the card, not nothing: *You're done for today.* A
+ * screen that silently omits its own headline when there is no work leaves the
+ * reader to work out from an absence whether she is finished or whether it has
+ * not loaded — and `today === null` (still loading) IS the other case, which is
+ * why the two are branched apart rather than collapsed into a falsy check.
+ */
+function StartHere({ office, today }: { office: RcmOfficeId; today: Today | null }) {
+  if (!today) return null;
+
+  const waiting = today.counts.attention;
+  const start = today.startHere;
+  const partial = today.total > today.scanned;
+
+  if (waiting === 0 || !start) {
+    return (
+      <div
+        className="mt-4 flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-900/60 dark:bg-emerald-950/15"
+        data-testid={`rcm-start-here-${office}`}
+      >
+        <PartyPopper size={18} className="flex-shrink-0 text-emerald-700 dark:text-emerald-400" />
+        <p
+          className="text-base font-semibold text-foreground"
+          data-testid={`rcm-start-here-done-${office}`}
+        >
+          You&rsquo;re done for today.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mt-4 flex flex-col gap-3 rounded-lg border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between"
+      data-testid={`rcm-start-here-${office}`}
+    >
+      <div>
+        <p
+          className="text-lg font-semibold text-foreground"
+          data-testid={`rcm-start-here-count-${office}`}
+        >
+          {waiting} check{waiting === 1 ? "" : "s"} need{waiting === 1 ? "s" : ""} you
+        </p>
+        {/* WHICH ONE, by name — so the button is not a leap of faith. */}
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Oldest first: {start.payer} · {money(start.totalAmountCents)}
+        </p>
+        {partial && (
+          <p
+            className="mt-0.5 text-xs text-muted-foreground"
+            data-testid={`rcm-start-here-scan-${office}`}
+          >
+            Counted over the newest {today.scanned} of {today.total}.
+          </p>
+        )}
+      </div>
+      <Link
+        href={remittanceHref(start.batchId)}
+        data-testid={`rcm-start-here-go-${office}`}
+        className="inline-flex flex-shrink-0 items-center gap-1.5 self-start rounded-md bg-foreground px-4 py-2 text-sm font-semibold text-background transition-opacity hover:opacity-90 sm:self-auto"
+      >
+        Start
+        <ArrowRight size={14} />
+      </Link>
     </div>
   );
 }
@@ -1254,7 +1441,19 @@ function QueueCard({
           className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
         />
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{copy.hint}</p>
+      {/*
+        S7 · THE HINT MOVED TO THE PAGE THIS CARD OPENS.
+        Three of these render side by side, and each carried a full sentence
+        under its number — forty words of definition below three digits, on the
+        screen whose whole job is "where do I start". It could not fold into an
+        `Explainer` here: a disclosure inside a `<Link>` is a control inside a
+        control, which is the shape `rcm-disabled-reasons.test.tsx` bans.
+
+        It did not need to. `FILTER_COPY[filter].hint` is already printed, in
+        full, directly under the tabs on the page each card links to
+        (`remittance-filter-hint`). The sentence is one click away, in the place
+        it describes, which is one level down rather than gone.
+      */}
     </Link>
   );
 }
@@ -1374,6 +1573,16 @@ export function summarise(
       .slice()
       .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))
       .slice(0, ARRIVALS_LIMIT),
+    /*
+     * OLDEST WAITING FIRST — `oldestWaitingFirst`'s own reason, applied to the
+     * one row that gets a button: a queue is worked from the end that has been
+     * waiting longest, and money ages. Parked and set-aside are out for the
+     * reason on the field.
+     */
+    startHere:
+      oldestWaitingFirst(
+        rows.filter((r) => r.needsAttention && r.setAsideAt == null && r.parkedAt == null),
+      )[0] ?? null,
     postedThisWeek: postedRecently.length,
     postedCents: postedRecently.reduce((sum, r) => sum + r.postedTotalCents, 0),
     postedTonight: postedTonight.length,
