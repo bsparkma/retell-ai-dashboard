@@ -124,7 +124,11 @@ export const FILTER_COPY: Record<WorklistFilter, FilterCopy> = {
   attention: {
     label: "Needs attention",
     hint: "Everything somebody still owes an action on.",
-    empty: "Nothing needs attention here.",
+    /* S7 · AN EMPTY PANEL TEACHES (Phase 4). "Nothing needs attention here."
+       is true and tells a new hire nothing about what will ever appear, or
+       how. A screen that says what is coming is a screen somebody can wait at
+       without wondering whether it is broken. */
+    empty: "Nothing needs attention. Checks land here when an 835 arrives.",
   },
   match: {
     label: "Waiting to be matched",

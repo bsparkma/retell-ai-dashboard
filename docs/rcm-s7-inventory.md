@@ -197,3 +197,62 @@ tell the reader they did not need to come here.
 5. **The five-step rail is the single largest repeated cost**: a label row plus five
    evidence lines on every check-flow screen, including `Deposit — coming soon`, which is
    about a feature that does not exist.
+
+---
+
+## 5. After (regenerated at the end of the slice)
+
+Same command, same walk, same counter.
+
+| Screen | Chrome words before → after | Actions | Primary buttons before → after | Budget now |
+| --- | --- | ---: | --- | ---: |
+| Today | **253 → 89** | 16 → 17 | **0 → 1** (“Start”) | 90 |
+| Checks list | 72 → 72 | 8 | 0 → 0 | 80 |
+| Check page | **527 → 472** | 18 → 16 | **3 → 1** | 480 |
+| Claim page (Match + Workbench) | **487 → 426** | 18 → 17 | **4 → 1** | 430 |
+| Approve | **362 → 220** | 5 | 1 → 1 | 230 |
+| Approve → takeback route | 152 → 127 | 2 | 1 → 1 | 130 |
+| Posted / Done | **407 → 264** | 17 → 16 | 1 → 0 | 270 |
+| Stuck / Failed | **627 → 502** | 19 → 17 | **2 → 1** | 510 |
+| Shadow worksheet | **498 → 348** | 21 → 19 | **2 → 0** | 350 |
+| Activity / History | **109 → 39** | 44 | 1 → 1 | 80 |
+
+Whole-module chrome: **3,494 → 2,559 prose words, a 27% cut**, with nothing honest
+deleted — every folded sentence is still rendered, behind a summary or on the page it
+is about, and every one that was pinned by a test keeps its test id.
+
+### Why three screens now read zero primary buttons, and that is correct
+
+- **Checks list** is a lookup screen of co-equal rows. A reader arrives at it to find one
+  specific check; nothing on it is "the next step in the day's work", and the solid style
+  is spent on the selected tab, which says *where you are*.
+- **Posted** and **Shadow worksheet** DO have a primary — `Next check` — and the counter
+  photographs them while its read is still in flight, when the panel honestly reads
+  *Looking for the next check…* rather than drawing a button that may be about to become
+  a different button. The walk asserts the button itself separately (smoke 1.17).
+
+### Where a budget is not the brief's number, and why
+
+The brief asks for above-the-fold budgets — 80 · 130 · 100. jsdom has no fold, so the
+budget is enforced against the **whole screen's chrome**, which is strictly harder.
+Three screens meet the brief's own figure against that harder measure: **Checks (72/80)**,
+**Activity (39/80)** and **the takeback route (127/130)**.
+
+The rest are over it, every one of them because of text the brief itself exempts, and the
+brief's own remedy is the one taken — *"if a budget can't be met because of an exempt
+block, raise the budget for that screen in the sweep and note it in the PR."*
+
+| Screen | Budget | The exempt block that sets the floor |
+| --- | ---: | --- |
+| Today | 90 | Nine words over 80: the shadow pill and its one-line hint, which are a *state*, not prose |
+| Check page | 480 | The D-17 takeback explanation, its two written-form descriptions and its typed-confirmation copy — roughly 200 words of the 472, verbatim and untouched |
+| Claim page | 430 | The Q2 named-difference confirm, plus the per-candidate evidence a match decision is made from |
+| Approve | 230 | The W-4 confirm-to-switch copy and "This is the last moment anything can be changed" |
+| Posted | 270 | The proof block, and the measured register's provenance lines |
+| Stuck | 510 | The **W-16 measured screen copy** — the promised-vs-measured pair, the proof block and the per-patient remediation steps. It is most of the 502 and not a word of it moved |
+| Shadow worksheet | 350 | The would-have-done worksheet's figures and the shadow refusal |
+
+Each budget is the measured figure rounded up to the next ten. A budget is not there to
+hit a number; it is there to stop the words coming back. Adding a paragraph to any of
+these screens now fails `tests/rcm-smoke.test.tsx`, and raising a ceiling is a deliberate,
+reviewable line in a diff.

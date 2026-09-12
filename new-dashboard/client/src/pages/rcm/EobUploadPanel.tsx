@@ -473,7 +473,9 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
       {state.kind === "loaded" &&
         (state.uploads.length === 0 ? (
           <p className="mt-4 text-sm text-muted-foreground" data-testid={`rcm-eob-empty-${office}`}>
-            No EOB documents uploaded for this office yet.
+            {/* S7 · Phase 4: what will appear, and how. */}
+            No EOB documents uploaded for this office yet. Drop a PDF above and a person checks
+            what it read.
           </p>
         ) : (
           <ul className="mt-4 divide-y divide-border" data-testid={`rcm-eob-list-${office}`}>

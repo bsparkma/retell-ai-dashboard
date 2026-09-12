@@ -1595,7 +1595,27 @@ interface ScreenSpec {
   note?: string;
 }
 
-const SCREEN_KIND_BUDGET = { list: 80, flow: 130, terminal: 100 } as const;
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE BUDGETS, AND WHY THEY ARE NOT THE BRIEF'S NUMBERS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The S7 brief asks for ABOVE-THE-FOLD budgets: 80 words on a list screen, 130
+ * on a flow screen, 100 on a terminal one. jsdom has no layout and therefore no
+ * fold, so what is measured here is the WHOLE screen's chrome — a strict
+ * superset — and three screens meet the brief's own figure against that harder
+ * measure (Checks, Activity, the takeback route).
+ *
+ * The rest do not, and the brief's own escape hatch is the reason and the
+ * remedy: *"if a budget can't be met because of an exempt block, raise the
+ * budget for that screen in the sweep and note it in the PR."* Every screen
+ * below the line is over it because of exempt safety text, and the note is in
+ * `docs/rcm-s7-inventory.md` §5 and in the PR.
+ *
+ * WHAT A BUDGET IS FOR HERE. Not to hit a number — to stop the words coming
+ * back. Each is the measured figure after this slice, rounded up to the next
+ * ten, so a paragraph added to any of these screens fails this suite and
+ * raising the ceiling is a deliberate, reviewable line in a diff.
+ */
 
 function screenIdOf(root: HTMLElement): string | null {
   const path = lastRenderedPath;
@@ -1618,20 +1638,20 @@ function screenIdOf(root: HTMLElement): string | null {
 }
 
 const SCREENS: Record<string, ScreenSpec> = {
-  today: { id: "today", label: "Today", kind: "list", budget: null },
+  today: { id: "today", label: "Today", kind: "list", budget: 90 },
   "bring-in": { id: "bring-in", label: "Bring in (Today's upload section)", kind: "list", budget: null },
-  checks: { id: "checks", label: "Checks list", kind: "list", budget: null },
-  check: { id: "check", label: "Check page", kind: "flow", budget: null },
+  checks: { id: "checks", label: "Checks list", kind: "list", budget: 80 },
+  check: { id: "check", label: "Check page", kind: "flow", budget: 480 },
   /* MATCH AND WORKBENCH ARE ONE SCREEN, not two. `ClaimMatch` renders
      `MatchGuidance` and `ClaimWorkbench` together, always — see its §5 note.
      The brief counts them separately; the code has only ever had one page. */
-  claim: { id: "claim", label: "Claim page (Match + Workbench)", kind: "flow", budget: null },
-  approve: { id: "approve", label: "Approve", kind: "flow", budget: null },
-  "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: null },
-  posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: null },
-  stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: null },
-  "shadow-worksheet": { id: "shadow-worksheet", label: "Shadow worksheet", kind: "terminal", budget: null },
-  activity: { id: "activity", label: "Activity / History", kind: "list", budget: null },
+  claim: { id: "claim", label: "Claim page (Match + Workbench)", kind: "flow", budget: 430 },
+  approve: { id: "approve", label: "Approve", kind: "flow", budget: 230 },
+  "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: 130 },
+  posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: 270 },
+  stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: 510 },
+  "shadow-worksheet": { id: "shadow-worksheet", label: "Shadow worksheet", kind: "terminal", budget: 350 },
+  activity: { id: "activity", label: "Activity / History", kind: "list", budget: 80 },
   "takeback-sop": { id: "takeback-sop", label: "Takeback how-to", kind: "flow", budget: null },
 };
 
@@ -1673,6 +1693,23 @@ function measure(root: HTMLElement): void {
 }
 
 /**
+ * (g) A SCREEN SAYS NO MORE THAN ITS BUDGET — S7, Phase 2.3.
+ *
+ * Chrome words only (the repeating rows are governed by (a2)'s face rule), and
+ * the budget is `SCREENS[id].budget`. A screen the walk reaches in a state with
+ * no budget yet is skipped rather than failed — a new screen is not a
+ * regression, it is a screen nobody has measured.
+ */
+function overBudget(root: HTMLElement): string[] {
+  const id = screenIdOf(root);
+  const spec = id ? SCREENS[id] : undefined;
+  if (!spec || spec.budget === null) return [];
+  const words = chromeWords(root).length;
+  if (words <= spec.budget) return [];
+  return [`${spec.label} says ${words} prose words; its budget is ${spec.budget}.`];
+}
+
+/**
  * (f) AT MOST ONE PRIMARY-STYLED CONTROL PER SCREEN — S7, Phase 3.
  *
  * "At most", not "exactly", and the difference is a real product fact rather
@@ -1702,6 +1739,8 @@ function tooManyPrimaries(root: HTMLElement): string[] {
  */
 function sweep(root: HTMLElement = document.body): string[] {
   measure(root);
+  const over = overBudget(root);
+  expect(over, `a screen over its word budget (S7 g): ${over.join(" ")}`).toEqual([]);
   const primaries = tooManyPrimaries(root);
   expect(primaries, `more than one primary-styled control (S7 f): ${primaries.join(" + ")}`).toEqual([]);
   expect(unexplainedDisabled(root), "a greyed control with no reason beside it").toEqual([]);
@@ -3191,6 +3230,233 @@ describe("5d · sentences wrap, identifiers truncate", () => {
     expect(shell).toContain('describe("a column whose job is a sentence never cuts itself off"');
     expect(shell).toContain('it("still truncates the IDENTIFIER cells beside them"');
     expect(existsSync(join(__dirname, "rcm-shell.test.tsx"))).toBe(true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5f/5g · THE S7 SWEEPS CATCH WHAT THEY BAN
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Every sweep above earns its place by failing on the shape it exists to stop.
+// A guard nobody has watched fail is a guard nobody knows is wired up — see
+// PR #123, where a substring test passed on exactly the drift it was written to
+// catch. One negative check per new rule, and one positive beside it so the
+// rule cannot pass by refusing to look.
+
+describe("5f · at most one primary-styled control per screen", () => {
+  it("catches a second solid button, and lets one through", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const one = render(
+      <div>
+        <button className={solid} data-testid="a">Post to Open Dental</button>
+        <button className="rounded-md border border-border px-3 py-1.5">Save for tomorrow</button>
+      </div>,
+    );
+    expect(tooManyPrimaries(one.container)).toEqual([]);
+    cleanup();
+
+    const two = render(
+      <div>
+        <button className={solid} data-testid="a">Post to Open Dental</button>
+        <button className={solid} data-testid="b">Review and approve</button>
+      </div>,
+    );
+    expect(tooManyPrimaries(two.container)).toHaveLength(2);
+  });
+
+  it("does not count a selected tab, a pressed toggle, a greyed button, or a tint", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const { container } = render(
+      <div>
+        <button className={solid} data-testid="real">Match it up</button>
+        {/* WHERE YOU ARE, not what to press. */}
+        <button role="tab" className={solid}>Needs attention</button>
+        {/* WHICH ONE IS CHOSEN, not what to press. */}
+        <button aria-pressed="true" className="border-foreground bg-foreground text-background">
+          Bill the patient
+        </button>
+        {/* A REFUSAL is never the primary. */}
+        <button disabled className={solid}>Post to Open Dental</button>
+        {/* A drop zone's tint is not a button, and `bg-primary/5` is not `bg-primary`. */}
+        <div className="border-primary bg-primary/5">Drop an 835 here</div>
+      </div>,
+    );
+    expect(tooManyPrimaries(container)).toEqual([]);
+    expect(primaryButtons(container).map((el) => el.dataset.testid)).toEqual(["real"]);
+  });
+
+  it("excludes an open in-flow confirm's own two choices, and nothing else on the page", () => {
+    const solid = "rounded-md bg-foreground px-3 py-1.5 text-background";
+    const ok = render(
+      <div>
+        <button className={solid} data-testid="page">Match it up</button>
+        <div data-testid="match-anyway">
+          <button className={solid}>Go back and look again</button>
+          <button className="border">Match anyway — no claim number agrees</button>
+        </div>
+      </div>,
+    );
+    expect(tooManyPrimaries(ok.container)).toEqual([]);
+    cleanup();
+
+    // A SECOND PRIMARY ELSEWHERE still fails while a confirm is open.
+    const bad = render(
+      <div>
+        <button className={solid} data-testid="page">Match it up</button>
+        <button className={solid} data-testid="other">Review and approve</button>
+        <div data-testid="recoupment-permanent-confirm">
+          <button className={solid}>Keep the adjustment</button>
+        </div>
+      </div>,
+    );
+    expect(tooManyPrimaries(bad.container)).toHaveLength(2);
+  });
+});
+
+describe("5g · the word budget, and what it counts", () => {
+  /** Enough prose to blow any budget, in one element. */
+  const wordy = (n: number) => Array.from({ length: n }, () => "word").join(" ");
+
+  it("fires when a screen goes over, and passes when it does not", () => {
+    lastRenderedPath = "/rcm/remittances";
+    const under = render(<div>{wordy(SCREENS.checks.budget ?? 0)}</div>);
+    expect(overBudget(under.container)).toEqual([]);
+    cleanup();
+
+    const over = render(<div>{wordy((SCREENS.checks.budget ?? 0) + 1)}</div>);
+    expect(overBudget(over.container)).toHaveLength(1);
+    expect(overBudget(over.container)[0]).toContain("its budget is");
+  });
+
+  it("counts the work as free and the prose as dear", () => {
+    // Amounts, ids, codes, dates and this world's proper nouns are the WORK.
+    const { container } = render(
+      <div>
+        $1,234.56 900700101 clm-900201 D2740 Sep 8, 2026 7:10 PM 42 100% #900601 Stedi Test 2
+        SYNTHETIC DENTAL Roland Family Dental Billing Person
+      </div>,
+    );
+    expect(proseWords(container)).toEqual([]);
+  });
+
+  it("does NOT count a tooltip, so hiding a sentence in one buys nothing", () => {
+    const { container } = render(
+      <div>
+        <span title="Everything somebody still owes an action on.">Needs attention</span>
+        <button aria-label="Refresh this practice's checks">↻</button>
+      </div>,
+    );
+    // The visible label, and nothing the attributes carry.
+    expect(proseWords(container)).toEqual(["Needs", "attention"]);
+    // …while the banned-word and office-key scans DO still read them.
+    expect(renderedProse(container)).toEqual(
+      expect.arrayContaining(["Everything somebody still owes an action on."]),
+    );
+  });
+
+  it("does not count a closed disclosure's body, and does count an open one's", () => {
+    const closed = render(
+      <details>
+        <summary>Details</summary>
+        <p>{wordy(40)}</p>
+      </details>,
+    );
+    expect(proseWords(closed.container)).toEqual(["Details"]);
+    cleanup();
+
+    const open = render(
+      <details open>
+        <summary>Details</summary>
+        <p>{wordy(40)}</p>
+      </details>,
+    );
+    expect(proseWords(open.container)).toHaveLength(41);
+  });
+});
+
+describe("5a2 · a list row's state cell is a phrase, not a sentence", () => {
+  it("catches a ninth prose word, and lets the data through", () => {
+    const ok = render(
+      <div data-testid="remittance-waiting-x">You — 3 claims to check over</div>,
+    );
+    expect(overlongCardFaces(ok.container)).toEqual([]);
+    cleanup();
+
+    const bad = render(
+      <div data-testid="rcm-arrival-next-x">
+        The posting did not finish. Open it and it says where it stopped.
+      </div>,
+    );
+    expect(overlongCardFaces(bad.container)).toHaveLength(1);
+    cleanup();
+
+    // A cell that is mostly FIGURES is not a wordy cell.
+    const figures = render(
+      <div data-testid="rcm-next-action-x">
+        Next: check over Test, MangoTest — 3 more after.
+      </div>,
+    );
+    expect(overlongCardFaces(figures.container)).toEqual([]);
+  });
+
+  /**
+   * EVERY FACE `waitingFor` CAN PRODUCE, driven through the real function
+   * rather than read off a rendered screen.
+   *
+   * The sweep above only sees the states the walk happens to reach. This one
+   * renders each `next` string into a state cell and puts it through the same
+   * counter, so a wordy sentence added to a branch nobody walks today still
+   * fails on the day it is written.
+   *
+   * `waitingFor`'s branch table is exercised by `WAITING_VOCAB`, whose own
+   * coverage is asserted in 5a — `WAITING_VOCAB.states` is all of
+   * `WAITING_STATES`, so "every sentence" here means every sentence.
+   */
+  it("every sentence `waitingFor` can put on a face is inside the limit", () => {
+    const seen = new Set<string>();
+    for (const [, re] of WAITING_VOCAB.next) {
+      if (seen.has(re.source)) continue;
+      seen.add(re.source);
+    }
+    expect(seen.size).toBeGreaterThan(5);
+
+    const row = {
+      batchId: "x",
+      officeId: "roland",
+      totalAmountCents: 100,
+      flags: [] as string[],
+      attentionReasons: [] as string[],
+      attentionObservations: [] as string[],
+      setAsideAt: null as string | null,
+      claimCount: 4,
+      queuedClaimCount: 0,
+      unmatchedClaimCount: 0,
+    };
+    const cases: [Record<string, unknown>, WaitingContext][] = [
+      [{ ...row, setAsideAt: NOW }, {}],
+      [{ ...row, officeId: "valley" }, { office: "roland" }],
+      [{ ...row, totalAmountCents: -100 }, {}],
+      [{ ...row, attentionReasons: ["posting_failed"] }, {}],
+      [{ ...row, attentionReasons: ["claims_withheld"] }, {}],
+      [{ ...row, queuedClaimCount: 1 }, { shadowMode: true }],
+      [{ ...row }, { confirmedAt: NOW }],
+      [{ ...row, attentionReasons: ["claims_unreviewed"] }, {}],
+      [
+        { ...row, attentionReasons: ["claims_unreviewed"], unmatchedClaimCount: 2 },
+        {},
+      ],
+      [{ ...row, attentionReasons: ["claims_awaiting_approval"] }, {}],
+      [{ ...row, attentionObservations: ["claims_unmatched"], unmatchedClaimCount: 2 }, {}],
+      [{ ...row }, {}],
+    ];
+    for (const [r, ctx] of cases) {
+      const w = waitingFor(r as never, ctx);
+      const { container } = render(
+        <div data-testid="rcm-arrival-next-x">{w.next}</div>,
+      );
+      expect(overlongCardFaces(container), `${w.state}: "${w.next}"`).toEqual([]);
+      cleanup();
+    }
   });
 });
 

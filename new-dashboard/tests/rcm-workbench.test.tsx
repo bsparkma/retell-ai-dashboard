@@ -737,7 +737,7 @@ describe("the remittance list", () => {
     // 600 of them reads as a broken screen.
     await waitFor(() =>
       expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
-        "Nothing needs attention here.",
+        "Nothing needs attention. Checks land here when an 835 arrives.",
       ),
     );
     /*
