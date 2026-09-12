@@ -102,6 +102,7 @@ import {
 import { planFlow, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import Explainer from "@/components/rcm/Explainer";
 import CopyChip from "@/components/rcm/CopyChip";
 
 export default function PostingQueue() {
@@ -163,17 +164,31 @@ export default function PostingQueue() {
         >
           Posting history
         </h1>
+        {/*
+          S7 · SEVENTY-FIVE OF THIS SCREEN'S HUNDRED-AND-NINE PROSE WORDS WERE
+          THESE TWO PARAGRAPHS, one of which exists to tell the reader they did
+          not need to come here. Both are true and both are worth having — this
+          is the screen that posts a whole practice's waiting set at once, and
+          somebody standing in front of that button should be able to find out
+          exactly what it does. It is one line, and then one click.
+
+          `posting-history-note` keeps its test id: it is the same sentence, in
+          the same place, behind a fold.
+        */}
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Every check this practice has approved, and what happened to each one — line by line,
-          with what it wrote and what Open Dental said back. Posting writes each line&rsquo;s
-          adjudication, marks the claim received and creates the check, then asks Open Dental for
-          each write again to confirm it took.
+          Every check this practice has approved, and what happened to each one.
         </p>
-        <p className="mt-1 max-w-3xl text-sm text-muted-foreground" data-testid="posting-history-note">
-          You do not have to come here to post one check — that is on the check&rsquo;s own page,
-          and it is the same act. This screen is for posting a practice&rsquo;s whole waiting set at
-          once, and for looking at what already happened.
-        </p>
+        <Explainer testId="posting-history-what" label="What posting does, and when to use this screen">
+          <p className="max-w-3xl">
+            Posting writes each line&rsquo;s adjudication, marks the claim received and creates
+            the check, then asks Open Dental for each write again to confirm it took.
+          </p>
+          <p className="max-w-3xl" data-testid="posting-history-note">
+            You do not have to come here to post one check — that is on the check&rsquo;s own
+            page, and it is the same act. This screen is for posting a practice&rsquo;s whole
+            waiting set at once, and for looking at what already happened.
+          </p>
+        </Explainer>
       </div>
 
       {scope.offices.length === 0 ? (

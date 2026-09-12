@@ -1531,10 +1531,23 @@ function ClaimTriageRow({
           ) : null}
         </div>
         {claim.odMatchStatus === "confirmed" && mayRelease && (
-          <p className="max-w-md pt-0.5 text-xs text-muted-foreground">
-            This one is already tied to a chart claim. Matching it again replaces that and un-ties
-            it; the confirmation stays in the audit trail.
-          </p>
+          /*
+            S7 · ONE OF THESE RENDERS PER CONFIRMED CLAIM.
+            Twenty-eight words under a button labelled *Match this claim again*,
+            repeated down the table — fifty-six on a two-claim check, and more
+            on a real one. It is exactly the consequence somebody wants before
+            pressing it and exactly the paragraph nobody wants while scanning
+            the table for the row that does not line up. One click, per row.
+          */
+          <Explainer
+            testId={`rematch-consequence-${claim.claimId}`}
+            label="What matching it again does"
+          >
+            <p className="max-w-md">
+              This one is already tied to a chart claim. Matching it again replaces that and
+              un-ties it; the confirmation stays in the audit trail.
+            </p>
+          </Explainer>
         )}
         {rematchNote && (
           <p

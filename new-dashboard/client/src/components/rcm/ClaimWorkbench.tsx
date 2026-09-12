@@ -92,6 +92,7 @@ import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { approveHref } from "@/features/rcm/flow";
 import { verdictBlock, type VerdictBlock } from "@/features/rcm/verdictBlock";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import Explainer from "@/components/rcm/Explainer";
 
 /**
  * `claim` is the DETAIL claim, not `WorkbenchClaim`.
@@ -1789,6 +1790,17 @@ function MatchMeta({
           data-testid="match-ambiguous"
         >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+          {/*
+            S7 LOOKED AT TRIMMING THE SECOND SENTENCE AND PUT IT BACK.
+
+            It reads as a duplicate of `MatchGuidance`'s paragraph one panel up,
+            and it is not one: that paragraph is now behind a fold, and two
+            earlier slices deliberately kept THIS chip outside every fold
+            because it changes what to do rather than describing how the search
+            ran (`rcm-stage-c3.test.tsx`, `rcm-workbench.test.tsx`). With the
+            guidance folded, this is the only sentence on the screen saying out
+            loud that the app has NOT chosen. It stays whole.
+          */}
           <span>
             The top candidates are within {rules.ambiguityMargin} points of each other. The ranking
             below is not a recommendation — read the evidence and decide.
@@ -2077,10 +2089,16 @@ function ReviewBox({
           </span>
         )}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Worklist hygiene only — this changes nothing in Open Dental. A claim with no chart match can
-        still be finished work.
-      </p>
+      {/* S7: twenty words explaining a control whose own label is *Mark it
+          reviewed*. Worth having — "a claim with no chart match can still be
+          finished work" is the sentence that unsticks somebody — and worth one
+          click rather than a paragraph every visit. */}
+      <Explainer testId="mark-reviewed-why" label="What this does">
+        <p>
+          Worklist hygiene only — this changes nothing in Open Dental. A claim with no chart match
+          can still be finished work.
+        </p>
+      </Explainer>
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}

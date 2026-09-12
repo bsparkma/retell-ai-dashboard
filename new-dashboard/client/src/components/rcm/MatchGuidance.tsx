@@ -54,6 +54,7 @@
  * NO REAL PATIENT DATA anywhere in this file.
  */
 import { Building2, CheckCircle2, Info, Search } from "lucide-react";
+import Explainer from "@/components/rcm/Explainer";
 import { Link } from "wouter";
 import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
 import { agreement, differences, likelihood } from "@/features/rcm/matchWords";
@@ -326,10 +327,16 @@ export default function MatchGuidance({
         <Info size={15} />
         More than one of these could be it
       </h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Here is how each one differs from what the carrier sent. Nothing below decides between
-        them — that is yours.
-      </p>
+      {/* S7: the heading already says more than one could be it, and the cards
+          below already print the differences. What is worth keeping is the
+          refusal — the app has NOT chosen — and it is one click down rather
+          than a paragraph between the heading and the evidence. */}
+      <Explainer testId="match-guidance-unsure-why" label="How to read these">
+        <p>
+          Here is how each one differs from what the carrier sent. Nothing below decides between
+          them — that is yours.
+        </p>
+      </Explainer>
 
       <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {candidates.slice(0, 3).map((c) => (
