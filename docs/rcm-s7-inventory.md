@@ -207,7 +207,7 @@ Same command, same walk, same counter.
 | Screen | Chrome words before → after | Actions | Primary buttons before → after | Budget now |
 | --- | --- | ---: | --- | ---: |
 | Today | **253 → 89** | 16 → 17 | **0 → 1** (“Start”) | 90 |
-| Checks list | 72 → 72 | 8 | 0 → 0 | 80 |
+| Checks list | 72 → 72 populated · **98 empty** | 8 | 0 → 0 | 100 |
 | Check page | **527 → 472** | 18 → 16 | **3 → 1** | 480 |
 | Claim page (Match + Workbench) | **487 → 426** | 18 → 17 | **4 → 1** | 430 |
 | Approve | **362 → 220** | 5 | 1 → 1 | 230 |
@@ -235,8 +235,17 @@ is about, and every one that was pinned by a test keeps its test id.
 
 The brief asks for above-the-fold budgets — 80 · 130 · 100. jsdom has no fold, so the
 budget is enforced against the **whole screen's chrome**, which is strictly harder.
-Three screens meet the brief's own figure against that harder measure: **Checks (72/80)**,
-**Activity (39/80)** and **the takeback route (127/130)**.
+Two screens meet the brief's own figure against that harder measure: **Activity (39/80)**
+and **the takeback route (127/130)**.
+
+**A correction, found by the PM's negative-check requirement.** This section previously
+also claimed Checks at 72/80. That figure is the POPULATED screen, and until the review
+pass nothing in the suite rendered an empty one. Walked to, the empty Checks page measures
+**98** — because Phase 4 requires an empty panel to say what will land in it and how, and
+that costs about twenty words the screen does not spend when it has rows to show. Its
+budget is the empty state's, 100, since the empty state is the worst case. **Phase 4 and
+Phase 2.3 pull against each other on exactly one screen, and Phase 4 wins**: a new hire
+meeting an empty queue is the person this whole slice is for.
 
 The rest are over it, every one of them because of text the brief itself exempts, and the
 brief's own remedy is the one taken — *"if a budget can't be met because of an exempt
@@ -245,6 +254,7 @@ block, raise the budget for that screen in the sweep and note it in the PR."*
 | Screen | Budget | The exempt block that sets the floor |
 | --- | ---: | --- |
 | Today | 90 | Nine words over 80: the shadow pill and its one-line hint, which are a *state*, not prose |
+| Checks list | 100 | Not an exemption — Phase 4. The empty panel has to teach, and teaching costs ~20 words. Populated, this screen is 72 |
 | Check page | 480 | The D-17 takeback explanation, its two written-form descriptions and its typed-confirmation copy — roughly 200 words of the 472, verbatim and untouched |
 | Claim page | 430 | The Q2 named-difference confirm, plus the per-candidate evidence a match decision is made from |
 | Approve | 230 | The W-4 confirm-to-switch copy and "This is the last moment anything can be changed" |
@@ -256,3 +266,36 @@ Each budget is the measured figure rounded up to the next ten. A budget is not t
 hit a number; it is there to stop the words coming back. Adding a paragraph to any of
 these screens now fails `tests/rcm-smoke.test.tsx`, and raising a ceiling is a deliberate,
 reviewable line in a diff.
+
+---
+
+## 6. The negative checks, and what they found (PM review, 2026-09-11)
+
+The review required every new pin to be **shown failing with its fix undone**, then passing
+restored. Four fixes were reverted in the working tree one at a time and the suite re-run.
+Three sweeps caught their own regression immediately. One did not, and that is the useful
+result:
+
+| Sweep | Fix undone | Result |
+| --- | --- | --- |
+| **(f)** one primary | `approve-open-page` painted solid again | **FAILED**, 3 cases — *"button[rcm-cta] "Match it up" + a[approve-open-page] "Review and approve""* |
+| **(a2)** chip + phrase | the takeback clause put back on the row face | **FAILED**, 3 cases — *"rcm-arrival-next-x says 11 prose words"* |
+| **(g)** word budget | Today's three queue-card definitions restored | **FAILED**, many cases — *"Today says 127 prose words; its budget is 90."* |
+| **(h)** empty states | the *what lands here* line deleted | **PASSED — the guard never ran** |
+
+**(h) was vacuous.** No case in the suite rendered an empty list, so a rule about empty
+panels was judging markup nobody produced. Two walk cases now go somewhere with nothing in
+it — the real `RemittanceList` with one set-aside check, and the real `PostingQueue` with
+nothing waiting — and with those in place the same mutation fails.
+
+Two defects in the sweep itself fell out of writing them, both of which would have shipped
+a guard that could not catch what it was for:
+
+1. **It judged the buttons inside the panel as panels.** A prefix match on
+   `remittances-empty-` caught `remittances-empty-see-all-roland` and reported *"See all of
+   them" is a bare negation*. Anchored on the office key now.
+2. **An exit counted as an answer.** The first rule accepted *any* control as "the how", so
+   a panel reading "Nothing needs attention." beside **See all of them** and **Back to
+   Today** passed — two ways out of an empty queue and not one word about what would fill
+   it. The rule now reads the arrival verb only; a button counts by saying one
+   (*Add a check*, *Bring one in*), never by merely existing.
