@@ -152,4 +152,11 @@ _(the exam numbers created, and the "confirmed gone" lines from step 3)_
 
 ## 6. Push / PR
 
-PR_PLACEHOLDER
+Pushed. **PR #178** — `feature/hyg-perio-arch-probe` → `develop`:
+https://github.com/bsparkma/retell-ai-dashboard/pull/178
+
+Independent of #176 and #177: it touches only `backend/scripts/`, one new test file and one
+allow-list entry. It can merge first, and the run in §4 needs it deployed to staging.
+
+**Queue item 12 (the perio send) is not started, by its own instruction:** *"DO NOT START THIS
+UNTIL ITEM 11'S PROBE HAS BEEN RUN AND ITS FINDINGS ARE RECORDED."*
