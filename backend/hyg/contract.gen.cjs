@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z4 = __importStar(require_external());
-    exports2.z = z4;
+    var z5 = __importStar(require_external());
+    exports2.z = z5;
     __exportStar(require_external(), exports2);
-    exports2.default = z4;
+    exports2.default = z5;
   }
 });
 
@@ -14844,6 +14844,8 @@ __export(contract_entry_exports, {
   HygIdentitySchema: () => HygIdentitySchema,
   HygIdentityStateSchema: () => HygIdentityStateSchema,
   HygOperatorySchema: () => HygOperatorySchema,
+  HygPerioPriorResponseSchema: () => HygPerioPriorResponseSchema,
+  HygPerioResponseSchema: () => HygPerioResponseSchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
   HygVisitResponseSchema: () => HygVisitResponseSchema,
@@ -14860,9 +14862,29 @@ __export(contract_entry_exports, {
   OFFICE_IDS: () => OFFICE_IDS,
   OFFICE_TIME_ZONE: () => OFFICE_TIME_ZONE,
   OfficeIdSchema: () => OfficeIdSchema,
+  PERIO_FLAGS: () => PERIO_FLAGS,
+  PERIO_FLAG_KEYS: () => PERIO_FLAG_KEYS,
+  PERIO_FLAG_LABELS: () => PERIO_FLAG_LABELS,
+  PERIO_FULL_MOUTH_SITES: () => PERIO_FULL_MOUTH_SITES,
+  PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
+  PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
+  PERIO_SEGMENTS: () => PERIO_SEGMENTS,
+  PERIO_SITES_PER_TOOTH: () => PERIO_SITES_PER_TOOTH,
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
+  PERIO_TOOTH_COUNT: () => PERIO_TOOTH_COUNT,
+  PERIO_UPPER_TEETH: () => PERIO_UPPER_TEETH,
+  PerioChartSaveRequestSchema: () => PerioChartSaveRequestSchema,
+  PerioChartSchema: () => PerioChartSchema,
+  PerioCountsSchema: () => PerioCountsSchema,
+  PerioDirectionSchema: () => PerioDirectionSchema,
   PerioGradeSchema: () => PerioGradeSchema,
+  PerioPriorSchema: () => PerioPriorSchema,
+  PerioSegmentSchema: () => PerioSegmentSchema,
+  PerioSiteSchema: () => PerioSiteSchema,
   PerioStageSchema: () => PerioStageSchema,
+  PerioSweepSchema: () => PerioSweepSchema,
+  PerioToothKeySchema: () => PerioToothKeySchema,
+  PerioToothSchema: () => PerioToothSchema,
   RECORDS_MATRIX: () => RECORDS_MATRIX,
   RECORD_STATUS_LABELS: () => RECORD_STATUS_LABELS,
   RecordStatusSchema: () => RecordStatusSchema,
@@ -14891,23 +14913,47 @@ __export(contract_entry_exports, {
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod3.ZodError,
+  ZodError: () => import_zod4.ZodError,
+  bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
+  chartingOrder: () => chartingOrder,
   controlLabel: () => controlLabel,
   controlsFor: () => controlsFor,
+  countPerioChart: () => countPerioChart,
+  defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
   emptyNoteField: () => emptyNoteField,
+  emptyPerioChart: () => emptyPerioChart,
+  emptyPerioSite: () => emptyPerioSite,
+  emptyPerioTooth: () => emptyPerioTooth,
   emptySlip: () => emptySlip,
   fieldText: () => fieldText,
+  firstOpenPerioCursor: () => firstOpenPerioCursor,
+  flagsFromBits: () => flagsFromBits,
   freeFieldsFor: () => freeFieldsFor,
   hasPerioChartLine: () => hasPerioChartLine,
   isAnswered: () => isAnswered,
   isChildVisit: () => isChildVisit,
   isOfficeId: () => isOfficeId,
+  isPatientRight: () => isPatientRight,
+  normalizePerioChart: () => normalizePerioChart,
+  perioPreviewLines: () => perioPreviewLines,
+  perioProgressLabel: () => perioProgressLabel,
+  perioSegmentOf: () => perioSegmentOf,
+  perioSideOf: () => perioSideOf,
+  perioSite: () => perioSite,
+  perioTooth: () => perioTooth,
   recordsNeededFor: () => recordsNeededFor,
   renderVisitNote: () => renderVisitNote,
+  sameCursor: () => sameCursor,
+  samePerioReadings: () => samePerioReadings,
+  screenSites: () => screenSites,
+  segmentOrder: () => segmentOrder,
   slipNoteField: () => slipNoteField,
+  stepPerioCursor: () => stepPerioCursor,
   suggestVisitType: () => suggestVisitType,
-  z: () => import_zod3.z
+  withPerioSite: () => withPerioSite,
+  withPerioSkipped: () => withPerioSkipped,
+  z: () => import_zod4.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -15921,7 +15967,10 @@ var HYG_VISIT_ERROR_CODES = [
   // Slice 3.
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
-  "NOT_STAGED"
+  "NOT_STAGED",
+  // H4 slice 10. A perio chart stages; sending one is the next slice.
+  "PERIO_SEND_NOT_BUILT",
+  "PATIENT_CHANGED"
 ];
 
 // shared/hyg/records.ts
@@ -15975,8 +16024,371 @@ function recordsNeededFor(items) {
   return out;
 }
 
+// shared/hyg/perio.ts
+var import_zod3 = __toESM(require_zod(), 1);
+var PERIO_MAX_DEPTH = 19;
+var PERIO_TOOTH_COUNT = 32;
+var PERIO_SITES_PER_TOOTH = 6;
+var PERIO_FULL_MOUTH_SITES = PERIO_TOOTH_COUNT * PERIO_SITES_PER_TOOTH;
+var PERIO_UPPER_TEETH = Array.from({ length: 16 }, (_, i) => i + 1);
+var PERIO_LOWER_TEETH = Array.from({ length: 16 }, (_, i) => 32 - i);
+var PerioSiteSchema = import_zod3.z.object({
+  depth: import_zod3.z.number().int().min(0).max(PERIO_MAX_DEPTH).nullable(),
+  bleeding: import_zod3.z.boolean(),
+  suppuration: import_zod3.z.boolean(),
+  plaque: import_zod3.z.boolean(),
+  calculus: import_zod3.z.boolean()
+}).strict();
+var PERIO_FLAGS = ["bleeding", "suppuration", "plaque", "calculus"];
+var PERIO_FLAG_LABELS = {
+  bleeding: "Bleeding",
+  suppuration: "Suppuration",
+  plaque: "Plaque",
+  calculus: "Calculus"
+};
+var PERIO_FLAG_KEYS = {
+  bleeding: "B",
+  suppuration: "S",
+  plaque: "P",
+  calculus: "C"
+};
+var PerioToothSchema = import_zod3.z.object({
+  skipped: import_zod3.z.boolean(),
+  sites: import_zod3.z.object({
+    DB: PerioSiteSchema,
+    B: PerioSiteSchema,
+    MB: PerioSiteSchema,
+    DL: PerioSiteSchema,
+    L: PerioSiteSchema,
+    ML: PerioSiteSchema
+  }).strict()
+}).strict();
+var PerioToothKeySchema = import_zod3.z.string().regex(/^(?:[1-9]|[12]\d|3[0-2])$/, "must be a universal tooth number from 1 to 32");
+var PerioSegmentSchema = import_zod3.z.enum([
+  "upperFacial",
+  "upperLingual",
+  "lowerLingual",
+  "lowerFacial"
+]);
+var PerioDirectionSchema = import_zod3.z.enum(["ltr", "rtl"]);
+var PerioSweepSchema = import_zod3.z.object({
+  upperFacial: PerioDirectionSchema,
+  upperLingual: PerioDirectionSchema,
+  lowerLingual: PerioDirectionSchema,
+  lowerFacial: PerioDirectionSchema
+}).strict();
+function defaultPerioSweep() {
+  return { upperFacial: "ltr", upperLingual: "rtl", lowerLingual: "ltr", lowerFacial: "rtl" };
+}
+var PerioChartSchema = import_zod3.z.object({
+  teeth: import_zod3.z.record(PerioToothKeySchema, PerioToothSchema),
+  sweep: PerioSweepSchema.default(defaultPerioSweep)
+}).strict();
+function emptyPerioSite() {
+  return { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false };
+}
+function emptyPerioTooth() {
+  return {
+    skipped: false,
+    sites: {
+      DB: emptyPerioSite(),
+      B: emptyPerioSite(),
+      MB: emptyPerioSite(),
+      DL: emptyPerioSite(),
+      L: emptyPerioSite(),
+      ML: emptyPerioSite()
+    }
+  };
+}
+function emptyPerioChart() {
+  return { teeth: {}, sweep: defaultPerioSweep() };
+}
+function perioTooth(chart, tooth) {
+  return chart.teeth[String(tooth)] ?? emptyPerioTooth();
+}
+function perioSite(chart, tooth, surface) {
+  return perioTooth(chart, tooth).sites[surface];
+}
+function withPerioSite(chart, tooth, surface, patch) {
+  const current = perioTooth(chart, tooth);
+  const next = {
+    skipped: current.skipped,
+    sites: { ...current.sites, [surface]: { ...current.sites[surface], ...patch } }
+  };
+  return { ...chart, teeth: { ...chart.teeth, [String(tooth)]: next } };
+}
+function withPerioSkipped(chart, tooth, skipped) {
+  const current = perioTooth(chart, tooth);
+  return {
+    ...chart,
+    teeth: { ...chart.teeth, [String(tooth)]: { skipped, sites: current.sites } }
+  };
+}
+function isPatientRight(tooth) {
+  return tooth >= 1 && tooth <= 8 || tooth >= 25 && tooth <= 32;
+}
+function perioSideOf(surface) {
+  return surface === "DB" || surface === "B" || surface === "MB" ? "facial" : "lingual";
+}
+function screenSites(tooth, side) {
+  const right = isPatientRight(tooth);
+  if (side === "facial") return right ? ["DB", "B", "MB"] : ["MB", "B", "DB"];
+  return right ? ["DL", "L", "ML"] : ["ML", "L", "DL"];
+}
+var PERIO_SEGMENTS = [
+  { id: "upperFacial", arch: "upper", side: "facial", teeth: PERIO_UPPER_TEETH, label: "Upper facial" },
+  { id: "upperLingual", arch: "upper", side: "lingual", teeth: PERIO_UPPER_TEETH, label: "Upper lingual" },
+  { id: "lowerLingual", arch: "lower", side: "lingual", teeth: PERIO_LOWER_TEETH, label: "Lower lingual" },
+  { id: "lowerFacial", arch: "lower", side: "facial", teeth: PERIO_LOWER_TEETH, label: "Lower facial" }
+];
+function perioSegmentOf(tooth, surface) {
+  const upper = tooth <= 16;
+  const facial = perioSideOf(surface) === "facial";
+  if (upper) return facial ? "upperFacial" : "upperLingual";
+  return facial ? "lowerFacial" : "lowerLingual";
+}
+function sameCursor(a, b) {
+  return a !== null && b !== null && a.tooth === b.tooth && a.surface === b.surface;
+}
+function segmentOrder(segment, direction) {
+  const teeth = direction === "ltr" ? segment.teeth.slice() : segment.teeth.slice().reverse();
+  const out = [];
+  for (const tooth of teeth) {
+    const sites = screenSites(tooth, segment.side);
+    if (direction === "rtl") sites.reverse();
+    for (const surface of sites) out.push({ tooth, surface });
+  }
+  return out;
+}
+function chartingOrder(sweep) {
+  const out = [];
+  for (const segment of PERIO_SEGMENTS) out.push(...segmentOrder(segment, sweep[segment.id]));
+  return out;
+}
+function stepPerioCursor(chart, from, step) {
+  const order = chartingOrder(chart.sweep);
+  let i = order.findIndex((c) => sameCursor(c, from));
+  if (i === -1) return null;
+  for (i += step; i >= 0 && i < order.length; i += step) {
+    if (!perioTooth(chart, order[i].tooth).skipped) return order[i];
+  }
+  return null;
+}
+function firstOpenPerioCursor(chart) {
+  const order = chartingOrder(chart.sweep);
+  const open = order.find(
+    (c) => !perioTooth(chart, c.tooth).skipped && perioSite(chart, c.tooth, c.surface).depth === null
+  );
+  if (open) return open;
+  const chartable = order.find((c) => !perioTooth(chart, c.tooth).skipped);
+  return chartable ?? order[0];
+}
+function bleedSupPlaqCalcBits(site) {
+  return (site.bleeding ? 1 : 0) + (site.suppuration ? 2 : 0) + (site.plaque ? 4 : 0) + (site.calculus ? 8 : 0);
+}
+function flagsFromBits(bits) {
+  if (typeof bits !== "number" || !Number.isInteger(bits) || bits < 0 || bits > 15) return null;
+  return {
+    bleeding: (bits & 1) !== 0,
+    suppuration: (bits & 2) !== 0,
+    plaque: (bits & 4) !== 0,
+    calculus: (bits & 8) !== 0
+  };
+}
+var PerioCountsSchema = import_zod3.z.object({
+  /** Sites with a depth, on teeth that are not skipped. */
+  sitesCharted: import_zod3.z.number().int(),
+  /** 192, less six for every skipped tooth. */
+  sitesExpected: import_zod3.z.number().int(),
+  teethSkipped: import_zod3.z.array(import_zod3.z.number().int()),
+  bleeding: import_zod3.z.number().int(),
+  suppuration: import_zod3.z.number().int(),
+  plaque: import_zod3.z.number().int(),
+  calculus: import_zod3.z.number().int(),
+  sitesAtLeast5: import_zod3.z.number().int(),
+  deepest: import_zod3.z.object({ depth: import_zod3.z.number().int(), tooth: import_zod3.z.number().int(), surface: ToothSurfaceSchema }).nullable(),
+  /** Every expected site charted. A partial chart is `false` and SAYS so. */
+  complete: import_zod3.z.boolean(),
+  /** No depth, no flag, no skipped tooth — nothing to stage. */
+  empty: import_zod3.z.boolean()
+});
+var FACIAL_SITES = ["DB", "B", "MB"];
+var LINGUAL_SITES = ["DL", "L", "ML"];
+var ALL_SITES = [...FACIAL_SITES, ...LINGUAL_SITES];
+function countPerioChart(chart) {
+  const counts = {
+    sitesCharted: 0,
+    sitesExpected: PERIO_FULL_MOUTH_SITES,
+    teethSkipped: [],
+    bleeding: 0,
+    suppuration: 0,
+    plaque: 0,
+    calculus: 0,
+    sitesAtLeast5: 0,
+    deepest: null,
+    complete: false,
+    empty: true
+  };
+  for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
+    const t = perioTooth(chart, tooth);
+    if (t.skipped) {
+      counts.teethSkipped.push(tooth);
+      continue;
+    }
+    for (const surface of ALL_SITES) {
+      const site = t.sites[surface];
+      if (site.depth !== null) {
+        counts.sitesCharted += 1;
+        if (site.depth >= 5) counts.sitesAtLeast5 += 1;
+        if (counts.deepest === null || site.depth > counts.deepest.depth) {
+          counts.deepest = { depth: site.depth, tooth, surface };
+        }
+      }
+      for (const flag of PERIO_FLAGS) if (site[flag]) counts[flag] += 1;
+    }
+  }
+  counts.sitesExpected = PERIO_FULL_MOUTH_SITES - PERIO_SITES_PER_TOOTH * counts.teethSkipped.length;
+  counts.complete = counts.sitesExpected > 0 && counts.sitesCharted === counts.sitesExpected;
+  counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
+  return counts;
+}
+function perioProgressLabel(counts) {
+  const skipped = counts.teethSkipped.length;
+  const tail = skipped === 0 ? "" : ` (${skipped} ${skipped === 1 ? "tooth" : "teeth"} skipped)`;
+  const head = counts.complete ? "Full chart" : "Partial chart";
+  return `${head}: ${counts.sitesCharted} of ${counts.sitesExpected} sites charted${tail}`;
+}
+function siteIsEmpty(site) {
+  return site.depth === null && PERIO_FLAGS.every((flag) => !site[flag]);
+}
+function normalizePerioChart(chart) {
+  const teeth = {};
+  for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
+    const stored = chart.teeth[String(tooth)];
+    if (!stored) continue;
+    const sites = {
+      DB: { ...emptyPerioSite(), ...stored.sites.DB },
+      B: { ...emptyPerioSite(), ...stored.sites.B },
+      MB: { ...emptyPerioSite(), ...stored.sites.MB },
+      DL: { ...emptyPerioSite(), ...stored.sites.DL },
+      L: { ...emptyPerioSite(), ...stored.sites.L },
+      ML: { ...emptyPerioSite(), ...stored.sites.ML }
+    };
+    const canonical = { skipped: stored.skipped, sites: {} };
+    for (const surface of ALL_SITES) {
+      const s = sites[surface];
+      canonical.sites[surface] = {
+        depth: s.depth,
+        bleeding: s.bleeding,
+        suppuration: s.suppuration,
+        plaque: s.plaque,
+        calculus: s.calculus
+      };
+    }
+    if (!canonical.skipped && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
+      continue;
+    }
+    teeth[String(tooth)] = canonical;
+  }
+  const sweep = chart.sweep ?? defaultPerioSweep();
+  return {
+    teeth,
+    sweep: {
+      upperFacial: sweep.upperFacial,
+      upperLingual: sweep.upperLingual,
+      lowerLingual: sweep.lowerLingual,
+      lowerFacial: sweep.lowerFacial
+    }
+  };
+}
+function samePerioReadings(a, b) {
+  return JSON.stringify(normalizePerioChart(a).teeth) === JSON.stringify(normalizePerioChart(b).teeth);
+}
+function teethList(teeth) {
+  return teeth.map((t) => "#" + t).join(", ");
+}
+function perioPreviewLines(chart) {
+  const normalized = normalizePerioChart(chart);
+  const counts = countPerioChart(normalized);
+  const lines = [perioProgressLabel(counts)];
+  if (counts.teethSkipped.length > 0) lines.push("Teeth skipped: " + teethList(counts.teethSkipped));
+  lines.push(
+    `Bleeding: ${counts.bleeding} sites; suppuration: ${counts.suppuration}; plaque: ${counts.plaque}; calculus: ${counts.calculus}`
+  );
+  if (counts.deepest !== null) {
+    lines.push(
+      `Deepest: ${counts.deepest.depth} mm at #${counts.deepest.tooth} ${counts.deepest.surface}; sites 5 mm or deeper: ${counts.sitesAtLeast5}`
+    );
+  }
+  lines.push("Depths read DB B MB (facial) and DL L ML (lingual); - is not charted.");
+  const notCharted = [];
+  for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
+    const t = normalized.teeth[String(tooth)];
+    if (!t) {
+      notCharted.push(tooth);
+      continue;
+    }
+    if (t.skipped) {
+      lines.push(`  #${tooth} skipped`);
+      continue;
+    }
+    const depths = (sites) => sites.map((s) => t.sites[s].depth === null ? "-" : String(t.sites[s].depth)).join(" ");
+    const flagParts = [];
+    for (const flag of PERIO_FLAGS) {
+      const at = ALL_SITES.filter((s) => t.sites[s][flag]);
+      if (at.length > 0) flagParts.push(`${flag} ${at.join(", ")}`);
+    }
+    lines.push(
+      `  #${tooth} facial ${depths(FACIAL_SITES)}, lingual ${depths(LINGUAL_SITES)}` + (flagParts.length > 0 ? "; " + flagParts.join("; ") : "")
+    );
+  }
+  if (notCharted.length > 0 && notCharted.length < PERIO_TOOTH_COUNT) {
+    lines.push("Not charted: " + teethList(notCharted));
+  }
+  return lines;
+}
+var PerioChartSaveRequestSchema = import_zod3.z.object({ chart: PerioChartSchema }).strict();
+var HygPerioResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: import_zod3.z.number().int(),
+  /** False until somebody changes something on this appointment. */
+  visitStarted: import_zod3.z.boolean(),
+  chart: PerioChartSchema,
+  stagedWrite: StagedWriteSchema.nullable(),
+  counts: PerioCountsSchema
+});
+var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
+  import_zod3.z.object({
+    status: import_zod3.z.literal("found"),
+    examNum: import_zod3.z.number().int(),
+    /** Open Dental's ExamDate, `YYYY-MM-DD`, or null when it gave none. */
+    examDate: import_zod3.z.string().nullable(),
+    provNum: import_zod3.z.number().int().nullable(),
+    chart: PerioChartSchema,
+    counts: PerioCountsSchema,
+    /** The measurement list did not come back whole. Some readings are missing. */
+    truncated: import_zod3.z.boolean()
+  }),
+  import_zod3.z.object({ status: import_zod3.z.literal("none") }),
+  import_zod3.z.object({
+    status: import_zod3.z.literal("unavailable"),
+    message: import_zod3.z.string(),
+    /** Open Dental's own status line. Never a body. */
+    detail: import_zod3.z.string().nullable()
+  })
+]);
+var HygPerioPriorResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: import_zod3.z.number().int(),
+  date: import_zod3.z.string(),
+  appointment: HygAppointmentSchema,
+  prior: PerioPriorSchema
+});
+
 // ../backend/hyg/contract.entry.ts
-var import_zod3 = __toESM(require_zod());
+var import_zod4 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CORRECTED_OPTION_SPELLINGS,
@@ -16000,6 +16412,8 @@ var import_zod3 = __toESM(require_zod());
   HygIdentitySchema,
   HygIdentityStateSchema,
   HygOperatorySchema,
+  HygPerioPriorResponseSchema,
+  HygPerioResponseSchema,
   HygSendResponseSchema,
   HygSlipSchema,
   HygVisitResponseSchema,
@@ -16016,9 +16430,29 @@ var import_zod3 = __toESM(require_zod());
   OFFICE_IDS,
   OFFICE_TIME_ZONE,
   OfficeIdSchema,
+  PERIO_FLAGS,
+  PERIO_FLAG_KEYS,
+  PERIO_FLAG_LABELS,
+  PERIO_FULL_MOUTH_SITES,
+  PERIO_LOWER_TEETH,
+  PERIO_MAX_DEPTH,
+  PERIO_SEGMENTS,
+  PERIO_SITES_PER_TOOTH,
   PERIO_STAGE_LABELS,
+  PERIO_TOOTH_COUNT,
+  PERIO_UPPER_TEETH,
+  PerioChartSaveRequestSchema,
+  PerioChartSchema,
+  PerioCountsSchema,
+  PerioDirectionSchema,
   PerioGradeSchema,
+  PerioPriorSchema,
+  PerioSegmentSchema,
+  PerioSiteSchema,
   PerioStageSchema,
+  PerioSweepSchema,
+  PerioToothKeySchema,
+  PerioToothSchema,
   RECORDS_MATRIX,
   RECORD_STATUS_LABELS,
   RecordStatusSchema,
@@ -16048,20 +16482,44 @@ var import_zod3 = __toESM(require_zod());
   XRAY_OPTIONS,
   YesNoSchema,
   ZodError,
+  bleedSupPlaqCalcBits,
+  chartingOrder,
   controlLabel,
   controlsFor,
+  countPerioChart,
+  defaultPerioSweep,
   deriveCategory,
   emptyNoteField,
+  emptyPerioChart,
+  emptyPerioSite,
+  emptyPerioTooth,
   emptySlip,
   fieldText,
+  firstOpenPerioCursor,
+  flagsFromBits,
   freeFieldsFor,
   hasPerioChartLine,
   isAnswered,
   isChildVisit,
   isOfficeId,
+  isPatientRight,
+  normalizePerioChart,
+  perioPreviewLines,
+  perioProgressLabel,
+  perioSegmentOf,
+  perioSideOf,
+  perioSite,
+  perioTooth,
   recordsNeededFor,
   renderVisitNote,
+  sameCursor,
+  samePerioReadings,
+  screenSites,
+  segmentOrder,
   slipNoteField,
+  stepPerioCursor,
   suggestVisitType,
+  withPerioSite,
+  withPerioSkipped,
   z
 });

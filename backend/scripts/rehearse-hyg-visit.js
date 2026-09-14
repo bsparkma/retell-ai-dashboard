@@ -380,6 +380,139 @@ async function main() {
       bad('a Written row carries the reference the send recorded');
     }
 
+    // ── 6c. the perio chart (H4 slice 10) ───────────────────────────────────
+    // The chart is the visit's `perio` row in Draft. What only a real Postgres
+    // can prove: the ON CONFLICT … WHERE really refuses a row a send has
+    // claimed, and jsonb's key reordering does not make an unchanged chart
+    // look changed.
+    const perioVisit = await visitStore.openVisit(pool, {
+      office: 'roland',
+      aptNum: 990002,
+      patNum: 12828,
+      visitDate: '2026-09-08',
+      actor: ACTOR,
+    });
+    let chart = contract.emptyPerioChart();
+    for (const c of contract.chartingOrder(chart.sweep).slice(0, 84)) {
+      chart = contract.withPerioSite(chart, c.tooth, c.surface, { depth: 3, bleeding: c.tooth === 3 });
+    }
+    const draft = await visitStore.savePerioDraft(pool, {
+      office: 'roland', visit: perioVisit, chart, actor: ACTOR,
+    });
+    if (draft.ok && draft.row.state === 'Draft' && draft.changed) {
+      ok('a perio chart stores as the visit\'s Draft perio row');
+    } else {
+      bad('a perio chart stores as the visit\'s Draft perio row', JSON.stringify(draft));
+    }
+
+    const readBack = await visitStore.getPerio(pool, { office: 'roland', visitId: perioVisit.visitId });
+    if (
+      !readBack.unreadable &&
+      JSON.stringify(readBack.chart) === JSON.stringify(contract.normalizePerioChart(chart))
+    ) {
+      ok('the chart reads back through jsonb as the same canonical chart');
+    } else {
+      bad('the chart reads back through jsonb as the same canonical chart');
+    }
+
+    const again = await visitStore.savePerioDraft(pool, {
+      office: 'roland', visit: perioVisit, chart, actor: ACTOR,
+    });
+    if (again.ok && again.changed === false) {
+      ok('saving the same chart again changes nothing (jsonb key order is not a change)');
+    } else {
+      bad('saving the same chart again changes nothing', JSON.stringify(again));
+    }
+
+    const perioStaged = await visitStore.stageWrite(pool, {
+      office: 'roland',
+      visit: perioVisit,
+      kind: 'perio',
+      actor: ACTOR,
+      compose: composer.compose,
+    });
+    if (
+      perioStaged.ok &&
+      perioStaged.staged.state === 'Staged' &&
+      perioStaged.staged.preview[0] === 'Partial chart: 84 of 192 sites charted'
+    ) {
+      ok('a partial chart stages from its stored draft, labelled partial');
+    } else {
+      bad('a partial chart stages from its stored draft', JSON.stringify(perioStaged));
+    }
+
+    const flippedSweep = { ...chart, sweep: { ...chart.sweep, lowerFacial: 'ltr' } };
+    const sweepOnly = await visitStore.savePerioDraft(pool, {
+      office: 'roland', visit: perioVisit, chart: flippedSweep, actor: ACTOR,
+    });
+    if (sweepOnly.ok && sweepOnly.row.state === 'Staged') {
+      ok('changing only the entry direction leaves a staged chart staged');
+    } else {
+      bad('changing only the entry direction leaves a staged chart staged', JSON.stringify(sweepOnly));
+    }
+
+    const moreChart = contract.withPerioSite(chart, 32, 'DB', { depth: 5 });
+    const unstaged = await visitStore.savePerioDraft(pool, {
+      office: 'roland', visit: perioVisit, chart: moreChart, actor: ACTOR,
+    });
+    if (unstaged.ok && unstaged.row.state === 'Draft' && unstaged.row.preview.length === 0) {
+      ok('changing a reading on a staged chart takes it back to Draft (ON CONFLICT … WHERE accepts Staged)');
+    } else {
+      bad('changing a reading on a staged chart takes it back to Draft', JSON.stringify(unstaged));
+    }
+
+    await visitStore.stageWrite(pool, {
+      office: 'roland', visit: perioVisit, kind: 'perio', actor: ACTOR, compose: composer.compose,
+    });
+    const offList = await visitStore.unstageWrite(pool, {
+      office: 'roland', visitId: perioVisit.visitId, kind: 'perio', actor: ACTOR,
+    });
+    const afterUnstage = await visitStore.getPerio(pool, { office: 'roland', visitId: perioVisit.visitId });
+    if (
+      offList.ok &&
+      afterUnstage.row.state === 'Draft' &&
+      contract.countPerioChart(afterUnstage.chart).sitesCharted === 85
+    ) {
+      ok('un-staging a chart returns it to Draft with every reading kept');
+    } else {
+      bad('un-staging a chart returns it to Draft with every reading kept', JSON.stringify(offList));
+    }
+
+    // The race the pre-check cannot see: a send claims the row between the
+    // store's SELECT and its INSERT. Simulated by hiding the row from that one
+    // SELECT, so the statement that answers is Postgres's own conflict WHERE.
+    await pool.query(
+      `UPDATE hyg_staged_write SET state = 'Sending' WHERE visit_id = $1 AND kind = 'perio'`,
+      [perioVisit.visitId]
+    );
+    let hidden = false;
+    const racingPool = {
+      query: (sql, params) => {
+        if (!hidden && /SELECT[\s\S]*FROM hyg_staged_write/.test(sql)) {
+          hidden = true;
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        return pool.query(sql, params);
+      },
+    };
+    const raced = await visitStore.savePerioDraft(racingPool, {
+      office: 'roland', visit: perioVisit, chart: contract.emptyPerioChart(), actor: ACTOR,
+    });
+    const stillSending = await pool.query(
+      `SELECT state, payload FROM hyg_staged_write WHERE visit_id = $1 AND kind = 'perio'`,
+      [perioVisit.visitId]
+    );
+    if (
+      !raced.ok &&
+      raced.code === 'STAGED_WRITE_IMMUTABLE' &&
+      stillSending.rows[0].state === 'Sending' &&
+      contract.countPerioChart(stillSending.rows[0].payload.chart).sitesCharted === 85
+    ) {
+      ok('a save racing a send cannot drag a Sending chart back to Draft (the conflict WHERE refuses)');
+    } else {
+      bad('a save racing a send cannot drag a Sending chart back to Draft', JSON.stringify(raced));
+    }
+
     // ── 7. the cascade, and cleanup ─────────────────────────────────────────
     await pool.query('DELETE FROM hyg_visit WHERE created_by = $1', [ACTOR]);
     const orphans = await pool.query(

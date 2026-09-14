@@ -1138,5 +1138,8 @@ export const HYG_VISIT_ERROR_CODES = [
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
   "NOT_STAGED",
+  // H4 slice 10. A perio chart stages; sending one is the next slice.
+  "PERIO_SEND_NOT_BUILT",
+  "PATIENT_CHANGED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

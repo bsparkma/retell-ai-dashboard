@@ -21,7 +21,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const composer = require('./stagedWriteComposer');
-const { emptySlip } = require('../../hyg/contract.gen.cjs');
+const contract = require('../../hyg/contract.gen.cjs');
+const { emptySlip } = contract;
 
 const ACTOR = 'hygienist@carein.ai';
 
@@ -222,11 +223,47 @@ test('the handoff derives its category and refuses an empty one', () => {
   assert.ok(implant.preview.some((l) => l.includes('CT scan')));
 });
 
-test('perio composes to nothing, and says why', () => {
+test('perio with no stored draft composes to nothing, and says why', () => {
   const res = composer.compose('perio', { visit: visit(), items: [item()], actor: ACTOR });
-  assert.ok(res.unavailable);
-  assert.match(res.unavailable, /cannot be deleted/);
-  assert.equal(res.preview, undefined, 'there is no empty envelope to send');
+  assert.ok(res.empty);
+  assert.match(res.empty, /no perio readings/);
+  assert.equal(res.preview, undefined, 'there is no empty chart to stage');
+
+  // A draft that holds nothing is the same answer, not an empty envelope.
+  const blank = composer.compose('perio', {
+    visit: visit(),
+    items: [],
+    actor: ACTOR,
+    draft: { chart: contract.emptyPerioChart() },
+  });
+  assert.ok(blank.empty);
+});
+
+test('perio composes from the STORED draft, and a partial chart says it is partial', () => {
+  let chart = contract.emptyPerioChart();
+  chart = contract.withPerioSite(chart, 3, 'DB', { depth: 3, bleeding: true });
+  chart = contract.withPerioSite(chart, 3, 'B', { depth: 2 });
+  chart = contract.withPerioSite(chart, 3, 'MB', { depth: 3 });
+  chart = contract.withPerioSkipped(chart, 1, true);
+
+  const res = composer.compose('perio', {
+    visit: visit(),
+    items: [],
+    actor: ACTOR,
+    draft: { chart },
+  });
+  assert.equal(res.title, 'Perio chart');
+  assert.equal(res.summary, 'Partial chart: 3 of 186 sites charted (1 tooth skipped), 2026-09-08');
+  assert.equal(res.preview[0], 'Partial chart: 3 of 186 sites charted (1 tooth skipped)');
+  assert.ok(res.preview.includes('  #1 skipped'));
+  assert.ok(res.preview.includes('  #3 facial 3 2 3, lingual - - -; bleeding DB'), res.preview.join('\n'));
+  // Every reading the chart holds is in the words a person confirms.
+  assert.deepEqual(res.payload.chart, contract.normalizePerioChart(chart));
+  assert.equal(res.payload.patNum, 12827);
+  for (const line of res.preview) {
+    assert.match(line, /^[\x20-\x7e]*$/, 'OD-safe ASCII: ' + line);
+    assert.doesNotMatch(line, /\bsigned\b/i);
+  }
 });
 
 test('the router slip prints the records each treatment needs, with their status', () => {

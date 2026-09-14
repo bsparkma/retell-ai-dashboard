@@ -180,6 +180,8 @@ test('the module owns source files, so the scan below is scanning something', ()
   assert.ok(files.some((f) => f.endsWith('visit.js')));
   assert.ok(files.some((f) => f.endsWith('visitStore.js')));
   assert.ok(files.some((f) => f.endsWith('stagedWriteComposer.js')));
+  // H4 slice 10's reader, named for the same reason.
+  assert.ok(files.some((f) => f.endsWith('odPerio.js')));
 });
 
 /**
@@ -304,6 +306,136 @@ test('exactly ONE file registers non-GET hyg routes, and it is the named one', (
   // rename that emptied it would not pass this quietly.
   const visitSrc = fs.readFileSync(path.join(__dirname, 'visit.js'), 'utf8');
   assert.match(visitSrc, /router\.post\s*\(/, 'routes/hyg/visit.js should own the mutations');
+});
+
+// ── 3. the perio chart (H4 slice 10): read, display, stage — ZERO writes ─────
+//
+// A perio row written into Open Dental is the one write in this module that
+// cannot be taken back (only Mobility and SkipTooth measurements can be
+// deleted). So slice 10 adds perio READS and a perio STAGE and nothing else,
+// and these tests hold it to that in all three ways: behaviourally, by scanning
+// the reader's source, and by proving the scan would catch a write.
+
+/** The same receiver-capturing shape the client-call scan above uses. */
+const WRITE_SHAPED_CALL = /([A-Za-z_$][\w$.]*)\.(post|put|patch|delete)\s*\(/g;
+
+/** Write-shaped calls on anything that is not an Express router. */
+function clientWriteCalls(src) {
+  return [...stripComments(src).matchAll(WRITE_SHAPED_CALL)]
+    .filter((hit) => hit[1] !== 'router' && hit[1] !== 'app')
+    .map((hit) => hit[1] + '.' + hit[2]);
+}
+
+const PERIO_ENDPOINTS = ['/perioexams', '/periomeasures'];
+
+test('the perio reader reaches Open Dental through odGet ONLY — and really does reach it', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'services', 'hyg', 'odPerio.js'), 'utf8');
+  const code = stripComments(src);
+  assert.doesNotMatch(code, /apiWriteRaw/, 'the perio reader names the write transport');
+  assert.deepEqual(clientWriteCalls(src), [], 'the perio reader issues a write-shaped call');
+  // Non-vacuous: the file this guards is the one that reads perio, through the
+  // paged GET helper. A reader that moved elsewhere would leave this guarding
+  // an empty room.
+  assert.match(code, /pagedList\(odGet, '\/perioexams'/);
+  assert.match(code, /pagedList\(odGet, '\/periomeasures'/);
+});
+
+test('no perio endpoint is named in code anywhere but the reader — least of all the writer', () => {
+  const offenders = [];
+  for (const file of hygSources()) {
+    if (file.endsWith('.test.js') || file.endsWith('hygTestUtils.js')) continue;
+    if (path.basename(file) === 'odPerio.js') continue;
+    const code = stripComments(fs.readFileSync(file, 'utf8'));
+    for (const endpoint of PERIO_ENDPOINTS) {
+      if (code.includes(endpoint)) offenders.push(path.basename(file) + ' -> ' + endpoint);
+    }
+  }
+  // odWriter.js is the one file that MAY write; in slice 10 it must not know a
+  // perio endpoint exists. The send slice is where that changes, deliberately.
+  assert.deepEqual(offenders, [], 'a perio endpoint is named outside services/hyg/odPerio.js');
+});
+
+test('the perio scans would FAIL on a perio write, so passing them means something', () => {
+  // Synthetic sources, run through the same helpers the two tests above use.
+  assert.deepEqual(
+    clientWriteCalls("await od.client.post('/periomeasures', row);"),
+    ['od.client.post']
+  );
+  assert.deepEqual(clientWriteCalls("router.put('/:aptNum/perio', handler);"), []);
+  assert.deepEqual(
+    clientWriteCalls("// client.post('/perioexams') in prose is not a call\n"),
+    [],
+    'comments are prose, not code'
+  );
+});
+
+test('driving EVERY perio path to success reaches no Open Dental write verb', async () => {
+  // Past one page of measures, so the paging path is inside the claim too.
+  const measures = [];
+  for (let tooth = 1; tooth <= 32; tooth += 1) {
+    for (const type of ['Probing', 'BleedSupPlaqCalc', 'GingMargin', 'Mobility']) {
+      measures.push({
+        PerioMeasureNum: measures.length + 1, PerioExamNum: 5001, SequenceType: type,
+        IntTooth: tooth, ToothValue: -1,
+        DBvalue: 1, Bvalue: 0, MBvalue: 3, DLvalue: 3, Lvalue: 2, MLvalue: 3,
+      });
+    }
+  }
+  const od = new FakeOd({
+    '/appointments': [apptRow({ AptNum: 900001, PatNum: 12827, AptDateTime: DATE + ' 08:00:00' })],
+    '/operatories': [operatoryRow()],
+    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Perio Maint' }],
+    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
+    '/patients/12827': patientRow(),
+    '/perioexams': [{ PerioExamNum: 5001, PatNum: 12827, ExamDate: '2025-05-12', ProvNum: 7 }],
+    '/periomeasures': measures.slice(0, 100),
+    '/periomeasures?Offset=100': measures.slice(100),
+  });
+
+  const app = await bootHygApp({ od });
+  const q = '?office=roland&date=' + DATE;
+  const contract = require('../../hyg/contract.gen.cjs');
+  let chart = contract.emptyPerioChart();
+  for (const c of contract.chartingOrder(chart.sweep).slice(0, 30)) {
+    chart = contract.withPerioSite(chart, c.tooth, c.surface, { depth: 4, bleeding: true });
+  }
+  try {
+    assert.equal((await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + q)).status, 200);
+    assert.equal(
+      (await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/perio' + q, { body: { chart } })).status,
+      200
+    );
+    assert.equal((await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/perio' + q)).status, 200);
+    const prior = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/perio/prior' + q);
+    assert.equal(prior.status, 200);
+    assert.equal(prior.body.prior.status, 'found', 'the read path must actually SUCCEED');
+    assert.equal(prior.body.prior.counts.sitesCharted, 192, 'both measure pages were read');
+
+    const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + q, {
+      body: { kind: 'perio' },
+    });
+    assert.equal(staged.status, 201);
+    const write = staged.body.visit.stagedWrites.find((w) => w.kind === 'perio');
+
+    // And the one path that COULD write: the send, handed the staged chart.
+    const sent = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + q, {
+      body: { confirm: [{ kind: 'perio', previewFingerprint: write.previewFingerprint }] },
+    });
+    assert.equal(sent.status, 422);
+    assert.equal(sent.body.code, 'PERIO_SEND_NOT_BUILT');
+
+    assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
+    for (const c of od.calls) {
+      assert.match(
+        c.path,
+        /^\/(appointments|operatories|appointmenttypes|providers|patients|perioexams|periomeasures)/,
+        'unexpected Open Dental path: ' + c.path
+      );
+    }
+    assert.ok(od.calls.some((c) => c.path === '/periomeasures' && c.params.Offset === 100));
+  } finally {
+    await app.close();
+  }
 });
 
 test('driving the visit MUTATIONS to success reaches no Open Dental write verb', async () => {

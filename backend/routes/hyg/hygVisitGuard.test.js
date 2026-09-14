@@ -68,6 +68,8 @@ const MUTATIONS = [
   ['DELETE', '/api/hyg/visit/900001/items/item-0001' + Q, undefined],
   ['POST', '/api/hyg/visit/900001/staged-writes' + Q, { kind: 'router' }],
   ['DELETE', '/api/hyg/visit/900001/staged-writes/router' + Q, undefined],
+  // H4 slice 10: the perio chart is a mutation like any other.
+  ['PUT', '/api/hyg/visit/900001/perio' + Q, { chart: { teeth: {} } }],
 ];
 
 test('a role with hyg.read but not hyg.write is refused EVERY mutation', async () => {
