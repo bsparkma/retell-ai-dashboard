@@ -981,6 +981,11 @@ Backspace takes back the last reading. A flag lands on the reading just entered
 A partial chart stages and is labelled partial everywhere, in one set of words:
 `Partial chart: 84 of 192 sites charted (2 teeth skipped)`.
 
+### The send (H4 slice 11) — see §13
+
+A staged chart is sent from this page, not from the tray's Send. The tray's
+batch send refuses a perio confirmation (`422 PERIO_SENDS_FROM_ITS_CHART`).
+
 ### Touch targets
 
 Each site cell is 44px tall but about 20px wide: 48 sites across 1180px does not
@@ -988,3 +993,87 @@ fit three 44px-wide targets per tooth without scrolling the arch sideways, and a
 scrolling chart hides the teeth being compared. Cells are for pointing at a
 site; the keypad under the grid (0–19, flags, back/next, skip) is the touch
 entry path and every key on it is 44px.
+
+---
+
+## 13. The perio send (H4 slice 11) — resumable, confirmed, read back
+
+The module's only write that cannot be taken back. `POST /perioexams` creates the
+exam; every measurement is its own `POST /periomeasures`; there is no bulk
+measurement write; and **a stray Probing row is permanent** (`DELETE
+/periomeasures` accepts only Mobility and SkipTooth). A full chart at one request
+a second is minutes.
+
+### The confirm
+
+`POST /visit/:aptNum/perio/send?date=` carries `{ previewFingerprint, examDate,
+provNum }` and no payload. The server refuses, before anything is written:
+
+| Code | When |
+| --- | --- |
+| `PREVIEW_CHANGED` | the staged preview's fingerprint differs — or the preview recomposed from the stored chart does |
+| `EXAM_DATE_CHANGED` | the visit date is not the date confirmed |
+| `NO_PROVIDER` | the appointment has neither a hygienist nor a provider (Open Dental would default to the patient's primary) |
+| `PROVIDER_CHANGED` | the hygienist-else-provider is not the ProvNum confirmed |
+| `PATIENT_CHANGED` | the appointment now belongs to another patient |
+| `PERIO_SEND_IN_PROGRESS` | a send of this chart already attempted a row — resume it |
+
+The dialog shows the exam date, the provider and ProvNum, sites, flags, skipped
+teeth, the row count and the time, the server's preview lines, and that a probing
+row cannot be deleted.
+
+### The queue — `hyg_perio_send_row`
+
+`backend/migrations-tenant/1788400000000_hyg_perio_send.js`, with its GRANT
+block. One row per write: seq 0 the exam header, then one per (tooth,
+SequenceType) from `perioMeasureRows(chart)` — SkipTooth for a skipped tooth,
+Probing where any depth, BleedSupPlaqCalc where any flag, nothing for an
+untouched tooth. `pending → sending → sent → confirmed`, or `failed` with Open
+Dental's words. CHECKs refuse CAL, a NULL tooth, a failure with no reason and a
+confirmation with no Open Dental number; a partial unique index refuses a second
+plan for the same measurement.
+
+### Steps, not a background thread
+
+The page calls `POST …/perio/send/step` until done, halted or paused. Each step is
+a bounded batch (`PERIO_SEND_BATCH` = 12) inside an ordinary audited request —
+one `hyg_perio_send` audit row per Open Dental write, with the approving user.
+Leaving the page stops asking for steps. Nothing is lost, which is why the page
+says "safe to leave": every row's state is stored before its write goes out.
+
+### Read before write, every time
+
+Each step reads the exam's measurements FIRST, and posts only rows that read
+shows absent:
+
+| Read shows | The row is |
+| --- | --- |
+| present, same values | **confirmed without posting** — it landed last time |
+| present, different values | **halted** — never a second row beside it |
+| absent, after an OK | **halted** — accepted-but-missing is not guessed at |
+| absent, never answered | posted, once its claim has lapsed |
+
+Nothing is posted on a truncated read. The exam header is the same: the
+patient's exam numbers are recorded just before it is posted, and a resumed send
+adopts the one new exam with that date and provider. A claim (`claimed_at`,
+lease `HYG_PERIO_SEND_LEASE_MS`, default 120s — longer than a write's timeout) is
+what stops two tabs writing a row twice.
+
+Open Dental's answer is three-way (`odPerioWriter.js`): **ok** (not yet the
+claim), **refused** (4xx or `OD_WRITE_DISABLED` — halts, words beside the site),
+**uncertain** (no answer, 5xx, 408 — pauses; may have landed).
+
+The staged write is `Written` only when the exam and every row are confirmed:
+`Perio exam 7001: 64 rows read back`. A halted send is `Failed`; the chart is
+locked (no edit, no re-stage, and the generic retry answers `PERIO_USE_RESUME`).
+`POST …/perio/send/resume` returns failed rows to pending and steps — reading
+first.
+
+`[hygperio] office=… exam=… rows=n confirmed=n failed=n ms=…` per step.
+
+### Two writers in the allow-list
+
+`OD_WRITE_LAYER` is `odWriter.js` and `odPerioWriter.js`. `hygNoOdWrites.test.js`
+asserts each reaches the transport and owns its endpoints, and that
+`/perioexams` / `/periomeasures` appear in code only in the reader and the perio
+writer.
