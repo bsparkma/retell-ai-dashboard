@@ -317,7 +317,7 @@ export function StagedWritesTray({
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {kind === "perio" && (!write || write.state === "Draft") ? (
+                  {kind === "perio" && write?.state !== "Staged" ? (
                     // THE CHART IS ENTERED ON ITS OWN PAGE. Before anything is
                     // staged, the useful thing this row can offer is the way there.
                     <Link
@@ -378,11 +378,19 @@ export function StagedWritesTray({
                   className="mt-2 text-xs text-muted-foreground"
                   data-testid="hyg-perio-not-sent"
                 >
-                  Staged on this visit. Sending a perio chart to Open Dental is not built yet, so
-                  Send leaves it here.{" "}
+                  Staged. A perio chart is written from its own page, row by row, each read back —
+                  Send below leaves it here.{" "}
                   <Link href={perioHref} className="underline underline-offset-2">
                     Open chart
                   </Link>
+                </p>
+              ) : null}
+
+              {kind === "perio" && (write?.state === "Sending" || write?.state === "Failed") ? (
+                <p className="mt-2 text-xs text-muted-foreground" data-testid="hyg-perio-in-progress">
+                  {write.state === "Failed"
+                    ? "The send stopped. Open the chart to see why and resume it — CareIN reads Open Dental before it sends any row again."
+                    : "Being written to Open Dental. Open the chart to follow it, or to resume it if it paused."}
                 </p>
               ) : null}
 

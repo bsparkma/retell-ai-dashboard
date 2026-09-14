@@ -68,6 +68,8 @@ interface GridProps {
   onSelect: (cursor: PerioCursor) => void;
   onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
   gridRef?: Ref<HTMLDivElement>;
+  /** Teeth whose send row was refused (slice 11) — marked so the error sits beside its site. */
+  failedTeeth?: number[];
 }
 
 function SiteCell({
@@ -152,6 +154,7 @@ function ToothSide(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { tooth: nu
 }
 
 function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" | "lower" }) {
+  // `failedTeeth` is read by the tooth-number row only.
   const teeth = props.arch === "upper" ? PERIO_UPPER_TEETH : PERIO_LOWER_TEETH;
   const sides: PerioSide[] = props.arch === "upper" ? ["facial", "lingual"] : ["lingual", "facial"];
   const numbers = (
@@ -159,17 +162,25 @@ function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" 
       <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         {props.arch === "upper" ? "Upper" : "Lower"}
       </span>
-      {teeth.map((tooth) => (
-        <span
-          key={tooth}
-          className={cn(
-            "text-center text-xs font-semibold tabular-nums",
-            props.cursor.tooth === tooth ? "text-primary" : "text-muted-foreground",
-          )}
-        >
-          {tooth}
-        </span>
-      ))}
+      {teeth.map((tooth) => {
+        const failed = (props.failedTeeth ?? []).includes(tooth);
+        return (
+          <span
+            key={tooth}
+            data-testid={failed ? `hyg-perio-failed-tooth-${tooth}` : undefined}
+            className={cn(
+              "text-center text-xs font-semibold tabular-nums",
+              failed
+                ? "rounded bg-destructive text-destructive-foreground"
+                : props.cursor.tooth === tooth
+                  ? "text-primary"
+                  : "text-muted-foreground",
+            )}
+          >
+            {failed ? `${tooth}!` : tooth}
+          </span>
+        );
+      })}
     </div>
   );
 

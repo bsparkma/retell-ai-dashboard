@@ -48,6 +48,9 @@ import {
   type HygPerioPriorResponse,
   type HygPerioResponse,
   type PerioChart,
+  HygPerioSendResponseSchema,
+  type HygPerioSendResponse,
+  type PerioSendRequest,
 } from "@shared/hyg/perio";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
@@ -635,6 +638,58 @@ export async function fetchPerioPrior(
     },
     signal,
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio send (H4 slice 11)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parsePerioSend(raw: unknown): HygPerioSendResponse {
+  const parsed = HygPerioSendResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new HygApiError(
+      "CareIN reported a perio send this page could not read",
+      0,
+      "CONTRACT_MISMATCH",
+      { issues: parsed.error.issues.slice(0, 5) },
+    );
+  }
+  return parsed.data;
+}
+
+/** Where a send stands. Our database only. `progress` is null before one starts. */
+export async function fetchPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  signal?: AbortSignal,
+): Promise<HygPerioSendResponse> {
+  return get(`/visit/${aptNum}/perio/send`, { office }, parsePerioSend, signal);
+}
+
+/**
+ * Confirm the staged chart and run the first step.
+ *
+ * ⚠️ NO PAYLOAD. The fingerprint of the preview on screen, and the exam date
+ * and provider the dialog showed. The server re-derives all three and refuses
+ * on any difference; it builds every row it writes from the STAGED chart.
+ */
+export async function startPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  request: PerioSendRequest,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send`, { office, date }, parsePerioSend, request);
+}
+
+/** The next bounded batch. Called until done, halted or paused. */
+export async function stepPerioSend(office: OfficeId, aptNum: number): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/step`, { office }, parsePerioSend);
+}
+
+/** A stopped send, continued. Failed rows are READ before they are posted again. */
+export async function resumePerioSend(office: OfficeId, aptNum: number): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/resume`, { office }, parsePerioSend);
 }
 
 /**

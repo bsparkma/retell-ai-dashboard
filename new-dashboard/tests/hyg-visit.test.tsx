@@ -524,7 +524,7 @@ describe("what the screen may not claim", () => {
     await screen.findByTestId("hyg-staged-preview-router");
 
     expect(screen.getByTestId("hyg-staged-perio").textContent).toMatch(/Partial chart: 84 of 192/);
-    expect(screen.getByTestId("hyg-perio-not-sent").textContent).toMatch(/not built yet/i);
+    expect(screen.getByTestId("hyg-perio-not-sent").textContent).toMatch(/written from its own page/i);
     // Router is staged, perio is staged: Send counts ONE.
     expect(screen.getByTestId("hyg-send-all").textContent).toMatch(/Send 1 to Open Dental/);
   });
