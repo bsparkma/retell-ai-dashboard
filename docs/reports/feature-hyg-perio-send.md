@@ -224,4 +224,12 @@ through the unchanged `scripts/shoot-hyg.mjs`.
 
 ## 10. Push / PR
 
-PR_PLACEHOLDER
+Pushed. **PR #177** — `feature/hyg-perio-send` → `feature/hyg-perio-workspace` (stacked on #176):
+https://github.com/bsparkma/retell-ai-dashboard/pull/177
+
+When #176 merges, retarget and re-run CI:
+
+```bash
+gh api -X PATCH repos/bsparkma/retell-ai-dashboard/pulls/177 -f base=develop
+gh pr close 177 && gh pr reopen 177
+```
