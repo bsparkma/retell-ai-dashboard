@@ -44,6 +44,7 @@ const { Pool } = require('pg');
 
 const visitStore = require('../services/hyg/visitStore');
 const composer = require('../services/hyg/stagedWriteComposer');
+const perioSendStore = require('../services/hyg/perioSendStore');
 const contract = require('../hyg/contract.gen.cjs');
 
 const ACTOR = 'rehearsal@carein.ai';
@@ -107,10 +108,10 @@ async function main() {
     // ── 0. the grant ────────────────────────────────────────────────────────
     const who = await pool.query('SELECT current_user AS role');
     ok('connected', 'as ' + who.rows[0].role);
-    for (const table of ['hyg_visit', 'hyg_treatment_item', 'hyg_staged_write']) {
+    for (const table of ['hyg_visit', 'hyg_treatment_item', 'hyg_staged_write', 'hyg_perio_send_row']) {
       await pool.query(`SELECT count(*) FROM ${table}`);
     }
-    ok('grants: the app role can read all three hyg_* tables');
+    ok('grants: the app role can read all four hyg_* tables, the perio send queue included');
 
     // Leave nothing behind, and start from nothing.
     await pool.query("DELETE FROM hyg_visit WHERE created_by = $1", [ACTOR]);
@@ -513,13 +514,109 @@ async function main() {
       bad('a save racing a send cannot drag a Sending chart back to Draft', JSON.stringify(raced));
     }
 
+    // ── 6d. the perio SEND queue (H4 slice 11) ──────────────────────────────
+    // What only a real Postgres proves: the long-form CHECKs refuse what they
+    // must (a NULL tooth, CAL, a failure with no reason, a confirmation with no
+    // Open Dental number), the partial unique index refuses a second plan for
+    // the same measurement, and the lease really is `claimed_at < cutoff`.
+    const perioRow = await pool.query(
+      `SELECT staged_write_id FROM hyg_staged_write WHERE visit_id = $1 AND kind = 'perio'`,
+      [perioVisit.visitId]
+    );
+    const stagedWriteId = perioRow.rows[0].staged_write_id;
+    const queueArgs = {
+      office: 'roland',
+      visitId: perioVisit.visitId,
+      stagedWriteId,
+      examBody: { PatNum: 12828, ExamDate: '2026-09-08', ProvNum: 7 },
+      measures: contract.perioMeasureRows(moreChart),
+      actor: ACTOR,
+    };
+    await perioSendStore.createQueue(pool, queueArgs);
+    const queued = await perioSendStore.createQueue(pool, queueArgs);
+    if (queued.length === 1 + queueArgs.measures.length) {
+      ok('planning a send twice plans it once', `${queued.length} rows`);
+    } else {
+      bad('planning a send twice plans it once', `${queued.length} rows`);
+    }
+
+    await refuses('a measurement with no tooth is refused', 'hyg_perio_send_row_shape_check', () =>
+      pool.query(
+        `INSERT INTO hyg_perio_send_row (staged_write_id, visit_id, office, seq, target, tooth, sequence_type, body, created_by)
+         VALUES ($1, $2, 'roland', 900, 'measure', NULL, 'Probing', '{}'::jsonb, $3)`,
+        [stagedWriteId, perioVisit.visitId, ACTOR]
+      )
+    );
+    await refuses('a CAL row cannot even be planned', 'hyg_perio_send_row_shape_check', () =>
+      pool.query(
+        `INSERT INTO hyg_perio_send_row (staged_write_id, visit_id, office, seq, target, tooth, sequence_type, body, created_by)
+         VALUES ($1, $2, 'roland', 901, 'measure', 3, 'CAL', '{}'::jsonb, $3)`,
+        [stagedWriteId, perioVisit.visitId, ACTOR]
+      )
+    );
+    const firstMeasure = queued.find((r) => r.target === 'measure');
+    await refuses(
+      'a second plan for the same tooth and SequenceType is refused',
+      'hyg_perio_send_row_measure_key',
+      () =>
+        pool.query(
+          `INSERT INTO hyg_perio_send_row (staged_write_id, visit_id, office, seq, target, tooth, sequence_type, body, created_by)
+           VALUES ($1, $2, 'roland', 902, 'measure', $3, $4, '{}'::jsonb, $5)`,
+          [stagedWriteId, perioVisit.visitId, firstMeasure.tooth, firstMeasure.sequence_type, ACTOR]
+        )
+    );
+    await refuses('a failed row with no reason is refused', 'hyg_perio_send_row_failed_reason_check', () =>
+      pool.query(`UPDATE hyg_perio_send_row SET state = 'failed', error_message = NULL WHERE send_row_id = $1`, [
+        firstMeasure.send_row_id,
+      ])
+    );
+    await refuses(
+      'a confirmed row with no Open Dental number is refused',
+      'hyg_perio_send_row_confirmed_ref_check',
+      () =>
+        pool.query(
+          `UPDATE hyg_perio_send_row SET state = 'confirmed', od_ref = NULL, confirmed_at = now() WHERE send_row_id = $1`,
+          [firstMeasure.send_row_id]
+        )
+    );
+
+    const claimed = await perioSendStore.claimRow(pool, {
+      office: 'roland', sendRowId: firstMeasure.send_row_id, leaseCutoff: new Date(),
+    });
+    const heldFresh = await perioSendStore.claimRow(pool, {
+      office: 'roland', sendRowId: firstMeasure.send_row_id, leaseCutoff: new Date(Date.now() - 60000),
+    });
+    const crossOffice = await perioSendStore.claimRow(pool, {
+      office: 'valley', sendRowId: firstMeasure.send_row_id, leaseCutoff: new Date(Date.now() + 60000),
+    });
+    const lapsed = await perioSendStore.claimRow(pool, {
+      office: 'roland', sendRowId: firstMeasure.send_row_id, leaseCutoff: new Date(Date.now() + 60000),
+    });
+    if (claimed && claimed.state === 'sending' && !heldFresh && !crossOffice && lapsed && lapsed.attempts === 2) {
+      ok('a claim is exclusive while fresh, re-claimable once lapsed, and never across offices');
+    } else {
+      bad('claim lease semantics', JSON.stringify({ claimed: !!claimed, heldFresh: !!heldFresh, crossOffice: !!crossOffice, lapsed }));
+    }
+
+    await perioSendStore.markRow(pool, { office: 'roland', sendRowId: firstMeasure.send_row_id, state: 'sent', odRef: 90001 });
+    await perioSendStore.markRow(pool, { office: 'roland', sendRowId: firstMeasure.send_row_id, state: 'confirmed' });
+    const settled = (await perioSendStore.getRows(pool, { office: 'roland', stagedWriteId })).find(
+      (r) => r.send_row_id === firstMeasure.send_row_id
+    );
+    if (settled.state === 'confirmed' && settled.od_ref === 90001 && settled.confirmed_at) {
+      ok('confirming a row keeps the number its send recorded (bigint back as a number)');
+    } else {
+      bad('confirming a row keeps the number its send recorded', JSON.stringify(settled));
+    }
+
     // ── 7. the cascade, and cleanup ─────────────────────────────────────────
     await pool.query('DELETE FROM hyg_visit WHERE created_by = $1', [ACTOR]);
     const orphans = await pool.query(
       `SELECT (SELECT count(*)::int FROM hyg_treatment_item) AS items,
-              (SELECT count(*)::int FROM hyg_staged_write) AS staged`
+              (SELECT count(*)::int FROM hyg_staged_write) AS staged,
+              (SELECT count(*)::int FROM hyg_perio_send_row) AS perio`
     );
-    if (orphans.rows[0].items === 0 && orphans.rows[0].staged === 0) {
+    if (orphans.rows[0].items === 0 && orphans.rows[0].staged === 0 && orphans.rows[0].perio === 0) {
       ok('deleting a visit cascades to its items and staged writes');
     } else {
       bad('deleting a visit cascades', JSON.stringify(orphans.rows[0]));

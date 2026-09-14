@@ -210,6 +210,132 @@ class FakeHygDb extends FakeAuditDb {
     if (/audit_log/i.test(text)) return super.query(sql, params);
     this.statements.push(text);
 
+    // A test can make ONE statement fail, to stand in for a process that died
+    // between an Open Dental write and the row that records it (slice 11).
+    if (typeof this.failOnce === 'function' && this.failOnce(text, params)) {
+      this.failOnce = null;
+      throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
+    }
+
+    // ── hyg_perio_send_row (H4 slice 11) ────────────────────────────────────
+    if (/FROM hyg_perio_send_row\s+WHERE staged_write_id = \$1 AND office = \$2/i.test(text) &&
+        /^\s*SELECT/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const rows = (this.hyg_perio_send_row || [])
+        .filter((r) => r.staged_write_id === stagedWriteId && r.office === office)
+        .sort((a, b) => a.seq - b.seq);
+      return { rows, rowCount: rows.length };
+    }
+    if (/DELETE FROM hyg_perio_send_row/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const table = this.hyg_perio_send_row || [];
+      const kept = table.filter(
+        (r) => !(r.staged_write_id === stagedWriteId && r.office === office &&
+                 r.state === 'pending' && r.attempts === 0)
+      );
+      this.hyg_perio_send_row = kept;
+      return { rows: [], rowCount: table.length - kept.length };
+    }
+    if (/INSERT INTO hyg_perio_send_row/i.test(text)) {
+      this.hyg_perio_send_row = this.hyg_perio_send_row || [];
+      const exam = /'exam'/.test(text);
+      const [stagedWriteId, visitId, office] = params;
+      const seq = exam ? 0 : params[3];
+      const tooth = exam ? null : params[4];
+      const sequenceType = exam ? null : params[5];
+      const body = FakeHygDb.json(exam ? params[3] : params[6]);
+      const actor = exam ? params[4] : params[7];
+      this.checkOffice(office);
+      if (!this.hyg_staged_write.some((w) => w.staged_write_id === stagedWriteId)) {
+        throw new Error('hyg_perio_send_row_staged_write_id_fkey violated');
+      }
+      if (!exam && !['Probing', 'BleedSupPlaqCalc', 'SkipTooth'].includes(sequenceType)) {
+        throw new Error('hyg_perio_send_row_shape_check violated');
+      }
+      if (this.hyg_perio_send_row.some((r) => r.staged_write_id === stagedWriteId && r.seq === seq)) {
+        return { rows: [], rowCount: 0 }; // ON CONFLICT (staged_write_id, seq) DO NOTHING
+      }
+      this.hyg_perio_send_row.push({
+        send_row_id: this.nextId('sendrow'),
+        staged_write_id: stagedWriteId,
+        visit_id: visitId,
+        office,
+        seq,
+        target: exam ? 'exam' : 'measure',
+        tooth,
+        sequence_type: sequenceType,
+        body,
+        state: 'pending',
+        od_ref: null,
+        error_message: null,
+        attempts: 0,
+        claimed_at: null,
+        confirmed_at: null,
+        prior_exam_nums: null,
+        created_by: actor,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send_row\s+SET state = 'sending'/i.test(text)) {
+      const [id, office, cutoff] = params;
+      const row = (this.hyg_perio_send_row || []).find(
+        (r) => r.send_row_id === id && r.office === office &&
+          (r.state === 'pending' ||
+           (r.state === 'sending' && r.claimed_at && r.claimed_at < new Date(cutoff)))
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: 'sending', claimed_at: new Date(), attempts: row.attempts + 1,
+        error_message: null, updated_at: new Date(),
+      });
+      return { rows: [row], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send_row\s+SET state = \$3/i.test(text)) {
+      const [id, office, state, odRef, error] = params;
+      const row = (this.hyg_perio_send_row || []).find((r) => r.send_row_id === id && r.office === office);
+      if (!row) return { rows: [], rowCount: 0 };
+      if (state === 'failed' && !error) throw new Error('hyg_perio_send_row_failed_reason_check violated');
+      const nextRef = odRef === null || odRef === undefined ? row.od_ref : odRef;
+      if (state === 'confirmed' && (nextRef === null || nextRef === undefined)) {
+        throw new Error('hyg_perio_send_row_confirmed_ref_check violated');
+      }
+      Object.assign(row, {
+        state, od_ref: nextRef, error_message: error,
+        confirmed_at: state === 'confirmed' ? new Date() : null, updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send_row SET prior_exam_nums/i.test(text)) {
+      const [id, office, nums] = params;
+      const row = (this.hyg_perio_send_row || []).find((r) => r.send_row_id === id && r.office === office);
+      if (row) row.prior_exam_nums = FakeHygDb.json(nums);
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+    if (/UPDATE hyg_perio_send_row\s+SET state = 'pending'/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      let n = 0;
+      for (const r of this.hyg_perio_send_row || []) {
+        if (r.staged_write_id === stagedWriteId && r.office === office && r.state === 'failed') {
+          Object.assign(r, { state: 'pending', error_message: null, updated_at: new Date() });
+          n += 1;
+        }
+      }
+      return { rows: [], rowCount: n };
+    }
+    // The staged chart → Sending, FROM a state named in the parameters. Matched
+    // before the slice-3 statement below, which always means "from Staged".
+    if (/UPDATE hyg_staged_write\s+SET state = 'Sending'[\s\S]*kind = 'perio' AND state = \$3/i.test(text)) {
+      const [visitId, office, from] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === 'perio' && r.state === from
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { state: 'Sending', error_message: null, updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+
     // ── hyg_visit ───────────────────────────────────────────────────────────
     if (/^\s*SELECT[\s\S]*FROM hyg_visit\s+WHERE office = \$1 AND apt_num = \$2/i.test(text)) {
       const [office, aptNum] = params;

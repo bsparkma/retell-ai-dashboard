@@ -671,3 +671,202 @@ export const HygPerioPriorResponseSchema = z.object({
   prior: PerioPriorSchema,
 });
 export type HygPerioPriorResponse = z.infer<typeof HygPerioPriorResponseSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The send (H4 slice 11)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The only SequenceTypes a perio send writes. NEVER CAL — Open Dental derives it
+ * and never stores it. `services/hyg/odPerioWriter.js` refuses anything else
+ * before the transport, and the migration's CHECK refuses it in the queue.
+ */
+export const PerioSendSequenceTypeSchema = z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
+export type PerioSendSequenceType = z.infer<typeof PerioSendSequenceTypeSchema>;
+
+/** Measurement rows posted per step before reading them back. ~15s of wall clock. */
+export const PERIO_SEND_BATCH = 12;
+
+/** Open Dental serves one request a second per credential. */
+export const OD_SECONDS_PER_REQUEST = 1;
+
+/** The body of one `POST /periomeasures`, minus the PerioExamNum it learns at send time. */
+export interface PerioMeasureBody {
+  ToothValue: number;
+  MBvalue: number;
+  Bvalue: number;
+  DBvalue: number;
+  MLvalue: number;
+  Lvalue: number;
+  DLvalue: number;
+}
+
+export interface PerioMeasurePlan {
+  /** 1-based; 0 is the exam header. */
+  seq: number;
+  tooth: number;
+  sequenceType: PerioSendSequenceType;
+  body: PerioMeasureBody;
+  /** Sites this row carries a READING for — Probing only. */
+  sites: number;
+}
+
+/**
+ * Exactly the measurement rows a chart becomes in Open Dental, in tooth order.
+ *
+ *   skipped tooth                → one SkipTooth row (ToothValue 1, surfaces -1)
+ *   any depth on the tooth       → one Probing row (-1 where not charted)
+ *   any flag on the tooth        → one BleedSupPlaqCalc row (0–15 per site)
+ *   a tooth nobody touched       → NOTHING. A partial chart writes a partial exam.
+ *
+ * Pure, and shared, so the confirm dialog's "n rows" and the server's queue are
+ * one computation — the server builds the queue from the STAGED chart, never
+ * from anything the client sends.
+ */
+export function perioMeasureRows(chart: PerioChart): PerioMeasurePlan[] {
+  const normalized = normalizePerioChart(chart);
+  const out: PerioMeasurePlan[] = [];
+  let seq = 1;
+  for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
+    const t = normalized.teeth[String(tooth)];
+    if (!t) continue;
+    if (t.skipped) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "SkipTooth",
+        body: { ToothValue: 1, MBvalue: -1, Bvalue: -1, DBvalue: -1, MLvalue: -1, Lvalue: -1, DLvalue: -1 },
+        sites: 0,
+      });
+      continue;
+    }
+    const depth = (s: ToothSurface) => t.sites[s].depth ?? -1;
+    const charted = ALL_SITES.filter((s) => t.sites[s].depth !== null).length;
+    if (charted > 0) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "Probing",
+        body: {
+          ToothValue: -1,
+          MBvalue: depth("MB"),
+          Bvalue: depth("B"),
+          DBvalue: depth("DB"),
+          MLvalue: depth("ML"),
+          Lvalue: depth("L"),
+          DLvalue: depth("DL"),
+        },
+        sites: charted,
+      });
+    }
+    const bits = (s: ToothSurface) => bleedSupPlaqCalcBits(t.sites[s]);
+    if (ALL_SITES.some((s) => bits(s) > 0)) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "BleedSupPlaqCalc",
+        body: {
+          ToothValue: -1,
+          MBvalue: bits("MB"),
+          Bvalue: bits("B"),
+          DBvalue: bits("DB"),
+          MLvalue: bits("ML"),
+          Lvalue: bits("L"),
+          DLvalue: bits("DL"),
+        },
+        sites: 0,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Open Dental requests still to go — the HONEST time remaining.
+ *
+ * One POST per row, plus a read before and a read after every batch, plus three
+ * for an exam header not yet confirmed (the exams before, the POST, the exams
+ * after). Paging past 100 measurement rows adds a read this does not count; it
+ * is an estimate at one request a second, and the screen says "about".
+ */
+export function estimatePerioSendRequests({
+  examConfirmed,
+  rowsRemaining,
+}: {
+  examConfirmed: boolean;
+  rowsRemaining: number;
+}): number {
+  const rows = Math.max(0, rowsRemaining);
+  return (examConfirmed ? 0 : 3) + rows + Math.ceil(rows / PERIO_SEND_BATCH) * 2;
+}
+
+/**
+ * POST /api/hyg/visit/:aptNum/perio/send — the confirmation.
+ *
+ * NO PAYLOAD. The fingerprint of the preview she read, and the two facts the
+ * dialog showed that the preview does not carry: the exam date and the
+ * provider. The server re-derives all three and refuses on any difference.
+ */
+export const PerioSendRequestSchema = z
+  .object({
+    previewFingerprint: z.string().min(1).max(200),
+    examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    provNum: z.number().int().positive(),
+  })
+  .strict();
+export type PerioSendRequest = z.infer<typeof PerioSendRequestSchema>;
+
+export const PerioSendRowStateSchema = z.enum(["pending", "sending", "sent", "confirmed", "failed"]);
+export type PerioSendRowState = z.infer<typeof PerioSendRowStateSchema>;
+
+export const PerioSendRowSchema = z.object({
+  seq: z.number().int(),
+  target: z.enum(["exam", "measure"]),
+  tooth: z.number().int().nullable(),
+  sequenceType: PerioSendSequenceTypeSchema.nullable(),
+  state: PerioSendRowStateSchema,
+  /** PerioExamNum or PerioMeasureNum, once Open Dental has minted one. */
+  odRef: z.number().int().nullable(),
+  /** Open Dental's own words when it refused; the reason a row is waiting otherwise. */
+  errorMessage: z.string().nullable(),
+  sites: z.number().int(),
+});
+export type PerioSendRow = z.infer<typeof PerioSendRowSchema>;
+
+export const PerioSendProgressSchema = z.object({
+  examNum: z.number().int().nullable(),
+  examDate: z.string(),
+  provNum: z.number().int(),
+  rowsTotal: z.number().int(),
+  rowsConfirmed: z.number().int(),
+  rowsFailed: z.number().int(),
+  rowsRemaining: z.number().int(),
+  sitesTotal: z.number().int(),
+  sitesConfirmed: z.number().int(),
+  requestsRemaining: z.number().int(),
+  secondsRemaining: z.number().int(),
+  /** Every row read back. The staged write is Written. */
+  done: z.boolean(),
+  /** A row was refused or could not be confirmed. Nothing more sends until Resume. */
+  halted: z.boolean(),
+  haltMessage: z.string().nullable(),
+  startedBy: z.string().nullable(),
+  startedAt: z.string().nullable(),
+});
+export type PerioSendProgress = z.infer<typeof PerioSendProgressSchema>;
+
+/** Every perio-send route answers with this. `progress` is null before a send starts. */
+export const HygPerioSendResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: z.number().int(),
+  stagedWrite: StagedWriteSchema.nullable(),
+  progress: PerioSendProgressSchema.nullable(),
+  rows: z.array(PerioSendRowSchema),
+  /**
+   * Why this step stopped short without halting — Open Dental did not answer,
+   * or another tab holds a row. Nothing was lost; the next step reads first.
+   */
+  paused: z.string().nullable(),
+});
+export type HygPerioSendResponse = z.infer<typeof HygPerioSendResponseSchema>;

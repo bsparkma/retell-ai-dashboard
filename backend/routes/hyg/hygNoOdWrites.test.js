@@ -190,7 +190,12 @@ test('the module owns source files, so the scan below is scanning something', ()
  * Adding a name here is the deliberate act. It should be hard to do by
  * accident, visible in a diff, and argued for in a PR body.
  */
-const OD_WRITE_LAYER = Object.freeze(['odWriter.js']);
+const OD_WRITE_LAYER = Object.freeze([
+  'odWriter.js',
+  // H4 slice 11: the perio send's writer. Added in the same commit as the
+  // assertion below that it really reaches the transport and owns its endpoints.
+  'odPerioWriter.js',
+]);
 
 test('only the one allow-listed file names the Open Dental WRITE transport', () => {
   // `apiWriteRaw` is the ONE method on config/openDental.js that can POST or PUT
@@ -203,28 +208,43 @@ test('only the one allow-listed file names the Open Dental WRITE transport', () 
     // defines the throwing stub, and this file explains why. Skipping them by
     // name rather than by a comment marker keeps the exemption enumerated.
     if (file.endsWith('hygNoOdWrites.test.js') || file.endsWith('hygTestUtils.js')) continue;
+    // The perio writer's own unit test hands it a recording client, which has
+    // to be called `apiWriteRaw` because that is what the writer calls. A test
+    // double, enumerated by name like the harness above — never a pattern.
+    if (file.endsWith('odPerioWriter.test.js')) continue;
     if (OD_WRITE_LAYER.includes(path.basename(file))) continue;
     if (/apiWriteRaw/.test(src)) offenders.push(path.basename(file));
   }
   assert.deepEqual(offenders, [], 'these files reach an Open Dental write verb');
 });
 
-test('the allow-listed writer is REAL, and it is the only thing that can write', () => {
-  // An allow-list is only a guarantee if the file it names actually exists and
-  // actually reaches the transport. Otherwise the writes moved somewhere else
+test('every allow-listed writer is REAL, and each owns its own endpoints', () => {
+  // An allow-list is only a guarantee if the files it names actually exist and
+  // actually reach the transport. Otherwise the writes moved somewhere else
   // and this file is guarding an empty room.
   const files = hygSources();
-  const writer = files.find((f) => OD_WRITE_LAYER.includes(path.basename(f)));
-  assert.ok(writer, `the allow-listed write layer ${[...OD_WRITE_LAYER]} is missing`);
+  const OWNED = {
+    'odWriter.js': [/'\/procedurelogs\/GroupNote'/, /'\/documents\/Upload'/],
+    'odPerioWriter.js': [
+      /apiWriteRaw\(\s*'POST',\s*'\/perioexams'/,
+      /apiWriteRaw\(\s*'POST',\s*'\/periomeasures'/,
+    ],
+  };
+  // The list and the ownership map grow TOGETHER, or this fails.
+  assert.deepEqual(Object.keys(OWNED).sort(), [...OD_WRITE_LAYER].sort());
+  for (const name of OD_WRITE_LAYER) {
+    const writer = files.find((f) => path.basename(f) === name);
+    assert.ok(writer, `the allow-listed writer ${name} is missing`);
+    const code = stripComments(fs.readFileSync(writer, 'utf8'));
+    assert.match(code, /apiWriteRaw\(/, `${name} does not reach the transport`);
+    for (const owned of OWNED[name]) assert.match(code, owned, `${name} should own ${owned}`);
+  }
 
-  const src = fs.readFileSync(writer, 'utf8');
-  assert.match(src, /apiWriteRaw\(/, 'the allow-listed file does not reach the transport');
-
-  // And the two endpoints slice 3 writes to live THERE, not in the orchestration
-  // above it. A POST assembled in sendVisit.js and passed down as a string would
-  // satisfy the grep above while putting the decision somewhere unreviewed.
+  // And the two endpoints slice 3 writes to live in odWriter.js, not in the
+  // orchestration above it. A POST assembled in sendVisit.js and passed down as
+  // a string would satisfy the grep above while putting the decision somewhere
+  // unreviewed.
   for (const endpoint of ['/procedurelogs/GroupNote', '/documents/Upload']) {
-    assert.ok(src.includes(endpoint), `${endpoint} must live in the allow-listed writer`);
     const elsewhere = files.filter(
       (f) =>
         !OD_WRITE_LAYER.includes(path.basename(f)) &&
@@ -340,19 +360,21 @@ test('the perio reader reaches Open Dental through odGet ONLY — and really doe
   assert.match(code, /pagedList\(odGet, '\/periomeasures'/);
 });
 
-test('no perio endpoint is named in code anywhere but the reader — least of all the writer', () => {
+test('perio endpoints are named in code only by the reader and the perio writer', () => {
+  // Slice 10 allowed the reader alone. Slice 11 adds exactly one file: the perio
+  // writer, which is in OD_WRITE_LAYER. The orchestration (perioSend.js) reaches
+  // both through their functions and names neither endpoint.
+  const PERIO_FILES = ['odPerio.js', 'odPerioWriter.js'];
   const offenders = [];
   for (const file of hygSources()) {
     if (file.endsWith('.test.js') || file.endsWith('hygTestUtils.js')) continue;
-    if (path.basename(file) === 'odPerio.js') continue;
+    if (PERIO_FILES.includes(path.basename(file))) continue;
     const code = stripComments(fs.readFileSync(file, 'utf8'));
     for (const endpoint of PERIO_ENDPOINTS) {
       if (code.includes(endpoint)) offenders.push(path.basename(file) + ' -> ' + endpoint);
     }
   }
-  // odWriter.js is the one file that MAY write; in slice 10 it must not know a
-  // perio endpoint exists. The send slice is where that changes, deliberately.
-  assert.deepEqual(offenders, [], 'a perio endpoint is named outside services/hyg/odPerio.js');
+  assert.deepEqual(offenders, [], 'a perio endpoint is named outside the reader and the perio writer');
 });
 
 test('the perio scans would FAIL on a perio write, so passing them means something', () => {
@@ -422,7 +444,7 @@ test('driving EVERY perio path to success reaches no Open Dental write verb', as
       body: { confirm: [{ kind: 'perio', previewFingerprint: write.previewFingerprint }] },
     });
     assert.equal(sent.status, 422);
-    assert.equal(sent.body.code, 'PERIO_SEND_NOT_BUILT');
+    assert.equal(sent.body.code, 'PERIO_SENDS_FROM_ITS_CHART');
 
     assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
     for (const c of od.calls) {

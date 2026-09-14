@@ -120,18 +120,18 @@ function checkConfirmations(stagedRows, confirmations) {
   /** @type {object[]} */
   const rows = [];
 
-  // A PERIO CHART STAGES AND DOES NOT SEND (H4 slice 10). Refused before any
-  // other check, and for the WHOLE batch rather than skipped: a confirmation
-  // that named a chart and quietly sent everything else would report a send
-  // the hygienist did not ask for. A stray Probing row in Open Dental is
-  // permanent, so the send is its own slice, built resumable.
+  // A PERIO CHART DOES NOT RIDE ALONG WITH THE SLIP AND THE NOTE. It is minutes
+  // of row-by-row writes with its own resumable queue (services/hyg/perioSend.js)
+  // and is confirmed and sent from its own page. Refused before any other check,
+  // and for the WHOLE batch rather than skipped: a confirmation that named a
+  // chart and quietly sent everything else would report a send nobody asked for.
   if (confirmations.some((c) => c.kind === 'perio')) {
     return {
       ok: false,
-      code: 'PERIO_SEND_NOT_BUILT',
+      code: 'PERIO_SENDS_FROM_ITS_CHART',
       error:
-        'Sending a perio chart to Open Dental is not built yet, so nothing was sent. ' +
-        'The chart stays staged on this visit.',
+        'A perio chart is sent from its own page, row by row, not with the slip and the note. ' +
+        'Nothing was sent.',
     };
   }
 
@@ -335,7 +335,7 @@ async function sendVisit({
       ok: false,
       // 422 for the chart: the request was well-formed and names something this
       // version cannot do. Every other refusal here is a state conflict.
-      status: checked.code === 'PERIO_SEND_NOT_BUILT' ? 422 : 409,
+      status: checked.code === 'PERIO_SENDS_FROM_ITS_CHART' ? 422 : 409,
       code: checked.code,
       error: checked.error,
     };

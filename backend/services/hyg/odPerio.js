@@ -68,18 +68,21 @@ function examDateOf(value) {
 }
 
 /**
- * The newest exam for this patient.
+ * Every perio exam Open Dental holds for this patient, unsorted.
  *
- * Newest by ExamDate, then by PerioExamNum, because two exams on one day is
- * possible and the higher number is the later one. An exam with no readable
- * date sorts last rather than being guessed into a position.
+ * The filter-ignored guard lives HERE, once: a row is kept only when its own
+ * PatNum is the patient asked about. The send (slice 11) reads through this to
+ * tell the exam it created from one that was already there, so the guard that
+ * keeps a stranger's history off the screen also keeps a stranger's exam from
+ * being adopted as ours.
  *
  * @param {Function} odGet
  * @param {{ patNum: number }} opts
- * @returns {Promise<{ ok: true, exam: object|null, odReads: number, dropped: number }
+ * @returns {Promise<{ ok: true, exams: Array<{ examNum: number, examDate: string|null,
+ *                     provNum: number|null }>, odReads: number, dropped: number, truncated: boolean }
  *                   | { ok: false, error: string, odReads: number }>}
  */
-async function readLatestExam(odGet, { patNum }) {
+async function readExams(odGet, { patNum }) {
   const list = await pagedList(odGet, '/perioexams', { PatNum: patNum });
   if (list.error && list.rows.length === 0) {
     return { ok: false, error: list.error, odReads: list.pages };
@@ -100,6 +103,58 @@ async function readLatestExam(odGet, { patNum }) {
       provNum: odInt(row.ProvNum),
     });
   }
+  return {
+    ok: true,
+    exams,
+    odReads: list.pages,
+    dropped,
+    truncated: list.truncated || Boolean(list.error),
+  };
+}
+
+/**
+ * One exam's measurement rows, whole or saying it is not.
+ *
+ * `truncated` matters more to the send than to the screen: a row missing from a
+ * truncated read is NOT evidence it is missing from the chart, and posting it on
+ * that evidence is how a permanent second copy gets written. The send refuses to
+ * post anything on a truncated read.
+ *
+ * @param {Function} odGet
+ * @param {{ examNum: number }} opts
+ * @returns {Promise<{ ok: true, rows: object[], truncated: boolean, odReads: number }
+ *                   | { ok: false, error: string, odReads: number }>}
+ */
+async function readExamMeasures(odGet, { examNum }) {
+  const list = await pagedList(odGet, '/periomeasures', { PerioExamNum: examNum });
+  if (list.error && list.rows.length === 0) {
+    return { ok: false, error: list.error, odReads: list.pages };
+  }
+  return {
+    ok: true,
+    rows: list.rows.filter((r) => r && odInt(r.PerioExamNum) === examNum),
+    truncated: list.truncated || Boolean(list.error),
+    odReads: list.pages,
+  };
+}
+
+/**
+ * The newest exam for this patient.
+ *
+ * Newest by ExamDate, then by PerioExamNum, because two exams on one day is
+ * possible and the higher number is the later one. An exam with no readable
+ * date sorts last rather than being guessed into a position.
+ *
+ * @param {Function} odGet
+ * @param {{ patNum: number }} opts
+ * @returns {Promise<{ ok: true, exam: object|null, odReads: number, dropped: number }
+ *                   | { ok: false, error: string, odReads: number }>}
+ */
+async function readLatestExam(odGet, { patNum }) {
+  const read = await readExams(odGet, { patNum });
+  if (!read.ok) return read;
+  const { exams, dropped } = read;
+  const list = { pages: read.odReads };
 
   exams.sort((a, b) => {
     if (a.examDate !== b.examDate) {
@@ -234,6 +289,8 @@ async function readPriorPerio(odGet, { patNum }) {
 module.exports = {
   readPriorPerio,
   readLatestExam,
+  readExams,
+  readExamMeasures,
   chartFromMeasures,
   examDateOf,
   SURFACE_FIELDS,

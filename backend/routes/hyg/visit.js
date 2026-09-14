@@ -71,13 +71,15 @@ const express = require('express');
 
 const { h, resolveHygOd, actorEmail, auditHygRead, auditHygReads, auditHygDenial } =
   require('./helpers');
-const { audit } = require('../../platform/audit');
+const { audit, auditMany } = require('../../platform/audit');
 const tenantDb = require('../../platform/tenantDb');
 const odDay = require('../../services/hyg/odDay');
 const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
 const odPerio = require('../../services/hyg/odPerio');
+const perioSend = require('../../services/hyg/perioSend');
+const perioSendStore = require('../../services/hyg/perioSendStore');
 const hygStaff = require('../../config/hygStaff');
 const contract = require('../../hyg/contract.gen.cjs');
 
@@ -986,6 +988,268 @@ router.get(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The perio SEND (H4 slice 11) — resumable, confirmed, read back
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//   GET  /:aptNum/perio/send          progress. Our database only.
+//   POST /:aptNum/perio/send          confirm: fingerprint + exam date + provider,
+//                                     re-derived server-side; plans the queue;
+//                                     runs the first step.
+//   POST /:aptNum/perio/send/step     the next bounded batch. The page calls it
+//                                     until the send is done, halted or paused.
+//   POST /:aptNum/perio/send/resume   a halted send → Sending, failed rows back to
+//                                     pending (READ before they are posted), one step.
+//
+// Every write happens inside one of these requests, attributed to the person
+// making it and audited row by row. There is no background thread: leaving the
+// page stops the sending, loses nothing, and the next step reads Open Dental
+// before it posts a single row. See services/hyg/perioSend.js.
+
+/** The send, as the screen reads it. */
+async function perioSendPayload(req, office, aptNum, visit, paused) {
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const staged = await visitStore.getStagedWrite(pool, {
+      office,
+      visitId: visit.visitId,
+      kind: 'perio',
+    });
+    const rows = staged
+      ? await perioSendStore.getRows(pool, { office, stagedWriteId: staged.staged_write_id })
+      : [];
+    const view = perioSend.sendView(staged, rows);
+    return {
+      success: true,
+      office,
+      aptNum,
+      stagedWrite: staged ? visitStore.toStagedWrite(staged) : null,
+      progress: view.progress,
+      rows: view.rows,
+      paused: paused || null,
+    };
+  });
+}
+
+/** One step, and one audit row per Open Dental write it attempted. */
+async function runPerioStep(req, office, aptNum, od, visit) {
+  const odGet = (path, params, opts) =>
+    od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+  const step = await tenantDb.withTenantDb(req, (pool) =>
+    perioSend.stepPerioSend({ pool, office, visit, od, odGet })
+  );
+  if (step.ok && step.attempted.length > 0) {
+    // ONE ROW PER WRITE, success or failure, with the approving user on it.
+    await auditMany(
+      req,
+      step.attempted.map((a) => ({
+        action: 'UPDATE',
+        resourceType: 'hyg_perio_send',
+        resourceId: aptNum,
+        result: a.ok ? 'SUCCESS' : 'ERROR',
+        office,
+        sourceRef: null,
+      }))
+    );
+  }
+  return step;
+}
+
+router.get(
+  '/:aptNum/perio/send',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const visit = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getVisit(pool, { office, aptNum })
+    );
+    if (!visit) {
+      return res.json({ success: true, office, aptNum, stagedWrite: null, progress: null, rows: [], paused: null });
+    }
+    await auditHygRead(req, 'hyg_perio_send', { office, resourceId: aptNum });
+    return res.json(await perioSendPayload(req, office, aptNum, visit, null));
+  })
+);
+
+router.post(
+  '/:aptNum/perio/send',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    if (!isRealDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'date query param is required and must be a real calendar date (YYYY-MM-DD)',
+        code: 'INVALID_DATE',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.PerioSendRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    // The appointment is re-read from Open Dental at confirm time: the provider
+    // the exam is filed under comes from HERE, and the office handle is put
+    // through assertOfficeMatch before anything is written.
+    const resolved = await resolveAppointment(req, { office, aptNum, date });
+    if (!resolved.ok) {
+      await auditHygDenial(req, 'hyg_perio_send', aptNum, {
+        office,
+        result: resolved.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(resolved.status).json(resolved.body);
+    }
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+    if (resolved.appointment.patNum !== visit.patNum) {
+      await auditHygDenial(req, 'hyg_perio_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(409).json({
+        success: false,
+        error:
+          'This appointment now belongs to a different patient in Open Dental than the visit ' +
+          'the chart was entered on. Nothing was sent.',
+        code: 'PATIENT_CHANGED',
+        office,
+      });
+    }
+
+    const actor = actorEmail(req);
+    const started = await tenantDb.withTenantDb(req, (pool) =>
+      perioSend.startPerioSend({
+        pool,
+        office,
+        visit,
+        appointment: resolved.appointment,
+        request: body,
+        actor,
+      })
+    );
+    if (!started.ok) {
+      await auditHygDenial(req, 'hyg_perio_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(started.status).json({
+        success: false,
+        error: started.error,
+        code: started.code,
+        office,
+      });
+    }
+    // The confirmation itself is a recorded act, before any row is written.
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_send',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    const step = await runPerioStep(req, office, aptNum, resolved.od, visit);
+    if (!step.ok) {
+      return res.status(step.status).json({ success: false, error: step.error, code: step.code, office });
+    }
+    return res.json(await perioSendPayload(req, office, aptNum, visit, step.paused));
+  })
+);
+
+/** Office readiness and the visit, for the two routes that continue a send. */
+async function perioContinuation(req, res, office, aptNum) {
+  const resolved = resolveHygOd(office);
+  if (!resolved.ok) {
+    await auditHygDenial(req, 'hyg_perio_send', aptNum, {
+      office,
+      result: resolved.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+    });
+    res.status(resolved.status).json(resolved.body);
+    return null;
+  }
+  const visit = await loadForMutation(req, res, office, aptNum);
+  if (!visit) return null;
+  return { od: resolved.od, visit };
+}
+
+router.post(
+  '/:aptNum/perio/send/step',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const cont = await perioContinuation(req, res, office, aptNum);
+    if (!cont) return undefined;
+
+    const step = await runPerioStep(req, office, aptNum, cont.od, cont.visit);
+    if (!step.ok) {
+      return res.status(step.status).json({ success: false, error: step.error, code: step.code, office });
+    }
+    return res.json(await perioSendPayload(req, office, aptNum, cont.visit, step.paused));
+  })
+);
+
+router.post(
+  '/:aptNum/perio/send/resume',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const cont = await perioContinuation(req, res, office, aptNum);
+    if (!cont) return undefined;
+
+    const resumed = await tenantDb.withTenantDb(req, (pool) =>
+      perioSend.resumePerioSend({ pool, office, visit: cont.visit })
+    );
+    if (!resumed.ok) {
+      return res.status(resumed.status).json({
+        success: false,
+        error: resumed.error,
+        code: resumed.code,
+        office,
+      });
+    }
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_send',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    const step = await runPerioStep(req, office, aptNum, cont.od, cont.visit);
+    if (!step.ok) {
+      return res.status(step.status).json({ success: false, error: step.error, code: step.code, office });
+    }
+    return res.json(await perioSendPayload(req, office, aptNum, cont.visit, step.paused));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/hyg/visit/:aptNum/send?office=&date=   (H1 slice 3)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1146,6 +1410,21 @@ router.post(
         error: 'kind must be one of: ' + contract.StagedWriteKindSchema.options.join(', '),
         code: 'INVALID_BODY',
         field: 'kind',
+        office,
+      });
+    }
+
+    // A STOPPED PERIO SEND IS RESUMED, NEVER RE-STAGED. Failed → Staged would
+    // make the chart editable again while rows of it may already be permanent
+    // in Open Dental. The resume route continues the same queue and reads before
+    // it posts.
+    if (kind.data === 'perio') {
+      return res.status(409).json({
+        success: false,
+        error:
+          'A stopped perio send is resumed from its chart, which checks Open Dental before it ' +
+          'sends anything again.',
+        code: 'PERIO_USE_RESUME',
         office,
       });
     }

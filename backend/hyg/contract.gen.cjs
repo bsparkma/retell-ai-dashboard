@@ -14846,6 +14846,7 @@ __export(contract_entry_exports, {
   HygOperatorySchema: () => HygOperatorySchema,
   HygPerioPriorResponseSchema: () => HygPerioPriorResponseSchema,
   HygPerioResponseSchema: () => HygPerioResponseSchema,
+  HygPerioSendResponseSchema: () => HygPerioSendResponseSchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
   HygVisitResponseSchema: () => HygVisitResponseSchema,
@@ -14859,6 +14860,7 @@ __export(contract_entry_exports, {
   NoteControlIdSchema: () => NoteControlIdSchema,
   NoteFieldSchema: () => NoteFieldSchema,
   NoteFreeFieldSchema: () => NoteFreeFieldSchema,
+  OD_SECONDS_PER_REQUEST: () => OD_SECONDS_PER_REQUEST,
   OFFICE_IDS: () => OFFICE_IDS,
   OFFICE_TIME_ZONE: () => OFFICE_TIME_ZONE,
   OfficeIdSchema: () => OfficeIdSchema,
@@ -14869,6 +14871,7 @@ __export(contract_entry_exports, {
   PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
   PERIO_SEGMENTS: () => PERIO_SEGMENTS,
+  PERIO_SEND_BATCH: () => PERIO_SEND_BATCH,
   PERIO_SITES_PER_TOOTH: () => PERIO_SITES_PER_TOOTH,
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
   PERIO_TOOTH_COUNT: () => PERIO_TOOTH_COUNT,
@@ -14880,6 +14883,11 @@ __export(contract_entry_exports, {
   PerioGradeSchema: () => PerioGradeSchema,
   PerioPriorSchema: () => PerioPriorSchema,
   PerioSegmentSchema: () => PerioSegmentSchema,
+  PerioSendProgressSchema: () => PerioSendProgressSchema,
+  PerioSendRequestSchema: () => PerioSendRequestSchema,
+  PerioSendRowSchema: () => PerioSendRowSchema,
+  PerioSendRowStateSchema: () => PerioSendRowStateSchema,
+  PerioSendSequenceTypeSchema: () => PerioSendSequenceTypeSchema,
   PerioSiteSchema: () => PerioSiteSchema,
   PerioStageSchema: () => PerioStageSchema,
   PerioSweepSchema: () => PerioSweepSchema,
@@ -14926,6 +14934,7 @@ __export(contract_entry_exports, {
   emptyPerioSite: () => emptyPerioSite,
   emptyPerioTooth: () => emptyPerioTooth,
   emptySlip: () => emptySlip,
+  estimatePerioSendRequests: () => estimatePerioSendRequests,
   fieldText: () => fieldText,
   firstOpenPerioCursor: () => firstOpenPerioCursor,
   flagsFromBits: () => flagsFromBits,
@@ -14936,6 +14945,7 @@ __export(contract_entry_exports, {
   isOfficeId: () => isOfficeId,
   isPatientRight: () => isPatientRight,
   normalizePerioChart: () => normalizePerioChart,
+  perioMeasureRows: () => perioMeasureRows,
   perioPreviewLines: () => perioPreviewLines,
   perioProgressLabel: () => perioProgressLabel,
   perioSegmentOf: () => perioSegmentOf,
@@ -15968,9 +15978,16 @@ var HYG_VISIT_ERROR_CODES = [
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
   "NOT_STAGED",
-  // H4 slice 10. A perio chart stages; sending one is the next slice.
-  "PERIO_SEND_NOT_BUILT",
-  "PATIENT_CHANGED"
+  // H4 slices 10 and 11: the perio chart and its own send.
+  "PERIO_SENDS_FROM_ITS_CHART",
+  "PATIENT_CHANGED",
+  "EXAM_DATE_CHANGED",
+  "NO_PROVIDER",
+  "PROVIDER_CHANGED",
+  "PERIO_SEND_IN_PROGRESS",
+  "NOT_STARTED",
+  "PAYLOAD_INVALID",
+  "PERIO_USE_RESUME"
 ];
 
 // shared/hyg/records.ts
@@ -16386,6 +16403,124 @@ var HygPerioPriorResponseSchema = import_zod3.z.object({
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema
 });
+var PerioSendSequenceTypeSchema = import_zod3.z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
+var PERIO_SEND_BATCH = 12;
+var OD_SECONDS_PER_REQUEST = 1;
+function perioMeasureRows(chart) {
+  const normalized = normalizePerioChart(chart);
+  const out = [];
+  let seq = 1;
+  for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
+    const t = normalized.teeth[String(tooth)];
+    if (!t) continue;
+    if (t.skipped) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "SkipTooth",
+        body: { ToothValue: 1, MBvalue: -1, Bvalue: -1, DBvalue: -1, MLvalue: -1, Lvalue: -1, DLvalue: -1 },
+        sites: 0
+      });
+      continue;
+    }
+    const depth = (s) => t.sites[s].depth ?? -1;
+    const charted = ALL_SITES.filter((s) => t.sites[s].depth !== null).length;
+    if (charted > 0) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "Probing",
+        body: {
+          ToothValue: -1,
+          MBvalue: depth("MB"),
+          Bvalue: depth("B"),
+          DBvalue: depth("DB"),
+          MLvalue: depth("ML"),
+          Lvalue: depth("L"),
+          DLvalue: depth("DL")
+        },
+        sites: charted
+      });
+    }
+    const bits = (s) => bleedSupPlaqCalcBits(t.sites[s]);
+    if (ALL_SITES.some((s) => bits(s) > 0)) {
+      out.push({
+        seq: seq++,
+        tooth,
+        sequenceType: "BleedSupPlaqCalc",
+        body: {
+          ToothValue: -1,
+          MBvalue: bits("MB"),
+          Bvalue: bits("B"),
+          DBvalue: bits("DB"),
+          MLvalue: bits("ML"),
+          Lvalue: bits("L"),
+          DLvalue: bits("DL")
+        },
+        sites: 0
+      });
+    }
+  }
+  return out;
+}
+function estimatePerioSendRequests({
+  examConfirmed,
+  rowsRemaining
+}) {
+  const rows = Math.max(0, rowsRemaining);
+  return (examConfirmed ? 0 : 3) + rows + Math.ceil(rows / PERIO_SEND_BATCH) * 2;
+}
+var PerioSendRequestSchema = import_zod3.z.object({
+  previewFingerprint: import_zod3.z.string().min(1).max(200),
+  examDate: import_zod3.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  provNum: import_zod3.z.number().int().positive()
+}).strict();
+var PerioSendRowStateSchema = import_zod3.z.enum(["pending", "sending", "sent", "confirmed", "failed"]);
+var PerioSendRowSchema = import_zod3.z.object({
+  seq: import_zod3.z.number().int(),
+  target: import_zod3.z.enum(["exam", "measure"]),
+  tooth: import_zod3.z.number().int().nullable(),
+  sequenceType: PerioSendSequenceTypeSchema.nullable(),
+  state: PerioSendRowStateSchema,
+  /** PerioExamNum or PerioMeasureNum, once Open Dental has minted one. */
+  odRef: import_zod3.z.number().int().nullable(),
+  /** Open Dental's own words when it refused; the reason a row is waiting otherwise. */
+  errorMessage: import_zod3.z.string().nullable(),
+  sites: import_zod3.z.number().int()
+});
+var PerioSendProgressSchema = import_zod3.z.object({
+  examNum: import_zod3.z.number().int().nullable(),
+  examDate: import_zod3.z.string(),
+  provNum: import_zod3.z.number().int(),
+  rowsTotal: import_zod3.z.number().int(),
+  rowsConfirmed: import_zod3.z.number().int(),
+  rowsFailed: import_zod3.z.number().int(),
+  rowsRemaining: import_zod3.z.number().int(),
+  sitesTotal: import_zod3.z.number().int(),
+  sitesConfirmed: import_zod3.z.number().int(),
+  requestsRemaining: import_zod3.z.number().int(),
+  secondsRemaining: import_zod3.z.number().int(),
+  /** Every row read back. The staged write is Written. */
+  done: import_zod3.z.boolean(),
+  /** A row was refused or could not be confirmed. Nothing more sends until Resume. */
+  halted: import_zod3.z.boolean(),
+  haltMessage: import_zod3.z.string().nullable(),
+  startedBy: import_zod3.z.string().nullable(),
+  startedAt: import_zod3.z.string().nullable()
+});
+var HygPerioSendResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: import_zod3.z.number().int(),
+  stagedWrite: StagedWriteSchema.nullable(),
+  progress: PerioSendProgressSchema.nullable(),
+  rows: import_zod3.z.array(PerioSendRowSchema),
+  /**
+   * Why this step stopped short without halting — Open Dental did not answer,
+   * or another tab holds a row. Nothing was lost; the next step reads first.
+   */
+  paused: import_zod3.z.string().nullable()
+});
 
 // ../backend/hyg/contract.entry.ts
 var import_zod4 = __toESM(require_zod());
@@ -16414,6 +16549,7 @@ var import_zod4 = __toESM(require_zod());
   HygOperatorySchema,
   HygPerioPriorResponseSchema,
   HygPerioResponseSchema,
+  HygPerioSendResponseSchema,
   HygSendResponseSchema,
   HygSlipSchema,
   HygVisitResponseSchema,
@@ -16427,6 +16563,7 @@ var import_zod4 = __toESM(require_zod());
   NoteControlIdSchema,
   NoteFieldSchema,
   NoteFreeFieldSchema,
+  OD_SECONDS_PER_REQUEST,
   OFFICE_IDS,
   OFFICE_TIME_ZONE,
   OfficeIdSchema,
@@ -16437,6 +16574,7 @@ var import_zod4 = __toESM(require_zod());
   PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH,
   PERIO_SEGMENTS,
+  PERIO_SEND_BATCH,
   PERIO_SITES_PER_TOOTH,
   PERIO_STAGE_LABELS,
   PERIO_TOOTH_COUNT,
@@ -16448,6 +16586,11 @@ var import_zod4 = __toESM(require_zod());
   PerioGradeSchema,
   PerioPriorSchema,
   PerioSegmentSchema,
+  PerioSendProgressSchema,
+  PerioSendRequestSchema,
+  PerioSendRowSchema,
+  PerioSendRowStateSchema,
+  PerioSendSequenceTypeSchema,
   PerioSiteSchema,
   PerioStageSchema,
   PerioSweepSchema,
@@ -16494,6 +16637,7 @@ var import_zod4 = __toESM(require_zod());
   emptyPerioSite,
   emptyPerioTooth,
   emptySlip,
+  estimatePerioSendRequests,
   fieldText,
   firstOpenPerioCursor,
   flagsFromBits,
@@ -16504,6 +16648,7 @@ var import_zod4 = __toESM(require_zod());
   isOfficeId,
   isPatientRight,
   normalizePerioChart,
+  perioMeasureRows,
   perioPreviewLines,
   perioProgressLabel,
   perioSegmentOf,
