@@ -42,6 +42,13 @@ import {
   type StagedWriteKind,
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
+import {
+  HygPerioPriorResponseSchema,
+  HygPerioResponseSchema,
+  type HygPerioPriorResponse,
+  type HygPerioResponse,
+  type PerioChart,
+} from "@shared/hyg/perio";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -531,6 +538,102 @@ export async function sendVisit(
       return parsed.data;
     },
     { confirm },
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio chart (H4 slice 10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The chart stored on this visit. Our database only — no Open Dental read, so
+ * the grid paints before the prior exam has even been asked for.
+ */
+export async function fetchPerio(
+  office: OfficeId,
+  aptNum: number,
+  signal?: AbortSignal,
+): Promise<HygPerioResponse> {
+  return get(
+    `/visit/${aptNum}/perio`,
+    { office },
+    (raw) => {
+      const parsed = HygPerioResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned a perio chart this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * Store the chart, whole, as a Draft.
+ *
+ * A chart that was staged goes back to Draft if a READING changed — the staged
+ * preview no longer describes it. The response says which, and that is what the
+ * page renders.
+ */
+export async function savePerio(
+  office: OfficeId,
+  aptNum: number,
+  chart: PerioChart,
+): Promise<HygPerioResponse> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/perio`,
+    { office },
+    (raw) => {
+      const parsed = HygPerioResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved a perio chart this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { chart },
+  );
+}
+
+/**
+ * Open Dental's last perio exam for this appointment's patient.
+ *
+ * A 200 carries one of three answers — found, none, unavailable — and a screen
+ * draws each differently. A THROWN error is a refusal about the appointment
+ * itself (not ready, moved to another patient, no schedule), which is a fourth.
+ */
+export async function fetchPerioPrior(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  signal?: AbortSignal,
+): Promise<HygPerioPriorResponse> {
+  return get(
+    `/visit/${aptNum}/perio/prior`,
+    { office, date },
+    (raw) => {
+      const parsed = HygPerioPriorResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned a perio history this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
   );
 }
 

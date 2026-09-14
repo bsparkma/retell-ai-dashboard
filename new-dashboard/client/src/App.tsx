@@ -60,6 +60,7 @@ import TcNurture from "./pages/tc/TcNurture";
 import TcGuide from "./pages/tc/TcGuide";
 import HygDay from "./pages/hyg/HygDay";
 import HygVisit from "./pages/hyg/HygVisit";
+import HygPerio from "./pages/hyg/HygPerio";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
@@ -170,6 +171,9 @@ export function Router() {
           <Redirect to="/hyg/day" replace />
         </Route>
         <Route path="/hyg/day" component={HygDay} />
+        {/* The perio chart (H4 slice 10), reached from the visit's tray. Above
+            the visit route so the longer path is matched first. */}
+        <Route path="/hyg/visit/:aptNum/perio" component={HygPerio} />
         <Route path="/hyg/visit/:aptNum" component={HygVisit} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />

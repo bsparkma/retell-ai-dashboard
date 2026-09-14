@@ -486,13 +486,47 @@ describe("what the screen may not claim", () => {
     expect(page).not.toMatch(/(?<!un)\bsigned\b/i);
   });
 
-  it("says perio is not built rather than offering to send an empty one", async () => {
+  it("offers the perio chart as a place to go, not a Stage button over nothing", async () => {
+    // H4 slice 10. A perio chart is entered on its own page; the tray's job
+    // before there is one is to say where that is.
     renderVisit();
     await screen.findByTestId("hyg-visit");
 
-    const perio = screen.getByTestId("hyg-stage-perio");
-    expect(perio.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByTestId("hyg-staged-perio").textContent).toMatch(/not built yet/i);
+    expect(screen.queryByTestId("hyg-stage-perio")).toBeNull();
+    const link = screen.getByTestId("hyg-open-perio");
+    expect(link.getAttribute("href")).toBe("/hyg/visit/900001/perio?office=roland&date=2026-09-08");
+  });
+
+  it("leaves a staged perio chart out of Send, and says it stays", async () => {
+    server.visit = null;
+    server.staged = [
+      {
+        id: "staged-perio",
+        kind: "perio",
+        state: "Staged",
+        title: "Perio chart",
+        summary: "Partial chart: 84 of 192 sites charted, 2026-09-08",
+        preview: ["Partial chart: 84 of 192 sites charted"],
+        previewFingerprint: "fp-perio",
+        errorMessage: null,
+        writtenRef: null,
+        stagedBy: "hygienist@carein.ai",
+        stagedAt: "2026-09-08T13:10:00.000Z",
+        sentBy: null,
+        sentAt: null,
+        updatedAt: "2026-09-08T13:10:00.000Z",
+      },
+    ];
+    renderVisit();
+    await screen.findByTestId("hyg-visit");
+    // Force a visit so the tray renders the staged row.
+    fireEvent.click(screen.getByTestId("hyg-stage-router"));
+    await screen.findByTestId("hyg-staged-preview-router");
+
+    expect(screen.getByTestId("hyg-staged-perio").textContent).toMatch(/Partial chart: 84 of 192/);
+    expect(screen.getByTestId("hyg-perio-not-sent").textContent).toMatch(/not built yet/i);
+    // Router is staged, perio is staged: Send counts ONE.
+    expect(screen.getByTestId("hyg-send-all").textContent).toMatch(/Send 1 to Open Dental/);
   });
 
   it("gives every control a 44px tap target", async () => {

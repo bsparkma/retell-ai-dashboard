@@ -30,6 +30,7 @@
  * prototype's notes summary said "Signed by" — a defect, not copy to lift.
  */
 import { useState } from "react";
+import { Link } from "wouter";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -83,7 +84,7 @@ const KIND_LABELS: Record<StagedWriteKind, string> = {
 
 const KIND_BLURBS: Record<StagedWriteKind, string> = {
   router: "The slip, filed into this patient's images.",
-  perio: "Not built yet — perio charting has its own slice.",
+  perio: "Probing depths, and bleeding, suppuration, plaque and calculus, site by site.",
   note: "An unsigned note on today's appointment, with your name typed in it.",
   "tc-handoff": "The treatment, to the treatment coordinator.",
 };
@@ -95,8 +96,17 @@ const KIND_ICONS: Record<StagedWriteKind, typeof FileText> = {
   "tc-handoff": UserPlus,
 };
 
-/** Which kinds this release can compose. `perio` refuses server-side too. */
+/**
+ * Which kinds stage straight from this tray.
+ *
+ * `perio` is not one of them: a chart is ENTERED on its own page, and the tray's
+ * job is to link there, show what was staged, and keep it out of Send — sending
+ * a perio chart is not built (H4 slice 11), and the server refuses one too.
+ */
 const AVAILABLE: StagedWriteKind[] = ["router", "note", "tc-handoff"];
+
+/** Kinds Send may include. A staged perio chart stays on the list, unsent. */
+const SENDABLE: StagedWriteKind[] = ["router", "note", "tc-handoff"];
 
 function StatePill({ state }: { state: StagedWrite["state"] }) {
   return (
@@ -212,6 +222,7 @@ export function StagedWritesTray({
   onSend,
   onRetry,
   refusal,
+  perioHref,
 }: {
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
@@ -226,10 +237,12 @@ export function StagedWritesTray({
   onRetry: (kind: StagedWriteKind) => void;
   /** The server's last refusal, in its own words. `kind: null` = the send. */
   refusal: { kind: StagedWriteKind | null; message: string } | null;
+  /** Where the perio chart for this visit is entered. */
+  perioHref: string;
 }) {
   const [confirming, setConfirming] = useState<StagedWrite[] | null>(null);
   const byKind = new Map(staged.map((w) => [w.kind, w]));
-  const ready = staged.filter((w) => w.state === "Staged");
+  const ready = staged.filter((w) => w.state === "Staged" && SENDABLE.includes(w.kind));
 
   /**
    * A handoff with nothing to hand off cannot be staged, and the card says so
@@ -304,7 +317,17 @@ export function StagedWritesTray({
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {write?.state === "Staged" ? (
+                  {kind === "perio" && (!write || write.state === "Draft") ? (
+                    // THE CHART IS ENTERED ON ITS OWN PAGE. Before anything is
+                    // staged, the useful thing this row can offer is the way there.
+                    <Link
+                      href={perioHref}
+                      data-testid="hyg-open-perio"
+                      className={cn(TAP, "inline-flex items-center border-border text-foreground hover:bg-accent/50")}
+                    >
+                      {write ? "Open chart" : "Chart perio"}
+                    </Link>
+                  ) : write?.state === "Staged" ? (
                     <button
                       type="button"
                       onClick={() => onUnstage(kind)}
@@ -350,7 +373,20 @@ export function StagedWritesTray({
                 </div>
               </div>
 
-              {write && write.state !== "Written" ? (
+              {kind === "perio" && write?.state === "Staged" ? (
+                <p
+                  className="mt-2 text-xs text-muted-foreground"
+                  data-testid="hyg-perio-not-sent"
+                >
+                  Staged on this visit. Sending a perio chart to Open Dental is not built yet, so
+                  Send leaves it here.{" "}
+                  <Link href={perioHref} className="underline underline-offset-2">
+                    Open chart
+                  </Link>
+                </p>
+              ) : null}
+
+              {write && write.state !== "Written" && write.preview.length > 0 ? (
                 <ul
                   className="mt-2 space-y-0.5 border-t border-border/60 pt-2 text-xs text-muted-foreground"
                   data-testid={`hyg-staged-preview-${kind}`}
