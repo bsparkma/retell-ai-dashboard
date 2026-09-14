@@ -127,24 +127,54 @@ function doctorOptions(office) {
 }
 
 /**
- * The typed-name block for one office and one hygienist.
+ * The typed-name block for one office and one author.
  *
- * Her line first, then the office's doctors. NOT a signature — the composer
- * appends the "Unsigned." line, and nothing here says otherwise.
+ * The author's line first, then the office's supervising doctors. NOT a
+ * signature — the composer appends the "Unsigned." line, and nothing here says
+ * otherwise.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ONE PERSON, ONE LINE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The author is not always a hygienist. When a doctor writes the note — Beau's
+ * own walk on staging, 2026-09-09 — he appeared TWICE: once as the bare author
+ * name the session gave, and again, three lines down, with his credential and
+ * licence in the supervising list. A block naming the same person twice, once
+ * worse than the other, reads like a defect in a chart note and is one.
+ *
+ * So an author who IS one of the office's doctors is printed once, as the
+ * DOCTOR line — the better of the two, because it carries the credential and
+ * the licence — and is left out of the list below. Best information wins, and
+ * the list still names everyone else who supervises.
+ *
+ * A hygienist author is unaffected: she is not in the doctor list, so nothing
+ * is removed and every doctor still appears.
  *
  * @param {{ office: string, hygienistName: string|null }} input
+ *   `hygienistName` is the AUTHOR's name — the parameter keeps its name so
+ *   every existing call site reads the same, but a doctor may be the author.
  * @returns {string[]} lines, possibly empty when we know nothing at all
  */
 function signatureBlock({ office, hygienistName }) {
   const lines = [];
   const key = normalizeName(hygienistName);
+  const doctors = supervisingDoctors(office);
+  // Case-insensitive, and on the same normalisation the roster uses, so
+  // "beau  sparkman" from a session is the same person as the config's entry.
+  const authorIsDoctor = key ? doctors.find((d) => normalizeName(d.name) === key) : undefined;
+
   if (key) {
-    const known = HYGIENIST_ROSTER[key];
-    // Her OWN spelling of her name when we have it, and what she signed in as
-    // when we do not. The licence is only ever the roster's.
+    // In order of how much we know: the doctor entry (name + credential +
+    // licence), then the hygienist roster's, then what she signed in as. The
+    // licence is only ever config's — never invented, never somebody else's.
+    const known = authorIsDoctor || HYGIENIST_ROSTER[key];
     lines.push(known ? personLine(known) : String(hygienistName).trim());
   }
-  for (const doctor of supervisingDoctors(office)) lines.push(personLine(doctor));
+  for (const doctor of doctors) {
+    // Already printed above, as the author. One person, one line.
+    if (authorIsDoctor && doctor === authorIsDoctor) continue;
+    lines.push(personLine(doctor));
+  }
   return lines;
 }
 

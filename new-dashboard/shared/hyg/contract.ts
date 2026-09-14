@@ -71,6 +71,38 @@ export function isOfficeId(value: unknown): value is OfficeId {
   return OfficeIdSchema.safeParse(value).success;
 }
 
+/**
+ * THE ZONE THE OFFICE DAY IS COUNTED IN. Not the device's, and not UTC.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY A CONSTANT AND NOT THE BROWSER'S OWN CLOCK
+ * ═════════════════════════════════════════════════════════════════════════════
+ * "Which day is it?" is a question about a PRACTICE, not about whoever is
+ * holding the iPad. Both practices are US Central and always have been, so the
+ * schedule for "today" is a Central calendar date even when it is read from a
+ * laptop in another zone, an iPad whose clock is wrong, or a CI runner on UTC.
+ *
+ * The browser-local version of this was wrong in both directions and only for
+ * a few hours a day, which is the worst way for a date to be wrong: a device
+ * EAST of Central shows tomorrow's schedule late in the evening, one WEST
+ * shows yesterday's after midnight, and both look completely normal.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT MIRRORS THE BACKEND, AND A TEST SAYS SO
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The server side of this is `OFFICE_TIMEZONE`, whose default lives in
+ * `backend/config/hygWarm.js` as `DEFAULT_TIMEZONE` — the same zone the 07:45
+ * warm reads its schedule in. This constant cannot read an env var, so it is
+ * the one place the two could drift; `backend/config/hygWarm.test.js` asserts
+ * they are equal, so a change to one without the other is a red build rather
+ * than a Day View that quietly disagrees with the job that warmed it.
+ *
+ * If a practice ever opens outside Central this stops being a constant and
+ * becomes a per-office field on the day response. It is not one yet because
+ * pretending to support something untested is worse than saying Central.
+ */
+export const OFFICE_TIME_ZONE = "America/Chicago";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Treatment vocabulary
 // ─────────────────────────────────────────────────────────────────────────────
