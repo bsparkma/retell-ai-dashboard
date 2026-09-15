@@ -44,6 +44,10 @@ export * from "../../new-dashboard/shared/hyg/noteTemplates";
 // the preview the composer fingerprints. perio.ts imports from contract.ts, one
 // direction only, so nothing here is exported twice.
 export * from "../../new-dashboard/shared/hyg/perio";
+// The perio send plan (item 12): the probe's position table, the arch-string
+// predicate, the per-row rows and the read-back comparison. perioSend.ts imports
+// from perio.ts and contract.ts, never the reverse.
+export * from "../../new-dashboard/shared/hyg/perioSend";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.
