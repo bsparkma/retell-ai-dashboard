@@ -220,4 +220,10 @@ ce8ad09 Photograph the perio send: confirm, paused, written, incomplete, undo, t
 
 ## 9. Push / PR
 
-_(filled in after push)_
+Pushed. **PR #179** — `feature/hyg-perio-send-v2` → `develop`:
+https://github.com/bsparkma/retell-ai-dashboard/pull/179
+
+Independent of every open branch; #176 and #178, which it builds on, are merged. PR #177 is closed,
+unmerged (§3). The staging rehearsal in §6 needs this deployed to staging.
+
+Commit `7400737` (after §8's list) adds the paused-send undo button and this report.
