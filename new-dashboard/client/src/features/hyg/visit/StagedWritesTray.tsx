@@ -317,9 +317,10 @@ export function StagedWritesTray({
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {kind === "perio" && (!write || write.state === "Draft") ? (
-                    // THE CHART IS ENTERED ON ITS OWN PAGE. Before anything is
-                    // staged, the useful thing this row can offer is the way there.
+                  {kind === "perio" && write?.state !== "Staged" ? (
+                    // THE CHART IS ENTERED, SENT AND UNDONE ON ITS OWN PAGE. Unless it
+                    // is sitting staged (when the list can take it off), the useful
+                    // thing this row can offer is the way there.
                     <Link
                       href={perioHref}
                       data-testid="hyg-open-perio"
@@ -378,11 +379,25 @@ export function StagedWritesTray({
                   className="mt-2 text-xs text-muted-foreground"
                   data-testid="hyg-perio-not-sent"
                 >
-                  Staged on this visit. Sending a perio chart to Open Dental is not built yet, so
-                  Send leaves it here.{" "}
+                  Staged. A perio chart is sent from its own page, where every site is read back
+                  from Open Dental, so Send below leaves it here.{" "}
                   <Link href={perioHref} className="underline underline-offset-2">
                     Open chart
                   </Link>
+                </p>
+              ) : null}
+
+              {kind === "perio" && (write?.state === "Sending" || write?.state === "Failed") ? (
+                <p
+                  className={cn(
+                    "mt-2 text-xs",
+                    write.state === "Failed" ? "text-destructive" : "text-muted-foreground",
+                  )}
+                  data-testid="hyg-perio-in-progress"
+                >
+                  {write.state === "Failed"
+                    ? "The perio send stopped. Open the chart to see what did not land in Open Dental, and to delete the exam if one was created."
+                    : "Being written to Open Dental. Open the chart to follow it, or to continue it if it paused."}
                 </p>
               ) : null}
 

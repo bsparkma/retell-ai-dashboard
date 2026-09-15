@@ -1,13 +1,17 @@
 /**
- * /hyg/visit/:aptNum/perio — the perio chart (H4 slice 10).
+ * /hyg/visit/:aptNum/perio — the perio chart (H4 slice 10) and its send (item 12).
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * READ, DISPLAY, STAGE. NOTHING ON THIS PAGE REACHES A CHART.
+ * ENTER, STAGE, CONFIRM — AND ONLY THE CONFIRM REACHES A CHART
  * ═════════════════════════════════════════════════════════════════════════════
- * A stray Probing row in Open Dental is PERMANENT — only Mobility and SkipTooth
- * measurements can be deleted — so a perio chart is entered here, stored on the
- * visit, and STAGED whole. The send is its own slice. The Stage button puts the
- * chart on the visit's "Ready to send" list; the tray there says it stays.
+ * A perio chart is entered here, stored on the visit, and STAGED whole. A staged
+ * chart can then be sent from this page: the confirm dialog shows exactly how each
+ * arch goes in (one request where the arch strings can say it; row by row where a
+ * reading of 10 or more, a gap, or a flag with no depth means they cannot), and
+ * the server writes, then reads EVERY site back. Written means read back and
+ * matching; anything else is named on screen, loudly, with the delete-the-exam
+ * undo beside it. A chart that is sending, stopped or written takes no more
+ * readings.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE KEYBOARD IS THE FAST PATH, AND THE ORDER IS THE ONE SAID OUT LOUD
@@ -27,16 +31,16 @@
  * are four different facts.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * THE SERVER HOLDS THE CHART
+ * THE SERVER HOLDS THE CHART, AND THE SEND RUNS FROM THIS PAGE
  * ═════════════════════════════════════════════════════════════════════════════
  * Every change is stored after a short pause, one save at a time, in order. The
- * page says "Saved" only when the chart the server answered with is the chart on
- * screen; a reading typed while a save was in flight keeps it at "Saving…" until
- * the next one lands.
+ * send is a loop of steps this page asks for, so every write happens inside a
+ * request the person who confirmed it made. Leaving the page stops asking; the
+ * server's record survives, and Continue reads Open Dental before it writes.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { AlertTriangle, ArrowLeft, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, Send } from "lucide-react";
 
 import { isOfficeId, type StagedWrite } from "@shared/hyg/contract";
 import {
@@ -55,13 +59,19 @@ import {
   type HygPerioResponse,
   type PerioChart,
 } from "@shared/hyg/perio";
+import { type HygPerioSendResponse } from "@shared/hyg/perioSend";
 import {
+  deletePerioSendExam,
   fetchPerio,
   fetchPerioPrior,
+  fetchPerioSend,
   HygApiError,
   openVisit,
+  retryStagedWrite,
   savePerio,
   stageWrite,
+  startPerioSend,
+  stepPerioSend,
 } from "@/features/hyg/api";
 import { todayIso } from "@/features/hyg/day";
 import {
@@ -72,6 +82,8 @@ import {
   type PerioEntryAction,
 } from "@/features/hyg/perio/entry";
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
+import { PerioSendConfirm } from "@/features/hyg/perio/PerioSendConfirm";
+import { PerioDeleteExamDialog, PerioSendPanel, perioMismatchTeeth } from "@/features/hyg/perio/PerioSendPanel";
 import { cn } from "@/lib/utils";
 
 /** How long after the last key the chart is stored. */
@@ -88,6 +100,21 @@ type SaveState = "idle" | "saving" | "saved" | "failed";
 
 function chartKey(chart: PerioChart): string {
   return JSON.stringify(normalizePerioChart(chart));
+}
+
+/**
+ * The provider an exam is filed under: the hygienist, else the provider. The
+ * SAME rule the server applies (services/hyg/perioSend.js provNumFor); the
+ * confirm carries this number and the server refuses if its own differs.
+ */
+function provNumOf(appointment: { provHyg: number | null; provNum: number | null }): number | null {
+  if (appointment.provHyg !== null && appointment.provHyg > 0) return appointment.provHyg;
+  if (appointment.provNum !== null && appointment.provNum > 0) return appointment.provNum;
+  return null;
+}
+
+function isInFlight(res: HygPerioSendResponse): boolean {
+  return res.send !== null && (res.send.state === "posting" || res.send.state === "filling");
 }
 
 /** Found / none / unavailable / not read yet / refused — each drawn its own way. */
@@ -207,7 +234,14 @@ function PriorPanel({
 function StagedPill({ write }: { write: StagedWrite }) {
   return (
     <span
-      className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold text-muted-foreground"
+      className={cn(
+        "rounded-full px-2.5 py-1 text-xs font-semibold",
+        write.state === "Failed"
+          ? "bg-destructive/15 text-destructive"
+          : write.state === "Written"
+            ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300"
+            : "bg-muted text-muted-foreground",
+      )}
       data-testid={`hyg-perio-state-${write.state}`}
     >
       {write.state}
@@ -233,6 +267,24 @@ export default function HygPerio() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [staging, setStaging] = useState(false);
   const [stageMessage, setStageMessage] = useState<string | null>(null);
+  // THE SEND (item 12).
+  const [send, setSend] = useState<HygPerioSendResponse | null>(null);
+  const [sendRunning, setSendRunning] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** Stops the step loop when the page goes away — leaving pauses, it does not lose. */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  /** A chart that is sending, stopped or written takes no more readings. */
+  const lockedRef = useRef(false);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** The chart the server last answered with, normalised. */
@@ -243,6 +295,12 @@ export default function HygPerio() {
   const inFlight = useRef<Promise<boolean>>(Promise.resolve(true));
   const latestChart = useRef<PerioChart>(entry.chart);
   latestChart.current = entry.chart;
+
+  /** A send answer is also the chart's staged-write state; both move together. */
+  const applySend = useCallback((res: HygPerioSendResponse) => {
+    setSend(res.send ? res : null);
+    setStored((prev) => (prev ? { ...prev, stagedWrite: res.stagedWrite } : prev));
+  }, []);
 
   const loadChart = useCallback(
     async (signal?: AbortSignal) => {
@@ -255,6 +313,16 @@ export default function HygPerio() {
         setStored(res);
         setLoadError(null);
         setSaveState(res.visitStarted ? "saved" : "idle");
+        if (res.visitStarted) {
+          // Where a send stands, if one was ever started. Our database only, and a
+          // failure here costs the send panel, not the chart.
+          try {
+            const progress = await fetchPerioSend(office, aptNum, signal);
+            setSend(progress.send ? progress : null);
+          } catch {
+            /* the chart still loads; the panel appears once a send answers */
+          }
+        }
       } catch (err) {
         if (signal?.aborted) return;
         setLoadError(
@@ -358,6 +426,7 @@ export default function HygPerio() {
   );
 
   const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+    if (lockedRef.current) return;
     const action = keyToPerioAction(e);
     if (!action) return;
     e.preventDefault();
@@ -366,6 +435,7 @@ export default function HygPerio() {
 
   /** A tap does what its key does, and gives the keyboard back. */
   const act = useCallback((action: PerioEntryAction) => {
+    if (lockedRef.current && action.type !== "select") return;
     dispatch(action);
     gridRef.current?.focus();
   }, []);
@@ -390,6 +460,69 @@ export default function HygPerio() {
       setStaging(false);
     }
   }, [office, aptNum, save]);
+
+  /**
+   * Run a send: the first call, then steps until it finishes, stops or pauses.
+   *
+   * The loop lives on this page on purpose — every write happens inside a request
+   * this person made. Leaving stops asking for steps; Continue reads before it writes.
+   */
+  const runSend = useCallback(
+    async (first: () => Promise<HygPerioSendResponse>) => {
+      if (!isOfficeId(office)) return;
+      setSendRunning(true);
+      setSendError(null);
+      try {
+        let res = await first();
+        if (mounted.current) applySend(res);
+        while (mounted.current && isInFlight(res) && res.paused === null) {
+          res = await stepPerioSend(office, aptNum);
+          if (mounted.current) applySend(res);
+        }
+      } catch (err) {
+        if (mounted.current) {
+          setSendError(
+            err instanceof HygApiError
+              ? err.message
+              : "The send stopped before Open Dental answered. Nothing is lost; Continue reads before it writes.",
+          );
+        }
+      } finally {
+        if (mounted.current) setSendRunning(false);
+      }
+    },
+    [office, aptNum, applySend],
+  );
+
+  const onDeleteExam = useCallback(
+    async (examNum: number) => {
+      if (!isOfficeId(office)) return;
+      setDeleting(true);
+      setDeleteError(null);
+      try {
+        applySend(await deletePerioSendExam(office, aptNum, examNum));
+        setDeleteOpen(false);
+      } catch (err) {
+        setDeleteError(err instanceof HygApiError ? err.message : "Could not delete the exam. Nothing here changed.");
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [office, aptNum, applySend],
+  );
+
+  const onRestage = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setSendError(null);
+    try {
+      const res = await retryStagedWrite(office, aptNum, "perio");
+      const write = res.visit.stagedWrites.find((w) => w.kind === "perio") ?? null;
+      setStored((prev) => (prev ? { ...prev, stagedWrite: write } : prev));
+      setSend((prev) => (prev ? { ...prev, stagedWrite: write } : prev));
+    } catch (err) {
+      setSendError(err instanceof HygApiError ? err.message : "Could not put the chart back on the list");
+    }
+  }, [office, aptNum]);
 
   const visitHref = `/hyg/visit/${aptNum}?office=${office ?? ""}&date=${date}`;
 
@@ -450,7 +583,21 @@ export default function HygPerio() {
     : [];
   const appointment = prior.phase === "loaded" ? prior.res.appointment : null;
   const staged = stored.stagedWrite;
+  const locked =
+    staged !== null && (staged.state === "Sending" || staged.state === "Failed" || staged.state === "Written");
+  lockedRef.current = locked;
   const isStaged = staged?.state === "Staged" && saveState !== "saving";
+  const provNum = appointment ? provNumOf(appointment) : null;
+  const providerLabel = appointment
+    ? `${appointment.providerName ?? "Provider"} (ProvNum ${provNum ?? "none"})`
+    : "Reading the appointment…";
+  const sendBlockedReason = !appointment
+    ? "Waiting for the appointment from Open Dental before this can be sent."
+    : provNum === null
+      ? "This appointment has no provider in Open Dental, so an exam cannot be filed under the right one."
+      : null;
+  const sendBlocked = !isStaged || provNum === null || sendRunning;
+  const mismatchTeeth = perioMismatchTeeth(send?.send ?? null);
 
   const saveLabel =
     saveState === "saving"
@@ -460,6 +607,20 @@ export default function HygPerio() {
         : saveState === "saved"
           ? "Saved on this visit"
           : "Nothing saved yet";
+
+  const stageNote =
+    staged?.state === "Written"
+      ? "In Open Dental and read back. This chart can no longer be changed here."
+      : staged?.state === "Failed"
+        ? "The send stopped. The readings are locked until what reached Open Dental is dealt with below."
+        : locked
+          ? "Being written to Open Dental. The readings are locked."
+          : isStaged
+            ? sendBlockedReason ??
+              "Staged. Send it from here: every site is read back from Open Dental. Changing a reading takes it off the list until you stage it again."
+            : counts.empty
+              ? "Nothing to stage until there is a reading."
+              : "Staging spells out every reading. Nothing is written to Open Dental until you confirm a send.";
 
   return (
     <div className="p-6" data-testid="hyg-perio">
@@ -508,32 +669,48 @@ export default function HygPerio() {
             {perioProgressLabel(counts)}
           </span>
           {staged ? <StagedPill write={staged} /> : null}
-          <button
-            type="button"
-            onClick={() => void onStage()}
-            disabled={staging || counts.empty || isStaged}
-            data-testid="hyg-perio-stage"
-            className={cn(
-              TAP,
-              "inline-flex items-center gap-1.5",
-              staging || counts.empty || isStaged
-                ? "cursor-not-allowed border-border text-muted-foreground"
-                : "border-primary bg-primary text-primary-foreground",
-            )}
-          >
-            {staging ? <Loader2 size={14} className="animate-spin" /> : null}
-            {/* The pill beside this already says Staged; the button does not repeat it. */}
-            Stage chart
-          </button>
+          {locked ? null : (
+            <button
+              type="button"
+              onClick={() => void onStage()}
+              disabled={staging || counts.empty || isStaged}
+              data-testid="hyg-perio-stage"
+              className={cn(
+                TAP,
+                "inline-flex items-center gap-1.5",
+                staging || counts.empty || isStaged
+                  ? "cursor-not-allowed border-border text-muted-foreground"
+                  : "border-primary bg-primary text-primary-foreground",
+              )}
+            >
+              {staging ? <Loader2 size={14} className="animate-spin" /> : null}
+              {/* The pill beside this already says Staged; the button does not repeat it. */}
+              Stage chart
+            </button>
+          )}
+          {isStaged && !locked ? (
+            <button
+              type="button"
+              onClick={() => setConfirmOpen(true)}
+              disabled={sendBlocked}
+              data-testid="hyg-perio-send-open"
+              className={cn(
+                TAP,
+                "inline-flex items-center gap-1.5",
+                sendBlocked
+                  ? "cursor-not-allowed border-border text-muted-foreground"
+                  : "border-primary bg-primary text-primary-foreground",
+              )}
+            >
+              {sendRunning ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              Send to Open Dental
+            </button>
+          ) : null}
         </div>
       </header>
 
       <p className="mt-1 text-xs text-muted-foreground" data-testid="hyg-perio-stage-note">
-        {isStaged
-          ? "On this visit's Ready to send list. Sending a perio chart to Open Dental is not built yet, so it stays there. Changing a reading takes it off the list until you stage it again."
-          : counts.empty
-            ? "Nothing to stage until there is a reading."
-            : "Staging puts the chart on the visit's Ready to send list, with every reading spelled out. Nothing is sent from here."}
+        {stageNote}
       </p>
       {stageMessage ? (
         <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400" data-testid="hyg-perio-stage-refused">
@@ -544,6 +721,27 @@ export default function HygPerio() {
       {saveError ? (
         <p className="mt-1 text-xs text-destructive" data-testid="hyg-perio-save-error">
           {saveError} — the readings on screen are not stored yet.
+        </p>
+      ) : null}
+
+      {send?.send ? (
+        <div className="mt-3">
+          <PerioSendPanel
+            response={send}
+            running={sendRunning}
+            error={sendError}
+            canRestage={staged?.state === "Failed"}
+            onContinue={() => void runSend(() => stepPerioSend(office, aptNum))}
+            onDelete={() => {
+              setDeleteError(null);
+              setDeleteOpen(true);
+            }}
+            onRestage={() => void onRestage()}
+          />
+        </div>
+      ) : sendError ? (
+        <p className="mt-2 text-xs text-destructive" data-testid="hyg-perio-send-error">
+          {sendError}
         </p>
       ) : null}
 
@@ -565,6 +763,7 @@ export default function HygPerio() {
           onSelect={(c) => act({ type: "select", cursor: c })}
           onKeyDown={onKeyDown}
           gridRef={gridRef}
+          failedTeeth={mismatchTeeth}
         />
       </div>
 
@@ -589,7 +788,7 @@ export default function HygPerio() {
                 key={depth}
                 type="button"
                 onClick={() => act({ type: "depth", depth })}
-                disabled={cursorSkipped}
+                disabled={cursorSkipped || locked}
                 data-testid={`hyg-perio-key-${depth}`}
                 className={cn(
                   "h-11 rounded-md border border-border text-sm font-semibold tabular-nums hover:bg-accent/50 disabled:opacity-40",
@@ -607,13 +806,14 @@ export default function HygPerio() {
             <button type="button" onClick={() => act({ type: "move", step: 1 })} className={cn(TAP, "border-border")}>
               Next →
             </button>
-            <button type="button" onClick={() => act({ type: "erase" })} className={cn(TAP, "border-border")}>
+            <button type="button" onClick={() => act({ type: "erase" })} disabled={locked} className={cn(TAP, "border-border disabled:opacity-40")}>
               Undo last
             </button>
             <button
               type="button"
               onClick={() => act({ type: "toggleSkip" })}
-              className={cn(TAP, "border-border")}
+              disabled={locked}
+              className={cn(TAP, "border-border disabled:opacity-40")}
               data-testid="hyg-perio-toggle-skip"
             >
               {cursorSkipped ? `Chart #${cursor.tooth}` : `Skip #${cursor.tooth}`}
@@ -634,10 +834,11 @@ export default function HygPerio() {
                 type="button"
                 aria-pressed={targetSite[flag]}
                 onClick={() => act({ type: "flag", flag })}
+                disabled={locked}
                 data-testid={`hyg-perio-flag-${flag}`}
                 className={cn(
                   TAP,
-                  "flex items-center justify-between",
+                  "flex items-center justify-between disabled:opacity-60",
                   targetSite[flag]
                     ? "border-primary bg-primary/10 text-foreground"
                     : "border-border text-muted-foreground",
@@ -668,10 +869,11 @@ export default function HygPerio() {
                       type="button"
                       aria-pressed={entry.chart.sweep[segment.id] === direction}
                       onClick={() => act({ type: "sweep", segment: segment.id, direction })}
+                      disabled={locked}
                       data-testid={`hyg-perio-sweep-${segment.id}-${direction}`}
                       aria-label={`${segment.label}: ${direction === "ltr" ? "left to right" : "right to left"}`}
                       className={cn(
-                        "h-11 w-11 rounded-md border text-base",
+                        "h-11 w-11 rounded-md border text-base disabled:opacity-60",
                         entry.chart.sweep[segment.id] === direction
                           ? "border-primary bg-primary/10 text-foreground"
                           : "border-border text-muted-foreground",
@@ -686,6 +888,38 @@ export default function HygPerio() {
           </div>
         </section>
       </div>
+
+      {staged && isStaged ? (
+        <PerioSendConfirm
+          open={confirmOpen}
+          write={staged}
+          chart={entry.chart}
+          patientName={appointment?.patientName ?? "this patient"}
+          examDate={date}
+          providerLabel={providerLabel}
+          busy={sendRunning}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => {
+            if (provNum === null) return;
+            setConfirmOpen(false);
+            const fingerprint = staged.previewFingerprint;
+            void runSend(() =>
+              startPerioSend(office, aptNum, date, { previewFingerprint: fingerprint, examDate: date, provNum }),
+            );
+          }}
+        />
+      ) : null}
+
+      {send?.send && send.send.canDelete ? (
+        <PerioDeleteExamDialog
+          open={deleteOpen}
+          send={send.send}
+          busy={deleting}
+          error={deleteError}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={(examNum) => void onDeleteExam(examNum)}
+        />
+      ) : null}
     </div>
   );
 }

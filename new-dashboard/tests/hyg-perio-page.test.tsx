@@ -29,6 +29,7 @@ import {
   type PerioChart,
   type PerioPrior,
 } from "@shared/hyg/perio";
+import { planPerioSend, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
 
 (globalThis as Record<string, unknown>).React = React;
 
@@ -42,6 +43,13 @@ const server = vi.hoisted(() => ({
   priorRefusal: null as { status: number; message: string; code: string } | null,
   saves: [] as unknown[],
   calls: [] as string[],
+  // The send (item 12): what GET answers, what start and each step answer in
+  // turn, and what the undo answers.
+  send: null as unknown,
+  sendScript: [] as unknown[],
+  sendRequests: [] as unknown[],
+  afterDelete: null as unknown,
+  deletes: [] as number[],
 }));
 
 const APPOINTMENT: HygAppointment = {
@@ -154,6 +162,33 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       server.stagedWrite = write;
       return { success: true, visit: { stagedWrites: [write] } } as never;
     }),
+    fetchPerioSend: vi.fn(async (): Promise<HygPerioSendResponse> => {
+      server.calls.push("SEND_GET");
+      return (
+        (server.send as HygPerioSendResponse | null) ?? {
+          success: true,
+          office: "roland",
+          aptNum: 900001,
+          stagedWrite: server.stagedWrite as StagedWrite | null,
+          send: null,
+          paused: null,
+        }
+      );
+    }),
+    startPerioSend: vi.fn(async (_o: string, _a: number, _d: string, request: unknown) => {
+      server.calls.push("SEND_START");
+      server.sendRequests.push(request);
+      return server.sendScript.shift() as HygPerioSendResponse;
+    }),
+    stepPerioSend: vi.fn(async () => {
+      server.calls.push("SEND_STEP");
+      return server.sendScript.shift() as HygPerioSendResponse;
+    }),
+    deletePerioSendExam: vi.fn(async (_o: string, _a: number, examNum: number) => {
+      server.calls.push("DELETE");
+      server.deletes.push(examNum);
+      return server.afterDelete as HygPerioSendResponse;
+    }),
   };
 });
 
@@ -187,8 +222,62 @@ beforeEach(() => {
   server.priorRefusal = null;
   server.saves = [];
   server.calls = [];
+  server.send = null;
+  server.sendScript = [];
+  server.sendRequests = [];
+  server.afterDelete = null;
+  server.deletes = [];
 });
 afterEach(cleanup);
+
+/** Every site 0–9 except one 12 on #3 DB — the upper jaw goes row by row. */
+function chartWithDeepPocket(): PerioChart {
+  let chart = emptyPerioChart();
+  chartingOrder(chart.sweep).forEach((c, i) => {
+    chart = withPerioSite(chart, c.tooth, c.surface, { depth: (i % 4) + 2 });
+  });
+  return normalizePerioChart(withPerioSite(chart, 3, "DB", { depth: 12 }));
+}
+
+function view(chart: PerioChart, over: Partial<PerioSendView>): PerioSendView {
+  const plan = planPerioSend(chart);
+  return {
+    sendId: "send-0001",
+    state: "filling",
+    examNum: 7001,
+    examDate: "2026-09-08",
+    provNum: 7,
+    arches: plan.arches,
+    rowsPlanned: plan.rows.length,
+    rowsWritten: 0,
+    deepSites: plan.deepSites.length,
+    mismatches: [],
+    errorMessage: null,
+    requestsRemaining: 20,
+    startedBy: "hygienist@carein.ai",
+    startedAt: "2026-09-08T13:20:00.000Z",
+    finishedAt: null,
+    deletedBy: null,
+    deletedAt: null,
+    canDelete: false,
+    ...over,
+  };
+}
+
+function sendResponse(
+  stagedState: StagedWrite["state"],
+  send: PerioSendView,
+  paused: string | null = null,
+): HygPerioSendResponse {
+  return {
+    success: true,
+    office: "roland",
+    aptNum: 900001,
+    stagedWrite: { ...staged(stagedState, "Full chart: 192 of 192 sites charted"), preview: ["Full chart"] },
+    send,
+    paused,
+  };
+}
 
 describe("entering a chart", () => {
   it(
@@ -278,7 +367,7 @@ describe("staging", () => {
     fireEvent.click(screen.getByTestId("hyg-perio-stage"));
     await screen.findByTestId("hyg-perio-state-Staged");
     expect(server.calls.lastIndexOf("SAVE")).toBeLessThan(server.calls.indexOf("STAGE"));
-    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/not built yet/);
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/every site is read back/);
   });
 
   it("offers nothing to stage on an empty chart", async () => {
@@ -340,5 +429,120 @@ describe("the last exam", () => {
     const panel = await screen.findByTestId("hyg-perio-prior-failed");
     expect(panel.textContent).toMatch(/PATIENT_CHANGED/);
     expect(screen.getByTestId("hyg-perio-patient").textContent).toMatch(/Patient not shown/);
+  });
+});
+
+describe("sending (item 12)", () => {
+  it("confirms with how each arch goes in, sends the fingerprint, date and provider, and steps to Written", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Staged", "Full chart: 192 of 192 sites charted, 2026-09-08");
+    server.sendScript = [
+      sendResponse("Sending", view(chart, { state: "filling", rowsWritten: 12 })),
+      sendResponse("Written", view(chart, { state: "written", rowsWritten: 16, finishedAt: "2026-09-08T13:21:00.000Z" })),
+    ];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    const open = await screen.findByTestId("hyg-perio-send-open");
+    expect(open.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(open);
+    const dialog = await screen.findByTestId("hyg-perio-confirm");
+    // The SAME plan the server sends from: the 12 is named, and the jaw that can go in one request says so.
+    expect(screen.getByTestId("hyg-perio-confirm-arch-UpperFacial").textContent).toMatch(/#3 DB reads 10 mm or more/);
+    expect(screen.getByTestId("hyg-perio-confirm-arch-UpperLingual").textContent).toMatch(/other side of this jaw/);
+    expect(screen.getByTestId("hyg-perio-confirm-arch-LowerLingual").textContent).toMatch(/One request with the exam: 48 sites/);
+    expect(screen.getByTestId("hyg-perio-confirm-provider").textContent).toMatch(/ProvNum 7/);
+    expect(dialog.textContent).toMatch(/NOT marked written/);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-confirm-accept"));
+    await waitFor(() =>
+      expect(screen.getByTestId("hyg-perio-send-status").textContent).toBe(
+        "Written to Open Dental: exam 7001, every site read back and matching",
+      ),
+    );
+    expect(server.sendRequests).toEqual([{ previewFingerprint: "fp", examDate: "2026-09-08", provNum: 7 }]);
+    expect(server.calls.filter((c) => c === "SEND_START" || c === "SEND_STEP")).toEqual(["SEND_START", "SEND_STEP"]);
+    expect(screen.getByTestId("hyg-perio-state-Written")).toBeTruthy();
+
+    // A written chart takes no more readings.
+    const before = screen.getByTestId("hyg-perio-progress").textContent;
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(7));
+    expect(screen.getByTestId("hyg-perio-progress").textContent).toBe(before);
+    expect(screen.queryByTestId("hyg-perio-stage")).toBeNull();
+  });
+
+  it("an INCOMPLETE send is loud: it names the sites, marks the teeth, locks the chart, and the undo needs a tick", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = { ...staged("Failed", "Perio chart"), errorMessage: "Exam 7001 is in Open Dental but does not match" };
+    server.send = sendResponse(
+      "Failed",
+      view(chart, {
+        state: "incomplete",
+        canDelete: true,
+        errorMessage: "Exam 7001 is in Open Dental but does not match this chart at 1 place.",
+        mismatches: [{ tooth: 14, surface: "B", kind: "depth", expected: "3 mm", found: "4 mm" }],
+      }),
+    );
+    server.afterDelete = sendResponse(
+      "Staged",
+      view(chart, { state: "deleted", deletedBy: "hygienist@carein.ai", deletedAt: "2026-09-08T13:25:00.000Z" }),
+    );
+    renderPerio();
+
+    const panel = await screen.findByTestId("hyg-perio-incomplete");
+    expect(screen.getByTestId("hyg-perio-send-status").textContent).toBe("Exam 7001 is in Open Dental and INCOMPLETE");
+    expect(panel.textContent).toMatch(/understates disease/);
+    expect(screen.getByTestId("hyg-perio-mismatches").textContent).toBe(
+      "#14 B: the chart says 3 mm, Open Dental holds 4 mm",
+    );
+    expect(screen.getByTestId("hyg-perio-failed-tooth-14").textContent).toBe("14!");
+
+    // Locked: a key changes nothing, and no save goes out.
+    const before = screen.getByTestId("hyg-perio-progress").textContent;
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(5));
+    expect(screen.getByTestId("hyg-perio-progress").textContent).toBe(before);
+    expect(screen.queryByTestId("hyg-perio-send-open")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("hyg-perio-delete-open"));
+    await screen.findByTestId("hyg-perio-delete-dialog");
+    const confirm = screen.getByTestId("hyg-perio-delete-confirm");
+    expect(confirm.textContent).toMatch(/Delete exam 7001/);
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(confirm);
+    expect(server.deletes).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-delete-understood"));
+    expect(screen.getByTestId("hyg-perio-delete-confirm").hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByTestId("hyg-perio-delete-confirm"));
+
+    await screen.findByTestId("hyg-perio-deleted");
+    expect(server.deletes).toEqual([7001]);
+    expect(screen.getByTestId("hyg-perio-send-status").textContent).toBe("Exam 7001 was deleted from Open Dental");
+    expect(screen.getByTestId("hyg-perio-state-Staged")).toBeTruthy();
+    expect(screen.queryByTestId("hyg-perio-failed-tooth-14")).toBeNull();
+  });
+
+  it("a refused send says nothing was created, and offers only the way back to the list", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = { ...staged("Failed", "Perio chart"), errorMessage: "refused" };
+    server.send = sendResponse(
+      "Failed",
+      view(chart, {
+        state: "refused",
+        examNum: null,
+        errorMessage:
+          "Open Dental refused this perio exam - ProvNum is not a valid provider. Nothing was created in Open Dental, so there is nothing to undo.",
+      }),
+    );
+    renderPerio();
+    expect((await screen.findByTestId("hyg-perio-refused")).textContent).toMatch(/nothing to undo/);
+    expect(screen.getByTestId("hyg-perio-restage")).toBeTruthy();
+    expect(screen.queryByTestId("hyg-perio-delete-open")).toBeNull();
   });
 });
