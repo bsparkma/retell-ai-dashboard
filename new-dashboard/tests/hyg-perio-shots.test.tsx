@@ -410,7 +410,7 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     const view = sendView(chart, { state: "filling" });
     fixtures.send = sendResponse(
       write,
-      { ...view, rowsWritten: 12, requestsRemaining: 7 },
+      { ...view, rowsWritten: 12, requestsRemaining: 7, canDelete: true },
       "Open Dental did not answer for #29 Probing. CareIN will check whether it landed before sending it again.",
     );
     renderPerio();

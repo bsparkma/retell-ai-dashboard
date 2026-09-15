@@ -298,14 +298,27 @@ export function PerioSendPanel({
       ) : null}
 
       {inFlight && !running ? (
-        <button
-          type="button"
-          onClick={onContinue}
-          data-testid="hyg-perio-continue"
-          className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
-        >
-          <RotateCcw size={14} /> Continue
-        </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onContinue}
+            data-testid="hyg-perio-continue"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
+          >
+            <RotateCcw size={14} /> Continue
+          </button>
+          {/* An unfinished send that already created its exam can be undone instead of finished. */}
+          {s.canDelete ? (
+            <button
+              type="button"
+              onClick={onDelete}
+              data-testid="hyg-perio-delete-open"
+              className={cn(TAP, "inline-flex items-center gap-1.5 border-destructive text-destructive")}
+            >
+              <Trash2 size={14} /> Delete exam {s.examNum} instead
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </section>
   );

@@ -526,6 +526,20 @@ describe("sending (item 12)", () => {
     expect(screen.queryByTestId("hyg-perio-failed-tooth-14")).toBeNull();
   });
 
+  it("a paused send that already created its exam offers Continue, or deleting that exam instead", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Sending", "Perio chart");
+    server.send = sendResponse("Sending", view(chart, { state: "filling", rowsWritten: 12, canDelete: true }));
+    renderPerio();
+    expect((await screen.findByTestId("hyg-perio-send-status")).textContent).toBe(
+      "Paused. Nothing is being written right now.",
+    );
+    expect(screen.getByTestId("hyg-perio-continue")).toBeTruthy();
+    expect(screen.getByTestId("hyg-perio-delete-open").textContent).toMatch(/Delete exam 7001 instead/);
+  });
+
   it("a refused send says nothing was created, and offers only the way back to the list", async () => {
     const chart = chartWithDeepPocket();
     server.chart = chart;
