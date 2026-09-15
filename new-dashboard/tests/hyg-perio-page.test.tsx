@@ -223,9 +223,22 @@ describe("entering a chart", () => {
   it(
     "takes a full 32-tooth chart from the keyboard alone, in charting order, and stores exactly that",
     async () => {
+      // Focus is on the grid THE MOMENT it is on screen: the first key is a number,
+      // not a click. Checked when the grid enters the DOM, not after findBy — a focus
+      // that lands a frame later (a passive effect) drops the keys typed in between,
+      // and whether findBy happens to resolve after it is a matter of machine speed.
+      const focusedOnArrival: boolean[] = [];
+      const observer = new MutationObserver(() => {
+        const arrived = document.querySelector('[data-testid="hyg-perio-grid"]');
+        if (arrived && focusedOnArrival.length === 0) {
+          focusedOnArrival.push(document.activeElement === arrived);
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
       renderPerio();
       const grid = await screen.findByTestId("hyg-perio-grid");
-      // Focus is on the grid: the first key is a number, not a click.
+      observer.disconnect();
+      expect(focusedOnArrival).toEqual([true]);
       expect(document.activeElement).toBe(grid);
 
       const order = chartingOrder(emptyPerioChart().sweep);

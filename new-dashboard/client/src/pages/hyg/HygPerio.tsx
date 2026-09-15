@@ -34,7 +34,7 @@
  * screen; a reading typed while a save was in flight keeps it at "Saving…" until
  * the next one lands.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams, useSearch } from "wouter";
 import { AlertTriangle, ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 
@@ -335,9 +335,12 @@ export default function HygPerio() {
     return () => controller.abort();
   }, [loadChart, loadPrior]);
 
-  // Focus the grid once the chart is on screen: the first key should be a number.
+  // Focus the grid in the same commit that puts it on screen: the first key should
+  // be a number. A LAYOUT effect, not a passive one — a passive effect runs after the
+  // browser paints, so for a frame (longer on a busy iPad) the grid is visible but
+  // <body> has focus and the keys typed then are dropped.
   const chartReady = stored !== null;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (chartReady) gridRef.current?.focus();
   }, [chartReady]);
 
