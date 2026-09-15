@@ -77,6 +77,7 @@ const odDay = require('../../services/hyg/odDay');
 const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
+const odPerio = require('../../services/hyg/odPerio');
 const hygStaff = require('../../config/hygStaff');
 const contract = require('../../hyg/contract.gen.cjs');
 
@@ -770,6 +771,217 @@ router.delete(
       sourceRef: null,
     });
     return res.json(visitPayload(outcome.visit));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio chart (H4 slice 10) — READ, DISPLAY, STAGE. NOTHING SENDS.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Three routes, and they live in THIS file for the same reason the send does:
+// the mutation allow-list in hygNoOdWrites.test.js names one file.
+//
+//   GET /:aptNum/perio          the stored chart. Our database only.
+//   PUT /:aptNum/perio          store the chart, whole, as a Draft.
+//   GET /:aptNum/perio/prior    Open Dental's last exam. GETs only.
+//
+// The chart and the prior exam are separate requests on purpose. The chart is
+// what she is typing into and it paints from Postgres in milliseconds; the prior
+// exam is two paged reads on a credential three modules share. Waiting on the
+// second to show the first would put a spinner in front of the part of the page
+// she is working in.
+//
+// Staging is the existing POST /:aptNum/staged-writes with `kind: 'perio'`, and
+// the send refuses a perio confirmation — see services/hyg/sendVisit.js.
+
+/** The response every stored-chart route answers with. */
+function perioPayload(office, aptNum, visit, perio) {
+  const chart = perio ? perio.chart : contract.emptyPerioChart();
+  return {
+    success: true,
+    office,
+    aptNum,
+    visitStarted: Boolean(visit),
+    chart,
+    stagedWrite: perio && perio.row ? visitStore.toStagedWrite(perio.row) : null,
+    counts: contract.countPerioChart(chart),
+  };
+}
+
+router.get(
+  '/:aptNum/perio',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+
+    const loaded = await tenantDb.withTenantDb(req, async (pool) => {
+      const visit = await visitStore.getVisit(pool, { office, aptNum });
+      if (!visit) return { visit: null, perio: null };
+      return { visit, perio: await visitStore.getPerio(pool, { office, visitId: visit.visitId }) };
+    });
+
+    // Readings are a patient's clinical data even without a name beside them,
+    // so a stored chart is audited as a disclosure — fail-closed, before the
+    // body. No visit means nothing stored and nobody disclosed: no row.
+    if (loaded.visit) {
+      await auditHygRead(req, 'hyg_perio', { office, resourceId: aptNum });
+      await auditHygReads(req, [
+        { resourceType: 'hyg_perio_patient', office, resourceId: loaded.visit.patNum },
+      ]);
+    }
+    return res.json(perioPayload(office, aptNum, loaded.visit, loaded.perio));
+  })
+);
+
+router.put(
+  '/:aptNum/perio',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.PerioChartSaveRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      const saved = await visitStore.savePerioDraft(pool, {
+        office,
+        visit,
+        chart: body.chart,
+        actor: actorEmail(req),
+      });
+      if (!saved.ok) return saved;
+      return { ok: true, perio: await visitStore.getPerio(pool, { office, visitId: visit.visitId }) };
+    });
+
+    if (!outcome.ok) {
+      return res.status(409).json({
+        success: false,
+        error: outcome.message,
+        code: outcome.code,
+        office,
+      });
+    }
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json(perioPayload(office, aptNum, visit, outcome.perio));
+  })
+);
+
+router.get(
+  '/:aptNum/perio/prior',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    if (!isRealDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'date query param is required and must be a real calendar date (YYYY-MM-DD)',
+        code: 'INVALID_DATE',
+        office,
+      });
+    }
+
+    // WHOSE exam comes from Open Dental's answer for this appointment, never
+    // from a request — the same lookup the visit itself was opened with.
+    const resolved = await resolveAppointment(req, { office, aptNum, date });
+    if (!resolved.ok) {
+      await auditHygDenial(req, 'hyg_perio_prior', aptNum, {
+        office,
+        result: resolved.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(resolved.status).json(resolved.body);
+    }
+    const patNum = resolved.appointment.patNum;
+
+    const visit = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getVisit(pool, { office, aptNum })
+    );
+    if (visit && visit.patNum !== patNum) {
+      // A chart composed for one patient must never be drawn beside another
+      // patient's history. There is no version of this where guessing is right.
+      await auditHygDenial(req, 'hyg_perio_prior', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(409).json({
+        success: false,
+        error:
+          'This appointment now belongs to a different patient in Open Dental than the visit ' +
+          'the chart was entered on.',
+        code: 'PATIENT_CHANGED',
+        office,
+      });
+    }
+
+    const startedAt = Date.now();
+    let odPerioReads = 0;
+    const odGet = (path, params, opts) => {
+      odPerioReads += 1;
+      return resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+    };
+
+    let prior;
+    try {
+      ({ prior } = await odPerio.readPriorPerio(odGet, { patNum }));
+    } catch (err) {
+      prior = {
+        status: 'unavailable',
+        message: 'The last perio exam could not be read from Open Dental.',
+        detail: String((err && err.message) || 'threw').slice(0, 200),
+      };
+    }
+
+    // The appointment (a name) and a perio history are both in this body, so
+    // both are audited before it is sent — including when the history came
+    // back `none`, because the name did not.
+    await auditHygRead(req, 'hyg_perio_prior', { office, resourceId: aptNum });
+    await auditHygReads(req, [{ resourceType: 'hyg_perio_prior_patient', office, resourceId: patNum }]);
+
+    // Counts and milliseconds only — never a PatNum, never a reading.
+    console.log(
+      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} ` +
+        `od_perio_reads=${odPerioReads} ms=${Date.now() - startedAt}`
+    );
+
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      date,
+      appointment: resolved.appointment,
+      prior,
+    });
   })
 );
 

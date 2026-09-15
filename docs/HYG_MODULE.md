@@ -877,6 +877,114 @@ visit whose chart note is missing.
 
 ### What is still not here
 
-Perio. `POST /perioexams` and `/periomeasures` are not called and the writer
-does not know their names — a stray Probing row is PERMANENT in Open Dental
-(only Mobility and SkipTooth can be deleted). H4.
+The perio SEND. `POST /perioexams` and `/periomeasures` are not called and the
+writer does not know their names — a stray Probing row is PERMANENT in Open
+Dental (only Mobility and SkipTooth can be deleted). §12 is the chart, which
+reads and stages; the send is the next slice.
+
+---
+
+## 12. The perio chart (H4 slice 10) — read, display, stage
+
+`/hyg/visit/:aptNum/perio?office=&date=`, reached from the perio row of the
+visit's tray. **Nothing on this page, and nothing it calls, writes to Open
+Dental.**
+
+### Scope, locked 2026-08-13
+
+Six probing depths per tooth plus Open Dental's four per-site flags
+(`BleedSupPlaqCalc`: bleeding 1, suppuration 2, plaque 4, calculus 8), and
+SkipTooth. **No recession, mobility, furcation, gingival margin or CAL.** CAL is
+derived by Open Dental and never stored, so it is not a field anywhere — the
+chart schema is `.strict()` and a `cal` key is a 400.
+
+### Where the chart lives: the visit's `perio` staged-write row
+
+No migration. `hyg_staged_write` already had a `perio` kind, a `Draft` state
+nothing used, a jsonb `payload` and `UNIQUE (visit_id, kind)`:
+
+```
+entering readings  → PUT  /visit/:aptNum/perio       → row in Draft, payload.chart
+staging            → POST /visit/:aptNum/staged-writes {kind:'perio'}
+                                                     → composed from payload.chart → Staged
+un-staging         → DELETE /visit/:aptNum/staged-writes/perio
+                                                     → back to Draft, readings KEPT
+```
+
+It is not a slip field: the slip is saved whole by a different form on its own
+debounce, and two forms replacing one document would each erase the other's
+last few seconds.
+
+- **A changed reading un-stages a staged chart.** The preview is a snapshot of
+  readings; once one changes it is wrong, so the save returns the row to Draft
+  and clears the preview. A save that changes no reading — a repeated debounce,
+  a flipped entry direction — leaves it staged.
+- **Un-staging keeps the readings.** Every other kind is deleted on un-stage
+  because it is recomposed from the visit; a perio chart IS its row.
+- **The send refuses a perio confirmation for the whole batch**
+  (`422 PERIO_SEND_NOT_BUILT`), and the tray leaves a staged chart out of Send
+  and says so.
+
+### Three routes, all in `routes/hyg/visit.js`
+
+| Route | Reaches | Audit |
+| --- | --- | --- |
+| `GET /visit/:aptNum/perio` | Postgres only | `hyg_perio` + `hyg_perio_patient` when a visit exists |
+| `PUT /visit/:aptNum/perio` | Postgres only | `hyg_perio` UPDATE |
+| `GET /visit/:aptNum/perio/prior?date=` | Open Dental, GETs only | `hyg_perio_prior` + `hyg_perio_prior_patient` |
+
+They are in `visit.js` because the mutation allow-list in
+`hygNoOdWrites.test.js` names one file. The chart and the prior exam are
+separate requests so the grid paints from Postgres while two paged Open Dental
+reads are still running.
+
+### The prior exam — `services/hyg/odPerio.js`
+
+`GET /perioexams?PatNum=` → newest by ExamDate, then PerioExamNum;
+`GET /periomeasures?PerioExamNum=` → one row per (tooth, SequenceType). **Both are
+paged past 100** through `odDay.pagedList` — a full exam is 32 Probing + 32
+BleedSupPlaqCalc rows plus whatever else was charted, which is already past one
+page. **Every row is checked against what was asked for**: an exam row is kept
+only if its own PatNum matches, a measure row only if its own PerioExamNum does,
+because RCM found list endpoints that silently ignore an unknown filter.
+
+The answer is three-way, and the page draws four states:
+
+| | means |
+| --- | --- |
+| `found` | an exam, with whatever readings it holds; `truncated` when a later page failed |
+| `none` | Open Dental answered and there is no exam — an honest empty, never zeros |
+| `unavailable` | Open Dental did not answer, with its own status line — not "no history" |
+| *(loading)* | the request is still out |
+
+A refusal about the appointment itself (office not ready, `PATIENT_CHANGED` when
+the appointment moved to another patient since the visit was opened) is a fifth
+display.
+
+`[hygperio] office=… apt=… prior=found|none|unavailable od_perio_reads=n ms=…`
+— counts and milliseconds, never a PatNum or a reading.
+
+### Entry order is load-bearing
+
+`shared/hyg/perio.ts` `chartingOrder` is the order a hygienist calls numbers out
+loud, and voice will lean on it. Sites are walked in SCREEN order, which is
+anatomical: distal-first on the patient's right (#1–#8, #25–#32), mesial-first
+on the left. The default sweep is one continuous snake — upper facial →, upper
+lingual ←, lower lingual →, lower facial ← — and each sweep's direction can be
+flipped. `tests/hyg-perio.test.ts` pins the seams between sweeps.
+
+Keys (`features/hyg/perio/entry.ts`): `0–9` depth and advance · `Shift+0–9`
+10–19 · `B S P C` flags · `X` skip tooth · `→`/Space next · `←` back ·
+Backspace takes back the last reading. A flag lands on the reading just entered
+("3, 2, 3 — bleeding"), otherwise on the cursor, and the page names the target.
+
+A partial chart stages and is labelled partial everywhere, in one set of words:
+`Partial chart: 84 of 192 sites charted (2 teeth skipped)`.
+
+### Touch targets
+
+Each site cell is 44px tall but about 20px wide: 48 sites across 1180px does not
+fit three 44px-wide targets per tooth without scrolling the arch sideways, and a
+scrolling chart hides the teeth being compared. Cells are for pointing at a
+site; the keypad under the grid (0–19, flags, back/next, skip) is the touch
+entry path and every key on it is 44px.

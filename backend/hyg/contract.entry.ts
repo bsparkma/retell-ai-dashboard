@@ -40,6 +40,10 @@ export * from "../../new-dashboard/shared/hyg/records";
 // prints cannot drift apart. contract.ts imports from this file but deliberately
 // does not re-export it — exporting a name twice here is an esbuild error.
 export * from "../../new-dashboard/shared/hyg/noteTemplates";
+// The perio chart (H4 slice 10): its schema, its charting order, its counts and
+// the preview the composer fingerprints. perio.ts imports from contract.ts, one
+// direction only, so nothing here is exported twice.
+export * from "../../new-dashboard/shared/hyg/perio";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

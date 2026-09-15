@@ -485,6 +485,85 @@ class FakeHygDb extends FakeAuditDb {
       return { rows, rowCount: rows.length };
     }
 
+    // ── the perio chart's own three statements (H4 slice 10) ────────────────
+    // Matched BEFORE the general INSERT below, which would otherwise read this
+    // statement's parameters by the wrong positions.
+    if (/INSERT INTO hyg_staged_write[\s\S]*'Draft'/i.test(text)) {
+      const [visitId, office, kind, title, summary, payload] = params;
+      this.checkOffice(office);
+      if (!FakeHygDb.KINDS.includes(kind)) {
+        throw new Error(`hyg_staged_write_kind_check violated: '${kind}'`);
+      }
+      const parent = this.hyg_visit.find((r) => r.visit_id === visitId && r.office === office);
+      if (!parent) {
+        throw new Error('hyg_staged_write_visit_fk violated: no such (visit_id, office)');
+      }
+      const fields = {
+        state: 'Draft',
+        title,
+        summary,
+        preview: [],
+        payload: FakeHygDb.json(payload),
+        error_message: null,
+        staged_by: null,
+        staged_at: null,
+        updated_at: new Date(),
+      };
+      const existing = this.hyg_staged_write.find((r) => r.visit_id === visitId && r.kind === kind);
+      if (existing) {
+        // ON CONFLICT … DO UPDATE … WHERE state IN ('Draft', 'Staged'): a row a
+        // send has claimed is left alone and no row comes back.
+        if (!['Draft', 'Staged'].includes(existing.state)) return { rows: [], rowCount: 0 };
+        Object.assign(existing, fields);
+        return { rows: [existing], rowCount: 1 };
+      }
+      const row = {
+        staged_write_id: this.nextId('staged'),
+        visit_id: visitId,
+        office,
+        kind,
+        sent_by: null,
+        sent_at: null,
+        written_ref: null,
+        created_at: new Date(),
+        ...fields,
+      };
+      this.hyg_staged_write.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write SET payload/i.test(text)) {
+      const [visitId, office, kind, payload] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId &&
+          r.office === office &&
+          r.kind === kind &&
+          ['Draft', 'Staged'].includes(r.state)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.payload = FakeHygDb.json(payload);
+      row.updated_at = new Date();
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write\s+SET state = 'Draft'/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Staged'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: 'Draft',
+        preview: [],
+        staged_by: null,
+        staged_at: null,
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
     if (/INSERT INTO hyg_staged_write/i.test(text)) {
       const [visitId, office, kind, title, summary, preview, payload, actor] = params;
       this.checkOffice(office);

@@ -509,6 +509,7 @@ export default function HygVisit() {
             onSend={(confirm) => void onSend(confirm)}
             onRetry={(kind) => void run(() => retryStagedWrite(office, aptNum, kind))}
             refusal={refusal}
+            perioHref={`/hyg/visit/${aptNum}/perio?office=${office}&date=${date}`}
           />
         </aside>
       </div>

@@ -120,6 +120,21 @@ function checkConfirmations(stagedRows, confirmations) {
   /** @type {object[]} */
   const rows = [];
 
+  // A PERIO CHART STAGES AND DOES NOT SEND (H4 slice 10). Refused before any
+  // other check, and for the WHOLE batch rather than skipped: a confirmation
+  // that named a chart and quietly sent everything else would report a send
+  // the hygienist did not ask for. A stray Probing row in Open Dental is
+  // permanent, so the send is its own slice, built resumable.
+  if (confirmations.some((c) => c.kind === 'perio')) {
+    return {
+      ok: false,
+      code: 'PERIO_SEND_NOT_BUILT',
+      error:
+        'Sending a perio chart to Open Dental is not built yet, so nothing was sent. ' +
+        'The chart stays staged on this visit.',
+    };
+  }
+
   for (const confirmation of confirmations) {
     const row = byKind.get(confirmation.kind);
     if (!row) {
@@ -318,7 +333,9 @@ async function sendVisit({
   if (!checked.ok) {
     return {
       ok: false,
-      status: checked.code === 'PREVIEW_CHANGED' ? 409 : 409,
+      // 422 for the chart: the request was well-formed and names something this
+      // version cannot do. Every other refusal here is a state conflict.
+      status: checked.code === 'PERIO_SEND_NOT_BUILT' ? 422 : 409,
       code: checked.code,
       error: checked.error,
     };
