@@ -49,6 +49,11 @@ import {
   type HygPerioResponse,
   type PerioChart,
 } from "@shared/hyg/perio";
+import {
+  HygPerioSendResponseSchema,
+  type HygPerioSendResponse,
+  type PerioSendRequest,
+} from "@shared/hyg/perioSend";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -635,6 +640,65 @@ export async function fetchPerioPrior(
     },
     signal,
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio send (item 12)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parsePerioSend(raw: unknown): HygPerioSendResponse {
+  const parsed = HygPerioSendResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new HygApiError(
+      "CareIN reported a perio send this page could not read",
+      0,
+      "CONTRACT_MISMATCH",
+      { issues: parsed.error.issues.slice(0, 5) },
+    );
+  }
+  return parsed.data;
+}
+
+/** Where a send stands. Our database only. `send` is null before one starts. */
+export async function fetchPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  signal?: AbortSignal,
+): Promise<HygPerioSendResponse> {
+  return get(`/visit/${aptNum}/perio/send`, { office }, parsePerioSend, signal);
+}
+
+/**
+ * Confirm the staged chart and run the first step.
+ *
+ * ⚠️ NO PAYLOAD. The fingerprint of the preview on screen, and the exam date and
+ * provider the dialog showed. The server re-derives all three, refuses on any
+ * difference, and plans every write from the STAGED chart.
+ */
+export async function startPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  request: PerioSendRequest,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send`, { office, date }, parsePerioSend, request);
+}
+
+/** The next bounded step. Called until the send finishes, stops or pauses. */
+export async function stepPerioSend(office: OfficeId, aptNum: number): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/step`, { office }, parsePerioSend);
+}
+
+/**
+ * The undo: delete the exam this send created. The number is repeated as the
+ * explicit confirmation of WHICH exam; the server refuses any other.
+ */
+export async function deletePerioSendExam(
+  office: OfficeId,
+  aptNum: number,
+  examNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/delete-exam`, { office }, parsePerioSend, { examNum });
 }
 
 /**

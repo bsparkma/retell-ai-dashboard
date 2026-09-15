@@ -1138,8 +1138,20 @@ export const HYG_VISIT_ERROR_CODES = [
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
   "NOT_STAGED",
-  // H4 slice 10. A perio chart stages; sending one is the next slice.
-  "PERIO_SEND_NOT_BUILT",
+  // H4 slice 10 and item 12: the perio chart is sent from its own page.
+  "PERIO_SENDS_FROM_ITS_CHART",
   "PATIENT_CHANGED",
+  "EXAM_DATE_CHANGED",
+  "NO_PROVIDER",
+  "PROVIDER_CHANGED",
+  "PAYLOAD_INVALID",
+  "PERIO_SEND_IN_PROGRESS",
+  "PERIO_SEND_BUSY",
+  "PERIO_EXAM_NOT_DELETABLE",
+  "PERIO_EXAM_EXISTS",
+  // Open Dental's own answer to the perio undo.
+  "OD_REFUSED",
+  "OD_NO_ANSWER",
+  "OD_DELETE_UNCONFIRMED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

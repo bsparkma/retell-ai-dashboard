@@ -68,6 +68,8 @@ interface GridProps {
   onSelect: (cursor: PerioCursor) => void;
   onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
   gridRef?: Ref<HTMLDivElement>;
+  /** Teeth an incomplete send could not match in Open Dental (item 12) — marked beside the error. */
+  failedTeeth?: number[];
 }
 
 function SiteCell({
@@ -159,17 +161,25 @@ function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" 
       <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         {props.arch === "upper" ? "Upper" : "Lower"}
       </span>
-      {teeth.map((tooth) => (
-        <span
-          key={tooth}
-          className={cn(
-            "text-center text-xs font-semibold tabular-nums",
-            props.cursor.tooth === tooth ? "text-primary" : "text-muted-foreground",
-          )}
-        >
-          {tooth}
-        </span>
-      ))}
+      {teeth.map((tooth) => {
+        const failed = (props.failedTeeth ?? []).includes(tooth);
+        return (
+          <span
+            key={tooth}
+            data-testid={failed ? `hyg-perio-failed-tooth-${tooth}` : undefined}
+            className={cn(
+              "text-center text-xs font-semibold tabular-nums",
+              failed
+                ? "rounded bg-destructive text-destructive-foreground"
+                : props.cursor.tooth === tooth
+                  ? "text-primary"
+                  : "text-muted-foreground",
+            )}
+          >
+            {failed ? `${tooth}!` : tooth}
+          </span>
+        );
+      })}
     </div>
   );
 

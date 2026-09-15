@@ -7,13 +7,20 @@
  * and dark.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * FIVE SHOTS
+ * ELEVEN SHOTS
  * ─────────────────────────────────────────────────────────────────────────────
  *   hyg-perio-01-full-with-prior    a full chart, last exam's numbers under it
  *   hyg-perio-02-partial-staged     a partial chart, staged, and labelled partial
  *   hyg-perio-03-no-prior           no exam on file: an honest empty, not zeros
  *   hyg-perio-04-prior-unavailable  Open Dental did not answer — not "no history"
  *   hyg-perio-05-tray               the visit's tray: perio staged, left out of Send
+ *   The send (item 12):
+ *   hyg-perio-send-06-confirm       how each arch goes in — a 10 mm pocket named
+ *   hyg-perio-send-07-paused        rows going in, Open Dental did not answer, Continue
+ *   hyg-perio-send-08-written       every site read back and matching
+ *   hyg-perio-send-09-incomplete    loud: the sites named, the teeth marked, the undo
+ *   hyg-perio-send-10-delete        the delete dialog, tick not yet given
+ *   hyg-perio-send-11-tray-stopped  the visit's tray pointing at the stopped send
  *
  * NO NETWORK, NO BACKEND, NO PHI. The one name is synthetic; 12827 is the
  * designated roland fixture.
@@ -22,7 +29,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Route, Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -40,6 +47,7 @@ import {
   type PerioChart,
   type PerioPrior,
 } from "@shared/hyg/perio";
+import { planPerioSend, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
 
 (globalThis as Record<string, unknown>).React = React;
 
@@ -55,6 +63,7 @@ const fixtures = vi.hoisted(() => ({
   stagedWrite: null as unknown,
   prior: null as unknown,
   visitStaged: [] as unknown[],
+  send: null as unknown,
 }));
 
 const APPOINTMENT: HygAppointment = {
@@ -120,6 +129,16 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         counts: perio.countPerioChart(chart),
       };
     }),
+    fetchPerioSend: vi.fn(async () =>
+      (fixtures.send as HygPerioSendResponse | null) ?? {
+        success: true as const,
+        office: "roland" as const,
+        aptNum: 900001,
+        stagedWrite: fixtures.stagedWrite as StagedWrite | null,
+        send: null,
+        paused: null,
+      },
+    ),
     fetchPerioPrior: vi.fn(async () => ({
       success: true as const,
       office: "roland" as const,
@@ -236,7 +255,68 @@ beforeEach(() => {
   fixtures.stagedWrite = null;
   fixtures.prior = { status: "none" };
   fixtures.visitStaged = [];
+  fixtures.send = null;
 });
+
+/** A full chart, #16 skipped, one 10 mm pocket on #30 DB: the upper jaw one request, the lower row by row. */
+function sendChart(): PerioChart {
+  return normalizePerioChart(withPerioSite(exam(192, 7, [16]), 30, "DB", { depth: 10, bleeding: true }));
+}
+
+function sendView(chart: PerioChart, over: Partial<PerioSendView>): PerioSendView {
+  const plan = planPerioSend(chart);
+  return {
+    sendId: "send-0001",
+    state: "filling",
+    examNum: 7001,
+    examDate: "2026-09-08",
+    provNum: 7,
+    arches: plan.arches,
+    rowsPlanned: plan.rows.length,
+    rowsWritten: 0,
+    deepSites: plan.deepSites.length,
+    mismatches: [],
+    errorMessage: null,
+    requestsRemaining: 0,
+    startedBy: "hygienist@carein.ai",
+    startedAt: "2026-09-08T13:20:00.000Z",
+    finishedAt: null,
+    deletedBy: null,
+    deletedAt: null,
+    canDelete: false,
+    ...over,
+  };
+}
+
+function sendResponse(write: StagedWrite, send: PerioSendView, paused: string | null = null): HygPerioSendResponse {
+  return { success: true, office: "roland", aptNum: 900001, stagedWrite: write, send, paused };
+}
+
+const INCOMPLETE_MESSAGE =
+  "Exam 7001 is in Open Dental but does not match this chart at 2 places: #19 MB: the chart says 3 mm, " +
+  "Open Dental holds 4 mm; #19 B: the chart says 2 mm, Open Dental holds 3 mm. An incomplete perio chart " +
+  "understates disease. Delete exam 7001 from Open Dental on the perio chart page, or correct it there.";
+
+function incompleteFixtures(chart: PerioChart) {
+  const write = { ...perioWrite("Failed", chart), errorMessage: INCOMPLETE_MESSAGE };
+  fixtures.chart = chart;
+  fixtures.stagedWrite = write;
+  fixtures.prior = found(exam(192, 5, [16]));
+  fixtures.send = sendResponse(
+    write,
+    sendView(chart, {
+      state: "incomplete",
+      rowsWritten: 16,
+      canDelete: true,
+      finishedAt: "2026-09-08T13:21:30.000Z",
+      errorMessage: INCOMPLETE_MESSAGE,
+      mismatches: [
+        { tooth: 19, surface: "MB", kind: "depth", expected: "3 mm", found: "4 mm" },
+        { tooth: 19, surface: "B", kind: "depth", expected: "2 mm", found: "3 mm" },
+      ],
+    }),
+  );
+}
 afterEach(cleanup);
 
 describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
@@ -307,5 +387,75 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     renderAt("/hyg/visit/900001?office=roland&date=2026-09-08", "/hyg/visit/:aptNum", HygVisit);
     await screen.findByTestId("hyg-perio-not-sent");
     dump("hyg-perio-05-tray@1180x1400");
+  });
+
+  it("06 — the confirm: how each arch goes in, with the 10 mm pocket named", async () => {
+    const chart = sendChart();
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Staged", chart);
+    fixtures.prior = found(exam(192, 5, [16]));
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    fireEvent.click(await screen.findByTestId("hyg-perio-send-open"));
+    await screen.findByTestId("hyg-perio-confirm-arches");
+    dump("hyg-perio-send-06-confirm@1180x900");
+  });
+
+  it("07 — rows going in, Open Dental did not answer, and Continue", async () => {
+    const chart = sendChart();
+    const write = perioWrite("Sending", chart);
+    fixtures.chart = chart;
+    fixtures.stagedWrite = write;
+    fixtures.prior = found(exam(192, 5, [16]));
+    const view = sendView(chart, { state: "filling" });
+    fixtures.send = sendResponse(
+      write,
+      { ...view, rowsWritten: 12, requestsRemaining: 7, canDelete: true },
+      "Open Dental did not answer for #29 Probing. CareIN will check whether it landed before sending it again.",
+    );
+    renderPerio();
+    await screen.findByTestId("hyg-perio-continue");
+    dump("hyg-perio-send-07-paused@1180x900");
+  });
+
+  it("08 — written: every site read back and matching", async () => {
+    const chart = sendChart();
+    const write = {
+      ...perioWrite("Written", chart),
+      writtenRef: "Perio exam 7001: 186 sites and 1 skipped tooth read back and match",
+      sentBy: "hygienist@carein.ai",
+      sentAt: "2026-09-08T13:21:30.000Z",
+    };
+    fixtures.chart = chart;
+    fixtures.stagedWrite = write;
+    fixtures.prior = found(exam(192, 5, [16]));
+    const view = sendView(chart, { state: "written", finishedAt: "2026-09-08T13:21:30.000Z" });
+    fixtures.send = sendResponse(write, { ...view, rowsWritten: view.rowsPlanned });
+    renderPerio();
+    await screen.findByTestId("hyg-perio-state-Written");
+    dump("hyg-perio-send-08-written@1180x900");
+  });
+
+  it("09 — incomplete: loud, the sites named, the teeth marked, and the undo", async () => {
+    incompleteFixtures(sendChart());
+    renderPerio();
+    await screen.findByTestId("hyg-perio-incomplete");
+    dump("hyg-perio-send-09-incomplete@1180x900");
+  });
+
+  it("10 — the delete dialog, before the tick", async () => {
+    incompleteFixtures(sendChart());
+    renderPerio();
+    fireEvent.click(await screen.findByTestId("hyg-perio-delete-open"));
+    await screen.findByTestId("hyg-perio-delete-dialog");
+    dump("hyg-perio-send-10-delete@1180x900");
+  });
+
+  it("11 — the visit's tray, pointing at the stopped send", async () => {
+    const chart = sendChart();
+    fixtures.visitStaged = [{ ...perioWrite("Failed", chart), errorMessage: INCOMPLETE_MESSAGE }];
+    renderAt("/hyg/visit/900001?office=roland&date=2026-09-08", "/hyg/visit/:aptNum", HygVisit);
+    await screen.findByTestId("hyg-perio-in-progress");
+    dump("hyg-perio-send-11-tray-stopped@1180x1400");
   });
 });

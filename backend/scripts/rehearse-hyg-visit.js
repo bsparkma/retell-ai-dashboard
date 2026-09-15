@@ -40,9 +40,11 @@
  * 12828, valley 7115) or an obviously synthetic number.
  */
 
+const crypto = require('node:crypto');
 const { Pool } = require('pg');
 
 const visitStore = require('../services/hyg/visitStore');
+const perioSendStore = require('../services/hyg/perioSendStore');
 const composer = require('../services/hyg/stagedWriteComposer');
 const contract = require('../hyg/contract.gen.cjs');
 
@@ -512,6 +514,208 @@ async function main() {
     } else {
       bad('a save racing a send cannot drag a Sending chart back to Draft', JSON.stringify(raced));
     }
+
+    // ── 6d. the perio send (item 12) ────────────────────────────────────────
+    // What only a real Postgres can prove about hyg_perio_send: the long-way
+    // CHECKs refuse what they say, the in-flight index refuses a second send, the
+    // lease UPDATE is exclusive, every store WHERE really scopes by office, the
+    // app role cannot DELETE a send, and a visit with a send cannot be deleted
+    // from under it. ONE transaction, rolled back — the app role, correctly,
+    // could not delete what this leaves behind.
+    const sendClient = await pool.connect();
+    try {
+      await sendClient.query('BEGIN');
+      const refusesInTx = async (name, constraint, fn) => {
+        await sendClient.query('SAVEPOINT refusal');
+        try {
+          await fn();
+          bad(name, 'the database ACCEPTED it');
+        } catch (err) {
+          const message = (err && err.message) || String(err);
+          if (constraint && !message.includes(constraint)) {
+            bad(name, `refused, but not by ${constraint}: ${message.slice(0, 120)}`);
+          } else {
+            ok(name, 'refused' + (constraint ? ` by ${constraint}` : ''));
+          }
+        } finally {
+          await sendClient.query('ROLLBACK TO SAVEPOINT refusal');
+        }
+      };
+
+      await sendClient.query('SELECT count(*) FROM hyg_perio_send');
+      ok('grants: the app role can read hyg_perio_send');
+
+      const sendVisit = await visitStore.openVisit(sendClient, {
+        office: 'roland', aptNum: 990003, patNum: 12828, visitDate: '2026-09-08', actor: ACTOR,
+      });
+      let sendChart = contract.emptyPerioChart();
+      for (const c of contract.chartingOrder(sendChart.sweep)) {
+        sendChart = contract.withPerioSite(sendChart, c.tooth, c.surface, { depth: 3 });
+      }
+      sendChart = contract.withPerioSite(sendChart, 3, 'DB', { depth: 12 });
+      await visitStore.savePerioDraft(sendClient, { office: 'roland', visit: sendVisit, chart: sendChart, actor: ACTOR });
+      await visitStore.stageWrite(sendClient, {
+        office: 'roland', visit: sendVisit, kind: 'perio', actor: ACTOR, compose: composer.compose,
+      });
+      const stagedRow = await visitStore.getStagedWrite(sendClient, {
+        office: 'roland', visitId: sendVisit.visitId, kind: 'perio',
+      });
+      const plan = contract.planPerioSend(sendChart);
+      const base = {
+        office: 'roland',
+        visitId: sendVisit.visitId,
+        stagedWriteId: stagedRow.staged_write_id,
+        patNum: 12828,
+        examDate: '2026-09-08',
+        provNum: 7,
+        previewFingerprint: visitStore.fingerprintPreview(stagedRow.preview),
+        plan,
+        actor: ACTOR,
+      };
+
+      const created = await perioSendStore.createSend(sendClient, base);
+      // jsonb REORDERS object keys (shorter keys first), so `strings` comes back
+      // LowerFacial, LowerLingual — harmless, because it becomes an object body
+      // whose key order means nothing. `arches` is an array and keeps its order.
+      const storedStrings = Object.keys(created.plan.strings).sort().join(',');
+      const storedArches = created.plan.arches.map((a) => a.field).join(',');
+      if (
+        created.state === 'posting' &&
+        created.pat_num === 12828 &&
+        created.prov_num === 7 &&
+        created.exam_date === '2026-09-08' &&
+        created.plan.rows.length === 16 &&
+        storedStrings === 'LowerFacial,LowerLingual' &&
+        created.plan.strings.LowerLingual === plan.strings.LowerLingual &&
+        storedArches === 'UpperFacial,UpperLingual,LowerLingual,LowerFacial'
+      ) {
+        ok('a send stores its frozen plan through jsonb, exam_date as text, bigints as numbers');
+      } else {
+        bad(
+          'a send stores its frozen plan',
+          JSON.stringify({
+            state: created.state,
+            pat_num: created.pat_num,
+            prov_num: created.prov_num,
+            exam_date: created.exam_date,
+            rows: created.plan.rows.length,
+            storedStrings,
+            storedArches,
+          })
+        );
+      }
+      const sendId = created.send_id;
+
+      await refusesInTx('a second send in flight for one chart', 'hyg_perio_send_in_flight_key', () =>
+        perioSendStore.createSend(sendClient, base)
+      );
+      await refusesInTx('an exam date that is not YYYY-MM-DD', 'hyg_perio_send_exam_date_check', () =>
+        sendClient.query(`UPDATE hyg_perio_send SET exam_date = '09/08/2026' WHERE send_id = $1`, [sendId])
+      );
+      await refusesInTx('a send for another office', 'hyg_perio_send_office_check', () =>
+        sendClient.query(`UPDATE hyg_perio_send SET office = 'nope' WHERE send_id = $1`, [sendId])
+      );
+      await refusesInTx('filling with no exam number (the long-way CHECK)', 'hyg_perio_send_exam_num_check', () =>
+        sendClient.query(`UPDATE hyg_perio_send SET state = 'filling' WHERE send_id = $1`, [sendId])
+      );
+      await refusesInTx('refused while holding an exam number', 'hyg_perio_send_exam_num_check', () =>
+        sendClient.query(
+          `UPDATE hyg_perio_send SET state = 'refused', exam_num = 7001, error_message = 'x' WHERE send_id = $1`,
+          [sendId]
+        )
+      );
+      await refusesInTx('incomplete with no reason', 'hyg_perio_send_reason_check', () =>
+        sendClient.query(`UPDATE hyg_perio_send SET state = 'incomplete' WHERE send_id = $1`, [sendId])
+      );
+      await refusesInTx('half a lease (a token and no time)', 'hyg_perio_send_lease_check', () =>
+        sendClient.query(`UPDATE hyg_perio_send SET step_token = gen_random_uuid() WHERE send_id = $1`, [sendId])
+      );
+
+      const cutoff = new Date(Date.now() - 120000);
+      const tokenA = crypto.randomUUID();
+      const tokenB = crypto.randomUUID();
+      const claimedA = await perioSendStore.claimStep(sendClient, { office: 'roland', sendId, token: tokenA, leaseCutoff: cutoff });
+      const claimedB = await perioSendStore.claimStep(sendClient, { office: 'roland', sendId, token: tokenB, leaseCutoff: cutoff });
+      const strangerRenews = await perioSendStore.renewStep(sendClient, { office: 'roland', sendId, token: tokenB });
+      const holderRenews = await perioSendStore.renewStep(sendClient, { office: 'roland', sendId, token: tokenA });
+      const valleyClaims = await perioSendStore.claimStep(sendClient, {
+        office: 'valley', sendId, token: tokenB, leaseCutoff: new Date(Date.now() + 60000),
+      });
+      if (claimedA && !claimedB && !strangerRenews && holderRenews && !valleyClaims) {
+        ok('the step lease is exclusive: a second claim, a stranger renewing, and another office all fail');
+      } else {
+        bad('the step lease is exclusive', JSON.stringify({ claimedA, claimedB, strangerRenews, holderRenews, valleyClaims }));
+      }
+      const takenOver = await perioSendStore.claimStep(sendClient, {
+        office: 'roland', sendId, token: tokenB, leaseCutoff: new Date(Date.now() + 60000),
+      });
+      await perioSendStore.releaseStep(sendClient, { office: 'roland', sendId, token: tokenA });
+      const stillHeld = await sendClient.query('SELECT step_token FROM hyg_perio_send WHERE send_id = $1', [sendId]);
+      await perioSendStore.releaseStep(sendClient, { office: 'roland', sendId, token: tokenB });
+      const released = await sendClient.query('SELECT step_token, step_claimed_at FROM hyg_perio_send WHERE send_id = $1', [sendId]);
+      if (takenOver && stillHeld.rows[0].step_token === tokenB && released.rows[0].step_token === null && released.rows[0].step_claimed_at === null) {
+        ok('a lapsed lease is taken over, and only its holder can release it');
+      } else {
+        bad('a lapsed lease is taken over, and only its holder can release it');
+      }
+
+      await perioSendStore.setPriorExamNums(sendClient, { office: 'roland', sendId, priorExamNums: [2001, 2002] });
+      const valleyFills = await perioSendStore.markFilling(sendClient, { office: 'valley', sendId, examNum: 7001 });
+      const filled = await perioSendStore.markFilling(sendClient, { office: 'roland', sendId, examNum: 7001 });
+      await perioSendStore.addRowsWritten(sendClient, { office: 'roland', sendId, count: 12 });
+      const stopped = await perioSendStore.finishSend(sendClient, {
+        office: 'roland', sendId, state: 'incomplete',
+        errorMessage: 'Exam 7001 does not match at #3 DB',
+        mismatches: [{ tooth: 3, surface: 'DB', kind: 'depth', expected: '12 mm', found: '1 mm' }],
+      });
+      const writtenAfterStop = await perioSendStore.finishSend(sendClient, { office: 'roland', sendId, state: 'written' });
+      const valleyReads = await perioSendStore.getLatestSend(sendClient, { office: 'valley', stagedWriteId: stagedRow.staged_write_id });
+      const incomplete = await perioSendStore.getLatestSend(sendClient, { office: 'roland', stagedWriteId: stagedRow.staged_write_id });
+      if (
+        !valleyFills && filled && stopped && !writtenAfterStop && valleyReads === null &&
+        incomplete.state === 'incomplete' && incomplete.exam_num === 7001 && incomplete.rows_written === 12 &&
+        JSON.stringify(incomplete.prior_exam_nums) === '[2001,2002]' &&
+        incomplete.mismatches[0].found === '1 mm' && incomplete.finished_at !== null
+      ) {
+        ok('posting → filling → incomplete through the store; a finished send is not re-finished; office scopes every read and write');
+      } else {
+        bad('posting → filling → incomplete through the store', JSON.stringify({ valleyFills, filled, stopped, writtenAfterStop, valleyReads, incomplete }));
+      }
+
+      // With the first send incomplete, the in-flight index no longer blocks a second.
+      const second = await perioSendStore.createSend(sendClient, base);
+      const deletedFirst = await perioSendStore.markDeleted(sendClient, { office: 'roland', sendId, actor: ACTOR });
+      const deletedSecond = await perioSendStore.markDeleted(sendClient, { office: 'roland', sendId: second.send_id, actor: ACTOR });
+      const firstRow = (await sendClient.query('SELECT state, deleted_by, deleted_at FROM hyg_perio_send WHERE send_id = $1', [sendId])).rows[0];
+      if (deletedFirst && !deletedSecond && firstRow.state === 'deleted' && firstRow.deleted_by === ACTOR && firstRow.deleted_at) {
+        ok('only a send that knows its exam can be marked deleted, and it records who');
+      } else {
+        bad('only a send that knows its exam can be marked deleted', JSON.stringify({ deletedFirst, deletedSecond, firstRow }));
+      }
+
+      await visitStore.markSending(sendClient, { office: 'roland', visitId: sendVisit.visitId, kind: 'perio' });
+      const valleyRestages = await perioSendStore.restageChart(sendClient, { office: 'valley', visitId: sendVisit.visitId });
+      const restaged = await perioSendStore.restageChart(sendClient, { office: 'roland', visitId: sendVisit.visitId });
+      const chartState = (await visitStore.getStagedWrite(sendClient, { office: 'roland', visitId: sendVisit.visitId, kind: 'perio' })).state;
+      if (!valleyRestages && restaged && chartState === 'Staged') {
+        ok('a chart whose send left nothing behind goes back to Staged — for its own office only');
+      } else {
+        bad('restaging the chart', JSON.stringify({ valleyRestages, restaged, chartState }));
+      }
+
+      await refusesInTx('the app role deleting a send record', 'permission denied', () =>
+        sendClient.query('DELETE FROM hyg_perio_send WHERE send_id = $1', [sendId])
+      );
+      await refusesInTx('deleting a visit that has a send record', 'hyg_perio_send', () =>
+        sendClient.query('DELETE FROM hyg_visit WHERE visit_id = $1', [sendVisit.visitId])
+      );
+    } finally {
+      await sendClient.query('ROLLBACK');
+      sendClient.release();
+    }
+    const leftover = await pool.query('SELECT count(*)::int AS n FROM hyg_perio_send');
+    if (leftover.rows[0].n === 0) ok('the send rehearsal left nothing behind');
+    else bad('the send rehearsal left rows behind', String(leftover.rows[0].n));
 
     // ── 7. the cascade, and cleanup ─────────────────────────────────────────
     await pool.query('DELETE FROM hyg_visit WHERE created_by = $1', [ACTOR]);

@@ -1650,11 +1650,14 @@ class OpenDentalService extends EventEmitter {
   //
   // METHODS: POST and PUT only.
   //
-  // DELETE is deliberately absent. Nothing in the posting sequence deletes: the
-  // unwind documented in docs/RCM_POSTING.md is a human-run script against a test
-  // patient, not a code path, and `DELETE /claimprocs` does not exist on this
-  // build at all (Spike 0b test 12). A delete verb on the transport would be a
+  // DELETE is deliberately absent HERE. Nothing in the posting sequence deletes:
+  // the unwind documented in docs/RCM_POSTING.md is a human-run script against a
+  // test patient, not a code path, and `DELETE /claimprocs` does not exist on
+  // this build at all (Spike 0b test 12). A delete verb on this method would be a
   // capability the drain holds and never needs, so it is not built.
+  //
+  // The one DELETE the application issues is `apiDeleteRaw` below, and it can
+  // name exactly one resource shape: a perio exam. See its header.
 
   /**
    * Raw OD cloud POST/PUT returning the outcome instead of throwing, so callers
@@ -1743,6 +1746,72 @@ class OpenDentalService extends EventEmitter {
       // OD's refusal text is the actionable half of a 400, and it is metadata
       // rather than PHI — these messages are about amounts and statuses, never
       // about people.
+      const payload = error.response?.data;
+      const detail =
+        typeof payload === 'string' ? payload : payload ? JSON.stringify(payload) : error.message;
+      return { ok: false, status, data: payload ?? null, error: String(detail).slice(0, 400) };
+    }
+  }
+
+  /**
+   * THE ONE DELETE THIS APPLICATION MAY ISSUE: `DELETE /perioexams/{PerioExamNum}`.
+   *
+   * Why it exists at all: a perio Probing row, once written, can never be
+   * deleted on its own (`DELETE /periomeasures` accepts only Mobility and
+   * SkipTooth). The only complete undo for a perio chart that landed wrong or
+   * half-landed is deleting the whole exam, which removes every measurement with
+   * it (H0 §2; Open Dental's apiperioexams page). The hygiene perio send offers
+   * that undo for an exam it created seconds earlier — services/hyg/odPerioWriter.js
+   * is the only caller, and routes/hyg/hygNoOdWrites.test.js holds it there.
+   *
+   * Why it can do nothing else: the PATH is checked here, in the transport,
+   * against one pattern. There is no argument that deletes a claim, a payment, a
+   * patient or a document through this method. A second resource that needs a
+   * delete is a second, reviewed edit to this pattern — not a parameter.
+   *
+   * Same guard, same throttle, same shape as `apiWriteRaw`: refused under
+   * OPENDENTAL_WRITE_DISABLED, a refusal returned rather than thrown, and a 200 is
+   * NOT proof — the caller reads the exam list back.
+   *
+   * @param {string} path exactly `/perioexams/<positive integer>`
+   * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number, module?: string }} [opts]
+   * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
+   */
+  async apiDeleteRaw(path, opts = {}) {
+    if (!/^\/perioexams\/[1-9]\d*$/.test(String(path))) {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        error: `apiDeleteRaw deletes a perio exam and nothing else; refused '${String(path).slice(0, 80)}'`,
+      };
+    }
+    if (require('../middleware/envGuards').isOdWriteDisabled()) {
+      return {
+        ok: false,
+        status: 403,
+        data: null,
+        error: 'OD_WRITE_DISABLED: Open Dental writes are disabled in this environment',
+      };
+    }
+    if (this.useDatabase) {
+      return { ok: false, status: 0, data: null, error: 'OD client is in direct-DB mode; a delete requires api mode' };
+    }
+    if (!this.enabled || !this.client) {
+      return { ok: false, status: 0, data: null, error: 'Open Dental cloud API is not configured' };
+    }
+
+    try {
+      const config = {
+        ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        ...(opts.quiet ? { __odQuiet: true } : {}),
+        ...(opts.minIntervalMs ? { __odMinIntervalMs: opts.minIntervalMs } : {}),
+        ...(opts.module ? { __odModule: String(opts.module) } : {}),
+      };
+      const response = await this.client.delete(path, config);
+      return { ok: true, status: response.status, data: response.data };
+    } catch (error) {
+      const status = error.response?.status || 0;
       const payload = error.response?.data;
       const detail =
         typeof payload === 'string' ? payload : payload ? JSON.stringify(payload) : error.message;

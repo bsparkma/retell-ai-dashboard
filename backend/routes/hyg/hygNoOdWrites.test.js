@@ -190,12 +190,27 @@ test('the module owns source files, so the scan below is scanning something', ()
  * Adding a name here is the deliberate act. It should be hard to do by
  * accident, visible in a diff, and argued for in a PR body.
  */
-const OD_WRITE_LAYER = Object.freeze(['odWriter.js']);
+const OD_WRITE_LAYER = Object.freeze([
+  'odWriter.js',
+  // H4 item 12: the perio send's writer — POST /perioexams (with the arch
+  // strings), POST /periomeasures, and DELETE /perioexams/{n}, the undo. A
+  // SIBLING rather than three more functions in odWriter.js so the file that
+  // can delete an exam is small enough to read whole. Registered in the same
+  // commit as the test below that proves it really reaches the transport.
+  'odPerioWriter.js',
+]);
 
-test('only the one allow-listed file names the Open Dental WRITE transport', () => {
-  // `apiWriteRaw` is the ONE method on config/openDental.js that can POST or PUT
-  // to Open Dental (there is deliberately no DELETE). RCM names it in exactly
-  // one file and fails the build if a second one does; hyg now names it in one.
+/**
+ * The transport's write verbs, by name. `apiDeleteRaw` joined in item 12: it can
+ * delete one resource shape (a perio exam) and nothing else, and it is exactly
+ * as reviewed a capability as a POST.
+ */
+const WRITE_TRANSPORT = /apiWriteRaw|apiDeleteRaw/;
+
+test('only the allow-listed files name the Open Dental WRITE transport', () => {
+  // `apiWriteRaw` (POST/PUT) and `apiDeleteRaw` (one DELETE) are the only
+  // methods on config/openDental.js that change Open Dental. RCM names the
+  // first in exactly one file; hyg names them in the files listed above.
   const offenders = [];
   for (const file of hygSources()) {
     const src = fs.readFileSync(file, 'utf8');
@@ -203,10 +218,30 @@ test('only the one allow-listed file names the Open Dental WRITE transport', () 
     // defines the throwing stub, and this file explains why. Skipping them by
     // name rather than by a comment marker keeps the exemption enumerated.
     if (file.endsWith('hygNoOdWrites.test.js') || file.endsWith('hygTestUtils.js')) continue;
+    // The perio writer's unit test hands the writer a fake client with both
+    // methods on it, and asserts on what reached them. It can call nothing real.
+    if (file.endsWith('odPerioWriter.test.js')) continue;
     if (OD_WRITE_LAYER.includes(path.basename(file))) continue;
-    if (/apiWriteRaw/.test(src)) offenders.push(path.basename(file));
+    if (WRITE_TRANSPORT.test(src)) offenders.push(path.basename(file));
   }
   assert.deepEqual(offenders, [], 'these files reach an Open Dental write verb');
+});
+
+test('the perio writer is REAL: it reaches both verbs, and its endpoints live nowhere else', () => {
+  const files = hygSources();
+  const writer = files.find((f) => path.basename(f) === 'odPerioWriter.js');
+  assert.ok(writer, 'services/hyg/odPerioWriter.js is on the allow-list but missing');
+  const code = stripComments(fs.readFileSync(writer, 'utf8'));
+  assert.match(code, /apiWriteRaw\('POST', '\/perioexams'/, 'the exam POST must live in the writer');
+  assert.match(code, /apiWriteRaw\('POST', '\/periomeasures'/, 'the measurement POST must live in the writer');
+  assert.match(code, /apiDeleteRaw\(`\/perioexams\/\$\{examNum\}`/, 'the exam DELETE must live in the writer');
+  // No PUT: the jaw rule means no row is ever edited after it lands.
+  assert.doesNotMatch(code, /apiWriteRaw\('PUT'/, 'the perio writer must not PUT');
+  // The orchestration reaches it by function, never by verb.
+  const send = stripComments(fs.readFileSync(files.find((f) => f.endsWith('perioSend.js')), 'utf8'));
+  assert.doesNotMatch(send, WRITE_TRANSPORT);
+  assert.match(send, /writer\.createPerioExam\(/);
+  assert.match(send, /writer\.deletePerioExam\(/);
 });
 
 test('the allow-listed writer is REAL, and it is the only thing that can write', () => {
@@ -214,8 +249,10 @@ test('the allow-listed writer is REAL, and it is the only thing that can write',
   // actually reaches the transport. Otherwise the writes moved somewhere else
   // and this file is guarding an empty room.
   const files = hygSources();
-  const writer = files.find((f) => OD_WRITE_LAYER.includes(path.basename(f)));
-  assert.ok(writer, `the allow-listed write layer ${[...OD_WRITE_LAYER]} is missing`);
+  // By NAME: the list has two files now, and the slip/note endpoints belong to
+  // this one. The perio writer is held to its own endpoints in the test above.
+  const writer = files.find((f) => path.basename(f) === 'odWriter.js');
+  assert.ok(writer, 'the allow-listed write layer odWriter.js is missing');
 
   const src = fs.readFileSync(writer, 'utf8');
   assert.match(src, /apiWriteRaw\(/, 'the allow-listed file does not reach the transport');
@@ -340,11 +377,14 @@ test('the perio reader reaches Open Dental through odGet ONLY — and really doe
   assert.match(code, /pagedList\(odGet, '\/periomeasures'/);
 });
 
-test('no perio endpoint is named in code anywhere but the reader — least of all the writer', () => {
+test('no perio endpoint is named in code anywhere but the reader and the perio writer', () => {
   const offenders = [];
   for (const file of hygSources()) {
     if (file.endsWith('.test.js') || file.endsWith('hygTestUtils.js')) continue;
-    if (path.basename(file) === 'odPerio.js') continue;
+    // Item 12 is where this changed, deliberately: the READER reads perio, the
+    // PERIO WRITER writes it, and nothing else — least of all odWriter.js or the
+    // send's orchestration — knows a perio endpoint exists.
+    if (path.basename(file) === 'odPerio.js' || path.basename(file) === 'odPerioWriter.js') continue;
     const code = stripComments(fs.readFileSync(file, 'utf8'));
     for (const endpoint of PERIO_ENDPOINTS) {
       if (code.includes(endpoint)) offenders.push(path.basename(file) + ' -> ' + endpoint);
@@ -422,7 +462,7 @@ test('driving EVERY perio path to success reaches no Open Dental write verb', as
       body: { confirm: [{ kind: 'perio', previewFingerprint: write.previewFingerprint }] },
     });
     assert.equal(sent.status, 422);
-    assert.equal(sent.body.code, 'PERIO_SEND_NOT_BUILT');
+    assert.equal(sent.body.code, 'PERIO_SENDS_FROM_ITS_CHART');
 
     assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
     for (const c of od.calls) {

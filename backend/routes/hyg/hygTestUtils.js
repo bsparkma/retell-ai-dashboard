@@ -170,6 +170,8 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_treatment_item = [];
     /** @type {Array<Record<string, any>>} */
     this.hyg_staged_write = [];
+    /** @type {Array<Record<string, any>>} item 12 */
+    this.hyg_perio_send = [];
     this.seq = 0;
   }
 
@@ -209,6 +211,148 @@ class FakeHygDb extends FakeAuditDb {
     // Audit and its probe stay with the parent, unchanged.
     if (/audit_log/i.test(text)) return super.query(sql, params);
     this.statements.push(text);
+
+    // A test can make ONE statement fail, to stand in for a process that died
+    // between two statements (item 12).
+    if (typeof this.failOnce === 'function' && this.failOnce(text, params)) {
+      this.failOnce = null;
+      throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
+    }
+
+    // ── hyg_perio_send (item 12) ────────────────────────────────────────────
+    // Matched FIRST: the chart's restage below would otherwise be read as one of
+    // the slice-3 hyg_staged_write statements.
+    if (/UPDATE hyg_staged_write\s+SET error_message = NULL, state = 'Staged'[\s\S]*kind = 'perio' AND state IN \('Sending', 'Failed'\)/i.test(text)) {
+      const [visitId, office] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === 'perio' && ['Sending', 'Failed'].includes(r.state)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { state: 'Staged', error_message: null, updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/FROM hyg_perio_send\s+WHERE staged_write_id = \$1 AND office = \$2/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const rows = this.hyg_perio_send.filter((r) => r.staged_write_id === stagedWriteId && r.office === office);
+      const latest = rows.length > 0 ? [rows[rows.length - 1]] : [];
+      return { rows: latest, rowCount: latest.length };
+    }
+    if (/INSERT INTO hyg_perio_send/i.test(text)) {
+      const [stagedWriteId, visitId, office, patNum, examDate, provNum, fingerprint, plan, actor] = params;
+      this.checkOffice(office);
+      if (!this.hyg_staged_write.some((w) => w.staged_write_id === stagedWriteId)) {
+        throw new Error('hyg_perio_send_staged_write_id_fkey violated');
+      }
+      if (!this.hyg_visit.some((v) => v.visit_id === visitId && v.office === office)) {
+        throw new Error('hyg_perio_send_visit_fk violated: no such (visit_id, office)');
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(examDate))) throw new Error('hyg_perio_send_exam_date_check violated');
+      if (this.hyg_perio_send.some((r) => r.staged_write_id === stagedWriteId && ['posting', 'filling'].includes(r.state))) {
+        throw new Error('duplicate key value violates unique constraint "hyg_perio_send_in_flight_key"');
+      }
+      const row = {
+        send_id: this.nextId('send'),
+        staged_write_id: stagedWriteId,
+        visit_id: visitId,
+        office,
+        pat_num: String(patNum), // bigint comes back as a string
+        exam_date: examDate,
+        prov_num: String(provNum),
+        preview_fingerprint: fingerprint,
+        plan: FakeHygDb.json(plan),
+        state: 'posting',
+        exam_num: null,
+        prior_exam_nums: null,
+        rows_written: 0,
+        mismatches: [],
+        error_message: null,
+        step_token: null,
+        step_claimed_at: null,
+        created_by: actor,
+        created_at: new Date(),
+        updated_at: new Date(),
+        finished_at: null,
+        deleted_by: null,
+        deleted_at: null,
+      };
+      this.hyg_perio_send.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+    const perioSend = (id, office) => this.hyg_perio_send.find((r) => r.send_id === id && r.office === office);
+    if (/UPDATE hyg_perio_send\s+SET step_token = \$3, step_claimed_at = now\(\)/i.test(text)) {
+      const [id, office, token, cutoff] = params;
+      const row = perioSend(id, office);
+      if (!row || (row.step_token !== null && !(row.step_claimed_at < new Date(cutoff)))) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, { step_token: token, step_claimed_at: new Date(), updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET step_claimed_at = now\(\)/i.test(text)) {
+      const [id, office, token] = params;
+      const row = perioSend(id, office);
+      if (!row || row.step_token !== token) return { rows: [], rowCount: 0 };
+      row.step_claimed_at = new Date();
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET step_token = NULL/i.test(text)) {
+      const [id, office, token] = params;
+      const row = perioSend(id, office);
+      if (!row || row.step_token !== token) return { rows: [], rowCount: 0 };
+      Object.assign(row, { step_token: null, step_claimed_at: null });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET prior_exam_nums/i.test(text)) {
+      const [id, office, nums] = params;
+      const row = perioSend(id, office);
+      if (!row || row.state !== 'posting') return { rows: [], rowCount: 0 };
+      row.prior_exam_nums = FakeHygDb.json(nums);
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET state = 'filling'/i.test(text)) {
+      const [id, office, examNum] = params;
+      const row = perioSend(id, office);
+      if (!row || row.state !== 'posting') return { rows: [], rowCount: 0 };
+      if (examNum === null || examNum === undefined) throw new Error('hyg_perio_send_exam_num_check violated');
+      Object.assign(row, { state: 'filling', exam_num: String(examNum), updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET rows_written = rows_written \+ \$3/i.test(text)) {
+      const [id, office, count] = params;
+      const row = perioSend(id, office);
+      if (!row) return { rows: [], rowCount: 0 };
+      row.rows_written += count;
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send\s+SET state = \$3, error_message = \$4/i.test(text)) {
+      const [id, office, state, error, mismatches] = params;
+      const row = perioSend(id, office);
+      if (!row || !['posting', 'filling'].includes(row.state)) return { rows: [], rowCount: 0 };
+      if (['incomplete', 'refused'].includes(state) && !error) throw new Error('hyg_perio_send_reason_check violated');
+      if (state === 'refused' && row.exam_num !== null) throw new Error('hyg_perio_send_exam_num_check violated');
+      if (state === 'written' && row.exam_num === null) throw new Error('hyg_perio_send_exam_num_check violated');
+      Object.assign(row, {
+        state, error_message: error, mismatches: FakeHygDb.json(mismatches),
+        finished_at: new Date(), updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send\s+SET state = 'deleted'/i.test(text)) {
+      const [id, office, actor] = params;
+      const row = perioSend(id, office);
+      if (!row || !['filling', 'incomplete'].includes(row.state) || row.exam_num === null) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (!actor) throw new Error('hyg_perio_send_deleted_check violated');
+      Object.assign(row, {
+        state: 'deleted', deleted_by: actor, deleted_at: new Date(),
+        finished_at: row.finished_at || new Date(), updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/hyg_perio_send/i.test(text)) {
+      throw new Error('[hygTestUtils] unexpected hyg_perio_send SQL: ' + text.trim().slice(0, 120));
+    }
 
     // ── hyg_visit ───────────────────────────────────────────────────────────
     if (/^\s*SELECT[\s\S]*FROM hyg_visit\s+WHERE office = \$1 AND apt_num = \$2/i.test(text)) {
@@ -678,6 +822,22 @@ class FakeOd {
     const value = typeof scripted === 'function' ? scripted(body, this) : scripted;
     if (value && typeof value === 'object' && 'ok' in value) return value;
     return { ok: true, status: 200, data: value };
+  }
+  /**
+   * The transport's one DELETE (item 12). Answers from `deleteRoutes` (keyed by
+   * path, value or function) when a test scripted it; otherwise it throws like
+   * every other write verb here.
+   */
+  async apiDeleteRaw(path, opts = {}) {
+    this.writes.push(['apiDeleteRaw', 'DELETE', path, null, opts]);
+    const routes = this.deleteRoutes;
+    if (!routes || !Object.prototype.hasOwnProperty.call(routes, path)) {
+      throw new Error('[hygTestUtils] /api/hyg reached an UNSCRIPTED Open Dental DELETE: ' + path);
+    }
+    const scripted = routes[path];
+    const value = typeof scripted === 'function' ? scripted(this) : scripted;
+    if (value && typeof value === 'object' && 'ok' in value) return value;
+    return { ok: true, status: 200, data: value ?? null };
   }
   async post(...args) {
     this.writes.push(['post', ...args]);
