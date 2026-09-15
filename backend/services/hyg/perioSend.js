@@ -305,7 +305,7 @@ async function startPerioSend({ pool, office, visit, appointment, request, actor
 async function stopIncomplete(ctx, send, message, mismatches) {
   const undo =
     send.exam_num !== null
-      ? ` An incomplete perio chart understates disease. Delete exam ${send.exam_num} from Open Dental from this page, or correct it there.`
+      ? ` An incomplete perio chart understates disease. Delete exam ${send.exam_num} from Open Dental on the perio chart page, or correct it there.`
       : ' An incomplete perio chart understates disease. Check this patient\'s perio chart in Open Dental before sending again.';
   const full = message + undo;
   await store.finishSend(ctx.pool, {
