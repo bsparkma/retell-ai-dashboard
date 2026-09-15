@@ -70,6 +70,10 @@ const MUTATIONS = [
   ['DELETE', '/api/hyg/visit/900001/staged-writes/router' + Q, undefined],
   // H4 slice 10: the perio chart is a mutation like any other.
   ['PUT', '/api/hyg/visit/900001/perio' + Q, { chart: { teeth: {} } }],
+  // Item 12: the perio send, its steps and its undo write to Open Dental.
+  ['POST', '/api/hyg/visit/900001/perio/send' + Q, { previewFingerprint: 'fp', examDate: '2026-09-08', provNum: 7 }],
+  ['POST', '/api/hyg/visit/900001/perio/send/step' + Q, undefined],
+  ['POST', '/api/hyg/visit/900001/perio/send/delete-exam' + Q, { examNum: 7001 }],
 ];
 
 test('a role with hyg.read but not hyg.write is refused EVERY mutation', async () => {

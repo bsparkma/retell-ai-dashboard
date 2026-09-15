@@ -284,7 +284,7 @@ test('the send refuses a perio confirmation for the WHOLE batch, and writes noth
       },
     });
     assert.equal(res.status, 422);
-    assert.equal(res.body.code, 'PERIO_SEND_NOT_BUILT');
+    assert.equal(res.body.code, 'PERIO_SENDS_FROM_ITS_CHART');
 
     // WHOLE batch: the slip that rode along was not quietly sent either.
     assert.deepEqual(app.od.writes, [], 'not one Open Dental write verb');

@@ -231,9 +231,59 @@ async function readPriorPerio(odGet, { patNum }) {
   };
 }
 
+/**
+ * Every exam this patient has, for the SEND (item 12).
+ *
+ * The send must tell the exam IT created from one that was already there, so it
+ * reads the list before it posts and again after. Unlike `readLatestExam`, a
+ * failed page here is a failure, whole: an exam missing from half a list is not
+ * missing from the chart, and "no new exam appeared" read off a partial list is
+ * how a second exam header gets posted.
+ *
+ * @param {Function} odGet
+ * @param {{ patNum: number }} opts
+ * @returns {Promise<{ ok: true, exams: Array<{ examNum: number, examDate: string|null, provNum: number|null }>,
+ *                     truncated: boolean, odReads: number }
+ *                   | { ok: false, error: string, odReads: number }>}
+ */
+async function readExams(odGet, { patNum }) {
+  const list = await pagedList(odGet, '/perioexams', { PatNum: patNum });
+  if (list.error) return { ok: false, error: String(list.error), odReads: list.pages };
+  const exams = [];
+  for (const row of list.rows) {
+    const examNum = odInt(row && row.PerioExamNum);
+    // The filter-ignored guard. See the header.
+    if (examNum === null || odInt(row.PatNum) !== patNum) continue;
+    exams.push({ examNum, examDate: examDateOf(row.ExamDate), provNum: odInt(row.ProvNum) });
+  }
+  return { ok: true, exams, truncated: list.truncated, odReads: list.pages };
+}
+
+/**
+ * One exam's measurement rows, for the send's read-before-write and its
+ * read-back — WHOLE, or reported as not whole.
+ *
+ * @param {Function} odGet
+ * @param {{ examNum: number }} opts
+ * @returns {Promise<{ ok: true, rows: object[], truncated: boolean, odReads: number }
+ *                   | { ok: false, error: string, odReads: number }>}
+ */
+async function readExamMeasures(odGet, { examNum }) {
+  const list = await pagedList(odGet, '/periomeasures', { PerioExamNum: examNum });
+  if (list.error) return { ok: false, error: String(list.error), odReads: list.pages };
+  return {
+    ok: true,
+    rows: list.rows.filter((r) => r && odInt(r.PerioExamNum) === examNum),
+    truncated: list.truncated,
+    odReads: list.pages,
+  };
+}
+
 module.exports = {
   readPriorPerio,
   readLatestExam,
+  readExams,
+  readExamMeasures,
   chartFromMeasures,
   examDateOf,
   SURFACE_FIELDS,
