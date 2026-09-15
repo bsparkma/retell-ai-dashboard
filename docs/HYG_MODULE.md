@@ -887,8 +887,8 @@ reads and stages; the send is the next slice.
 ## 12. The perio chart (H4 slice 10) — read, display, stage
 
 `/hyg/visit/:aptNum/perio?office=&date=`, reached from the perio row of the
-visit's tray. **Nothing on this page, and nothing it calls, writes to Open
-Dental.**
+visit's tray. **Entering, storing and staging a chart write nothing to Open
+Dental.** Sending one is §13.
 
 ### Scope, locked 2026-08-13
 
@@ -921,9 +921,9 @@ last few seconds.
   a flipped entry direction — leaves it staged.
 - **Un-staging keeps the readings.** Every other kind is deleted on un-stage
   because it is recomposed from the visit; a perio chart IS its row.
-- **The send refuses a perio confirmation for the whole batch**
-  (`422 PERIO_SEND_NOT_BUILT`), and the tray leaves a staged chart out of Send
-  and says so.
+- **The visit's batch send refuses a perio confirmation for the whole batch**
+  (`422 PERIO_SENDS_FROM_ITS_CHART`), and the tray leaves a staged chart out of
+  Send and says so. A chart is sent from its own page (§13).
 
 ### Three routes, all in `routes/hyg/visit.js`
 
@@ -988,3 +988,113 @@ fit three 44px-wide targets per tooth without scrolling the arch sideways, and a
 scrolling chart hides the teeth being compared. Cells are for pointing at a
 site; the keypad under the grid (0–19, flags, back/next, skip) is the touch
 entry path and every key on it is 44px.
+
+## 13. The perio send (H4 item 12)
+
+A staged chart is sent from its own page. **Every rule below is something the
+arch-string probe measured on roland staging** (`docs/reports/feature-hyg-perio-arch-probe.md`
+§4), not something Open Dental's docs imply.
+
+### The shape: one POST where a string can say it, rows where it cannot
+
+```
+confirm   fingerprint + exam date + provider, re-derived server-side → send row, Staged → Sending
+exam      POST /perioexams  { PatNum, ExamDate, ProvNum, Note, <every expressible arch string> }
+tail      POST /periomeasures, one per (tooth, SequenceType) the strings could not carry
+verify    GET /periomeasures?PerioExamNum= (paged) → every site vs the staged chart
+          → Written only on a full match; otherwise incomplete, with the sites named
+```
+
+A full chart of 0–9 readings with no gaps is **one** Open Dental write.
+
+### When an arch may go as a string — `shared/hyg/perioSend.ts`
+
+`perioArchVerdict(chart, field)` sends a string only when ALL hold:
+
+- every charted depth on the arch is **0–9** — a `10` is written as `1`,`0` on two
+  sites and shifts everything after it, silently;
+- the charted sites run **unbroken from position 1** — nothing holds a place, so a
+  gap would hand its position to the next reading (a trailing gap is fine: the
+  string stops);
+- **no flag sits on a site with no depth** — a flag letter rides the digit before it.
+
+An empty arch sends no string at all. **A site that was not charted is never
+written as 0**; per-row bodies carry `-1`.
+
+**The jaw rule.** Open Dental keeps one Probing row per tooth for both sides, so
+if either arch of a jaw goes row by row, both do (`partner`). Otherwise a string
+would create the row and the other side would need a `PUT` onto it — a verb the
+probe never exercised, onto a row that cannot be deleted. It costs no extra
+requests.
+
+**The position table is the probe's**, copied row for row, and
+`tests/hyg-perio-send-plan.test.ts` re-encodes the chart the probe read back into
+exactly the strings the probe sent. Do not re-derive it.
+
+### Skipped teeth
+
+A skipped tooth is always a `SkipTooth` row after the exam. Before a charted tooth
+it is a gap, so that arch goes row by row. **Missing third molars (#1, #16, #17,
+#32) therefore send many real charts down the row-by-row path** — an arch whose
+FIRST tooth is skipped cannot be a string. Correct, slower, and read back the same
+way.
+
+### Routes, all in `routes/hyg/visit.js`
+
+| Route | Does | Audit |
+| --- | --- | --- |
+| `GET /visit/:aptNum/perio/send` | where the latest send stands; Postgres only | `hyg_perio_send` READ |
+| `POST /visit/:aptNum/perio/send?date=` | confirm, then the first step | UPDATE for the confirm; one CREATE per write |
+| `POST /visit/:aptNum/perio/send/step` | the next bounded step (≤12 rows) | one CREATE per write |
+| `POST /visit/:aptNum/perio/send/delete-exam` `{ examNum }` | the undo | one DELETE; a guard refusal is a denial row |
+
+The page calls step until the send finishes, stops or pauses. **Every write
+happens inside a request the confirming person made** — leaving the page pauses
+the send, and the next step reads Open Dental before it writes anything.
+
+### States — `hyg_perio_send` (migration 1788500000000)
+
+| state | means | staged write |
+| --- | --- | --- |
+| `posting` | the exam POST is not confirmed yet | Sending |
+| `filling` | the exam exists; rows going in, or verifying | Sending |
+| `written` | every site read back and matched | Written, `Perio exam N: n sites read back and match` |
+| `incomplete` | the exam exists and does NOT match | Failed, sites named |
+| `refused` | Open Dental refused the exam; nothing created | Failed |
+| `deleted` | the undo removed the exam this send created | back to Staged, same preview |
+
+One row per send, not per write. `prior_exam_nums` is recorded before the exam
+POST, so a POST that landed without answering is **adopted** on the next step,
+never posted twice; a POST that answered OK but is not in the list afterwards
+stops the send rather than risk a second exam. A step holds a **lease**
+(`step_token`), renewed before every write, so two tabs cannot both read "absent"
+and both post a permanent row. The app role has `SELECT, INSERT, UPDATE` and no
+`DELETE`, and there is no cascade from the visit: a send that created an exam is
+a record of something in a chart.
+
+A Failed chart goes back on the list (`POST …/staged-writes/perio/retry`) only
+when its last send left nothing unaccounted for — refused, deleted, or stopped
+without an exam it could name. Otherwise `409 PERIO_EXAM_EXISTS`.
+
+### The undo
+
+`DELETE /perioexams/{n}` removes the exam and every row in it — the one complete
+undo perio has. `deletePerioExamForSend` refuses unless: the send knows its exam;
+the request repeats that exact number; the send is `filling` or `incomplete` (a
+written chart is corrected in Open Dental); no step holds the lease; and Open
+Dental lists that exam for THIS patient before the delete and not after. The page
+adds an explicit tick-box.
+
+The transport can issue exactly one DELETE: `apiDeleteRaw` in
+`config/openDental.js` refuses any path that is not `/perioexams/<n>`, under
+`OPENDENTAL_WRITE_DISABLED`.
+
+### Writes live in one registered file
+
+`services/hyg/odPerioWriter.js` is on `OD_WRITE_LAYER` in `hygNoOdWrites.test.js`
+beside `odWriter.js`: the exam POST, the measurement POST and the exam DELETE,
+and nothing else — no PUT, no CAL, no recession. It refuses a malformed arch
+string before the transport. `perioSend.js` decides; it cannot reach the transport.
+
+`[hygperio] office=… exam=… arches=n rows=n deep=n mismatches=n ms=…` — counts and
+milliseconds per step, never a PatNum or a reading.

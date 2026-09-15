@@ -119,29 +119,75 @@ HYG_PROBE_OFFICE=roland HYG_PROBE_PATNUM=12828 \
 > The container's manifest is lost on a redeploy; if that happens first, clean up with
 > `--cleanup <n> --force-cleanup`, which still refuses any exam that is not 12828's.
 
+> **Recorded 2026-09-15 by item 12**, from the run's own console output (roland staging, fixture
+> 12828, ProvNum 15). That output was saved as `backend/probe-output.txt` in the probe worktree and
+> was never committed; the findings below are copied from it, and the full per-position mapping
+> read-back is committed as `new-dashboard/tests/fixtures/perio-arch-probe-staging.json`, which
+> item 12's tests are pinned to. The run created exams **2249** (mapping), **2250** (flags),
+> **2251** (deep) and **2252** (skip); `malformed` was refused and created nothing.
+
 ### Q1 — Does the arch-string POST land at all?
-_(from `mapping`: "Q1 LANDED", and the row count)_
+**Yes.** `POST /perioexams` answered 201, and `mapping` read back **32 measurement rows** — one
+Probing row per tooth. No BleedSupPlaqCalc rows were created for strings with no flag letters.
 
 ### Q2 — The mapping (position → tooth, site, direction)
-_(paste the four `UNIQUE / AMBIGUOUS / NONE` lines and tables from `mapping`)_
+**UNIQUE on all four arches, 48/48 positions matched, 0 unexpected readings, 0 characters past the
+region.** Best fit every time: *patient-right-to-left, sweep*.
+
+| positions | UpperFacial | UpperLingual | LowerLingual | LowerFacial |
+|---|---|---|---|---|
+| 1–3 | #1 DB B MB | #1 DL L ML | #32 DL L ML | #32 DB B MB |
+| 4–6 | #2 DB B MB | #2 DL L ML | #31 DL L ML | #31 DB B MB |
+| 7–9 | #3 DB B MB | #3 DL L ML | #30 DL L ML | #30 DB B MB |
+| 10–12 | #4 DB B MB | #4 DL L ML | #29 DL L ML | #29 DB B MB |
+| 13–15 | #5 DB B MB | #5 DL L ML | #28 DL L ML | #28 DB B MB |
+| 16–18 | #6 DB B MB | #6 DL L ML | #27 DL L ML | #27 DB B MB |
+| 19–21 | #7 DB B MB | #7 DL L ML | #26 DL L ML | #26 DB B MB |
+| 22–24 | #8 DB B MB | #8 DL L ML | #25 DL L ML | #25 DB B MB |
+| 25–27 | #9 MB B DB | #9 ML L DL | #24 ML L DL | #24 MB B DB |
+| 28–30 | #10 MB B DB | #10 ML L DL | #23 ML L DL | #23 MB B DB |
+| 31–33 | #11 MB B DB | #11 ML L DL | #22 ML L DL | #22 MB B DB |
+| 34–36 | #12 MB B DB | #12 ML L DL | #21 ML L DL | #21 MB B DB |
+| 37–39 | #13 MB B DB | #13 ML L DL | #20 ML L DL | #20 MB B DB |
+| 40–42 | #14 MB B DB | #14 ML L DL | #19 ML L DL | #19 MB B DB |
+| 43–45 | #15 MB B DB | #15 ML L DL | #18 ML L DL | #18 MB B DB |
+| 46–48 | #16 MB B DB | #16 ML L DL | #17 ML L DL | #17 MB B DB |
+
+Upper strings run #1 → #16 and lower strings #32 → #17. **Site order reverses at the midline**: one
+physical sweep around the arch, distal-first on the patient's right, mesial-first on the left.
 
 ### Q3 — Depths above 9
-_(from `deep`: the raw Probing rows for #1–#4 — did `10 11 19 3` land as 1,0,1,1,1,9,3 on seven sites, as runs, or was it refused?)_
+**They cannot be written, and they fail silently.** `"10 11 19 3"` read back as Probing
+`#1 DB 1, B 0, MB 1` · `#2 DB 1, B 1, MB 9` · `#3 DB 3`: the space was ignored and every digit took
+its own site (1,0,1,1,1,9,3). No error, and every later site shifted.
 
 ### Q4 — The four flags, and several on one site
-_(from `flags`: the BleedSupPlaqCalc rows for #1–#4. "Flag follows its depth" predicts 1,2,4,8,3,12,15 on the first seven sites of the mapping; "flag precedes its depth" predicts 0,1,2,4,8,3,12)_
+**A flag follows its depth, and flags stack.** `"3b2s4p5c6bs7pc8bspc"` read back as Probing
+`#1 3,2,4` · `#2 5,6,7` · `#3 8` (DB, B, MB) and BleedSupPlaqCalc `#1 1,2,4` · `#2 8,3,12` ·
+`#3 15` — exactly the "follows" prediction, 1,2,4,8,3,12,15. Unflagged, uncharted sites on those
+rows read -1.
 
 ### Q5 — Skipped teeth
-_(from `skip`: where the six 3s landed, and whether any SkipTooth row appeared)_
+**No character holds a place, and none means skip.** `"3x3-3_3 3X3"` put its six 3s on `#1 DB B MB`
+and `#2 DB B MB`, and no SkipTooth row appeared (2 rows, both Probing). A shorter string simply
+stops early.
 
 ### Q6 — Atomicity, partial arches, malformed strings
-_(from `flags`: one partial arch sent alone. From `malformed`: was the exam refused, or created — and how many upper sites got 4s from 60 digits, and what "zzz!!" did)_
+**A partial arch sent alone lands** (`flags`: one 19-character UpperFacial, 6 rows). **A malformed
+body is refused before anything is created**: `malformed` answered 400 *"UpperLingual must start
+with a number from 0-9."* and the exam list afterwards held no new exam. The 60-digit UpperFacial in
+the same body was therefore never adjudicated on its own; item 12 treats an over-long string as
+forbidden by construction.
 
 ### Q7 — ProvNum and ExamDate land as sent
-_(from `mapping`: the "Q7 exam header" line)_
+**Yes.** `ExamDate=2000-01-01 (sent 2000-01-01), ProvNum=15 (sent 15)`, and the Note as sent.
 
 ### Cleanup
-_(the exam numbers created, and the "confirmed gone" lines from step 3)_
+The run printed `--cleanup 2249,2250,2251,2252`. The console output of that cleanup was not saved,
+but the manifest it maintains (`backend/scripts/.probe-hyg-perio-arch.json` in the probe worktree)
+is now `{"exams": []}` — and `--cleanup` removes an exam from the manifest only after reading the
+patient's exam list back and confirming it gone. **Worth one look in Open Dental's perio chart for
+12828 (exams dated 2000-01-01) to confirm by eye.**
 
 ## 5. What the findings decide (for item 12)
 
@@ -149,6 +195,11 @@ _(the exam numbers created, and the "confirmed gone" lines from step 3)_
   plus a read-back. Then Q3 and Q5 decide what, if anything, needs per-row `PUT`/`POST`
   (depths ≥10; skipped teeth), as a short named list.
 - **Anything else** → the per-row resumable design — which is PR #177.
+
+**Outcome:** Q1 yes, Q2 UNIQUE, Q4 expressible, Q6 atomic — the strings hold. Q3 (no depth ≥10) and
+Q5 (no place-holder) became item 12's expressibility rule: an arch goes as a string only when it can
+say every reading truthfully, and row by row otherwise. See
+`docs/reports/feature-hyg-perio-send-v2.md`.
 
 ## 6. Push / PR
 
