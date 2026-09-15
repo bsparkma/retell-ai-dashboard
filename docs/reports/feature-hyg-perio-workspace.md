@@ -221,3 +221,23 @@ https://github.com/bsparkma/retell-ai-dashboard/pull/176
 
 Slice 11 (`feature/hyg-perio-send`) is stacked on this branch. When #176 merges, retarget #11's PR
 to `develop` with `gh api -X PATCH` and close/reopen it so CI runs.
+
+## 10. CI fix — the grid took focus a frame late (commit 7e5068b)
+
+PR CI failed on `tests/hyg-perio-page.test.tsx:200`: `document.activeElement` was `<body>`, not the
+grid. It was not the Node 22 flake, and the test was right.
+
+**Cause.** `HygPerio` focused the grid in a passive `useEffect`, which React runs *after* the
+browser paints. A probe that read `document.activeElement` at the moment the grid entered the DOM
+got `<body>` on every run. Locally `findByTestId` happened to resolve after the effect had run; on
+the CI runner it resolved inside the gap. On an iPad with a keyboard the gap is real too: for at
+least a frame (longer while a slow device draws 192 site buttons) the grid is visible but keys go to
+`<body>` and are lost.
+
+**Fix.** Focus in `useLayoutEffect`, which runs in the same commit that adds the grid, before paint and
+before any key can arrive. The test still asserts real focus, and now checks it **when the grid
+enters the DOM** (a `MutationObserver`), not after `findBy`. It fails every run against the old
+effect (`[false]`) and passes with the fix. Gates after the fix: `pnpm run check` clean; `pnpm run
+test` 107 files passed, 19 skipped.
+
+PR #177 has the same effect; the fix is cherry-picked there.
