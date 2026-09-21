@@ -40,10 +40,29 @@
  * leaves "we tried and do not know", not "ready to send". `Written` is reached
  * only after `services/hyg/odWriter.js` has read the thing back out of Open
  * Dental (or TC has returned a case id). A failed send never looks sent.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE PERIO CHART RIDES ALONG — AND IS STILL SENT BY ITS OWN MACHINERY (item 15)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A staged perio chart is one more unit here, with its own state, reason and
+ * reference like the others. It is NOT one more writer: this file never touches
+ * a perio endpoint. It calls `services/hyg/perioSend.js` — the confirm, and then
+ * the first bounded step — which is the one path a chart takes to Open Dental,
+ * with the arch-string plan, the read-back of every site and the undo. The rest
+ * of the steps are the page's to ask for, through the chart's own step route,
+ * exactly as they are when the send starts on the chart page.
+ *
+ * The perio CONFIRM runs before anything is written by any unit. It writes
+ * nothing to Open Dental, and every refusal it can give — the fingerprint, the
+ * exam date, the provider, a send already in flight — refuses the WHOLE batch,
+ * the same as a stale preview does for the other kinds. A correction to a chart
+ * already in Open Dental is refused here: it is sent from the chart page, which
+ * shows what it changes.
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
 const odWriter = require('./odWriter');
+const perioSend = require('./perioSend');
 const slipPdf = require('./slipPdf');
 const tcHandoff = require('./tcHandoffClient');
 const visitStore = require('./visitStore');
@@ -53,12 +72,20 @@ const visitStore = require('./visitStore');
  *
  * The NOTE first: it is the record that the visit happened, it is the cheapest
  * to write, and it is the one whose absence is hardest to notice later. The
- * SLIP second. The TC HANDOFF last, because it is the only one that creates
+ * SLIP second. The TC HANDOFF third, because it is the only one that creates
  * work for another person — if the first two are failing today, the treatment
  * coordinator is better off not receiving a case about a visit whose chart note
  * is missing.
+ *
+ * The PERIO CHART's writes go last (item 15). It is the longest by far — an exam
+ * and then, where the arch strings cannot say it, a row at a time, every site
+ * read back — and appending it leaves the three units above exactly where they
+ * were. Its CONFIRM does not wait for last: see the header.
  */
-const SEND_ORDER = Object.freeze(['note', 'router', 'tc-handoff']);
+const SEND_ORDER = Object.freeze(['note', 'router', 'tc-handoff', 'perio']);
+
+/** The kinds this file writes itself. Perio is written by perioSend.js. */
+const DIRECT_KINDS = Object.freeze(['note', 'router', 'tc-handoff']);
 
 /**
  * What a payload must look like before it is allowed near a chart.
@@ -120,22 +147,9 @@ function checkConfirmations(stagedRows, confirmations) {
   /** @type {object[]} */
   const rows = [];
 
-  // A PERIO CHART DOES NOT RIDE ALONG WITH THE SLIP AND THE NOTE. It has its own
-  // confirmation (exam date, provider, and which arches go as strings), its own
-  // read-back of every site, and an undo — services/hyg/perioSend.js, driven
-  // from the chart's page. Refused before any other check, and for the WHOLE
-  // batch rather than skipped: a confirmation that named a chart and quietly
-  // sent everything else would report a send nobody asked for.
-  if (confirmations.some((c) => c.kind === 'perio')) {
-    return {
-      ok: false,
-      code: 'PERIO_SENDS_FROM_ITS_CHART',
-      error:
-        'A perio chart is sent from its own page, where every site is read back from Open Dental. ' +
-        'Nothing was sent.',
-    };
-  }
-
+  // A perio confirmation is checked here like every other kind — staged, and the
+  // fingerprint of what she read — and then again, in full, by perioSend's own
+  // confirm before anything is written (see sendVisit below).
   for (const confirmation of confirmations) {
     const row = byKind.get(confirmation.kind);
     if (!row) {
@@ -209,7 +223,10 @@ async function sendOne(row, ctx) {
 
   if (row.kind === 'note') return sendNote(payload, ctx);
   if (row.kind === 'router') return sendSlip(row, payload, ctx);
-  return sendHandoff(ctx);
+  if (row.kind === 'tc-handoff') return sendHandoff(ctx);
+  // Unreachable: perio never comes through here. Said anyway, rather than
+  // letting an unknown kind fall into somebody else's writer.
+  return { ok: false, code: 'PAYLOAD_INVALID', error: `No writer here for '${row.kind}'` };
 }
 
 /** The visit note → POST /procedurelogs/GroupNote, unsigned. */
@@ -332,17 +349,56 @@ async function sendVisit({
 
   const checked = checkConfirmations(stagedRows, confirmations);
   if (!checked.ok) {
-    return {
-      ok: false,
-      // 422 for the chart: the request was well-formed and names something this
-      // version cannot do. Every other refusal here is a state conflict.
-      status: checked.code === 'PERIO_SENDS_FROM_ITS_CHART' ? 422 : 409,
-      code: checked.code,
-      error: checked.error,
-    };
+    return { ok: false, status: 409, code: checked.code, error: checked.error };
   }
   if (checked.rows.length === 0) {
     return { ok: false, status: 422, code: 'NOTHING_TO_SEND', error: 'Nothing is staged to send' };
+  }
+
+  /*
+   * THE PERIO CONFIRM, BEFORE ANY UNIT WRITES ANYTHING.
+   *
+   * perioSend.startPerioSend re-derives the fingerprint, the exam date and the
+   * provider, refuses a chart already mid-send or with an incomplete exam still
+   * in Open Dental, freezes the plan onto a recorded send, and claims the row.
+   * It writes NOTHING to Open Dental, so a refusal here refuses the whole batch
+   * with nothing written by any unit — the same promise a stale note preview
+   * keeps. Once it has said yes, the chart is `Sending` and no second send, from
+   * this page or the chart's, can start it again.
+   */
+  const perioConfirmation = confirmations.find((c) => c.kind === 'perio') || null;
+  let perioStarted = false;
+  if (perioConfirmation) {
+    const { live } = await perioSend.readSend(pool, { office, visit });
+    if (live) {
+      // A CORRECTION stays on the chart page, which shows every site it changes
+      // and what it replaces. The visit's dialog shows neither.
+      return {
+        ok: false,
+        status: 422,
+        code: 'PERIO_SENDS_FROM_ITS_CHART',
+        error:
+          `This perio chart is a correction to exam ${live.exam_num}, and a correction is sent from ` +
+          'the chart page, where it shows what changes. Nothing was sent.',
+      };
+    }
+    const started = await perioSend.startPerioSend({
+      pool,
+      office,
+      visit,
+      appointment,
+      request: {
+        previewFingerprint: perioConfirmation.previewFingerprint,
+        examDate: perioConfirmation.examDate,
+        provNum: perioConfirmation.provNum,
+      },
+      actor,
+      odGet,
+    });
+    if (!started.ok) {
+      return { ok: false, status: started.status, code: started.code, error: started.error };
+    }
+    perioStarted = true;
   }
 
   const ctx = {
@@ -359,7 +415,7 @@ async function sendVisit({
 
   /** @type {object[]} */
   const outcomes = [];
-  for (const row of checked.rows) {
+  for (const row of checked.rows.filter((r) => DIRECT_KINDS.includes(r.kind))) {
     // PERSISTED BEFORE THE CALL. See the header.
     const claimed = await visitStore.markSending(pool, {
       office,
@@ -423,7 +479,78 @@ async function sendVisit({
     }
   }
 
-  return { ok: true, outcomes };
+  if (!perioStarted) return { ok: true, outcomes, perio: null };
+  const perio = await sendPerioFirstStep({ pool, office, visit, od, odGet });
+  outcomes.push(perio.outcome);
+  return { ok: true, outcomes, perio: { attempted: perio.attempted, amend: perio.amend } };
+}
+
+/**
+ * The perio chart's FIRST STEP, run by perioSend.js — and its outcome, read
+ * from the row that step left behind rather than inferred from what it returned.
+ *
+ * A full chart the arch strings can say goes in one step: the exam, then every
+ * site read back. Anything longer carries on in the page's own requests to the
+ * chart's step route, which is how the chart page runs a send too.
+ *
+ * Never throws. A step that throws has not written anything this module can
+ * see — every write is recorded before it is attempted — so the chart stays
+ * `Sending` and the next step reads Open Dental before it writes anything.
+ *
+ * @returns {Promise<{ outcome: object, attempted: object[], amend: object|null }>}
+ */
+async function sendPerioFirstStep({ pool, office, visit, od, odGet }) {
+  let paused = null;
+  let attempted = [];
+  let amend = null;
+  try {
+    const step = await perioSend.stepPerioSend({ pool, office, visit, od, odGet });
+    if (step.ok) {
+      paused = step.paused;
+      attempted = step.attempted;
+      amend = step.amend || null;
+    } else {
+      paused = step.error;
+    }
+  } catch (err) {
+    paused =
+      `The perio send stopped before Open Dental answered (${(err && err.message) || String(err)}). ` +
+      'Nothing is lost: Retry reads Open Dental before it writes anything.';
+  }
+
+  const row = await visitStore.getStagedWrite(pool, { office, visitId: visit.visitId, kind: 'perio' });
+  const state = row ? row.state : 'Sending';
+  if (state === 'Written') {
+    return {
+      outcome: { kind: 'perio', state, writtenRef: row.written_ref, errorMessage: null, code: null },
+      attempted,
+      amend,
+    };
+  }
+  if (state === 'Failed') {
+    return {
+      outcome: {
+        kind: 'perio',
+        state,
+        writtenRef: null,
+        errorMessage: row.error_message,
+        code: 'PERIO_SEND_STOPPED',
+      },
+      attempted,
+      amend,
+    };
+  }
+  return {
+    outcome: {
+      kind: 'perio',
+      state,
+      writtenRef: null,
+      errorMessage: paused,
+      code: paused ? 'PERIO_PAUSED' : null,
+    },
+    attempted,
+    amend,
+  };
 }
 
 module.exports = { sendVisit, checkConfirmations, SEND_ORDER, PAYLOAD_SCHEMAS };

@@ -408,6 +408,25 @@ describe("staging", () => {
     expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/every site is read back/);
   });
 
+  it("ITEM 15: once staged, says the chart rides the visit's Send and offers the way back there", async () => {
+    renderPerio();
+    const grid = await screen.findByTestId("hyg-perio-grid");
+    for (let i = 0; i < 5; i += 1) fireEvent.keyDown(grid, digit(3));
+    // Not before it is staged: there is nothing yet for the visit to send.
+    expect(screen.queryByTestId("hyg-perio-to-visit")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("hyg-perio-stage"));
+    await screen.findByTestId("hyg-perio-state-Staged");
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(
+      /will go with the visit's Send, alongside the note, the slip and the handoff/,
+    );
+    const back = screen.getByTestId("hyg-perio-to-visit");
+    expect(back.getAttribute("href")).toBe("/hyg/visit/900001?office=roland&date=2026-09-08");
+    expect(back.className).toMatch(/min-h-11/);
+    // The chart's own Send stays: it is the same send, surfaced in two places.
+    expect(screen.getByTestId("hyg-perio-send-open")).toBeTruthy();
+  });
+
   it("offers nothing to stage on an empty chart", async () => {
     renderPerio();
     await screen.findByTestId("hyg-perio-grid");
@@ -572,7 +591,7 @@ describe("sending (item 12)", () => {
     server.send = sendResponse("Sending", view(chart, { state: "filling", rowsWritten: 12, canDelete: true }));
     renderPerio();
     expect((await screen.findByTestId("hyg-perio-send-status")).textContent).toBe(
-      "Paused. Nothing is being written right now.",
+      "Paused here. Nothing is being written from this page right now.",
     );
     expect(screen.getByTestId("hyg-perio-continue")).toBeTruthy();
     expect(screen.getByTestId("hyg-perio-delete-open").textContent).toMatch(/Delete exam 7001 instead/);
@@ -639,6 +658,8 @@ describe("correcting a sent chart (item 13)", () => {
 
     fireEvent.click(screen.getByTestId("hyg-perio-stage"));
     await screen.findByTestId("hyg-perio-state-Staged");
+    // Item 15: a CORRECTION does not ride the visit Send, so it is not sent back there.
+    expect(screen.queryByTestId("hyg-perio-to-visit")).toBeNull();
     fireEvent.click(screen.getByTestId("hyg-perio-send-open"));
 
     const dialog = await screen.findByTestId("hyg-perio-confirm");

@@ -33,6 +33,18 @@ import { cn } from "@/lib/utils";
 
 const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors";
 
+/**
+ * The provider an exam is filed under: the hygienist, else the provider. The
+ * SAME rule the server applies (services/hyg/perioSend.js provNumFor); both
+ * confirms — the chart page's and the visit Send's — carry this number, and the
+ * server refuses if its own differs.
+ */
+export function perioProvNumOf(appointment: { provHyg: number | null; provNum: number | null }): number | null {
+  if (appointment.provHyg !== null && appointment.provHyg > 0) return appointment.provHyg;
+  if (appointment.provNum !== null && appointment.provNum > 0) return appointment.provNum;
+  return null;
+}
+
 /** "about 20 seconds" — an estimate at one request a second, and worded as one. */
 export function formatRemaining(seconds: number): string {
   if (seconds <= 0) return "a moment";

@@ -79,9 +79,9 @@
  * `ctx.draft`, loaded by visitStore, never a request body. A visit with no
  * readings refuses with NOTHING_TO_STAGE rather than staging an empty chart.
  *
- * Staging is as far as it goes. A stray Probing row is PERMANENT in Open Dental
- * (only Mobility and SkipTooth can be deleted), so the send is its own slice and
- * `sendVisit.js` refuses a perio confirmation until then.
+ * Staging is as far as this file goes. The send is `services/hyg/perioSend.js`,
+ * started from the chart page or riding the visit Send (item 15), and it plans
+ * every write from the payload stored here.
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
@@ -321,8 +321,7 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
       // A partial chart SAYS it is partial, in the same words everywhere.
       summary: `${contract.perioProgressLabel(counts)}, ${dateLabel}`,
       preview: contract.perioPreviewLines(chart),
-      // Nothing sends this in slice 10: sendVisit refuses a perio confirmation
-      // outright. It is stored whole so the send slice needs nothing the
+      // Stored whole, so the send (services/hyg/perioSend.js) needs nothing the
       // preview did not show.
       payload: { kind: 'perio', aptNum: visit.aptNum, patNum: visit.patNum, chart },
     };

@@ -383,8 +383,9 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     dump("hyg-perio-04-prior-unavailable@1180x900");
   });
 
-  it("05 — the visit's tray: the chart staged, and left out of Send", async () => {
+  it("05 — the visit's tray: the chart staged, riding Send (item 15)", async () => {
     const chart = exam(84, 11, []);
+    fixtures.chart = chart;
     fixtures.visitStaged = [
       {
         ...perioWrite("Staged", chart),
@@ -408,8 +409,24 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     ];
     void emptySlip;
     renderAt("/hyg/visit/900001?office=roland&date=2026-09-08", "/hyg/visit/:aptNum", HygVisit);
-    await screen.findByTestId("hyg-perio-not-sent");
+    await screen.findByTestId("hyg-perio-rides-send");
     dump("hyg-perio-05-tray@1180x1400");
+
+    // Item 15: the ONE dialog, with the chart beside the slip.
+    fireEvent.click(screen.getByTestId("hyg-send-all"));
+    await screen.findByTestId("hyg-confirm-perio-provider");
+    dump("hyg-perio-05b-visit-confirm@1180x1100");
+  });
+
+  it("05c — the chart page, staged: it rides the visit Send, and the way back (item 15)", async () => {
+    const chart = sendChart();
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Staged", chart);
+    fixtures.prior = found(exam(192, 5, [16]));
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    await screen.findByTestId("hyg-perio-to-visit");
+    dump("hyg-perio-05c-staged-to-visit@1180x900");
   });
 
   it("06 — the confirm: how each arch goes in, with the 10 mm pocket named", async () => {

@@ -42,6 +42,16 @@
  *
  * A 200 from that call does not mean everything landed. Partial success is
  * normal, and the tray renders each write's own state.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A STAGED PERIO CHART RIDES THE SAME SEND (item 15)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * One dialog, one Send. The server runs the chart's confirm before any unit
+ * writes and its first step in the same request; if the chart needs more steps
+ * (readings of 10+, gaps), this page asks for them through the chart's own step
+ * route, exactly as the chart page does — so every write still happens inside a
+ * request the confirming person made. Leaving stops asking; Retry carries on the
+ * same send, and it reads Open Dental before it writes anything.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -57,6 +67,8 @@ import {
 } from "@shared/hyg/contract";
 import {
   addTreatmentItem,
+  fetchPerio,
+  fetchPerioSend,
   fetchVisit,
   HygApiError,
   openVisit,
@@ -65,6 +77,7 @@ import {
   saveSlip,
   sendVisit,
   stageWrite,
+  stepPerioSend,
   unstageWrite,
   updateTreatmentItem,
   type HygVisitMutation,
@@ -72,9 +85,12 @@ import {
 } from "@/features/hyg/api";
 import { formatClock, formatLength, todayIso, visibleFlags } from "@/features/hyg/day";
 import { suggestVisitType } from "@shared/hyg/noteTemplates";
+import type { PerioCounts } from "@shared/hyg/perio";
+import type { HygPerioSendResponse } from "@shared/hyg/perioSend";
+import { perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
 import { RouterSlip } from "@/features/hyg/visit/RouterSlip";
 import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
-import { StagedWritesTray } from "@/features/hyg/visit/StagedWritesTray";
+import { StagedWritesTray, type TrayPerio } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
 import { cn } from "@/lib/utils";
 
@@ -218,6 +234,24 @@ export default function HygVisit() {
    */
   const trayRef = useRef<HTMLElement | null>(null);
 
+  /**
+   * ITEM 15: the perio chart's own record — where its send stands, whether it is
+   * a correction, and how many sites it charts. Our database only, read when the
+   * visit has a chart on it.
+   */
+  const [perioSend, setPerioSend] = useState<HygPerioSendResponse | null>(null);
+  const [perioCounts, setPerioCounts] = useState<PerioCounts | null>(null);
+  const [perioRunning, setPerioRunning] = useState(false);
+  const [perioPaused, setPerioPaused] = useState<string | null>(null);
+  /** Stops the step loop when the page goes away — leaving pauses, it does not lose. */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (!isOfficeId(office)) return;
@@ -264,6 +298,85 @@ export default function HygVisit() {
         : prev,
     );
   }, []);
+
+  /**
+   * The perio row as a step answered it. The step's `stagedWrite` IS the row, read
+   * back — so the tray's pill moves with the chart's own record, never ahead of it.
+   */
+  const applyPerioStep = useCallback((res: HygPerioSendResponse) => {
+    setPerioSend(res);
+    setPerioPaused(res.paused);
+    const write = res.stagedWrite;
+    if (!write) return;
+    setPage((prev) =>
+      prev && prev.visit
+        ? {
+            ...prev,
+            visit: {
+              ...prev.visit,
+              stagedWrites: prev.visit.stagedWrites.map((w) => (w.kind === "perio" ? write : w)),
+            },
+          }
+        : prev,
+    );
+  }, []);
+
+  // Where the chart's send stands, and its counts, whenever its row moves. A
+  // failure here costs the perio line, not the visit: without it the chart
+  // simply does not ride Send, and the tray says it is still checking.
+  const perioWrite = page?.visit?.stagedWrites.find((w) => w.kind === "perio") ?? null;
+  const perioKey = perioWrite ? `${perioWrite.state}|${perioWrite.updatedAt}` : null;
+  useEffect(() => {
+    if (!isOfficeId(office) || perioKey === null) {
+      setPerioSend(null);
+      setPerioCounts(null);
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const [progress, chart] = await Promise.all([
+          fetchPerioSend(office, aptNum, controller.signal),
+          fetchPerio(office, aptNum, controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        setPerioSend(progress);
+        setPerioCounts(chart.counts);
+      } catch {
+        /* the tray says it is still checking; Send leaves the chart out */
+      }
+    })();
+    return () => controller.abort();
+  }, [office, aptNum, perioKey]);
+
+  /**
+   * Ask for the chart's next steps until it finishes, stops or pauses — the chart
+   * page's loop, run from here. Every step is its own request by this person.
+   */
+  const runPerioSteps = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setPerioRunning(true);
+    setPerioPaused(null);
+    try {
+      for (;;) {
+        const res = await stepPerioSend(office, aptNum);
+        if (!mounted.current) return;
+        applyPerioStep(res);
+        const inFlight = res.send !== null && (res.send.state === "posting" || res.send.state === "filling");
+        if (!inFlight || res.paused !== null) break;
+      }
+    } catch (err) {
+      if (mounted.current) {
+        setPerioPaused(
+          err instanceof HygApiError
+            ? err.message
+            : "The perio send stopped before Open Dental answered. Nothing is lost; Retry reads before it writes.",
+        );
+      }
+    } finally {
+      if (mounted.current) setPerioRunning(false);
+    }
+  }, [office, aptNum, applyPerioStep]);
 
   /**
    * Run a mutation, making sure the visit exists first.
@@ -353,11 +466,21 @@ export default function HygVisit() {
       if (!isOfficeId(office) || !page) return;
       setSending(true);
       setRefusal(null);
+      let perioContinues = false;
       try {
         const res = await sendVisit(office, aptNum, date, confirm);
         adopt(res);
+        // THE CHART'S FIRST STEP RAN IN THAT REQUEST. If it is still Sending, the
+        // rest are ours to ask for — unless it paused, which the row now says.
+        const perio = res.outcomes.find((o) => o.kind === "perio");
+        if (perio && perio.state === "Sending") {
+          if (perio.code === "PERIO_PAUSED") setPerioPaused(perio.errorMessage);
+          else perioContinues = true;
+        }
       } catch (err) {
-        if (err instanceof HygApiError && err.status === 409) {
+        // 409 and 422 are both refusals of the WHOLE send — a stale preview, a
+        // changed exam date or provider, a correction — and nothing was written.
+        if (err instanceof HygApiError && (err.status === 409 || err.status === 422)) {
           setRefusal({ kind: null, message: err.message });
           // Re-read: the server refused because its rows differ from what this
           // page is showing, so what this page is showing is the stale half.
@@ -368,9 +491,41 @@ export default function HygVisit() {
       } finally {
         setSending(false);
       }
+      if (perioContinues) await runPerioSteps();
     },
-    [office, aptNum, date, page, adopt, load],
+    [office, aptNum, date, page, adopt, load, runPerioSteps],
   );
+
+  /**
+   * Retry on the perio row. Two different acts behind one word, chosen by the
+   * row's state, and neither can put a second exam in Open Dental:
+   *   Sending — the SAME send carries on: its next step reads Open Dental first,
+   *             so an exam the interrupted send created is adopted, not re-posted.
+   *   Failed  — the chart goes back on the list, which the server allows only when
+   *             that send left nothing in Open Dental. A refusal says so here.
+   */
+  const onRetryPerio = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    const write = page?.visit?.stagedWrites.find((w) => w.kind === "perio");
+    if (!write) return;
+    setRefusal(null);
+    if (write.state === "Sending") {
+      await runPerioSteps();
+      return;
+    }
+    setBusy(true);
+    try {
+      adopt(await retryStagedWrite(office, aptNum, "perio"));
+    } catch (err) {
+      if (err instanceof HygApiError && (err.status === 409 || err.status === 422)) {
+        setRefusal({ kind: "perio", message: err.message });
+      } else if (err instanceof HygApiError) {
+        setError(err);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [office, aptNum, page, adopt, runPerioSteps]);
 
   const backHref = `/hyg/day${office ? `?office=${office}&date=${date}` : ""}`;
 
@@ -432,6 +587,38 @@ export default function HygVisit() {
 
   const items = page.visit?.items ?? [];
   const staged = page.visit?.stagedWrites ?? [];
+
+  // ITEM 15: can the staged chart ride Send? Only when its own record has been
+  // read (a correction and an in-flight send are both on it), and only with a
+  // provider to file the exam under.
+  const perioProvNum = perioProvNumOf(page.appointment);
+  const perioExamDate = page.visit?.visitDate ?? date;
+  const perioLive = perioSend?.live ?? null;
+  const perioInFlight =
+    perioSend?.send != null && (perioSend.send.state === "posting" || perioSend.send.state === "filling");
+  const perioBlocked =
+    perioSend === null
+      ? null
+      : perioLive !== null
+        ? null
+        : perioInFlight
+          ? "This chart is already being sent. Open the chart to follow it."
+          : perioProvNum === null
+            ? "This appointment has no provider in Open Dental, so the exam cannot be filed under whoever charted it. Send leaves the chart here."
+            : null;
+  const trayPerio: TrayPerio = {
+    sendable:
+      perioWrite?.state === "Staged" && perioSend !== null && perioLive === null && perioBlocked === null,
+    blockedReason: perioBlocked,
+    correctionOf: perioLive?.examNum ?? null,
+    sitesCharted: perioCounts?.sitesCharted ?? null,
+    sitesExpected: perioCounts?.sitesExpected ?? null,
+    examDate: perioExamDate,
+    provNum: perioProvNum,
+    providerLabel: `${page.appointment.providerName ?? "Provider"} (ProvNum ${perioProvNum ?? "none"})`,
+    running: perioRunning,
+    paused: perioPaused,
+  };
   // Recomputed for the form's own wording ("chosen from the appointment type"),
   // from the appointment this page already fetched. It never overrides `draft`.
   const suggestion = suggestVisitType({
@@ -507,9 +694,15 @@ export default function HygVisit() {
             onStage={(kind) => void onStage(kind)}
             onUnstage={(kind) => void run(() => unstageWrite(office, aptNum, kind))}
             onSend={(confirm) => void onSend(confirm)}
-            onRetry={(kind) => void run(() => retryStagedWrite(office, aptNum, kind))}
+            onRetry={(kind) =>
+              kind === "perio"
+                ? void onRetryPerio()
+                : void run(() => retryStagedWrite(office, aptNum, kind))
+            }
             refusal={refusal}
             perioHref={`/hyg/visit/${aptNum}/perio?office=${office}&date=${date}`}
+            perio={trayPerio}
+            onResumePerio={() => void onRetryPerio()}
           />
         </aside>
       </div>

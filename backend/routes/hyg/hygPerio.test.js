@@ -13,7 +13,8 @@
  *   - a partial chart stages, and SAYS it is partial
  *   - changing a staged reading un-stages it; a save that changes nothing does not
  *   - un-staging a chart keeps its readings
- *   - the send refuses a perio confirmation, whole, and writes nothing anywhere
+ *   - a stale perio confirmation refuses the visit Send, whole, and writes nothing
+ *     anywhere (item 15: a CURRENT one rides it — hygVisitPerioSend.test.js)
  *   - the prior exam is audited per patient and is found / none / unavailable
  *
  * NO PHI: 12827 / 12828 are the designated roland fixtures.
@@ -264,7 +265,7 @@ test('a chart that has left Draft/Staged cannot be changed or taken off the list
   }
 });
 
-test('the send refuses a perio confirmation for the WHOLE batch, and writes nothing anywhere', async () => {
+test('a stale perio confirmation refuses the visit Send for the WHOLE batch, and writes nothing anywhere', async () => {
   const app = await bootHygApp({ od: od() });
   try {
     await api(app.baseUrl, 'POST', BASE + '/open' + Q);
@@ -279,12 +280,19 @@ test('the send refuses a perio confirmation for the WHOLE batch, and writes noth
       body: {
         confirm: [
           { kind: 'router', previewFingerprint: router.previewFingerprint },
-          { kind: 'perio', previewFingerprint: perio.previewFingerprint },
+          // Item 15: a staged chart rides the visit Send — but only the chart
+          // she read. This one changed since.
+          {
+            kind: 'perio',
+            previewFingerprint: perio.previewFingerprint + '-stale',
+            examDate: DATE,
+            provNum: 7,
+          },
         ],
       },
     });
-    assert.equal(res.status, 422);
-    assert.equal(res.body.code, 'PERIO_SENDS_FROM_ITS_CHART');
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'PREVIEW_CHANGED');
 
     // WHOLE batch: the slip that rode along was not quietly sent either.
     assert.deepEqual(app.od.writes, [], 'not one Open Dental write verb');

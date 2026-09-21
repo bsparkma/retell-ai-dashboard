@@ -797,8 +797,9 @@ router.delete(
 // second to show the first would put a spinner in front of the part of the page
 // she is working in.
 //
-// Staging is the existing POST /:aptNum/staged-writes with `kind: 'perio'`, and
-// the send refuses a perio confirmation — see services/hyg/sendVisit.js.
+// Staging is the existing POST /:aptNum/staged-writes with `kind: 'perio'`. A
+// staged chart is sent from its own page (below) or rides the visit's Send
+// (item 15) — the same perioSend machinery either way; see services/hyg/sendVisit.js.
 
 /** The response every stored-chart route answers with. */
 function perioPayload(office, aptNum, visit, perio) {
@@ -1494,11 +1495,28 @@ router.post(
       });
     }
 
+    // A PERIO CHART THAT RODE ALONG (item 15) is audited exactly as the chart
+    // page audits its own send: the confirmation as a recorded act, then ONE row
+    // per Open Dental write the step attempted. Its outcome is not also counted
+    // below — its writes are its rows.
+    if (outcome.perio) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_perio_send',
+        resourceId: aptNum,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+      await auditPerioWrites(req, office, aptNum, outcome.perio.attempted);
+      if (outcome.perio.amend) await auditPerioAmendment(req, office, aptNum, outcome.perio.amend);
+    }
+
     // ONE AUDIT ROW PER WRITE, with the approving user on it, and the result
     // recorded honestly — a failed write is an ERROR row, not a missing one.
     // The action is UPDATE because that is what reaching a chart is; the
     // vocabulary is CHECK-constrained to four verbs (audit_log_action_check).
-    for (const result of outcome.outcomes) {
+    for (const result of outcome.outcomes.filter((o) => o.kind !== 'perio')) {
       await audit(req, {
         action: 'UPDATE',
         resourceType: 'hyg_visit_send',
