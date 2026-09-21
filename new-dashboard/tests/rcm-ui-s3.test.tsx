@@ -856,7 +856,13 @@ describe("Where the patient stands", () => {
     expect(cell.querySelector("span")?.className).not.toMatch(/emerald/);
   });
 
-  it("says NOT JUDGED rather than guessing at a claim the gate skipped", async () => {
+  it("reads the EOB rather than guessing at a claim the gate skipped", async () => {
+    /*
+     * S8: was "says NOT JUDGED". The cell still refuses to borrow a verdict for
+     * a claim the gate skipped; it now prints the one figure the EOB itself
+     * states — $0.00 here, the fixture's patientBalanceCents — instead of the
+     * "Not judged yet" instruction.
+     */
     state.approval = {
       ...previewWith({}),
       claims: [] as unknown[],
@@ -864,7 +870,7 @@ describe("Where the patient stands", () => {
 
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     const cell = await screen.findByTestId("claim-stands-c-1");
-    await waitFor(() => expect(cell.textContent).toContain("Not judged yet"));
+    await waitFor(() => expect(cell.textContent).toBe("EOB says $0.00"));
   });
 
   /**

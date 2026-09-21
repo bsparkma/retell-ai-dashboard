@@ -116,6 +116,22 @@ export default function RcmStepper({
    */
   hideCta = false,
   testId = "rcm-stepper",
+  /**
+   * S8 · HOW MUCH ROOM THE RAIL GETS.
+   *
+   * `rail` is the compact strip every screen has drawn since Slice 6a: five
+   * marks in a line and the evidence underneath as a list. `board` is the check
+   * page's artboard — five COLUMNS, each carrying its own mark, name and one
+   * line of status — because the check page is where the whole journey of one
+   * payment is the subject, rather than a reminder at the top of something else.
+   *
+   * SAME DATA, SAME WORDS, SAME TESTIDS. `step-<name>` and `step-note-<name>`
+   * are on the same facts in both variants, so nothing that reads the rail has
+   * to know which one it is looking at. The one thing `board` drops is the
+   * repeat: `rail` prints each step's name twice (once on the strip, once
+   * leading its note line), and a column needs it once.
+   */
+  variant = "rail",
 }: {
   flow: RcmFlow;
   /**
@@ -127,7 +143,32 @@ export default function RcmStepper({
   here?: StepView["step"];
   hideCta?: boolean;
   testId?: string;
+  variant?: "rail" | "board";
 }) {
+  if (variant === "board") {
+    return (
+      <section
+        className="mt-5 rounded-xl border border-border bg-card px-5 py-4"
+        data-testid={testId}
+        data-variant="board"
+        aria-label="Where this remittance is"
+      >
+        <ol className="grid grid-cols-1 gap-x-3 gap-y-4 sm:grid-cols-5">
+          {flow.steps.map((step, i) => (
+            <BoardStep
+              key={step.step}
+              step={step}
+              last={i === flow.steps.length - 1}
+              nextDone={flow.steps[i + 1]?.state === "done"}
+              isHere={here === step.step}
+            />
+          ))}
+        </ol>
+        {flow.cta && !hideCta && <Cta cta={flow.cta} onAction={onAction} />}
+      </section>
+    );
+  }
+
   return (
     <section
       className="mt-4 rounded-xl border border-border bg-card p-4"
@@ -191,6 +232,146 @@ function Step({ step, last, isHere }: { step: StepView; last: boolean; isHere: b
         </span>
       )}
       {!last && <span className="text-muted-foreground/40" aria-hidden>›</span>}
+    </li>
+  );
+}
+
+/**
+ * THE BOARD'S MARKS — S8, the check page's artboard.
+ *
+ * Three shapes a reader learns in one look, and they are shapes before they
+ * are colours, so a reader who cannot tell emerald from grey loses nothing:
+ *
+ *   FILLED, WITH A TICK   done. It happened; the line underneath says when.
+ *   A RING                you are here — the one step with work in it now.
+ *   DASHED                not yet. Deposit, which is not built, is dashed too
+ *                         and dimmer, because "not yet" is also true of it.
+ *
+ * Blocked keeps the rail's rose and its warning glyph, and `unknown` keeps its
+ * question mark: those two are not stages of progress, they are statements
+ * about what this screen can see, and flattening them into "not yet" would be
+ * the rail asserting something it was not told.
+ */
+const BOARD_MARK: Record<StepState, string> = {
+  done: "border-emerald-500 bg-emerald-500 text-white",
+  current: "border-2 border-foreground bg-background text-foreground",
+  blocked: "border-rose-500 bg-rose-500 text-white",
+  unknown: "border-border bg-muted text-muted-foreground",
+  todo: "border-dashed border-muted-foreground/50 bg-background text-muted-foreground",
+  unavailable: "border-dashed border-muted-foreground/30 bg-background text-muted-foreground/50",
+};
+
+function BoardMark({ state }: { state: StepState }) {
+  switch (state) {
+    case "done":
+      return <Check size={13} strokeWidth={3} />;
+    case "current":
+      return <span className="block h-2 w-2 rounded-full bg-current" />;
+    case "blocked":
+      return <AlertTriangle size={12} strokeWidth={2.5} />;
+    case "unknown":
+      return <CircleHelp size={12} strokeWidth={2.5} />;
+    case "unavailable":
+      return <Clock size={11} strokeWidth={2.5} />;
+    default:
+      return null;
+  }
+}
+
+/**
+ * ONE COLUMN OF THE BOARD: the mark and the line to the next one, the step's
+ * name, and the fact under it.
+ *
+ * The status line WRAPS. It is a sentence — "0 of 2 claims checked over · not
+ * finished until you approve." — in a column a fifth of the page wide, and the
+ * rule on every sentence in this module is that the row grows rather than the
+ * sentence stopping mid-word. The rail's `whitespace-nowrap` on the NAME is
+ * kept off here too; a name that wraps inside its own column is still read.
+ */
+function BoardStep({
+  step,
+  last,
+  nextDone,
+  isHere,
+}: {
+  step: StepView;
+  last: boolean;
+  /** The step after this one is done — so the line between them is too. */
+  nextDone: boolean;
+  isHere: boolean;
+}) {
+  const linkable =
+    step.href !== null && (step.state === "done" || step.state === "blocked") && !isHere;
+  const name = (
+    <span
+      className={`text-sm ${
+        step.state === "current"
+          ? "font-semibold text-foreground"
+          : step.state === "blocked"
+            ? "font-semibold text-rose-700 dark:text-rose-400"
+            : step.state === "done"
+              ? "font-medium text-foreground"
+              : "font-medium text-muted-foreground"
+      }`}
+    >
+      {step.title}
+    </span>
+  );
+
+  return (
+    <li
+      className="min-w-0"
+      data-testid={`step-${step.step}`}
+      data-state={step.state}
+      aria-current={step.state === "current" ? "step" : undefined}
+    >
+      <div className="flex items-center">
+        <span
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${BOARD_MARK[step.state]}`}
+          aria-hidden
+        >
+          <BoardMark state={step.state} />
+        </span>
+        {/* The line to the next column. Solid once BOTH ends are done — a line
+            between a done step and a live one is the distance still to go. */}
+        {!last && (
+          <span
+            aria-hidden
+            className={`ml-2 hidden h-px flex-1 sm:block ${
+              step.state === "done" && nextDone ? "bg-emerald-500/60" : "bg-border"
+            }`}
+          />
+        )}
+      </div>
+
+      <div className="mt-2">
+        {linkable ? (
+          <Link
+            href={step.href as string}
+            className="underline-offset-4 hover:underline"
+            data-testid={`step-link-${step.step}`}
+          >
+            {name}
+          </Link>
+        ) : (
+          name
+        )}
+      </div>
+
+      {step.detail && (
+        <p
+          className={`mt-0.5 break-words text-xs ${
+            step.state === "blocked"
+              ? "text-rose-700 dark:text-rose-400"
+              : step.state === "unavailable"
+                ? "text-muted-foreground/70"
+                : "text-muted-foreground"
+          }`}
+          data-testid={`step-note-${step.step}`}
+        >
+          {step.detail}
+        </p>
+      )}
     </li>
   );
 }

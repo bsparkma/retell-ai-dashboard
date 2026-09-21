@@ -212,6 +212,21 @@ export const MATCH_STATUS_TONE: Record<OdMatchStatus, string> = {
   confirmed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
 };
 
+/**
+ * The same four tones as a single DOT — S8's claims table on the check page.
+ *
+ * Beside `MATCH_STATUS_TONE` rather than in the page that uses it, so the pill
+ * the claim screen still draws and the dot the check page now draws cannot
+ * drift into two colour schemes for one status. A `Record`, so a fifth status
+ * is a type error here until somebody picks its dot.
+ */
+export const MATCH_STATUS_DOT: Record<OdMatchStatus, string> = {
+  not_run: "bg-muted-foreground/50",
+  candidates: "bg-amber-500",
+  no_candidate: "bg-slate-500",
+  confirmed: "bg-emerald-500",
+};
+
 /** Confidence chip colours. Deliberately NOT green for HIGH at the top level —
  *  green reads as "done", and a HIGH candidate is still an unmade decision. */
 export const CONFIDENCE_TONE: Record<MatchConfidence, string> = {

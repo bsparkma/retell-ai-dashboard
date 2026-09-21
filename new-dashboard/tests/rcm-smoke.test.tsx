@@ -2173,10 +2173,15 @@ describe("1 · enter a check, the whole road", () => {
     expect(screen.getByTestId("rcm-cta").textContent).toContain("Match it up");
     expect(within(rail).queryByTestId("rcm-cta")).toBeNull();
 
-    // The miniature says NOT JUDGED rather than guessing at an unmatched claim —
-    // and an untouched row stays quiet: no verdict, so none of the verdict tones.
+    // The miniature does not guess at an unmatched claim — and an untouched row
+    // stays quiet: no verdict, so none of the verdict tones.
+    //
+    // S8: what it says instead is the EOB's own patient figure, read off the
+    // claim row ("EOB says $450.00" — the fixture's patientBalanceCents), in
+    // place of "Not judged yet — match it up and check it over". No "Will
+    // owe", which is a projection onto a chart claim that does not exist yet.
     await waitFor(() =>
-      expect(screen.getByTestId(`claim-stands-${C1}`).textContent).toContain("Not judged yet"),
+      expect(screen.getByTestId(`claim-stands-${C1}`).textContent).toBe("EOB says $450.00"),
     );
     const untouched = screen.getByTestId(`claim-stands-${C1}`).querySelector("span")?.className ?? "";
     expect(untouched).toContain("text-muted-foreground");

@@ -2,13 +2,13 @@
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | Today | list | 89 | 157 | 18 | 1 | “Pick up where you left off” · “Start” | 4 |
 | Bring in (Today's upload section) | list | — | — | — | — | *not reached by the walk* | 0 |
-| Checks list | list | 98 | 98 | 8 | 0 | — | 3 |
-| Check page | flow | 472 | 472 | 16 | 1 | “Match it up” · “Pick the right claim for Stedi Test 2” · “Approve 2 claims for posting” · “Check over Test, MangoTest” · “Post to Open Dental” · “Approve 1 claim for posting” · “Pick the right claim for Test, MangoTest” | 47 |
+| Checks list | list | 100 | 100 | 8 | 0 | — | 3 |
+| Check page | flow | 464 | 464 | 16 | 1 | “Match it up” · “Pick the right claim for Stedi Test 2” · “Approve 2 claims for posting” · “Check over Test, MangoTest” · “Post to Open Dental” · “Approve 1 claim for posting” · “Pick the right claim for Test, MangoTest” | 47 |
 | Claim page (Match + Workbench) | flow | 426 | 461 | 17 | 1 | “Yes, that’s the one” · “Mark checked over” · “Approve for posting” | 9 |
 | Approve | flow | 220 | 222 | 5 | 1 | “Yes — this check is right” · “Back to the check” · “Take me to the check to post it” | 4 |
 | Approve → takeback | flow | 127 | 138 | 2 | 1 | “Take me to the takeback” | 1 |
-| Posted / Done | terminal | 264 | 264 | 16 | 0 | — | 1 |
-| Stuck / Failed | terminal | 502 | 502 | 17 | 1 | “Post to Open Dental” | 11 |
-| Shadow worksheet | terminal | 348 | 348 | 19 | 0 | — | 4 |
+| Posted / Done | terminal | 256 | 256 | 16 | 0 | — | 1 |
+| Stuck / Failed | terminal | 494 | 494 | 17 | 1 | “Post to Open Dental” | 11 |
+| Shadow worksheet | terminal | 340 | 340 | 19 | 0 | — | 4 |
 | Activity / History | list | 51 | 1749 | 44 | 1 | “Post 24 to Open Dental” | 2 |
 | Takeback how-to | flow | — | — | — | — | *not reached by the walk* | 0 |

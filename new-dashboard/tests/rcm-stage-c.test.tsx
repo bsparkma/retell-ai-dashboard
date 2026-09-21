@@ -605,7 +605,13 @@ describe("the check's claim table is a triage screen", () => {
     );
   });
 
-  it("says 'not judged' rather than a neutral verdict when the gate has nothing", async () => {
+  it("says what the EOB says rather than a neutral verdict when the gate has nothing", async () => {
+    /*
+     * S8 renamed this from "says 'not judged'". The property is the same — a
+     * claim the gate did not judge gets NO verdict sentence — and what it gets
+     * instead is the EOB's own patient figure straight off the claim row,
+     * not "Not judged yet — match it up and check it over".
+     */
     state.checks = [check()];
     state.claims = [claim()];
     state.approval = {
@@ -626,7 +632,7 @@ describe("the check's claim table is a triage screen", () => {
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
 
     await waitFor(() =>
-      expect(screen.getByTestId("claim-stands-c-1").textContent).toContain("Not judged yet"),
+      expect(screen.getByTestId("claim-stands-c-1").textContent).toBe("EOB says $450.00"),
     );
   });
 

@@ -443,7 +443,14 @@ export function remittanceFlow(
    * day is APPENDED rather than substituted, so a check with no `createdAt`
    * loses the date and keeps the sentence rather than rendering a gap.
    */
-  const readOn = remittance.createdAt ? officeDay(remittance.createdAt, remittance.officeId) : null;
+  /*
+   * S8 · THE TIME, NOT ONLY THE DAY. The check page's board draws this line
+   * under a done mark, and "read Aug 28" leaves a biller who read two files
+   * that evening unable to tell which was which. `officeStamp` is the same
+   * office-zone stamp the approve line beside it already uses, so the two done
+   * steps on one rail speak one register.
+   */
+  const readOn = remittance.createdAt ? officeStamp(remittance.createdAt, remittance.officeId) : null;
   const upload = view(
     "upload",
     "done",
@@ -596,12 +603,21 @@ function reviewStep(f: {
   if (f.total === 0) return view("review", "todo", null, here);
 
   if (f.unreviewed > 0) {
+    /*
+     * S8 · PROGRESS, AND THE GATE — the two things the live step owes a reader.
+     *
+     * It said what was LEFT ("3 claims still need a note and a Mark checked
+     * over"), which answers "how much more" and not "how far along", and never
+     * mentioned that reading every claim is not the end of the step. On the
+     * board the Decide column is the one with the ring round it, and the line
+     * under it is the one sentence a new hire reads to learn what finishing it
+     * means: all of them read, and then a yes. The how — a note, and the Mark
+     * checked over button — is on every claim's own page, where it is done.
+     */
     return view(
       "review",
       "current",
-      `${claims(f.unreviewed)} ${
-        f.unreviewed === 1 ? "still needs" : "still need"
-      } a note and a Mark checked over.`,
+      `${f.total - f.unreviewed} of ${claims(f.total)} checked over · not finished until you approve.`,
       f.firstUnreviewed ? claimHref(f.firstUnreviewed.claimId, f.batchId) : here,
     );
   }
