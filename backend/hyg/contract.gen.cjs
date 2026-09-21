@@ -14901,6 +14901,7 @@ __export(contract_entry_exports, {
   PerioSendSequenceTypeSchema: () => PerioSendSequenceTypeSchema,
   PerioSendStateSchema: () => PerioSendStateSchema,
   PerioSendViewSchema: () => PerioSendViewSchema,
+  PerioSiteChangeSchema: () => PerioSiteChangeSchema,
   PerioSiteSchema: () => PerioSiteSchema,
   PerioStageSchema: () => PerioStageSchema,
   PerioSweepSchema: () => PerioSweepSchema,
@@ -14961,6 +14962,9 @@ __export(contract_entry_exports, {
   isWellFormedArchString: () => isWellFormedArchString,
   normalizePerioChart: () => normalizePerioChart,
   perioArchVerdict: () => perioArchVerdict,
+  perioChangeLine: () => perioChangeLine,
+  perioChangeSiteRef: () => perioChangeSiteRef,
+  perioChartChanges: () => perioChartChanges,
   perioJawOfField: () => perioJawOfField,
   perioJawOfTooth: () => perioJawOfTooth,
   perioMismatchLine: () => perioMismatchLine,
@@ -15563,7 +15567,8 @@ var StagedWriteStateSchema = import_zod2.z.enum([
   "Staged",
   "Sending",
   "Written",
-  "Failed"
+  "Failed",
+  "Amending"
 ]);
 var HygDayScopeSchema = import_zod2.z.enum(["hygiene", "all"]);
 var HYG_DAY_SCOPES = HygDayScopeSchema.options;
@@ -16011,7 +16016,13 @@ var HYG_VISIT_ERROR_CODES = [
   // Open Dental's own answer to the perio undo.
   "OD_REFUSED",
   "OD_NO_ANSWER",
-  "OD_DELETE_UNCONFIRMED"
+  "OD_DELETE_UNCONFIRMED",
+  // Item 13: correcting a chart that is already in Open Dental.
+  "NOT_AMENDABLE",
+  "NOT_AMENDING",
+  "AMEND_BASE_CHANGED",
+  "AMEND_BASE_MISSING",
+  "NOT_REPLACED"
 ];
 
 // shared/hyg/records.ts
@@ -16880,6 +16891,28 @@ function comparePerioReadback(expected, found) {
   }
   return out;
 }
+var PerioSiteChangeSchema = import_zod4.z.object({
+  tooth: import_zod4.z.number().int(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: import_zod4.z.enum(["depth", "flags", "skipped"]),
+  from: import_zod4.z.string(),
+  to: import_zod4.z.string()
+});
+function perioChartChanges(before, after) {
+  const out = [];
+  for (const m of comparePerioReadback(before, after)) {
+    if (m.kind === "duplicate") continue;
+    out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
+  }
+  return out;
+}
+function perioChangeLine(c) {
+  const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
+  return `${where}: ${c.from} \u2192 ${c.to}`;
+}
+function perioChangeSiteRef(c) {
+  return c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
+}
 function perioMismatchLine(m) {
   const where = m.surface === null ? `#${m.tooth}` : `#${m.tooth} ${m.surface}`;
   if (m.kind === "duplicate") return `${where}: ${m.found} in Open Dental where there should be ${m.expected}`;
@@ -16912,7 +16945,19 @@ var PerioSendViewSchema = import_zod4.z.object({
   deletedBy: import_zod4.z.string().nullable(),
   deletedAt: import_zod4.z.string().nullable(),
   /** An exam this send created, while the send is unfinished. The only exam the undo may touch. */
-  canDelete: import_zod4.z.boolean()
+  canDelete: import_zod4.z.boolean(),
+  // ── the amendment (item 13) ──
+  /** The exam this send REPLACES. null on a first send. */
+  supersedesExamNum: import_zod4.z.number().int().nullable(),
+  /** When the swap's last step removed that old exam. null while it is still there. */
+  supersedesDeletedAt: import_zod4.z.string().nullable(),
+  /** What this amendment changes, site by site, frozen when it was confirmed. */
+  amendDiff: import_zod4.z.array(PerioSiteChangeSchema),
+  /**
+   * The chart this send WROTE, once it verified — the baseline the next
+   * amendment is diffed against. null until a send has verified.
+   */
+  writtenChart: PerioChartSchema.nullable()
 });
 var HygPerioSendResponseSchema = import_zod4.z.object({
   success: import_zod4.z.literal(true),
@@ -16920,6 +16965,13 @@ var HygPerioSendResponseSchema = import_zod4.z.object({
   aptNum: import_zod4.z.number().int(),
   stagedWrite: StagedWriteSchema.nullable(),
   send: PerioSendViewSchema.nullable(),
+  /**
+   * The send whose exam is in Open Dental NOW (item 13) — the most recent one
+   * that verified. It is what a correction is diffed against and what it
+   * replaces, and it stays put while a correction is being prepared or has
+   * failed, which `send` (the latest attempt) does not.
+   */
+  live: PerioSendViewSchema.nullable(),
   /**
    * Why this step stopped short without finishing — Open Dental did not answer,
    * or another tab is mid-step. Nothing was lost; the next step reads first.
@@ -17009,6 +17061,7 @@ var import_zod5 = __toESM(require_zod());
   PerioSendSequenceTypeSchema,
   PerioSendStateSchema,
   PerioSendViewSchema,
+  PerioSiteChangeSchema,
   PerioSiteSchema,
   PerioStageSchema,
   PerioSweepSchema,
@@ -17069,6 +17122,9 @@ var import_zod5 = __toESM(require_zod());
   isWellFormedArchString,
   normalizePerioChart,
   perioArchVerdict,
+  perioChangeLine,
+  perioChangeSiteRef,
+  perioChartChanges,
   perioJawOfField,
   perioJawOfTooth,
   perioMismatchLine,
