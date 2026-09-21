@@ -21,7 +21,27 @@
  *   → Space Enter  next site, no reading
  *   ←              previous site
  *   Backspace      take back the last reading and go back to it
- *   Delete         clear the current site
+ *   Delete  Esc    clear the current site, cursor stays
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE NUMBER PAD (item 17)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * One hand on the probe, one on a Bluetooth number pad. The pad is a plain
+ * keyboard, so it is only more keys — all of them in NUMPAD_KEYS below, the one
+ * place the table lives:
+ *
+ *   /  *  -  +     bleeding / suppuration / plaque / calculus (same target as B S P C)
+ *   .              skip or un-skip the current tooth (same as X)
+ *   (  )           previous / next tooth — from the PAD only; see below
+ *   Tab  =         reserved, unmapped
+ *
+ * `(` and `)` are tooth moves only when the PAD sends them (a Numpad code, or
+ * the numpad key location). On the main row they are Shift+9 and Shift+0, which
+ * have meant 19 mm and 10 mm since slice 10, and still do.
+ *
+ * NUM LOCK OFF IS NOT A READING. With Num Lock off the pad's digits arrive as
+ * Home, End, PageUp, arrows and Clear. Those are reported by `perioKeyWarning`
+ * and do NOTHING to the chart — a depth is never guessed from a navigation key.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHICH SITE A FLAG LANDS ON
@@ -61,6 +81,8 @@ export type PerioEntryAction =
   | { type: "depth"; depth: number }
   | { type: "flag"; flag: PerioFlag }
   | { type: "move"; step: 1 | -1 }
+  /** To the first site of the next or previous tooth in charting order. */
+  | { type: "tooth"; step: 1 | -1 }
   | { type: "select"; cursor: PerioCursor }
   | { type: "erase" }
   | { type: "clear" }
@@ -85,6 +107,29 @@ function siteAfterTooth(chart: PerioChart, from: PerioCursor): PerioCursor | nul
   const at = order.findIndex((c) => sameCursor(c, from));
   for (let i = at + 1; i < order.length; i += 1) {
     if (order[i].tooth !== from.tooth && !perioTooth(chart, order[i].tooth).skipped) return order[i];
+  }
+  return null;
+}
+
+/**
+ * The first site of the neighbouring tooth, in charting order, passing over
+ * skipped teeth. "Tooth" here is the run of sites the sweep visits together — a
+ * tooth is met twice in a full chart (facial, then lingual) — so `(` and `)` move
+ * the way the cursor would, not across the mouth.
+ */
+function siteOfNeighbourTooth(chart: PerioChart, from: PerioCursor, step: 1 | -1): PerioCursor | null {
+  if (step === 1) return siteAfterTooth(chart, from);
+  const order = chartingOrder(chart.sweep);
+  let i = order.findIndex((c) => sameCursor(c, from));
+  // Back to the start of the run the cursor is in…
+  while (i > 0 && order[i - 1].tooth === order[i].tooth) i -= 1;
+  // …then back over the runs before it until one is chartable…
+  for (let j = i - 1; j >= 0; j -= 1) {
+    if (perioTooth(chart, order[j].tooth).skipped) continue;
+    // …and to the START of that run.
+    let k = j;
+    while (k > 0 && order[k - 1].tooth === order[k].tooth) k -= 1;
+    return order[k];
   }
   return null;
 }
@@ -115,6 +160,10 @@ export function reducePerioEntry(state: PerioEntryState, action: PerioEntryActio
     }
     case "move": {
       const next = stepPerioCursor(state.chart, state.cursor, action.step);
+      return { ...state, cursor: next ?? state.cursor, lastEntered: null };
+    }
+    case "tooth": {
+      const next = siteOfNeighbourTooth(state.chart, state.cursor, action.step);
       return { ...state, cursor: next ?? state.cursor, lastEntered: null };
     }
     case "select":
@@ -168,7 +217,15 @@ export interface PerioKey {
   ctrlKey: boolean;
   metaKey: boolean;
   altKey: boolean;
+  /**
+   * `KeyboardEvent.location`: 3 is the numeric keypad. Optional because a test
+   * or a synthetic event may not carry it; absent reads as "not the pad".
+   */
+  location?: number;
 }
+
+/** `KeyboardEvent.DOM_KEY_LOCATION_NUMPAD`, without reaching for the DOM. */
+const NUMPAD_LOCATION = 3;
 
 const FLAG_BY_KEY: Record<string, PerioFlag> = {
   b: "bleeding",
@@ -177,10 +234,77 @@ const FLAG_BY_KEY: Record<string, PerioFlag> = {
   c: "calculus",
 };
 
+/**
+ * THE NUMBER PAD'S TABLE (item 17). Keyed by `key` — what is printed on the cap
+ * — because `/ * - +` send the same `key` with Num Lock on or off.
+ */
+export const NUMPAD_FLAG_KEYS: Readonly<Record<string, PerioFlag>> = Object.freeze({
+  "/": "bleeding",
+  "*": "suppuration",
+  "-": "plaque",
+  "+": "calculus",
+});
+export const NUMPAD_SKIP_KEY = ".";
+export const NUMPAD_PREVIOUS_TOOTH_KEY = "(";
+export const NUMPAD_NEXT_TOOTH_KEY = ")";
+/** Reserved for a later version. They do nothing here, and Tab keeps its browser meaning. */
+export const NUMPAD_RESERVED_KEYS: readonly string[] = Object.freeze(["Tab", "="]);
+
+/**
+ * What a pad's digit and decimal keys send with Num Lock OFF. Any of these,
+ * arriving from a numpad code or location, is the signature.
+ */
+const NUM_LOCK_OFF_KEYS = new Set([
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Insert",
+  "Delete",
+  "Clear",
+]);
+
+const NUMPAD_DIGIT_CODE = /^Numpad(?:\d|Decimal)$/;
+
+/** Did this key come from the number pad, by code or by location? */
+function fromNumpad(e: PerioKey): boolean {
+  return e.code.startsWith("Numpad") || e.location === NUMPAD_LOCATION;
+}
+
+/**
+ * A key that is not a reading but LOOKS like the pad was used for one.
+ *
+ * `numLockOff`: a navigation key from the pad's digit block. With Num Lock off,
+ * "7" is Home and "4" is ArrowLeft. The screen says so, and `keyToPerioAction`
+ * returns null for the same key, so nothing lands in the chart.
+ *
+ * A pad's OWN dedicated Delete or arrow key sends a code equal to its key
+ * (`code: "Delete"`), which is how it is told apart from Num Lock's `Numpad.`.
+ */
+export function perioKeyWarning(e: PerioKey): "numLockOff" | null {
+  if (!NUM_LOCK_OFF_KEYS.has(e.key)) return null;
+  if (NUMPAD_DIGIT_CODE.test(e.code)) return "numLockOff";
+  if (e.location === NUMPAD_LOCATION && e.code !== e.key) return "numLockOff";
+  return null;
+}
+
 /** A key press → what it does, or null for a key entry does not own. */
 export function keyToPerioAction(e: PerioKey): PerioEntryAction | null {
   // Browser and OS shortcuts are not ours.
   if (e.ctrlKey || e.metaKey || e.altKey) return null;
+
+  // NEVER A DEPTH FROM A NAVIGATION KEY. Checked before the digit rule below,
+  // which reads the CODE and would otherwise turn Num-Lock-off Home (Numpad7) into 7.
+  if (perioKeyWarning(e) !== null) return null;
+
+  // The pad's parentheses, before the digit rule: on the main row they are
+  // Shift+9 and Shift+0, which are depths (19 and 10) and stay depths.
+  if (fromNumpad(e) && e.key === NUMPAD_PREVIOUS_TOOTH_KEY) return { type: "tooth", step: -1 };
+  if (fromNumpad(e) && e.key === NUMPAD_NEXT_TOOTH_KEY) return { type: "tooth", step: 1 };
 
   // By CODE, not key: Shift+3 is "#" as a key and still the 3 key physically.
   const digit = /^(?:Digit|Numpad)(\d)$/.exec(e.code);
@@ -193,6 +317,13 @@ export function keyToPerioAction(e: PerioKey): PerioEntryAction | null {
   if (lower in FLAG_BY_KEY) return { type: "flag", flag: FLAG_BY_KEY[lower] };
   if (lower === "x") return { type: "toggleSkip" };
 
+  const padFlag = NUMPAD_FLAG_KEYS[e.key];
+  if (padFlag) return { type: "flag", flag: padFlag };
+  // The pad's decimal key; a comma-decimal locale prints "," on the same cap.
+  if (e.key === NUMPAD_SKIP_KEY || (e.code === "NumpadDecimal" && e.key === ",")) {
+    return { type: "toggleSkip" };
+  }
+
   switch (e.key) {
     case "ArrowRight":
     case " ":
@@ -203,6 +334,7 @@ export function keyToPerioAction(e: PerioKey): PerioEntryAction | null {
     case "Backspace":
       return { type: "erase" };
     case "Delete":
+    case "Escape":
       return { type: "clear" };
     default:
       return null;

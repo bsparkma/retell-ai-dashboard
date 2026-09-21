@@ -81,10 +81,12 @@ import {
   flagTarget,
   initialPerioEntry,
   keyToPerioAction,
+  perioKeyWarning,
   reducePerioEntry,
   type PerioEntryAction,
 } from "@/features/hyg/perio/entry";
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
+import { PerioKeyLegend, PerioKeyLegendShow } from "@/features/hyg/perio/PerioKeyLegend";
 import { PerioSendConfirm, perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
 import { PerioDeleteExamDialog, PerioSendPanel, perioMismatchTeeth } from "@/features/hyg/perio/PerioSendPanel";
 import { cn } from "@/lib/utils";
@@ -93,6 +95,9 @@ import { cn } from "@/lib/utils";
 const SAVE_DEBOUNCE_MS = 600;
 
 const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors";
+
+/** Where this browser remembers that the key legend was hidden. */
+const LEGEND_HIDDEN_KEY = "hyg.perio.keyLegendHidden";
 
 type PriorState =
   | { phase: "loading" }
@@ -279,6 +284,30 @@ export default function HygPerio() {
   }, []);
   /** A chart that is sending, stopped or written takes no more readings. */
   const lockedRef = useRef(false);
+  /** Item 17: the last pad key looked like Num Lock was off. Cleared by the next real key. */
+  const [numLockOff, setNumLockOff] = useState(false);
+  /**
+   * Item 17: the key legend, shown until she hides it. A per-person, per-device
+   * preference, so it lives in this browser — and a storage that throws (a
+   * private window) just means the legend shows.
+   */
+  const [legendHidden, setLegendHidden] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(LEGEND_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const hideLegend = useCallback((hidden: boolean) => {
+    setLegendHidden(hidden);
+    try {
+      if (hidden) window.localStorage.setItem(LEGEND_HIDDEN_KEY, "1");
+      else window.localStorage.removeItem(LEGEND_HIDDEN_KEY);
+    } catch {
+      /* the choice holds for this visit to the page */
+    }
+    gridRef.current?.focus();
+  }, []);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** The chart the server last answered with, normalised. */
@@ -421,9 +450,18 @@ export default function HygPerio() {
 
   const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (lockedRef.current) return;
+    // ITEM 17: a number pad with Num Lock off sends Home, End and arrows for its
+    // digits. Say so, and chart NOTHING — a depth is never guessed from one.
+    if (perioKeyWarning(e) === "numLockOff") {
+      e.preventDefault();
+      setNumLockOff(true);
+      return;
+    }
     const action = keyToPerioAction(e);
     if (!action) return;
     e.preventDefault();
+    // A real key got through, so whatever was wrong with the pad is not wrong now.
+    setNumLockOff(false);
     dispatch(action);
   }, []);
 
@@ -866,6 +904,18 @@ export default function HygPerio() {
         />
       </div>
 
+      {numLockOff ? (
+        <p
+          role="alert"
+          className="mt-3 flex items-start gap-1.5 rounded-xl border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-900 dark:text-amber-300"
+          data-testid="hyg-perio-numlock"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          Num Lock is off. The number pad is sending arrow keys, not numbers, so nothing was charted.
+          Press Num Lock on the pad, then carry on.
+        </p>
+      ) : null}
+
       <div className="mt-3">
         <PerioGrid
           chart={entry.chart}
@@ -962,8 +1012,8 @@ export default function HygPerio() {
             ))}
           </div>
           <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-            Keys: 0–9 depth · Shift+0–9 for 10–19 · → or Space next · ← back · Backspace undo · X skip
-            tooth. Recession, mobility, furcation and CAL are not charted here.
+            Every key, including the number pad&apos;s, is in the legend below. Recession, mobility,
+            furcation and CAL are not charted here.
           </p>
         </section>
 
@@ -999,6 +1049,15 @@ export default function HygPerio() {
             ))}
           </div>
         </section>
+      </div>
+
+      {/* ITEM 17: every key, the number pad's included — hidden and brought back here. */}
+      <div className="mt-3">
+        {legendHidden ? (
+          <PerioKeyLegendShow onShow={() => hideLegend(false)} />
+        ) : (
+          <PerioKeyLegend onHide={() => hideLegend(true)} />
+        )}
       </div>
 
       {staged && isStaged ? (

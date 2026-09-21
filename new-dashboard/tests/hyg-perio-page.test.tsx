@@ -434,6 +434,77 @@ describe("staging", () => {
   });
 });
 
+describe("the number pad (item 17)", () => {
+  function padKey(key: string, code: string) {
+    return { key, code, location: 3 };
+  }
+
+  it("ACCEPTANCE 4: Num Lock off says so, on screen, and charts nothing", async () => {
+    renderPerio();
+    const grid = await screen.findByTestId("hyg-perio-grid");
+    expect(screen.queryByTestId("hyg-perio-numlock")).toBeNull();
+
+    // "7 4 1" on a pad with Num Lock off.
+    fireEvent.keyDown(grid, padKey("Home", "Numpad7"));
+    fireEvent.keyDown(grid, padKey("ArrowLeft", "Numpad4"));
+    fireEvent.keyDown(grid, padKey("End", "Numpad1"));
+    const warning = screen.getByTestId("hyg-perio-numlock");
+    expect(warning.getAttribute("role")).toBe("alert");
+    expect(warning.textContent).toMatch(/Num Lock is off/);
+    expect(screen.getByTestId("hyg-perio-progress").textContent).toMatch(/0 of 192/);
+    expect(screen.getByTestId("hyg-perio-cursor").textContent).toMatch(/#1 DB/);
+
+    // Num Lock on: the next real digit charts, and the warning goes.
+    fireEvent.keyDown(grid, padKey("7", "Numpad7"));
+    expect(screen.queryByTestId("hyg-perio-numlock")).toBeNull();
+    expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toMatch(/^7/);
+  });
+
+  it("the pad's flag and tooth keys work on the page, through the same grid", async () => {
+    renderPerio();
+    const grid = await screen.findByTestId("hyg-perio-grid");
+    fireEvent.keyDown(grid, padKey("3", "Numpad3"));
+    fireEvent.keyDown(grid, padKey("/", "NumpadDivide"));
+    expect(screen.getByTestId("hyg-perio-flag-bleeding").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(grid, padKey(")", "NumpadParenRight"));
+    expect(screen.getByTestId("hyg-perio-cursor").textContent).toMatch(/#2 DB/);
+  });
+
+  it("ACCEPTANCE 5: touch entry is unchanged — the keypad buttons chart and move as before", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    fireEvent.click(screen.getByTestId("hyg-perio-key-4"));
+    fireEvent.click(screen.getByTestId("hyg-perio-key-12"));
+    expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toMatch(/^4/);
+    expect(screen.getByTestId("hyg-perio-site-1-B").textContent).toMatch(/^12/);
+    fireEvent.click(screen.getByTestId("hyg-perio-flag-plaque"));
+    expect(screen.getByTestId("hyg-perio-flag-plaque").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ACCEPTANCE 6: the key legend renders, hides, and comes back", async () => {
+    window.localStorage.clear();
+    renderPerio();
+    const legend = await screen.findByTestId("hyg-perio-legend");
+    for (const k of ["/", "*", "-", "+", ".", "Backspace", "Delete", "Esc", "(", ")"]) {
+      expect(legend.textContent).toContain(k);
+    }
+    expect(screen.getByTestId("hyg-perio-legend-notes").textContent).toMatch(/Fn/);
+    expect(screen.getByTestId("hyg-perio-legend-notes").textContent).toMatch(/Tab and = do nothing/);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-legend-hide"));
+    expect(screen.queryByTestId("hyg-perio-legend")).toBeNull();
+    // Remembered on this device…
+    cleanup();
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    expect(screen.queryByTestId("hyg-perio-legend")).toBeNull();
+    // …and one tap brings it back.
+    fireEvent.click(screen.getByTestId("hyg-perio-legend-show"));
+    expect(screen.getByTestId("hyg-perio-legend")).toBeTruthy();
+    window.localStorage.clear();
+  });
+});
+
 describe("the last exam", () => {
   it("says it is reading while it is reading", async () => {
     server.priorPending = true;
