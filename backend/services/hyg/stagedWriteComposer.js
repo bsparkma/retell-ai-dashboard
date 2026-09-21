@@ -72,13 +72,16 @@
  * apart.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * WHAT IS NOT HERE
+ * PERIO COMPOSES FROM ITS OWN DRAFT (H4 slice 10)
  * ═════════════════════════════════════════════════════════════════════════════
- * `perio` is a kind in the contract's vocabulary and composes to NOTHING in
- * slice 2. Perio charting is its own arc (H4) and carries its own contingency —
- * a stray Probing row is PERMANENT in Open Dental. Returning an empty preview
- * for it would be a screen offering to send something that does not exist, so
- * it refuses instead, and the route turns that into an honest 422.
+ * A perio chart is entered site by site into the visit's `perio` row while it
+ * sits in `Draft`, and staging composes the preview from THAT stored chart —
+ * `ctx.draft`, loaded by visitStore, never a request body. A visit with no
+ * readings refuses with NOTHING_TO_STAGE rather than staging an empty chart.
+ *
+ * Staging is as far as this file goes. The send is `services/hyg/perioSend.js`,
+ * started from the chart page or riding the visit Send (item 15), and it plans
+ * every write from the payload stored here.
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
@@ -295,15 +298,32 @@ function recordsLines(items, recordsStatus) {
  *   `unavailable` — this kind is not built yet. `empty` — there is genuinely
  *   nothing to send, which is a refusal rather than an empty envelope.
  */
-function composeRaw(kind, { visit, items, actor, signature }) {
+function composeRaw(kind, { visit, items, actor, signature, draft }) {
   const slip = visit.slip || {};
   const dateLabel = visit.visitDate || 'today';
 
   if (kind === 'perio') {
+    // THE DRAFT CHART, NOT THE REQUEST. `draft` is the stored payload of this
+    // visit's own `perio` row, loaded by visitStore.stageWrite — the same
+    // "compose from what is stored" rule every other kind follows.
+    const parsed = contract.PerioChartSchema.safeParse(draft && draft.chart);
+    const chart = parsed.success ? contract.normalizePerioChart(parsed.data) : null;
+    if (!chart || contract.countPerioChart(chart).empty) {
+      return {
+        empty:
+          'There are no perio readings on this visit yet, so there is nothing to stage. ' +
+          'Open the perio chart and enter them first.',
+      };
+    }
+    const counts = contract.countPerioChart(chart);
     return {
-      unavailable:
-        'Perio charting is not built yet, so there is nothing to stage. A perio chart written ' +
-        'into Open Dental cannot be deleted, so it gets its own slice rather than riding on this one.',
+      title: 'Perio chart',
+      // A partial chart SAYS it is partial, in the same words everywhere.
+      summary: `${contract.perioProgressLabel(counts)}, ${dateLabel}`,
+      preview: contract.perioPreviewLines(chart),
+      // Stored whole, so the send (services/hyg/perioSend.js) needs nothing the
+      // preview did not show.
+      payload: { kind: 'perio', aptNum: visit.aptNum, patNum: visit.patNum, chart },
     };
   }
 

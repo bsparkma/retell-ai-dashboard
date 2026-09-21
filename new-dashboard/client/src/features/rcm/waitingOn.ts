@@ -88,8 +88,26 @@ export interface Waiting {
   state: WaitingState;
   /** "You — 4 claims to check over". The Checks list's column. */
   waitingOn: string;
-  /** "4 claims still to check over". Today's arrivals column. */
+  /**
+   * "4 claims still to check over". Today's arrivals column — the CARD FACE.
+   *
+   * EIGHT PROSE WORDS OR FEWER (S7, Phase 2.1), and the sweep in
+   * `tests/rcm-smoke.test.tsx` fails the day one grows a ninth. A row in a list
+   * is scanned, not read; the sentence that used to live here carried a second
+   * clause explaining what to do about it, which is a thing you want once you
+   * have decided to open the row and never before.
+   */
   next: string;
+  /**
+   * The clause that used to be the second half of `next`, or `null`.
+   *
+   * It is NOT deleted and it is NOT a tooltip. It is printed in full on the
+   * check's own page — the place the row links to — directly under the header,
+   * by the same `waitingFor` call that already picks the header's chip. So the
+   * honest sentence still exists, one click away, at the destination it is
+   * about. See `RemittanceDetail`'s `check-waiting-detail`.
+   */
+  detail: string | null;
   /**
    * True when this row wants a person's eye on it. Drives tone, never content —
    * a cell that was coloured but said nothing would be a colour nobody can act
@@ -123,7 +141,8 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
     return {
       state: "set_aside",
       waitingOn: "Nobody — it was set aside",
-      next: "Set aside. Put it back and it rejoins the queue.",
+      next: "Set aside.",
+      detail: "Put it back and it rejoins the queue.",
       urgent: false,
     };
   }
@@ -133,6 +152,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
       state: "other_office",
       waitingOn: "Nobody — belongs to another office",
       next: "Another office works this one.",
+      detail: null,
       urgent: false,
     };
   }
@@ -141,7 +161,8 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
     return {
       state: "takeback",
       waitingOn: "A takeback — money the carrier is reclaiming",
-      next: "The carrier is reclaiming money. It is authorised on its own.",
+      next: "The carrier is reclaiming money.",
+      detail: "It is authorised on its own.",
       urgent: true,
     };
   }
@@ -150,7 +171,8 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
     return {
       state: "stuck",
       waitingOn: "You — the posting did not finish",
-      next: "The posting did not finish. Open it and it says where it stopped.",
+      next: "The posting did not finish.",
+      detail: "Open it and it says where it stopped.",
       urgent: true,
     };
   }
@@ -159,6 +181,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
       state: "stuck",
       waitingOn: "You — a claim was held back",
       next: "One claim doesn't line up with Open Dental.",
+      detail: null,
       urgent: true,
     };
   }
@@ -173,6 +196,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
       state: "shadow",
       waitingOn: "Shadow mode — posting is switched off",
       next: "Held while shadow mode is on.",
+      detail: null,
       urgent: false,
     };
   }
@@ -182,6 +206,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
       state: "posted",
       waitingOn: "Nobody — it is posted",
       next: `Confirmed in Open Dental at ${officeStamp(ctx.confirmedAt, r.officeId)}`,
+      detail: null,
       urgent: false,
     };
   }
@@ -204,6 +229,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
         r.unmatchedClaimCount > 0 && matched > 0
           ? `${matched} matched already · ${r.unmatchedClaimCount} need you to pick`
           : `${claimWord(n)} still to check over`,
+      detail: null,
       urgent: true,
     };
   }
@@ -212,7 +238,8 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
     return {
       state: "approve",
       waitingOn: "You — it is ready to approve",
-      next: "Every claim is checked over. It needs approving.",
+      next: "It needs approving.",
+      detail: "Every claim on this check is checked over.",
       urgent: true,
     };
   }
@@ -222,6 +249,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
       state: "match",
       waitingOn: `You — ${claimWord(r.unmatchedClaimCount)} to match up`,
       next: `${claimWord(r.unmatchedClaimCount)} still to match up in Open Dental.`,
+      detail: null,
       urgent: true,
     };
   }
@@ -230,6 +258,7 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
     state: "nothing",
     waitingOn: "Nobody — nothing outstanding",
     next: "Nothing outstanding.",
+    detail: null,
     urgent: false,
   };
 }

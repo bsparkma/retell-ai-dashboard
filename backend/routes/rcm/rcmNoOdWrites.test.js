@@ -884,6 +884,10 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
    *                          refuses. POST only, one designated test patient
    *                          only, and it STOPS at the first success because a
    *                          landed probe is a permanent procnote row.
+   *   probe-hyg-perio-arch.js the hygiene perio arch-string probe. POST
+   *                          /perioexams on a designated test patient only, and
+   *                          DELETE /perioexams for exactly the exams its own
+   *                          manifest recorded — the one complete undo perio has.
    *
    * Deliberately NOT here: `rcm-s10-inventory.js`, `rcm-s10-835.js`,
    * `rcm/reseed-835.js`, `rcm/reseed-targets.js` and
@@ -917,6 +921,10 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
     // as true of a hygiene script as an RCM one. Adding a name here is the
     // review decision this list exists to force.
     'probe-hyg-groupnote.js',
+    // NOT an RCM script either: the hygiene perio arch-string probe (item 11).
+    // POST /perioexams on a designated fixture only, and DELETE /perioexams for
+    // exactly the exams it created. Named here for the same reason as above.
+    'probe-hyg-perio-arch.js',
   ]);
 
   const WRITE_SIGNALS = [

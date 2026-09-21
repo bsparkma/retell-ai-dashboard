@@ -71,6 +71,38 @@ export function isOfficeId(value: unknown): value is OfficeId {
   return OfficeIdSchema.safeParse(value).success;
 }
 
+/**
+ * THE ZONE THE OFFICE DAY IS COUNTED IN. Not the device's, and not UTC.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY A CONSTANT AND NOT THE BROWSER'S OWN CLOCK
+ * ═════════════════════════════════════════════════════════════════════════════
+ * "Which day is it?" is a question about a PRACTICE, not about whoever is
+ * holding the iPad. Both practices are US Central and always have been, so the
+ * schedule for "today" is a Central calendar date even when it is read from a
+ * laptop in another zone, an iPad whose clock is wrong, or a CI runner on UTC.
+ *
+ * The browser-local version of this was wrong in both directions and only for
+ * a few hours a day, which is the worst way for a date to be wrong: a device
+ * EAST of Central shows tomorrow's schedule late in the evening, one WEST
+ * shows yesterday's after midnight, and both look completely normal.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT MIRRORS THE BACKEND, AND A TEST SAYS SO
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The server side of this is `OFFICE_TIMEZONE`, whose default lives in
+ * `backend/config/hygWarm.js` as `DEFAULT_TIMEZONE` — the same zone the 07:45
+ * warm reads its schedule in. This constant cannot read an env var, so it is
+ * the one place the two could drift; `backend/config/hygWarm.test.js` asserts
+ * they are equal, so a change to one without the other is a red build rather
+ * than a Day View that quietly disagrees with the job that warmed it.
+ *
+ * If a practice ever opens outside Central this stops being a constant and
+ * becomes a per-office field on the day response. It is not one yet because
+ * pretending to support something untested is worse than saying Central.
+ */
+export const OFFICE_TIME_ZONE = "America/Chicago";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Treatment vocabulary
 // ─────────────────────────────────────────────────────────────────────────────
@@ -349,6 +381,13 @@ export type StagedWriteKind = z.infer<typeof StagedWriteKindSchema>;
  * after a READ-BACK confirms the write landed — the platform's honest-states
  * rule, and the reason RCM's drain reads a chart after posting to it. A failed
  * send never looks sent.
+ *
+ * `Amending` (item 13) is perio's alone: a chart that IS in Open Dental, being
+ * edited for a correction. It is client-mutable like `Draft`, and nothing in
+ * Open Dental changes while a chart sits in it — the correction is written as a
+ * new exam, verified, and only then does the old exam go. A procnote can never
+ * be amended this way: notes are physically append-only in Open Dental, perio
+ * measurements are not.
  */
 export const StagedWriteStateSchema = z.enum([
   "Draft",
@@ -356,6 +395,7 @@ export const StagedWriteStateSchema = z.enum([
   "Sending",
   "Written",
   "Failed",
+  "Amending",
 ]);
 export type StagedWriteState = z.infer<typeof StagedWriteStateSchema>;
 
@@ -1037,12 +1077,32 @@ export type HygVisitResponse = z.infer<typeof HygVisitResponseSchema>;
  * row and refuses the whole send on a mismatch, which is what makes "the
  * preview IS the write" a property rather than an intention.
  */
-export const SendConfirmationSchema = z
-  .object({
-    kind: StagedWriteKindSchema,
-    previewFingerprint: z.string().min(1).max(200),
-  })
-  .strict();
+const PreviewFingerprintSchema = z.string().min(1).max(200);
+
+/**
+ * A perio chart's confirmation carries two more facts (item 15): the exam date
+ * and the provider the dialog SHOWED, because the preview does not carry them.
+ * They are the same two the chart page's own confirm sends
+ * (`PerioSendRequestSchema`), and the server re-derives both and refuses the
+ * whole send if either differs. Riding the visit Send does not buy a chart a
+ * laxer confirmation.
+ */
+export const SendConfirmationSchema = z.union([
+  z
+    .object({
+      kind: z.enum(["router", "note", "tc-handoff"]),
+      previewFingerprint: PreviewFingerprintSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("perio"),
+      previewFingerprint: PreviewFingerprintSchema,
+      examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      provNum: z.number().int().positive(),
+    })
+    .strict(),
+]);
 export type SendConfirmation = z.infer<typeof SendConfirmationSchema>;
 
 /**
@@ -1082,9 +1142,16 @@ export const HygSendResponseSchema = z.object({
   recordsNeeded: z.array(z.string()),
   handoffCategory: HandoffCategorySchema,
   doctorOptions: z.array(z.string()),
-  /** One entry per confirmed kind, in the order they were attempted. */
+  /**
+   * One entry per confirmed kind, in the order they were attempted.
+   *
+   * A perio chart can come back `Sending` (item 15): its first step ran here,
+   * and the rest are the page's to ask for through the chart's own step route.
+   * `code: "PERIO_PAUSED"` says the step stopped short — Open Dental did not
+   * answer — and `errorMessage` says why; nothing is re-sent before a read.
+   */
   outcomes: z.array(SendOutcomeSchema),
-  /** Counts, not a verdict. `written + failed` is what was attempted. */
+  /** Counts, not a verdict. A perio chart still `Sending` is in neither. */
   written: z.number().int(),
   failed: z.number().int(),
 });
@@ -1106,5 +1173,27 @@ export const HYG_VISIT_ERROR_CODES = [
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
   "NOT_STAGED",
+  // H4 slice 10 and item 12. Since item 15 a staged chart rides the visit Send;
+  // this code now refuses only a staged CORRECTION, which is sent from its page.
+  "PERIO_SENDS_FROM_ITS_CHART",
+  "PATIENT_CHANGED",
+  "EXAM_DATE_CHANGED",
+  "NO_PROVIDER",
+  "PROVIDER_CHANGED",
+  "PAYLOAD_INVALID",
+  "PERIO_SEND_IN_PROGRESS",
+  "PERIO_SEND_BUSY",
+  "PERIO_EXAM_NOT_DELETABLE",
+  "PERIO_EXAM_EXISTS",
+  // Open Dental's own answer to the perio undo.
+  "OD_REFUSED",
+  "OD_NO_ANSWER",
+  "OD_DELETE_UNCONFIRMED",
+  // Item 13: correcting a chart that is already in Open Dental.
+  "NOT_AMENDABLE",
+  "NOT_AMENDING",
+  "AMEND_BASE_CHANGED",
+  "AMEND_BASE_MISSING",
+  "NOT_REPLACED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

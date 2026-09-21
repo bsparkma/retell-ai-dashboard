@@ -54,8 +54,18 @@ const contract = require('../../hyg/contract.gen.cjs');
  * The states a client's request may leave a staged write in.
  *
  * Note what is NOT here: Sending, Written, Failed. See the header.
+ *
+ * `Amending` (item 13) is perio's, and it is client-mutable for the same reason
+ * `Draft` is: it holds readings nobody has sent yet. What makes it different
+ * from `Draft` is that an exam for this visit IS in Open Dental — the readings
+ * here are the correction being prepared for it, and the chart says so.
  */
-const CLIENT_MUTABLE_STATES = Object.freeze(['Draft', 'Staged']);
+const CLIENT_MUTABLE_STATES = Object.freeze(['Draft', 'Staged', 'Amending']);
+
+/** The state an unsent perio chart rests in: a correction, or a first draft. */
+function perioRestingState(amending) {
+  return amending ? 'Amending' : 'Draft';
+}
 
 /** Columns of hyg_treatment_item, in one place, so the SELECTs cannot drift. */
 const ITEM_COLUMNS = `
@@ -472,7 +482,16 @@ async function stageWrite(pool, { office, visit, kind, actor, compose }) {
     };
   }
 
-  const composed = compose(kind, { visit, items: visit.items, actor });
+  // PERIO composes from its own stored draft — the chart entered site by site
+  // into this same row. Every other kind composes from the visit alone.
+  const draftRow =
+    kind === PERIO_KIND ? await getStagedWrite(pool, { office, visitId: visit.visitId, kind }) : null;
+  const composed = compose(kind, {
+    visit,
+    items: visit.items,
+    actor,
+    draft: draftRow ? draftRow.payload : null,
+  });
   if (composed.unavailable) {
     return { ok: false, code: 'STAGED_WRITE_KIND_UNAVAILABLE', message: composed.unavailable };
   }
@@ -523,6 +542,7 @@ async function unstageWrite(pool, { office, visitId, kind, actor }) {
   if (found.rowCount === 0) {
     return { ok: false, code: 'STAGED_WRITE_NOT_FOUND', message: 'Nothing of that kind is staged' };
   }
+  if (kind === PERIO_KIND) return unstagePerio(pool, { office, visitId, actor, state: found.rows[0].state });
   if (!CLIENT_MUTABLE_STATES.includes(found.rows[0].state)) {
     return {
       ok: false,
@@ -633,8 +653,254 @@ async function retryStagedWrite(pool, { office, visitId, kind, actor }) {
   return res.rowCount === 1;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio chart (H4 slice 10)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════
+// THE CHART IS THE VISIT'S `perio` STAGED-WRITE ROW, IN `Draft`
+// ═════════════════════════════════════════════════════════════════════════════
+// No new table and no migration. `hyg_staged_write` already has a `perio` kind,
+// a `Draft` state nothing used, a jsonb `payload` and UNIQUE (visit_id, kind) —
+// which is one chart per visit, on the server, exactly where every staged write
+// has lived since slice 2. Entering readings writes the chart into that row's
+// payload in `Draft`; staging composes the preview from it and moves it to
+// `Staged`.
+//
+// It is NOT a slip field. The slip is saved whole on a debounce by a different
+// form, and two forms replacing one document would each erase the other's last
+// few seconds of typing.
+//
+// ═════════════════════════════════════════════════════════════════════════════
+// CHANGING A STAGED CHART UN-STAGES IT
+// ═════════════════════════════════════════════════════════════════════════════
+// The staged preview is a snapshot of readings. A reading changed after staging
+// makes that snapshot wrong, so the save moves the row back to `Draft` and clears
+// the preview — the tray then shows a draft, not a stale preview beside a Stage
+// button that looks already done. A save that changes NOTHING about the
+// readings (a repeated debounce, a flipped sweep direction) leaves it staged.
+
+const PERIO_KIND = 'perio';
+
+/**
+ * A stored perio payload → a normalised chart, or null when it will not parse.
+ * @param {unknown} payload
+ */
+function readPerioChart(payload) {
+  const raw = payload && typeof payload === 'object' ? payload.chart : undefined;
+  const parsed = contract.PerioChartSchema.safeParse(raw);
+  return parsed.success ? contract.normalizePerioChart(parsed.data) : null;
+}
+
+/**
+ * The visit's perio chart and the row that holds it.
+ *
+ * A row whose chart this build cannot read is reported as an EMPTY chart with
+ * `unreadable: true` and a log line — the slip's rule, for the slip's reason: a
+ * half-parsed chart would look complete while missing readings.
+ *
+ * @returns {Promise<{ row: Record<string, any>|null, chart: object, unreadable: boolean }>}
+ */
+async function getPerio(pool, { office, visitId }) {
+  const row = await getStagedWrite(pool, { office, visitId, kind: PERIO_KIND });
+  if (!row) return { row: null, chart: contract.emptyPerioChart(), unreadable: false };
+  const chart = readPerioChart(row.payload);
+  if (!chart) {
+    console.warn(
+      `[hygperio] visit ${visitId} holds a perio chart this build cannot read; rendering an empty one`
+    );
+  }
+  return { row, chart: chart || contract.emptyPerioChart(), unreadable: chart === null };
+}
+
+/**
+ * Store the chart as a Draft.
+ *
+ * @returns {Promise<{ ok: true, row: Record<string, any>, changed: boolean }
+ *                  | { ok: false, code: string, message: string }>}
+ */
+async function savePerioDraft(pool, { office, visit, chart, actor, amending = false }) {
+  const resting = perioRestingState(amending);
+  // An amendment moves between `Amending` and `Staged`; a first chart between
+  // `Draft` and `Staged`. Naming both ends here keeps a correction from being
+  // filed as a fresh draft, which would lose the fact that an exam exists.
+  const mutableHere = amending ? "('Amending', 'Staged')" : "('Draft', 'Staged')";
+  const next = contract.normalizePerioChart(contract.PerioChartSchema.parse(chart));
+
+  const existing = await getStagedWrite(pool, { office, visitId: visit.visitId, kind: PERIO_KIND });
+  if (existing && !CLIENT_MUTABLE_STATES.includes(existing.state)) {
+    return {
+      ok: false,
+      code: 'STAGED_WRITE_IMMUTABLE',
+      message:
+        `This perio chart is ${String(existing.state).toLowerCase()} and cannot be changed here. ` +
+        'A chart that has gone to Open Dental keeps its own record.',
+    };
+  }
+
+  const payload = { kind: PERIO_KIND, aptNum: visit.aptNum, patNum: visit.patNum, chart: next };
+
+  if (existing) {
+    const stored = readPerioChart(existing.payload);
+    if (stored && contract.samePerioReadings(stored, next)) {
+      if (JSON.stringify(stored.sweep) === JSON.stringify(next.sweep)) {
+        return { ok: true, row: existing, changed: false };
+      }
+      // Only the direction she types in changed. The readings — and so the
+      // preview a staged row carries — did not, so the state stays.
+      const res = await pool.query(
+        `UPDATE hyg_staged_write SET payload = $4::jsonb, updated_at = now()
+          WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state IN ${mutableHere}
+          RETURNING ${STAGED_COLUMNS}`,
+        [visit.visitId, office, PERIO_KIND, JSON.stringify(payload)]
+      );
+      if (res.rowCount === 0) return { ok: false, code: 'STAGED_WRITE_IMMUTABLE', message: 'This perio chart can no longer be changed here.' };
+      return { ok: true, row: res.rows[0], changed: false };
+    }
+  }
+
+  const counts = contract.countPerioChart(next);
+  // ON CONFLICT … WHERE re-asserts the mutable states, so a send that claimed
+  // the row between the SELECT above and this statement wins and this save is
+  // refused, rather than dragging a Sending row back to Draft.
+  const res = await pool.query(
+    `INSERT INTO hyg_staged_write
+       (visit_id, office, kind, state, title, summary, preview, payload, staged_by, staged_at)
+     VALUES ($1, $2, $3, $7, $4, $5, '[]'::jsonb, $6::jsonb, NULL, NULL)
+     ON CONFLICT (visit_id, kind) DO UPDATE
+       SET state = $7, title = EXCLUDED.title, summary = EXCLUDED.summary,
+           preview = '[]'::jsonb, payload = EXCLUDED.payload,
+           staged_by = NULL, staged_at = NULL, error_message = NULL, updated_at = now()
+       WHERE hyg_staged_write.office = EXCLUDED.office
+         AND hyg_staged_write.state IN ${mutableHere}
+     RETURNING ${STAGED_COLUMNS}`,
+    [
+      visit.visitId,
+      office,
+      PERIO_KIND,
+      'Perio chart',
+      (amending ? 'Correction - ' : 'Draft - ') + contract.perioProgressLabel(counts),
+      JSON.stringify(payload),
+      resting,
+    ]
+  );
+  if (res.rowCount === 0) {
+    return { ok: false, code: 'STAGED_WRITE_IMMUTABLE', message: 'This perio chart can no longer be changed here.' };
+  }
+  await touchVisit(pool, { office, visitId: visit.visitId, actor });
+  return { ok: true, row: res.rows[0], changed: true };
+}
+
+/**
+ * Take a staged chart off the list — back to Draft, readings KEPT.
+ *
+ * Every other kind is deleted on un-stage, because it is recomposed from the
+ * visit on the next stage. A perio chart IS its row: deleting it would throw
+ * away up to 192 readings to answer "not yet". A Draft is already off the list.
+ */
+async function unstagePerio(pool, { office, visitId, actor, state, amending = false }) {
+  if (state === 'Draft') {
+    return {
+      ok: false,
+      code: 'STAGED_WRITE_NOT_FOUND',
+      message: 'The perio chart is a draft and is not staged. Its readings stay on the visit.',
+    };
+  }
+  if (!CLIENT_MUTABLE_STATES.includes(state)) {
+    return {
+      ok: false,
+      code: 'STAGED_WRITE_IMMUTABLE',
+      message:
+        `This perio chart is ${String(state).toLowerCase()} and cannot be removed. ` +
+        'What already went to a chart keeps its record here.',
+    };
+  }
+  // A correction taken off the list goes back to `Amending`, not `Draft`: the
+  // exam it corrects is still in Open Dental, and the chart must keep saying so.
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = $4, preview = '[]'::jsonb, staged_by = NULL, staged_at = NULL,
+            updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Staged'`,
+    [visitId, office, PERIO_KIND, perioRestingState(amending)]
+  );
+  if (res.rowCount === 0) {
+    return { ok: false, code: 'STAGED_WRITE_IMMUTABLE', message: 'This perio chart is no longer staged.' };
+  }
+  await touchVisit(pool, { office, visitId, actor });
+  return { ok: true };
+}
+
+/**
+ * Written → Amending: a sent chart, opened for a correction (item 13).
+ *
+ * The readings, the preview and `written_ref` are all LEFT ALONE — she edits
+ * what was written rather than starting again, and the row keeps pointing at
+ * the exam that is in Open Dental until a correction actually replaces it.
+ * Nothing here reaches Open Dental.
+ *
+ * @returns {Promise<boolean>} whether this call opened it
+ */
+async function beginPerioAmendment(pool, { office, visitId }) {
+  // `written_ref` goes with the state: the CHECK is a biconditional, so only a
+  // `Written` row may carry one. Nothing is lost — the exam number and the chart
+  // it wrote live on the send row, which is the record of what Open Dental
+  // holds, and abandoning the correction puts the same sentence back.
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Amending', written_ref = NULL, error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Written'`,
+    [visitId, office, PERIO_KIND]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Amending/Staged → Written: the correction is abandoned.
+ *
+ * The chart goes back to the readings Open Dental holds — passed in, because
+ * only the send knows what it wrote — and the preview is recomposed from them,
+ * so the row describes the exam again rather than a correction nobody sent.
+ * Open Dental is untouched by all of this.
+ *
+ * @returns {Promise<boolean>} whether this call closed it
+ */
+async function cancelPerioAmendment(pool, { office, visit, chart, composed, actor, writtenRef }) {
+  const payload = {
+    kind: PERIO_KIND,
+    aptNum: visit.aptNum,
+    patNum: visit.patNum,
+    chart: contract.normalizePerioChart(chart),
+  };
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Written', payload = $4::jsonb, preview = $5::jsonb, title = $6,
+            summary = $7, written_ref = $8, error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state IN ('Amending', 'Staged')`,
+    [
+      visit.visitId,
+      office,
+      PERIO_KIND,
+      JSON.stringify(payload),
+      JSON.stringify(composed.preview),
+      composed.title,
+      composed.summary,
+      writtenRef,
+    ]
+  );
+  if (res.rowCount === 1) await touchVisit(pool, { office, visitId: visit.visitId, actor });
+  return res.rowCount === 1;
+}
+
 module.exports = {
   CLIENT_MUTABLE_STATES,
+  PERIO_KIND,
+  perioRestingState,
+  beginPerioAmendment,
+  cancelPerioAmendment,
+  getPerio,
+  savePerioDraft,
+  readPerioChart,
   fingerprintPreview,
   getStagedWrite,
   markSending,

@@ -165,6 +165,9 @@ test('a write that has left Draft/Staged is immutable to this slice', async () =
     app.db.hyg_staged_write[0].state = 'Written';
     app.db.hyg_staged_write[0].sent_by = 'hygienist@carein.ai';
     app.db.hyg_staged_write[0].sent_at = new Date();
+    // A `Written` row carries what it wrote: the CHECK is a biconditional, and
+    // the fake has enforced it since item 13.
+    app.db.hyg_staged_write[0].written_ref = 'Document 4242';
 
     const restage = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, {
       body: { kind: 'router' },
@@ -241,7 +244,11 @@ test('a handoff with no treatment on it is refused, not sent empty', async () =>
   }
 });
 
-test('perio refuses honestly instead of staging an empty envelope', async () => {
+test('perio with no readings refuses honestly instead of staging an empty chart', async () => {
+  // Slice 10 builds the chart, so perio is no longer UNAVAILABLE — but a visit
+  // with no readings on it still has nothing to stage, and says so rather than
+  // putting an empty chart on the list. routes/hyg/hygPerio.test.js covers the
+  // chart itself.
   const app = await bootHygApp({ od: dayOd() });
   try {
     await visitWithNothingAnswered(app);
@@ -249,10 +256,8 @@ test('perio refuses honestly instead of staging an empty envelope', async () => 
       body: { kind: 'perio' },
     });
     assert.equal(res.status, 422);
-    assert.equal(res.body.code, 'STAGED_WRITE_KIND_UNAVAILABLE');
-    // Says WHY, and the why is the contingency: a perio measurement written
-    // into Open Dental cannot be deleted.
-    assert.match(res.body.error, /cannot be deleted/);
+    assert.equal(res.body.code, 'NOTHING_TO_STAGE');
+    assert.match(res.body.error, /no perio readings/);
     assert.equal(app.db.hyg_staged_write.length, 0);
   } finally {
     await app.close();

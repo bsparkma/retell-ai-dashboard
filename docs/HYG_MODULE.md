@@ -877,6 +877,315 @@ visit whose chart note is missing.
 
 ### What is still not here
 
-Perio. `POST /perioexams` and `/periomeasures` are not called and the writer
-does not know their names — a stray Probing row is PERMANENT in Open Dental
-(only Mobility and SkipTooth can be deleted). H4.
+The perio SEND. `POST /perioexams` and `/periomeasures` are not called and the
+writer does not know their names — a stray Probing row is PERMANENT in Open
+Dental (only Mobility and SkipTooth can be deleted). §12 is the chart, which
+reads and stages; the send is the next slice.
+
+---
+
+## 12. The perio chart (H4 slice 10) — read, display, stage
+
+`/hyg/visit/:aptNum/perio?office=&date=`, reached from the perio row of the
+visit's tray. **Entering, storing and staging a chart write nothing to Open
+Dental.** Sending one is §13.
+
+### Scope, locked 2026-08-13
+
+Six probing depths per tooth plus Open Dental's four per-site flags
+(`BleedSupPlaqCalc`: bleeding 1, suppuration 2, plaque 4, calculus 8), and
+SkipTooth. **No recession, mobility, furcation, gingival margin or CAL.** CAL is
+derived by Open Dental and never stored, so it is not a field anywhere — the
+chart schema is `.strict()` and a `cal` key is a 400.
+
+### Where the chart lives: the visit's `perio` staged-write row
+
+No migration. `hyg_staged_write` already had a `perio` kind, a `Draft` state
+nothing used, a jsonb `payload` and `UNIQUE (visit_id, kind)`:
+
+```
+entering readings  → PUT  /visit/:aptNum/perio       → row in Draft, payload.chart
+staging            → POST /visit/:aptNum/staged-writes {kind:'perio'}
+                                                     → composed from payload.chart → Staged
+un-staging         → DELETE /visit/:aptNum/staged-writes/perio
+                                                     → back to Draft, readings KEPT
+```
+
+It is not a slip field: the slip is saved whole by a different form on its own
+debounce, and two forms replacing one document would each erase the other's
+last few seconds.
+
+- **A changed reading un-stages a staged chart.** The preview is a snapshot of
+  readings; once one changes it is wrong, so the save returns the row to Draft
+  and clears the preview. A save that changes no reading — a repeated debounce,
+  a flipped entry direction — leaves it staged.
+- **Un-staging keeps the readings.** Every other kind is deleted on un-stage
+  because it is recomposed from the visit; a perio chart IS its row.
+- **The visit's batch send refuses a perio confirmation for the whole batch**
+  (`422 PERIO_SENDS_FROM_ITS_CHART`), and the tray leaves a staged chart out of
+  Send and says so. A chart is sent from its own page (§13).
+
+### Three routes, all in `routes/hyg/visit.js`
+
+| Route | Reaches | Audit |
+| --- | --- | --- |
+| `GET /visit/:aptNum/perio` | Postgres only | `hyg_perio` + `hyg_perio_patient` when a visit exists |
+| `PUT /visit/:aptNum/perio` | Postgres only | `hyg_perio` UPDATE |
+| `GET /visit/:aptNum/perio/prior?date=` | Open Dental, GETs only | `hyg_perio_prior` + `hyg_perio_prior_patient` |
+
+They are in `visit.js` because the mutation allow-list in
+`hygNoOdWrites.test.js` names one file. The chart and the prior exam are
+separate requests so the grid paints from Postgres while two paged Open Dental
+reads are still running.
+
+### The prior exam — `services/hyg/odPerio.js`
+
+`GET /perioexams?PatNum=` → newest by ExamDate, then PerioExamNum;
+`GET /periomeasures?PerioExamNum=` → one row per (tooth, SequenceType). **Both are
+paged past 100** through `odDay.pagedList` — a full exam is 32 Probing + 32
+BleedSupPlaqCalc rows plus whatever else was charted, which is already past one
+page. **Every row is checked against what was asked for**: an exam row is kept
+only if its own PatNum matches, a measure row only if its own PerioExamNum does,
+because RCM found list endpoints that silently ignore an unknown filter.
+
+The answer is three-way, and the page draws four states:
+
+| | means |
+| --- | --- |
+| `found` | an exam, with whatever readings it holds; `truncated` when a later page failed |
+| `none` | Open Dental answered and there is no exam — an honest empty, never zeros |
+| `unavailable` | Open Dental did not answer, with its own status line — not "no history" |
+| *(loading)* | the request is still out |
+
+A refusal about the appointment itself (office not ready, `PATIENT_CHANGED` when
+the appointment moved to another patient since the visit was opened) is a fifth
+display.
+
+`[hygperio] office=… apt=… prior=found|none|unavailable od_perio_reads=n ms=…`
+— counts and milliseconds, never a PatNum or a reading.
+
+### Entry order is load-bearing
+
+`shared/hyg/perio.ts` `chartingOrder` is the order a hygienist calls numbers out
+loud, and voice will lean on it. Sites are walked in SCREEN order, which is
+anatomical: distal-first on the patient's right (#1–#8, #25–#32), mesial-first
+on the left. The default sweep is one continuous snake — upper facial →, upper
+lingual ←, lower lingual →, lower facial ← — and each sweep's direction can be
+flipped. `tests/hyg-perio.test.ts` pins the seams between sweeps.
+
+Keys (`features/hyg/perio/entry.ts`): `0–9` depth and advance · `Shift+0–9`
+10–19 · `B S P C` flags · `X` skip tooth · `→`/Space next · `←` back ·
+Backspace takes back the last reading. A flag lands on the reading just entered
+("3, 2, 3 — bleeding"), otherwise on the cursor, and the page names the target.
+
+A partial chart stages and is labelled partial everywhere, in one set of words:
+`Partial chart: 84 of 192 sites charted (2 teeth skipped)`.
+
+### Touch targets
+
+Each site cell is 44px tall but about 20px wide: 48 sites across 1180px does not
+fit three 44px-wide targets per tooth without scrolling the arch sideways, and a
+scrolling chart hides the teeth being compared. Cells are for pointing at a
+site; the keypad under the grid (0–19, flags, back/next, skip) is the touch
+entry path and every key on it is 44px.
+
+## 13. The perio send (H4 item 12)
+
+A staged chart is sent from its own page. **Every rule below is something the
+arch-string probe measured on roland staging** (`docs/reports/feature-hyg-perio-arch-probe.md`
+§4), not something Open Dental's docs imply.
+
+### The shape: one POST where a string can say it, rows where it cannot
+
+```
+confirm   fingerprint + exam date + provider, re-derived server-side → send row, Staged → Sending
+exam      POST /perioexams  { PatNum, ExamDate, ProvNum, Note, <every expressible arch string> }
+tail      POST /periomeasures, one per (tooth, SequenceType) the strings could not carry
+verify    GET /periomeasures?PerioExamNum= (paged) → every site vs the staged chart
+          → Written only on a full match; otherwise incomplete, with the sites named
+```
+
+A full chart of 0–9 readings with no gaps is **one** Open Dental write.
+
+### When an arch may go as a string — `shared/hyg/perioSend.ts`
+
+`perioArchVerdict(chart, field)` sends a string only when ALL hold:
+
+- every charted depth on the arch is **0–9** — a `10` is written as `1`,`0` on two
+  sites and shifts everything after it, silently;
+- the charted sites run **unbroken from position 1** — nothing holds a place, so a
+  gap would hand its position to the next reading (a trailing gap is fine: the
+  string stops);
+- **no flag sits on a site with no depth** — a flag letter rides the digit before it.
+
+An empty arch sends no string at all. **A site that was not charted is never
+written as 0**; per-row bodies carry `-1`.
+
+**The jaw rule.** Open Dental keeps one Probing row per tooth for both sides, so
+if either arch of a jaw goes row by row, both do (`partner`). Otherwise a string
+would create the row and the other side would need a `PUT` onto it — a verb the
+probe never exercised, onto a row that cannot be deleted. It costs no extra
+requests.
+
+**The position table is the probe's**, copied row for row, and
+`tests/hyg-perio-send-plan.test.ts` re-encodes the chart the probe read back into
+exactly the strings the probe sent. Do not re-derive it.
+
+### Skipped teeth
+
+A skipped tooth is always a `SkipTooth` row after the exam. Before a charted tooth
+it is a gap, so that arch goes row by row. **Missing third molars (#1, #16, #17,
+#32) therefore send many real charts down the row-by-row path** — an arch whose
+FIRST tooth is skipped cannot be a string. Correct, slower, and read back the same
+way.
+
+### Routes, all in `routes/hyg/visit.js`
+
+| Route | Does | Audit |
+| --- | --- | --- |
+| `GET /visit/:aptNum/perio/send` | where the latest send stands; Postgres only | `hyg_perio_send` READ |
+| `POST /visit/:aptNum/perio/send?date=` | confirm, then the first step | UPDATE for the confirm; one CREATE per write |
+| `POST /visit/:aptNum/perio/send/step` | the next bounded step (≤12 rows) | one CREATE per write |
+| `POST /visit/:aptNum/perio/send/delete-exam` `{ examNum }` | the undo | one DELETE; a guard refusal is a denial row |
+
+The page calls step until the send finishes, stops or pauses. **Every write
+happens inside a request the confirming person made** — leaving the page pauses
+the send, and the next step reads Open Dental before it writes anything.
+
+### States — `hyg_perio_send` (migration 1788500000000)
+
+| state | means | staged write |
+| --- | --- | --- |
+| `posting` | the exam POST is not confirmed yet | Sending |
+| `filling` | the exam exists; rows going in, or verifying | Sending |
+| `written` | every site read back and matched | Written, `Perio exam N: n sites read back and match` |
+| `incomplete` | the exam exists and does NOT match | Failed, sites named |
+| `refused` | Open Dental refused the exam; nothing created | Failed |
+| `deleted` | the undo removed the exam this send created | back to Staged, same preview |
+
+One row per send, not per write. `prior_exam_nums` is recorded before the exam
+POST, so a POST that landed without answering is **adopted** on the next step,
+never posted twice; a POST that answered OK but is not in the list afterwards
+stops the send rather than risk a second exam. A step holds a **lease**
+(`step_token`), renewed before every write, so two tabs cannot both read "absent"
+and both post a permanent row. The app role has `SELECT, INSERT, UPDATE` and no
+`DELETE`, and there is no cascade from the visit: a send that created an exam is
+a record of something in a chart.
+
+A Failed chart goes back on the list (`POST …/staged-writes/perio/retry`) only
+when its last send left nothing unaccounted for — refused, deleted, or stopped
+without an exam it could name. Otherwise `409 PERIO_EXAM_EXISTS`.
+
+### The undo
+
+`DELETE /perioexams/{n}` removes the exam and every row in it — the one complete
+undo perio has. `deletePerioExamForSend` refuses unless: the send knows its exam;
+the request repeats that exact number; the send is `filling` or `incomplete` (a
+written chart is corrected in Open Dental); no step holds the lease; and Open
+Dental lists that exam for THIS patient before the delete and not after. The page
+adds an explicit tick-box.
+
+The transport can issue exactly one DELETE: `apiDeleteRaw` in
+`config/openDental.js` refuses any path that is not `/perioexams/<n>`, under
+`OPENDENTAL_WRITE_DISABLED`.
+
+### Writes live in one registered file
+
+`services/hyg/odPerioWriter.js` is on `OD_WRITE_LAYER` in `hygNoOdWrites.test.js`
+beside `odWriter.js`: the exam POST, the measurement POST and the exam DELETE,
+and nothing else — no PUT, no CAL, no recession. It refuses a malformed arch
+string before the transport. `perioSend.js` decides; it cannot reach the transport.
+
+`[hygperio] office=… exam=… arches=n rows=n deep=n mismatches=n ms=…` — counts and
+milliseconds per step, never a PatNum or a reading.
+
+## 14. Correcting a chart that is already in Open Dental (H4 item 13)
+
+A sent perio chart is **amendable**. Slice 2's rule — `Written` is terminal —
+came from NOTES, which Open Dental stores append-only: a sent note can never be
+unsaid. Perio measurements are not notes. They are editable in Open Dental's own
+chart, and a hygienist fixing a mistyped depth is routine clinical work. What
+stays true is that a sent chart is never *silently* editable: a correction is
+deliberate, visible and audited.
+
+### The swap, and its order
+
+`PUT /periomeasures` is documented by Open Dental and **has never been exercised
+against a live database** — exactly the status arch strings had before the probe
+found they corrupt a chart silently (§13, and the probe report §4 Q3). So a
+correction uses only the two proven operations:
+
+```
+POST the corrected exam  →  read back EVERY site  →  only then DELETE the old one
+```
+
+**Never the other way round.** A window with no perio exam at all is worse than a
+window with a wrong digit in one, and a re-create that failed would leave the
+patient with nothing. If the POST is refused or the read-back does not match,
+NOTHING is deleted and the chart says the correction did not go through. The two
+exams exist together for a moment, on the same date; that is expected and
+transient.
+
+`hygPerioAmend.test.js` asserts the ordering against a single ordered write log
+(`POST exam 7002`, `DELETE exam 7001`), and asserts an empty delete log on every
+failure path.
+
+### The states
+
+| | |
+| --- | --- |
+| `Written` + a live send | in Open Dental; **Amend chart** offers the correction |
+| `Amending` | editable again, holding what OPEN DENTAL HOLDS; nothing written |
+| `Staged` (with a live send) | a correction ready to send |
+| `Written` again | `written_ref` says `(amended; replaced exam N, now deleted)` |
+
+`Amending` is a new staged-write state (migration `1788600000000`), client-mutable
+like `Draft`. **`written_ref` goes with the state**: its CHECK is a biconditional,
+so opening a correction clears it and abandoning one restores the same sentence —
+`perioSend.writtenRefFor` is the single definition of it. Nothing is lost, because
+the exam number and the chart it wrote live on the send row.
+
+### What a correction is diffed against
+
+The send row now carries `chart` — what that send WROTE, recorded when it
+verified — plus `supersedes_exam_num`, `supersedes_deleted_at` and `amend_diff`.
+The **live send** is the most recent one in state `written`; its exam is what is
+in Open Dental now, and it is what a correction replaces. (`created_at` defaults
+to `clock_timestamp()` so two sends in one transaction still order: `now()` is the
+transaction's clock and would tie.)
+
+Opening a correction READS the exam back from Open Dental and loads those
+readings, so she edits what is actually there — if somebody corrected a site in
+Open Dental, she sees their correction. Confirming re-reads it: if the exam
+changed since, the send is refused with `AMEND_BASE_CHANGED` and nothing is
+written, rather than quietly reverting somebody's work.
+
+### Routes
+
+| Route | Does | Open Dental |
+| --- | --- | --- |
+| `POST /visit/:aptNum/perio/amend` | open a Written chart for a correction | reads only |
+| `POST /visit/:aptNum/perio/amend/cancel` | abandon it; the chart goes back | nothing |
+| `POST /visit/:aptNum/perio/send` (+`/step`) | the correction itself — the swap | POST, then DELETE |
+| `POST /visit/:aptNum/perio/send/remove-replaced` | finish a swap whose DELETE did not land | DELETE |
+
+The **undo** from item 12 (`/perio/send/delete-exam`) still names only the exam
+its own send created. It can never be pointed at the exam being replaced: that
+one is removed only as step 3 of a verified swap.
+
+### The audit trail, and what is deliberately NOT in it
+
+One row when a chart is opened for correction (`hyg_perio_amend`, `prior_state
+'written'`), one when the swap completes (`source_ref perio_exam:7001->7002`), and
+**one per changed site** (`hyg_perio_amend_site`, `resource_id 900001:14-B`).
+
+The readings themselves are NOT in the audit log. `audit_log` is identifiers only
+— its own columns say a value in it must never be PHI, and `prior_state` is
+slug-shaped by CHECK. The old and new numbers live in `hyg_perio_send.amend_diff`
+and on the screen. A test asserts no depth or flag word ever reaches the trail.
+
+### Deliberately not built
+
+No free-text reason (the diff is the record), no time limit on amending, no
+per-role restriction beyond module access, and **no `PUT /periomeasures`** — a
+surgical single-site edit needs its own probe first.

@@ -54,6 +54,7 @@ import { RCM_OFFICE_LABELS } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import { SHADOW_MODE_COPY } from "@/features/rcm/posting";
 import { rollUp } from "@/features/rcm/rollup";
+import Explainer from "@/components/rcm/Explainer";
 
 /**
  * The class that survives printing.
@@ -108,9 +109,23 @@ export default function ShadowModeBanner({
           <h2 className="text-base font-semibold text-foreground">
             Posting is switched off for {RCM_OFFICE_LABELS[office]}
           </h2>
-          <p className="mt-1 max-w-3xl text-sm text-foreground" data-testid="shadow-banner-body">
-            {SHADOW_MODE_COPY.banner}
-          </p>
+          {/*
+            S7 · THE HEADING IS THE STATE; THE BODY IS REASSURANCE, AND FOLDS.
+
+            "Posting is switched off for Roland" is the fact, and this screen
+            already says it three more times — the header pill, the greyed Post
+            button's own reason, and the rail's post step. The forty-five words
+            under it answer a DIFFERENT question ("so is my work lost?"), which
+            is worth answering and is not worth reading four times a day.
+
+            It is a fold, not a deletion: `SHADOW_MODE_COPY.banner` is unchanged
+            and W-8's one-state-sentence sweep still finds it exactly once.
+          */}
+          <Explainer testId="shadow-banner-body-fold" label="What that means for this check">
+            <p className="max-w-3xl text-foreground" data-testid="shadow-banner-body">
+              {SHADOW_MODE_COPY.banner}
+            </p>
+          </Explainer>
           {/*
             WHO CAN SWITCH IT ON — a disclosure, closed. She is not being asked
             to fix this, so the answer is one click away rather than a paragraph

@@ -92,6 +92,7 @@ import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { approveHref } from "@/features/rcm/flow";
 import { verdictBlock, type VerdictBlock } from "@/features/rcm/verdictBlock";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import Explainer from "@/components/rcm/Explainer";
 
 /**
  * `claim` is the DETAIL claim, not `WorkbenchClaim`.
@@ -1789,6 +1790,17 @@ function MatchMeta({
           data-testid="match-ambiguous"
         >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+          {/*
+            S7 LOOKED AT TRIMMING THE SECOND SENTENCE AND PUT IT BACK.
+
+            It reads as a duplicate of `MatchGuidance`'s paragraph one panel up,
+            and it is not one: that paragraph is now behind a fold, and two
+            earlier slices deliberately kept THIS chip outside every fold
+            because it changes what to do rather than describing how the search
+            ran (`rcm-stage-c3.test.tsx`, `rcm-workbench.test.tsx`). With the
+            guidance folded, this is the only sentence on the screen saying out
+            loud that the app has NOT chosen. It stays whole.
+          */}
           <span>
             The top candidates are within {rules.ambiguityMargin} points of each other. The ranking
             below is not a recommendation — read the evidence and decide.
@@ -2011,7 +2023,16 @@ function CandidateCard({
             onClick={onConfirm}
             disabled={disabled || isConfirmed}
             data-testid={`confirm-${c.odClaimNum}`}
-            className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            /*
+              SECONDARY (S7). One of these renders per candidate, and they are
+              co-equal: the app has ranked them and has deliberately not chosen.
+              Painting every one of them solid made a list of alternatives look
+              like a row of recommendations — and on the check page's own count
+              it was three of the four primary-styled buttons on the screen.
+              The one place the app IS confident keeps its solid button, in
+              `MatchGuidance`.
+            */
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
             <CheckCircle2 size={14} />
             {isConfirmed ? "Confirmed" : "This is the one"}
@@ -2068,10 +2089,16 @@ function ReviewBox({
           </span>
         )}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Worklist hygiene only — this changes nothing in Open Dental. A claim with no chart match can
-        still be finished work.
-      </p>
+      {/* S7: twenty words explaining a control whose own label is *Mark it
+          reviewed*. Worth having — "a claim with no chart match can still be
+          finished work" is the sentence that unsticks somebody — and worth one
+          click rather than a paragraph every visit. */}
+      <Explainer testId="mark-reviewed-why" label="What this does">
+        <p>
+          Worklist hygiene only — this changes nothing in Open Dental. A claim with no chart match
+          can still be finished work.
+        </p>
+      </Explainer>
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}

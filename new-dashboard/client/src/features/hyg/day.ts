@@ -7,6 +7,7 @@
  * a missing duration renders as nothing and never as a guess, and a chair with
  * no appointments does not become a column that implies it was closed.
  */
+import { OFFICE_TIME_ZONE } from "@shared/hyg/contract";
 import type { HygAppointment, HygDayResponse, HygOperatory } from "@shared/hyg/contract";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14,33 +15,89 @@ import type { HygAppointment, HygDayResponse, HygOperatory } from "@shared/hyg/c
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Today, as the LOCAL calendar date.
+ * Today, as the OFFICE's calendar date — Central, always.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * NEITHER UTC NOR THE DEVICE'S ZONE
+ * ═════════════════════════════════════════════════════════════════════════════
  * `toISOString().slice(0,10)` is the obvious version and it is wrong for
- * exactly the hours that matter: it is UTC, so anywhere west of Greenwich it
- * flips to tomorrow during the evening. Both practices are Central, so at 7pm
- * a hygienist opening the app would be shown the next day's schedule under the
- * heading "Today". Building the string from the local parts is the fix.
+ * exactly the hours that matter: it is UTC, so during the Central evening it
+ * has already flipped to tomorrow and a hygienist would be handed tomorrow's
+ * schedule.
+ *
+ * Building the string from the DEVICE's local parts fixes that one and opens
+ * the mirror of it. "Which day is it?" is a question about the practice, not
+ * about whoever is holding the iPad: a device east of Central rolls over
+ * early, one west of it rolls over late, and a device whose clock zone is
+ * simply wrong is wrong all day. All three look completely normal on screen.
+ *
+ * So the day is resolved in `OFFICE_TIME_ZONE`. `en-CA` is the locale because
+ * it formats as `YYYY-MM-DD` natively, and `Intl` carries the zone database so
+ * the boundary follows DST with nobody maintaining an offset table — the same
+ * two decisions, for the same two reasons, as `backend/services/localDayClock.js`.
  */
 export function todayIso(now: Date = new Date()): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: OFFICE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
 }
 
 /**
- * `date` shifted by whole days, staying on the local calendar.
+ * `date` shifted by whole days.
  *
- * Parsed as local noon rather than midnight: a DST spring-forward moves
- * midnight itself, so "+1 day" from a midnight can land back on the same date.
- * Noon has twelve hours of slack in both directions.
+ * PURE CALENDAR ARITHMETIC, in UTC, on a string that carries no time and no
+ * zone. `2026-09-08` plus one day is `2026-09-09` in every zone on earth, so
+ * involving a zone here can only introduce a way to get it wrong — which the
+ * previous version did: it built a DEVICE-local noon and then formatted that
+ * instant in the OFFICE's zone, so on an iPad far enough east or west the
+ * stepper would skip or repeat a day.
+ *
+ * UTC also removes the DST hazard outright rather than papering it with noon:
+ * UTC has no transitions, so `+1` is always exactly one calendar day.
  */
 export function shiftIsoDate(date: string, days: number): string {
   const [y, m, d] = date.split("-").map(Number);
-  const base = new Date(y, (m ?? 1) - 1, d ?? 1, 12, 0, 0);
-  base.setDate(base.getDate() + days);
-  return todayIso(base);
+  const base = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+  base.setUTCDate(base.getUTCDate() + days);
+  const yy = base.getUTCFullYear();
+  const mm = String(base.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(base.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+/**
+ * Which date the Day View should show once the office day has rolled over.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE BUG THIS CLOSES: A DEVICE THAT IS NEVER CLOSED
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The page picks its date ONCE, when it mounts. This module is built for an
+ * iPad in landscape propped at a chair, and that device is not shut down at
+ * night — so a page opened on Monday is still showing MONDAY's schedule on
+ * Tuesday morning, under Tuesday's own "Today" button, with every card and
+ * every link pointing at the wrong day. Nothing on screen says so.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT ONLY MOVES A DATE NOBODY CHOSE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A hygienist who stepped to tomorrow to look at it must not have that snatched
+ * back at midnight, so the roll is refused unless she is sitting on exactly the
+ * day that HAD been today. Moving a date somebody deliberately picked is a
+ * worse bug than the one being fixed.
+ *
+ * Pure, so the rule can be stated without a clock or a DOM event.
+ *
+ * @param displayed the date currently on screen
+ * @param wasToday  what this page last believed "today" was
+ * @param isToday   what "today" is now, in the office's zone
+ */
+export function rollToNewDay(displayed: string, wasToday: string, isToday: string): string {
+  if (wasToday === isToday) return displayed;
+  if (displayed !== wasToday) return displayed;
+  return isToday;
 }
 
 /** "Tuesday, 8 September" — the heading a hygienist reads to check she is on the right day. */

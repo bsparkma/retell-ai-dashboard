@@ -378,16 +378,47 @@ test('pending-at-unwind ids are recorded, and never also on the spent deny-list'
   }
 
   /*
-   * The 2026-09-01 reseed was UNWOUND on 2026-09-09, so the ids have made the
-   * move this constant's header describes: pending is empty, spent carries one
-   * per target. Whichever list holds them, it is exactly one list.
+   * BOTH LISTS MOVE A WHOLE RUN AT A TIME, and that — not a snapshot of how many
+   * are live today — is the invariant worth pinning.
+   *
+   * This assertion used to read `pending.claims.length === 0, 'nothing is live'`,
+   * which was true only between the 2026-09-09 teardown and the next reseed. The
+   * 2026-09-11 reseed made it false, correctly: seven claims are live again. A
+   * test that has to be edited every time the fixture is rebuilt is pinning the
+   * calendar, not the design.
+   *
+   * What must always hold: a reseed creates exactly one id per target in each
+   * bucket, and the unwind moves that whole set across in one go. So pending is
+   * either EMPTY (no run outstanding) or exactly TARGETS.length (one run live) —
+   * never a partial set — and spent is a whole number of retired runs.
    */
-  assert.equal(pending.claims.length, 0, 'nothing is live');
-  assert.equal(pending.procedures.length, 0);
-  assert.equal(pending.claimProcs.length, 0);
-  assert.equal(spent.claims.length, T.TARGETS.length);
-  assert.equal(spent.procedures.length, T.TARGETS.length);
-  assert.equal(spent.claimProcs.length, T.TARGETS.length);
+  const pendingSizes = [pending.claims.length, pending.procedures.length, pending.claimProcs.length];
+  assert.equal(
+    new Set(pendingSizes).size,
+    1,
+    `pending must carry the same count in every bucket — got ${pendingSizes.join('/')}`
+  );
+  assert.ok(
+    pendingSizes[0] === 0 || pendingSizes[0] === T.TARGETS.length,
+    `pending must be empty or exactly one run (${T.TARGETS.length}) — got ${pendingSizes[0]}`
+  );
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    assert.ok(spent[bucket].length > 0, `${bucket}: at least one run has been retired`);
+    assert.equal(
+      spent[bucket].length % T.TARGETS.length,
+      0,
+      `${bucket}: spent must be a whole number of runs — got ${spent[bucket].length}`
+    );
+  }
+
+  // And a pending run must be complete in every bucket, never half-recorded.
+  for (const bucket of ['claims', 'procedures', 'claimProcs']) {
+    assert.equal(
+      new Set(pending[bucket]).size,
+      pending[bucket].length,
+      `${bucket} has a duplicate among the pending ids`
+    );
+  }
 
   // And nothing may be double-counted inside a bucket.
   for (const bucket of ['claims', 'procedures', 'claimProcs']) {

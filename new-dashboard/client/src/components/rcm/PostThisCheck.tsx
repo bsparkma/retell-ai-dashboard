@@ -448,8 +448,10 @@ export default function PostThisCheck({
           data-testid="post-this-check-monitor-link"
         >
           Open the Posting screen
-        </Link>{" "}
-        to see every check in this practice, line by line, with what each one has already written.
+        </Link>
+        {/* S7: the trailing fourteen-word description of the Posting screen was
+            an explanation of a destination, printed under the link to it. The
+            link's own words say where it goes; the screen says what it holds. */}
       </p>
     </section>
   );

@@ -55,7 +55,7 @@
  * tomorrow is the only date change anybody makes at a chair. Columns scroll
  * horizontally inside their own container so the page body never does.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -86,6 +86,7 @@ import {
   formatDayHeading,
   groupByOperatory,
   providersOnDay,
+  rollToNewDay,
   shiftIsoDate,
   summarise,
   todayIso,
@@ -590,12 +591,54 @@ function DayColumns({ day, appointments }: { day: HygDayResponse; appointments: 
 export default function HygDay() {
   const { office: selection, offices, selected, loading: rosterLoading } = useOffice();
   const [date, setDate] = useState<string>(() => todayIso());
+  /**
+   * What this page believes "today" is, so it can notice the day rolling over.
+   * A ref rather than state: it is read inside an interval and never rendered,
+   * and making it state would re-subscribe the effect on every tick.
+   */
+  const todayRef = useRef<string>(todayIso());
   const [state, setState] = useState<DayState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
   /** Bumped by "Try the names again" — reloads the FILL, never the schedule. */
   const [fillKey, setFillKey] = useState(0);
   const [fillError, setFillError] = useState<HygApiError | null>(null);
   const [prefs, setPrefs] = useState<DayPrefs>(() => readPrefs());
+
+  /**
+   * Notice when the office day rolls over under a page nobody closed.
+   *
+   * This screen is designed for an iPad propped at a chair, and that device is
+   * not shut down at night: without this, a page opened on Monday still shows
+   * MONDAY under Tuesday's "Today" button, with every card linking into the
+   * wrong day and nothing on screen admitting it.
+   *
+   * TWO TRIGGERS, because either one alone leaves a real case uncovered. The
+   * visibility/focus listeners catch the app being picked up again — the
+   * common case, and the cheap one. The interval catches the iPad that simply
+   * sat there, awake, all night: it never fires a visibility event, and it is
+   * exactly the device this module was built for. A minute is far finer than a
+   * day boundary needs and costs one string comparison.
+   *
+   * `rollToNewDay` decides; it refuses to move a date the hygienist stepped to
+   * herself. See its own note.
+   */
+  useEffect(() => {
+    const check = () => {
+      const now = todayIso();
+      const was = todayRef.current;
+      if (now === was) return;
+      todayRef.current = now;
+      setDate((current) => rollToNewDay(current, was, now));
+    };
+    const timer = setInterval(check, 60_000);
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+    };
+  }, []);
 
   const updatePrefs = useCallback((patch: Partial<DayPrefs>) => {
     setPrefs((current) => {
@@ -775,7 +818,7 @@ export default function HygDay() {
           >
             Hygiene day
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="hyg-day-heading">
             {/* The SERVER's date once it has answered, the requested one until
                 then. They are always equal in production — the route echoes
                 what it was asked — and showing the answer means a day that

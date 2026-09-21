@@ -42,6 +42,18 @@ import {
   type StagedWriteKind,
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
+import {
+  HygPerioPriorResponseSchema,
+  HygPerioResponseSchema,
+  type HygPerioPriorResponse,
+  type HygPerioResponse,
+  type PerioChart,
+} from "@shared/hyg/perio";
+import {
+  HygPerioSendResponseSchema,
+  type HygPerioSendResponse,
+  type PerioSendRequest,
+} from "@shared/hyg/perioSend";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -532,6 +544,197 @@ export async function sendVisit(
     },
     { confirm },
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio chart (H4 slice 10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The chart stored on this visit. Our database only — no Open Dental read, so
+ * the grid paints before the prior exam has even been asked for.
+ */
+export async function fetchPerio(
+  office: OfficeId,
+  aptNum: number,
+  signal?: AbortSignal,
+): Promise<HygPerioResponse> {
+  return get(
+    `/visit/${aptNum}/perio`,
+    { office },
+    (raw) => {
+      const parsed = HygPerioResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned a perio chart this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * Store the chart, whole, as a Draft.
+ *
+ * A chart that was staged goes back to Draft if a READING changed — the staged
+ * preview no longer describes it. The response says which, and that is what the
+ * page renders.
+ */
+export async function savePerio(
+  office: OfficeId,
+  aptNum: number,
+  chart: PerioChart,
+): Promise<HygPerioResponse> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/perio`,
+    { office },
+    (raw) => {
+      const parsed = HygPerioResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved a perio chart this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { chart },
+  );
+}
+
+/**
+ * Open Dental's last perio exam for this appointment's patient.
+ *
+ * A 200 carries one of three answers — found, none, unavailable — and a screen
+ * draws each differently. A THROWN error is a refusal about the appointment
+ * itself (not ready, moved to another patient, no schedule), which is a fourth.
+ */
+export async function fetchPerioPrior(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  signal?: AbortSignal,
+): Promise<HygPerioPriorResponse> {
+  return get(
+    `/visit/${aptNum}/perio/prior`,
+    { office, date },
+    (raw) => {
+      const parsed = HygPerioPriorResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned a perio history this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The perio send (item 12)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parsePerioSend(raw: unknown): HygPerioSendResponse {
+  const parsed = HygPerioSendResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new HygApiError(
+      "CareIN reported a perio send this page could not read",
+      0,
+      "CONTRACT_MISMATCH",
+      { issues: parsed.error.issues.slice(0, 5) },
+    );
+  }
+  return parsed.data;
+}
+
+/** Where a send stands. Our database only. `send` is null before one starts. */
+export async function fetchPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  signal?: AbortSignal,
+): Promise<HygPerioSendResponse> {
+  return get(`/visit/${aptNum}/perio/send`, { office }, parsePerioSend, signal);
+}
+
+/**
+ * Confirm the staged chart and run the first step.
+ *
+ * ⚠️ NO PAYLOAD. The fingerprint of the preview on screen, and the exam date and
+ * provider the dialog showed. The server re-derives all three, refuses on any
+ * difference, and plans every write from the STAGED chart.
+ */
+export async function startPerioSend(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  request: PerioSendRequest,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send`, { office, date }, parsePerioSend, request);
+}
+
+/** The next bounded step. Called until the send finishes, stops or pauses. */
+export async function stepPerioSend(office: OfficeId, aptNum: number): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/step`, { office }, parsePerioSend);
+}
+
+/**
+ * The undo: delete the exam this send created. The number is repeated as the
+ * explicit confirmation of WHICH exam; the server refuses any other.
+ */
+export async function deletePerioSendExam(
+  office: OfficeId,
+  aptNum: number,
+  examNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/delete-exam`, { office }, parsePerioSend, { examNum });
+}
+
+/**
+ * Open a chart that is already in Open Dental for a correction (item 13).
+ *
+ * Writes NOTHING to Open Dental: it reads the exam back, loads those readings
+ * into the chart, and makes it editable again.
+ */
+export async function beginPerioAmendment(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/amend`, { office }, parsePerioSend);
+}
+
+/** Abandon a correction. The chart goes back to the readings Open Dental holds. */
+export async function cancelPerioAmendment(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/amend/cancel`, { office }, parsePerioSend);
+}
+
+/**
+ * The swap's last step, run again: remove the exam a verified correction
+ * replaced, when that delete did not land at the time. Never the correction's
+ * own exam — the server refuses any number but the one it replaced.
+ */
+export async function removePerioReplacedExam(
+  office: OfficeId,
+  aptNum: number,
+  examNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/remove-replaced`, { office }, parsePerioSend, {
+    examNum,
+  });
 }
 
 /**

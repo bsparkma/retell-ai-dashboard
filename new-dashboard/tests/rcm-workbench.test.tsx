@@ -19,6 +19,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FILTER_COPY } from "@/features/rcm/worklist";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -735,10 +736,19 @@ describe("the remittance list", () => {
     // the test: the office holds a remittance, this tab does not show it, and
     // the copy has to say both — "no remittances yet" over a practice holding
     // 600 of them reads as a broken screen.
+    /*
+     * BOTH HALVES, read out of the product's own copy rather than retyped.
+     * S7 split the empty panel's sentence in two — `empty` says the queue is
+     * clear, `arrives` says what would land in it — and a hardcoded copy here
+     * kept passing against a page that had lost one of them.
+     */
     await waitFor(() =>
       expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
-        "Nothing needs attention here.",
+        FILTER_COPY.attention.empty,
       ),
+    );
+    expect(screen.getByTestId("remittances-empty-roland").textContent).toContain(
+      FILTER_COPY.attention.arrives,
     );
     /*
      * CHANGED BY STAGE C — the sentence became a sentence AND A BUTTON (§11).

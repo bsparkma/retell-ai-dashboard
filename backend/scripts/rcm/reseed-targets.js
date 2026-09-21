@@ -537,11 +537,17 @@ const RESEED_SPENT_IDS = Object.freeze({
  * @type {Readonly<{claims:number[], procedures:number[], claimProcs:number[]}>}
  */
 const RESEED_PENDING_AT_UNWIND = Object.freeze({
-  // Empty since 2026-09-09: the 2026-09-01 reseed is unwound and its ids moved
-  // to RESEED_SPENT_IDS above, exactly as this constant's header requires.
-  claims: Object.freeze([]),
-  procedures: Object.freeze([]),
-  claimProcs: Object.freeze([]),
+  // The 2026-09-11 reseed, created on staging revision 0000180 after the
+  // 2026-09-09 teardown retired the 2026-09-01 set. All seven were read back
+  // before reaching the manifest, and the manifest records them `complete: true`.
+  //
+  // These are LIVE. They stay OFF `denyIds()` until the unwind removes them, at
+  // which point they MOVE to RESEED_SPENT_IDS above and this list goes back to
+  // empty. Listing a live id as spent would make `screenManifestForSpentIds`
+  // refuse the very manifest the unwind needs to read.
+  claims: Object.freeze([53967, 53968, 53969, 53970, 53971, 53972, 53973]),
+  procedures: Object.freeze([407307, 407308, 407309, 407310, 407311, 407312, 407313]),
+  claimProcs: Object.freeze([536796, 536797, 536799, 536800, 536802, 536803, 536805]),
 });
 
 /**

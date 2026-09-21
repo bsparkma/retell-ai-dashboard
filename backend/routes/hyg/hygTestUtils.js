@@ -170,6 +170,8 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_treatment_item = [];
     /** @type {Array<Record<string, any>>} */
     this.hyg_staged_write = [];
+    /** @type {Array<Record<string, any>>} item 12 */
+    this.hyg_perio_send = [];
     this.seq = 0;
   }
 
@@ -186,7 +188,7 @@ class FakeHygDb extends FakeAuditDb {
   ];
   static STATUSES = ['proposed', 'watch', 'confirmed', 'scheduled'];
   static KINDS = ['router', 'perio', 'note', 'tc-handoff'];
-  static STATES = ['Draft', 'Staged', 'Sending', 'Written', 'Failed'];
+  static STATES = ['Draft', 'Staged', 'Sending', 'Written', 'Failed', 'Amending'];
 
   checkOffice(office) {
     if (!FakeHygDb.OFFICES.includes(office)) {
@@ -204,11 +206,252 @@ class FakeHygDb extends FakeAuditDb {
     }
   }
 
+  /**
+   * Every statement, then the invariants the DATABASE would have enforced.
+   *
+   * `hyg_staged_write_written_ref_check` is a BICONDITIONAL — only a `Written`
+   * row may carry a `written_ref`, and a `Written` row must — and this fake let
+   * item 13 break it until a real-Postgres rehearsal refused the write. A fake
+   * is a second implementation of the rules; where it is silent, the rules are
+   * only as strong as the next rehearsal.
+   */
   async query(sql, params = []) {
+    const res = await this.queryInner(sql, params);
+    for (const row of this.hyg_staged_write) {
+      const hasRef = row.written_ref !== null && row.written_ref !== undefined;
+      if ((row.state === 'Written') !== hasRef) {
+        throw new Error(
+          `hyg_staged_write_written_ref_check violated: state '${row.state}', written_ref ${JSON.stringify(row.written_ref)}`
+        );
+      }
+    }
+    return res;
+  }
+
+  async queryInner(sql, params = []) {
     const text = String(sql);
     // Audit and its probe stay with the parent, unchanged.
     if (/audit_log/i.test(text)) return super.query(sql, params);
     this.statements.push(text);
+
+    // A test can make ONE statement fail, to stand in for a process that died
+    // between two statements (item 12).
+    if (typeof this.failOnce === 'function' && this.failOnce(text, params)) {
+      this.failOnce = null;
+      throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
+    }
+
+    // ── hyg_perio_send (item 12) ────────────────────────────────────────────
+    // Matched FIRST: the chart's restage below would otherwise be read as one of
+    // the slice-3 hyg_staged_write statements.
+    if (/UPDATE hyg_staged_write\s+SET error_message = NULL, state = 'Staged'[\s\S]*kind = 'perio' AND state IN \('Sending', 'Failed'\)/i.test(text)) {
+      const [visitId, office] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === 'perio' && ['Sending', 'Failed'].includes(r.state)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { state: 'Staged', error_message: null, updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    // ── the amendment (item 13) ─────────────────────────────────────────────
+    // Matched before the slice-2 staged-write statements below: both of these
+    // would otherwise be read as markWritten or a plain state move.
+    if (/UPDATE hyg_staged_write\s+SET state = 'Amending'/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Written'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { state: 'Amending', written_ref: null, error_message: null, updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_staged_write\s+SET state = 'Written', payload = \$4::jsonb/i.test(text)) {
+      const [visitId, office, kind, payload, preview, title, summary, writtenRef] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId &&
+          r.office === office &&
+          r.kind === kind &&
+          ['Amending', 'Staged'].includes(r.state)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: 'Written',
+        payload: FakeHygDb.json(payload),
+        preview: FakeHygDb.json(preview),
+        title,
+        summary,
+        written_ref: writtenRef,
+        error_message: null,
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/FROM hyg_perio_send\s+WHERE staged_write_id = \$1 AND office = \$2 AND state = 'written'/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const written = this.hyg_perio_send.filter(
+        (r) => r.staged_write_id === stagedWriteId && r.office === office && r.state === 'written'
+      );
+      const live = written.length > 0 ? [written[written.length - 1]] : [];
+      return { rows: live, rowCount: live.length };
+    }
+    if (/FROM hyg_perio_send\s+WHERE staged_write_id = \$1 AND office = \$2/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const rows = this.hyg_perio_send.filter((r) => r.staged_write_id === stagedWriteId && r.office === office);
+      const latest = rows.length > 0 ? [rows[rows.length - 1]] : [];
+      return { rows: latest, rowCount: latest.length };
+    }
+    if (/UPDATE hyg_perio_send SET chart = \$3::jsonb/i.test(text)) {
+      const [id, office, chart] = params;
+      const row = this.hyg_perio_send.find((r) => r.send_id === id && r.office === office);
+      if (!row) return { rows: [], rowCount: 0 };
+      row.chart = FakeHygDb.json(chart);
+      row.updated_at = new Date();
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET supersedes_deleted_at = now\(\)/i.test(text)) {
+      const [id, office] = params;
+      const row = this.hyg_perio_send.find(
+        (r) =>
+          r.send_id === id &&
+          r.office === office &&
+          r.supersedes_exam_num !== null &&
+          r.supersedes_deleted_at === null
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { supersedes_deleted_at: new Date(), updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/INSERT INTO hyg_perio_send/i.test(text)) {
+      const [stagedWriteId, visitId, office, patNum, examDate, provNum, fingerprint, plan, actor] = params;
+      this.checkOffice(office);
+      if (!this.hyg_staged_write.some((w) => w.staged_write_id === stagedWriteId)) {
+        throw new Error('hyg_perio_send_staged_write_id_fkey violated');
+      }
+      if (!this.hyg_visit.some((v) => v.visit_id === visitId && v.office === office)) {
+        throw new Error('hyg_perio_send_visit_fk violated: no such (visit_id, office)');
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(examDate))) throw new Error('hyg_perio_send_exam_date_check violated');
+      if (this.hyg_perio_send.some((r) => r.staged_write_id === stagedWriteId && ['posting', 'filling'].includes(r.state))) {
+        throw new Error('duplicate key value violates unique constraint "hyg_perio_send_in_flight_key"');
+      }
+      // Item 13: the exam this send replaces, and what it changes.
+      const supersedes = params[9] ?? null;
+      const amendDiff = FakeHygDb.json(params[10] ?? '[]');
+      if (supersedes === null && Array.isArray(amendDiff) && amendDiff.length > 0) {
+        throw new Error('hyg_perio_send_amend_diff_check violated');
+      }
+      const row = {
+        send_id: this.nextId('send'),
+        staged_write_id: stagedWriteId,
+        visit_id: visitId,
+        office,
+        pat_num: String(patNum), // bigint comes back as a string
+        exam_date: examDate,
+        prov_num: String(provNum),
+        preview_fingerprint: fingerprint,
+        plan: FakeHygDb.json(plan),
+        state: 'posting',
+        exam_num: null,
+        prior_exam_nums: null,
+        rows_written: 0,
+        mismatches: [],
+        error_message: null,
+        step_token: null,
+        step_claimed_at: null,
+        created_by: actor,
+        created_at: new Date(),
+        updated_at: new Date(),
+        finished_at: null,
+        deleted_by: null,
+        deleted_at: null,
+        chart: null,
+        supersedes_exam_num: supersedes === null ? null : String(supersedes),
+        supersedes_deleted_at: null,
+        amend_diff: amendDiff,
+      };
+      this.hyg_perio_send.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+    const perioSend = (id, office) => this.hyg_perio_send.find((r) => r.send_id === id && r.office === office);
+    if (/UPDATE hyg_perio_send\s+SET step_token = \$3, step_claimed_at = now\(\)/i.test(text)) {
+      const [id, office, token, cutoff] = params;
+      const row = perioSend(id, office);
+      if (!row || (row.step_token !== null && !(row.step_claimed_at < new Date(cutoff)))) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, { step_token: token, step_claimed_at: new Date(), updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET step_claimed_at = now\(\)/i.test(text)) {
+      const [id, office, token] = params;
+      const row = perioSend(id, office);
+      if (!row || row.step_token !== token) return { rows: [], rowCount: 0 };
+      row.step_claimed_at = new Date();
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET step_token = NULL/i.test(text)) {
+      const [id, office, token] = params;
+      const row = perioSend(id, office);
+      if (!row || row.step_token !== token) return { rows: [], rowCount: 0 };
+      Object.assign(row, { step_token: null, step_claimed_at: null });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET prior_exam_nums/i.test(text)) {
+      const [id, office, nums] = params;
+      const row = perioSend(id, office);
+      if (!row || row.state !== 'posting') return { rows: [], rowCount: 0 };
+      row.prior_exam_nums = FakeHygDb.json(nums);
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET state = 'filling'/i.test(text)) {
+      const [id, office, examNum] = params;
+      const row = perioSend(id, office);
+      if (!row || row.state !== 'posting') return { rows: [], rowCount: 0 };
+      if (examNum === null || examNum === undefined) throw new Error('hyg_perio_send_exam_num_check violated');
+      if (row.supersedes_exam_num !== null && Number(row.supersedes_exam_num) === Number(examNum)) {
+        throw new Error('hyg_perio_send_supersedes_self_check violated');
+      }
+      Object.assign(row, { state: 'filling', exam_num: String(examNum), updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send SET rows_written = rows_written \+ \$3/i.test(text)) {
+      const [id, office, count] = params;
+      const row = perioSend(id, office);
+      if (!row) return { rows: [], rowCount: 0 };
+      row.rows_written += count;
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send\s+SET state = \$3, error_message = \$4/i.test(text)) {
+      const [id, office, state, error, mismatches] = params;
+      const row = perioSend(id, office);
+      if (!row || !['posting', 'filling'].includes(row.state)) return { rows: [], rowCount: 0 };
+      if (['incomplete', 'refused'].includes(state) && !error) throw new Error('hyg_perio_send_reason_check violated');
+      if (state === 'refused' && row.exam_num !== null) throw new Error('hyg_perio_send_exam_num_check violated');
+      if (state === 'written' && row.exam_num === null) throw new Error('hyg_perio_send_exam_num_check violated');
+      Object.assign(row, {
+        state, error_message: error, mismatches: FakeHygDb.json(mismatches),
+        finished_at: new Date(), updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send\s+SET state = 'deleted'/i.test(text)) {
+      const [id, office, actor] = params;
+      const row = perioSend(id, office);
+      if (!row || !['filling', 'incomplete'].includes(row.state) || row.exam_num === null) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (!actor) throw new Error('hyg_perio_send_deleted_check violated');
+      Object.assign(row, {
+        state: 'deleted', deleted_by: actor, deleted_at: new Date(),
+        finished_at: row.finished_at || new Date(), updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/hyg_perio_send/i.test(text)) {
+      throw new Error('[hygTestUtils] unexpected hyg_perio_send SQL: ' + text.trim().slice(0, 120));
+    }
 
     // ── hyg_visit ───────────────────────────────────────────────────────────
     if (/^\s*SELECT[\s\S]*FROM hyg_visit\s+WHERE office = \$1 AND apt_num = \$2/i.test(text)) {
@@ -485,6 +728,95 @@ class FakeHygDb extends FakeAuditDb {
       return { rows, rowCount: rows.length };
     }
 
+    // ── the perio chart's own three statements (H4 slice 10) ────────────────
+    // Matched BEFORE the general INSERT below, which would otherwise read this
+    // statement's parameters by the wrong positions.
+    // The perio chart's own INSERT. Its resting state is a PARAMETER since item
+    // 13 — `Draft` for a first chart, `Amending` for a correction — so this
+    // matches on the parameter positions rather than on a literal state.
+    if (/INSERT INTO hyg_staged_write[\s\S]*VALUES \(\$1, \$2, \$3, \$7/i.test(text)) {
+      const [visitId, office, kind, title, summary, payload, resting] = params;
+      this.checkOffice(office);
+      if (!FakeHygDb.STATES.includes(resting)) {
+        throw new Error(`hyg_staged_write_state_check violated: '${resting}'`);
+      }
+      if (!FakeHygDb.KINDS.includes(kind)) {
+        throw new Error(`hyg_staged_write_kind_check violated: '${kind}'`);
+      }
+      const parent = this.hyg_visit.find((r) => r.visit_id === visitId && r.office === office);
+      if (!parent) {
+        throw new Error('hyg_staged_write_visit_fk violated: no such (visit_id, office)');
+      }
+      const fields = {
+        state: resting,
+        title,
+        summary,
+        preview: [],
+        payload: FakeHygDb.json(payload),
+        error_message: null,
+        staged_by: null,
+        staged_at: null,
+        updated_at: new Date(),
+      };
+      const existing = this.hyg_staged_write.find((r) => r.visit_id === visitId && r.kind === kind);
+      if (existing) {
+        // ON CONFLICT … DO UPDATE … WHERE state IN (…): a row a send has claimed
+        // is left alone and no row comes back. A correction moves between
+        // `Amending` and `Staged`, a first chart between `Draft` and `Staged`.
+        const mutableHere = resting === 'Amending' ? ['Amending', 'Staged'] : ['Draft', 'Staged'];
+        if (!mutableHere.includes(existing.state)) return { rows: [], rowCount: 0 };
+        Object.assign(existing, fields);
+        return { rows: [existing], rowCount: 1 };
+      }
+      const row = {
+        staged_write_id: this.nextId('staged'),
+        visit_id: visitId,
+        office,
+        kind,
+        sent_by: null,
+        sent_at: null,
+        written_ref: null,
+        created_at: new Date(),
+        ...fields,
+      };
+      this.hyg_staged_write.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_staged_write SET payload/i.test(text)) {
+      const [visitId, office, kind, payload] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId &&
+          r.office === office &&
+          r.kind === kind &&
+          ['Draft', 'Staged', 'Amending'].includes(r.state)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.payload = FakeHygDb.json(payload);
+      row.updated_at = new Date();
+      return { rows: [row], rowCount: 1 };
+    }
+
+    // Un-staging a perio chart. Its target state is a PARAMETER since item 13:
+    // a correction goes back to `Amending`, a first chart to `Draft`.
+    if (/UPDATE hyg_staged_write\s+SET state = \$4, preview = '\[\]'::jsonb/i.test(text)) {
+      const [visitId, office, kind, resting] = params;
+      const row = this.hyg_staged_write.find(
+        (r) =>
+          r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Staged'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        state: resting,
+        preview: [],
+        staged_by: null,
+        staged_at: null,
+        updated_at: new Date(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
     if (/INSERT INTO hyg_staged_write/i.test(text)) {
       const [visitId, office, kind, title, summary, preview, payload, actor] = params;
       this.checkOffice(office);
@@ -599,6 +931,22 @@ class FakeOd {
     const value = typeof scripted === 'function' ? scripted(body, this) : scripted;
     if (value && typeof value === 'object' && 'ok' in value) return value;
     return { ok: true, status: 200, data: value };
+  }
+  /**
+   * The transport's one DELETE (item 12). Answers from `deleteRoutes` (keyed by
+   * path, value or function) when a test scripted it; otherwise it throws like
+   * every other write verb here.
+   */
+  async apiDeleteRaw(path, opts = {}) {
+    this.writes.push(['apiDeleteRaw', 'DELETE', path, null, opts]);
+    const routes = this.deleteRoutes;
+    if (!routes || !Object.prototype.hasOwnProperty.call(routes, path)) {
+      throw new Error('[hygTestUtils] /api/hyg reached an UNSCRIPTED Open Dental DELETE: ' + path);
+    }
+    const scripted = routes[path];
+    const value = typeof scripted === 'function' ? scripted(this) : scripted;
+    if (value && typeof value === 'object' && 'ok' in value) return value;
+    return { ok: true, status: 200, data: value ?? null };
   }
   async post(...args) {
     this.writes.push(['post', ...args]);
@@ -883,6 +1231,163 @@ function operatoryRow(over = {}) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A fake Open Dental that charts perio the way the real one MEASURABLY does
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Open Dental's body keys for the six surfaces. */
+const PERIO_VALUE_KEY = Object.freeze({
+  MB: 'MBvalue', B: 'Bvalue', DB: 'DBvalue', ML: 'MLvalue', L: 'Lvalue', DL: 'DLvalue',
+});
+const PERIO_ARCH_FIELDS = ['UpperFacial', 'UpperLingual', 'LowerLingual', 'LowerFacial'];
+const PERIO_FLAG_BIT = { b: 1, s: 2, p: 4, c: 8 };
+
+/**
+ * A fake Open Dental that keeps what is written to it and parses arch strings
+ * THE WAY THE PROBE FOUND THE REAL ONE DOES.
+ *
+ * It reads the staging run's own read-back
+ * (`new-dashboard/tests/fixtures/perio-arch-probe-staging.json`) rather than the
+ * code under test, so a send that encoded a string with a wrong table lands
+ * readings on the wrong teeth HERE and the read-back catches it. Its rules are
+ * the findings: every digit takes the next site, a flag letter rides the digit
+ * before it, anything else is ignored, a body whose string does not start with a
+ * digit is refused and creates nothing, one row per (tooth, SequenceType).
+ *
+ * Lives in the harness because two suites drive it — the send (item 12) and the
+ * amendment (item 13) — and a second copy of a fake this load-bearing is how the
+ * two suites quietly stop testing the same Open Dental.
+ *
+ * @param {{ date?: string, patNum?: number, provHyg?: number, provNum?: number,
+ *           onExam?: Function, onMeasure?: Function, corrupt?: Function,
+ *           afterMeasure?: Function }} [opts]
+ *   A hook returning an envelope REPLACES the answer; `landed: true` on it still
+ *   stores the write — a write that landed and did not answer.
+ */
+function perioOd({
+  date = '2026-09-08',
+  patNum = 12827,
+  provHyg = 7,
+  provNum = 1,
+  onExam = null,
+  onMeasure = null,
+  corrupt = null,
+  afterMeasure = null,
+  onDelete = null,
+} = {}) {
+  const probe = require('../../../new-dashboard/tests/fixtures/perio-arch-probe-staging.json');
+  const client = new FakeOd({
+    '/appointments': [
+      apptRow({ AptNum: 900001, PatNum: patNum, AptDateTime: date + ' 08:00:00', ProvHyg: provHyg, ProvNum: provNum }),
+    ],
+    '/operatories': [operatoryRow()],
+    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Perio Maint' }],
+    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
+    ['/patients/' + patNum]: patientRow(),
+  });
+  /**
+   * `order` is every WRITE this fake accepted, in the order it accepted them.
+   * Item 13's whole safety property is an ordering — the new exam is posted and
+   * read back BEFORE the old one is deleted — and an ordering can only be
+   * asserted against a single ordered log.
+   */
+  const state = {
+    exams: [], measures: [], posts: [], deletes: [], order: [], nextExam: 7001, nextMeasure: 90001,
+  };
+
+  const publish = () => {
+    client.routes['/perioexams'] = state.exams.slice();
+    for (const key of Object.keys(client.routes)) {
+      if (key.startsWith('/periomeasures')) delete client.routes[key];
+    }
+    client.routes['/periomeasures'] = state.measures.slice(0, 100);
+    for (let offset = 100; offset <= state.measures.length; offset += 100) {
+      client.routes['/periomeasures?Offset=' + offset] = state.measures.slice(offset, offset + 100);
+    }
+  };
+
+  /** One row per (exam, tooth, SequenceType), -1 everywhere until something lands. */
+  const rowFor = (examNum, tooth, type) => {
+    let row = state.measures.find(
+      (m) => m.PerioExamNum === examNum && m.IntTooth === tooth && m.SequenceType === type
+    );
+    if (!row) {
+      row = {
+        PerioMeasureNum: state.nextMeasure++, PerioExamNum: examNum, SequenceType: type, IntTooth: tooth,
+        ToothValue: -1, MBvalue: -1, Bvalue: -1, DBvalue: -1, MLvalue: -1, Lvalue: -1, DLvalue: -1,
+      };
+      state.measures.push(row);
+    }
+    return row;
+  };
+
+  client.writeRoutes = {
+    '/perioexams': (body) => {
+      state.posts.push({ path: '/perioexams', body });
+      const hooked = onExam ? onExam(body, state) : null;
+      if (hooked && !hooked.landed) return hooked;
+      // Finding 6: validation happens before creation.
+      for (const f of PERIO_ARCH_FIELDS) {
+        if (f in body && !/^[0-9]/.test(String(body[f]))) {
+          return { ok: false, status: 400, data: null, error: `${f} must start with a number from 0-9.` };
+        }
+      }
+      const exam = {
+        PerioExamNum: state.nextExam++, PatNum: body.PatNum, ExamDate: body.ExamDate,
+        ProvNum: body.ProvNum, Note: body.Note,
+      };
+      state.exams.push(exam);
+      state.order.push('POST exam ' + exam.PerioExamNum);
+      for (const f of PERIO_ARCH_FIELDS) {
+        if (!(f in body)) continue;
+        const table = probe.regions[f];
+        let pos = -1;
+        for (const ch of String(body[f])) {
+          if (/[0-9]/.test(ch)) {
+            pos += 1; // Findings 4 and 5: every digit takes the NEXT site.
+            if (pos >= table.length) continue;
+            rowFor(exam.PerioExamNum, table[pos].tooth, 'Probing')[PERIO_VALUE_KEY[table[pos].surface]] = Number(ch);
+          } else if (PERIO_FLAG_BIT[ch] && pos >= 0 && pos < table.length) {
+            // Finding 3: a flag rides the digit before it, and flags stack.
+            const row = rowFor(exam.PerioExamNum, table[pos].tooth, 'BleedSupPlaqCalc');
+            const key = PERIO_VALUE_KEY[table[pos].surface];
+            row[key] = Math.max(0, row[key]) | PERIO_FLAG_BIT[ch];
+          }
+        }
+      }
+      if (corrupt) corrupt(state, exam);
+      publish();
+      return hooked || { ok: true, status: 201, data: exam };
+    },
+    '/periomeasures': (body) => {
+      state.posts.push({ path: '/periomeasures', body });
+      const hooked = onMeasure ? onMeasure(body, state) : null;
+      if (hooked && !hooked.landed) return hooked;
+      const row = { PerioMeasureNum: state.nextMeasure++, ...body };
+      state.measures.push(row);
+      state.order.push(`POST row #${row.IntTooth} ${row.SequenceType} in exam ${row.PerioExamNum}`);
+      if (afterMeasure) afterMeasure(row);
+      publish();
+      return hooked || { ok: true, status: 201, data: row };
+    },
+  };
+  client.deleteRoutes = {};
+  for (let n = 7001; n <= 7010; n += 1) {
+    client.deleteRoutes['/perioexams/' + n] = () => {
+      const hooked = onDelete ? onDelete(n, state) : null;
+      if (hooked) return hooked;
+      state.deletes.push(n);
+      state.order.push('DELETE exam ' + n);
+      state.exams = state.exams.filter((e) => e.PerioExamNum !== n);
+      state.measures = state.measures.filter((m) => m.PerioExamNum !== n);
+      publish();
+      return { ok: true, status: 200, data: null };
+    };
+  }
+  publish();
+  return { client, state };
+}
+
 module.exports = {
   FakeAuditDb,
   FakeHygDb,
@@ -892,4 +1397,6 @@ module.exports = {
   apptRow,
   patientRow,
   operatoryRow,
+  perioOd,
+  PERIO_VALUE_KEY,
 };

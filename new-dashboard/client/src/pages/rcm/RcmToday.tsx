@@ -117,16 +117,10 @@ import { Link } from "wouter";
 import {
   AlertCircle,
   ArrowRight,
-  Ban,
   BookmarkCheck,
-  CheckCircle2,
   Inbox,
   Loader2,
   PartyPopper,
-  Search,
-  ShieldCheck,
-  Stethoscope,
-  Undo2,
   Upload,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -144,18 +138,21 @@ import {
   type Remittance,
   type RemittanceClaim,
 } from "@/features/rcm/api";
+import Explainer from "@/components/rcm/Explainer";
 import EobUploadPanel from "./EobUploadPanel";
 import EraUploadPanel from "./EraUploadPanel";
 import { money, withinLastDays } from "@/features/rcm/format";
 import { blockedCopy, SHADOW_MODE_COPY } from "@/features/rcm/posting";
-import { remittanceHref } from "@/features/rcm/flow";
+import { RCM_STEP_TITLES, remittanceHref } from "@/features/rcm/flow";
 import { greetingFor, officeDay, officeDayKey, todayLongDate } from "@/features/rcm/time";
 import { nextActionFor, PICK_UP_LABEL, type NextAction } from "@/features/rcm/nextAction";
-import { waitingFor } from "@/features/rcm/waitingOn";
+import { waitingFor, type WaitingState } from "@/features/rcm/waitingOn";
 import {
+  checkChip,
   countByFilter,
   FILTER_COPY,
   newestParkedFirst,
+  oldestWaitingFirst,
   type WorklistFilter,
 } from "@/features/rcm/worklist";
 
@@ -177,6 +174,58 @@ const LEFT_OFF_LIMIT = 4;
 /** How many arrivals the table names. Newest first; the rest are on Checks. */
 const ARRIVALS_LIMIT = 6;
 
+/**
+ * THE DOT BESIDE THE STATE PHRASE — S8's arrivals table.
+ *
+ * WEIGHT ONLY. `CHECK_CHIPS` already decides the tone of each state on the
+ * Checks list; this is the same judgement expressed as a single dot, because a
+ * filled badge repeated down six rows of a table reads as decoration where one
+ * on a card reads as a label.
+ *
+ * `Record<WaitingState, …>` rather than a partial one, so a state added to
+ * `waitingOn.ts` is a type error here until somebody picks its colour. The four
+ * states with no chip still get an entry: they never render a dot (the cell is
+ * empty without a chip), and leaving them out would mean the compiler stopped
+ * checking this map the day one of them grew a chip.
+ */
+const STATE_DOT: Record<WaitingState, string> = {
+  review: "bg-muted-foreground/60",
+  match: "bg-muted-foreground/60",
+  stuck: "bg-amber-500",
+  approve: "bg-emerald-500",
+  posted: "bg-sky-500",
+  set_aside: "bg-muted-foreground/40",
+  takeback: "bg-amber-500",
+  shadow: "bg-muted-foreground/40",
+  other_office: "bg-muted-foreground/40",
+  nothing: "bg-muted-foreground/40",
+};
+
+/** What put a check on the *Where you left off* row — see `startedNote`. */
+type LeftOffKind = "parked" | "started";
+
+/**
+ * THE CARDS *Where you left off* WILL DRAW, decided in ONE place.
+ *
+ * `LeftOff` used to build this list inline, which was fine while it was the
+ * only thing that needed to know. S8 gave the FIRST card the page's single
+ * primary button, so `StartHere` — which used to hold that button
+ * unconditionally — now has to know whether a resume card is about to render
+ * above it and stand down if one is.
+ *
+ * Two components reading one function is the only way those two can never both
+ * paint a solid button: a second inline copy of this slice would go out of step
+ * the first time either list changed, and the failure would be a screen with
+ * two "press this one"s, which is the precise thing S7 Phase 3 removed.
+ */
+function leftOffRows(today: Today | null): { r: Remittance; kind: LeftOffKind }[] {
+  if (!today) return [];
+  return [
+    ...today.parked.map((r) => ({ r, kind: "parked" as const })),
+    ...today.started.map((r) => ({ r, kind: "started" as const })),
+  ].slice(0, LEFT_OFF_LIMIT);
+}
+
 interface Today {
   counts: Record<WorklistFilter, number>;
   /** How many checks the client-side counts were computed over, and how many exist. */
@@ -191,6 +240,18 @@ interface Today {
   started: Remittance[];
   /** The newest arrivals, whatever state they are in. */
   arrivals: Remittance[];
+  /**
+   * THE ONE CHECK THE START BUTTON OPENS — the oldest still waiting on somebody.
+   *
+   * `null` when nothing needs anybody, which is the whole of "you're done for
+   * today" and is a different answer from "we have not looked yet" (`today`
+   * itself being null).
+   *
+   * PARKED CHECKS ARE EXCLUDED. Somebody said on the record that this one is for
+   * tomorrow; a Start button that reopened it would overrule a decision a person
+   * made on purpose. They keep their own card, one section down.
+   */
+  startHere: Remittance | null;
   postedThisWeek: number;
   postedCents: number;
   /**
@@ -315,36 +376,59 @@ export default function RcmToday() {
         The name is the person signed in, and is DROPPED rather than guessed at
         when the session has not resolved — "Good morning," with a comma and
         nothing after it is worse than "Good morning." on its own.
-      */}
-      <h1
-        className="text-2xl font-bold tracking-tight text-foreground"
-        style={{ fontFamily: "Sora, sans-serif" }}
-        data-testid="rcm-today-greeting"
-      >
-        {greetingFor()}
-        {auth.status === "authenticated" && firstName(auth.user.name)
-          ? `, ${firstName(auth.user.name)}`
-          : ""}
-      </h1>
-      <p className="mt-1 text-sm text-muted-foreground" data-testid="rcm-today-date">
-        {todayLongDate()} · carrier payments, from the check that arrived to the money on the
-        chart.
-      </p>
 
-      {/* THE FLOW, SAID ONCE AT THE TOP. The same five the rail draws on every
-          screen below, so the shape is learned before it is needed. */}
+        S8 · THE BOARD'S HEADER IS LARGE AND LIGHT, AND THE DATE SITS OPPOSITE.
+        Two changes, both weight and position rather than words. `font-light` at
+        `text-3xl` is the artboard's greeting: it is the biggest thing on the
+        screen and the least insistent, which is the right tone for a line that
+        is hospitality rather than instruction — the INSTRUCTION is the one
+        primary button further down. And the date moves from beneath the
+        greeting to the far end of the same baseline, which buys a whole line of
+        vertical room at the top of a screen whose job is to get you to the
+        work. It stays `rcm-today-date` and still prints `todayLongDate()`.
+      */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+        <h1
+          className="text-3xl font-light tracking-tight text-foreground"
+          style={{ fontFamily: "Sora, sans-serif" }}
+          data-testid="rcm-today-greeting"
+        >
+          {greetingFor()}
+          {auth.status === "authenticated" && firstName(auth.user.name)
+            ? `, ${firstName(auth.user.name)}`
+            : ""}
+        </h1>
+        {/* S7: the trailing clause — "carrier payments, from the check that
+            arrived to the money on the chart" — described the module to somebody
+            already inside it, one line above a legend that draws the same journey
+            as four words and an arrow. The date stays: it is the PRACTICE's own,
+            which is the one thing this line knows that nothing else does. */}
+        <p className="text-sm text-muted-foreground" data-testid="rcm-today-date">
+          {todayLongDate()}
+        </p>
+      </div>
+
+      {/*
+        THE FLOW, SAID ONCE AT THE TOP — the same steps the rail draws on every
+        screen below, so the shape is learned before it is needed.
+
+        S7: it used to be a hand-copied array of four strings sitting a file away
+        from the rail's own names, which is how a legend and the thing it legends
+        drift apart. It reads `RCM_STEP_TITLES` now, so renaming a stage renames
+        it here in the same commit or not at all.
+      */}
       <p
         className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground"
         data-testid="rcm-flow-legend"
       >
-        {["Add the check", "Match it up", "Check it over", "Post"].map((s, i) => (
-          <span key={s} className="flex items-center gap-1.5">
+        {(["upload", "match", "review", "post"] as const).map((step, i) => (
+          <span key={step} className="flex items-center gap-1.5">
             {i > 0 && <span className="text-muted-foreground/40">›</span>}
-            <span className="font-medium text-foreground">{s}</span>
+            <span className="font-medium text-foreground">{RCM_STEP_TITLES[step]}</span>
           </span>
         ))}
         <span className="text-muted-foreground/40">›</span>
-        <span className="italic">Deposit — coming soon</span>
+        <span className="italic">{RCM_STEP_TITLES.deposit} (soon)</span>
       </p>
 
       {scope.offices.length === 0 ? (
@@ -474,6 +558,9 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
         </div>
       ) : (
         <>
+          {/* ── 0. START HERE — the one thing this screen is for ─────────── */}
+          <StartHere office={office} today={today} />
+
           {/* ── 1. WHERE DID I LEAVE OFF ─────────────────────────────────── */}
           <LeftOff office={office} today={today} onChanged={reload} />
 
@@ -483,128 +570,143 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
           {/* ── 3. GET WORK IN ───────────────────────────────────────────── */}
           <GetWorkIn office={office} />
 
-          {/* ── HOW IT STANDS — below the work, on purpose ───────────────── */}
-          <h3
-            className="mt-6 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          {/*
+            ── THE STAT STRIP — below the work, on purpose ──────────────────
+            ═════════════════════════════════════════════════════════════════
+            S8 · SIX CARDS BECOME ONE STRIP, AND THE HEADING GOES WITH THEM
+            ═════════════════════════════════════════════════════════════════
+            Same six numbers, the same six destinations, the same words on
+            every label — laid out as the artboard's footer strip: a small-caps
+            label over a figure, ruled off from the work above it.
+
+            THE "HOW IT STANDS" HEADING IS GONE, and that is a deliberate
+            three-word trade rather than tidying. Today's whole-screen prose
+            budget is pinned at 90 and the screen measured 89; the artboard's
+            two additions — the *State* column header and the *See every check*
+            link — cost four. The artboard's own footer strip has no heading,
+            six labelled figures under a rule needing no announcement, and
+            dropping it pays for both. The alternative was raising a budget to
+            buy a heading, which is the transaction the budget exists to stop.
+            Written up in `docs/reports/rcm-s8-today-board-fidelity.md`.
+
+            THE TILES ARE NOT RE-RANKED and nothing is dropped. Five stats have
+            a real source and all five are here. The artboard's third example
+            tile — *average evening* — and its *written off by the office* have
+            no endpoint behind them and are therefore ABSENT rather than
+            approximated; see the report's "stat tiles we did not draw".
+          */}
+          <div
+            className="mt-8 border-t border-border pt-4"
             data-testid={`rcm-stats-${office}`}
           >
-            How it stands
-          </h3>
-
-          <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <QueueCard
-              office={office}
-              filter="match"
-              icon={<Search size={14} />}
-              count={today ? today.counts.match : null}
-            />
-            <QueueCard
-              office={office}
-              filter="review"
-              icon={<Stethoscope size={14} />}
-              count={today ? today.counts.review : null}
-            />
-            <QueueCard
-              office={office}
-              filter="approve"
-              icon={<ShieldCheck size={14} />}
-              count={today ? today.counts.approve : null}
-            />
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Link
-              href="/rcm/remittances?view=blocked"
-              data-testid={`rcm-blocked-${office}`}
-              className={`rounded-lg border p-3 transition-colors ${
-                stuckTotal && stuckTotal > 0
-                  ? "border-rose-200 bg-rose-50/50 hover:bg-rose-50 dark:border-rose-900/60 dark:bg-rose-950/15 dark:hover:bg-rose-950/30"
-                  : "border-border/60 bg-muted/30 hover:bg-muted/50"
-              }`}
-            >
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Ban size={14} />
-                {FILTER_COPY.blocked.label}
-              </div>
-              <div
-                className="mt-1 text-2xl font-semibold tabular-nums text-foreground"
-                data-testid={`rcm-blocked-count-${office}`}
-              >
-                {stuckTotal === null ? "—" : stuckTotal}
-              </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+              <StatTile
+                href="/rcm/remittances?view=match"
+                testId={`rcm-queue-match-${office}`}
+                countTestId={`rcm-queue-count-match-${office}`}
+                label={FILTER_COPY.match.label}
+                count={today ? today.counts.match : null}
+              />
+              <StatTile
+                href="/rcm/remittances?view=review"
+                testId={`rcm-queue-review-${office}`}
+                countTestId={`rcm-queue-count-review-${office}`}
+                label={FILTER_COPY.review.label}
+                count={today ? today.counts.review : null}
+              />
+              <StatTile
+                href="/rcm/remittances?view=approve"
+                testId={`rcm-queue-approve-${office}`}
+                countTestId={`rcm-queue-count-approve-${office}`}
+                label={FILTER_COPY.approve.label}
+                count={today ? today.counts.approve : null}
+              />
               {/* THE TOP REASON, not just a number. "3 stuck" sends somebody
                   looking; "3 stuck · this practice is not switched on for
-                  posting yet" ends the search on the card. */}
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {today
-                  ? (today.topBlocker ??
-                    (today.counts.blocked > 0
-                      ? "Claims were held back at approval — the check says what stopped each one."
-                      : FILTER_COPY.blocked.empty))
-                  : "…"}
-              </p>
-            </Link>
+                  posting yet" ends the search on the tile. */}
+              <StatTile
+                href="/rcm/remittances?view=blocked"
+                testId={`rcm-blocked-${office}`}
+                countTestId={`rcm-blocked-count-${office}`}
+                label={FILTER_COPY.blocked.label}
+                count={stuckTotal}
+                urgent={Boolean(stuckTotal && stuckTotal > 0)}
+                note={
+                  today
+                    ? (today.topBlocker ??
+                      (today.counts.blocked > 0
+                        ? "Claims were held back at approval — the check says what stopped each one."
+                        : FILTER_COPY.blocked.empty))
+                    : "…"
+                }
+              />
+              {/* The EMPTY sentence stays — an empty panel has to teach (Phase
+                  4). The populated one was a definition and has gone the same
+                  way as the three above: it is under the tabs on the page this
+                  tile opens. */}
+              <StatTile
+                href="/rcm/remittances?view=set_aside"
+                testId={`rcm-set-aside-${office}`}
+                countTestId={`rcm-set-aside-count-${office}`}
+                label={FILTER_COPY.set_aside.label}
+                count={today ? today.setAsideCount : null}
+                note={
+                  today && today.setAsideCount === 0 ? FILTER_COPY.set_aside.empty : undefined
+                }
+              />
+            </div>
 
-            <Link
-              href="/rcm/remittances?view=set_aside"
-              data-testid={`rcm-set-aside-${office}`}
-              className="rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:bg-muted/40"
-            >
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Ban size={14} />
-                {FILTER_COPY.set_aside.label}
-              </div>
-              <div
-                className="mt-1 text-2xl font-semibold tabular-nums text-foreground"
-                data-testid={`rcm-set-aside-count-${office}`}
+            {/* WHAT THE THREE COUNTS WERE COMPUTED OVER. Only when it is not the
+                whole practice — a caveat printed over a complete answer teaches
+                people to ignore caveats. */}
+            {today && today.total > today.scanned && (
+              <p
+                className="mt-4 text-xs text-muted-foreground"
+                data-testid={`rcm-scan-note-${office}`}
               >
-                {today ? today.setAsideCount : "—"}
-              </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {today && today.setAsideCount > 0
-                  ? "Out of the counts above, and one click from being back in them."
-                  : FILTER_COPY.set_aside.empty}
+                The three counts above read the newest {today.scanned} of {today.total} checks this
+                practice holds.
               </p>
-            </Link>
-          </div>
+            )}
 
-          {/* WHAT THE THREE COUNTS WERE COMPUTED OVER. Only when it is not the
-              whole practice — a caveat printed over a complete answer teaches
-              people to ignore caveats. */}
-          {today && today.total > today.scanned && (
-            <p className="mt-3 text-xs text-muted-foreground" data-testid={`rcm-scan-note-${office}`}>
-              The three counts above read the newest {today.scanned} of {today.total} checks this
-              practice holds.
-            </p>
-          )}
+            {/*
+              THE EVENING'S ONE FINISHED NUMBER, on its own line under the
+              strip. It is the only tile of the six that counts work DONE
+              rather than work waiting, and standing it apart is how the strip
+              says so without a word.
 
-          <Link
-            href="/rcm/posting"
-            data-testid={`rcm-posted-week-${office}`}
-            className="mt-3 flex items-center gap-3 rounded-lg border border-border/60 bg-emerald-50/40 p-3 transition-colors hover:bg-emerald-50 dark:bg-emerald-950/10 dark:hover:bg-emerald-950/25"
-          >
-            <CheckCircle2 size={16} className="flex-shrink-0 text-muted-foreground" />
-            <div>
-              <div className="flex items-baseline gap-2">
+              S7: "Every one confirmed in Open Dental afterwards, by asking for
+              the check back" is a true and useful sentence about the POSTING
+              screen, printed on a tile whose only job is to link there. The
+              posting screen says it, per row, where the rows are.
+            */}
+            <Link
+              href="/rcm/posting"
+              data-testid={`rcm-posted-week-${office}`}
+              className="group mt-5 block border-t border-border/60 pt-4"
+            >
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground group-hover:text-foreground">
+                posted this week
+                <ArrowRight
+                  size={12}
+                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              </div>
+              <div className="mt-1 flex items-baseline gap-2">
                 <span
-                  className="text-xl font-semibold tabular-nums text-foreground"
+                  className="text-2xl font-semibold tabular-nums text-foreground"
                   data-testid={`rcm-posted-count-${office}`}
                 >
                   {today ? today.postedThisWeek : "—"}
                 </span>
-                <span className="text-xs font-medium text-muted-foreground">posted this week</span>
                 {today && today.postedThisWeek > 0 && (
                   <span className="font-mono text-sm tabular-nums text-muted-foreground">
                     {money(today.postedCents)}
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Every one confirmed in Open Dental afterwards, by asking for the check back.
-              </p>
-            </div>
-            <ArrowRight size={14} className="ml-auto flex-shrink-0 text-muted-foreground" />
-          </Link>
+            </Link>
+          </div>
         </>
       )}
     </section>
@@ -635,35 +737,103 @@ function OfficeToday({ office }: { office: RcmOfficeId }) {
  * this product has a place for it.
  */
 function GetWorkIn({ office }: { office: RcmOfficeId }) {
+  /*
+   * ── S7 · IT OPENS WHEN SOMEBODY IS HOLDING A FILE, AND NOT BEFORE ─────────
+   *
+   * D-18 put these panels below the work rather than above it, and got the
+   * ORDER right. What it left was the cost: two drop zones, two readers'
+   * promises and the proposal paragraph spend about fifty prose words on every
+   * visit to the screen whose job is "where do I start" — for an act most
+   * visits do not perform. 835s arrive on their own; adding one by hand is the
+   * exception, not the morning.
+   *
+   * So the section is a fold, open exactly when somebody came here to use it:
+   * `?add=1` — the Checks page's *Add a check*, the matching guidance's *bring
+   * the check in*, and `/rcm/bring-in`'s redirect — all still land on it, and
+   * the effect above still scrolls it into view.
+   *
+   * D-16 IS UNTOUCHED. There is still exactly one upload surface in this
+   * module; it is one click deep on the same page rather than zero. And it is
+   * a real `<details>`, so the browser opens it without this file being right
+   * about anything.
+   */
+  const openOnArrival =
+    typeof window !== "undefined" && window.location.search.includes("add=1");
   return (
-    <section className="mt-8 scroll-mt-6" id={getWorkInId(office)} data-testid={`rcm-get-work-in-${office}`}>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+    <details
+      open={openOnArrival}
+      className="group mt-8 scroll-mt-6"
+      id={getWorkInId(office)}
+      data-testid={`rcm-get-work-in-${office}`}
+    >
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
         <Upload size={14} />
         Get work in
-      </h3>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-        Whatever you add here becomes a <strong>proposal</strong> — claims and procedure lines
-        waiting for a person. Nothing added is posted to a patient chart.
-      </p>
+        <span
+          aria-hidden="true"
+          className="inline-block text-muted-foreground transition-transform group-open:rotate-90"
+        >
+          ›
+        </span>
+      </summary>
+      {/*
+        S7 · THREE EXPLANATIONS BECOME TWO LABELS AND A FOLD.
+        This section spent fifty-five words telling a reader what a proposal is
+        and how each of the two readers works, above two drop zones that are
+        self-evident once labelled. The labels name the file; the difference
+        between the two — one is exact, one needs your eyes — is the thing worth
+        knowing and it is one click away, on both.
+      */}
+      {/*
+        S8 · THE TWO ZONES ARE DRAWN AS ZONES.
+        ───────────────────────────────────────────────────────────────────────
+        The artboard's *Get work in* is two wide dashed-border cards side by
+        side, and the only thing missing was the border: the panels, their
+        labels and their Explainers were already two halves of a two-column
+        grid. A dashed rule and a little air is the whole change — the file
+        inputs inside are untouched, which is what keeps D-16 true.
 
+        NOT a second dropzone and not a navigation. A card that navigated to
+        *Bring in* would navigate to `/rcm/bring-in`, which redirects straight
+        back to this section (see `BringInRedirect`); the single upload home IS
+        this section, and `tests/rcm-shell.test.tsx` still fails if any second
+        RCM page imports one of these panels.
+      */}
       <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <div data-testid={`rcm-drop-era-${office}`}>
-          <p className="mb-1.5 text-xs font-medium text-foreground">
-            An 835 file from the carrier — <span className="font-normal text-muted-foreground">reads itself; every figure is exactly what was sent.</span>
+        <div
+          className="rounded-xl border border-dashed border-border bg-muted/10 p-4"
+          data-testid={`rcm-drop-era-${office}`}
+        >
+          <p className="mb-1.5 text-sm font-medium text-foreground">
+            An 835 file from the carrier
           </p>
+          <Explainer testId={`rcm-drop-era-why-${office}`} label="What happens to it">
+            <p>Reads itself; every figure is exactly what was sent.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EraUploadPanel office={office} />
         </div>
-        <div data-testid={`rcm-drop-eob-${office}`}>
-          <p className="mb-1.5 text-xs font-medium text-foreground">
-            A scanned EOB or a payer portal download —{" "}
-            <span className="font-normal text-muted-foreground">
-              read by a model, so every figure needs your eyes.
-            </span>
+        <div
+          className="rounded-xl border border-dashed border-border bg-muted/10 p-4"
+          data-testid={`rcm-drop-eob-${office}`}
+        >
+          <p className="mb-1.5 text-sm font-medium text-foreground">
+            A scanned EOB or a payer portal download
           </p>
+          <Explainer testId={`rcm-drop-eob-why-${office}`} label="What happens to it">
+            <p>Read by a model, so every figure needs your eyes.</p>
+            <p>
+              Whatever you add becomes a <strong>proposal</strong> — claims and procedure
+              lines waiting for a person. Nothing added is posted to a patient chart.
+            </p>
+          </Explainer>
           <EobUploadPanel office={office} />
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -721,12 +891,7 @@ function LeftOff({
    */
   const [claims, setClaims] = useState<Record<string, RemittanceClaim[]>>({});
 
-  const rows = today
-    ? [
-        ...today.parked.map((r) => ({ r, kind: "parked" as const })),
-        ...today.started.map((r) => ({ r, kind: "started" as const })),
-      ].slice(0, LEFT_OFF_LIMIT)
-    : [];
+  const rows = leftOffRows(today);
 
   /** The ids, as a stable string, so the effect does not re-run on every render. */
   const ids = rows.map(({ r }) => r.batchId).join(",");
@@ -763,27 +928,40 @@ function LeftOff({
   const more = today.parkedCount - today.parked.length;
 
   return (
-    <div
-      className="mt-4 rounded-lg border border-border bg-background p-3"
-      data-testid={`rcm-left-off-${office}`}
-    >
+    <div className="mt-6" data-testid={`rcm-left-off-${office}`}>
       <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
         <BookmarkCheck size={14} />
         Where you left off
       </h3>
-      <ul className="mt-2 space-y-2">
-        {rows.map(({ r, kind }) => (
+      {/*
+        S8 · A ROW OF CARDS, NOT A LIST OF ROWS.
+        ─────────────────────────────────────────────────────────────────────
+        Same rows, same order, same data — laid side by side instead of stacked
+        inside a bordered box. The reason is the FIRST one: a card can carry a
+        heavier border and a solid button without shouting over its neighbours,
+        where a list row painted differently from the rows beneath it just looks
+        broken. The artboard's emphasis on card one is only legible as a card.
+
+        THREE ACROSS, and `LEFT_OFF_LIMIT` is still four — the fourth wraps onto
+        a second line rather than being dropped. A limit is a promise about how
+        much this card will ever say, and quietly cutting it to fit a grid would
+        change what the screen shows to suit its own layout.
+      */}
+      <ul className="mt-2 grid grid-cols-1 gap-3 lg:grid-cols-3">
+        {rows.map(({ r, kind }, i) => (
           <LeftOffRow
             key={`${kind}-${r.batchId}`}
             office={office}
             remittance={r}
             kind={kind}
+            lead={i === 0}
+            shadowMode={today.shadowMode}
             action={nextActionFor(r, claims[r.batchId] ?? null)}
             onChanged={onChanged}
           />
         ))}
       </ul>
-      <p className="mt-2 px-2 text-xs text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground">
         Opening a saved check puts it back on the ordinary pile.
         {more > 0 && (
           <>
@@ -803,22 +981,178 @@ function LeftOff({
 }
 
 /**
+ * "N CHECKS NEED YOU → START" — the dominant thing on this screen (S7, Phase 1).
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS CARD EXISTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The 2026-09-11 inventory measured this page and found SIXTEEN clickable things
+ * and, in the ordinary populated state, ZERO primary buttons — the only solid
+ * button on Today rendered in the empty state, when the practice had never taken
+ * a check in. A new hire opening the screen met sixteen equal-weight links and
+ * nothing saying where to begin, which is exactly the ruling the owner gave:
+ * *unclear where to go*.
+ *
+ * So: one count, one destination, one button. Everything else on the page — what
+ * you left off, what came in, somewhere to add more, how the week went — is
+ * still here, and is now visibly secondary to this.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IT OPENS A CHECK, NOT A LIST
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The obvious build is a link to `?view=attention`, and it is the wrong one: it
+ * answers "where is the work" with another screen of choices. Start opens the
+ * oldest check still waiting on somebody, by name, so the first click of the day
+ * lands on work rather than on a filter.
+ *
+ * `today.startHere` decides WHICH, in `summarise`, where a test can drive it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE COUNT IS HONEST ABOUT WHAT IT COUNTED
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `counts.attention` is computed in the browser over the newest `SCAN_LIMIT`
+ * checks, like the three below it — `/api/rcm/remittances` has no work-state
+ * count for a whole office. On a practice holding more than that, the card says
+ * so in the same words the stats section already uses, rather than presenting a
+ * partial count as a total.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DONE IS A REAL ANSWER AND GETS THE SAME ROOM
+ * ─────────────────────────────────────────────────────────────────────────────
+ * An empty queue renders the card, not nothing: *You're done for today.* A
+ * screen that silently omits its own headline when there is no work leaves the
+ * reader to work out from an absence whether she is finished or whether it has
+ * not loaded — and `today === null` (still loading) IS the other case, which is
+ * why the two are branched apart rather than collapsed into a falsy check.
+ */
+function StartHere({ office, today }: { office: RcmOfficeId; today: Today | null }) {
+  if (!today) return null;
+
+  const waiting = today.counts.attention;
+  const start = today.startHere;
+  const partial = today.total > today.scanned;
+  /*
+   * ── S8 · WHOSE BUTTON IS THE SOLID ONE ───────────────────────────────────
+   *
+   * The artboard gives the page's one primary to the RESUME card — "Pick up
+   * where you left off" — and it is right about which of the two is the
+   * stronger claim on a biller's next click. A check she was reading an hour
+   * ago beats the oldest check in the queue, because she already has its
+   * context in her head and it is the one she will otherwise forget.
+   *
+   * So Start stands down to an outline whenever there is something to resume,
+   * and takes the solid fill back the moment there is not. It is a WEIGHT
+   * change and nothing else: the count, the sentence, the destination and the
+   * honesty caveat are untouched, and the button is still here and still
+   * works. The alternative — deleting Start whenever a resume card exists —
+   * would remove the only route to the oldest waiting check from a screen
+   * whose whole promise is that it names the next thing.
+   *
+   * `leftOffRows` is the shared predicate, so the two cards can never disagree
+   * about which of them is holding the primary.
+   */
+  const resuming = leftOffRows(today).length > 0;
+
+  if (waiting === 0 || !start) {
+    return (
+      <div
+        className="mt-4 flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-900/60 dark:bg-emerald-950/15"
+        data-testid={`rcm-start-here-${office}`}
+      >
+        <PartyPopper size={18} className="flex-shrink-0 text-emerald-700 dark:text-emerald-400" />
+        <p
+          className="text-base font-semibold text-foreground"
+          data-testid={`rcm-start-here-done-${office}`}
+        >
+          You&rsquo;re done for today.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mt-4 flex flex-col gap-3 rounded-lg border border-border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between"
+      data-testid={`rcm-start-here-${office}`}
+    >
+      <div>
+        <p
+          className="text-lg font-semibold text-foreground"
+          data-testid={`rcm-start-here-count-${office}`}
+        >
+          {waiting} check{waiting === 1 ? "" : "s"} need{waiting === 1 ? "s" : ""} you
+        </p>
+        {/* WHICH ONE, by name — so the button is not a leap of faith. */}
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Oldest first: {start.payer} · {money(start.totalAmountCents)}
+        </p>
+        {partial && (
+          <p
+            className="mt-0.5 text-xs text-muted-foreground"
+            data-testid={`rcm-start-here-scan-${office}`}
+          >
+            Counted over the newest {today.scanned} of {today.total}.
+          </p>
+        )}
+      </div>
+      <Link
+        href={remittanceHref(start.batchId)}
+        data-testid={`rcm-start-here-go-${office}`}
+        className={`inline-flex flex-shrink-0 items-center gap-1.5 self-start rounded-md px-4 py-2 text-sm font-semibold transition-opacity sm:self-auto ${
+          resuming
+            ? "border border-border bg-background text-foreground transition-colors hover:bg-muted"
+            : "bg-foreground text-background hover:opacity-90"
+        }`}
+      >
+        Start
+        <ArrowRight size={14} />
+      </Link>
+    </div>
+  );
+}
+
+/**
  * One unfinished check: what it is, what she wrote on it, and the next click.
  *
  * The whole row is NOT a link any more. It carries a button that goes somewhere
  * more specific than the row does — straight to the claim that is up — and a
  * link wrapping a link is markup no browser agrees about.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * S8 · THE LEAD CARD, AND WHAT MAKES IT THE LEAD
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Three things and no fourth: a solid border instead of a faint one, the
+ * page's one filled button instead of an outlined one, and nothing else. Not a
+ * bigger card, not a different colour, not a tone — the rose on this page
+ * belongs to *Stuck — needs you* and a resume card is not a problem.
+ *
+ * `lead` is POSITIONAL, not a judgement: it is the first row `leftOffRows`
+ * returned, which is the newest saved check or, failing that, the most recently
+ * touched one. The card does not re-rank anything; it draws what the list
+ * already decided, and `StartHere` reads the same predicate so exactly one
+ * filled button exists on the screen.
  */
 function LeftOffRow({
   office,
   remittance: r,
   kind,
+  lead,
+  shadowMode,
   action,
   onChanged,
 }: {
   office: RcmOfficeId;
   remittance: Remittance;
-  kind: "parked" | "started";
+  kind: LeftOffKind;
+  /** First card in the row — the emphasised one, and the only filled button. */
+  lead: boolean;
+  /**
+   * The posting switch, threaded through so this card's state token is the
+   * SAME one the arrivals table prints for the same check. Without it a check
+   * approved into a shadowed queue would read "Ready to post" here and "Held
+   * while shadow mode is on" eight rows down.
+   */
+  shadowMode: boolean;
   action: NextAction;
   onChanged: () => void;
 }) {
@@ -848,100 +1182,149 @@ function LeftOffRow({
     }
   }
 
+  const chip = checkChip(waitingFor(r, { office, shadowMode }).state);
+
   return (
     <li
       data-testid={`rcm-left-off-row-${r.batchId}`}
-      className="rounded-md border border-border/60 bg-card px-2.5 py-2"
+      className={`flex flex-col rounded-lg border bg-card p-3.5 ${
+        lead ? "border-foreground/25 shadow-sm" : "border-border/60"
+      }`}
     >
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        {/*
-          PARKED AND STARTED ARE VISUALLY DIFFERENT, AND NEITHER LOOKS STUCK. A
-          parked check is a note somebody left themselves; a started one is work
-          in progress. Both are ordinary. The rose tone on this page belongs to
-          "Stuck — needs you" alone, so a card of things you meant to come back
-          to cannot read as a card of problems.
-        */}
-        <span
-          className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${
-            kind === "parked"
-              ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-              : "bg-muted text-muted-foreground"
-          }`}
-        >
-          {kind === "parked" ? "Saved" : "Started"}
-        </span>
+      {/*
+        THE OVERLINE — what kind of unfinished this is, said once, at the top.
+        ───────────────────────────────────────────────────────────────────────
+        It was a pill beside the payer, which is where the artboard puts an
+        overline, and the change is worth more than it looks: a card is read
+        top-down, and the FIRST thing a saved card has to say is that somebody
+        put it down on purpose. The words are `FILTER_COPY.parked.label` —
+        "Saved for tomorrow", the same string the tab and the chip on the Checks
+        page use — so the three cannot drift.
+
+        NEITHER KIND LOOKS STUCK. A parked check is a note somebody left
+        themselves; a started one is work in progress. Both are ordinary, and
+        the rose tone on this page belongs to "Stuck — needs you" alone.
+      */}
+      <p
+        className={`text-[10px] font-semibold uppercase tracking-wider ${
+          kind === "parked" ? "text-sky-700 dark:text-sky-300" : "text-muted-foreground"
+        }`}
+      >
+        {kind === "parked" ? FILTER_COPY.parked.label : "Started"}
+      </p>
+
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <Link
           href={remittanceHref(r.batchId)}
-          className="truncate text-sm font-medium text-foreground underline-offset-4 hover:underline"
+          className="text-sm font-semibold text-foreground underline-offset-4 hover:underline"
         >
           {r.payer}
         </Link>
-        <span className="font-mono text-xs tabular-nums text-muted-foreground">
-          {money(r.totalAmountCents)}
-        </span>
-        {/*
-          HER OWN LINE, IN QUOTATION MARKS — the same treatment the set-aside
-          banner gives a reason note, and for the same reason: a sentence
-          somebody typed reads differently from a sentence the product composed,
-          and the quotes are what say which one this is. When there is no note,
-          the composed fallback is not quoted.
-
-          AND IT WRAPS. Both branches are sentences — hers, or `startedNote`'s
-          "Approve was pressed by … and this check still needs somebody" — and a
-          note somebody wrote to herself is the last thing on this page that
-          should arrive with its ending cut off. Same rule as the arrivals
-          table's *What happens next*; see the long note there.
-        */}
-        <span className="w-full break-words text-xs text-muted-foreground">
-          {kind === "parked" ? (
-            r.parkedNote ? (
-              <span data-testid={`rcm-left-off-note-${r.batchId}`}>“{r.parkedNote}”</span>
-            ) : (
-              `Saved${r.parkedBy ? ` by ${r.parkedBy}` : ""}${
-                r.parkedAt ? ` on ${officeDay(r.parkedAt, office)}` : ""
-              }`
-            )
-          ) : (
-            startedNote(r, office)
-          )}
+        {/* THE CHECK NUMBER — an identifier, so it may truncate; it is
+            recognisable from its first characters and the rest is lookup. */}
+        <span className="truncate font-mono text-xs tabular-nums text-muted-foreground">
+          {r.checkNumber || r.eftNumber || r.traceNumber || "no number"}
         </span>
       </div>
 
-      {/* THE NEXT THING, BY NAME, AND THE BUTTONS THAT ACT ON IT. */}
-      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-        <span
-          className="text-xs font-medium text-foreground"
-          data-testid={`rcm-next-action-${r.batchId}`}
-        >
-          {action.sentence}
+      {/*
+        AMOUNT · CLAIMS · STATE, the artboard's second line.
+
+        The state token is `checkChip`'s label — the SAME six words the Checks
+        list's chips and the worklist tabs are written in, read out of
+        `FILTER_COPY` rather than retyped here. Four states have no chip on
+        purpose (see `CHECK_CHIPS`); on those the token is simply absent rather
+        than invented, and the next-action sentence below already says the thing
+        in full.
+      */}
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
+        <span className="font-mono tabular-nums text-foreground">
+          {money(r.totalAmountCents)}
         </span>
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {/*
-            ONLY ON A SAVED ROW. A started check was never put down on purpose,
-            so there is nothing to bring back from — and a button that un-does
-            something nobody did is a control with no meaning.
-          */}
-          {kind === "parked" && (
-            <button
-              type="button"
-              onClick={bringBack}
-              disabled={busy}
-              data-testid={`rcm-bring-back-${r.batchId}`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-            >
-              {busy ? <Loader2 size={12} className="animate-spin" /> : <Undo2 size={12} />}
-              Bring it back to tonight
-            </button>
-          )}
-          <Link
-            href={action.href}
-            data-testid={`rcm-pick-up-${r.batchId}`}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+        <span aria-hidden>·</span>
+        <span>
+          {r.claimCount} claim{r.claimCount === 1 ? "" : "s"}
+        </span>
+        {chip && (
+          <>
+            <span aria-hidden>·</span>
+            <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${chip.tone}`}>
+              {chip.label}
+            </span>
+          </>
+        )}
+      </p>
+
+      {/*
+        HER OWN LINE, IN QUOTATION MARKS — the same treatment the set-aside
+        banner gives a reason note, and for the same reason: a sentence
+        somebody typed reads differently from a sentence the product composed,
+        and the quotes are what say which one this is. When there is no note,
+        the composed fallback is not quoted.
+
+        AND IT WRAPS. Both branches are sentences — hers, or `startedNote`'s
+        "Approve was pressed by … and this check still needs somebody" — and a
+        note somebody wrote to herself is the last thing on this page that
+        should arrive with its ending cut off. Same rule as the arrivals
+        table's *What happens next*; see the long note there.
+      */}
+      <p className="mt-1.5 break-words text-xs italic text-muted-foreground">
+        {kind === "parked" ? (
+          r.parkedNote ? (
+            <span data-testid={`rcm-left-off-note-${r.batchId}`}>“{r.parkedNote}”</span>
+          ) : (
+            `Saved${r.parkedBy ? ` by ${r.parkedBy}` : ""}${
+              r.parkedAt ? ` on ${officeDay(r.parkedAt, office)}` : ""
+            }`
+          )
+        ) : (
+          startedNote(r, office)
+        )}
+      </p>
+
+      {/* THE NEXT THING, BY NAME. `mt-auto` pins the actions to the foot of the
+          card so three cards of different heights still line their buttons up. */}
+      <p
+        className="mt-auto pt-2.5 break-words text-xs font-medium text-foreground"
+        data-testid={`rcm-next-action-${r.batchId}`}
+      >
+        {action.sentence}
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <Link
+          href={action.href}
+          data-testid={`rcm-pick-up-${r.batchId}`}
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-opacity ${
+            lead
+              ? "bg-foreground text-background hover:opacity-90"
+              : "border border-border bg-background text-foreground transition-colors hover:bg-muted"
+          }`}
+        >
+          {PICK_UP_LABEL}
+          <ArrowRight size={12} />
+        </Link>
+        {/*
+          ONLY ON A SAVED ROW, and now an underlined text link rather than a
+          second outlined button. A card with two buttons of equal weight asks
+          the reader to choose between them; this one is an undo, which is a
+          thing you reach for knowing you want it, not a thing you weigh.
+
+          It stays a `<button>`, because it POSTS — a link that is not a
+          destination is a lie to anyone middle-clicking it.
+        */}
+        {kind === "parked" && (
+          <button
+            type="button"
+            onClick={bringBack}
+            disabled={busy}
+            data-testid={`rcm-bring-back-${r.batchId}`}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:opacity-50"
           >
-            {PICK_UP_LABEL}
-            <ArrowRight size={12} />
-          </Link>
-        </div>
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Bring it back to tonight
+          </button>
+        )}
       </div>
 
       {error && (
@@ -967,13 +1350,30 @@ function LeftOffRow({
 function Arrivals({ office, today }: { office: RcmOfficeId; today: Today | null }) {
   return (
     <>
-      <h3
-        className="mt-6 flex items-center gap-1.5 text-sm font-semibold text-foreground"
-        data-testid={`rcm-what-came-in-${office}`}
-      >
-        <Inbox size={14} />
-        What came in
-      </h3>
+      {/*
+        S8 · THE SECTION HEADING CARRIES THE WAY OUT OF IT.
+        The table names the newest `ARRIVALS_LIMIT`; a practice with more than
+        six checks had no route from this section to the rest of them except
+        the sidebar. The link is where the artboard puts it — opposite the
+        heading, quiet — and it goes to the Checks page's default view, which
+        is the same population this table is the head of.
+      */}
+      <div className="mt-6 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h3
+          className="flex items-center gap-1.5 text-sm font-semibold text-foreground"
+          data-testid={`rcm-what-came-in-${office}`}
+        >
+          <Inbox size={14} />
+          What came in
+        </h3>
+        <Link
+          href="/rcm/remittances"
+          data-testid={`rcm-see-every-check-${office}`}
+          className="text-xs font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+        >
+          See every check
+        </Link>
+      </div>
 
       {!today ? (
         <div className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
@@ -984,22 +1384,41 @@ function Arrivals({ office, today }: { office: RcmOfficeId; today: Today | null 
         <EmptyArrivals office={office} today={today} />
       ) : (
         <div className="mt-2 overflow-hidden rounded-lg border border-border" data-testid={`rcm-arrivals-${office}`}>
-          <div className="hidden grid-cols-[minmax(8rem,1.2fr)_7rem_6rem_4rem_minmax(11rem,1.4fr)_1.25rem] gap-3 border-b border-border bg-muted/30 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground md:grid">
+          {/*
+            S8 · SIX COLUMNS, AND THE NEW ONE IS *STATE*.
+            ───────────────────────────────────────────────────────────────────
+            The artboard asks for a state chip beside the sentence, which sounds
+            like the thing W-8 forbids — two vocabularies about one check in the
+            same glance — and is not, because both come out of ONE
+            `waitingFor()` call below. The chip is the state's NAME, in the same
+            six words the worklist tabs are labelled with; the sentence is what
+            follows from it. A check cannot be chipped one thing and described
+            as another.
+
+            FOUR STATES GET NO CHIP and the cell is then empty rather than
+            filled with a seventh word — see `CHECK_CHIPS`. The sentence beside
+            it carries them in full ("The carrier is reclaiming money.", "Held
+            while shadow mode is on."), which is why they have no chip in the
+            first place.
+          */}
+          <div className="hidden grid-cols-[minmax(7rem,1.1fr)_6.5rem_6rem_3.5rem_9rem_minmax(10rem,1.3fr)_1.25rem] gap-3 border-b border-border bg-muted/30 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground md:grid">
             <span>Payer</span>
             <span>Check</span>
             <span className="text-right">Amount</span>
             <span className="text-right">Claims</span>
+            <span>State</span>
             <span>What happens next</span>
             <span />
           </div>
           {today.arrivals.map((r) => {
             const waiting = waitingFor(r, { office, shadowMode: today.shadowMode });
+            const chip = checkChip(waiting.state);
             return (
               <Link
                 key={r.batchId}
                 href={remittanceHref(r.batchId)}
                 data-testid={`rcm-arrival-${r.batchId}`}
-                className="grid grid-cols-1 items-center gap-3 border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted/40 md:grid-cols-[minmax(8rem,1.2fr)_7rem_6rem_4rem_minmax(11rem,1.4fr)_1.25rem]"
+                className="grid grid-cols-1 items-center gap-3 border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted/40 md:grid-cols-[minmax(7rem,1.1fr)_6.5rem_6rem_3.5rem_9rem_minmax(10rem,1.3fr)_1.25rem]"
               >
                 <span className="truncate text-sm font-medium text-foreground">{r.payer}</span>
                 <span className="truncate font-mono text-xs text-muted-foreground">
@@ -1010,6 +1429,34 @@ function Arrivals({ office, today }: { office: RcmOfficeId; today: Today | null 
                 </span>
                 <span className="text-right font-mono text-xs tabular-nums text-muted-foreground">
                   {r.claimCount}
+                </span>
+                {/*
+                  THE STATE, AS A DOT AND A PHRASE.
+                  ───────────────────────────────────────────────────────────
+                  The dot carries the weight `checkChip` already assigns —
+                  amber for something owed now, green for ready, sky for
+                  finished, muted for ordinary work — and the PHRASE carries
+                  the meaning. A reader who cannot see colour loses nothing.
+
+                  The testid is `rcm-state-chip-…`, deliberately NOT
+                  `rcm-arrival-…`: the smoke sweep's W-8 family matches every
+                  `rcm-arrival-*` testid as a card of its own, and a chip
+                  registering as a card would be a card with no state sentence
+                  in it.
+                */}
+                <span
+                  className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+                  data-testid={`rcm-state-chip-${r.batchId}`}
+                >
+                  {chip && (
+                    <>
+                      <span
+                        aria-hidden
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[waiting.state]}`}
+                      />
+                      <span className="break-words">{chip.label}</span>
+                    </>
+                  )}
                 </span>
                 {/*
                   THIS CELL WRAPS. IT MUST NEVER TRUNCATE.
@@ -1214,47 +1661,65 @@ export function summariseTonight(today: Today): SummaryLine[] {
   return lines;
 }
 
-/** One work state: its count, its name, and where it goes. */
-function QueueCard({
-  office,
-  filter,
-  icon,
+/**
+ * ONE FIGURE IN THE FOOTER STRIP — its name above it, and where it goes.
+ *
+ * S8 · WAS `QueueCard`, and the difference is chrome rather than content. The
+ * card was a bordered box with an icon, a label, a 24px figure and a hover
+ * arrow; five of them stacked into two rows of boxes under the work. The strip
+ * is what the artboard draws instead: a small-caps label over a figure, ruled
+ * off once at the top, no box and no icon per tile. It is the same number,
+ * linking to the same view, said with less furniture.
+ *
+ * IT TAKES ITS TESTIDS AS PROPS. The three queue tiles, *Stuck* and *Set aside*
+ * were three different shapes of card before this, with three testid
+ * conventions between them (`rcm-queue-review-…`, `rcm-blocked-…`,
+ * `rcm-set-aside-…`). Passing the ids in is what let one component replace all
+ * five without renaming anything a test — or a person's muscle memory for this
+ * page — already depends on.
+ *
+ * S7 · THE HINT LIVES ON THE PAGE THIS TILE OPENS. Each queue tile carried a
+ * full sentence under its number — forty words of definition below three
+ * digits, on the screen whose whole job is "where do I start". It could not
+ * fold into an `Explainer` here: a disclosure inside a `<Link>` is a control
+ * inside a control, which is the shape `rcm-disabled-reasons.test.tsx` bans. It
+ * did not need to — `FILTER_COPY[filter].hint` is printed in full directly
+ * under the tabs on the page each tile links to (`remittance-filter-hint`).
+ */
+function StatTile({
+  href,
+  testId,
+  countTestId,
+  label,
   count,
+  note,
+  urgent,
 }: {
-  office: RcmOfficeId;
-  filter: WorklistFilter;
-  icon: React.ReactNode;
+  href: string;
+  testId: string;
+  countTestId: string;
+  label: string;
   /** `null` renders an em dash — not a 0 we have not measured. */
   count: number | null;
+  /** The one line under the figure, where the tile has one to say. */
+  note?: string;
+  /** Something is owed right now. Tone only — the label is the message. */
+  urgent?: boolean;
 }) {
-  const copy = FILTER_COPY[filter];
   return (
-    <Link
-      href={`/rcm/remittances?view=${filter}`}
-      data-testid={`rcm-queue-${filter}-${office}`}
-      className={`group rounded-lg border p-3 transition-colors ${
-        count && count > 0
-          ? "border-border bg-background hover:bg-muted/60"
-          : "border-border/60 bg-muted/20 hover:bg-muted/40"
-      }`}
-    >
-      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        {icon}
-        {copy.label}
+    <Link href={href} data-testid={testId} className="group block">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground group-hover:text-foreground">
+        {label}
       </div>
-      <div className="mt-1 flex items-center justify-between">
-        <span
-          className="text-2xl font-semibold tabular-nums text-foreground"
-          data-testid={`rcm-queue-count-${filter}-${office}`}
-        >
-          {count === null ? "—" : count}
-        </span>
-        <ArrowRight
-          size={14}
-          className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-        />
+      <div
+        className={`mt-1 text-2xl font-semibold tabular-nums ${
+          urgent ? "text-rose-700 dark:text-rose-400" : "text-foreground"
+        }`}
+        data-testid={countTestId}
+      >
+        {count === null ? "—" : count}
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{copy.hint}</p>
+      {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
     </Link>
   );
 }
@@ -1374,6 +1839,16 @@ export function summarise(
       .slice()
       .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))
       .slice(0, ARRIVALS_LIMIT),
+    /*
+     * OLDEST WAITING FIRST — `oldestWaitingFirst`'s own reason, applied to the
+     * one row that gets a button: a queue is worked from the end that has been
+     * waiting longest, and money ages. Parked and set-aside are out for the
+     * reason on the field.
+     */
+    startHere:
+      oldestWaitingFirst(
+        rows.filter((r) => r.needsAttention && r.setAsideAt == null && r.parkedAt == null),
+      )[0] ?? null,
     postedThisWeek: postedRecently.length,
     postedCents: postedRecently.reduce((sum, r) => sum + r.postedTotalCents, 0),
     postedTonight: postedTonight.length,

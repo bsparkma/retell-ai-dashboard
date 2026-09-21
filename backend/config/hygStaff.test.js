@@ -83,6 +83,88 @@ test('no hygienist at all still names the office, and never a blank line', () =>
   for (const line of block) assert.ok(line.trim().length > 0);
 });
 
+/**
+ * ONE PERSON, ONE LINE — the 2026-09-09 staging walk.
+ *
+ * A doctor wrote the note and appeared TWICE in the block: once as the bare
+ * name the session gave, and again three lines down with his credential and
+ * licence. Two lines for one person, one of them worse than the other, in a
+ * chart note.
+ */
+test('an author who is also a supervising doctor is printed ONCE, with the licence', () => {
+  const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Beau Sparkman' });
+
+  // The better line wins: name, credential and licence, not the bare name.
+  assert.equal(block[0], 'Beau Sparkman DDS #6347');
+  // And exactly once, anywhere in the block.
+  assert.equal(
+    block.filter((l) => l.includes('Beau Sparkman')).length,
+    1,
+    'the author is named twice: ' + JSON.stringify(block)
+  );
+  // Everyone else who supervises is still there. Deduplicating one person must
+  // not quietly shorten the list of who is responsible for the visit.
+  assert.ok(block.includes('Blain VanNice DDS #7971'));
+  assert.ok(block.includes('Joe Farmer DDS #7571'));
+  assert.equal(block.length, hygStaff.doctorOptions('roland').length);
+});
+
+test('the author match is case- and spacing-insensitive, like the roster', () => {
+  // What a session actually hands over is not guaranteed to match the config's
+  // spelling character for character.
+  for (const typed of ['beau sparkman', 'BEAU SPARKMAN', '  Beau   Sparkman ']) {
+    const block = hygStaff.signatureBlock({ office: 'valley', hygienistName: typed });
+    assert.equal(block[0], 'Beau Sparkman DDS #6347', typed);
+    assert.equal(block.filter((l) => l.includes('Beau Sparkman')).length, 1, typed);
+  }
+});
+
+test('a HYGIENIST author is unchanged — every doctor still appears', () => {
+  // The other half of the rule. She is not in the doctor list, so nothing is
+  // removed from it.
+  const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Raegan McGee' });
+  assert.equal(block[0], 'Raegan McGee RDH #4251');
+  assert.equal(block.length, hygStaff.doctorOptions('roland').length + 1);
+  for (const doctor of hygStaff.doctorOptions('roland')) {
+    assert.ok(
+      block.some((l) => l.startsWith(doctor)),
+      doctor + ' vanished from the block'
+    );
+  }
+});
+
+test('an author nobody knows is still named once, and gains nothing', () => {
+  const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Temp Hygienist' });
+  assert.equal(block[0], 'Temp Hygienist');
+  assert.equal(block.length, hygStaff.doctorOptions('roland').length + 1);
+});
+
+test('no name appears twice in any block this file can produce', () => {
+  // The general form of the rule, across every author the config knows about.
+  const authors = [
+    null,
+    'Temp Hygienist',
+    ...Object.values(hygStaff.HYGIENIST_ROSTER).map((h) => h.name),
+    ...hygStaff.doctorOptions('roland'),
+    ...hygStaff.doctorOptions('valley'),
+  ];
+  for (const office of ['roland', 'valley']) {
+    for (const author of authors) {
+      const block = hygStaff.signatureBlock({ office, hygienistName: author });
+      // The NAME half of each line, so `Beau Sparkman` and
+      // `Beau Sparkman DDS #6347` are recognised as one person.
+      const names = block.map((l) =>
+        hygStaff.normalizeName(l.replace(/\s+(?:RDH|DDS)\b.*$/, ''))
+      );
+      assert.equal(
+        new Set(names).size,
+        names.length,
+        `${office} / ${author}: a name is repeated — ${JSON.stringify(block)}`
+      );
+    }
+  }
+});
+
 test('nothing this file produces claims a signature', () => {
   // The typed name block stands in for a signature and is not one. B1, locked.
   for (const office of ['roland', 'valley']) {
