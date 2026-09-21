@@ -154,7 +154,7 @@ const PAGE_SIZE = 50;
  * payer · check number · amount (received under it) · claims · state · waiting on · ›
  */
 const CHECKS_GRID =
-  "md:grid-cols-[minmax(10rem,1.3fr)_7.5rem_7rem_4rem_9rem_minmax(11rem,1.2fr)_1.25rem]";
+  "md:grid-cols-[minmax(10rem,1.3fr)_7.5rem_9rem_4rem_9rem_minmax(11rem,1.2fr)_1.25rem]";
 
 /**
  * How deep a CLIENT-SIDE filter reads before it starts telling a half-truth.
@@ -259,7 +259,7 @@ export default function RemittanceList() {
           </p>
         </div>
 
-        <div className="flex flex-col items-start gap-2 sm:items-end">
+        <div className="shrink-0">
           {/*
             ONE UPLOAD SURFACE, AND THIS IS NOT IT.
             ─────────────────────────────────────────────────────────────────
@@ -293,9 +293,20 @@ export default function RemittanceList() {
             Add a check on Today
             <ArrowRight size={13} />
           </Link>
+        </div>
+      </div>
 
+      {/*
+        S8 · THE TABS GET A ROW OF THEIR OWN, under the title.
+        They shared a right-hand column with the button above, and that column
+        wrapped beneath a long lede and landed mid-page — neither top-right nor
+        under the title. The artboard's order is title and button across the
+        top, then the tabs, then the hint that describes the selected one: the
+        tabs sit directly over the sentence they are the subject of.
+      */}
+      <div className="mt-4">
           <div
-            className="flex flex-wrap justify-end gap-0.5 rounded-lg border border-border p-0.5"
+            className="inline-flex flex-wrap gap-0.5 rounded-lg border border-border p-0.5"
             role="tablist"
           >
             {CHECK_TABS.map((value) => {
@@ -349,7 +360,6 @@ export default function RemittanceList() {
               </button>
             )}
           </div>
-        </div>
       </div>
 
       <p className="mt-2 text-sm text-muted-foreground" data-testid="remittance-filter-hint">
