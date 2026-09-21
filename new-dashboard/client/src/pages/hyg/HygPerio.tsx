@@ -40,7 +40,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, Send } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Loader2, Pencil, RefreshCw, Send } from "lucide-react";
 
 import { isOfficeId, type StagedWrite } from "@shared/hyg/contract";
 import {
@@ -59,8 +59,11 @@ import {
   type HygPerioResponse,
   type PerioChart,
 } from "@shared/hyg/perio";
-import { type HygPerioSendResponse } from "@shared/hyg/perioSend";
+import { perioChartChanges, type HygPerioSendResponse } from "@shared/hyg/perioSend";
 import {
+  beginPerioAmendment,
+  cancelPerioAmendment,
+  removePerioReplacedExam,
   deletePerioSendExam,
   fetchPerio,
   fetchPerioPrior,
@@ -275,6 +278,8 @@ export default function HygPerio() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** Item 13: an amend or cancel request is in flight. */
+  const [amending, setAmending] = useState(false);
   /** Stops the step loop when the page goes away — leaving pauses, it does not lose. */
   const mounted = useRef(true);
   useEffect(() => {
@@ -524,6 +529,61 @@ export default function HygPerio() {
     }
   }, [office, aptNum]);
 
+  /**
+   * ITEM 13: open a sent chart for a correction, abandon one, or finish a swap
+   * whose delete did not land. NONE of the first two write to Open Dental.
+   *
+   * Both reload the chart afterwards, because the server decides what the
+   * readings are: opening loads what OPEN DENTAL holds, and abandoning puts
+   * those same readings back.
+   */
+  const onAmend = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setAmending(true);
+    setSendError(null);
+    try {
+      applySend(await beginPerioAmendment(office, aptNum));
+      await loadChart();
+    } catch (err) {
+      setSendError(
+        err instanceof HygApiError ? err.message : "Could not open this chart for a correction.",
+      );
+    } finally {
+      setAmending(false);
+    }
+  }, [office, aptNum, applySend, loadChart]);
+
+  const onCancelAmend = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setAmending(true);
+    setSendError(null);
+    try {
+      applySend(await cancelPerioAmendment(office, aptNum));
+      await loadChart();
+    } catch (err) {
+      setSendError(err instanceof HygApiError ? err.message : "Could not put the chart back.");
+    } finally {
+      setAmending(false);
+    }
+  }, [office, aptNum, applySend, loadChart]);
+
+  const onRemoveReplaced = useCallback(
+    async (examNum: number) => {
+      if (!isOfficeId(office)) return;
+      setSendError(null);
+      try {
+        applySend(await removePerioReplacedExam(office, aptNum, examNum));
+      } catch (err) {
+        setSendError(
+          err instanceof HygApiError
+            ? err.message
+            : `Could not remove exam ${examNum}. Nothing here changed.`,
+        );
+      }
+    },
+    [office, aptNum, applySend],
+  );
+
   const visitHref = `/hyg/visit/${aptNum}?office=${office ?? ""}&date=${date}`;
 
   if (!isOfficeId(office)) {
@@ -599,6 +659,21 @@ export default function HygPerio() {
   const sendBlocked = !isStaged || provNum === null || sendRunning;
   const mismatchTeeth = perioMismatchTeeth(send?.send ?? null);
 
+  /*
+   * ITEM 13: the exam in Open Dental NOW, and the correction being prepared for it.
+   *
+   * `live` is the send that verified, which is what a correction replaces and
+   * what it is diffed against. It stays put while a correction is prepared or
+   * has failed, which the latest send does not.
+   */
+  const live = send?.live ?? null;
+  const correcting = live !== null && (staged?.state === "Amending" || staged?.state === "Staged");
+  const corrections =
+    correcting && live?.writtenChart ? perioChartChanges(live.writtenChart, entry.chart) : [];
+  const canAmend = staged?.state === "Written" && live !== null && !sendRunning && !amending;
+  const replacedStillThere =
+    live !== null && live.supersedesExamNum !== null && live.supersedesDeletedAt === null;
+
   const saveLabel =
     saveState === "saving"
       ? "Saving…"
@@ -610,8 +685,15 @@ export default function HygPerio() {
 
   const stageNote =
     staged?.state === "Written"
-      ? "In Open Dental and read back. This chart can no longer be changed here."
-      : staged?.state === "Failed"
+      ? live !== null
+        ? `In Open Dental as exam ${live.examNum}, every site read back. Correct it with Amend chart — nothing changes in Open Dental until you send the correction.`
+        : "In Open Dental and read back. This chart can no longer be changed here."
+      : staged?.state === "Amending"
+        ? `Correcting exam ${live?.examNum ?? ""}. These are the readings Open Dental holds; change what is wrong and stage it. NOTHING changes in Open Dental until you send.`
+        : correcting && isStaged
+          ? sendBlockedReason ??
+            `Staged as a correction to exam ${live?.examNum ?? ""}. Sending writes a corrected exam, reads every site back, and only then deletes the old one.`
+          : staged?.state === "Failed"
         ? "The send stopped. The readings are locked until what reached Open Dental is dealt with below."
         : locked
           ? "Being written to Open Dental. The readings are locked."
@@ -703,7 +785,30 @@ export default function HygPerio() {
               )}
             >
               {sendRunning ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              Send to Open Dental
+              {correcting ? "Send correction" : "Send to Open Dental"}
+            </button>
+          ) : null}
+          {/* ITEM 13: a sent chart is corrected, not unlocked. */}
+          {canAmend ? (
+            <button
+              type="button"
+              onClick={() => void onAmend()}
+              disabled={amending}
+              data-testid="hyg-perio-amend"
+              className={cn(TAP, "inline-flex items-center gap-1.5 border-primary text-foreground")}
+            >
+              <Pencil size={14} /> Amend chart
+            </button>
+          ) : null}
+          {correcting ? (
+            <button
+              type="button"
+              onClick={() => void onCancelAmend()}
+              disabled={amending || sendRunning}
+              data-testid="hyg-perio-amend-cancel"
+              className={cn(TAP, "inline-flex items-center gap-1.5 border-border text-muted-foreground")}
+            >
+              Cancel correction
             </button>
           ) : null}
         </div>
@@ -737,6 +842,9 @@ export default function HygPerio() {
               setDeleteOpen(true);
             }}
             onRestage={() => void onRestage()}
+            onRemoveReplaced={
+              replacedStillThere ? () => void onRemoveReplaced(live.supersedesExamNum as number) : null
+            }
           />
         </div>
       ) : sendError ? (
@@ -898,6 +1006,9 @@ export default function HygPerio() {
           examDate={date}
           providerLabel={providerLabel}
           busy={sendRunning}
+          // Item 13: a correction names what it changes, and what it replaces.
+          replacesExamNum={correcting ? live?.examNum ?? null : null}
+          changes={corrections}
           onCancel={() => setConfirmOpen(false)}
           onConfirm={() => {
             if (provNum === null) return;

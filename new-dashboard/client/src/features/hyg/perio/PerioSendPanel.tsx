@@ -19,7 +19,12 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, RotateCcw, Trash2 } from "lucide-react";
 
-import { perioMismatchLine, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
+import {
+  perioChangeLine,
+  perioMismatchLine,
+  type HygPerioSendResponse,
+  type PerioSendView,
+} from "@shared/hyg/perioSend";
 import {
   Dialog,
   DialogContent,
@@ -141,6 +146,7 @@ export function PerioSendPanel({
   onContinue,
   onDelete,
   onRestage,
+  onRemoveReplaced = null,
 }: {
   response: HygPerioSendResponse;
   running: boolean;
@@ -150,9 +156,15 @@ export function PerioSendPanel({
   onContinue: () => void;
   onDelete: () => void;
   onRestage: () => void;
+  /** Item 13: finish a swap whose DELETE did not land. Null when there is nothing to finish. */
+  onRemoveReplaced?: (() => void) | null;
 }) {
   const s = response.send;
   if (!s) return null;
+  // Item 13: the exam in Open Dental now, and whether the one it replaced went.
+  const live = response.live;
+  const replacedStillThere =
+    live !== null && live.supersedesExamNum !== null && live.supersedesDeletedAt === null;
   const inFlight = s.state === "posting" || s.state === "filling";
   const strings = s.arches.filter((a) => a.path === "string").length;
 
@@ -169,7 +181,9 @@ export function PerioSendPanel({
 
   const status =
     s.state === "written"
-      ? `Written to Open Dental: exam ${s.examNum}, every site read back and matching`
+      ? s.supersedesExamNum !== null
+        ? `Corrected in Open Dental: exam ${s.examNum} replaces exam ${s.supersedesExamNum}, every site read back`
+        : `Written to Open Dental: exam ${s.examNum}, every site read back and matching`
       : s.state === "incomplete"
         ? s.examNum !== null
           ? `Exam ${s.examNum} is in Open Dental and INCOMPLETE`
@@ -276,6 +290,39 @@ export function PerioSendPanel({
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      {/*
+        ITEM 13: the swap's last step did not land. The CHART is correct — the
+        corrected exam verified — and a duplicate is still there. Said out loud,
+        with the one action that finishes it.
+      */}
+      {replacedStillThere && s.state === "written" ? (
+        <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/50 bg-amber-500/5 p-2" data-testid="hyg-perio-replaced-left">
+          <p className="text-sm text-amber-900 dark:text-amber-300">
+            The exam this correction replaced, <strong>{live?.supersedesExamNum}</strong>, is still in Open
+            Dental. The chart above is correct; that one is a duplicate on the same date.
+          </p>
+          {onRemoveReplaced ? (
+            <button
+              type="button"
+              onClick={onRemoveReplaced}
+              data-testid="hyg-perio-remove-replaced"
+              className={cn(TAP, "inline-flex items-center gap-1.5 border-amber-600 text-amber-900 dark:text-amber-300")}
+            >
+              <Trash2 size={14} /> Remove exam {live?.supersedesExamNum}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {s.state === "written" && s.supersedesExamNum !== null && !replacedStillThere ? (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="hyg-perio-amended">
+          {s.amendDiff.length} {s.amendDiff.length === 1 ? "site" : "sites"} corrected ·{" "}
+          {s.amendDiff.slice(0, 3).map(perioChangeLine).join("; ")}
+          {s.amendDiff.length > 3 ? ` and ${s.amendDiff.length - 3} more` : ""} · exam{" "}
+          {s.supersedesExamNum} deleted
+        </p>
       ) : null}
 
       {s.state === "deleted" ? (

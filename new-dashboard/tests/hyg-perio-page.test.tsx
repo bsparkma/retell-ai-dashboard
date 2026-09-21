@@ -50,7 +50,17 @@ const server = vi.hoisted(() => ({
   sendRequests: [] as unknown[],
   afterDelete: null as unknown,
   deletes: [] as number[],
+  // Item 13: what amend / cancel / remove-replaced answer, in order.
+  amendScript: [] as unknown[],
+  removed: [] as number[],
 }));
+
+/** A send answer the server then HOLDS, the way the real one does. */
+function applyToServer(res: HygPerioSendResponse): HygPerioSendResponse {
+  server.stagedWrite = res.stagedWrite;
+  server.send = res;
+  return res;
+}
 
 const APPOINTMENT: HygAppointment = {
   aptNum: 900001,
@@ -152,7 +162,9 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       server.saves.push(chart);
       server.chart = perio.normalizePerioChart(chart);
       const counts = perio.countPerioChart(chart);
-      server.stagedWrite = staged("Draft", "Draft - " + perio.perioProgressLabel(counts));
+      // A correction rests in `Amending`, a first chart in `Draft` — the server's rule.
+      const resting = (server.stagedWrite as StagedWrite | null)?.state === "Amending" ? "Amending" : "Draft";
+      server.stagedWrite = staged(resting, resting + " - " + perio.perioProgressLabel(counts));
       return response();
     }),
     stageWrite: vi.fn(async () => {
@@ -171,9 +183,25 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
           aptNum: 900001,
           stagedWrite: server.stagedWrite as StagedWrite | null,
           send: null,
+          live: null,
           paused: null,
         }
       );
+    }),
+    // Item 13. Each returns the next scripted answer AND leaves the server
+    // holding it, because the page reloads the chart afterwards.
+    beginPerioAmendment: vi.fn(async () => {
+      server.calls.push("AMEND");
+      return applyToServer(server.amendScript.shift() as HygPerioSendResponse);
+    }),
+    cancelPerioAmendment: vi.fn(async () => {
+      server.calls.push("AMEND_CANCEL");
+      return applyToServer(server.amendScript.shift() as HygPerioSendResponse);
+    }),
+    removePerioReplacedExam: vi.fn(async (_o: string, _a: number, examNum: number) => {
+      server.calls.push("REMOVE_REPLACED");
+      server.removed.push(examNum);
+      return applyToServer(server.amendScript.shift() as HygPerioSendResponse);
     }),
     startPerioSend: vi.fn(async (_o: string, _a: number, _d: string, request: unknown) => {
       server.calls.push("SEND_START");
@@ -227,6 +255,8 @@ beforeEach(() => {
   server.sendRequests = [];
   server.afterDelete = null;
   server.deletes = [];
+  server.amendScript = [];
+  server.removed = [];
 });
 afterEach(cleanup);
 
@@ -260,6 +290,11 @@ function view(chart: PerioChart, over: Partial<PerioSendView>): PerioSendView {
     deletedBy: null,
     deletedAt: null,
     canDelete: false,
+    // Item 13: a first send replaces nothing and changes nothing.
+    supersedesExamNum: null,
+    supersedesDeletedAt: null,
+    amendDiff: [],
+    writtenChart: null,
     ...over,
   };
 }
@@ -268,6 +303,7 @@ function sendResponse(
   stagedState: StagedWrite["state"],
   send: PerioSendView,
   paused: string | null = null,
+  live: PerioSendView | null | undefined = undefined,
 ): HygPerioSendResponse {
   return {
     success: true,
@@ -275,6 +311,8 @@ function sendResponse(
     aptNum: 900001,
     stagedWrite: { ...staged(stagedState, "Full chart: 192 of 192 sites charted"), preview: ["Full chart"] },
     send,
+    // The exam in Open Dental now: by default the send itself, once it verified.
+    live: live === undefined ? (send.state === "written" ? send : null) : live,
     paused,
   };
 }
@@ -558,5 +596,107 @@ describe("sending (item 12)", () => {
     expect((await screen.findByTestId("hyg-perio-refused")).textContent).toMatch(/nothing to undo/);
     expect(screen.getByTestId("hyg-perio-restage")).toBeTruthy();
     expect(screen.queryByTestId("hyg-perio-delete-open")).toBeNull();
+  });
+});
+
+describe("correcting a sent chart (item 13)", () => {
+  function writtenView(chart: PerioChart, over: Partial<PerioSendView> = {}): PerioSendView {
+    return view(chart, {
+      state: "written",
+      examNum: 7001,
+      rowsWritten: 0,
+      finishedAt: "2026-09-08T13:21:00.000Z",
+      writtenChart: chart,
+      ...over,
+    });
+  }
+
+  it("a sent chart is amended, not unlocked: the confirm names every changed site, old → new", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Written", "Perio chart");
+    const live = writtenView(chart);
+    server.send = sendResponse("Written", live);
+    server.amendScript = [sendResponse("Amending", live, null, live)];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    // Before: it says where it is, and offers the correction.
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/In Open Dental as exam 7001/);
+    expect(screen.queryByTestId("hyg-perio-stage")).toBeNull();
+    fireEvent.click(await screen.findByTestId("hyg-perio-amend"));
+
+    await screen.findByTestId("hyg-perio-state-Amending");
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(
+      /NOTHING changes in Open Dental until you send/,
+    );
+    expect(server.calls.filter((c) => c === "AMEND")).toHaveLength(1);
+
+    // The readings are editable again — the thing slice 12 refused.
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(7));
+    expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toMatch(/^7/);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-stage"));
+    await screen.findByTestId("hyg-perio-state-Staged");
+    fireEvent.click(screen.getByTestId("hyg-perio-send-open"));
+
+    const dialog = await screen.findByTestId("hyg-perio-confirm");
+    expect(dialog.textContent).toMatch(/Correct exam 7001 in Open Dental\?/);
+    expect(screen.getByTestId("hyg-perio-confirm-changes").textContent).toMatch(/#1 DB: 2 mm → 7 mm/);
+    // And it says, before she confirms, that nothing is deleted unless the new exam verifies.
+    expect(dialog.textContent).toMatch(/deleted only after that succeeds/);
+    expect(screen.getByTestId("hyg-perio-confirm-accept").textContent).toMatch(/Send correction/);
+  });
+
+  it("an abandoned correction puts the chart back, and says the exam never changed", async () => {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Amending", "Correction - Full chart");
+    const live = writtenView(chart);
+    server.send = sendResponse("Amending", live, null, live);
+    server.amendScript = [sendResponse("Written", live)];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    fireEvent.click(await screen.findByTestId("hyg-perio-amend-cancel"));
+    await screen.findByTestId("hyg-perio-state-Written");
+    expect(server.calls.filter((c) => c === "AMEND_CANCEL")).toHaveLength(1);
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/In Open Dental as exam 7001/);
+    expect(screen.queryByTestId("hyg-perio-amend-cancel")).toBeNull();
+    expect(screen.getByTestId("hyg-perio-amend")).toBeTruthy();
+  });
+
+  it("a swap whose delete did not land says so, and offers to finish it", async () => {
+    const chart = chartWithDeepPocket();
+    const amended = writtenView(chart, {
+      examNum: 7002,
+      supersedesExamNum: 7001,
+      supersedesDeletedAt: null,
+      amendDiff: [{ tooth: 1, surface: "DB", kind: "depth", from: "2 mm", to: "7 mm" }],
+      errorMessage:
+        "Exam 7002 is correct and was read back in full. The exam it replaces, 7001, is STILL in Open Dental.",
+    });
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Written", "Perio chart");
+    server.send = sendResponse("Written", amended);
+    const finished = { ...amended, supersedesDeletedAt: "2026-09-08T14:00:00.000Z" };
+    server.amendScript = [sendResponse("Written", finished)];
+    renderPerio();
+
+    const warning = await screen.findByTestId("hyg-perio-replaced-left");
+    expect(warning.textContent).toMatch(/7001.*still in Open Dental/);
+    expect(screen.getByTestId("hyg-perio-send-status").textContent).toBe(
+      "Corrected in Open Dental: exam 7002 replaces exam 7001, every site read back",
+    );
+
+    fireEvent.click(screen.getByTestId("hyg-perio-remove-replaced"));
+    await waitFor(() => expect(screen.queryByTestId("hyg-perio-replaced-left")).toBeNull());
+    expect(server.removed).toEqual([7001]);
+    expect(screen.getByTestId("hyg-perio-amended").textContent).toMatch(
+      /1 site corrected · #1 DB: 2 mm → 7 mm · exam 7001 deleted/,
+    );
   });
 });
