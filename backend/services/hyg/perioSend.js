@@ -174,15 +174,46 @@ function sendView(send) {
     finishedAt: iso(send.finished_at),
     deletedBy: send.deleted_by ?? null,
     deletedAt: iso(send.deleted_at),
+    // THE UNDO IS ONLY EVER THE EXAM THIS SEND CREATED. The exam it replaces is
+    // not this send's to remove except as the last step of a verified swap.
     canDelete: send.exam_num !== null && (send.state === 'filling' || send.state === 'incomplete'),
+    supersedesExamNum: send.supersedes_exam_num ?? null,
+    supersedesDeletedAt: iso(send.supersedes_deleted_at),
+    amendDiff: Array.isArray(send.amend_diff) ? send.amend_diff : [],
+    writtenChart: sendChart(send),
   };
 }
 
-/** The latest send of this visit's chart, as the screen reads it. Our database only. */
+/**
+ * The latest send of this visit's chart, and the LIVE one — the most recent
+ * send that verified, whose exam is the one in Open Dental now. Our database
+ * only. A live send is what makes the next send an amendment.
+ */
 async function readSend(pool, { office, visit }) {
   const staged = await visitStore.getStagedWrite(pool, { office, visitId: visit.visitId, kind: 'perio' });
-  const send = staged ? await store.getLatestSend(pool, { office, stagedWriteId: staged.staged_write_id }) : null;
-  return { staged, send };
+  if (!staged) return { staged: null, send: null, live: null };
+  const send = await store.getLatestSend(pool, { office, stagedWriteId: staged.staged_write_id });
+  const live = await store.getLiveSend(pool, { office, stagedWriteId: staged.staged_write_id });
+  return { staged, send, live };
+}
+
+/** The chart a send wrote, if this build can read it back. */
+function sendChart(send) {
+  if (!send || !send.chart) return null;
+  const parsed = contract.PerioChartSchema.safeParse(send.chart);
+  return parsed.success ? contract.normalizePerioChart(parsed.data) : null;
+}
+
+/**
+ * What Open Dental holds for one exam, as a chart.
+ *
+ * @returns {Promise<{ ok: true, chart: object } | { ok: false, error: string }>}
+ */
+async function readExamChart(odGet, examNum) {
+  const read = await odPerio.readExamMeasures(odGet, { examNum });
+  if (!read.ok) return { ok: false, error: read.error };
+  if (read.truncated) return { ok: false, error: `only part of exam ${examNum} came back` };
+  return { ok: true, chart: odPerio.chartFromMeasures(read.rows).chart };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,10 +225,9 @@ async function readSend(pool, { office, visit }) {
  *
  * @returns {Promise<{ ok: true } | { ok: false, status: number, code: string, error: string }>}
  */
-async function startPerioSend({ pool, office, visit, appointment, request, actor }) {
-  const staged = await visitStore.getStagedWrite(pool, { office, visitId: visit.visitId, kind: 'perio' });
+async function startPerioSend({ pool, office, visit, appointment, request, actor, odGet }) {
+  const { staged, send: latest, live } = await readSend(pool, { office, visit });
   if (!staged) return refuse(409, 'NOT_STAGED', 'There is no staged perio chart on this visit.');
-  const latest = await store.getLatestSend(pool, { office, stagedWriteId: staged.staged_write_id });
   if (latest && IN_FLIGHT.includes(latest.state)) {
     return refuse(409, 'PERIO_SEND_IN_PROGRESS', 'This chart is already being sent. Continue that send from the chart.');
   }
@@ -275,6 +305,67 @@ async function startPerioSend({ pool, office, visit, appointment, request, actor
     return refuse(422, 'NOTHING_TO_SEND', 'This chart holds no readings to write.');
   }
 
+  /*
+   * ITEM 13: IS THIS A CORRECTION?
+   *
+   * A live send means an exam for this visit IS in Open Dental, so this send
+   * REPLACES it rather than adding a second one. Before anything is written,
+   * Open Dental is read back: the exam must still be there, and it must still
+   * hold what the baseline says, or somebody has edited it since she pressed
+   * Amend and this send would quietly revert their correction.
+   */
+  let supersedesExamNum = null;
+  let amendDiff = [];
+  if (live && live.exam_num !== null) {
+    if (typeof odGet !== 'function') {
+      return refuse(500, 'OD_READ_FAILED', 'A correction cannot be confirmed without reading Open Dental.');
+    }
+    const exams = await odPerio.readExams(odGet, { patNum: visit.patNum });
+    if (!exams.ok || exams.truncated) {
+      return refuse(
+        502,
+        'OD_READ_FAILED',
+        "Open Dental did not return this patient's perio exams, so the correction was not sent."
+      );
+    }
+    if (!exams.exams.some((e) => e.examNum === live.exam_num)) {
+      return refuse(
+        409,
+        'AMEND_BASE_MISSING',
+        `Exam ${live.exam_num} is no longer in Open Dental, so there is nothing to correct. Nothing was sent.`
+      );
+    }
+    const odChart = await readExamChart(odGet, live.exam_num);
+    if (!odChart.ok) {
+      return refuse(
+        502,
+        'OD_READ_FAILED',
+        `Open Dental did not return exam ${live.exam_num}'s readings (${odChart.error}), so the correction was not sent.`
+      );
+    }
+    const baseline = sendChart(live) || odChart.chart;
+    const drift = contract.perioChartChanges(baseline, odChart.chart);
+    if (drift.length > 0) {
+      const lines = drift.slice(0, 3).map(contract.perioChangeLine).join('; ');
+      return refuse(
+        409,
+        'AMEND_BASE_CHANGED',
+        `Exam ${live.exam_num} has been changed in Open Dental since this correction was started ` +
+          `(${lines}${drift.length > 3 ? ` and ${drift.length - 3} more` : ''}). Nothing was sent. ` +
+          'Open the chart again to start from what Open Dental holds now.'
+      );
+    }
+    amendDiff = contract.perioChartChanges(baseline, chart);
+    if (amendDiff.length === 0) {
+      return refuse(
+        422,
+        'NOTHING_TO_SEND',
+        `This chart is identical to exam ${live.exam_num} in Open Dental. There is nothing to correct.`
+      );
+    }
+    supersedesExamNum = live.exam_num;
+  }
+
   const claimed = await visitStore.markSending(pool, { office, visitId: visit.visitId, kind: 'perio' });
   if (!claimed) return refuse(409, 'NOT_STAGED', 'Another send started this chart first.');
   try {
@@ -288,6 +379,8 @@ async function startPerioSend({ pool, office, visit, appointment, request, actor
       previewFingerprint: request.previewFingerprint,
       plan,
       actor,
+      supersedesExamNum,
+      amendDiff,
     });
   } catch (err) {
     // Nothing reached Open Dental — the exam is only ever posted from a
@@ -295,7 +388,7 @@ async function startPerioSend({ pool, office, visit, appointment, request, actor
     await store.restageChart(pool, { office, visitId: visit.visitId });
     throw err;
   }
-  return { ok: true };
+  return { ok: true, amending: supersedesExamNum !== null, supersedesExamNum, amendDiff };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -455,20 +548,111 @@ async function verify(ctx, send, rows) {
     );
   }
 
-  const counts = contract.countPerioChart(chart);
-  const skipped = counts.teethSkipped.length;
-  await store.finishSend(ctx.pool, { office: ctx.office, sendId: send.send_id, state: 'written' });
+  // WHAT THIS SEND WROTE, recorded now that Open Dental agrees with it. It is
+  // the baseline the next correction is diffed against, and the thing an
+  // amendment re-reads Open Dental against before it writes anything.
+  await store.setSendChart(ctx.pool, { office: ctx.office, sendId: send.send_id, chart });
+
+  /*
+   * ITEM 13 — THE SWAP'S LAST STEP, AND ONLY NOW.
+   *
+   * The corrected exam exists and every site of it has been read back, so the
+   * exam it replaces may go. Never before: a window with no perio exam at all
+   * is worse than a window with a wrong digit in one, and a re-create that
+   * failed would leave the patient with nothing.
+   *
+   * If the delete does not land, the chart is still correct in Open Dental and
+   * a duplicate exam is still there. That is said out loud, on the send and on
+   * the screen, rather than retried silently.
+   */
+  let swapNote = null;
+  if (send.supersedes_exam_num !== null) {
+    const removal = await removeExam(ctx, send.supersedes_exam_num);
+    if (removal.ok) {
+      await store.markSupersededDeleted(ctx.pool, { office: ctx.office, sendId: send.send_id });
+    } else {
+      swapNote =
+        `Exam ${send.exam_num} is correct and was read back in full. The exam it replaces, ` +
+        `${send.supersedes_exam_num}, is STILL in Open Dental: ${removal.error}. Remove it from this ` +
+        'page, or delete it in Open Dental.';
+    }
+    ctx.amend = {
+      oldExam: send.supersedes_exam_num,
+      newExam: send.exam_num,
+      changes: Array.isArray(send.amend_diff) ? send.amend_diff : [],
+      replacedRemoved: removal.ok,
+    };
+  }
+
+  await store.finishSend(ctx.pool, {
+    office: ctx.office,
+    sendId: send.send_id,
+    state: 'written',
+    errorMessage: swapNote,
+  });
   await visitStore.markWritten(ctx.pool, {
     office: ctx.office,
     visitId: ctx.visit.visitId,
     kind: 'perio',
     actor: send.created_by,
-    writtenRef:
-      `Perio exam ${send.exam_num}: ${counts.sitesCharted} sites` +
-      (skipped > 0 ? ` and ${skipped} skipped ${skipped === 1 ? 'tooth' : 'teeth'}` : '') +
-      ' read back and match',
+    // The swap's outcome is part of what the chart says it is.
+    writtenRef: writtenRefFor({ ...send, supersedes_deleted_at: swapNote === null ? new Date() : null }, chart),
   });
   return undefined;
+}
+
+/**
+ * What a staged write says once its exam is in Open Dental.
+ *
+ * ONE definition, because two places need the identical sentence: the send that
+ * writes it, and a correction that is ABANDONED and has to put it back exactly
+ * as it was. `hyg_staged_write_written_ref_check` is a biconditional — only a
+ * `Written` row may carry a reference, and it must — so opening a correction
+ * clears it and closing one restores it. The exam number itself is never lost:
+ * it lives on the send row, which is the record of what is in the chart.
+ */
+function writtenRefFor(send, chart) {
+  const counts = contract.countPerioChart(chart);
+  const skipped = counts.teethSkipped.length;
+  const readBack =
+    `Perio exam ${send.exam_num}: ${counts.sitesCharted} sites` +
+    (skipped > 0 ? ` and ${skipped} skipped ${skipped === 1 ? 'tooth' : 'teeth'}` : '') +
+    ' read back and match';
+  if (send.supersedes_exam_num === null || send.supersedes_exam_num === undefined) return readBack;
+  return (
+    `${readBack} (amended; replaced exam ${send.supersedes_exam_num}` +
+    (send.supersedes_deleted_at ? ', now deleted)' : ' — STILL in Open Dental)')
+  );
+}
+
+/**
+ * Delete one exam and PROVE it is gone: read the patient's exams, delete, read
+ * again. Never called for anything but an exam this send is entitled to remove
+ * — the one it replaces, after its own exam verified.
+ *
+ * @returns {Promise<{ ok: true, alreadyGone: boolean } | { ok: false, error: string }>}
+ */
+async function removeExam(ctx, examNum) {
+  const before = await odPerio.readExams(ctx.odGet, { patNum: ctx.visit.patNum });
+  if (!before.ok || before.truncated) {
+    return { ok: false, error: "Open Dental did not return this patient's exams" };
+  }
+  if (!before.exams.some((e) => e.examNum === examNum)) {
+    // Somebody deleted it in Open Dental already. The swap's outcome is the same.
+    return { ok: true, alreadyGone: true };
+  }
+  const res = await writer.deletePerioExam(ctx.od, { examNum });
+  ctx.attempted.push({ action: 'DELETE', target: 'exam', ok: res.ok });
+  if (!res.ok) return { ok: false, error: odWords(res.error) };
+
+  const after = await odPerio.readExams(ctx.odGet, { patNum: ctx.visit.patNum });
+  if (!after.ok || after.truncated) {
+    return { ok: false, error: 'the delete was sent but Open Dental did not answer when asked again' };
+  }
+  if (after.exams.some((e) => e.examNum === examNum)) {
+    return { ok: false, error: 'it is still listed after the delete' };
+  }
+  return { ok: true, alreadyGone: false };
 }
 
 async function fillAndVerify(ctx, send) {
@@ -605,7 +789,9 @@ async function stepPerioSend({ pool, office, visit, od, odGet }) {
       `mismatches=${Array.isArray(after && after.mismatches) ? after.mismatches.length : ctx.mismatches} ` +
       `ms=${Date.now() - startedAt}`
   );
-  return { ok: true, attempted: ctx.attempted, paused: ctx.paused };
+  // `amend` is set only by a swap that completed in this step: both exam
+  // numbers and the per-site changes, for the audit trail the route writes.
+  return { ok: true, attempted: ctx.attempted, paused: ctx.paused, amend: ctx.amend || null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -717,6 +903,149 @@ async function deletePerioExamForSend({ pool, office, visit, od, odGet, request,
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Amending a chart that is already in Open Dental (item 13)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Open a `Written` chart for a correction. WRITES NOTHING TO OPEN DENTAL.
+ *
+ * The readings she starts from are the ones OPEN DENTAL HOLDS RIGHT NOW, read
+ * here and loaded into the chart — not CareIN's memory of what it wrote. If
+ * somebody corrected a site in Open Dental since, she sees their correction and
+ * edits from it, and the count of what differed is reported so the screen can
+ * say so.
+ *
+ * @returns {Promise<{ ok: true, examNum: number, changedInOpenDental: number }
+ *          | { ok: false, status: number, code: string, error: string }>}
+ */
+async function beginAmendment({ pool, office, visit, odGet, actor }) {
+  const { staged, send, live } = await readSend(pool, { office, visit });
+  if (!staged || !live || live.exam_num === null) {
+    return refuse(409, 'NOT_AMENDABLE', 'This chart is not in Open Dental, so there is nothing to correct.');
+  }
+  if (send && IN_FLIGHT.includes(send.state)) {
+    return refuse(409, 'PERIO_SEND_IN_PROGRESS', 'This chart is being sent right now. Let it finish first.');
+  }
+  if (staged.state !== 'Written') {
+    return refuse(
+      409,
+      'NOT_AMENDABLE',
+      staged.state === 'Amending' || staged.state === 'Staged'
+        ? 'This chart is already open for a correction.'
+        : `This chart is ${String(staged.state).toLowerCase()}, not written, so there is nothing to correct yet.`
+    );
+  }
+
+  const odChart = await readExamChart(odGet, live.exam_num);
+  if (!odChart.ok) {
+    return refuse(
+      502,
+      'OD_READ_FAILED',
+      `Open Dental did not return exam ${live.exam_num}'s readings (${odChart.error}), so a correction ` +
+        'cannot be started. Nothing changed.'
+    );
+  }
+  const changedInOpenDental = contract.perioChartChanges(sendChart(live) || odChart.chart, odChart.chart).length;
+  await store.setSendChart(pool, { office, sendId: live.send_id, chart: odChart.chart });
+
+  const opened = await visitStore.beginPerioAmendment(pool, { office, visitId: visit.visitId });
+  if (!opened) {
+    return refuse(409, 'NOT_AMENDABLE', 'This chart changed while it was being opened. Open it again.');
+  }
+  const loaded = await visitStore.savePerioDraft(pool, {
+    office,
+    visit,
+    chart: odChart.chart,
+    actor,
+    amending: true,
+  });
+  if (!loaded.ok) return refuse(409, loaded.code, loaded.message);
+  return { ok: true, examNum: live.exam_num, changedInOpenDental };
+}
+
+/**
+ * Abandon a correction: the chart goes back to the readings Open Dental holds,
+ * and back to `Written`. NOTHING in Open Dental changes — it never did.
+ */
+async function cancelAmendment({ pool, office, visit, actor }) {
+  const { staged, live } = await readSend(pool, { office, visit });
+  if (!staged || !live || !['Amending', 'Staged'].includes(staged.state)) {
+    return refuse(409, 'NOT_AMENDING', 'This chart is not open for a correction.');
+  }
+  const baseline = sendChart(live);
+  if (!baseline) {
+    return refuse(
+      409,
+      'NOT_AMENDING',
+      `CareIN cannot tell what exam ${live.exam_num} holds, so it cannot put the chart back. ` +
+        'Open the chart again to read it from Open Dental.'
+    );
+  }
+  const composed = composer.compose('perio', { visit, items: [], actor, draft: { chart: baseline } });
+  const closed = await visitStore.cancelPerioAmendment(pool, {
+    office,
+    visit,
+    chart: baseline,
+    composed,
+    actor,
+    // Put back the exact reference the send wrote: a `Written` row must carry one.
+    writtenRef: writtenRefFor(live, baseline),
+  });
+  if (!closed) return refuse(409, 'NOT_AMENDING', 'This chart is no longer open for a correction.');
+  return { ok: true, examNum: live.exam_num };
+}
+
+/**
+ * The swap's last step, run again: remove the exam a verified amendment
+ * replaced, when the delete did not land at the time.
+ *
+ * This is NOT the undo. It can only ever name the exam a send already replaced,
+ * and only while that send says it is still there.
+ */
+async function removeReplacedExam({ pool, office, visit, od, odGet, request, actor }) {
+  const { live } = await readSend(pool, { office, visit });
+  if (!live || live.supersedes_exam_num === null || live.supersedes_deleted_at !== null) {
+    return refuse(409, 'NOT_REPLACED', 'No replaced exam is waiting to be removed on this chart.');
+  }
+  if (live.supersedes_exam_num !== request.examNum) {
+    return refuse(
+      409,
+      'PERIO_EXAM_NOT_DELETABLE',
+      `Exam ${request.examNum} is not the exam this correction replaced (${live.supersedes_exam_num}). Nothing was deleted.`
+    );
+  }
+
+  const token = crypto.randomUUID();
+  const claimed = await store.claimStep(pool, {
+    office,
+    sendId: live.send_id,
+    token,
+    leaseCutoff: new Date(Date.now() - leaseMs()),
+  });
+  if (!claimed) {
+    return refuse(409, 'PERIO_SEND_BUSY', 'This chart is busy right now. Try again in a moment.');
+  }
+  const ctx = { pool, office, visit, od, odGet, attempted: [] };
+  try {
+    const removal = await removeExam(ctx, live.supersedes_exam_num);
+    if (!removal.ok) {
+      return {
+        ...refuse(
+          502,
+          'OD_DELETE_UNCONFIRMED',
+          `Exam ${live.supersedes_exam_num} was not removed: ${removal.error}. Nothing here changed.`
+        ),
+        attempted: ctx.attempted,
+      };
+    }
+    await store.markSupersededDeleted(pool, { office, sendId: live.send_id });
+    return { ok: true, attempted: ctx.attempted, examNum: live.supersedes_exam_num, actor };
+  } finally {
+    await store.releaseStep(pool, { office, sendId: live.send_id, token });
+  }
+}
+
 /**
  * May a Failed perio chart go back to Staged? Only when its last send left
  * nothing unaccounted for in Open Dental: refused (nothing created), deleted,
@@ -733,8 +1062,13 @@ module.exports = {
   startPerioSend,
   stepPerioSend,
   deletePerioExamForSend,
+  beginAmendment,
+  cancelAmendment,
+  removeReplacedExam,
   readSend,
+  sendChart,
   sendView,
+  writtenRefFor,
   canRestage,
   provNumFor,
   leaseMs,

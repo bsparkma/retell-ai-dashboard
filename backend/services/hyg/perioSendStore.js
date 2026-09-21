@@ -26,7 +26,8 @@ const SEND_COLUMNS = `
   send_id, staged_write_id, visit_id, office, pat_num, exam_date, prov_num,
   preview_fingerprint, plan, state, exam_num, prior_exam_nums, rows_written,
   mismatches, error_message, step_token, step_claimed_at, created_by, created_at,
-  updated_at, finished_at, deleted_by, deleted_at
+  updated_at, finished_at, deleted_by, deleted_at,
+  chart, supersedes_exam_num, supersedes_deleted_at, amend_diff
 `;
 
 function num(value) {
@@ -41,6 +42,7 @@ function toSend(row) {
     pat_num: num(row.pat_num),
     prov_num: num(row.prov_num),
     exam_num: num(row.exam_num),
+    supersedes_exam_num: num(row.supersedes_exam_num),
     rows_written: Number(row.rows_written),
   };
 }
@@ -66,17 +68,89 @@ async function getLatestSend(pool, { office, stagedWriteId }) {
  */
 async function createSend(
   pool,
-  { office, visitId, stagedWriteId, patNum, examDate, provNum, previewFingerprint, plan, actor }
+  {
+    office,
+    visitId,
+    stagedWriteId,
+    patNum,
+    examDate,
+    provNum,
+    previewFingerprint,
+    plan,
+    actor,
+    // Item 13. An amendment carries the exam it replaces and what it changes;
+    // a first send carries neither, and the CHECKs refuse a diff without one.
+    supersedesExamNum = null,
+    amendDiff = [],
+  }
 ) {
   const res = await pool.query(
     `INSERT INTO hyg_perio_send
        (staged_write_id, visit_id, office, pat_num, exam_date, prov_num, preview_fingerprint,
-        plan, state, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'posting', $9)
+        plan, state, created_by, supersedes_exam_num, amend_diff)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'posting', $9, $10, $11::jsonb)
      RETURNING ${SEND_COLUMNS}`,
-    [stagedWriteId, visitId, office, patNum, examDate, provNum, previewFingerprint, JSON.stringify(plan), actor]
+    [
+      stagedWriteId,
+      visitId,
+      office,
+      patNum,
+      examDate,
+      provNum,
+      previewFingerprint,
+      JSON.stringify(plan),
+      actor,
+      supersedesExamNum,
+      JSON.stringify(amendDiff),
+    ]
   );
   return toSend(res.rows[0]);
+}
+
+/**
+ * The send whose exam is LIVE in Open Dental: the most recent one that verified.
+ *
+ * This is what makes an amendment an amendment. A chart with a live send is in
+ * Open Dental, so the next send replaces that exam rather than adding a second.
+ * After a swap there are two `written` sends — the original, whose exam was
+ * deleted, and the amendment — and the most recent is the live one.
+ */
+async function getLiveSend(pool, { office, stagedWriteId }) {
+  const res = await pool.query(
+    `SELECT ${SEND_COLUMNS} FROM hyg_perio_send
+      WHERE staged_write_id = $1 AND office = $2 AND state = 'written'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [stagedWriteId, office]
+  );
+  return res.rowCount === 0 ? null : toSend(res.rows[0]);
+}
+
+/** The chart a send wrote, recorded when it verified. The next amendment's baseline. */
+async function setSendChart(pool, { office, sendId, chart }) {
+  await pool.query(
+    `UPDATE hyg_perio_send SET chart = $3::jsonb, updated_at = now()
+      WHERE send_id = $1 AND office = $2`,
+    [sendId, office, JSON.stringify(chart)]
+  );
+}
+
+/**
+ * The swap's last step: the replaced exam was read back GONE.
+ *
+ * Only ever called after the new exam verified. A send that carries
+ * `supersedes_exam_num` and no `supersedes_deleted_at` is the honest record of a
+ * swap whose delete did not land — the chart is right, and a duplicate exam is
+ * still in Open Dental.
+ */
+async function markSupersededDeleted(pool, { office, sendId }) {
+  const res = await pool.query(
+    `UPDATE hyg_perio_send SET supersedes_deleted_at = now(), updated_at = now()
+      WHERE send_id = $1 AND office = $2
+        AND supersedes_exam_num IS NOT NULL AND supersedes_deleted_at IS NULL`,
+    [sendId, office]
+  );
+  return res.rowCount === 1;
 }
 
 /**
@@ -192,6 +266,9 @@ async function restageChart(pool, { office, visitId }) {
 
 module.exports = {
   getLatestSend,
+  getLiveSend,
+  setSendChart,
+  markSupersededDeleted,
   createSend,
   claimStep,
   renewStep,

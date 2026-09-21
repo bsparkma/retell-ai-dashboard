@@ -28,122 +28,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { FakeOd, bootHygApp, api, apptRow, patientRow, operatoryRow } = require('./hygTestUtils');
+const { bootHygApp, api, perioOd, PERIO_VALUE_KEY: VALUE_KEY } = require('./hygTestUtils');
 const contract = require('../../hyg/contract.gen.cjs');
-const PROBE = require('../../../new-dashboard/tests/fixtures/perio-arch-probe-staging.json');
 
 const DATE = '2026-09-08';
 const Q = '?office=roland&date=' + DATE;
 const BASE = '/api/hyg/visit/900001';
-const FIELDS = ['UpperFacial', 'UpperLingual', 'LowerLingual', 'LowerFacial'];
-const VALUE_KEY = { MB: 'MBvalue', B: 'Bvalue', DB: 'DBvalue', ML: 'MLvalue', L: 'Lvalue', DL: 'DLvalue' };
-const FLAG_BIT = { b: 1, s: 2, p: 4, c: 8 };
-
-/**
- * A fake Open Dental that keeps what is written to it, parses arch strings the
- * way the probe found the real one does, and can be told to misbehave.
- *
- * @param {{ onExam?: Function, onMeasure?: Function, corrupt?: Function }} [opts]
- *   A hook returning an envelope REPLACES the answer; `landed: true` on it still
- *   stores the write — a write that landed and did not answer.
- */
-function perioOd({ onExam = null, onMeasure = null, corrupt = null, afterMeasure = null } = {}) {
-  const client = new FakeOd({
-    '/appointments': [
-      apptRow({ AptNum: 900001, PatNum: 12827, AptDateTime: DATE + ' 08:00:00', ProvHyg: 7, ProvNum: 1 }),
-    ],
-    '/operatories': [operatoryRow()],
-    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Perio Maint' }],
-    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
-    '/patients/12827': patientRow(),
-  });
-  const state = { exams: [], measures: [], posts: [], deletes: [], nextExam: 7001, nextMeasure: 90001 };
-
-  const publish = () => {
-    client.routes['/perioexams'] = state.exams.slice();
-    for (const key of Object.keys(client.routes)) {
-      if (key.startsWith('/periomeasures')) delete client.routes[key];
-    }
-    client.routes['/periomeasures'] = state.measures.slice(0, 100);
-    for (let offset = 100; offset <= state.measures.length; offset += 100) {
-      client.routes['/periomeasures?Offset=' + offset] = state.measures.slice(offset, offset + 100);
-    }
-  };
-
-  /** One row per (exam, tooth, SequenceType), -1 everywhere until something lands. */
-  const rowFor = (examNum, tooth, type) => {
-    let row = state.measures.find((m) => m.PerioExamNum === examNum && m.IntTooth === tooth && m.SequenceType === type);
-    if (!row) {
-      row = {
-        PerioMeasureNum: state.nextMeasure++, PerioExamNum: examNum, SequenceType: type, IntTooth: tooth,
-        ToothValue: -1, MBvalue: -1, Bvalue: -1, DBvalue: -1, MLvalue: -1, Lvalue: -1, DLvalue: -1,
-      };
-      state.measures.push(row);
-    }
-    return row;
-  };
-
-  client.writeRoutes = {
-    '/perioexams': (body) => {
-      state.posts.push({ path: '/perioexams', body });
-      const hooked = onExam ? onExam(body, state) : null;
-      if (hooked && !hooked.landed) return hooked;
-      // Finding 6: validation happens before creation.
-      for (const f of FIELDS) {
-        if (f in body && !/^[0-9]/.test(String(body[f]))) {
-          return { ok: false, status: 400, data: null, error: `${f} must start with a number from 0-9.` };
-        }
-      }
-      const exam = {
-        PerioExamNum: state.nextExam++, PatNum: body.PatNum, ExamDate: body.ExamDate,
-        ProvNum: body.ProvNum, Note: body.Note,
-      };
-      state.exams.push(exam);
-      for (const f of FIELDS) {
-        if (!(f in body)) continue;
-        const table = PROBE.regions[f];
-        let pos = -1;
-        for (const ch of String(body[f])) {
-          if (/[0-9]/.test(ch)) {
-            pos += 1; // Findings 4 and 5: every digit takes the NEXT site.
-            if (pos >= table.length) continue;
-            rowFor(exam.PerioExamNum, table[pos].tooth, 'Probing')[VALUE_KEY[table[pos].surface]] = Number(ch);
-          } else if (FLAG_BIT[ch] && pos >= 0 && pos < table.length) {
-            // Finding 3: a flag rides the digit before it, and flags stack.
-            const row = rowFor(exam.PerioExamNum, table[pos].tooth, 'BleedSupPlaqCalc');
-            const key = VALUE_KEY[table[pos].surface];
-            row[key] = Math.max(0, row[key]) | FLAG_BIT[ch];
-          }
-        }
-      }
-      if (corrupt) corrupt(state, exam);
-      publish();
-      return hooked || { ok: true, status: 201, data: exam };
-    },
-    '/periomeasures': (body) => {
-      state.posts.push({ path: '/periomeasures', body });
-      const hooked = onMeasure ? onMeasure(body, state) : null;
-      if (hooked && !hooked.landed) return hooked;
-      const row = { PerioMeasureNum: state.nextMeasure++, ...body };
-      state.measures.push(row);
-      if (afterMeasure) afterMeasure(row);
-      publish();
-      return hooked || { ok: true, status: 201, data: row };
-    },
-  };
-  client.deleteRoutes = {};
-  for (let n = 7001; n <= 7010; n += 1) {
-    client.deleteRoutes['/perioexams/' + n] = () => {
-      state.deletes.push(n);
-      state.exams = state.exams.filter((e) => e.PerioExamNum !== n);
-      state.measures = state.measures.filter((m) => m.PerioExamNum !== n);
-      publish();
-      return { ok: true, status: 200, data: null };
-    };
-  }
-  publish();
-  return { client, state };
-}
+/** The fake Open Dental both perio suites drive — see routes/hyg/hygTestUtils.js. */
+const perioFake = (opts) => perioOd({ date: DATE, patNum: 12827, ...opts });
 
 function examPosts(state) {
   return state.posts.filter((p) => p.path === '/perioexams');
@@ -205,7 +97,7 @@ function captureLogs() {
 }
 
 test('ACCEPTANCE 3: a full 0–9 chart is ONE write — one POST, four strings, no rows — then Written', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   const logs = captureLogs();
   try {
@@ -243,7 +135,7 @@ test('ACCEPTANCE 3: a full 0–9 chart is ONE write — one POST, four strings, 
 });
 
 test('ACCEPTANCE 4: an arch with a 12 goes row by row — with its jaw partner — and the other jaw stays a string', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     const chart = contract.withPerioSite(fullMouth(() => 3), 3, 'DB', { depth: 12 });
@@ -280,7 +172,7 @@ test('ACCEPTANCE 4: an arch with a 12 goes row by row — with its jaw partner �
 });
 
 test('ACCEPTANCE 5: a gap mid-arch goes row by row, and no site that was not charted is written as 0', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     let chart = fullMouth((i) => (i % 4) + 1);
@@ -315,7 +207,7 @@ test('ACCEPTANCE 5: a gap mid-arch goes row by row, and no site that was not cha
 });
 
 test('ACCEPTANCE 6: a read-back that differs by ONE site blocks Written, names the site, and offers the undo', async () => {
-  const od = perioOd({
+  const od = perioFake({
     corrupt: (state, exam) => {
       const row = state.measures.find((m) => m.PerioExamNum === exam.PerioExamNum && m.IntTooth === 14 && m.SequenceType === 'Probing');
       row.Bvalue = row.Bvalue === 9 ? 8 : row.Bvalue + 1;
@@ -356,7 +248,7 @@ test('ACCEPTANCE 6: a read-back that differs by ONE site blocks Written, names t
 });
 
 test('ACCEPTANCE 7: the undo deletes EXACTLY the exam this send created, guarded, read back, audited', async () => {
-  const od = perioOd({
+  const od = perioFake({
     // #30 goes row by row (its DL is a gap), and its row lands holding a 0 there.
     afterMeasure: (row) => {
       if (row.IntTooth === 30 && row.SequenceType === 'Probing') row.DLvalue = 0;
@@ -420,7 +312,7 @@ test('ACCEPTANCE 7: the undo deletes EXACTLY the exam this send created, guarded
 });
 
 test('the undo refuses a WRITTEN chart — a finished exam is corrected in Open Dental, not deleted from here', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     const write = await stage(app, fullMouth());
@@ -438,7 +330,7 @@ test('the undo refuses a WRITTEN chart — a finished exam is corrected in Open 
 
 test('a refused exam creates nothing: the chart says so, there is nothing to undo, and it can be sent again', async () => {
   let refuse = true;
-  const od = perioOd({
+  const od = perioFake({
     onExam: () =>
       refuse ? { ok: false, status: 400, data: null, error: 'ProvNum is not a valid provider.' } : null,
   });
@@ -469,7 +361,7 @@ test('a refused exam creates nothing: the chart says so, there is nothing to und
 
 test('an exam that LANDED without answering is found by reading and adopted — never posted twice', async () => {
   let n = 0;
-  const od = perioOd({
+  const od = perioFake({
     onExam: () => (++n === 1 ? { ok: false, status: 503, data: null, error: 'upstream timeout', landed: true } : null),
   });
   const app = await bootHygApp({ od: od.client });
@@ -492,7 +384,7 @@ test('an exam that LANDED without answering is found by reading and adopted — 
 
 test('a row that LANDED without answering is found by reading on the next step — every row posted once', async () => {
   let n = 0;
-  const od = perioOd({
+  const od = perioFake({
     onMeasure: () => (++n === 1 ? { ok: false, status: 0, data: null, error: 'socket hang up', landed: true } : null),
   });
   const app = await bootHygApp({ od: od.client });
@@ -514,7 +406,7 @@ test('a row that LANDED without answering is found by reading on the next step �
 
 test('two tabs cannot both step: a held lease writes nothing, a lapsed one is taken over', async () => {
   let answer = false;
-  const od = perioOd({ onExam: () => (answer ? null : { ok: false, status: 503, data: null, error: 'down' }) });
+  const od = perioFake({ onExam: () => (answer ? null : { ok: false, status: 503, data: null, error: 'down' }) });
   const app = await bootHygApp({ od: od.client });
   try {
     const write = await stage(app, fullMouth());
@@ -540,7 +432,7 @@ test('two tabs cannot both step: a held lease writes nothing, a lapsed one is ta
 });
 
 test('the fingerprint gate: a chart changed after it was read is refused, and nothing is written', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     const write = await stage(app, fullMouth());
@@ -560,7 +452,7 @@ test('the fingerprint gate: a chart changed after it was read is refused, and no
 });
 
 test('a confirm that dies before its send is recorded puts the chart back, having written nothing', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     const write = await stage(app, fullMouth());
@@ -578,7 +470,7 @@ test('a confirm that dies before its send is recorded puts the chart back, havin
 });
 
 test('GET /perio/send is our database only, and null before a send', async () => {
-  const od = perioOd();
+  const od = perioFake();
   const app = await bootHygApp({ od: od.client });
   try {
     const before = await api(app.baseUrl, 'GET', BASE + '/perio/send' + Q);

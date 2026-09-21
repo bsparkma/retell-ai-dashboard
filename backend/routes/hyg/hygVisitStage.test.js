@@ -165,6 +165,9 @@ test('a write that has left Draft/Staged is immutable to this slice', async () =
     app.db.hyg_staged_write[0].state = 'Written';
     app.db.hyg_staged_write[0].sent_by = 'hygienist@carein.ai';
     app.db.hyg_staged_write[0].sent_at = new Date();
+    // A `Written` row carries what it wrote: the CHECK is a biconditional, and
+    // the fake has enforced it since item 13.
+    app.db.hyg_staged_write[0].written_ref = 'Document 4242';
 
     const restage = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, {
       body: { kind: 'router' },

@@ -74,6 +74,10 @@ const MUTATIONS = [
   ['POST', '/api/hyg/visit/900001/perio/send' + Q, { previewFingerprint: 'fp', examDate: '2026-09-08', provNum: 7 }],
   ['POST', '/api/hyg/visit/900001/perio/send/step' + Q, undefined],
   ['POST', '/api/hyg/visit/900001/perio/send/delete-exam' + Q, { examNum: 7001 }],
+  // Item 13: opening, abandoning and finishing a correction all change a chart.
+  ['POST', '/api/hyg/visit/900001/perio/amend' + Q, undefined],
+  ['POST', '/api/hyg/visit/900001/perio/amend/cancel' + Q, undefined],
+  ['POST', '/api/hyg/visit/900001/perio/send/remove-replaced' + Q, { examNum: 7001 }],
 ];
 
 test('a role with hyg.read but not hyg.write is refused EVERY mutation', async () => {

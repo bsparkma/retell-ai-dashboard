@@ -744,11 +744,16 @@ router.delete(
     if (!visit) return undefined;
 
     const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      // ITEM 13: a correction taken off the list goes back to `Amending`, not
+      // `Draft` — the exam it corrects is still in Open Dental.
+      const live =
+        kind.data === 'perio' ? (await perioSend.readSend(pool, { office, visit })).live : null;
       const removed = await visitStore.unstageWrite(pool, {
         office,
         visitId: visit.visitId,
         kind: kind.data,
         actor: actorEmail(req),
+        amending: live !== null,
       });
       if (!removed.ok) return removed;
       return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
@@ -862,11 +867,16 @@ router.put(
     if (!visit) return undefined;
 
     const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      // ITEM 13: a chart whose exam is LIVE in Open Dental is being corrected,
+      // so an unsent change rests in `Amending`, not `Draft` — the difference is
+      // whether the row still says an exam exists.
+      const { live } = await perioSend.readSend(pool, { office, visit });
       const saved = await visitStore.savePerioDraft(pool, {
         office,
         visit,
         chart: body.chart,
         actor: actorEmail(req),
+        amending: live !== null,
       });
       if (!saved.ok) return saved;
       return { ok: true, perio: await visitStore.getPerio(pool, { office, visitId: visit.visitId }) };
@@ -1007,13 +1017,15 @@ router.get(
 /** The send, as the screen reads it. */
 async function perioSendPayload(req, office, aptNum, visit, paused) {
   return tenantDb.withTenantDb(req, async (pool) => {
-    const { staged, send } = await perioSend.readSend(pool, { office, visit });
+    const { staged, send, live } = await perioSend.readSend(pool, { office, visit });
     return {
       success: true,
       office,
       aptNum,
       stagedWrite: staged ? visitStore.toStagedWrite(staged) : null,
       send: perioSend.sendView(send),
+      // What is in Open Dental now, which is what a correction replaces.
+      live: perioSend.sendView(live),
       paused: paused || null,
     };
   });
@@ -1039,11 +1051,47 @@ async function auditPerioWrites(req, office, aptNum, attempted) {
   );
 }
 
+/**
+ * A completed swap, in the trail: one row for the amendment and ONE PER SITE it
+ * changed (item 13).
+ *
+ * What these rows carry is IDENTIFIERS — the actor (from the request), the
+ * appointment, which exam replaced which, and which sites moved. What they do
+ * NOT carry is the readings: `audit_log` is explicit that nothing in it may be
+ * a PHI value, and `prior_state` is slug-shaped by a CHECK. The old and new
+ * readings live on the send (`amend_diff`) and on the screen, which is where a
+ * hygienist reads them anyway.
+ */
+async function auditPerioAmendment(req, office, aptNum, amend) {
+  const swapRef = `perio_exam:${amend.oldExam}->${amend.newExam}`;
+  await auditMany(req, [
+    {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_amend',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: swapRef,
+      priorState: amend.replacedRemoved ? 'replaced' : 'replaced_not_removed',
+    },
+    ...amend.changes.map((change) => ({
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_amend_site',
+      resourceId: `${aptNum}:${change.tooth}${change.surface ? '-' + change.surface : ''}`,
+      result: 'SUCCESS',
+      office,
+      sourceRef: swapRef,
+      priorState: change.kind,
+    })),
+  ]);
+}
+
 async function runPerioStep(req, office, aptNum, od, visit) {
   const step = await tenantDb.withTenantDb(req, (pool) =>
     perioSend.stepPerioSend({ pool, office, visit, od, odGet: perioOdGet(od) })
   );
   if (step.ok) await auditPerioWrites(req, office, aptNum, step.attempted);
+  if (step.ok && step.amend) await auditPerioAmendment(req, office, aptNum, step.amend);
   return step;
 }
 
@@ -1080,7 +1128,7 @@ router.get(
     if (aptNum === null) return badAptNum(res, office);
     const visit = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
     if (!visit) {
-      return res.json({ success: true, office, aptNum, stagedWrite: null, send: null, paused: null });
+      return res.json({ success: true, office, aptNum, stagedWrite: null, send: null, live: null, paused: null });
     }
     await auditHygRead(req, 'hyg_perio_send', { office, resourceId: aptNum });
     return res.json(await perioSendPayload(req, office, aptNum, visit, null));
@@ -1138,6 +1186,8 @@ router.post(
         appointment: resolved.appointment,
         request: body,
         actor: actorEmail(req),
+        // A correction re-reads the exam it replaces before anything is written.
+        odGet: perioOdGet(resolved.od),
       })
     );
     if (!started.ok) {
@@ -1222,6 +1272,125 @@ router.post(
         office,
         sourceRef: null,
       });
+    }
+    return res.json(await perioSendPayload(req, office, aptNum, cont.visit, null));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Correcting a chart that is already in Open Dental (H4 item 13)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//   POST /:aptNum/perio/amend                 open a Written chart for a correction
+//   POST /:aptNum/perio/amend/cancel          abandon it; the chart goes back
+//   POST /:aptNum/perio/send/remove-replaced  the swap's last step, run again
+//
+// The correction itself goes out through the ordinary send routes above: an
+// amendment IS a send, of a new exam, which replaces the old one only after
+// every site of it has been read back. Opening and abandoning a correction
+// write NOTHING to Open Dental.
+
+router.post(
+  '/:aptNum/perio/amend',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const cont = await perioContinuation(req, res, office, aptNum);
+    if (!cont) return undefined;
+
+    const opened = await tenantDb.withTenantDb(req, (pool) =>
+      perioSend.beginAmendment({
+        pool,
+        office,
+        visit: cont.visit,
+        odGet: perioOdGet(cont.od),
+        actor: actorEmail(req),
+      })
+    );
+    if (!opened.ok) {
+      await auditHygDenial(req, 'hyg_perio_amend', aptNum, {
+        office,
+        result: opened.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(opened.status).json({ success: false, error: opened.error, code: opened.code, office });
+    }
+    // Opening a sent chart for correction is itself a recorded act: it is the
+    // moment a Written chart became editable again, and by whom.
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_amend',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: `perio_exam:${opened.examNum}`,
+      priorState: 'written',
+    });
+    return res.json(await perioSendPayload(req, office, aptNum, cont.visit, null));
+  })
+);
+
+router.post(
+  '/:aptNum/perio/amend/cancel',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    // Our database only: this touches nothing in Open Dental, so it does not
+    // need the office's client — only the visit.
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const closed = await tenantDb.withTenantDb(req, (pool) =>
+      perioSend.cancelAmendment({ pool, office, visit, actor: actorEmail(req) })
+    );
+    if (!closed.ok) {
+      return res.status(closed.status).json({ success: false, error: closed.error, code: closed.code, office });
+    }
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_amend',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: `perio_exam:${closed.examNum}`,
+      priorState: 'amending',
+    });
+    return res.json(await perioSendPayload(req, office, aptNum, visit, null));
+  })
+);
+
+router.post(
+  '/:aptNum/perio/send/remove-replaced',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const body = parseBody(res, contract.PerioDeleteExamRequestSchema, req.body);
+    if (body === null) return undefined;
+    const cont = await perioContinuation(req, res, office, aptNum);
+    if (!cont) return undefined;
+
+    const outcome = await tenantDb.withTenantDb(req, (pool) =>
+      perioSend.removeReplacedExam({
+        pool,
+        office,
+        visit: cont.visit,
+        od: cont.od,
+        odGet: perioOdGet(cont.od),
+        request: body,
+        actor: actorEmail(req),
+      })
+    );
+    await auditPerioWrites(req, office, aptNum, outcome.attempted);
+    if (!outcome.ok) {
+      if (!outcome.attempted || outcome.attempted.length === 0) {
+        await auditHygDenial(req, 'hyg_perio_send', aptNum, {
+          office,
+          result: outcome.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+        });
+      }
+      return res.status(outcome.status).json({ success: false, error: outcome.error, code: outcome.code, office });
     }
     return res.json(await perioSendPayload(req, office, aptNum, cont.visit, null));
   })
