@@ -680,7 +680,23 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
 
     const RcmToday = (await import("@/pages/rcm/RcmToday")).default;
     renderAt(<RcmToday />, "/rcm?add=1");
-    await screen.findByTestId("rcm-get-work-in-roland");
+    const door = await screen.findByTestId("rcm-get-work-in-roland");
+    /*
+     * OPEN THE FOLD BEFORE SHOOTING IT.
+     *
+     * S7 made this section a `<details>` that opens on `?add=1`, read off
+     * `window.location.search`. `memoryLocation` routes wouter without touching
+     * `window.location`, so under jsdom the search string is empty and the fold
+     * stays shut — which is why this dump, whose whole subject is the two drop
+     * zones, has been a picture of a closed summary ever since. The panels were
+     * always in the DOM (a `<details>` renders its children either way), so the
+     * two `waitFor`s below passed and nothing said the shot was of a door
+     * nobody had opened.
+     *
+     * Setting the attribute is what the browser does on the arrival this dump
+     * stands in for, not a shape the product cannot reach.
+     */
+    door.setAttribute("open", "");
     // Both lanes' own recent lists have settled — the shot is of a live door,
     // not of two spinners.
     await waitFor(() => expect(screen.getByTestId("rcm-era-list-roland")).toBeTruthy());
