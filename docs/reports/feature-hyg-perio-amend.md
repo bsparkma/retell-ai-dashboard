@@ -181,4 +181,8 @@ c6bdbd9 Amend a sent chart from the perio page
 
 ## 9. Push / PR
 
-_(filled in after push)_
+Pushed. **PR #180** — `feature/hyg-perio-amend` → `develop`:
+https://github.com/bsparkma/retell-ai-dashboard/pull/180
+
+Off `develop` after #179 merged, so it stacks on nothing. The staging rehearsal in §6 needs it
+deployed to staging.
