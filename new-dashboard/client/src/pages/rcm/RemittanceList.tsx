@@ -99,6 +99,7 @@ import {
 import {
   CHECK_TABS,
   checkChip,
+  STATE_DOT,
   FILTER_COPY,
   isWorklistFilter,
   matchesFilter,
@@ -143,6 +144,17 @@ function tabCount(
 
 /** Rows per page. The server caps at 200; this is what a screen reads well. */
 const PAGE_SIZE = 50;
+
+/**
+ * THE TABLE'S COLUMN TEMPLATE, declared ONCE and read by the header and every
+ * row — the worklist lesson from the voice side, where per-row grids drifted
+ * out of alignment. A constant rather than a repeated literal so the two can
+ * never be edited apart; it is a complete class string so Tailwind still sees it.
+ *
+ * payer · check number · amount (received under it) · claims · state · waiting on · ›
+ */
+const CHECKS_GRID =
+  "md:grid-cols-[minmax(10rem,1.3fr)_7.5rem_7rem_4rem_9rem_minmax(11rem,1.2fr)_1.25rem]";
 
 /**
  * How deep a CLIENT-SIDE filter reads before it starts telling a half-truth.
@@ -274,7 +286,11 @@ export default function RemittanceList() {
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
           >
             <Upload size={14} />
-            Add a check
+            {/* S8 · IT SAYS WHERE IT GOES. A button labelled "Add a check" on a
+                list of checks reads like it opens a form here; it navigates to
+                Today, and the label now says so before the press rather than
+                after. Two words, paid for inside the pinned budget. */}
+            Add a check on Today
             <ArrowRight size={13} />
           </Link>
 
@@ -661,12 +677,22 @@ function OfficeRemittances({
           {/* A grid whose template is declared ONCE and used by both the header
               and every row — the worklist lesson from the voice side, where
               per-row grids with max-content columns drifted out of alignment. */}
-          <div className="hidden grid-cols-[minmax(11rem,1.4fr)_7rem_8rem_5rem_9rem_minmax(9rem,1fr)_1.5rem] gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground md:grid">
-            <span>Payer / check</span>
-            <span>Date</span>
-            <span className="text-right">Amount</span>
+          {/*
+            S8 · THE BOARD'S SIX COLUMNS.
+            Payer and check number were one stacked cell, and the carrier's date
+            had a column of its own; the artboard splits the first and stacks
+            the second UNDER the amount. The date's job is to tell two checks of
+            the same amount apart, which is exactly where it now sits. "Status"
+            became "State" to match the word Today's table uses for the same
+            dot. Nothing is added or dropped — seven facts per row before and
+            after, the same predicate behind every one.
+          */}
+          <div className={`hidden ${CHECKS_GRID} gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground md:grid`}>
+            <span>Payer</span>
+            <span>Check number</span>
+            <span className="text-right">Amount · received</span>
             <span className="text-right">Claims</span>
-            <span>Status</span>
+            <span>State</span>
             {/*
               WHO OR WHAT, IN WORDS. It replaced a row of chips that named the
               server's predicates — `claims_unreviewed`, `claims_unmatched` — in
@@ -764,7 +790,7 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
     <Link
       href={`/rcm/remittances/${r.batchId}`}
       data-testid={`remittance-row-${r.batchId}`}
-      className="grid grid-cols-1 items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/40 md:grid-cols-[minmax(11rem,1.4fr)_7rem_8rem_5rem_9rem_minmax(9rem,1fr)_1.5rem]"
+      className={`grid grid-cols-1 items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/40 ${CHECKS_GRID}`}
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -778,9 +804,6 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
               {SOURCE_LABELS[r.source]}
             </span>
           )}
-        </div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {r.checkNumber || r.eftNumber || r.traceNumber || "No check or trace number"}
         </div>
         {/*
           WHO IS ON THIS CHECK — C-3b item 1.
@@ -809,12 +832,27 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
         )}
       </div>
 
-      <span className="text-sm text-muted-foreground">{day(r.depositDate)}</span>
+      {/* THE CHECK NUMBER, a column of its own. An identifier, so it may
+          truncate — recognisable from its first digits, the rest is lookup. */}
+      <span className="truncate font-mono text-xs text-muted-foreground">
+        {r.checkNumber || r.eftNumber || r.traceNumber || "No check or trace number"}
+      </span>
 
       <div className="text-right">
         <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
           {money(r.totalAmountCents)}
         </div>
+        {/* RECEIVED — the carrier's date, under its amount. Dropped when the
+            carrier sent none, never replaced with the day CareIN read the file:
+            those are two different facts and only one is the carrier's. */}
+        {r.depositDate && (
+          <div
+            className="text-xs text-muted-foreground"
+            data-testid={`remittance-received-${r.batchId}`}
+          >
+            {day(r.depositDate)}
+          </div>
+        )}
         {/* THE BALANCE CHECK, in the row rather than only on the detail: the
             batch's own total against the sum of its claims. A mismatch is the
             first thing a biller wants to see, and the difference is the number
@@ -848,11 +886,17 @@ function RemittanceRow({ office, remittance: r }: { office: RcmOfficeId; remitta
       */}
       <span className="min-w-0">
         {chip && (
+          /* S8 · A DOT AND A PHRASE — the same `STATE_DOT` Today's arrivals
+             table reads, so one state wears one colour on both screens. */
           <span
-            className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${chip.tone}`}
+            className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground"
             data-testid={`remittance-chip-${r.batchId}`}
           >
-            {chip.label}
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATE_DOT[waiting.state]}`}
+            />
+            <span className="break-words">{chip.label}</span>
           </span>
         )}
       </span>
