@@ -1,6 +1,6 @@
 | Screen | Kind | Chrome words | Whole-render words | Clickable actions | Primary buttons | Primary label(s) | Renders |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| Today | list | 89 | 138 | 17 | 1 | “Start” | 4 |
+| Today | list | 89 | 157 | 18 | 1 | “Pick up where you left off” · “Start” | 4 |
 | Bring in (Today's upload section) | list | — | — | — | — | *not reached by the walk* | 0 |
 | Checks list | list | 98 | 98 | 8 | 0 | — | 3 |
 | Check page | flow | 472 | 472 | 16 | 1 | “Match it up” · “Pick the right claim for Stedi Test 2” · “Approve 2 claims for posting” · “Check over Test, MangoTest” · “Post to Open Dental” · “Approve 1 claim for posting” · “Pick the right claim for Test, MangoTest” | 47 |
