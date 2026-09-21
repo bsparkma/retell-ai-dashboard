@@ -225,6 +225,17 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       server.staged = server.staged.filter((w) => w.kind !== kind);
       return payload();
     }),
+    // Item 15: the chart's own record. This file never answers it, which is the
+    // fail-closed case: a chart whose record cannot be read does not ride Send.
+    // tests/hyg-visit-perio-send.test.tsx answers it.
+    fetchPerioSend: vi.fn(async () => {
+      server.calls.push("GET perio/send");
+      throw new real.HygApiError("CareIN could not be reached", 0, null);
+    }),
+    fetchPerio: vi.fn(async () => {
+      server.calls.push("GET perio");
+      throw new real.HygApiError("CareIN could not be reached", 0, null);
+    }),
   };
 });
 
@@ -497,7 +508,7 @@ describe("what the screen may not claim", () => {
     expect(link.getAttribute("href")).toBe("/hyg/visit/900001/perio?office=roland&date=2026-09-08");
   });
 
-  it("leaves a staged perio chart out of Send, and says it stays", async () => {
+  it("leaves a staged perio chart out of Send while its own record cannot be read, and says so", async () => {
     server.visit = null;
     server.staged = [
       {
@@ -524,8 +535,11 @@ describe("what the screen may not claim", () => {
     await screen.findByTestId("hyg-staged-preview-router");
 
     expect(screen.getByTestId("hyg-staged-perio").textContent).toMatch(/Partial chart: 84 of 192/);
-    expect(screen.getByTestId("hyg-perio-not-sent").textContent).toMatch(/sent from its own page/i);
-    // Router is staged, perio is staged: Send counts ONE.
+    // FAIL CLOSED (item 15): whether a chart may ride Send is on its own record
+    // (a correction, a send already in flight). Unread, it stays out.
+    expect((await screen.findByTestId("hyg-perio-blocked")).textContent).toMatch(/Checking/);
+    expect(screen.queryByTestId("hyg-perio-rides-send")).toBeNull();
+    // Router is staged, perio is staged but unconfirmable: Send counts ONE.
     expect(screen.getByTestId("hyg-send-all").textContent).toMatch(/Send 1 to Open Dental/);
   });
 

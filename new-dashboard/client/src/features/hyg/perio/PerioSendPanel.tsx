@@ -196,7 +196,9 @@ export function PerioSendPanel({
               ? s.state === "posting"
                 ? "Writing the exam to Open Dental…"
                 : "Writing and reading back from Open Dental…"
-              : "Paused. Nothing is being written right now.";
+              : // Item 15: the same send can be running from the visit page, so this
+                // says only what THIS page knows.
+                "Paused here. Nothing is being written from this page right now.";
 
   return (
     <section className={cn("rounded-xl border p-3", tone)} data-testid="hyg-perio-send">

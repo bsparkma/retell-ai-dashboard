@@ -85,7 +85,7 @@ import {
   type PerioEntryAction,
 } from "@/features/hyg/perio/entry";
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
-import { PerioSendConfirm } from "@/features/hyg/perio/PerioSendConfirm";
+import { PerioSendConfirm, perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
 import { PerioDeleteExamDialog, PerioSendPanel, perioMismatchTeeth } from "@/features/hyg/perio/PerioSendPanel";
 import { cn } from "@/lib/utils";
 
@@ -103,17 +103,6 @@ type SaveState = "idle" | "saving" | "saved" | "failed";
 
 function chartKey(chart: PerioChart): string {
   return JSON.stringify(normalizePerioChart(chart));
-}
-
-/**
- * The provider an exam is filed under: the hygienist, else the provider. The
- * SAME rule the server applies (services/hyg/perioSend.js provNumFor); the
- * confirm carries this number and the server refuses if its own differs.
- */
-function provNumOf(appointment: { provHyg: number | null; provNum: number | null }): number | null {
-  if (appointment.provHyg !== null && appointment.provHyg > 0) return appointment.provHyg;
-  if (appointment.provNum !== null && appointment.provNum > 0) return appointment.provNum;
-  return null;
 }
 
 function isInFlight(res: HygPerioSendResponse): boolean {
@@ -647,7 +636,7 @@ export default function HygPerio() {
     staged !== null && (staged.state === "Sending" || staged.state === "Failed" || staged.state === "Written");
   lockedRef.current = locked;
   const isStaged = staged?.state === "Staged" && saveState !== "saving";
-  const provNum = appointment ? provNumOf(appointment) : null;
+  const provNum = appointment ? perioProvNumOf(appointment) : null;
   const providerLabel = appointment
     ? `${appointment.providerName ?? "Provider"} (ProvNum ${provNum ?? "none"})`
     : "Reading the appointment…";
@@ -699,7 +688,7 @@ export default function HygPerio() {
           ? "Being written to Open Dental. The readings are locked."
           : isStaged
             ? sendBlockedReason ??
-              "Staged. Send it from here: every site is read back from Open Dental. Changing a reading takes it off the list until you stage it again."
+              "Staged. It will go with the visit's Send, alongside the note, the slip and the handoff — or send it from here now. Either way every site is read back from Open Dental. Changing a reading takes it off the list until you stage it again."
             : counts.empty
               ? "Nothing to stage until there is a reading."
               : "Staging spells out every reading. Nothing is written to Open Dental until you confirm a send.";
@@ -817,6 +806,21 @@ export default function HygPerio() {
       <p className="mt-1 text-xs text-muted-foreground" data-testid="hyg-perio-stage-note">
         {stageNote}
       </p>
+      {/*
+        ITEM 15: THE WAY BACK. Charting is the middle of a visit, not the end of
+        it — the note, the slip and the handoff are waiting on the visit page,
+        and one Send there carries this chart with them. A correction is not
+        offered this: it is sent from here, where it shows what it changes.
+      */}
+      {isStaged && !correcting && !sendRunning ? (
+        <Link
+          href={visitHref}
+          data-testid="hyg-perio-to-visit"
+          className={cn(TAP, "mt-2 inline-flex items-center gap-1.5 border-primary text-foreground hover:bg-accent/50")}
+        >
+          <ArrowLeft size={14} /> Back to the visit to send it with everything else
+        </Link>
+      ) : null}
       {stageMessage ? (
         <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400" data-testid="hyg-perio-stage-refused">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
