@@ -21,6 +21,11 @@
  *   hyg-perio-send-09-incomplete    loud: the sites named, the teeth marked, the undo
  *   hyg-perio-send-10-delete        the delete dialog, tick not yet given
  *   hyg-perio-send-11-tray-stopped  the visit's tray pointing at the stopped send
+ *   The correction (item 13):
+ *   hyg-perio-amend-12-written      a chart in Open Dental, offering Amend
+ *   hyg-perio-amend-13-amending     editable again; nothing changed in Open Dental yet
+ *   hyg-perio-amend-14-confirm      the confirm, naming every changed site old → new
+ *   hyg-perio-amend-15-replaced-left  a swap whose delete did not land
  *
  * NO NETWORK, NO BACKEND, NO PHI. The one name is synthetic; 12827 is the
  * designated roland fixture.
@@ -284,12 +289,30 @@ function sendView(chart: PerioChart, over: Partial<PerioSendView>): PerioSendVie
     deletedBy: null,
     deletedAt: null,
     canDelete: false,
+    // Item 13: a first send replaces nothing and changes nothing.
+    supersedesExamNum: null,
+    supersedesDeletedAt: null,
+    amendDiff: [],
+    writtenChart: null,
     ...over,
   };
 }
 
-function sendResponse(write: StagedWrite, send: PerioSendView, paused: string | null = null): HygPerioSendResponse {
-  return { success: true, office: "roland", aptNum: 900001, stagedWrite: write, send, paused };
+function sendResponse(
+  write: StagedWrite,
+  send: PerioSendView,
+  paused: string | null = null,
+  live: PerioSendView | null | undefined = undefined,
+): HygPerioSendResponse {
+  return {
+    success: true,
+    office: "roland",
+    aptNum: 900001,
+    stagedWrite: write,
+    send,
+    live: live === undefined ? (send.state === "written" ? send : null) : live,
+    paused,
+  };
 }
 
 const INCOMPLETE_MESSAGE =
@@ -449,6 +472,83 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     fireEvent.click(await screen.findByTestId("hyg-perio-delete-open"));
     await screen.findByTestId("hyg-perio-delete-dialog");
     dump("hyg-perio-send-10-delete@1180x900");
+  });
+
+  // ── correcting a sent chart (item 13) ─────────────────────────────────────
+
+  /** A chart that IS in Open Dental as exam 7001, and the correction being prepared for it. */
+  function amendFixtures(state: "Written" | "Amending" | "Staged", chart: PerioChart) {
+    const write = { ...perioWrite(state, chart), writtenRef: "Perio exam 7001: 186 sites read back and match" };
+    const live = sendView(chart, {
+      state: "written",
+      examNum: 7001,
+      rowsWritten: 0,
+      finishedAt: "2026-09-08T13:21:00.000Z",
+      writtenChart: chart,
+    });
+    fixtures.chart = chart;
+    fixtures.stagedWrite = write;
+    fixtures.prior = found(exam(192, 5, [16]));
+    fixtures.send = sendResponse(write, live, null, live);
+    return live;
+  }
+
+  it("12 — a chart that is in Open Dental, offering the correction", async () => {
+    amendFixtures("Written", sendChart());
+    renderPerio();
+    await screen.findByTestId("hyg-perio-amend");
+    dump("hyg-perio-amend-12-written@1180x900");
+  });
+
+  it("13 — correcting it: the readings are editable again, and nothing has changed in Open Dental", async () => {
+    const chart = sendChart();
+    amendFixtures("Amending", withPerioSite(chart, 14, "B", { depth: 9 }));
+    renderPerio();
+    await screen.findByTestId("hyg-perio-amend-cancel");
+    dump("hyg-perio-amend-13-amending@1180x900");
+  });
+
+  it("14 — the confirm names every changed site, old → new", async () => {
+    const chart = sendChart();
+    const corrected = withPerioSite(withPerioSite(chart, 14, "B", { depth: 9 }), 30, "DL", { depth: 5 });
+    const live = amendFixtures("Staged", corrected);
+    // The baseline is what Open Dental holds; the chart on screen is the correction.
+    fixtures.send = sendResponse({ ...perioWrite("Staged", corrected) }, live, null, {
+      ...live,
+      writtenChart: chart,
+    });
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    fireEvent.click(await screen.findByTestId("hyg-perio-send-open"));
+    await screen.findByTestId("hyg-perio-confirm-changes");
+    dump("hyg-perio-amend-14-confirm@1180x900");
+  });
+
+  it("15 — a swap whose delete did not land says the old exam is still there", async () => {
+    const chart = sendChart();
+    const write = { ...perioWrite("Written", chart), writtenRef: "Perio exam 7002: 186 sites read back and match (amended; replaced exam 7001 — STILL in Open Dental)" };
+    const amended = sendView(chart, {
+      state: "written",
+      examNum: 7002,
+      rowsWritten: 0,
+      finishedAt: "2026-09-08T14:02:00.000Z",
+      writtenChart: chart,
+      supersedesExamNum: 7001,
+      supersedesDeletedAt: null,
+      amendDiff: [
+        { tooth: 14, surface: "B", kind: "depth", from: "3 mm", to: "9 mm" },
+        { tooth: 30, surface: "DL", kind: "depth", from: "2 mm", to: "5 mm" },
+      ],
+      errorMessage:
+        "Exam 7002 is correct and was read back in full. The exam it replaces, 7001, is STILL in Open Dental: it is still listed after the delete. Remove it from this page, or delete it in Open Dental.",
+    });
+    fixtures.chart = chart;
+    fixtures.stagedWrite = write;
+    fixtures.prior = found(exam(192, 5, [16]));
+    fixtures.send = sendResponse(write, amended, null, amended);
+    renderPerio();
+    await screen.findByTestId("hyg-perio-replaced-left");
+    dump("hyg-perio-amend-15-replaced-left@1180x900");
   });
 
   it("11 — the visit's tray, pointing at the stopped send", async () => {
