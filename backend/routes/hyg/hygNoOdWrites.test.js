@@ -244,6 +244,28 @@ test('the perio writer is REAL: it reaches both verbs, and its endpoints live no
   assert.match(send, /writer\.deletePerioExam\(/);
 });
 
+test('item 15: the visit send reaches a perio chart ONLY through perioSend — no second perio write path', () => {
+  // The visit Send now carries a staged chart. It must ORCHESTRATE the one perio
+  // path (perioSend.js → odPerioWriter.js), never grow its own: no transport verb,
+  // no perio endpoint, no writer function called directly.
+  const files = hygSources();
+  const sendVisit = stripComments(fs.readFileSync(files.find((f) => f.endsWith('sendVisit.js')), 'utf8'));
+  assert.doesNotMatch(sendVisit, WRITE_TRANSPORT, 'sendVisit.js names the write transport');
+  for (const endpoint of PERIO_ENDPOINTS) {
+    assert.ok(!sendVisit.includes(endpoint), `sendVisit.js names ${endpoint}`);
+  }
+  assert.doesNotMatch(sendVisit, /odPerioWriter|createPerioExam|createPerioMeasure|deletePerioExam/);
+  // NON-VACUOUS: it really does hand the chart to the perio machinery — the
+  // confirm and the step — so a refactor that dropped the chart from the Send
+  // (or routed it somewhere else) fails here rather than passing an empty scan.
+  assert.match(sendVisit, /require\('\.\/perioSend'\)/);
+  assert.match(sendVisit, /perioSend\.startPerioSend\(/);
+  assert.match(sendVisit, /perioSend\.stepPerioSend\(/);
+  // And the module it hands to is the one that reaches the allow-listed writer.
+  const perio = stripComments(fs.readFileSync(files.find((f) => f.endsWith('perioSend.js')), 'utf8'));
+  assert.match(perio, /require\('\.\/odPerioWriter'\)/);
+});
+
 test('the allow-listed writer is REAL, and it is the only thing that can write', () => {
   // An allow-list is only a guarantee if the file it names actually exists and
   // actually reaches the transport. Otherwise the writes moved somewhere else
@@ -457,12 +479,19 @@ test('driving EVERY perio path to success reaches no Open Dental write verb', as
     assert.equal(staged.status, 201);
     const write = staged.body.visit.stagedWrites.find((w) => w.kind === 'perio');
 
-    // And the one path that COULD write: the send, handed the staged chart.
+    // And the one path that COULD write: the visit send, handed the staged chart
+    // with a confirmation that does not match it. Since item 15 a CURRENT one
+    // writes (hygVisitPerioSend.test.js); a stale one must refuse before any
+    // unit reaches Open Dental.
     const sent = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + q, {
-      body: { confirm: [{ kind: 'perio', previewFingerprint: write.previewFingerprint }] },
+      body: {
+        confirm: [
+          { kind: 'perio', previewFingerprint: write.previewFingerprint + '-stale', examDate: DATE, provNum: 7 },
+        ],
+      },
     });
-    assert.equal(sent.status, 422);
-    assert.equal(sent.body.code, 'PERIO_SENDS_FROM_ITS_CHART');
+    assert.equal(sent.status, 409);
+    assert.equal(sent.body.code, 'PREVIEW_CHANGED');
 
     assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
     for (const c of od.calls) {

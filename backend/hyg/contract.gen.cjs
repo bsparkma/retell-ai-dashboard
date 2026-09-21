@@ -15960,10 +15960,19 @@ var HygVisitResponseSchema = import_zod2.z.object({
    */
   doctorOptions: import_zod2.z.array(import_zod2.z.string())
 });
-var SendConfirmationSchema = import_zod2.z.object({
-  kind: StagedWriteKindSchema,
-  previewFingerprint: import_zod2.z.string().min(1).max(200)
-}).strict();
+var PreviewFingerprintSchema = import_zod2.z.string().min(1).max(200);
+var SendConfirmationSchema = import_zod2.z.union([
+  import_zod2.z.object({
+    kind: import_zod2.z.enum(["router", "note", "tc-handoff"]),
+    previewFingerprint: PreviewFingerprintSchema
+  }).strict(),
+  import_zod2.z.object({
+    kind: import_zod2.z.literal("perio"),
+    previewFingerprint: PreviewFingerprintSchema,
+    examDate: import_zod2.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    provNum: import_zod2.z.number().int().positive()
+  }).strict()
+]);
 var SendVisitRequestSchema = import_zod2.z.object({ confirm: import_zod2.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
 var SendOutcomeSchema = import_zod2.z.object({
   kind: StagedWriteKindSchema,
@@ -15981,9 +15990,16 @@ var HygSendResponseSchema = import_zod2.z.object({
   recordsNeeded: import_zod2.z.array(import_zod2.z.string()),
   handoffCategory: HandoffCategorySchema,
   doctorOptions: import_zod2.z.array(import_zod2.z.string()),
-  /** One entry per confirmed kind, in the order they were attempted. */
+  /**
+   * One entry per confirmed kind, in the order they were attempted.
+   *
+   * A perio chart can come back `Sending` (item 15): its first step ran here,
+   * and the rest are the page's to ask for through the chart's own step route.
+   * `code: "PERIO_PAUSED"` says the step stopped short — Open Dental did not
+   * answer — and `errorMessage` says why; nothing is re-sent before a read.
+   */
   outcomes: import_zod2.z.array(SendOutcomeSchema),
-  /** Counts, not a verdict. `written + failed` is what was attempted. */
+  /** Counts, not a verdict. A perio chart still `Sending` is in neither. */
   written: import_zod2.z.number().int(),
   failed: import_zod2.z.number().int()
 });
@@ -16002,7 +16018,8 @@ var HYG_VISIT_ERROR_CODES = [
   "PREVIEW_CHANGED",
   "NOTHING_TO_SEND",
   "NOT_STAGED",
-  // H4 slice 10 and item 12: the perio chart is sent from its own page.
+  // H4 slice 10 and item 12. Since item 15 a staged chart rides the visit Send;
+  // this code now refuses only a staged CORRECTION, which is sent from its page.
   "PERIO_SENDS_FROM_ITS_CHART",
   "PATIENT_CHANGED",
   "EXAM_DATE_CHANGED",
