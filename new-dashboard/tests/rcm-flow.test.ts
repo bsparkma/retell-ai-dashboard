@@ -206,7 +206,15 @@ describe("the rail", () => {
     expect(stateOf(fresh, "review")).toBe("todo");
     // The sentence survives the demotion — it is still true, and the notes
     // under the rail are where a biller reads what each step is waiting for.
-    expect(detailOf(fresh, "review")).toContain("note and a Mark checked over");
+    //
+    // S8 reworded it for the check page's board: progress and the gate
+    // ("0 of 1 claim checked over · not finished until you approve.") rather
+    // than what is left ("1 claim still needs a note and a Mark checked over").
+    // What this pins is unchanged — the READING sentence is still here on a
+    // demoted step. Mutation-proved in docs/reports/rcm-s8-checks-board-fidelity.md.
+    expect(detailOf(fresh, "review")).toContain(
+      "0 of 1 claim checked over · not finished until you approve.",
+    );
 
     for (const rail of [
       fresh,
@@ -270,7 +278,11 @@ describe("the rail", () => {
       [claim({ odMatchStatus: "confirmed", odClaimNum: 53784 })],
     );
     expect(stateOf(flow, "review")).toBe("current");
-    expect(detailOf(flow, "review")).toContain("Mark checked over");
+    // S8: the reading sentence is progress-and-gate now (see above). The
+    // imbalance half is asserted ABSENT as well as the reading half present,
+    // so a precedence swap cannot pass by printing both.
+    expect(detailOf(flow, "review")).toContain("checked over · not finished until you approve.");
+    expect(detailOf(flow, "review")).not.toContain("does not balance");
   });
 
   it("never offers more than one call to action", () => {

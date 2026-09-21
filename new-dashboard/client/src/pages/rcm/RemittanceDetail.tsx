@@ -83,7 +83,7 @@ import {
   lineFlagLabel,
   lineFlagTone,
   matchStatusLabel,
-  MATCH_STATUS_TONE,
+  MATCH_STATUS_DOT,
   money,
   NO_ACTION_REASONS,
   reasonTone,
@@ -494,12 +494,33 @@ export default function RemittanceDetailPage() {
       <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
+            {/*
+              S8 · PAYER · CHECK NUMBER, ONE TITLE.
+              The number used to sit on a line of its own under the money line,
+              prefixed "Check" — on a page whose breadcrumb, whose URL and whose
+              every panel already say it is a check. On the board it is the
+              second half of the title: "is this the check I am looking for" is
+              one glance at one line. An EFT keeps its marker (below), because
+              that one is a different fact rather than a repeat.
+            */}
             <h1
-              className="text-2xl font-bold tracking-tight text-foreground"
+              className="text-2xl font-semibold tracking-tight text-foreground"
               style={{ fontFamily: "Sora, sans-serif" }}
+              data-testid="check-title"
             >
               {r.payer}
+              {(r.checkNumber || r.eftNumber || r.traceNumber) && (
+                <span className="font-mono text-xl font-normal text-muted-foreground">
+                  {" · "}
+                  {r.checkNumber || r.eftNumber || r.traceNumber}
+                </span>
+              )}
             </h1>
+            {r.paymentMethod === "eft" && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                EFT
+              </span>
+            )}
             {/*
               ONE CHIP VOCABULARY. This was `batchStatusLabel(r.status)` — the
               ingestion pipeline's words — which meant the check's own page and
@@ -555,10 +576,6 @@ export default function RemittanceDetailPage() {
             )}
             {" · "}
             {claims.length} {claims.length === 1 ? "claim" : "claims"}
-          </p>
-          <p className="mt-1 font-mono text-sm text-muted-foreground">
-            {r.paymentMethod === "eft" ? "EFT" : "Check"}{" "}
-            {r.checkNumber || r.eftNumber || r.traceNumber || "—"}
           </p>
           {/*
             ── S7 · WHERE THE LIST ROW'S SECOND CLAUSE WENT ────────────────────
@@ -691,8 +708,14 @@ export default function RemittanceDetailPage() {
           map is passed either: with nothing here to fire the verbs, handing the
           rail three callbacks it can never reach would be wiring that reads as
           live and is not.
+
+          S8 · THE BOARD VARIANT. This is the one screen where the journey of a
+          payment is the subject rather than a reminder, so the rail gets the
+          artboard's room: five columns, a mark and a status line each. Same
+          flow object, same words — see `RcmStepper`'s `variant`.
         */
         hideCta
+        variant="board"
       />
 
       {/*
@@ -1429,11 +1452,24 @@ function ClaimTriageRow({
         </button>
 
         <div className="min-w-0">
+          {/*
+            S8 · A DOT AND A PHRASE, not a filled pill. Same words, same match
+            status, same tone family — the Checks list and Today draw state this
+            way now, and a filled pill repeated down a claim table reads as
+            decoration where the dot reads as a label. The words carry the
+            meaning; the dot only carries weight.
+          */}
           <span
-            className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-medium ${MATCH_STATUS_TONE[claim.odMatchStatus]}`}
+            className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground"
             data-testid={`claim-match-state-${claim.claimId}`}
           >
-            {matchStatusLabel(claim.odMatchStatus, claim.rejectedCandidates)}
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${MATCH_STATUS_DOT[claim.odMatchStatus]}`}
+            />
+            <span className="break-words">
+              {matchStatusLabel(claim.odMatchStatus, claim.rejectedCandidates)}
+            </span>
           </span>
           <div className="mt-0.5 flex flex-wrap gap-1">
             {claim.reviewedAt && (
@@ -1475,8 +1511,28 @@ function ClaimTriageRow({
           ) : judged === null ? (
             <span className="block text-xs text-muted-foreground/70">…</span>
           ) : (
+            /*
+              S8 · WHAT THE EOB SAYS, AND NOTHING ABOUT OPEN DENTAL.
+
+              A claim the gate has not judged has no verdict, so this cell must
+              not borrow a verdict's sentence — "Will owe" is a projection onto
+              a chart, and there is no chart claim yet to project onto. What it
+              CAN honestly say is the one figure the carrier's document states
+              about the patient: `patientBalanceCents`, the EOB's own
+              patient-responsibility amount, read straight off the claim row.
+              Nothing is added, subtracted or compared here, so this is a
+              reading of the document rather than a second arithmetic beside
+              `verdictFor()`'s.
+
+              It stays QUIET — muted, like the "…" above — because it is not a
+              verdict and must not wear a verdict's green, amber or red.
+
+              It replaced "Not judged yet — match it up and check it over": the
+              instruction half is the rail's job, one screen-width up, and the
+              claim's own row already carries its match state beside this cell.
+            */
             <span className="block text-xs text-muted-foreground">
-              Not judged yet — match it up and check it over.
+              EOB says {money(claim.patientBalanceCents)}
             </span>
           )}
         </div>
