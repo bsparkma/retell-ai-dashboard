@@ -45,6 +45,8 @@ const { Pool } = require('pg');
 
 const visitStore = require('../services/hyg/visitStore');
 const perioSendStore = require('../services/hyg/perioSendStore');
+/** Item 13: the one definition of what a Written chart says it wrote. */
+const perioSend = require('../services/hyg/perioSend');
 const composer = require('../services/hyg/stagedWriteComposer');
 const contract = require('../hyg/contract.gen.cjs');
 
@@ -708,6 +710,215 @@ async function main() {
       );
       await refusesInTx('deleting a visit that has a send record', 'hyg_perio_send', () =>
         sendClient.query('DELETE FROM hyg_visit WHERE visit_id = $1', [sendVisit.visitId])
+      );
+
+      // ── 6e. correcting a sent chart (item 13) ─────────────────────────────
+      // What only a real Postgres can prove: `Amending` is a state the CHECK
+      // now accepts, the swap columns refuse the shapes that would let a
+      // correction lie, and the `written` send really is found as the live one.
+      const amendVisit = await visitStore.openVisit(sendClient, {
+        office: 'roland', aptNum: 990004, patNum: 12828, visitDate: '2026-09-08', actor: ACTOR,
+      });
+      let amendChart = contract.emptyPerioChart();
+      for (const c of contract.chartingOrder(amendChart.sweep)) {
+        amendChart = contract.withPerioSite(amendChart, c.tooth, c.surface, { depth: 3 });
+      }
+      await visitStore.savePerioDraft(sendClient, {
+        office: 'roland', visit: amendVisit, chart: amendChart, actor: ACTOR,
+      });
+      await visitStore.stageWrite(sendClient, {
+        office: 'roland', visit: amendVisit, kind: 'perio', actor: ACTOR, compose: composer.compose,
+      });
+      const amendStaged = await visitStore.getStagedWrite(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId, kind: 'perio',
+      });
+      const firstSend = await perioSendStore.createSend(sendClient, {
+        office: 'roland',
+        visitId: amendVisit.visitId,
+        stagedWriteId: amendStaged.staged_write_id,
+        patNum: 12828,
+        examDate: '2026-09-08',
+        provNum: 7,
+        previewFingerprint: visitStore.fingerprintPreview(amendStaged.preview),
+        plan: contract.planPerioSend(amendChart),
+        actor: ACTOR,
+      });
+      await perioSendStore.markFilling(sendClient, { office: 'roland', sendId: firstSend.send_id, examNum: 8001 });
+      await perioSendStore.setSendChart(sendClient, {
+        office: 'roland', sendId: firstSend.send_id, chart: amendChart,
+      });
+      await perioSendStore.finishSend(sendClient, { office: 'roland', sendId: firstSend.send_id, state: 'written' });
+      await visitStore.markWritten(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId, kind: 'perio', actor: ACTOR,
+        writtenRef: 'Perio exam 8001: 192 sites read back and match',
+      });
+
+      const liveBefore = await perioSendStore.getLiveSend(sendClient, {
+        office: 'roland', stagedWriteId: amendStaged.staged_write_id,
+      });
+      const valleySeesLive = await perioSendStore.getLiveSend(sendClient, {
+        office: 'valley', stagedWriteId: amendStaged.staged_write_id,
+      });
+      if (
+        liveBefore && liveBefore.exam_num === 8001 && valleySeesLive === null &&
+        contract.countPerioChart(liveBefore.chart).sitesCharted === 192
+      ) {
+        ok('the live send is the one that verified, it carries the chart it wrote, and office scopes it');
+      } else {
+        bad('the live send', JSON.stringify({ liveBefore: liveBefore && liveBefore.exam_num, valleySeesLive }));
+      }
+
+      // `Amending` — a state the original CHECK did not have.
+      const opened = await visitStore.beginPerioAmendment(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId,
+      });
+      const openedRow = await visitStore.getStagedWrite(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId, kind: 'perio',
+      });
+      const notWritten = await visitStore.beginPerioAmendment(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId,
+      });
+      // written_ref goes with the state: `hyg_staged_write_written_ref_check` is
+      // a biconditional, and only a Written row may carry one. The exam number
+      // is not lost — it is on the send row, which getLiveSend just proved.
+      if (opened && openedRow.state === 'Amending' && openedRow.written_ref === null && !notWritten) {
+        ok('a Written chart opens for a correction, drops its written_ref with the state, and cannot be opened twice');
+      } else {
+        bad(
+          'opening a correction',
+          JSON.stringify({ opened, state: openedRow.state, written_ref: openedRow.written_ref, notWritten })
+        );
+      }
+
+      // A correction rests in `Amending`, not `Draft` — through the real UPDATE.
+      const corrected = contract.withPerioSite(amendChart, 14, 'B', { depth: 9 });
+      const savedCorrection = await visitStore.savePerioDraft(sendClient, {
+        office: 'roland', visit: amendVisit, chart: corrected, actor: ACTOR, amending: true,
+      });
+      if (savedCorrection.ok && savedCorrection.row.state === 'Amending') {
+        ok('an unsent correction rests in Amending');
+      } else {
+        bad('an unsent correction rests in Amending', JSON.stringify(savedCorrection));
+      }
+
+      const amendDiff = contract.perioChartChanges(amendChart, corrected);
+      const secondSend = await perioSendStore.createSend(sendClient, {
+        office: 'roland',
+        visitId: amendVisit.visitId,
+        stagedWriteId: amendStaged.staged_write_id,
+        patNum: 12828,
+        examDate: '2026-09-08',
+        provNum: 7,
+        previewFingerprint: 'fp-correction',
+        plan: contract.planPerioSend(corrected),
+        actor: ACTOR,
+        supersedesExamNum: 8001,
+        amendDiff,
+      });
+      if (
+        secondSend.supersedes_exam_num === 8001 &&
+        secondSend.amend_diff.length === 1 &&
+        secondSend.amend_diff[0].to === '9 mm'
+      ) {
+        ok('a correction records the exam it replaces and the sites it changes, through jsonb');
+      } else {
+        bad('a correction records what it replaces', JSON.stringify(secondSend.amend_diff));
+      }
+
+      await refusesInTx('a diff with nothing to replace', 'hyg_perio_send_amend_diff_check', () =>
+        sendClient.query(
+          `UPDATE hyg_perio_send SET supersedes_exam_num = NULL WHERE send_id = $1`,
+          [secondSend.send_id]
+        )
+      );
+      await refusesInTx('a send that supersedes the exam it created', 'hyg_perio_send_supersedes_self_check', () =>
+        sendClient.query(
+          `UPDATE hyg_perio_send SET exam_num = 8001, state = 'filling' WHERE send_id = $1`,
+          [secondSend.send_id]
+        )
+      );
+      await refusesInTx('a delete recorded for an exam nothing replaced', 'hyg_perio_send_supersedes_check', () =>
+        sendClient.query(
+          `UPDATE hyg_perio_send SET supersedes_deleted_at = now() WHERE send_id = $1`,
+          [firstSend.send_id]
+        )
+      );
+
+      // The swap's last step, and the fact that it is a SEPARATE step.
+      await perioSendStore.markFilling(sendClient, { office: 'roland', sendId: secondSend.send_id, examNum: 8002 });
+      await perioSendStore.finishSend(sendClient, { office: 'roland', sendId: secondSend.send_id, state: 'written' });
+      const beforeSwap = await perioSendStore.getLiveSend(sendClient, {
+        office: 'roland', stagedWriteId: amendStaged.staged_write_id,
+      });
+      const valleySwaps = await perioSendStore.markSupersededDeleted(sendClient, {
+        office: 'valley', sendId: secondSend.send_id,
+      });
+      const swapped = await perioSendStore.markSupersededDeleted(sendClient, {
+        office: 'roland', sendId: secondSend.send_id,
+      });
+      const twice = await perioSendStore.markSupersededDeleted(sendClient, {
+        office: 'roland', sendId: secondSend.send_id,
+      });
+      const afterSwap = await perioSendStore.getLiveSend(sendClient, {
+        office: 'roland', stagedWriteId: amendStaged.staged_write_id,
+      });
+      if (
+        beforeSwap.exam_num === 8002 && beforeSwap.supersedes_deleted_at === null &&
+        !valleySwaps && swapped && !twice && afterSwap.exam_num === 8002 &&
+        afterSwap.supersedes_deleted_at !== null
+      ) {
+        ok('a verified correction is the live exam, and the replaced one is recorded gone exactly once');
+      } else {
+        bad(
+          'the swap record',
+          JSON.stringify({
+            liveBefore: beforeSwap.exam_num,
+            deletedBefore: beforeSwap.supersedes_deleted_at,
+            liveAfter: afterSwap.exam_num,
+            deletedAfter: afterSwap.supersedes_deleted_at,
+            valleySwaps, swapped, twice,
+          })
+        );
+      }
+
+      // Abandoning one: back to Written, with the readings Open Dental holds.
+      await visitStore.beginPerioAmendment(sendClient, { office: 'roland', visitId: amendVisit.visitId });
+      const composedBack = composer.compose('perio', {
+        visit: amendVisit, items: [], actor: ACTOR, draft: { chart: amendChart },
+      });
+      const liveNow = await perioSendStore.getLiveSend(sendClient, {
+        office: 'roland', stagedWriteId: amendStaged.staged_write_id,
+      });
+      const restoredRef = perioSend.writtenRefFor(liveNow, amendChart);
+      const cancelled = await visitStore.cancelPerioAmendment(sendClient, {
+        office: 'roland', visit: amendVisit, chart: amendChart, composed: composedBack, actor: ACTOR,
+        writtenRef: restoredRef,
+      });
+      const backRow = await visitStore.getStagedWrite(sendClient, {
+        office: 'roland', visitId: amendVisit.visitId, kind: 'perio',
+      });
+      const cancelAgain = await visitStore.cancelPerioAmendment(sendClient, {
+        office: 'roland', visit: amendVisit, chart: amendChart, composed: composedBack, actor: ACTOR,
+        writtenRef: restoredRef,
+      });
+      if (
+        cancelled && backRow.state === 'Written' && !cancelAgain &&
+        backRow.written_ref === restoredRef &&
+        contract.perioChartChanges(amendChart, backRow.payload.chart).length === 0
+      ) {
+        ok('an abandoned correction returns the chart to Written, with its reference and the readings Open Dental holds');
+      } else {
+        bad(
+          'abandoning a correction',
+          JSON.stringify({ cancelled, state: backRow.state, written_ref: backRow.written_ref, cancelAgain })
+        );
+      }
+
+      await refusesInTx('a staged-write state the CHECK does not know', 'hyg_staged_write_state_check', () =>
+        sendClient.query(
+          `UPDATE hyg_staged_write SET state = 'Amended' WHERE staged_write_id = $1`,
+          [amendStaged.staged_write_id]
+        )
       );
     } finally {
       await sendClient.query('ROLLBACK');

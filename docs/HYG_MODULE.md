@@ -1098,3 +1098,94 @@ string before the transport. `perioSend.js` decides; it cannot reach the transpo
 
 `[hygperio] office=… exam=… arches=n rows=n deep=n mismatches=n ms=…` — counts and
 milliseconds per step, never a PatNum or a reading.
+
+## 14. Correcting a chart that is already in Open Dental (H4 item 13)
+
+A sent perio chart is **amendable**. Slice 2's rule — `Written` is terminal —
+came from NOTES, which Open Dental stores append-only: a sent note can never be
+unsaid. Perio measurements are not notes. They are editable in Open Dental's own
+chart, and a hygienist fixing a mistyped depth is routine clinical work. What
+stays true is that a sent chart is never *silently* editable: a correction is
+deliberate, visible and audited.
+
+### The swap, and its order
+
+`PUT /periomeasures` is documented by Open Dental and **has never been exercised
+against a live database** — exactly the status arch strings had before the probe
+found they corrupt a chart silently (§13, and the probe report §4 Q3). So a
+correction uses only the two proven operations:
+
+```
+POST the corrected exam  →  read back EVERY site  →  only then DELETE the old one
+```
+
+**Never the other way round.** A window with no perio exam at all is worse than a
+window with a wrong digit in one, and a re-create that failed would leave the
+patient with nothing. If the POST is refused or the read-back does not match,
+NOTHING is deleted and the chart says the correction did not go through. The two
+exams exist together for a moment, on the same date; that is expected and
+transient.
+
+`hygPerioAmend.test.js` asserts the ordering against a single ordered write log
+(`POST exam 7002`, `DELETE exam 7001`), and asserts an empty delete log on every
+failure path.
+
+### The states
+
+| | |
+| --- | --- |
+| `Written` + a live send | in Open Dental; **Amend chart** offers the correction |
+| `Amending` | editable again, holding what OPEN DENTAL HOLDS; nothing written |
+| `Staged` (with a live send) | a correction ready to send |
+| `Written` again | `written_ref` says `(amended; replaced exam N, now deleted)` |
+
+`Amending` is a new staged-write state (migration `1788600000000`), client-mutable
+like `Draft`. **`written_ref` goes with the state**: its CHECK is a biconditional,
+so opening a correction clears it and abandoning one restores the same sentence —
+`perioSend.writtenRefFor` is the single definition of it. Nothing is lost, because
+the exam number and the chart it wrote live on the send row.
+
+### What a correction is diffed against
+
+The send row now carries `chart` — what that send WROTE, recorded when it
+verified — plus `supersedes_exam_num`, `supersedes_deleted_at` and `amend_diff`.
+The **live send** is the most recent one in state `written`; its exam is what is
+in Open Dental now, and it is what a correction replaces. (`created_at` defaults
+to `clock_timestamp()` so two sends in one transaction still order: `now()` is the
+transaction's clock and would tie.)
+
+Opening a correction READS the exam back from Open Dental and loads those
+readings, so she edits what is actually there — if somebody corrected a site in
+Open Dental, she sees their correction. Confirming re-reads it: if the exam
+changed since, the send is refused with `AMEND_BASE_CHANGED` and nothing is
+written, rather than quietly reverting somebody's work.
+
+### Routes
+
+| Route | Does | Open Dental |
+| --- | --- | --- |
+| `POST /visit/:aptNum/perio/amend` | open a Written chart for a correction | reads only |
+| `POST /visit/:aptNum/perio/amend/cancel` | abandon it; the chart goes back | nothing |
+| `POST /visit/:aptNum/perio/send` (+`/step`) | the correction itself — the swap | POST, then DELETE |
+| `POST /visit/:aptNum/perio/send/remove-replaced` | finish a swap whose DELETE did not land | DELETE |
+
+The **undo** from item 12 (`/perio/send/delete-exam`) still names only the exam
+its own send created. It can never be pointed at the exam being replaced: that
+one is removed only as step 3 of a verified swap.
+
+### The audit trail, and what is deliberately NOT in it
+
+One row when a chart is opened for correction (`hyg_perio_amend`, `prior_state
+'written'`), one when the swap completes (`source_ref perio_exam:7001->7002`), and
+**one per changed site** (`hyg_perio_amend_site`, `resource_id 900001:14-B`).
+
+The readings themselves are NOT in the audit log. `audit_log` is identifiers only
+— its own columns say a value in it must never be PHI, and `prior_state` is
+slug-shaped by CHECK. The old and new numbers live in `hyg_perio_send.amend_diff`
+and on the screen. A test asserts no depth or flag word ever reaches the trail.
+
+### Deliberately not built
+
+No free-text reason (the diff is the record), no time limit on amending, no
+per-role restriction beyond module access, and **no `PUT /periomeasures`** — a
+surgical single-site edit needs its own probe first.

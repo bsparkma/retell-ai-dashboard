@@ -26,6 +26,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const migration = require('../../migrations-tenant/1788200000000_hyg_visit.js');
+/** Item 13 added `Amending`; the CHECK the database carries now is this one's. */
+const amendMigration = require('../../migrations-tenant/1788600000000_hyg_perio_amend.js');
 const contract = require('../../hyg/contract.gen.cjs');
 
 const MIGRATION_PATH = path.join(
@@ -50,7 +52,24 @@ test('the database enforces exactly the vocabularies the contract does', () => {
   );
   assert.deepEqual(migration.TREATMENT_STATUSES, contract.TreatmentStatusSchema.options, 'status');
   assert.deepEqual(migration.STAGED_WRITE_KINDS, contract.StagedWriteKindSchema.options, 'kind');
-  assert.deepEqual(migration.STAGED_WRITE_STATES, contract.StagedWriteStateSchema.options, 'state');
+
+  /*
+   * THE STATE LIST IS THE LATEST MIGRATION'S, NOT THIS ONE'S.
+   *
+   * A migration is a historical record of what was true when it ran, so
+   * 1788200000000 still names the five states it created. Item 13 added
+   * `Amending` in its own migration, and THAT is the CHECK the database is
+   * carrying now — so the contract is compared against the current list, and
+   * the original is asserted to be its opening, which is what "added a state"
+   * has to mean.
+   */
+  const current = amendMigration.STAGED_WRITE_STATES;
+  assert.deepEqual(current, contract.StagedWriteStateSchema.options, 'state');
+  assert.deepEqual(
+    current.slice(0, migration.STAGED_WRITE_STATES.length),
+    migration.STAGED_WRITE_STATES,
+    'the original states are still the first five, in order'
+  );
 });
 
 test('priority and category are checked SEPARATELY, and their words cannot cross', () => {

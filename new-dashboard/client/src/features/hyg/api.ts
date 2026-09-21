@@ -702,6 +702,42 @@ export async function deletePerioSendExam(
 }
 
 /**
+ * Open a chart that is already in Open Dental for a correction (item 13).
+ *
+ * Writes NOTHING to Open Dental: it reads the exam back, loads those readings
+ * into the chart, and makes it editable again.
+ */
+export async function beginPerioAmendment(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/amend`, { office }, parsePerioSend);
+}
+
+/** Abandon a correction. The chart goes back to the readings Open Dental holds. */
+export async function cancelPerioAmendment(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/amend/cancel`, { office }, parsePerioSend);
+}
+
+/**
+ * The swap's last step, run again: remove the exam a verified correction
+ * replaced, when that delete did not land at the time. Never the correction's
+ * own exam — the server refuses any number but the one it replaced.
+ */
+export async function removePerioReplacedExam(
+  office: OfficeId,
+  aptNum: number,
+  examNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/send/remove-replaced`, { office }, parsePerioSend, {
+    examNum,
+  });
+}
+
+/**
  * Put a FAILED write back on the list, with the same words.
  *
  * Deliberately not a re-compose: a retry that rebuilt the preview would send

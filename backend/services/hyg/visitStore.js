@@ -54,8 +54,18 @@ const contract = require('../../hyg/contract.gen.cjs');
  * The states a client's request may leave a staged write in.
  *
  * Note what is NOT here: Sending, Written, Failed. See the header.
+ *
+ * `Amending` (item 13) is perio's, and it is client-mutable for the same reason
+ * `Draft` is: it holds readings nobody has sent yet. What makes it different
+ * from `Draft` is that an exam for this visit IS in Open Dental — the readings
+ * here are the correction being prepared for it, and the chart says so.
  */
-const CLIENT_MUTABLE_STATES = Object.freeze(['Draft', 'Staged']);
+const CLIENT_MUTABLE_STATES = Object.freeze(['Draft', 'Staged', 'Amending']);
+
+/** The state an unsent perio chart rests in: a correction, or a first draft. */
+function perioRestingState(amending) {
+  return amending ? 'Amending' : 'Draft';
+}
 
 /** Columns of hyg_treatment_item, in one place, so the SELECTs cannot drift. */
 const ITEM_COLUMNS = `
@@ -709,7 +719,12 @@ async function getPerio(pool, { office, visitId }) {
  * @returns {Promise<{ ok: true, row: Record<string, any>, changed: boolean }
  *                  | { ok: false, code: string, message: string }>}
  */
-async function savePerioDraft(pool, { office, visit, chart, actor }) {
+async function savePerioDraft(pool, { office, visit, chart, actor, amending = false }) {
+  const resting = perioRestingState(amending);
+  // An amendment moves between `Amending` and `Staged`; a first chart between
+  // `Draft` and `Staged`. Naming both ends here keeps a correction from being
+  // filed as a fresh draft, which would lose the fact that an exam exists.
+  const mutableHere = amending ? "('Amending', 'Staged')" : "('Draft', 'Staged')";
   const next = contract.normalizePerioChart(contract.PerioChartSchema.parse(chart));
 
   const existing = await getStagedWrite(pool, { office, visitId: visit.visitId, kind: PERIO_KIND });
@@ -735,7 +750,7 @@ async function savePerioDraft(pool, { office, visit, chart, actor }) {
       // preview a staged row carries — did not, so the state stays.
       const res = await pool.query(
         `UPDATE hyg_staged_write SET payload = $4::jsonb, updated_at = now()
-          WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state IN ('Draft', 'Staged')
+          WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state IN ${mutableHere}
           RETURNING ${STAGED_COLUMNS}`,
         [visit.visitId, office, PERIO_KIND, JSON.stringify(payload)]
       );
@@ -751,21 +766,22 @@ async function savePerioDraft(pool, { office, visit, chart, actor }) {
   const res = await pool.query(
     `INSERT INTO hyg_staged_write
        (visit_id, office, kind, state, title, summary, preview, payload, staged_by, staged_at)
-     VALUES ($1, $2, $3, 'Draft', $4, $5, '[]'::jsonb, $6::jsonb, NULL, NULL)
+     VALUES ($1, $2, $3, $7, $4, $5, '[]'::jsonb, $6::jsonb, NULL, NULL)
      ON CONFLICT (visit_id, kind) DO UPDATE
-       SET state = 'Draft', title = EXCLUDED.title, summary = EXCLUDED.summary,
+       SET state = $7, title = EXCLUDED.title, summary = EXCLUDED.summary,
            preview = '[]'::jsonb, payload = EXCLUDED.payload,
            staged_by = NULL, staged_at = NULL, error_message = NULL, updated_at = now()
        WHERE hyg_staged_write.office = EXCLUDED.office
-         AND hyg_staged_write.state IN ('Draft', 'Staged')
+         AND hyg_staged_write.state IN ${mutableHere}
      RETURNING ${STAGED_COLUMNS}`,
     [
       visit.visitId,
       office,
       PERIO_KIND,
       'Perio chart',
-      'Draft - ' + contract.perioProgressLabel(counts),
+      (amending ? 'Correction - ' : 'Draft - ') + contract.perioProgressLabel(counts),
       JSON.stringify(payload),
+      resting,
     ]
   );
   if (res.rowCount === 0) {
@@ -782,7 +798,7 @@ async function savePerioDraft(pool, { office, visit, chart, actor }) {
  * visit on the next stage. A perio chart IS its row: deleting it would throw
  * away up to 192 readings to answer "not yet". A Draft is already off the list.
  */
-async function unstagePerio(pool, { office, visitId, actor, state }) {
+async function unstagePerio(pool, { office, visitId, actor, state, amending = false }) {
   if (state === 'Draft') {
     return {
       ok: false,
@@ -799,12 +815,14 @@ async function unstagePerio(pool, { office, visitId, actor, state }) {
         'What already went to a chart keeps its record here.',
     };
   }
+  // A correction taken off the list goes back to `Amending`, not `Draft`: the
+  // exam it corrects is still in Open Dental, and the chart must keep saying so.
   const res = await pool.query(
     `UPDATE hyg_staged_write
-        SET state = 'Draft', preview = '[]'::jsonb, staged_by = NULL, staged_at = NULL,
+        SET state = $4, preview = '[]'::jsonb, staged_by = NULL, staged_at = NULL,
             updated_at = now()
       WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Staged'`,
-    [visitId, office, PERIO_KIND]
+    [visitId, office, PERIO_KIND, perioRestingState(amending)]
   );
   if (res.rowCount === 0) {
     return { ok: false, code: 'STAGED_WRITE_IMMUTABLE', message: 'This perio chart is no longer staged.' };
@@ -813,9 +831,73 @@ async function unstagePerio(pool, { office, visitId, actor, state }) {
   return { ok: true };
 }
 
+/**
+ * Written → Amending: a sent chart, opened for a correction (item 13).
+ *
+ * The readings, the preview and `written_ref` are all LEFT ALONE — she edits
+ * what was written rather than starting again, and the row keeps pointing at
+ * the exam that is in Open Dental until a correction actually replaces it.
+ * Nothing here reaches Open Dental.
+ *
+ * @returns {Promise<boolean>} whether this call opened it
+ */
+async function beginPerioAmendment(pool, { office, visitId }) {
+  // `written_ref` goes with the state: the CHECK is a biconditional, so only a
+  // `Written` row may carry one. Nothing is lost — the exam number and the chart
+  // it wrote live on the send row, which is the record of what Open Dental
+  // holds, and abandoning the correction puts the same sentence back.
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Amending', written_ref = NULL, error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Written'`,
+    [visitId, office, PERIO_KIND]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Amending/Staged → Written: the correction is abandoned.
+ *
+ * The chart goes back to the readings Open Dental holds — passed in, because
+ * only the send knows what it wrote — and the preview is recomposed from them,
+ * so the row describes the exam again rather than a correction nobody sent.
+ * Open Dental is untouched by all of this.
+ *
+ * @returns {Promise<boolean>} whether this call closed it
+ */
+async function cancelPerioAmendment(pool, { office, visit, chart, composed, actor, writtenRef }) {
+  const payload = {
+    kind: PERIO_KIND,
+    aptNum: visit.aptNum,
+    patNum: visit.patNum,
+    chart: contract.normalizePerioChart(chart),
+  };
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Written', payload = $4::jsonb, preview = $5::jsonb, title = $6,
+            summary = $7, written_ref = $8, error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state IN ('Amending', 'Staged')`,
+    [
+      visit.visitId,
+      office,
+      PERIO_KIND,
+      JSON.stringify(payload),
+      JSON.stringify(composed.preview),
+      composed.title,
+      composed.summary,
+      writtenRef,
+    ]
+  );
+  if (res.rowCount === 1) await touchVisit(pool, { office, visitId: visit.visitId, actor });
+  return res.rowCount === 1;
+}
+
 module.exports = {
   CLIENT_MUTABLE_STATES,
   PERIO_KIND,
+  perioRestingState,
+  beginPerioAmendment,
+  cancelPerioAmendment,
   getPerio,
   savePerioDraft,
   readPerioChart,

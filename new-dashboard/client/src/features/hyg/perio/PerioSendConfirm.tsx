@@ -15,7 +15,12 @@ import { AlertTriangle, Loader2, Send } from "lucide-react";
 
 import { type StagedWrite } from "@shared/hyg/contract";
 import { countPerioChart, type PerioChart } from "@shared/hyg/perio";
-import { estimatePerioSendRequests, planPerioSend } from "@shared/hyg/perioSend";
+import {
+  estimatePerioSendRequests,
+  perioChangeLine,
+  planPerioSend,
+  type PerioSiteChange,
+} from "@shared/hyg/perioSend";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +48,8 @@ export function PerioSendConfirm({
   examDate,
   providerLabel,
   busy,
+  replacesExamNum = null,
+  changes = [],
   onCancel,
   onConfirm,
 }: {
@@ -53,6 +60,10 @@ export function PerioSendConfirm({
   examDate: string;
   providerLabel: string;
   busy: boolean;
+  /** Item 13: the exam this correction replaces, or null on a first send. */
+  replacesExamNum?: number | null;
+  /** Every site this correction changes, old → new. */
+  changes?: PerioSiteChange[];
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -71,7 +82,9 @@ export function PerioSendConfirm({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Send className="h-4 w-4" />
-            Write this perio chart to Open Dental?
+            {replacesExamNum === null
+              ? "Write this perio chart to Open Dental?"
+              : `Correct exam ${replacesExamNum} in Open Dental?`}
           </DialogTitle>
           <DialogDescription asChild>
             <div className="space-y-3" data-testid="hyg-perio-confirm-body">
@@ -94,6 +107,28 @@ export function PerioSendConfirm({
                   {shape}, then every site read back — about {formatRemaining(seconds)}
                 </dd>
               </dl>
+
+              {/*
+                ITEM 13: A HYGIENIST CONFIRMING A CORRECTION SEES THE CORRECTION.
+                Every changed site, old → new — not a summary, and not a count.
+              */}
+              {replacesExamNum !== null ? (
+                <div className="rounded-lg border border-primary/50" data-testid="hyg-perio-confirm-changes">
+                  <p className="border-b border-border px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    What changes ({changes.length} {changes.length === 1 ? "site" : "sites"})
+                  </p>
+                  <ul className="max-h-40 space-y-0.5 overflow-y-auto p-2 text-sm tabular-nums">
+                    {changes.map((change, i) => (
+                      <li key={i} className="text-foreground">
+                        {perioChangeLine(change)}
+                      </li>
+                    ))}
+                    {changes.length === 0 ? (
+                      <li className="text-muted-foreground">Nothing is different from the exam in Open Dental.</li>
+                    ) : null}
+                  </ul>
+                </div>
+              ) : null}
 
               <div className="rounded-lg border border-border" data-testid="hyg-perio-confirm-arches">
                 <p className="border-b border-border px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -122,9 +157,20 @@ export function PerioSendConfirm({
 
               <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 text-sm text-amber-800 dark:text-amber-300">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                If any site does not read back exactly as charted, the chart is NOT marked written, the
-                screen names the sites, and you can delete the exam. If anything on this chart changes
-                before you confirm, nothing is sent.
+                {replacesExamNum === null ? (
+                  <>
+                    If any site does not read back exactly as charted, the chart is NOT marked written, the
+                    screen names the sites, and you can delete the exam. If anything on this chart changes
+                    before you confirm, nothing is sent.
+                  </>
+                ) : (
+                  <>
+                    The corrected exam is written FIRST and every site of it read back. Exam{" "}
+                    {replacesExamNum} is deleted only after that succeeds — if anything fails, nothing is
+                    deleted and the patient keeps the exam they have. The two exist together for a moment,
+                    on the same date.
+                  </>
+                )}
               </p>
 
               <ul
@@ -152,7 +198,7 @@ export function PerioSendConfirm({
             className={cn(TAP, "border-primary bg-primary text-primary-foreground")}
           >
             {busy ? <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" /> : null}
-            Write to Open Dental
+            {replacesExamNum === null ? "Write to Open Dental" : "Send correction"}
           </button>
         </DialogFooter>
       </DialogContent>

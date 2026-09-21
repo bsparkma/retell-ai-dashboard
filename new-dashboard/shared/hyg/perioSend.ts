@@ -57,6 +57,7 @@ import {
   PERIO_FLAGS,
   PERIO_FLAG_LABELS,
   PERIO_TOOTH_COUNT,
+  PerioChartSchema,
   bleedSupPlaqCalcBits,
   normalizePerioChart,
   perioSite,
@@ -572,6 +573,48 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Amending a chart that is already in Open Dental (item 13)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One site a correction changes, in words: `#14 B: 3 mm → 4 mm`.
+ *
+ * The same comparison the read-back uses, read the other way round: `before` is
+ * what Open Dental holds (the chart the last send WROTE), `after` is the
+ * correction. A hygienist confirming an amendment sees this list, not a summary.
+ */
+export const PerioSiteChangeSchema = z.object({
+  tooth: z.number().int(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: z.enum(["depth", "flags", "skipped"]),
+  from: z.string(),
+  to: z.string(),
+});
+export type PerioSiteChange = z.infer<typeof PerioSiteChangeSchema>;
+
+/** Every site where the correction differs from what was written. Pure. */
+export function perioChartChanges(before: PerioChart, after: PerioChart): PerioSiteChange[] {
+  const out: PerioSiteChange[] = [];
+  for (const m of comparePerioReadback(before, after)) {
+    // `duplicate` describes Open Dental holding two rows; two CHARTS cannot differ that way.
+    if (m.kind === "duplicate") continue;
+    out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
+  }
+  return out;
+}
+
+/** "#14 B: 3 mm → 4 mm" */
+export function perioChangeLine(c: PerioSiteChange): string {
+  const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
+  return `${where}: ${c.from} → ${c.to}`;
+}
+
+/** "#14 B" — the sites an amendment touches, for the audit trail and the grid. */
+export function perioChangeSiteRef(c: PerioSiteChange): string {
+  return c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
+}
+
 /** "#3 DB: the chart says 4 mm, Open Dental holds 1 mm" */
 export function perioMismatchLine(m: PerioMismatch): string {
   const where = m.surface === null ? `#${m.tooth}` : `#${m.tooth} ${m.surface}`;
@@ -643,6 +686,18 @@ export const PerioSendViewSchema = z.object({
   deletedAt: z.string().nullable(),
   /** An exam this send created, while the send is unfinished. The only exam the undo may touch. */
   canDelete: z.boolean(),
+  // ── the amendment (item 13) ──
+  /** The exam this send REPLACES. null on a first send. */
+  supersedesExamNum: z.number().int().nullable(),
+  /** When the swap's last step removed that old exam. null while it is still there. */
+  supersedesDeletedAt: z.string().nullable(),
+  /** What this amendment changes, site by site, frozen when it was confirmed. */
+  amendDiff: z.array(PerioSiteChangeSchema),
+  /**
+   * The chart this send WROTE, once it verified — the baseline the next
+   * amendment is diffed against. null until a send has verified.
+   */
+  writtenChart: PerioChartSchema.nullable(),
 });
 export type PerioSendView = z.infer<typeof PerioSendViewSchema>;
 
@@ -653,6 +708,13 @@ export const HygPerioSendResponseSchema = z.object({
   aptNum: z.number().int(),
   stagedWrite: StagedWriteSchema.nullable(),
   send: PerioSendViewSchema.nullable(),
+  /**
+   * The send whose exam is in Open Dental NOW (item 13) — the most recent one
+   * that verified. It is what a correction is diffed against and what it
+   * replaces, and it stays put while a correction is being prepared or has
+   * failed, which `send` (the latest attempt) does not.
+   */
+  live: PerioSendViewSchema.nullable(),
   /**
    * Why this step stopped short without finishing — Open Dental did not answer,
    * or another tab is mid-step. Nothing was lost; the next step reads first.

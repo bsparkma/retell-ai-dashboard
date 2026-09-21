@@ -381,6 +381,13 @@ export type StagedWriteKind = z.infer<typeof StagedWriteKindSchema>;
  * after a READ-BACK confirms the write landed — the platform's honest-states
  * rule, and the reason RCM's drain reads a chart after posting to it. A failed
  * send never looks sent.
+ *
+ * `Amending` (item 13) is perio's alone: a chart that IS in Open Dental, being
+ * edited for a correction. It is client-mutable like `Draft`, and nothing in
+ * Open Dental changes while a chart sits in it — the correction is written as a
+ * new exam, verified, and only then does the old exam go. A procnote can never
+ * be amended this way: notes are physically append-only in Open Dental, perio
+ * measurements are not.
  */
 export const StagedWriteStateSchema = z.enum([
   "Draft",
@@ -388,6 +395,7 @@ export const StagedWriteStateSchema = z.enum([
   "Sending",
   "Written",
   "Failed",
+  "Amending",
 ]);
 export type StagedWriteState = z.infer<typeof StagedWriteStateSchema>;
 
@@ -1153,5 +1161,11 @@ export const HYG_VISIT_ERROR_CODES = [
   "OD_REFUSED",
   "OD_NO_ANSWER",
   "OD_DELETE_UNCONFIRMED",
+  // Item 13: correcting a chart that is already in Open Dental.
+  "NOT_AMENDABLE",
+  "NOT_AMENDING",
+  "AMEND_BASE_CHANGED",
+  "AMEND_BASE_MISSING",
+  "NOT_REPLACED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];
