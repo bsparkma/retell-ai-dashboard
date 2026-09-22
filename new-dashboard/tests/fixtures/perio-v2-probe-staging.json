@@ -1,0 +1,1011 @@
+{
+  "source": "backend/scripts/probe-hyg-perio-v2.js, run inside the staging container (revision ca-carein-backend--0000189), roland, PatNum 12828 (designated fixture), ProvNum 15, ExamDate 2000-01-01. Run 2026-09-21T23:59Z; cleanup 2026-09-22T00:0xZ. Measurement rows carry no patient identifier.",
+  "examsBeforeRun": [
+    {
+      "PerioExamNum": 2265,
+      "ExamDate": "2026-09-21",
+      "note": "pre-existing, not created by this probe, left untouched"
+    }
+  ],
+  "examsCreated": [
+    2266,
+    2267
+  ],
+  "experiments": [
+    {
+      "experiment": "types",
+      "answers": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "examNum": 2266,
+      "examSent": {
+        "PatNum": 12828,
+        "ProvNum": 15,
+        "ExamDate": "2000-01-01",
+        "Note": "CareIN v2 perio probe (types). Test data - delete with --cleanup.",
+        "UpperFacial": "323"
+      },
+      "examHeader": {
+        "PerioExamNum": 2266,
+        "ExamDate": "2000-01-01",
+        "ProvNum": 15,
+        "Note": "CareIN v2 perio probe (types). Test data - delete with --cleanup."
+      },
+      "rows": [
+        {
+          "id": "gm-3-mixed",
+          "why": "Q2: 0-3 and 101/102 on one tooth  which way is recession?",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "GingMargin",
+            "IntTooth": 3,
+            "ToothValue": -1,
+            "MBvalue": 0,
+            "Bvalue": 2,
+            "DBvalue": 3,
+            "MLvalue": 1,
+            "Lvalue": 101,
+            "DLvalue": 102
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122473,
+              "PerioExamNum": 2266,
+              "SequenceType": "GingMargin",
+              "IntTooth": 3,
+              "ToothValue": -1,
+              "MBvalue": 0,
+              "Bvalue": 2,
+              "DBvalue": 3,
+              "MLvalue": 1,
+              "Lvalue": 101,
+              "DLvalue": 102,
+              "SecDateTEdit": "2026-09-21 18:59:26"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122473,
+                "PerioExamNum": 2266,
+                "SequenceType": "GingMargin",
+                "IntTooth": 3,
+                "ToothValue": -1,
+                "MBvalue": 0,
+                "Bvalue": 2,
+                "DBvalue": 3,
+                "MLvalue": 1,
+                "Lvalue": 101,
+                "DLvalue": 102
+              }
+            ]
+          }
+        },
+        {
+          "id": "gm-1-beside-probing",
+          "why": "Q2/Q5: recession beside probing on the same tooth",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "GingMargin",
+            "IntTooth": 1,
+            "ToothValue": -1,
+            "MBvalue": 1,
+            "Bvalue": 1,
+            "DBvalue": 2,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122474,
+              "PerioExamNum": 2266,
+              "SequenceType": "GingMargin",
+              "IntTooth": 1,
+              "ToothValue": -1,
+              "MBvalue": 1,
+              "Bvalue": 1,
+              "DBvalue": 2,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:26"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122474,
+                "PerioExamNum": 2266,
+                "SequenceType": "GingMargin",
+                "IntTooth": 1,
+                "ToothValue": -1,
+                "MBvalue": 1,
+                "Bvalue": 1,
+                "DBvalue": 2,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "furc-3-upper-molar",
+          "why": "Q3: an upper molar's three furcation entries (B, ML, DL), classes 1-3",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 3,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 1,
+            "DBvalue": -1,
+            "MLvalue": 2,
+            "Lvalue": -1,
+            "DLvalue": 3
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122475,
+              "PerioExamNum": 2266,
+              "SequenceType": "Furcation",
+              "IntTooth": 3,
+              "ToothValue": -1,
+              "MBvalue": -1,
+              "Bvalue": 1,
+              "DBvalue": -1,
+              "MLvalue": 2,
+              "Lvalue": -1,
+              "DLvalue": 3,
+              "SecDateTEdit": "2026-09-21 18:59:27"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122475,
+                "PerioExamNum": 2266,
+                "SequenceType": "Furcation",
+                "IntTooth": 3,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 1,
+                "DBvalue": -1,
+                "MLvalue": 2,
+                "Lvalue": -1,
+                "DLvalue": 3
+              }
+            ]
+          }
+        },
+        {
+          "id": "furc-30-lower-molar",
+          "why": "Q3: a lower molar's two (B, L)",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 30,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": 1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122476,
+              "PerioExamNum": 2266,
+              "SequenceType": "Furcation",
+              "IntTooth": 30,
+              "ToothValue": -1,
+              "MBvalue": -1,
+              "Bvalue": 2,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": 1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:27"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122476,
+                "PerioExamNum": 2266,
+                "SequenceType": "Furcation",
+                "IntTooth": 30,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 2,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": 1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "furc-8-single-root",
+          "why": "Q3: a single-rooted incisor  accepted, refused, or silently dropped?",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 8,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122477,
+              "PerioExamNum": 2266,
+              "SequenceType": "Furcation",
+              "IntTooth": 8,
+              "ToothValue": -1,
+              "MBvalue": -1,
+              "Bvalue": 2,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:27"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122477,
+                "PerioExamNum": 2266,
+                "SequenceType": "Furcation",
+                "IntTooth": 8,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 2,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "mob-3",
+          "why": "Q4: mobility 2 in ToothValue, every surface -1",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "Mobility",
+            "IntTooth": 3,
+            "ToothValue": 2,
+            "MBvalue": -1,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122478,
+              "PerioExamNum": 2266,
+              "SequenceType": "Mobility",
+              "IntTooth": 3,
+              "ToothValue": 2,
+              "MBvalue": -1,
+              "Bvalue": -1,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:27"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122478,
+                "PerioExamNum": 2266,
+                "SequenceType": "Mobility",
+                "IntTooth": 3,
+                "ToothValue": 2,
+                "MBvalue": -1,
+                "Bvalue": -1,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "mob-30",
+          "why": "Q4: mobility 1",
+          "sent": {
+            "PerioExamNum": 2266,
+            "SequenceType": "Mobility",
+            "IntTooth": 30,
+            "ToothValue": 1,
+            "MBvalue": -1,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122479,
+              "PerioExamNum": 2266,
+              "SequenceType": "Mobility",
+              "IntTooth": 30,
+              "ToothValue": 1,
+              "MBvalue": -1,
+              "Bvalue": -1,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:28"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122479,
+                "PerioExamNum": 2266,
+                "SequenceType": "Mobility",
+                "IntTooth": 30,
+                "ToothValue": 1,
+                "MBvalue": -1,
+                "Bvalue": -1,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        }
+      ],
+      "readBack": {
+        "count": 8,
+        "unfiltered": 8,
+        "truncated": false,
+        "types": [
+          "Furcation",
+          "GingMargin",
+          "Mobility",
+          "Probing"
+        ],
+        "rows": [
+          {
+            "PerioMeasureNum": 122472,
+            "PerioExamNum": 2266,
+            "SequenceType": "Probing",
+            "IntTooth": 1,
+            "ToothValue": -1,
+            "MBvalue": 3,
+            "Bvalue": 2,
+            "DBvalue": 3,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122473,
+            "PerioExamNum": 2266,
+            "SequenceType": "GingMargin",
+            "IntTooth": 3,
+            "ToothValue": -1,
+            "MBvalue": 0,
+            "Bvalue": 2,
+            "DBvalue": 3,
+            "MLvalue": 1,
+            "Lvalue": 101,
+            "DLvalue": 102
+          },
+          {
+            "PerioMeasureNum": 122474,
+            "PerioExamNum": 2266,
+            "SequenceType": "GingMargin",
+            "IntTooth": 1,
+            "ToothValue": -1,
+            "MBvalue": 1,
+            "Bvalue": 1,
+            "DBvalue": 2,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122475,
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 3,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 1,
+            "DBvalue": -1,
+            "MLvalue": 2,
+            "Lvalue": -1,
+            "DLvalue": 3
+          },
+          {
+            "PerioMeasureNum": 122476,
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 30,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": 1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122477,
+            "PerioExamNum": 2266,
+            "SequenceType": "Furcation",
+            "IntTooth": 8,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122478,
+            "PerioExamNum": 2266,
+            "SequenceType": "Mobility",
+            "IntTooth": 3,
+            "ToothValue": 2,
+            "MBvalue": -1,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122479,
+            "PerioExamNum": 2266,
+            "SequenceType": "Mobility",
+            "IntTooth": 30,
+            "ToothValue": 1,
+            "MBvalue": -1,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          }
+        ]
+      }
+    },
+    {
+      "experiment": "bad",
+      "answers": [
+        7
+      ],
+      "examNum": 2267,
+      "examSent": {
+        "PatNum": 12828,
+        "ProvNum": 15,
+        "ExamDate": "2000-01-01",
+        "Note": "CareIN v2 perio probe (bad). Test data - delete with --cleanup."
+      },
+      "examHeader": {
+        "PerioExamNum": 2267,
+        "ExamDate": "2000-01-01",
+        "ProvNum": 15,
+        "Note": "CareIN v2 perio probe (bad). Test data - delete with --cleanup."
+      },
+      "rows": [
+        {
+          "id": "gm-25",
+          "why": "out of range above 19",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 4,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 25,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "Bvalue is invalid. Value must be 0-19 or 101-119 for SequenceType of GingMargin.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "gm-99",
+          "why": "the gap between 19 and 101",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 5,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 99,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "Bvalue is invalid. Value must be 0-19 or 101-119 for SequenceType of GingMargin.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "gm-neg5",
+          "why": "a literal negative instead of 105",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 6,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": -5,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "Bvalue is invalid. Value must be 0-19 or 101-119 for SequenceType of GingMargin.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "gm-120",
+          "why": "past the documented 101-119",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 7,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 120,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "Bvalue is invalid. Value must be 0-19 or 101-119 for SequenceType of GingMargin.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "furc-5",
+          "why": "a furcation class past III",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "Furcation",
+            "IntTooth": 14,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 5,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122480,
+              "PerioExamNum": 2267,
+              "SequenceType": "Furcation",
+              "IntTooth": 14,
+              "ToothValue": -1,
+              "MBvalue": -1,
+              "Bvalue": 5,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:31"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122480,
+                "PerioExamNum": 2267,
+                "SequenceType": "Furcation",
+                "IntTooth": 14,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 5,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "furc-toothvalue",
+          "why": "furcation with ToothValue set (docs: must be -1)",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "Furcation",
+            "IntTooth": 2,
+            "ToothValue": 1,
+            "MBvalue": -1,
+            "Bvalue": 1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "ToothValue must be -1 for SequenceType of Furcation.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "mob-25",
+          "why": "mobility far out of range",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "Mobility",
+            "IntTooth": 14,
+            "ToothValue": 25,
+            "MBvalue": -1,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "ToothValue is invalid.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "mob-surface",
+          "why": "mobility with a surface value (docs: all must be -1)",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "Mobility",
+            "IntTooth": 13,
+            "ToothValue": 1,
+            "MBvalue": 2,
+            "Bvalue": -1,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "MBvalue is invalid. Value must be -1 for SequenceType of Mobility.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "gm-dup-a",
+          "why": "a GingMargin row for #12",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 12,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": true,
+            "status": 201,
+            "error": null,
+            "data": {
+              "PerioMeasureNum": 122481,
+              "PerioExamNum": 2267,
+              "SequenceType": "GingMargin",
+              "IntTooth": 12,
+              "ToothValue": -1,
+              "MBvalue": -1,
+              "Bvalue": 2,
+              "DBvalue": -1,
+              "MLvalue": -1,
+              "Lvalue": -1,
+              "DLvalue": -1,
+              "SecDateTEdit": "2026-09-21 18:59:33"
+            }
+          },
+          "landed": {
+            "verdict": "exact",
+            "diffs": [],
+            "rows": [
+              {
+                "PerioMeasureNum": 122481,
+                "PerioExamNum": 2267,
+                "SequenceType": "GingMargin",
+                "IntTooth": 12,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 2,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "gm-dup-b",
+          "why": "and a SECOND for #12: new row, overwrite, or refusal?",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 12,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 4,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "A PerioMeasure with SequenceType GingMargin already exists for IntTooth 12.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "altered",
+            "diffs": [
+              "Bvalue sent 4 holds 2"
+            ],
+            "rows": [
+              {
+                "PerioMeasureNum": 122481,
+                "PerioExamNum": 2267,
+                "SequenceType": "GingMargin",
+                "IntTooth": 12,
+                "ToothValue": -1,
+                "MBvalue": -1,
+                "Bvalue": 2,
+                "DBvalue": -1,
+                "MLvalue": -1,
+                "Lvalue": -1,
+                "DLvalue": -1
+              }
+            ]
+          }
+        },
+        {
+          "id": "type-recession",
+          "why": "a type name that does not exist",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "Recession",
+            "IntTooth": 9,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "SequenceType is invalid.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        },
+        {
+          "id": "tooth-33",
+          "why": "a tooth that does not exist",
+          "sent": {
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 33,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          "response": {
+            "ok": false,
+            "status": 400,
+            "error": "IntTooth is invalid.",
+            "data": null
+          },
+          "landed": {
+            "verdict": "absent",
+            "rows": []
+          }
+        }
+      ],
+      "readBack": {
+        "count": 2,
+        "unfiltered": 2,
+        "truncated": false,
+        "types": [
+          "Furcation",
+          "GingMargin"
+        ],
+        "rows": [
+          {
+            "PerioMeasureNum": 122480,
+            "PerioExamNum": 2267,
+            "SequenceType": "Furcation",
+            "IntTooth": 14,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 5,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          },
+          {
+            "PerioMeasureNum": 122481,
+            "PerioExamNum": 2267,
+            "SequenceType": "GingMargin",
+            "IntTooth": 12,
+            "ToothValue": -1,
+            "MBvalue": -1,
+            "Bvalue": 2,
+            "DBvalue": -1,
+            "MLvalue": -1,
+            "Lvalue": -1,
+            "DLvalue": -1
+          }
+        ]
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "examNum": 2266,
+      "gone": true,
+      "rowsBefore": 8,
+      "typesBefore": [
+        "Furcation",
+        "GingMargin",
+        "Mobility",
+        "Probing"
+      ],
+      "rowsAfter": null,
+      "readAfterError": "PerioExamNum not found."
+    },
+    {
+      "examNum": 2267,
+      "gone": true,
+      "rowsBefore": 2,
+      "typesBefore": [
+        "Furcation",
+        "GingMargin"
+      ],
+      "rowsAfter": null,
+      "readAfterError": "PerioExamNum not found."
+    }
+  ],
+  "q6RowReadAfterDelete": {
+    "GET /periomeasures?PerioExamNum=2266": "404 PerioExamNum not found.",
+    "GET /periomeasures?PerioExamNum=2267": "404 PerioExamNum not found.",
+    "GET /periomeasures/{PerioMeasureNum}": "NOT a single-row read: the id in the path is ignored and the UNFILTERED list is returned (first row PerioMeasureNum 2, exam 1). Not scanned further; see the report."
+  }
+}
