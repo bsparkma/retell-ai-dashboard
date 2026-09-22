@@ -166,7 +166,7 @@ describe("the sentences name WHO, in the words the design asked for", () => {
 
   it("names the takeback for what it is", () => {
     const w = waitingFor(check({ totalAmountCents: -4_000 }), { office: "roland" });
-    expect(w.waitingOn).toBe("A takeback — money the carrier is reclaiming");
+    expect(w.waitingOn).toBe("You — a takeback, money the carrier is reclaiming");
     expect(w.urgent).toBe(true);
   });
 

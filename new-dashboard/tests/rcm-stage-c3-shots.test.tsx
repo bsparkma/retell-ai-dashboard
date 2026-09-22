@@ -584,6 +584,23 @@ describe.skipIf(!enabled)("Stage C-3 screenshots", () => {
     dump("c3-01-claim-pre-link");
   });
 
+  it("s8-match-ambiguous — two could be it, and the differences are named (S8)", async () => {
+    /*
+     * The same two candidates as c3-01, with the SERVER calling the snapshot
+     * ambiguous — which is what puts the match screen in its "not sure" state.
+     * c3-01 is the confident state; S8's match artboard draws both.
+     */
+    state.claim = claim({
+      odMatchStatus: "candidates",
+      matchSnapshot: snapshot({ ambiguous: true, margin: 4 }),
+    });
+
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
+    await screen.findByTestId("rcm-claim-match");
+    await waitFor(() => expect(screen.getByTestId("match-guidance-unsure")).toBeTruthy());
+    dump("s8-match-ambiguous");
+  });
+
   it("c3-02-claim-linked — the linked one open, the leader folded", async () => {
     state.claim = claim({
       odMatchStatus: "confirmed",

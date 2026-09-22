@@ -94,6 +94,31 @@ export function officeStamp(iso: string | null | undefined, office?: RcmOfficeId
 }
 
 /**
+ * HOW OLD A READING IS, in the unit a person uses — "5 minutes ago",
+ * "3 hours ago", "4 days ago". S8's "Read from Open Dental <n> ago".
+ *
+ * ZONE-FREE ON PURPOSE. An age is a difference between two instants, and it is
+ * the same number in every timezone — which is why this is the one helper in
+ * this file that takes no office.
+ *
+ * A reading from the future (a clock skew between the server that stamped it
+ * and this browser) says "just now" rather than a negative age; an unparseable
+ * stamp says "at an unrecorded time" rather than inventing one. `now` is a
+ * parameter so a test can pin it.
+ */
+export function readAgo(iso: string | null | undefined, now: Date = new Date()): string {
+  const d = parse(iso);
+  if (!d) return "at an unrecorded time";
+  const minutes = Math.floor((now.getTime() - d.getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  const unit = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"} ago`;
+  if (minutes < 60) return unit(minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return unit(hours, "hour");
+  return unit(Math.floor(hours / 24), "day");
+}
+
+/**
  * TODAY, SPELLED OUT, IN THE PRACTICE'S ZONE.
  *
  * The date under Today's greeting. It reads the office zone rather than the

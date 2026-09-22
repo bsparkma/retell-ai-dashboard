@@ -503,7 +503,7 @@ describe("the Checks list says whose move it is", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("remittance-waiting-b-1").textContent).toBe(
-        "A takeback — money the carrier is reclaiming",
+        "You — a takeback, money the carrier is reclaiming",
       ),
     );
 

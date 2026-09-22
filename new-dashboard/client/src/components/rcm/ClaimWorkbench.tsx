@@ -91,6 +91,7 @@ import {
 import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
 import { approveHref } from "@/features/rcm/flow";
 import { verdictBlock, type VerdictBlock } from "@/features/rcm/verdictBlock";
+import { readAgo } from "@/features/rcm/time";
 import DisabledReason from "@/components/rcm/DisabledReason";
 import Explainer from "@/components/rcm/Explainer";
 
@@ -122,25 +123,31 @@ export interface ClaimWorkbenchProps {
   mayDecide: boolean;
   decideBlockedBy: "approved" | "permission" | null;
   fromBatchId: string | null;
-  /** Which claim on the check this is, and how to walk to the next one. */
-  siblings: { index: number; total: number; prevId: string | null; nextId: string | null } | null;
-  /**
-   * PUT THE WHOLE CHECK DOWN UNTIL TOMORROW, from the bench header.
-   *
-   * Null when the URL did not say which check this claim arrived on — there is
-   * then no check to save, and the control is not rendered rather than rendered
-   * pointing at nothing.
-   *
-   * The PAGE owns the call, because it holds the office and the batch id. This
-   * component owns none of it and only draws the three states it can be in.
-   */
-  park: { onPark: () => void; busy: boolean; saved: boolean; error: string | null } | null;
   onRunMatch: (force: boolean) => void;
   onReview: () => void;
   onConfirm: (odClaimNum: number) => void;
   onDecide: (lineId: string, decision: LineDecision, reason: string | null) => void;
   /** The document this claim's numbers were read from, when there is one. */
   documentHref: string | null;
+  /**
+   * S8 · THE NEXT STEP'S ONE CONTROL, drawn inside the verdict band.
+   *
+   * The PAGE builds it — it owns `claimFlow`, the handlers and the rule for when
+   * the matching guidance is already offering the link — and hands this
+   * component the finished node. So there is still exactly one place the CTA is
+   * decided and one place it is drawn; only the place moved, from the top rail
+   * to the band that says whether the patient's number is right, which is the
+   * thing a person reads just before pressing it. Null draws nothing.
+   */
+  bandAction?: React.ReactNode;
+  /**
+   * S8 · "Next: claim 3 of 6 — so-and-so", printed under an ENABLED primary.
+   *
+   * From the check's own claim list, which the page already reads for the
+   * pager. Null when there is no next claim, or the list did not load — the
+   * line is dropped rather than guessed at.
+   */
+  nextUp?: { position: number; total: number; name: string } | null;
 }
 
 export default function ClaimWorkbench({
@@ -154,13 +161,13 @@ export default function ClaimWorkbench({
   mayDecide,
   decideBlockedBy,
   fromBatchId,
-  siblings,
-  park,
   onRunMatch,
   onReview,
   onConfirm,
   onDecide,
   documentHref,
+  bandAction = null,
+  nextUp = null,
 }: ClaimWorkbenchProps) {
   const verdict = claim.verdict ?? null;
   const identity = claim.identity ?? null;
@@ -171,40 +178,23 @@ export default function ClaimWorkbench({
   return (
     <div className="mt-4" data-testid="claim-workbench">
       {/*
-        ── THE VERDICT, ACROSS THE TOP ─────────────────────────────────────────
-        First, because it is the answer every other panel is evidence for. A
-        biller who reads nothing else on this screen should still be able to tell
-        whether the patient's number is right.
+        S8 · THE BENCH HEADER MOVED UP INTO THE PAGE'S RAIL (`BenchHeader`,
+        exported below), and THE VERDICT MOVED DOWN, to a band across the
+        bottom of the two panels.
+
+        The verdict used to lead, on the reasoning that it is the answer every
+        panel is evidence for. The artboard reads it the other way and it is the
+        better order for the person doing the work: the panels are what she
+        checks, the band is what she concludes, and the one button that acts on
+        the conclusion sits IN the band — so the sentence saying whether the
+        patient's number is right is the last thing read before the press rather
+        than something scrolled past on the way to it.
+
+        THREE-FIFTHS AND TWO. The carrier's panel is a seven-column table now,
+        and at an even split its decision column ran off the edge at 1280. The
+        Open Dental side is two narrow tables and a card, and gives up the room.
       */}
-      <VerdictLine
-        verdict={verdict}
-        identityBlocking={identity?.blocking ?? false}
-        confirmedAt={confirmedAt}
-        patientName={claim.patientName}
-      />
-
-      {/*
-        ── THE BENCH HEADER ────────────────────────────────────────────────────
-        Where this claim sits on the check, the way to the one either side of
-        it, and the way to put the whole check down until tomorrow.
-
-        The third is here because of WHEN a biller reaches for it. She is nine
-        claims into a twelve-claim check at 4:55pm; making her navigate back to
-        the check to press *Save for tomorrow* is what stops anybody saving
-        anything, and the panel that would explain it lives two screens away
-        from where she is standing. It is the SAME act and the SAME endpoint the
-        check's own page calls — no second way to park a check, just a second
-        place to reach the one there is.
-
-        It renders whenever there is a check to save OR a claim either side, so
-        a one-claim check still gets the header rather than losing the control
-        because there is nobody to page to.
-      */}
-      {(park || (siblings && siblings.total > 1)) && (
-        <BenchHeader siblings={siblings} fromBatchId={fromBatchId} park={park} />
-      )}
-
-      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <CarrierPanel
           claim={claim}
           provenance={data.claim.provenance}
@@ -218,6 +208,15 @@ export default function ClaimWorkbench({
         />
 
         <div className="space-y-4">
+          {/*
+            S8 · ONE HEADING OVER BOTH HALVES OF WHAT OPEN DENTAL HAS — the
+            patient it holds and the claim it holds. It was the claim panel's
+            own heading, sitting under the identity panel as though the patient
+            were not part of what Open Dental has.
+          */}
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            What Open Dental has
+          </h2>
           <IdentityPanel identity={identity} matchStatus={claim.odMatchStatus} />
           <ChartPanel
             claim={claim}
@@ -242,6 +241,35 @@ export default function ClaimWorkbench({
             onSave={onReview}
           />
         </div>
+      </div>
+
+      {/*
+        ── THE VERDICT BAND, ACROSS THE BOTTOM ─────────────────────────────────
+        The verdict module's own sentence, registers and figures, rendered by
+        the same `VerdictLine` as before — nothing re-derived, nothing reworded.
+        What is new is only what sits beside it: the next step's one control,
+        and when that control is live, which claim comes after this one.
+      */}
+      <div className="mt-4" data-testid="verdict-band">
+        <VerdictLine
+          verdict={verdict}
+          identityBlocking={identity?.blocking ?? false}
+          confirmedAt={confirmedAt}
+          patientName={claim.patientName}
+        />
+        {bandAction && (
+          <div
+            className="mt-3 flex flex-col items-end gap-1"
+            data-testid="verdict-band-action"
+          >
+            {bandAction}
+            {nextUp && (
+              <p className="text-xs text-muted-foreground" data-testid="verdict-band-next">
+                Next: claim {nextUp.position} of {nextUp.total} — {nextUp.name}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -523,15 +551,48 @@ function Figure({ label, value, strong }: { label: string; value: string; strong
  * It is rendered only when the URL says which check this is (`?from=`), because
  * without that there is no check to save and a button that cannot know its own
  * subject is worse than no button.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * S8 · IT LIVES IN THE PAGE'S TOP RAIL NOW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Exported so `ClaimMatch` can draw it opposite the flow context line, where
+ * the artboard puts it, rather than as a bordered strip between two panels.
+ * "Claim 2 of 6 on this check" became "Claim 2 of 6": it sits on the same line
+ * as the check it is counting, so "on this check" was the line repeating
+ * itself.
  */
-function BenchHeader({
+export interface BenchSiblings {
+  index: number;
+  total: number;
+  prevId: string | null;
+  nextId: string | null;
+}
+
+/**
+ * PUT THE WHOLE CHECK DOWN UNTIL TOMORROW, from the bench header.
+ *
+ * Null when the URL did not say which check this claim arrived on — there is
+ * then no check to save, and the control is not rendered rather than rendered
+ * pointing at nothing.
+ *
+ * The PAGE owns the call, because it holds the office and the batch id. This
+ * component owns none of it and only draws the three states it can be in.
+ */
+export interface BenchPark {
+  onPark: () => void;
+  busy: boolean;
+  saved: boolean;
+  error: string | null;
+}
+
+export function BenchHeader({
   siblings,
   fromBatchId,
   park,
 }: {
-  siblings: ClaimWorkbenchProps["siblings"];
+  siblings: BenchSiblings | null;
   fromBatchId: string | null;
-  park: ClaimWorkbenchProps["park"];
+  park: BenchPark | null;
 }) {
   const href = (id: string) =>
     `/rcm/claims/${encodeURIComponent(id)}${fromBatchId ? `?from=${encodeURIComponent(fromBatchId)}` : ""}`;
@@ -539,13 +600,11 @@ function BenchHeader({
 
   return (
     <div
-      className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2 text-xs"
+      className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 text-xs"
       data-testid="claim-pager"
     >
       <span className="text-muted-foreground">
-        {siblings
-          ? `Claim ${siblings.index + 1} of ${siblings.total} on this check`
-          : "This check's claim"}
+        {siblings ? `Claim ${siblings.index + 1} of ${siblings.total}` : "This check's claim"}
       </span>
 
       <span className="flex flex-wrap items-center gap-2">
@@ -667,8 +726,10 @@ function CarrierPanel({
   return (
     <section data-testid="claim-parsed">
       <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* S8: the board's heading, naming both halves of the panel — what the
+            carrier said, and the one column where the biller answers it. */}
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          What the carrier said
+          What the carrier said, and what you decide
         </h2>
         {/*
           ONE CLICK TO THE PAPER. The reason a biller checks a figure is that she
@@ -705,16 +766,6 @@ function CarrierPanel({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3 border-b border-border p-4 sm:grid-cols-4">
-          <Fact label="Billed" value={money(claim.totalBilledCents)} />
-          <Fact label="Allowed" value={money(claim.totalAllowedCents)} />
-          <Fact label="Carrier paid" value={money(claim.totalPaidCents)} strong />
-          <Fact
-            label="Patient owes"
-            value={money(verdict ? verdict.eobPatientCents : claim.patientBalanceCents)}
-          />
-        </div>
-
         {claim.needsReviewReasons.length > 0 && (
           <div className="border-b border-border p-4" data-testid="claim-review-reasons">
             <div className="flex flex-wrap gap-1.5">
@@ -738,20 +789,118 @@ function CarrierPanel({
           </div>
         )}
 
-        <ul className="divide-y divide-border" data-testid="carrier-lines">
-          {claim.lines.map((line) => (
-            <CarrierLine
-              key={line.lineId}
-              line={line}
-              reasons={reasons}
-              busy={busy}
-              mayDecide={mayDecide}
-              decideBlockedBy={decideBlockedBy}
-              notLinked={notLinked}
-              onDecide={onDecide}
-            />
-          ))}
-        </ul>
+        {/*
+          THE CAUTION, ABOVE THE TABLE — Stage C-3, item 4, and S8.
+
+          Above and not below, because it is a thing to know BEFORE pressing. In
+          plain words, naming the consequence rather than the mechanism:
+          absorbing money is done on behalf of a patient, and an unlinked claim
+          has not said which one. Amber, never rose — a caution about an allowed
+          act, not a refusal.
+
+          S8 · ONCE, NOT ONCE PER LINE. It sat above every line's buttons, so a
+          four-line claim said the same twenty words four times. It is a fact
+          about the CLAIM, and the table is one decision surface: said once over
+          it, it is still read before any button in it is pressed.
+        */}
+        {notLinked && (
+          <p
+            className="flex items-start gap-1.5 border-b border-amber-200 bg-amber-50/60 px-4 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-300"
+            data-testid="decision-unlinked"
+          >
+            <Info size={12} className="mt-0.5 shrink-0" />
+            <span>
+              This claim isn&rsquo;t linked to an Open Dental claim yet — match it up first, so the
+              office is absorbing for the right patient.
+            </span>
+          </p>
+        )}
+
+        {/*
+          ═══════════════════════════════════════════════════════════════════════
+          S8 · ONE ROW PER LINE, AND THE DECISION IS A COLUMN OF IT
+          ═══════════════════════════════════════════════════════════════════════
+          It was a card per line: four labelled figures, a sentence naming the
+          contractual write-off, and the decision underneath. Every figure was
+          there, and a biller comparing the BILLED of line two against line one
+          had to find it again under a new label each time. A table puts each
+          figure in the same column on every line, which is the comparison the
+          work is.
+
+          Nothing moved in or out of a line. The figures are the server's, the
+          decision is the same two-way choice with the same amounts, the
+          picker opens in the line's own sub-row, and every testid a test or the
+          walk reads is on the same fact it was on before.
+        */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[40rem] text-xs" data-testid="carrier-lines">
+            <thead>
+              <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-2 font-semibold">
+                  <span className="sr-only">Line</span>
+                </th>
+                <th className="px-2 py-2 text-right font-semibold">Billed</th>
+                <th className="px-2 py-2 text-right font-semibold">Allowed</th>
+                <th className="px-2 py-2 text-right font-semibold">Paid</th>
+                <th className="px-2 py-2 text-right font-semibold">Contract w/o</th>
+                <th className="px-2 py-2 text-right font-semibold">Patient owes</th>
+                <th className="px-4 py-2 font-semibold">Your decision</th>
+              </tr>
+            </thead>
+            <tbody>
+              {claim.lines.map((line) => (
+                <CarrierLine
+                  key={line.lineId}
+                  line={line}
+                  reasons={reasons}
+                  busy={busy}
+                  mayDecide={mayDecide}
+                  decideBlockedBy={decideBlockedBy}
+                  onDecide={onDecide}
+                />
+              ))}
+            </tbody>
+            {/*
+              THE CLAIM'S OWN TOTALS, as the server sent them — never a column
+              summed here. The contract total is the verdict's
+              `contractualWriteOffCents` and is a dash when there is no verdict
+              yet, rather than an addition this screen would be doing on its
+              own; the patient total is the same figure the header pair prints.
+            */}
+            <tfoot>
+              <tr className="border-t border-border font-mono tabular-nums text-foreground">
+                <td className="px-4 py-2 font-sans text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Claim total
+                </td>
+                <td className="px-2 py-2 text-right">{money(claim.totalBilledCents)}</td>
+                <td className="px-2 py-2 text-right">{money(claim.totalAllowedCents)}</td>
+                <td className="px-2 py-2 text-right font-semibold">{money(claim.totalPaidCents)}</td>
+                <td className="px-2 py-2 text-right text-muted-foreground">
+                  {verdict ? money(verdict.contractualWriteOffCents) : "—"}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {money(verdict ? verdict.eobPatientCents : claim.patientBalanceCents)}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {/*
+          THE CARRIER'S OWN WRITE-OFF, SAID ONCE AS A FOOTNOTE.
+          It used to be a sentence under every line — "Contract write-off $X —
+          the carrier's, already accepted." The column now carries the figure,
+          and this carries what the column MEANS: the contract took it, and it is
+          arithmetic, not a decision anybody here makes.
+        */}
+        <p
+          className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground"
+          data-testid="contractual-footnote"
+        >
+          Contract w/o = Billed − Allowed. The contract requires it — shown for the arithmetic, not a
+          choice.
+        </p>
       </div>
     </section>
   );
@@ -760,10 +909,11 @@ function CarrierPanel({
 /**
  * One line of the carrier's adjudication, and the decision about its remainder.
  *
- * The four numbers read left to right the way a biller reads a remittance:
- * billed, allowed, paid, and what that leaves the patient. The contractual
- * write-off sits under them as a FACT — labelled as the carrier's, with no
- * control beside it, because this slice always accepts it.
+ * S8 · TWO TABLE ROWS. The first is the line — what it is, the five figures and
+ * the decision. The second, spanning the table, opens UNDER it only when there
+ * is something to say about the decision: the reason picker while somebody is
+ * choosing, and the audit sentence once a write-off is recorded. In place, never
+ * a side panel, so the line being decided stays in view above its own answer.
  */
 function CarrierLine({
   line,
@@ -771,7 +921,6 @@ function CarrierLine({
   busy,
   mayDecide,
   decideBlockedBy,
-  notLinked,
   onDecide,
 }: {
   line: ClaimLine;
@@ -779,17 +928,21 @@ function CarrierLine({
   busy: ClaimWorkbenchProps["busy"];
   mayDecide: boolean;
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
-  /** No Open Dental claim behind this one yet — a caution, never a lock. */
-  notLinked: boolean;
   onDecide: ClaimWorkbenchProps["onDecide"];
 }) {
   const remainder = line.patientRemainderCents;
   const writtenOff = line.decision === "office_writeoff";
+  /** The reason picker, lifted here so it can open in the row UNDER this one. */
+  const [picking, setPicking] = useState(false);
+  const disabled = busy !== null || !mayDecide;
+  const reasonLabel = line.decisionReason
+    ? (reasons.find((r) => r.slug === line.decisionReason)?.label ?? line.decisionReason)
+    : null;
 
   return (
-    <li className="p-4" data-testid={`carrier-line-${line.lineId}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
+    <Fragment>
+      <tr className="border-t border-border align-top" data-testid={`carrier-line-${line.lineId}`}>
+        <td className="px-4 py-3">
           <div className="font-mono text-sm text-foreground">{line.billedCode}</div>
           {line.paidCode && line.paidCode !== line.billedCode && (
             <div className="font-mono text-xs text-amber-700 dark:text-amber-400">
@@ -797,16 +950,18 @@ function CarrierLine({
             </div>
           )}
           <div className="text-xs text-muted-foreground">{line.description}</div>
-          <div className="mt-1 flex flex-wrap gap-1">
-            {line.flags.map((flag) => (
-              <span
-                key={flag}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${lineFlagTone(flag)}`}
-              >
-                {lineFlagLabel(flag)}
-              </span>
-            ))}
-          </div>
+          {line.flags.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {line.flags.map((flag) => (
+                <span
+                  key={flag}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${lineFlagTone(flag)}`}
+                >
+                  {lineFlagLabel(flag)}
+                </span>
+              ))}
+            </div>
+          )}
           {line.adjustments.map((adj) => (
             <div key={adj.adjustmentId} className="mt-1 text-xs text-muted-foreground">
               <span className="font-mono" title={adj.groupDescription ?? undefined}>
@@ -816,75 +971,140 @@ function CarrierLine({
               {adj.reasonDescription ? ` — ${adj.reasonDescription}` : ""}
             </div>
           ))}
-        </div>
-
-        <dl className="grid shrink-0 grid-cols-4 gap-x-3 text-right text-xs">
-          <Amount label="Billed" cents={line.billedCents} />
-          <Amount label="Allowed" cents={line.allowedCents} />
-          <Amount label="Paid" cents={line.paidCents} strong />
-          <Amount label="Patient" cents={remainder} />
-        </dl>
-      </div>
-
-      {/*
-        THE CARRIER'S OWN WRITE-OFF, AS A FACT.
-        No control, and labelled as the carrier's rather than as "write-off" on
-        its own — the whole screen turns on the difference between the one the
-        contract took and the one this office chose.
-      */}
-      <p className="mt-2 text-xs text-muted-foreground" data-testid={`contractual-${line.lineId}`}>
-        Contract write-off {money(line.contractualWriteOffCents)} — the carrier's, already
-        accepted.
-      </p>
-
-      {line.odClaimProcNum !== null && (
-        <p className="mt-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-400">
-          → ClaimProc {line.odClaimProcNum}
-        </p>
-      )}
-
-      {/*
-        THE DECISION — about the patient's remainder, and nothing else.
-        A line where the patient owes nothing has nothing to decide, so the
-        control is not rendered rather than rendered disabled: a disabled control
-        invites somebody to look for a way to enable it.
-      */}
-      {remainder === 0 ? (
-        /*
-          NOTHING TO DECIDE — AND THE TWO WAYS THAT HAPPENS ARE DIFFERENT FACTS.
-
-          A line the carrier PAID IN FULL and a line that ended at zero because
-          the contract took all of it both leave the patient owing nothing, and
-          only the first is good news. Printing "the carrier paid it in full"
-          over a bundled or fully-adjusted line would be this screen telling a
-          biller money arrived that did not, on the one panel whose whole job is
-          what the carrier actually did.
-
-          So the sentence is chosen by whether a payment landed, and `paidCents`
-          is the server's own figure for that.
-        */
-        <p
-          className="mt-2 text-xs text-muted-foreground"
-          data-testid={`decision-none-${line.lineId}`}
+          {line.odClaimProcNum !== null && (
+            <p className="mt-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-400">
+              → ClaimProc {line.odClaimProcNum}
+            </p>
+          )}
+        </td>
+        <td className="px-2 py-3 text-right font-mono tabular-nums text-muted-foreground">
+          {money(line.billedCents)}
+        </td>
+        <td className="px-2 py-3 text-right font-mono tabular-nums text-muted-foreground">
+          {money(line.allowedCents)}
+        </td>
+        <td className="px-2 py-3 text-right font-mono font-semibold tabular-nums text-foreground">
+          {money(line.paidCents)}
+        </td>
+        {/*
+          THE CARRIER'S OWN WRITE-OFF, AS A FACT. A figure in its own column, with
+          no control in the cell — the footnote under the table says what it is.
+        */}
+        <td
+          className="px-2 py-3 text-right font-mono tabular-nums text-muted-foreground"
+          data-testid={`contractual-${line.lineId}`}
         >
-          {line.paidCents > 0
-            ? "Nothing to decide — the carrier paid it in full."
-            : "Nothing to decide — this line leaves the patient owing nothing."}
-        </p>
-      ) : (
-        <LineDecisionControl
-          line={line}
-          remainder={remainder}
-          writtenOff={writtenOff}
-          reasons={reasons}
-          busy={busy}
-          mayDecide={mayDecide}
-          decideBlockedBy={decideBlockedBy}
-          notLinked={notLinked}
-          onDecide={onDecide}
-        />
+          {money(line.contractualWriteOffCents)}
+        </td>
+        <td className="px-2 py-3 text-right font-mono tabular-nums text-foreground">
+          {money(remainder)}
+        </td>
+
+        {/*
+          THE DECISION — about the patient's remainder, and nothing else.
+          A line where the patient owes nothing has nothing to decide, so the
+          control is not rendered rather than rendered disabled: a disabled
+          control invites somebody to look for a way to enable it.
+        */}
+        <td className="px-4 py-3">
+          {remainder === 0 ? (
+            /*
+              NOTHING TO DECIDE — AND THE TWO WAYS THAT HAPPENS ARE DIFFERENT
+              FACTS. A line the carrier PAID IN FULL and a line that ended at
+              zero because the contract took all of it both leave the patient
+              owing nothing, and only the first is good news. So the sentence is
+              chosen by whether a payment landed, and `paidCents` is the
+              server's own figure for that.
+            */
+            <p className="text-xs text-muted-foreground" data-testid={`decision-none-${line.lineId}`}>
+              {line.paidCents > 0
+                ? "Nothing to decide — the carrier paid it in full."
+                : "Nothing to decide — this line leaves the patient owing nothing."}
+            </p>
+          ) : (
+            <LineDecisionControl
+              line={line}
+              remainder={remainder}
+              writtenOff={writtenOff}
+              busy={busy}
+              disabled={disabled}
+              decideBlockedBy={decideBlockedBy}
+              picking={picking}
+              setPicking={setPicking}
+              onDecide={onDecide}
+            />
+          )}
+        </td>
+      </tr>
+
+      {remainder !== 0 && (picking || writtenOff) && (
+        <tr className="align-top">
+          <td colSpan={7} className="px-4 pb-3">
+            {picking && (
+              <div
+                className="rounded-lg border border-border bg-muted/40 p-2"
+                data-testid={`reasons-${line.lineId}`}
+              >
+                <p className="text-xs font-medium text-foreground">
+                  Why is the office absorbing this?
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {reasons.map((r) => (
+                    <button
+                      key={r.slug}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        setPicking(false);
+                        onDecide(line.lineId, "office_writeoff", r.slug);
+                      }}
+                      data-testid={`reason-${r.slug}-${line.lineId}`}
+                      className={`rounded-md border px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                        line.decisionReason === r.slug
+                          ? "border-amber-400 bg-amber-100 font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-100"
+                          : "border-border text-foreground hover:bg-background"
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  A reason is required — it is the only account of why the practice absorbed this.
+                </p>
+              </div>
+            )}
+
+            {/*
+              WHAT WAS DECIDED, AND BY WHOM — at the line, because the person
+              checking it six weeks from now is looking AT THE LINE.
+
+              S8 · THE BOARD'S AUDIT SENTENCE. "Written off whole" is literally
+              true — there is no amount field anywhere on this screen, a line is
+              written off whole or billed whole — and "the patient is never
+              billed for this line" says the consequence rather than the
+              mechanism. The reason stays in it: it is the only account of why,
+              and the picker above is closed most of the time. Every part is the
+              stored decision, rendered.
+            */}
+            {writtenOff && (
+              <p
+                className={`text-xs text-amber-800 dark:text-amber-300 ${picking ? "mt-2" : ""}`}
+                data-testid={`decision-stamp-${line.lineId}`}
+              >
+                Written off whole — {money(remainder)}
+                {reasonLabel ? ` (${reasonLabel})` : " (no reason recorded)"}. The patient is never
+                billed for this line.
+                {line.decidedBy || line.decidedAt ? " Decided" : ""}
+                {line.decidedBy ? ` by ${line.decidedBy}` : ""}
+                {line.decidedAt ? `, ${stamp(line.decidedAt)}` : ""}
+                {line.decidedBy || line.decidedAt ? "." : ""}
+              </p>
+            )}
+          </td>
+        </tr>
       )}
-    </li>
+    </Fragment>
   );
 }
 
@@ -896,57 +1116,35 @@ function CarrierLine({
  * sitting on screen with no reason attached is a state the server refuses to
  * store and the verdict would call red. Picking a reason and recording the
  * decision are one act, so they are one click.
+ *
+ * S8 · The picker itself is drawn by `CarrierLine`, in the row under this one;
+ * this control only opens and closes it. The two buttons stack, because they
+ * live in a table column now.
  */
 function LineDecisionControl({
   line,
   remainder,
   writtenOff,
-  reasons,
   busy,
-  mayDecide,
+  disabled,
   decideBlockedBy,
-  notLinked,
+  picking,
+  setPicking,
   onDecide,
 }: {
   line: ClaimLine;
   remainder: number;
   writtenOff: boolean;
-  reasons: { slug: string; label: string }[];
   busy: ClaimWorkbenchProps["busy"];
-  mayDecide: boolean;
+  disabled: boolean;
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
-  notLinked: boolean;
+  picking: boolean;
+  setPicking: (next: boolean | ((prev: boolean) => boolean)) => void;
   onDecide: ClaimWorkbenchProps["onDecide"];
 }) {
-  const [picking, setPicking] = useState(false);
-  const disabled = busy !== null || !mayDecide;
-
   return (
-    <div className="mt-2" data-testid={`decision-${line.lineId}`}>
-      {/*
-        THE CAUTION, ABOVE THE BUTTONS — Stage C-3, item 4.
-
-        Above and not below, because it is a thing to know BEFORE pressing. In
-        plain words, naming the consequence rather than the mechanism: absorbing
-        money is done on behalf of a patient, and an unlinked claim has not said
-        which one. It reads as amber, never rose — this is a caution about an
-        allowed act, not a refusal, and colouring it as a block would teach a
-        biller to expect a button that does not work.
-      */}
-      {notLinked && (
-        <p
-          className="mb-2 flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1.5 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-300"
-          data-testid={`decision-unlinked-${line.lineId}`}
-        >
-          <Info size={12} className="mt-0.5 shrink-0" />
-          <span>
-            This claim isn&rsquo;t linked to an Open Dental claim yet — match it up first, so the
-            office is absorbing for the right patient.
-          </span>
-        </p>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
+    <div data-testid={`decision-${line.lineId}`}>
+      <div className="flex flex-col items-start gap-1.5">
         <button
           type="button"
           disabled={disabled}
@@ -987,59 +1185,7 @@ function LineDecisionControl({
       </div>
 
       {/*
-        WHAT WAS DECIDED, AND BY WHOM. Printed under the control rather than only
-        in the verdict, because the person checking a line six weeks from now is
-        looking AT THE LINE.
-      */}
-      {writtenOff && (
-        <p
-          className="mt-1 text-xs text-amber-800 dark:text-amber-300"
-          data-testid={`decision-stamp-${line.lineId}`}
-        >
-          The office is absorbing {money(remainder)}
-          {line.decisionReason
-            ? ` — ${reasons.find((r) => r.slug === line.decisionReason)?.label ?? line.decisionReason}`
-            : " — no reason recorded"}
-          {line.decidedBy ? ` · ${line.decidedBy}` : ""}
-          {line.decidedAt ? ` ${stamp(line.decidedAt)}` : ""}
-        </p>
-      )}
-
-      {picking && (
-        <div
-          className="mt-2 rounded-lg border border-border bg-muted/40 p-2"
-          data-testid={`reasons-${line.lineId}`}
-        >
-          <p className="text-xs font-medium text-foreground">Why is the office absorbing this?</p>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {reasons.map((r) => (
-              <button
-                key={r.slug}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  setPicking(false);
-                  onDecide(line.lineId, "office_writeoff", r.slug);
-                }}
-                data-testid={`reason-${r.slug}-${line.lineId}`}
-                className={`rounded-md border px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                  line.decisionReason === r.slug
-                    ? "border-amber-400 bg-amber-100 font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-100"
-                    : "border-border text-foreground hover:bg-background"
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
-            A reason is required — it is the only account of why the practice absorbed this.
-          </p>
-        </div>
-      )}
-
-      {/*
-        TWO CAUSES, TWO SENTENCES.
+        TWO CAUSES, TWO SENTENCES — beside the greyed buttons, in the same cell.
 
         An approved check is FROZEN, and telling the person who approved it that
         she lacks permission sends her to ask for access she already holds. What
@@ -1063,19 +1209,6 @@ function LineDecisionControl({
           Deciding write-offs needs review permission. Ask a biller.
         </DisabledReason>
       ) : null}
-    </div>
-  );
-}
-
-function Amount({ label, cents, strong }: { label: string; cents: number; strong?: boolean }) {
-  return (
-    <div>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd
-        className={`font-mono tabular-nums ${strong ? "font-semibold text-foreground" : "text-muted-foreground"}`}
-      >
-        {money(cents)}
-      </dd>
     </div>
   );
 }
@@ -1123,9 +1256,11 @@ function IdentityPanel({
         className="rounded-xl border border-dashed border-border bg-card p-4"
         data-testid="identity-unknown"
       >
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Is this the right patient?
-        </h2>
+        {/* S8: the board's label, the same one the linked state wears below,
+            so the panel is called one thing before and after a link. */}
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Same patient?
+        </h3>
         <p className="mt-1 text-xs text-muted-foreground">
           Nothing to compare yet — link this claim to a chart claim below and the two sets of
           details appear here side by side.
@@ -1146,7 +1281,10 @@ function IdentityPanel({
       data-testid="identity-panel"
       data-identity={identity.blocking ? "blocking" : identity.matched ? "agrees" : "partial"}
     >
-      <div className="flex items-start gap-2 border-b border-border px-4 py-2.5">
+      <h3 className="px-4 pt-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Same patient?
+      </h3>
+      <div className="flex items-start gap-2 border-b border-border px-4 py-2">
         {identity.blocking ? (
           <Ban size={15} className="mt-0.5 shrink-0 text-rose-700 dark:text-rose-400" />
         ) : (
@@ -1193,6 +1331,22 @@ function IdentityPanel({
                 }`}
               >
                 {f.od ?? "not recorded"}
+                {/*
+                  S8 · A TICK WHERE THE SERVER SAYS THEY AGREE, and only there.
+                  `status` is the identity comparison's own answer; this draws
+                  it and compares nothing. `unknown` gets no tick — a field one
+                  side never sent has not agreed with anything.
+                */}
+                {f.status === "agrees" && (
+                  <Check
+                    size={12}
+                    strokeWidth={3}
+                    className="ml-1.5 inline align-[-1px] text-emerald-600 dark:text-emerald-400"
+                    aria-label="agrees"
+                    role="img"
+                    data-testid={`identity-agrees-${f.field}`}
+                  />
+                )}
                 {/*
                   "differs" and "not recorded" are different answers and must not
                   read the same. A field Open Dental never sent is not a
@@ -1279,10 +1433,10 @@ function ChartPanel({
         the panel above them rather than to this one. They now sit beside the
         heading and stack under themselves if they must.
       */}
-      <div className="flex items-start justify-between gap-3">
-        <h2 className="shrink-0 pt-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          What Open Dental has
-        </h2>
+      {/* S8: the heading moved up a level, over the identity panel AND this
+          one — see the wrapper in `ClaimWorkbench`. The controls stay here,
+          right-aligned, with the claim they act on. */}
+      <div className="flex items-start justify-end gap-3">
         {/*
           EVERY DISABLED CONTROL SAYS WHY, IN THE FLOW OF THE PAGE.
           Not a `title` — the practice reads these screens on a tablet, and there
@@ -1461,7 +1615,10 @@ function ChartPanel({
           </table>
 
           <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
-            Read from Open Dental {chart.fetchedAt ? stamp(chart.fetchedAt) : "at match time"}. The
+            {/* S8: "<n> ago" rather than the stamp — the question a reader has
+                of a reading is how old it is, and the stamp made her do the
+                subtraction. See `readAgo` in features/rcm/time.ts. */}
+            Read from Open Dental {chart.fetchedAt ? readAgo(chart.fetchedAt) : "at match time"}. The
             chart is re-checked again before anything is written to it.
           </p>
 

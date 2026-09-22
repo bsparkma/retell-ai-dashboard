@@ -2531,7 +2531,7 @@ describe("2 · the takeback lane", () => {
   it("2.1 Checks and Today say it is a takeback, whole", async () => {
     const list = renderAt(<RemittanceList />, "/rcm/remittances");
     const waiting = await screen.findByTestId(`remittance-waiting-${T}`);
-    expect(waiting.textContent).toBe("A takeback — money the carrier is reclaiming");
+    expect(waiting.textContent).toBe("You — a takeback, money the carrier is reclaiming");
     expectWraps(waiting, `remittance-row-${T}`);
     sweep(list.container);
     list.unmount();
