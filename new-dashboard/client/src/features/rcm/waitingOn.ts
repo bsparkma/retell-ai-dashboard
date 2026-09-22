@@ -160,7 +160,15 @@ export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
   if (isTakeback(r)) {
     return {
       state: "takeback",
-      waitingOn: "A takeback — money the carrier is reclaiming",
+      /*
+       * S8 · IT NAMES ITS OWNER (PM ruling). Every other *Waiting on* sentence
+       * leads with WHO — "You —", "Nobody —" — and this one led with a thing,
+       * which is the one row where the answer most needs to be a person: a
+       * takeback is authorised by a human, on the check, on its own. Eight prose
+       * words, at the row-face limit. The `next` register below is Today's and
+       * is not part of the ruling.
+       */
+      waitingOn: "You — a takeback, money the carrier is reclaiming",
       next: "The carrier is reclaiming money.",
       detail: "It is authorised on its own.",
       urgent: true,
