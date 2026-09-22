@@ -2,7 +2,7 @@
 
 Branch `feature/hyg-perio-v2-probe`, off `origin/develop`. Worktree
 `C:\Users\beau\carein-wt\hyg-perio-v2-probe`. **Measure, do not build: no product code.**
-Push/PR status is in §7.
+Push/PR status is in §11.
 
 - Script: `backend/scripts/probe-hyg-perio-v2.js` (fixture-guarded, **roland 12828 only**), tests
   `backend/test/probeHygPerioV2.test.js`, and one name added to the scripts write allow-list in
