@@ -1,0 +1,15 @@
+{
+  "source": "Open Dental's answer to GET /procedurelogs/GroupNotes for a patient with NO group notes. Read inside the staging container (revision ca-carein-backend--0000191, image built from develop 9bf52f5) with the deployed, read-only, fixture-guarded backend/scripts/diag-hyg-groupnotes.js: office roland, PatNum 12827 (designated fixture; its item-15 note never landed, so it has none). Captured 2026-09-22T00:35:10Z, BEFORE any code in item 21 changed. The same read was made twice, because the first run's output was lost to the az CLI's cp1252 crash on the script's box-drawing characters; both returned the same answer.",
+  "request": {
+    "office": "roland",
+    "path": "/procedurelogs/GroupNotes",
+    "params": { "PatNum": 12827 }
+  },
+  "response": {
+    "status": 404,
+    "body": "No GroupNote(s) found for PatNum 12827.",
+    "bodyShape": "a plain string, exactly as apiGetRaw hands it to the caller in `data` (it would have JSON-stringified an object body; the error text it logged carried no braces or quotes). The raw Content-Type header was not captured."
+  },
+  "wallClock": "answered in well under a second (item 16 measured 511-896 ms for the same path on 12828)",
+  "matchRule": "status === 404 AND data is a string AND data.trim() matches /^No GroupNote\\(s\\) found for PatNum (\\d+)\\.$/ AND that number equals the PatNum asked about. Nothing broader."
+}

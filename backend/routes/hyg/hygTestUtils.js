@@ -881,6 +881,28 @@ class FakeHygDb extends FakeAuditDb {
  * unscripted path answers 404 the way a real capability miss would, rather
  * than throwing — the routes are supposed to survive one.
  */
+// The READ surface, from the writer that owns it. Spelled out here, its path would
+// contain the GroupNote WRITE endpoint's name, which hygNoOdWrites.test.js forbids
+// outside the allow-listed writer.
+const { GROUP_NOTES_PATH } = require('../../services/hyg/odWriter');
+const GROUP_NOTES_NONE = require('../../../new-dashboard/tests/fixtures/od-groupnotes-none-staging.json');
+
+/**
+ * Open Dental's answer for a patient with no group notes, for `patNum` — the
+ * captured one (tests/fixtures/od-groupnotes-none-staging.json), with only the
+ * PatNum in the sentence changed to the one asked about. Same shape apiGetRaw
+ * returns for any refusal: `data` is the body, `error` is its text.
+ *
+ * @param {unknown} patNum
+ */
+function noGroupNotesAnswer(patNum) {
+  const body = GROUP_NOTES_NONE.response.body.replace(
+    /PatNum \d+\./,
+    'PatNum ' + String(patNum) + '.'
+  );
+  return { ok: false, status: GROUP_NOTES_NONE.response.status, data: body, error: body };
+}
+
 class FakeOd {
   /**
    * @param {Record<string, unknown>} routes GET path → response
@@ -910,6 +932,13 @@ class FakeOd {
 
     if (scripted === undefined) {
       return { ok: false, status: 404, data: null, error: "'" + path + "' is not scripted" };
+    }
+    // ABSENCE, THE WAY OPEN DENTAL SAYS IT (item 21). A patient with no group
+    // notes is not `[]` on this surface: it is the 404 sentence captured from
+    // staging. A fake that answered `[]` here modelled only presence, and that is
+    // how every first-note send passed in this suite while failing on staging.
+    if (path === GROUP_NOTES_PATH && Array.isArray(scripted) && scripted.length === 0) {
+      return noGroupNotesAnswer(params && params.PatNum);
     }
     if (scripted && typeof scripted === 'object' && !Array.isArray(scripted) && 'ok' in scripted) {
       return scripted;
