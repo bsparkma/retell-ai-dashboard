@@ -575,4 +575,25 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     await screen.findByTestId("hyg-perio-in-progress");
     dump("hyg-perio-send-11-tray-stopped@1180x1400");
   });
+
+  it("16 — the key legend, number pad included (item 17)", async () => {
+    window.localStorage.clear();
+    fixtures.chart = exam(84, 11, []);
+    fixtures.prior = found(exam(192, 5, [16]));
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    await screen.findByTestId("hyg-perio-legend");
+    dump("hyg-perio-numpad-16-legend@1180x1500");
+  });
+
+  it("17 — Num Lock off: said plainly, nothing charted (item 17)", async () => {
+    window.localStorage.clear();
+    fixtures.chart = exam(84, 11, []);
+    fixtures.prior = found(exam(192, 5, [16]));
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    fireEvent.keyDown(await screen.findByTestId("hyg-perio-grid"), { key: "Home", code: "Numpad7", location: 3 });
+    await screen.findByTestId("hyg-perio-numlock");
+    dump("hyg-perio-numpad-17-numlock-off@1180x900");
+  });
 });
