@@ -342,7 +342,7 @@ export default function MatchGuidance({
                 subject.od.dateService ? day(subject.od.dateService) : "not recorded",
                 readings.date,
               ],
-              ["Lines", odLineCount(subject), readings.lines],
+              ["Lines", linesPaired(subject), readings.lines],
               ["Billed", money(subject.od.billedCents), readings.amount],
             ]}
           />
@@ -473,7 +473,8 @@ function MatchHeading({ progress }: { progress: MatchGuidanceProps["progress"] }
         </h2>
         {progress && (
           <span className="text-sm text-muted-foreground" data-testid="match-heading-progress">
-            {progress.matched} of {progress.total} claims matched · {progress.needYou} need you
+            {progress.matched} of {progress.total} claims matched · {progress.needYou}{" "}
+            {progress.needYou === 1 ? "needs" : "need"} you
           </span>
         )}
       </div>
@@ -583,15 +584,19 @@ function FieldValue({ value, reading }: { value: string; reading?: FieldReading 
 }
 
 /**
- * How many lines Open Dental holds on this claim, as the card prints it.
+ * THE LINES ROW, AS THE SCORER COMPARES IT — "2 of 2".
  *
- * `od.lines` is typed as always present, and a snapshot written before the
- * match began carrying the chart's lines does not have it. A missing list is
- * "not recorded" — the same honest absence every other field on these cards
- * prints — rather than a crash that takes the whole evidence screen with it.
+ * How many of the carrier's lines found a line in this Open Dental claim, out of
+ * how many the carrier sent: `linePairs`, the same pairing `differences()` and
+ * `agreement()` read. It is NOT the chart claim's own line count. A first draft
+ * printed `od.lines.length` beside a tick earned by the pairing, and on a
+ * snapshot that did not carry the chart's lines that read "0 ✓" — a zero with a
+ * tick beside it, the value and its mark contradicting each other. Printing the
+ * compared fact itself means the tick is always about the number next to it.
  */
-function odLineCount(c: MatchCandidate): string {
-  return Array.isArray(c.od.lines) ? String(c.od.lines.length) : "not recorded";
+function linesPaired(c: MatchCandidate): string {
+  const paired = c.linePairs.filter((p) => p.odClaimProcNum !== null).length;
+  return `${paired} of ${c.linePairs.length}`;
 }
 
 /** One side of the identity comparison. */
@@ -693,7 +698,7 @@ function CandidateSummary({
             ["Patient", c.od.patientName ?? "not recorded", readings.name],
             ["Service date", c.od.dateService ? day(c.od.dateService) : "not recorded", readings.date],
             ["Billed", money(c.od.billedCents), readings.amount],
-            ["Lines", odLineCount(c), readings.lines],
+            ["Lines", linesPaired(c), readings.lines],
           ] as [string, string, FieldReading][]
         ).map(([label, value, reading]) => (
           <div key={label} className="flex items-baseline justify-between gap-2">

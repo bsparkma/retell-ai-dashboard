@@ -189,8 +189,12 @@ export default function ClaimWorkbench({
         the conclusion sits IN the band — so the sentence saying whether the
         patient's number is right is the last thing read before the press rather
         than something scrolled past on the way to it.
+
+        THREE-FIFTHS AND TWO. The carrier's panel is a seven-column table now,
+        and at an even split its decision column ran off the edge at 1280. The
+        Open Dental side is two narrow tables and a card, and gives up the room.
       */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <CarrierPanel
           claim={claim}
           provenance={data.claim.provenance}
