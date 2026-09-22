@@ -1,6 +1,6 @@
 # Item 21: a patient with no visit notes can receive their first one
 
-Branch `feature/hyg-note-first-note`, off `origin/develop` at 9bf52f5. PR to `develop`, not merged.
+Branch `feature/hyg-note-first-note`, off `origin/develop` at 9bf52f5. PR #190 to `develop`, not merged.
 This item runs after item 20 (#189), which touches the same send path.
 
 ## 0. Read this first: the one stuck note belongs to a real patient
