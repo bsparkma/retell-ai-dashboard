@@ -595,6 +595,10 @@ function FieldValue({ value, reading }: { value: string; reading?: FieldReading 
  * compared fact itself means the tick is always about the number next to it.
  */
 function linesPaired(c: MatchCandidate): string {
+  // No pairing on the snapshot is "not recorded", never "0 of 0" — which would
+  // read as a claim with no lines rather than a comparison nobody made. It is
+  // also exactly when `fieldReadings` says `not_compared`, so no tick either.
+  if (c.linePairs.length === 0) return "not recorded";
   const paired = c.linePairs.filter((p) => p.odClaimProcNum !== null).length;
   return `${paired} of ${c.linePairs.length}`;
 }
