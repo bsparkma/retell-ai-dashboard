@@ -206,7 +206,9 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     startPerioSend: vi.fn(async (_o: string, _a: number, _d: string, request: unknown) => {
       server.calls.push("SEND_START");
       server.sendRequests.push(request);
-      return server.sendScript.shift() as HygPerioSendResponse;
+      const next = server.sendScript.shift();
+      if (next instanceof real.HygApiError) throw next;
+      return next as HygPerioSendResponse;
     }),
     stepPerioSend: vi.fn(async () => {
       server.calls.push("SEND_STEP");
@@ -686,6 +688,36 @@ describe("sending (item 12)", () => {
     expect((await screen.findByTestId("hyg-perio-refused")).textContent).toMatch(/nothing to undo/);
     expect(screen.getByTestId("hyg-perio-restage")).toBeTruthy();
     expect(screen.queryByTestId("hyg-perio-delete-open")).toBeNull();
+  });
+});
+
+describe("the test-patient rail (item 20)", () => {
+  it("a non-test patient's chart is refused beside Send, in the server's words, and stays Staged", async () => {
+    const { HygApiError } = await import("@/features/hyg/api");
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Staged", "Full chart: 192 of 192 sites charted, 2026-09-08");
+    server.sendScript = [
+      new HygApiError(
+        "This environment only writes to the designated test patients (roland 12827, 12828; valley 7115), " +
+          "and this patient is not one of them. Nothing was sent to Open Dental.",
+        422,
+        "HYG_TEST_PATIENTS_ONLY",
+      ),
+    ];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    fireEvent.click(await screen.findByTestId("hyg-perio-send-open"));
+    await screen.findByTestId("hyg-perio-confirm");
+    fireEvent.click(screen.getByTestId("hyg-perio-confirm-accept"));
+
+    const error = await screen.findByTestId("hyg-perio-send-error");
+    expect(error.textContent).toMatch(/only writes to the designated test patients/);
+    expect(error.textContent).toMatch(/Nothing was sent to Open Dental/);
+    expect(server.calls.filter((c) => c === "SEND_STEP")).toEqual([]);
+    expect(screen.getByTestId("hyg-perio-state-Staged")).toBeTruthy();
   });
 });
 

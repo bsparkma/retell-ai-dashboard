@@ -78,6 +78,7 @@ const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
 const odPerio = require('../../services/hyg/odPerio');
+const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const hygStaff = require('../../config/hygStaff');
 const contract = require('../../hyg/contract.gen.cjs');
@@ -1581,6 +1582,15 @@ router.post(
 
     const visit = await loadForMutation(req, res, office, aptNum);
     if (!visit) return undefined;
+
+    // ITEM 20: a retry writes nothing to Open Dental itself, but it re-arms a
+    // write that would. With the test-patient rail on, a patient outside it
+    // cannot have one re-armed.
+    const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+    if (gated) {
+      await auditHygDenial(req, 'hyg_staged_write', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(gated.status).json({ success: false, error: gated.error, code: gated.code, office });
+    }
 
     // A FAILED PERIO CHART GOES BACK ON THE LIST ONLY IF ITS LAST SEND LEFT
     // NOTHING BEHIND. An incomplete exam this send created is still in Open
