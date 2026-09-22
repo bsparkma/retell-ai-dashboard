@@ -504,8 +504,15 @@ describe("the per-line write-off decision", () => {
   it("shows the contractual write-off as the CARRIER'S, with no control beside it", async () => {
     renderClaim();
     const fact = await screen.findByTestId("contractual-pl-1");
-    expect(fact.textContent).toContain("Contract write-off $50.00");
-    expect(fact.textContent).toContain("the carrier's, already accepted");
+    // S8: a figure in the table's Contract w/o column, and a footnote under the
+    // table saying what that column is — rather than the same sentence under
+    // every line. The two halves of the old assertion are still both pinned: the
+    // figure is the carrier's own, and nothing about it is a control.
+    expect(fact.textContent).toBe("$50.00");
+    expect(fact.querySelector("button, a, input")).toBeNull();
+    const footnote = screen.getByTestId("contractual-footnote");
+    expect(footnote.textContent).toContain("The contract requires it");
+    expect(footnote.textContent).toContain("not a choice");
   });
 
   it("billing the patient names the amount, and is the state a fresh line is in", async () => {
@@ -571,7 +578,10 @@ describe("the per-line write-off decision", () => {
     renderClaim();
     const stamp = await screen.findByTestId("decision-stamp-pl-1");
     // The person checking a line six weeks from now is looking AT THE LINE.
-    expect(stamp.textContent).toContain("The office is absorbing $20.00");
+    // S8: the board's audit sentence — the amount, whole, and what that means
+    // for the patient — with the reason and the person still in it.
+    expect(stamp.textContent).toContain("Written off whole — $20.00");
+    expect(stamp.textContent).toContain("The patient is never billed for this line.");
     expect(stamp.textContent).toContain("X-rays — panoramic");
     expect(stamp.textContent).toContain("Billing User");
   });

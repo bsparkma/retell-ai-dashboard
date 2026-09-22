@@ -802,8 +802,15 @@ describe("a write-off on an unlinked claim", () => {
 
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
 
-    const caution = await screen.findByTestId("decision-unlinked-pl-1");
+    // S8: the caution is said ONCE, over the line table, rather than above every
+    // line's buttons — it is a fact about the claim. Still above any button.
+    const caution = await screen.findByTestId("decision-unlinked");
     expect(caution.textContent).toContain("linked to an Open Dental claim yet");
+    expect(screen.getAllByTestId("decision-unlinked")).toHaveLength(1);
+    expect(
+      caution.compareDocumentPosition(screen.getByTestId("write-off-pl-1")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(caution.textContent).toContain("for the right patient");
 
     /*
@@ -822,7 +829,7 @@ describe("a write-off on an unlinked claim", () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
     await screen.findByTestId("decision-pl-1");
 
-    expect(screen.queryByTestId("decision-unlinked-pl-1")).toBeNull();
+    expect(screen.queryByTestId("decision-unlinked")).toBeNull();
   });
 });
 

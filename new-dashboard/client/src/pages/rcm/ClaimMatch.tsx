@@ -51,10 +51,11 @@ import {
   type LineDecision,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { day, MATCH_STATUS_TONE } from "@/features/rcm/format";
+import { day, MATCH_STATUS_TONE, money } from "@/features/rcm/format";
 import { claimFlow, claimHref, claimStateLine, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
-import ClaimWorkbench from "@/components/rcm/ClaimWorkbench";
+import ClaimWorkbench, { BenchHeader } from "@/components/rcm/ClaimWorkbench";
+import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
 import MatchAnywayConfirm from "@/components/rcm/MatchAnywayConfirm";
 import { claimNumberAgrees, disagreements } from "@/features/rcm/matchWords";
@@ -110,6 +111,23 @@ export default function ClaimMatchPage() {
    * than guessed at. One extra read per screen, not per claim.
    */
   const [siblings, setSiblings] = useState<string[] | null>(null);
+  /**
+   * S8 · WHAT THE SAME READ ALREADY SAYS ABOUT THE CHECK AND ITS OTHER CLAIMS.
+   *
+   * The pager's `getRemittance` returns the check's own row and every claim on
+   * it, and this page used to keep only the ids. The header rail's flow context
+   * (payer · check · amount · received) and the band's "Next: claim 3 of 6 —
+   * so-and-so" are both in that one response, so they come from it rather than
+   * from a second read. Null exactly when `siblings` is — same failure, same
+   * silence.
+   */
+  const [checkContext, setCheckContext] = useState<{
+    payer: string;
+    checkNumber: string | null;
+    amountCents: number;
+    depositDate: string | null;
+    names: Record<string, string>;
+  } | null>(null);
   /**
    * THE ONE-LINE ANSWER TO THE LAST THING THAT HAPPENED.
    *
@@ -213,15 +231,27 @@ export default function ClaimMatchPage() {
   useEffect(() => {
     if (state.kind !== "loaded" || !fromBatchId) {
       setSiblings(null);
+      setCheckContext(null);
       return;
     }
     let cancelled = false;
     getRemittance(state.office, fromBatchId)
       .then((r) => {
-        if (!cancelled) setSiblings(r.claims.map((c) => c.claimId));
+        if (cancelled) return;
+        setSiblings(r.claims.map((c) => c.claimId));
+        setCheckContext({
+          payer: r.remittance.payer,
+          checkNumber: r.remittance.checkNumber || r.remittance.eftNumber || r.remittance.traceNumber,
+          amountCents: r.remittance.totalAmountCents,
+          depositDate: r.remittance.depositDate,
+          names: Object.fromEntries(r.claims.map((c) => [c.claimId, c.patientName])),
+        });
       })
       .catch(() => {
-        if (!cancelled) setSiblings(null);
+        if (!cancelled) {
+          setSiblings(null);
+          setCheckContext(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -320,6 +350,58 @@ export default function ClaimMatchPage() {
           nextId: pagerIndex < siblings.length - 1 ? siblings[pagerIndex + 1] : null,
         }
       : null;
+
+  /*
+   * ── THE NEXT STEP'S ONE CONTROL, DECIDED ONCE (S8) ───────────────────────────
+   *
+   * THE APPROVE CTA CARRIES THE VERDICT'S REFUSAL (S4). A red verdict is the
+   * gate's refusal arriving early: the approve route holds exactly these claims
+   * back. `verdictBlock` turns the first problem into one sentence naming the
+   * code, and `claimFlow` greys the approve verb with it.
+   *
+   * S7 · NO BUTTON TO THE PAGE YOU ARE ON. `claimFlow`'s match CTA reads *Pick
+   * the right claim for so-and-so* and links to this very screen; and when the
+   * matching guidance is OFFERING the link — candidates in hand, nothing linked
+   * — its own *Yes, that's the one* is the next click, and a CTA reading *Match
+   * it up* beside it would be an invitation to re-run the search the reader is
+   * looking at the result of. In both cases nothing is drawn here.
+   *
+   * S8 · WHERE IT IS DRAWN MOVED, NOT HOW IT IS DECIDED. It used to be the
+   * rail's own CTA; it is now drawn by `RcmPrimaryAction` — the same component
+   * the check's header uses, with the same testids, label, disabled state and
+   * printed reason — inside the verdict band at the bottom of the workbench.
+   * The rail is told to draw none (`hideCta`), so there is still one copy.
+   */
+  const claimflow = claimFlow(
+    claim,
+    fromBatchId,
+    verdictBlock(claim.verdict ?? null)?.reason ?? null,
+  );
+  const guidanceIsOffering =
+    claim.odClaimNum === null && (claim.matchSnapshot?.candidates.length ?? 0) > 0;
+  const bandCta =
+    claimflow.cta && !(claimflow.cta.href === claimHref(claim.claimId, fromBatchId) || guidanceIsOffering)
+      ? claimflow.cta
+      : null;
+  /**
+   * "Next: claim 3 of 6 — so-and-so", under an ENABLED primary only. A greyed
+   * one is not a step anybody is about to take, so pointing past it would be
+   * advice about a future the screen has just said is blocked.
+   */
+  const nextId = pager?.nextId ?? null;
+  const nextUp =
+    bandCta && !bandCta.disabled && pager && nextId && checkContext?.names[nextId]
+      ? { position: pager.index + 2, total: pager.total, name: checkContext.names[nextId] }
+      : null;
+  /* Only when the URL says which check this is — see `BenchPark`. */
+  const park = fromBatchId
+    ? {
+        onPark: () => void saveForTomorrow(fromBatchId),
+        busy: parking,
+        saved: parked,
+        error: parkError,
+      }
+    : null;
 
   /** Turn a refusal into the server's own words, never "something went wrong". */
   function say(err: unknown, fallback: string) {
@@ -502,27 +584,77 @@ export default function ClaimMatchPage() {
 
         It degrades honestly: arriving without `?from=` (a bookmark, a pasted
         link) falls back to the list rather than guessing a batch id.
-      */}
-      {fromBatchId ? (
-        <Link
-          href={remittanceHref(fromBatchId)}
-          data-testid="back-to-remittance"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft size={14} /> Back to the remittance
-          <span className="text-muted-foreground/70">— Approve is there</span>
-        </Link>
-      ) : (
-        <Link
-          href="/rcm/remittances"
-          data-testid="back-to-remittances"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft size={14} /> All checks
-        </Link>
-      )}
 
-      <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
+        S8 · THE HEADER RAIL. The way back now SAYS which check it goes back to
+        — payer · check number · amount · received, the board's flow context —
+        instead of "Back to the remittance — Approve is there". The approve
+        pointer was a second copy of the sentence the Open Dental panel already
+        prints beside its own link to the approve screen. Opposite it, the
+        pager and Save for tomorrow, which used to be a bordered strip between
+        the verdict and the panels.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        {fromBatchId ? (
+          <Link
+            href={remittanceHref(fromBatchId)}
+            data-testid="back-to-remittance"
+            className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft size={14} className="shrink-0" />
+            {checkContext ? (
+              <>
+                <span className="font-medium text-foreground">{checkContext.payer}</span>
+                {checkContext.checkNumber && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span>
+                      check <span className="font-mono">{checkContext.checkNumber}</span>
+                    </span>
+                  </>
+                )}
+                <span aria-hidden>·</span>
+                <span className="font-mono">{money(checkContext.amountCents)}</span>
+                {/* Dropped, never faked, when the carrier sent no date. */}
+                {checkContext.depositDate && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span>received {day(checkContext.depositDate)}</span>
+                  </>
+                )}
+              </>
+            ) : (
+              "Back to the check"
+            )}
+          </Link>
+        ) : (
+          <Link
+            href="/rcm/remittances"
+            data-testid="back-to-remittances"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft size={14} /> All checks
+          </Link>
+        )}
+        {/*
+          It renders whenever there is a check to save OR a claim either side, so
+          a one-claim check still gets the header rather than losing the control
+          because there is nobody to page to.
+        */}
+        {(park || (pager && pager.total > 1)) && (
+          <BenchHeader siblings={pager} fromBatchId={fromBatchId} park={park} />
+        )}
+      </div>
+
+      {/*
+        S8 · THE PATIENT LINE, AND THE TWO FIGURES THE WHOLE SCREEN IS ABOUT.
+        Who this is — name, and the birthday and subscriber id the carrier sent
+        (the detail read carries both; each is dropped when absent) — and,
+        opposite, what the carrier paid on this claim beside what the EOB says
+        the patient owes. The second figure is the SAME one the carrier panel's
+        total row prints: the verdict's `eobPatientCents` when there is a
+        verdict, the claim's own patient balance before there is one.
+      */}
+      <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1
             className="text-2xl font-bold tracking-tight text-foreground"
@@ -530,11 +662,38 @@ export default function ClaimMatchPage() {
           >
             {claim.patientName}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {claim.payer} · claim <span className="font-mono">#{claim.claimNumber}</span> · service{" "}
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="claim-patient-line">
+            {/* The payer is on the rail above when the check is known; without
+                `?from=` there is no rail context, so it stays here. */}
+            {!checkContext && <>{claim.payer} · </>}
+            {claim.patientDob && <>born {day(claim.patientDob)} · </>}
+            {claim.subscriberId && (
+              <>
+                subscriber <span className="font-mono">{claim.subscriberId}</span> ·{" "}
+              </>
+            )}
+            claim <span className="font-mono">#{claim.claimNumber}</span> · service{" "}
             {day(claim.serviceDate)} · {RCM_OFFICE_LABELS[office]}
           </p>
         </div>
+        <dl className="flex gap-6 text-right" data-testid="claim-money-pair">
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Carrier paid this claim
+            </dt>
+            <dd className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              {money(claim.totalPaidCents)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              EOB says patient owes
+            </dt>
+            <dd className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              {money(claim.verdict ? claim.verdict.eobPatientCents : claim.patientBalanceCents)}
+            </dd>
+          </div>
+        </dl>
       </div>
 
       {/* The same five steps as the check and the Posting screen, scoped to
@@ -558,34 +717,13 @@ export default function ClaimMatchPage() {
         page's own control is the one that gets the paint; the rail still draws
         the five steps and their evidence, just not a second copy of the verb.
       */}
-      {(() => {
-        const claimflow = claimFlow(
-          claim,
-          fromBatchId,
-          verdictBlock(claim.verdict ?? null)?.reason ?? null,
-        );
-        const here = claimHref(claim.claimId, fromBatchId);
-        /*
-          The second case: the matching guidance is OFFERING the link, right
-          below the rail. `MatchGuidance` draws its solid *Yes, that's the one*
-          on exactly this condition — candidates in hand and nothing linked yet
-          — and a rail CTA reading *Match it up* above it is an invitation to
-          re-run the search the reader is looking at the result of.
-        */
-        const guidanceIsOffering =
-          claim.odClaimNum === null && (claim.matchSnapshot?.candidates.length ?? 0) > 0;
-        return (
-          <RcmStepper
-            flow={claimflow}
-            here="match"
-            hideCta={claimflow.cta?.href === here || guidanceIsOffering}
-            onAction={{
-              "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
-              review: markReviewed,
-            }}
-          />
-        );
-      })()}
+      {/*
+        S8 · THE BOARD, as on the check's own page — five columns, each step's
+        name said once with its status line under it. The rail's compact form
+        printed every step's name twice (the strip, then the start of each note
+        line), and its CTA now lives in the verdict band: see `bandCta` above.
+      */}
+      <RcmStepper flow={claimflow} here="match" hideCta variant="board" />
 
       {/*
         ── WHERE THIS CLAIM IS, IN ONE LINE — Stage C-3, item 1 ────────────────
@@ -739,23 +877,24 @@ export default function ClaimMatchPage() {
         mayDecide={mayDecide}
         decideBlockedBy={decideBlockedBy}
         fromBatchId={fromBatchId}
-        siblings={pager}
-        /* Only when the URL says which check this is — see the prop's note. */
-        park={
-          fromBatchId
-            ? {
-                onPark: () => void saveForTomorrow(fromBatchId),
-                busy: parking,
-                saved: parked,
-                error: parkError,
-              }
-            : null
-        }
         onRunMatch={runMatch}
         onReview={markReviewed}
         onConfirm={confirmMatch}
         onDecide={decide}
         documentHref={documentHref(office, data.claim.provenance?.uploadId)}
+        bandAction={
+          bandCta ? (
+            <RcmPrimaryAction
+              cta={bandCta}
+              onAction={{
+                "run-match": () => runMatch(claim.odMatchStatus === "confirmed"),
+                review: markReviewed,
+              }}
+              busy={busy === "match" || busy === "review"}
+            />
+          ) : null
+        }
+        nextUp={nextUp}
       />
     </div>
   );
