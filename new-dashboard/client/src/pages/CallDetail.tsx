@@ -85,6 +85,40 @@ function formatLastVisit(iso: string | undefined): string | null {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+/**
+ * The practice's own zone, mirroring the backend's `OFFICE_TIMEZONE` default —
+ * the same constant, for the same reason, as `features/rcm/time.ts`. A call
+ * stamp rendered in the viewer's zone is wrong for anyone travelling or on a
+ * laptop whose clock zone drifted, and "7:57 AM" is exactly the kind of detail
+ * someone reads back to a patient. When a practice outside Central is onboarded
+ * this becomes a per-office value and this line is the one that changes.
+ */
+const OFFICE_TIME_ZONE = "America/Chicago";
+
+/**
+ * When the call came in, in office time: "Sep 22, 2026 · 7:57 AM".
+ *
+ * Returns null — not "Invalid Date" — for anything unparseable, so the caller
+ * omits the line rather than printing a defect into the patient card.
+ */
+function formatCallStamp(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.toLocaleDateString("en-US", {
+    timeZone: OFFICE_TIME_ZONE,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const time = d.toLocaleTimeString("en-US", {
+    timeZone: OFFICE_TIME_ZONE,
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${day} · ${time}`;
+}
+
 function formatBalance(amount: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
 }
@@ -143,6 +177,9 @@ function CallPatientPanel({
   const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
   const sent = syncStatus === "synced";
   const matchedUnsent = !sent && odPatientId != null;
+  // When the call came in. Read off the call already loaded for this view — no
+  // extra request, and nothing new stored on the call record.
+  const callStamp = formatCallStamp(call.date);
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -193,7 +230,7 @@ function CallPatientPanel({
             <Skeleton className="h-3 w-3/4" />
           </div>
         ) : patient ? (
-          <PatientFoundView patient={patient} source={source} />
+          <PatientFoundView patient={patient} source={source} callStamp={callStamp} />
         ) : odPatientId == null ? (
           <PatientNoMatchView
             callerName={callerName}
@@ -201,6 +238,7 @@ function CallPatientPanel({
             notAPatient={notAPatient}
             notAPatientReason={notAPatientReason}
             onLinkPatient={onLinkPatient}
+            callStamp={callStamp}
           />
         ) : null}
       </CardContent>
@@ -209,13 +247,15 @@ function CallPatientPanel({
 }
 
 function PatientNoMatchView({
-  callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
+  callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient, callStamp,
 }: {
   callerName: string;
   callerPhone: string;
   notAPatient: boolean;
   notAPatientReason: NotAPatientReason | null;
   onLinkPatient: () => void;
+  /** When the call came in, office time. Null when unknown — the line is omitted. */
+  callStamp: string | null;
 }) {
   const initials = initialsOf(callerName) || "?";
   return (
@@ -227,6 +267,7 @@ function PatientNoMatchView({
         <div className="min-w-0">
           <div className="font-medium text-sm truncate">{callerName || "Unknown caller"}</div>
           <div className="text-xs text-muted-foreground font-mono">{callerPhone || "—"}</div>
+          {callStamp && <div className="text-xs text-muted-foreground mt-0.5">{callStamp}</div>}
         </div>
       </div>
       {notAPatient ? (
@@ -245,7 +286,12 @@ function PatientNoMatchView({
   );
 }
 
-function PatientFoundView({ patient, source }: { patient: OdPatient; source: PatientMatchSource }) {
+function PatientFoundView({ patient, source, callStamp }: {
+  patient: OdPatient;
+  source: PatientMatchSource;
+  /** When the call came in, office time. Null when unknown — the line is omitted. */
+  callStamp: string | null;
+}) {
   const fullName = patient.fullName?.trim()
     ? patient.fullName
     : `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim();
@@ -316,6 +362,9 @@ function PatientFoundView({ patient, source }: { patient: OdPatient; source: Pat
             >
               {sourceBadge.text}
             </div>
+          )}
+          {callStamp && (
+            <div className="text-[11px] mt-0.5 text-muted-foreground">{callStamp}</div>
           )}
         </div>
       </div>
