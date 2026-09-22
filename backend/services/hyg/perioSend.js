@@ -54,6 +54,7 @@ const odPerio = require('./odPerio');
 const writer = require('./odPerioWriter');
 const store = require('./perioSendStore');
 const visitStore = require('./visitStore');
+const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 
 const PAYLOAD_SCHEMA = contract.z
   .object({
@@ -226,6 +227,9 @@ async function readExamChart(odGet, examNum) {
  * @returns {Promise<{ ok: true } | { ok: false, status: number, code: string, error: string }>}
  */
 async function startPerioSend({ pool, office, visit, appointment, request, actor, odGet }) {
+  // Item 20: staging writes to the designated test patients only.
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
   const { staged, send: latest, live } = await readSend(pool, { office, visit });
   if (!staged) return refuse(409, 'NOT_STAGED', 'There is no staged perio chart on this visit.');
   if (latest && IN_FLIGHT.includes(latest.state)) {
@@ -745,6 +749,9 @@ async function fillAndVerify(ctx, send) {
  *          | { ok: false, status: number, code: string, error: string }>}
  */
 async function stepPerioSend({ pool, office, visit, od, odGet }) {
+  // Item 20: staging writes to the designated test patients only.
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
   const startedAt = Date.now();
   const { staged, send } = await readSend(pool, { office, visit });
   if (!staged) return refuse(409, 'NOT_STAGED', 'There is no perio chart on this visit.');
@@ -814,6 +821,9 @@ async function stepPerioSend({ pool, office, visit, od, odGet }) {
  *          | { ok: false, status: number, code: string, error: string, attempted?: object[] }>}
  */
 async function deletePerioExamForSend({ pool, office, visit, od, odGet, request, actor }) {
+  // Item 20: staging writes to the designated test patients only.
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
   const { staged, send } = await readSend(pool, { office, visit });
   if (!staged || !send || send.exam_num === null) {
     return refuse(
@@ -920,6 +930,9 @@ async function deletePerioExamForSend({ pool, office, visit, od, odGet, request,
  *          | { ok: false, status: number, code: string, error: string }>}
  */
 async function beginAmendment({ pool, office, visit, odGet, actor }) {
+  // Item 20: staging writes to the designated test patients only.
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
   const { staged, send, live } = await readSend(pool, { office, visit });
   if (!staged || !live || live.exam_num === null) {
     return refuse(409, 'NOT_AMENDABLE', 'This chart is not in Open Dental, so there is nothing to correct.');
@@ -1004,6 +1017,9 @@ async function cancelAmendment({ pool, office, visit, actor }) {
  * and only while that send says it is still there.
  */
 async function removeReplacedExam({ pool, office, visit, od, odGet, request, actor }) {
+  // Item 20: staging writes to the designated test patients only.
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
   const { live } = await readSend(pool, { office, visit });
   if (!live || live.supersedes_exam_num === null || live.supersedes_deleted_at !== null) {
     return refuse(409, 'NOT_REPLACED', 'No replaced exam is waiting to be removed on this chart.');

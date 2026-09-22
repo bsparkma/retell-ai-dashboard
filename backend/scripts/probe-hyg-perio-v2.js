@@ -65,7 +65,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 /** The only patient this script will touch. Stricter than item 11's list, on purpose. */
-const FIXTURES = Object.freeze({ roland: Object.freeze([12828]) });
+// HYG_PROBE_APP_ROOT lets a copy in /tmp resolve the app's own modules.
+const APP_ROOT = process.env.HYG_PROBE_APP_ROOT || path.join(__dirname, '..');
+// The designated test patients come from the ONE shared list (item 20). This
+// probe is deliberately NARROWER than it — roland 12828 only — and can only
+// ever narrow it: a PatNum not on the shared list cannot get in here.
+const { DESIGNATED_TEST_PATIENTS } = require(path.join(APP_ROOT, 'config/testPatients'));
+const FIXTURES = Object.freeze({
+  roland: Object.freeze(DESIGNATED_TEST_PATIENTS.roland.filter((p) => p === 12828)),
+});
 
 const DEFAULT_MANIFEST = path.join(__dirname, '.probe-hyg-perio-v2.json');
 const DEFAULT_EXAM_DATE = '2000-01-01';
@@ -179,8 +187,7 @@ function writesDisabled(env) {
 
 function defaultDeps() {
   // LAZY, so requiring this file reaches no config and no Open Dental.
-  // HYG_PROBE_APP_ROOT lets a copy in /tmp resolve the app's own modules.
-  const root = process.env.HYG_PROBE_APP_ROOT || path.join(__dirname, '..');
+  const root = APP_ROOT;
   return {
     loadSecrets: () => require(path.join(root, 'config/secrets')).loadSecrets(),
     getOd: (office) => {

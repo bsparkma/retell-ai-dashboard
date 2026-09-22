@@ -61,7 +61,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 /** The only PatNums this script will touch. */
-const FIXTURES = Object.freeze({ roland: Object.freeze([12827, 12828]), valley: Object.freeze([7115]) });
+// The designated test patients: ONE list, shared with the hygiene write gate (item 20).
+const { DESIGNATED_TEST_PATIENTS: FIXTURES } = require('../config/testPatients');
 
 const DEFAULT_MANIFEST = path.join(__dirname, '.probe-hyg-perio-arch.json');
 const DEFAULT_EXAM_DATE = '2000-01-01';

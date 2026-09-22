@@ -66,6 +66,7 @@ const perioSend = require('./perioSend');
 const slipPdf = require('./slipPdf');
 const tcHandoff = require('./tcHandoffClient');
 const visitStore = require('./visitStore');
+const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 
 /**
  * The order writes are attempted in, and it is not arbitrary.
@@ -341,6 +342,16 @@ async function sendVisit({
   confirmations,
   submitHygieneIntake = tcHandoff.submitHygieneIntake,
 }) {
+  /*
+   * ITEM 20: THE TEST-PATIENT RAIL, BEFORE ANYTHING ELSE. With the gate on
+   * (config/hygFixtureGate.js), a patient who is not a designated test patient
+   * is refused for the WHOLE send — note, slip, TC handoff and perio alike —
+   * with every unit left exactly as it was: Staged, not Failed, because nothing
+   * was attempted.
+   */
+  const gated = refuseUnlessTestPatient({ office, patNum: visit.patNum });
+  if (gated) return gated;
+
   const stagedRows = [];
   for (const kind of SEND_ORDER) {
     const row = await visitStore.getStagedWrite(pool, { office, visitId: visit.visitId, kind });
