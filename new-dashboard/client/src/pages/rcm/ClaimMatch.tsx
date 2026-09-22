@@ -127,6 +127,8 @@ export default function ClaimMatchPage() {
     amountCents: number;
     depositDate: string | null;
     names: Record<string, string>;
+    /** Which claims on the check a person has linked — for "Match it up"'s count. */
+    linked: Record<string, boolean>;
   } | null>(null);
   /**
    * THE ONE-LINE ANSWER TO THE LAST THING THAT HAPPENED.
@@ -245,6 +247,9 @@ export default function ClaimMatchPage() {
           amountCents: r.remittance.totalAmountCents,
           depositDate: r.remittance.depositDate,
           names: Object.fromEntries(r.claims.map((c) => [c.claimId, c.patientName])),
+          linked: Object.fromEntries(
+            r.claims.map((c) => [c.claimId, c.odMatchStatus === "confirmed"]),
+          ),
         });
       })
       .catch(() => {
@@ -393,6 +398,23 @@ export default function ClaimMatchPage() {
     bandCta && !bandCta.disabled && pager && nextId && checkContext?.names[nextId]
       ? { position: pager.index + 2, total: pager.total, name: checkContext.names[nextId] }
       : null;
+  /**
+   * S8 · "Match it up"'s count, off the check's own claim list. Linked means a
+   * person confirmed it (`odMatchStatus === "confirmed"`); everything else still
+   * needs somebody. THIS claim's place among those is its order on the check,
+   * counting only the unlinked ones. Null when the list is not loaded.
+   */
+  const matchProgress = (() => {
+    if (!siblings || !checkContext) return null;
+    const needing = siblings.filter((id) => !checkContext.linked[id]);
+    const at = needing.indexOf(claimId);
+    return {
+      matched: siblings.length - needing.length,
+      total: siblings.length,
+      needYou: needing.length,
+      position: at >= 0 ? at + 1 : null,
+    };
+  })();
   /* Only when the URL says which check this is — see `BenchPark`. */
   const park = fromBatchId
     ? {
@@ -854,7 +876,11 @@ export default function ClaimMatchPage() {
           serviceDate: claim.serviceDate,
           billedCents: claim.totalBilledCents,
           patientName: claim.patientName,
+          birthdate: claim.patientDob,
+          subscriberId: claim.subscriberId,
+          lineCount: claim.lines.length,
         }}
+        progress={matchProgress}
         confirmedClaimNum={claim.odClaimNum}
         busy={busy !== null || claim.odMatchStatus === "confirmed"}
         fromBatchId={fromBatchId}

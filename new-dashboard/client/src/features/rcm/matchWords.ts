@@ -333,6 +333,70 @@ export function agreement(
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
+/**
+ * ONE ROW OF A CANDIDATE CARD — S8's match artboard.
+ *
+ * The board draws each candidate as field rows with a tick where the field
+ * agrees and an amber sentence where it does not. This is the per-field form of
+ * the two functions above, and it is built ONLY out of them:
+ *
+ *   differs       `differences()` returned a phrase of this kind — the value,
+ *                 then the delta, verbatim.
+ *   agrees        both sides carried the field AND `differences()` found
+ *                 nothing — the exact rule `agreement()` uses to name a field in
+ *                 its sentence, so a row can never tick a field the sentence
+ *                 would not name.
+ *   not_compared  one side did not carry it. No tick, no amber: an absence is
+ *                 not an agreement, and it is not a disagreement either.
+ *
+ * WHAT IS NOT HERE, AND WHY. Date of birth and subscriber id are not keys of
+ * this map at all. The scorer compares name, service date, billed total, line
+ * count and claim number (its evidence tags); it does not compare a birthday or
+ * a member number at the match step, so there is no scorer answer for a tick to
+ * render. The card still PRINTS what Open Dental holds for them — a fact — and
+ * the workbench's identity compare, which does compare them, takes over once a
+ * claim is linked. The claim number is `claimNumberAgrees()`, the server's own
+ * tag, never a string comparison written here.
+ */
+export type MatchField = "claimNumber" | "name" | "date" | "amount" | "lines";
+
+export type FieldReading =
+  | { status: "agrees" }
+  | { status: "differs"; phrase: string; notable: boolean }
+  | { status: "not_compared" };
+
+export function fieldReadings(
+  candidate: MatchCandidate,
+  eob: {
+    serviceDate?: string | null;
+    billedCents?: number | null;
+    patientName?: string | null;
+  },
+): Record<MatchField, FieldReading> {
+  const diffs = differences(candidate, eob);
+  const differ = (kind: Difference["kind"]): FieldReading | null => {
+    const d = diffs.find((x) => x.kind === kind);
+    return d ? { status: "differs", phrase: d.phrase, notable: d.notable } : null;
+  };
+  const read = (kind: Difference["kind"], compared: boolean): FieldReading =>
+    differ(kind) ?? (compared ? { status: "agrees" } : { status: "not_compared" });
+
+  return {
+    // The one field whose "does not agree" is not a phrase of `differences()`:
+    // absent and different are both "does not agree", and the named-difference
+    // confirm (Q2) is where that is said out loud. Here it is only a tick or
+    // nothing.
+    claimNumber: claimNumberAgrees(candidate) ? { status: "agrees" } : { status: "not_compared" },
+    name: read("name", Boolean(eob.patientName && candidate.od.patientName)),
+    date: read("date", at(eob.serviceDate) !== null && at(candidate.od.dateService) !== null),
+    amount: read(
+      "amount",
+      typeof eob.billedCents === "number" && typeof candidate.od.billedCents === "number",
+    ),
+    lines: read("lines", candidate.linePairs.length > 0),
+  };
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    WHAT A MATCH RUN DID, AND WHAT IT LEFT ALONE — W-11
    ─────────────────────────────────────────────────────────────────────────────

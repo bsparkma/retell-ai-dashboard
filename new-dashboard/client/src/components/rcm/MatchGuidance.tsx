@@ -53,11 +53,11 @@
  *
  * NO REAL PATIENT DATA anywhere in this file.
  */
-import { Building2, CheckCircle2, Info, Search } from "lucide-react";
+import { Building2, Check, CheckCircle2, Info, Search } from "lucide-react";
 import Explainer from "@/components/rcm/Explainer";
 import { Link } from "wouter";
 import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
-import { agreement, differences, likelihood } from "@/features/rcm/matchWords";
+import { agreement, fieldReadings, likelihood, type FieldReading } from "@/features/rcm/matchWords";
 import { CONFIDENCE_TONE, day, money } from "@/features/rcm/format";
 import { remittanceHref } from "@/features/rcm/flow";
 import DisabledReason from "@/components/rcm/DisabledReason";
@@ -77,7 +77,30 @@ export interface MatchGuidanceProps {
     serviceDate: string | null;
     billedCents: number | null;
     patientName: string | null;
+    /**
+     * S8 · the rest of the EOB card: the birthday and member number the
+     * carrier sent (detail read only — PHI) and how many lines it paid. PRINTED
+     * beside Open Dental's; never ticked, because the scorer compares neither
+     * birthday nor member number at this step (see `fieldReadings`).
+     */
+    birthdate?: string | null;
+    subscriberId?: string | null;
+    lineCount?: number;
   };
+  /**
+   * S8 · WHERE THIS CLAIM SITS AMONG THE ONES THAT NEED A PERSON, from the
+   * check's own claim list (the pager's read). Null when that list is not
+   * loaded — the line is dropped rather than guessed.
+   */
+  progress?: {
+    /** Claims on the check a person has linked. */
+    matched: number;
+    total: number;
+    /** Claims on the check not linked yet. */
+    needYou: number;
+    /** 1-based place of THIS claim among those, or null if it is not one. */
+    position: number | null;
+  } | null;
   /** Already linked? Then this block reports rather than offers. */
   confirmedClaimNum: number | null;
   /** Disabled while another action is in flight. */
@@ -115,6 +138,7 @@ export default function MatchGuidance({
   onConfirm,
   onShowOthers,
   fromBatchId = null,
+  progress = null,
 }: MatchGuidanceProps) {
   /*
    * NOTHING HAS RUN, OR THE SNAPSHOT IS IN AN OLDER SHAPE. The picker below
@@ -240,6 +264,20 @@ export default function MatchGuidance({
     (!snapshot.ambiguous &&
       (runnerUp === null || subject.score - runnerUp.score >= CLEAR_ENOUGH));
   const agrees = agreement(subject, eob);
+  const readings = fieldReadings(subject, eob);
+  /*
+   * "FITS PERFECTLY" IS A CLAIM, AND IT IS ONLY MADE WHEN IT IS TRUE.
+   *
+   * The board's confident heading is "Found it — one claim in Open Dental fits
+   * this one perfectly." That is honest on exactly one shape: the carrier's
+   * claim number names this claim (the scorer's own tag) AND nothing the app can
+   * compare differs (`agreement()` returned a sentence rather than null). A
+   * clear leader that is merely AHEAD — the server did not call it ambiguous,
+   * but a date or an amount is off — keeps the shipped "This looks like the
+   * one", because "perfectly" over an amber row would be the heading
+   * contradicting the card under it.
+   */
+  const perfect = agrees !== null && readings.claimNumber.status === "agrees";
 
   // ── One clear candidate ────────────────────────────────────────────────────
   if (clear) {
@@ -248,6 +286,7 @@ export default function MatchGuidance({
         className="mt-4 rounded-xl border border-border bg-card p-4"
         data-testid="match-guidance-confident"
       >
+        {!linked && <MatchHeading progress={progress} />}
         {/*
           THE HEADING NAMES WHAT THIS PANEL IS, NOT WHAT STATE THE CLAIM IS IN.
           Stage C-3, item 1: the state is said once, at the top of the page. Once
@@ -257,31 +296,54 @@ export default function MatchGuidance({
         */}
         <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
           <CheckCircle2 size={15} />
-          {linked ? "How the two sides line up" : "This looks like the one"}
+          {linked
+            ? "How the two sides line up"
+            : perfect
+              ? "Found it — one claim in Open Dental fits this one perfectly."
+              : "This looks like the one"}
         </h2>
 
+        {/*
+          S8 · THE TWO CARDS THE BOARD DRAWS, THE SAME ROWS ON EACH.
+          The carrier's card and Open Dental's, field for field — patient, born,
+          subscriber, service date, lines, billed — so the eye reads across a
+          row rather than hunting for the matching fact in the other column.
+          Open Dental's card carries the tick, or the amber delta, on every
+          field the scorer compares (see `fieldReadings`), and nothing on the
+          two it does not.
+        */}
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <IdentityColumn
             title="What the carrier sent"
             testId="match-guidance-eob"
             rows={[
               ["Patient", eob.patientName ?? "not recorded"],
+              ["Born", eob.birthdate ? day(eob.birthdate) : "not recorded"],
+              ["Subscriber", eob.subscriberId ?? "not recorded"],
               ["Service date", eob.serviceDate ? day(eob.serviceDate) : "not recorded"],
+              ["Lines", typeof eob.lineCount === "number" ? String(eob.lineCount) : "not recorded"],
               ["Billed", eob.billedCents === null ? "not recorded" : money(eob.billedCents)],
             ]}
           />
           <IdentityColumn
-            title="What Open Dental holds"
+            title={`Open Dental claim ${subject.odClaimNum}`}
+            titleMark={readings.claimNumber}
+            accent
             testId="match-guidance-od"
             rows={[
-              ["Patient", subject.od.patientName ?? "not recorded"],
+              ["Patient", subject.od.patientName ?? "not recorded", readings.name],
               [
                 "Born",
                 subject.od.patientBirthdate ? day(subject.od.patientBirthdate) : "not recorded",
               ],
               ["Subscriber", subject.od.subscriberId ?? "not recorded"],
-              ["Service date", subject.od.dateService ? day(subject.od.dateService) : "not recorded"],
-              ["Billed", money(subject.od.billedCents)],
+              [
+                "Service date",
+                subject.od.dateService ? day(subject.od.dateService) : "not recorded",
+                readings.date,
+              ],
+              ["Lines", odLineCount(subject), readings.lines],
+              ["Billed", money(subject.od.billedCents), readings.amount],
             ]}
           />
         </div>
@@ -323,9 +385,12 @@ export default function MatchGuidance({
       className="mt-4 rounded-xl border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900/60 dark:bg-amber-950/15"
       data-testid="match-guidance-unsure"
     >
+      <MatchHeading progress={progress} />
+      {/* S8: the board's heading, and it COUNTS — "more than one" left the
+          reader to count the cards, and the cards below show at most three. */}
       <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
         <Info size={15} />
-        More than one of these could be it
+        Not sure about this one — {candidates.length} claims could be it.
       </h2>
       {/* S7: the heading already says more than one could be it, and the cards
           below already print the differences. What is worth keeping is the
@@ -337,6 +402,22 @@ export default function MatchGuidance({
           them — that is yours.
         </p>
       </Explainer>
+
+      {/*
+        S8 · THE CARRIER'S SIDE, ONCE, ABOVE THE CANDIDATES — what every card
+        below is being compared against. The cards used to carry only Open
+        Dental's figures and a list of differences, and "6 weeks earlier" is a
+        distance from something the card never printed.
+      */}
+      <p className="mt-2 text-sm text-foreground" data-testid="match-guidance-eob-summary">
+        <span className="text-muted-foreground">The carrier sent:</span>{" "}
+        {eob.patientName ?? "no patient name"}
+        {eob.serviceDate ? ` · ${day(eob.serviceDate)}` : ""}
+        {eob.billedCents !== null ? ` · ${money(eob.billedCents)}` : ""}
+        {typeof eob.lineCount === "number"
+          ? ` · ${eob.lineCount} line${eob.lineCount === 1 ? "" : "s"}`
+          : ""}
+      </p>
 
       <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {candidates.slice(0, 3).map((c) => (
@@ -360,6 +441,48 @@ export default function MatchGuidance({
       <NeitherOfThese fromBatchId={fromBatchId} />
       <Footer />
     </section>
+  );
+}
+
+/**
+ * "MATCH IT UP" — the board's title row for a claim nobody has linked yet.
+ *
+ * The step's name (the rail's own CTA verb) and where this claim sits in the
+ * check's matching: how many a person has linked, how many still need one, and
+ * which of THOSE this is. Every number comes off the check's own claim list —
+ * `progress`, from the read the pager already makes — and the whole line is
+ * dropped when that list is not loaded, rather than guessed at.
+ *
+ * NOT "FOUND ON THEIR OWN". The artboard counts claims "found on their own",
+ * and none are: this module never confirms a match without a person pressing a
+ * button (review-then-send). The honest count is how many are MATCHED — linked
+ * by somebody — and that is the word used.
+ */
+function MatchHeading({ progress }: { progress: MatchGuidanceProps["progress"] }) {
+  return (
+    <div
+      className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-border pb-3"
+      data-testid="match-heading"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2
+          className="text-lg font-semibold tracking-tight text-foreground"
+          style={{ fontFamily: "Sora, sans-serif" }}
+        >
+          Match it up
+        </h2>
+        {progress && (
+          <span className="text-sm text-muted-foreground" data-testid="match-heading-progress">
+            {progress.matched} of {progress.total} claims matched · {progress.needYou} need you
+          </span>
+        )}
+      </div>
+      {progress && progress.position !== null && (
+        <span className="text-xs font-medium text-muted-foreground" data-testid="match-heading-position">
+          Claim {progress.position} of {progress.needYou} that needs you
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -410,26 +533,102 @@ function NeitherOfThese({ fromBatchId }: { fromBatchId: string | null }) {
   );
 }
 
+/**
+ * THE MARK AFTER A VALUE — S8.
+ *
+ * A tick for a field `fieldReadings` says agrees; nothing for one it did not
+ * compare. A field that DIFFERS is not marked here — the row prints the
+ * difference phrase in place of the bare value, in amber (see `FieldValue`), so
+ * the reader gets the value and the distance in one line.
+ */
+function AgreeTick({ reading }: { reading?: FieldReading }) {
+  if (reading?.status !== "agrees") return null;
+  return (
+    <Check
+      size={12}
+      strokeWidth={3}
+      className="ml-1 inline shrink-0 align-[-1px] text-emerald-600 dark:text-emerald-400"
+      aria-label="agrees"
+      role="img"
+    />
+  );
+}
+
+/**
+ * One field's value as a card prints it: the difference phrase when the field
+ * differs (value, then delta, verbatim from `differences()`), otherwise the
+ * value with its tick. Notable differences are amber; the rest are muted, so a
+ * card's weight lands on the thing that should stop somebody.
+ */
+function FieldValue({ value, reading }: { value: string; reading?: FieldReading }) {
+  if (reading?.status === "differs") {
+    return (
+      <span
+        className={
+          reading.notable
+            ? "font-medium text-amber-800 dark:text-amber-300"
+            : "text-muted-foreground"
+        }
+      >
+        {reading.phrase}
+      </span>
+    );
+  }
+  return (
+    <span className="text-foreground">
+      {value}
+      <AgreeTick reading={reading} />
+    </span>
+  );
+}
+
+/**
+ * How many lines Open Dental holds on this claim, as the card prints it.
+ *
+ * `od.lines` is typed as always present, and a snapshot written before the
+ * match began carrying the chart's lines does not have it. A missing list is
+ * "not recorded" — the same honest absence every other field on these cards
+ * prints — rather than a crash that takes the whole evidence screen with it.
+ */
+function odLineCount(c: MatchCandidate): string {
+  return Array.isArray(c.od.lines) ? String(c.od.lines.length) : "not recorded";
+}
+
 /** One side of the identity comparison. */
 function IdentityColumn({
   title,
+  titleMark,
+  accent = false,
   testId,
   rows,
 }: {
   title: string;
+  /** The claim-number reading, ticked on the title when it agrees. */
+  titleMark?: FieldReading;
+  /** Open Dental's card on the board wears the green edge. */
+  accent?: boolean;
   testId: string;
-  rows: [string, string][];
+  /** label, value, and — only on a field the scorer compares — its reading. */
+  rows: [string, string, FieldReading?][];
 }) {
   return (
-    <div className="rounded-lg border border-border bg-background p-3" data-testid={testId}>
+    <div
+      className={`rounded-lg border bg-background p-3 ${
+        accent ? "border-emerald-300 dark:border-emerald-800" : "border-border"
+      }`}
+      data-testid={testId}
+    >
       <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
+        <AgreeTick reading={titleMark} />
       </div>
       <dl className="mt-1.5 space-y-1">
-        {rows.map(([label, value]) => (
+        {rows.map(([label, value, reading]) => (
           <div key={label} className="flex items-baseline justify-between gap-3 text-sm">
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="truncate text-right text-foreground">{value}</dd>
+            <dt className="shrink-0 text-muted-foreground">{label}</dt>
+            <dd className="min-w-0 break-words text-right">
+              <FieldValue value={value} reading={reading} />
+            </dd>
           </div>
         ))}
       </dl>
@@ -451,7 +650,7 @@ function CandidateSummary({
   busy: boolean;
   onConfirm: () => void;
 }) {
-  const diffs = differences(c, eob);
+  const readings = fieldReadings(c, eob);
   return (
     <div
       className="rounded-lg border border-border bg-background p-3"
@@ -475,31 +674,36 @@ function CandidateSummary({
         </span>
         <span className="font-mono text-sm font-medium text-foreground">
           ClaimNum {c.odClaimNum}
+          <AgreeTick reading={readings.claimNumber} />
         </span>
       </div>
-      <div className="mt-0.5 truncate text-xs text-muted-foreground">
-        {c.od.patientName ?? "Unknown patient"} · {c.od.dateService ? day(c.od.dateService) : "no date"}{" "}
-        · {money(c.od.billedCents)}
-      </div>
 
-      {diffs.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Nothing this app can compare differs from what the carrier sent.
-        </p>
-      ) : (
-        <ul className="mt-2 space-y-0.5" data-testid={`match-guidance-diffs-${c.odClaimNum}`}>
-          {diffs.map((d) => (
-            <li
-              key={d.kind}
-              className={`text-xs ${
-                d.notable ? "font-medium text-amber-800 dark:text-amber-300" : "text-muted-foreground"
-              }`}
-            >
-              {d.phrase}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/*
+        S8 · FIELD ROWS, A TICK OR A DIFFERENCE ON EACH.
+        This was one summary line and, under it, a list of whatever differed —
+        so a field that AGREED was simply absent, and a reader could not tell
+        "the same" from "not compared". Now every field the scorer compares has
+        a row: the value with a tick, or the difference phrase in its place.
+        Nothing is added that `differences()` did not already say; the testid
+        stays on the rows so every phrase is where the walk looks for it.
+      */}
+      <dl className="mt-2 space-y-0.5 text-xs" data-testid={`match-guidance-diffs-${c.odClaimNum}`}>
+        {(
+          [
+            ["Patient", c.od.patientName ?? "not recorded", readings.name],
+            ["Service date", c.od.dateService ? day(c.od.dateService) : "not recorded", readings.date],
+            ["Billed", money(c.od.billedCents), readings.amount],
+            ["Lines", odLineCount(c), readings.lines],
+          ] as [string, string, FieldReading][]
+        ).map(([label, value, reading]) => (
+          <div key={label} className="flex items-baseline justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">{label}</dt>
+            <dd className="min-w-0 break-words text-right">
+              <FieldValue value={value} reading={reading} />
+            </dd>
+          </div>
+        ))}
+      </dl>
 
       <div className="mt-2 flex flex-col items-start gap-1">
         <button
