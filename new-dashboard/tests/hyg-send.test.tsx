@@ -35,7 +35,7 @@ const server = vi.hoisted(() => ({
   /** Every send call, verbatim — so a test can prove what crossed the wire. */
   sends: [] as unknown[],
   /** Set to make the next send refuse the way a stale preview would. */
-  sendRefusal: null as { status: number; message: string } | null,
+  sendRefusal: null as { status: number; message: string; code?: string } | null,
   /** What the send turns each kind into. */
   outcome: {} as Record<string, Partial<StagedWrite>>,
 }));
@@ -137,7 +137,11 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     sendVisit: vi.fn(async (_o: string, _a: number, _d: string, confirm: unknown) => {
       server.sends.push(confirm);
       if (server.sendRefusal) {
-        throw new real.HygApiError(server.sendRefusal.message, server.sendRefusal.status, "PREVIEW_CHANGED");
+        throw new real.HygApiError(
+          server.sendRefusal.message,
+          server.sendRefusal.status,
+          server.sendRefusal.code ?? "PREVIEW_CHANGED",
+        );
       }
       server.staged = server.staged.map((w) => ({ ...w, ...(server.outcome[w.kind] ?? {}) }));
       const outcomes = server.staged.map((w) => ({
@@ -250,6 +254,32 @@ describe("the confirm step", () => {
     // A refusal about the SEND, not about one row — it stopped the batch.
     expect(screen.queryByTestId("hyg-failed-note")).toBeNull();
     // And it is not a page-level error that hides the visit.
+    expect(screen.getByTestId("hyg-visit")).toBeTruthy();
+  });
+});
+
+describe("the test-patient rail (item 20)", () => {
+  it("a non-test patient on staging is refused beside the Send button, and every write stays Staged", async () => {
+    server.staged = [stagedWrite("note"), stagedWrite("router")];
+    server.sendRefusal = {
+      status: 422,
+      code: "HYG_TEST_PATIENTS_ONLY",
+      message:
+        "This environment only writes to the designated test patients (roland 12827, 12828; valley 7115), " +
+        "and this patient is not one of them. Nothing was sent to Open Dental.",
+    };
+    renderVisit();
+    await screen.findByTestId("hyg-visit");
+
+    fireEvent.click(screen.getByTestId("hyg-send-all"));
+    fireEvent.click(await screen.findByTestId("hyg-confirm-send-accept"));
+
+    const refusal = await screen.findByTestId("hyg-send-refused");
+    expect(refusal.textContent).toMatch(/only writes to the designated test patients/);
+    expect(refusal.textContent).toMatch(/Nothing was sent to Open Dental/);
+    // Not a failed write on any row: nothing was attempted.
+    expect(screen.queryByTestId("hyg-failed-note")).toBeNull();
+    expect(screen.queryByTestId("hyg-failed-router")).toBeNull();
     expect(screen.getByTestId("hyg-visit")).toBeTruthy();
   });
 });

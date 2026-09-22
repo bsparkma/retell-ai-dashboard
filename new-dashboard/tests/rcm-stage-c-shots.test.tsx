@@ -737,6 +737,31 @@ describe.skipIf(!enabled)("Stage C screenshots", () => {
     dump("stagec-03-checks-waiting-on");
   });
 
+  it("stagec-03b-checks-empty-tab — a clear queue that still teaches (S8)", async () => {
+    /*
+     * The default tab with nothing in it, on a practice that DOES hold checks:
+     * one finished, one set aside. This is the empty state sweep (h) judges —
+     * what lands here, and how — and the worst case for the screen's word
+     * budget, so it is the one worth a picture beside the populated list.
+     */
+    state.checks = [
+      check({ needsAttention: false, attentionReasons: [] }),
+      check({
+        batchId: "b-2",
+        checkNumber: "830200002",
+        payer: "SYNTHETIC HEALTH PLAN",
+        needsAttention: false,
+        attentionReasons: [],
+        setAsideAt: "2026-03-05T20:00:00.000Z",
+      }),
+    ];
+
+    const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
+    renderAt(<RemittanceList />, "/rcm/remittances");
+    await waitFor(() => expect(screen.getByTestId("remittances-empty-roland")).toBeTruthy());
+    dump("stagec-03b-checks-empty-tab");
+  });
+
   it("stagec-04-check-triage — where the patient stands, per claim", async () => {
     // All three verdict tones in one table (PR #171 round 1): the matching
     // claim's miniature is green, as the verdict banners are.

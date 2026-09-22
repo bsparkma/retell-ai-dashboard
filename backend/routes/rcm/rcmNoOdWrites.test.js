@@ -888,6 +888,12 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
    *                          /perioexams on a designated test patient only, and
    *                          DELETE /perioexams for exactly the exams its own
    *                          manifest recorded — the one complete undo perio has.
+   *   probe-hyg-perio-v2.js  the hygiene v2 perio probe (item 19): recession,
+   *                          furcation and mobility rows. POST /perioexams and
+   *                          POST /periomeasures on roland 12828 ONLY, rows only
+   *                          into exams the same run created, and DELETE
+   *                          /perioexams for exactly the exams its manifest
+   *                          recorded. Never PUT, never a CAL row.
    *
    * Deliberately NOT here: `rcm-s10-inventory.js`, `rcm-s10-835.js`,
    * `rcm/reseed-835.js`, `rcm/reseed-targets.js` and
@@ -925,6 +931,9 @@ test('a NAMED allow-list of operational scripts may reach an OD write, and they 
     // POST /perioexams on a designated fixture only, and DELETE /perioexams for
     // exactly the exams it created. Named here for the same reason as above.
     'probe-hyg-perio-arch.js',
+    // The v2 perio probe (item 19): recession / furcation / mobility rows into
+    // exams it created on roland 12828, deleted by its own manifest. Same reason.
+    'probe-hyg-perio-v2.js',
   ]);
 
   const WRITE_SIGNALS = [

@@ -268,6 +268,37 @@ export function checkChip(state: WaitingState): CheckChip | null {
 }
 
 /**
+ * THE DOT BESIDE THE STATE PHRASE — the chip, drawn for a table.
+ *
+ * WEIGHT ONLY. `CHECK_CHIPS` decides each state's tone; this is the same
+ * judgement expressed as a single dot, because a filled badge repeated down a
+ * table reads as decoration where one on a card reads as a label.
+ *
+ * S8 moved it here from `RcmToday.tsx` when the Checks list started drawing
+ * dots too. Two screens, one map: a state that is amber on Today and grey on
+ * Checks would be two vocabularies for one fact, which is the exact thing
+ * `CHECK_CHIPS` exists to stop.
+ *
+ * `Record<WaitingState, …>` rather than a partial one, so a state added to
+ * `waitingOn.ts` is a type error here until somebody picks its colour. The four
+ * states with no chip still get an entry: they never render a dot (the cell is
+ * empty without a chip), and leaving them out would mean the compiler stopped
+ * checking this map the day one of them grew a chip.
+ */
+export const STATE_DOT: Record<WaitingState, string> = {
+  review: "bg-muted-foreground/60",
+  match: "bg-muted-foreground/60",
+  stuck: "bg-amber-500",
+  approve: "bg-emerald-500",
+  posted: "bg-sky-500",
+  set_aside: "bg-muted-foreground/40",
+  takeback: "bg-amber-500",
+  shadow: "bg-muted-foreground/40",
+  other_office: "bg-muted-foreground/40",
+  nothing: "bg-muted-foreground/40",
+};
+
+/**
  * Does this check belong in that state?
  *
  * A check can be in more than one — see the header. The exception is

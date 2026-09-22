@@ -1064,6 +1064,16 @@ describe.skipIf(!enabled)("RCM UX screenshots", () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1?from=b-1");
     await waitFor(() => expect(screen.getByTestId("verdict-decisions")).toBeTruthy());
     dump("bench-02-verdict-amber");
+
+    /*
+     * S8 · THE SAME AMBER CLAIM WITH ITS PICKER OPEN. The artboard draws the
+     * reason picker opening IN PLACE under the written-off line, with the
+     * decision's audit sentence beside it — so the picture is of the line that
+     * was already written off, re-opened, rather than of a fresh green claim.
+     */
+    fireEvent.click(screen.getByTestId("write-off-pl-2"));
+    await waitFor(() => expect(screen.getByTestId("reasons-pl-2")).toBeTruthy());
+    dump("s8-bench-amber-picker");
   });
 
   it("bench-03-verdict-red — the numbers disagree, and this cannot be approved", async () => {

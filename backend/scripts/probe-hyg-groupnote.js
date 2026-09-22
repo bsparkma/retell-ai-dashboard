@@ -55,7 +55,8 @@ const odOffices = require('../config/odOffices');
 const { loadSecrets } = require('../config/secrets');
 
 /** The only PatNums this script will touch. */
-const FIXTURES = { roland: [12827, 12828], valley: [7115] };
+// The designated test patients: ONE list, shared with the hygiene write gate (item 20).
+const { DESIGNATED_TEST_PATIENTS: FIXTURES } = require('../config/testPatients');
 
 const LF = '\n';
 const CRLF = '\r\n';

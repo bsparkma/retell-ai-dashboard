@@ -551,7 +551,7 @@ describe("there is exactly one place to add a check", () => {
  */
 const TAKEBACK_NEXT = "The carrier is reclaiming money.";
 const TAKEBACK_DETAIL = "It is authorised on its own.";
-const TAKEBACK_WAITING_ON = "A takeback — money the carrier is reclaiming";
+const TAKEBACK_WAITING_ON = "You — a takeback, money the carrier is reclaiming";
 
 /**
  * ASSERTING THE MECHANISM, NOT JUST THE TEXT — and this is the whole point.

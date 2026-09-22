@@ -279,7 +279,46 @@ function groupNoteProcNum(row) {
 }
 
 /**
- * Every GroupNote on a patient.
+ * OPEN DENTAL'S "THIS PATIENT HAS NO GROUP NOTES" — measured, not assumed.
+ *
+ * Open Dental does not answer `[]` for a patient with no group notes. It answers
+ * an ERROR, in well under a second. Captured on staging, roland PatNum 12827
+ * (designated fixture), 2026-09-22T00:35Z, before this code changed — the full
+ * record is new-dashboard/tests/fixtures/od-groupnotes-none-staging.json:
+ *
+ *     HTTP 404   "No GroupNote(s) found for PatNum 12827."
+ *
+ * Until item 21, readGroupNotes treated that answer like any other non-ok one —
+ * "Open Dental did not answer" — so the pre-check refused every patient's FIRST
+ * visit note with NOTE_PRECHECK_UNAVAILABLE, and Retry failed forever (#185).
+ *
+ * The match is deliberately NARROW: that status, that sentence, and the PatNum
+ * in the sentence equal to the one asked about. It is not "any 404" and not
+ * "any 4xx" — a 404 for a mistyped path, a 404 for another resource, or an
+ * outage still refuses, because the pre-check refusing when it is blind is the
+ * feature. If Open Dental ever rewords the sentence, first notes go back to
+ * refusing honestly rather than to writing blind.
+ */
+const NO_GROUP_NOTES_STATUS = 404;
+const NO_GROUP_NOTES_RE = /^No GroupNote\(s\) found for PatNum (\d+)\.$/;
+
+/**
+ * Is this Open Dental's "no group notes for this patient" answer, for THIS patient?
+ *
+ * @param {any} res an apiGetRaw result
+ * @param {number} patNum the PatNum that was asked about
+ * @returns {boolean}
+ */
+function isNoGroupNotesAnswer(res, patNum) {
+  if (!res || res.ok || res.status !== NO_GROUP_NOTES_STATUS) return false;
+  if (typeof res.data !== 'string') return false;
+  const m = NO_GROUP_NOTES_RE.exec(res.data.trim());
+  return Boolean(m) && Number(m[1]) === patNum;
+}
+
+/**
+ * Every GroupNote on a patient. A patient with none is `ok` with no rows — see
+ * isNoGroupNotesAnswer. Every other failure is `GROUP_NOTES_UNREADABLE`.
  *
  * @param {(path: string, params?: object, opts?: object) => Promise<any>} odGet
  * @param {number} patNum
@@ -288,6 +327,7 @@ function groupNoteProcNum(row) {
  */
 async function readGroupNotes(odGet, patNum) {
   const res = await odGet(GROUP_NOTES_PATH, { PatNum: patNum });
+  if (isNoGroupNotesAnswer(res, patNum)) return { ok: true, rows: [] };
   if (!res || !res.ok || !Array.isArray(res.data)) {
     return {
       ok: false,
@@ -542,6 +582,7 @@ module.exports = {
   resolveSlipDocCategory,
   readAppointmentProcedures,
   readGroupNotes,
+  isNoGroupNotesAnswer,
   matchingGroupNotes,
   sameNoteText,
   sameProcNums,

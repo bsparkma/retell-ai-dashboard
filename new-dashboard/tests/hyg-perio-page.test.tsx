@@ -206,7 +206,9 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     startPerioSend: vi.fn(async (_o: string, _a: number, _d: string, request: unknown) => {
       server.calls.push("SEND_START");
       server.sendRequests.push(request);
-      return server.sendScript.shift() as HygPerioSendResponse;
+      const next = server.sendScript.shift();
+      if (next instanceof real.HygApiError) throw next;
+      return next as HygPerioSendResponse;
     }),
     stepPerioSend: vi.fn(async () => {
       server.calls.push("SEND_STEP");
@@ -434,6 +436,77 @@ describe("staging", () => {
   });
 });
 
+describe("the number pad (item 17)", () => {
+  function padKey(key: string, code: string) {
+    return { key, code, location: 3 };
+  }
+
+  it("ACCEPTANCE 4: Num Lock off says so, on screen, and charts nothing", async () => {
+    renderPerio();
+    const grid = await screen.findByTestId("hyg-perio-grid");
+    expect(screen.queryByTestId("hyg-perio-numlock")).toBeNull();
+
+    // "7 4 1" on a pad with Num Lock off.
+    fireEvent.keyDown(grid, padKey("Home", "Numpad7"));
+    fireEvent.keyDown(grid, padKey("ArrowLeft", "Numpad4"));
+    fireEvent.keyDown(grid, padKey("End", "Numpad1"));
+    const warning = screen.getByTestId("hyg-perio-numlock");
+    expect(warning.getAttribute("role")).toBe("alert");
+    expect(warning.textContent).toMatch(/Num Lock is off/);
+    expect(screen.getByTestId("hyg-perio-progress").textContent).toMatch(/0 of 192/);
+    expect(screen.getByTestId("hyg-perio-cursor").textContent).toMatch(/#1 DB/);
+
+    // Num Lock on: the next real digit charts, and the warning goes.
+    fireEvent.keyDown(grid, padKey("7", "Numpad7"));
+    expect(screen.queryByTestId("hyg-perio-numlock")).toBeNull();
+    expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toMatch(/^7/);
+  });
+
+  it("the pad's flag and tooth keys work on the page, through the same grid", async () => {
+    renderPerio();
+    const grid = await screen.findByTestId("hyg-perio-grid");
+    fireEvent.keyDown(grid, padKey("3", "Numpad3"));
+    fireEvent.keyDown(grid, padKey("/", "NumpadDivide"));
+    expect(screen.getByTestId("hyg-perio-flag-bleeding").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(grid, padKey(")", "NumpadParenRight"));
+    expect(screen.getByTestId("hyg-perio-cursor").textContent).toMatch(/#2 DB/);
+  });
+
+  it("ACCEPTANCE 5: touch entry is unchanged — the keypad buttons chart and move as before", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    fireEvent.click(screen.getByTestId("hyg-perio-key-4"));
+    fireEvent.click(screen.getByTestId("hyg-perio-key-12"));
+    expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toMatch(/^4/);
+    expect(screen.getByTestId("hyg-perio-site-1-B").textContent).toMatch(/^12/);
+    fireEvent.click(screen.getByTestId("hyg-perio-flag-plaque"));
+    expect(screen.getByTestId("hyg-perio-flag-plaque").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ACCEPTANCE 6: the key legend renders, hides, and comes back", async () => {
+    window.localStorage.clear();
+    renderPerio();
+    const legend = await screen.findByTestId("hyg-perio-legend");
+    for (const k of ["/", "*", "-", "+", ".", "Backspace", "Delete", "Esc", "(", ")"]) {
+      expect(legend.textContent).toContain(k);
+    }
+    expect(screen.getByTestId("hyg-perio-legend-notes").textContent).toMatch(/Fn/);
+    expect(screen.getByTestId("hyg-perio-legend-notes").textContent).toMatch(/Tab and = do nothing/);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-legend-hide"));
+    expect(screen.queryByTestId("hyg-perio-legend")).toBeNull();
+    // Remembered on this device…
+    cleanup();
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    expect(screen.queryByTestId("hyg-perio-legend")).toBeNull();
+    // …and one tap brings it back.
+    fireEvent.click(screen.getByTestId("hyg-perio-legend-show"));
+    expect(screen.getByTestId("hyg-perio-legend")).toBeTruthy();
+    window.localStorage.clear();
+  });
+});
+
 describe("the last exam", () => {
   it("says it is reading while it is reading", async () => {
     server.priorPending = true;
@@ -615,6 +688,36 @@ describe("sending (item 12)", () => {
     expect((await screen.findByTestId("hyg-perio-refused")).textContent).toMatch(/nothing to undo/);
     expect(screen.getByTestId("hyg-perio-restage")).toBeTruthy();
     expect(screen.queryByTestId("hyg-perio-delete-open")).toBeNull();
+  });
+});
+
+describe("the test-patient rail (item 20)", () => {
+  it("a non-test patient's chart is refused beside Send, in the server's words, and stays Staged", async () => {
+    const { HygApiError } = await import("@/features/hyg/api");
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Staged", "Full chart: 192 of 192 sites charted, 2026-09-08");
+    server.sendScript = [
+      new HygApiError(
+        "This environment only writes to the designated test patients (roland 12827, 12828; valley 7115), " +
+          "and this patient is not one of them. Nothing was sent to Open Dental.",
+        422,
+        "HYG_TEST_PATIENTS_ONLY",
+      ),
+    ];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    fireEvent.click(await screen.findByTestId("hyg-perio-send-open"));
+    await screen.findByTestId("hyg-perio-confirm");
+    fireEvent.click(screen.getByTestId("hyg-perio-confirm-accept"));
+
+    const error = await screen.findByTestId("hyg-perio-send-error");
+    expect(error.textContent).toMatch(/only writes to the designated test patients/);
+    expect(error.textContent).toMatch(/Nothing was sent to Open Dental/);
+    expect(server.calls.filter((c) => c === "SEND_STEP")).toEqual([]);
+    expect(screen.getByTestId("hyg-perio-state-Staged")).toBeTruthy();
   });
 });
 

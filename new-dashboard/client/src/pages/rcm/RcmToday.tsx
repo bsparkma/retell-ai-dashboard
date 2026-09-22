@@ -146,9 +146,10 @@ import { blockedCopy, SHADOW_MODE_COPY } from "@/features/rcm/posting";
 import { RCM_STEP_TITLES, remittanceHref } from "@/features/rcm/flow";
 import { greetingFor, officeDay, officeDayKey, todayLongDate } from "@/features/rcm/time";
 import { nextActionFor, PICK_UP_LABEL, type NextAction } from "@/features/rcm/nextAction";
-import { waitingFor, type WaitingState } from "@/features/rcm/waitingOn";
+import { waitingFor } from "@/features/rcm/waitingOn";
 import {
   checkChip,
+  STATE_DOT,
   countByFilter,
   FILTER_COPY,
   newestParkedFirst,
@@ -173,33 +174,6 @@ const LEFT_OFF_LIMIT = 4;
 
 /** How many arrivals the table names. Newest first; the rest are on Checks. */
 const ARRIVALS_LIMIT = 6;
-
-/**
- * THE DOT BESIDE THE STATE PHRASE — S8's arrivals table.
- *
- * WEIGHT ONLY. `CHECK_CHIPS` already decides the tone of each state on the
- * Checks list; this is the same judgement expressed as a single dot, because a
- * filled badge repeated down six rows of a table reads as decoration where one
- * on a card reads as a label.
- *
- * `Record<WaitingState, …>` rather than a partial one, so a state added to
- * `waitingOn.ts` is a type error here until somebody picks its colour. The four
- * states with no chip still get an entry: they never render a dot (the cell is
- * empty without a chip), and leaving them out would mean the compiler stopped
- * checking this map the day one of them grew a chip.
- */
-const STATE_DOT: Record<WaitingState, string> = {
-  review: "bg-muted-foreground/60",
-  match: "bg-muted-foreground/60",
-  stuck: "bg-amber-500",
-  approve: "bg-emerald-500",
-  posted: "bg-sky-500",
-  set_aside: "bg-muted-foreground/40",
-  takeback: "bg-amber-500",
-  shadow: "bg-muted-foreground/40",
-  other_office: "bg-muted-foreground/40",
-  nothing: "bg-muted-foreground/40",
-};
 
 /** What put a check on the *Where you left off* row — see `startedNote`. */
 type LeftOffKind = "parked" | "started";
