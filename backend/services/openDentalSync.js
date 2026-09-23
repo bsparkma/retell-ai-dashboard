@@ -566,14 +566,31 @@ class OpenDentalSyncService {
         || (call.callback_required ? call.caller_number : null)
         || '-';
 
+      // What the caller said about themselves, when they said it. OMITTED when unknown
+      // rather than printed as "unknown" / "not provided": a chart line asserting that
+      // the caller has no insurance reads as a finding, and a front-desk reader cannot
+      // tell it apart from one the caller actually answered. Absent says less, and
+      // everything it says is true.
+      //
+      // Caller's own words, not verified coverage — the note gives the carrier NAME and
+      // nothing about benefits, which this line is in no position to know.
+      const patientTypeLine = nonEmpty(call.patient_status)
+        ? `Patient Type: ${call.patient_status.trim()}`
+        : null;
+      const insuranceLine = nonEmpty(call.insurance_name)
+        ? `Insurance: ${call.insurance_name.trim()}`
+        : null;
+
       // ASCII-only so sanitizeForOd is a no-op and the chart note is clean.
       note = [
         `CareIN call - ${localWhen} - ${source}`,
         `Caller: ${call.caller_name || 'Unknown'}`,
+        patientTypeLine,
+        insuranceLine,
         `Reason: ${reasonLine}`,
         `Action: ${call.action_needed || 'None'}`,
         `Callback #: ${callbackNum}`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
 
       // The call page shows call.summary; the chart note showed only the compact block,
       // so the note and the app disagreed about the same call. Append the full summary

@@ -879,3 +879,49 @@ test('linkOnly obeys the same cross-office refusal as a chart write', async () =
   assert.equal((await res.json()).code, 'OFFICE_MISMATCH');
   assert.equal(unifiedCallStore.getCall('x-link-6').od_patient_id ?? null, null);
 });
+
+test('commlog-preview carries the patient type and insurance lines', async () => {
+  // The preview endpoint and the send path both go through formatCommLogEntry, so a
+  // line that reaches the preview is the line that reaches the chart. Asserted against
+  // the builder as well as by shape, so this cannot drift into testing a second copy.
+  seedCall('c-preview-analysis', {
+    call_analysis: {
+      call_summary: 'Caller asked about a cleaning.',
+      patient_status: 'existing_patient',
+      insurance_name: 'Humana',
+    },
+  });
+  unifiedCallStore.updateCall('c-preview-analysis', {
+    od_patient_id: 12827,
+    od_patient_name: 'Stedi Test 2',
+    summary: 'Caller asked about a cleaning.',
+  });
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/c-preview-analysis/commlog-preview`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  const expected = openDentalSync.formatCommLogEntry(
+    unifiedCallStore.getCall('c-preview-analysis'), {},
+  );
+  assert.equal(body.note, expected.Note, 'preview is byte-for-byte what the send writes');
+  assert.match(body.note, /^Patient Type: existing_patient$/m);
+  assert.match(body.note, /^Insurance: Humana$/m);
+});
+
+test('commlog-preview omits both lines when the caller never said', async () => {
+  seedCall('c-preview-silent', {
+    call_analysis: { call_summary: 'Caller asked about a cleaning.' },
+  });
+  unifiedCallStore.updateCall('c-preview-silent', {
+    od_patient_id: 12827,
+    od_patient_name: 'Stedi Test 2',
+    summary: 'Caller asked about a cleaning.',
+  });
+
+  const res = await fetch(`${baseUrl}/api/unified-calls/c-preview-silent/commlog-preview`);
+  const body = await res.json();
+  assert.ok(!/Patient Type/.test(body.note));
+  assert.ok(!/^Insurance:/m.test(body.note));
+  assert.ok(!/not provided/.test(body.note));
+});
