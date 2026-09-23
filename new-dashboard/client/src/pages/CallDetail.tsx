@@ -28,6 +28,7 @@ import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
+import { formatCallStamp } from "@/lib/callTime";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
 import { SendToChartDialog } from "./calls/SendToChartDialog";
@@ -83,40 +84,6 @@ function formatLastVisit(iso: string | undefined): string | null {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
-/**
- * The practice's own zone, mirroring the backend's `OFFICE_TIMEZONE` default —
- * the same constant, for the same reason, as `features/rcm/time.ts`. A call
- * stamp rendered in the viewer's zone is wrong for anyone travelling or on a
- * laptop whose clock zone drifted, and "7:57 AM" is exactly the kind of detail
- * someone reads back to a patient. When a practice outside Central is onboarded
- * this becomes a per-office value and this line is the one that changes.
- */
-const OFFICE_TIME_ZONE = "America/Chicago";
-
-/**
- * When the call came in, in office time: "Sep 22, 2026 · 7:57 AM".
- *
- * Returns null — not "Invalid Date" — for anything unparseable, so the caller
- * omits the line rather than printing a defect into the patient card.
- */
-function formatCallStamp(iso: string | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const day = d.toLocaleDateString("en-US", {
-    timeZone: OFFICE_TIME_ZONE,
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-  const time = d.toLocaleTimeString("en-US", {
-    timeZone: OFFICE_TIME_ZONE,
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return `${day} · ${time}`;
 }
 
 function formatBalance(amount: number): string {
