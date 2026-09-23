@@ -185,32 +185,106 @@ async function summarise(pool, office, batchId) {
 }
 
 /**
- * Move a batch into 'posting', but only from a status that permits it.
+ * How long a batch may sit in 'posting' before another claim may take it over.
+ *
+ * THIS EXISTS BECAUSE `catch` DOES NOT RUN WHEN A CONTAINER IS KILLED. Every
+ * failure path inside `runPost` lands the batch in 'post_failed', which is
+ * resumable — but a SIGKILL (a deploy, an OOM) runs no handler at all, and the
+ * row is left saying 'posting' with nothing alive to finish it. Before this,
+ * that batch was stuck forever: the claim accepted only 'ready' and
+ * 'post_failed', and nothing ever reset a stale 'posting'. A half-posted fee
+ * schedule that can be neither continued nor rolled back is the worst state
+ * this module can reach, and a deploy during a post was enough to produce it.
+ *
+ * 30 minutes, against a documented worst case of about 20: a 500-fee post is
+ * two throttled requests per fee at ~1.2s, plus the procedure-code sweep. The
+ * margin is deliberate and one-directional — taking over a run that is merely
+ * slow is the failure worth avoiding, and waiting ten extra minutes costs only
+ * time. Do not tune this below the longest post the module can actually issue.
+ */
+const STALE_POSTING_MS = 30 * 60 * 1000;
+
+/**
+ * What a taken-over batch records about the run it inherited.
+ *
+ * Passed as a parameter rather than interpolated, like every other value in
+ * this file. The timestamp is appended in SQL because `posting_started_at` is
+ * overwritten by this same statement — read it in JS afterwards and it is
+ * already gone.
+ */
+const TAKEOVER_NOTE =
+  'Took over a post that stopped responding — its container was probably killed mid-run. ' +
+  'Fees it had already written are verified and skipped, not written twice.';
+
+/**
+ * Move a batch into 'posting', but only from a state that permits it.
  *
  * THE CONDITIONAL UPDATE IS THE REAL CONCURRENCY GUARD. Two containers, or two
  * clicks racing the in-process Map, both run this; exactly one matches a row and
  * the other gets zero and is told the batch is already going. Checking the
  * status with a SELECT and then updating would leave the window between them
  * wide open, which for a job that writes to a live practice database is the
- * expensive kind of race.
+ * expensive kind of race. ONE STATEMENT is what makes that true, so the stale
+ * takeover below is written INTO the same WHERE rather than as a preceding
+ * "unstick it" UPDATE — two racing takeovers of the same stale row still
+ * resolve to one winner, for exactly the same reason two racing claims do.
  *
- * `post_failed` is a permitted starting point — that IS the resume. `posted` is
- * not: re-posting a finished batch would rewrite every fee for no reason.
+ * Three permitted starting points:
  *
- * @returns {Promise<{ ok: true, batch: Record<string, unknown> } | { ok: false, code: string, error: string }>}
+ *   'ready'        the ordinary first post.
+ *   'post_failed'  the resume. Every handled failure lands here.
+ *   'posting', but STALE — older than STALE_POSTING_MS. The SIGKILL case: no
+ *                  handler ran, so nothing moved the row to 'post_failed', and
+ *                  without this the batch is stuck forever.
+ *
+ * 'posted' is not, and neither is a FRESH 'posting': re-posting a finished
+ * batch would rewrite every fee for no reason, and taking over a live run would
+ * put two writers on one practice's schedule.
+ *
+ * TAKING OVER IS SAFE BECAUSE THE RESUME ALREADY VERIFIES BY READ. A row that
+ * carries `od_fee_num` is skipped outright; a row that does not is checked
+ * against Open Dental before it is written, because the kill could have landed
+ * between Open Dental's commit and ours. That is the same mechanism a
+ * 'post_failed' resume relies on, and it is what makes re-entry here a
+ * continuation rather than a second pass. Nothing about the takeover needs its
+ * own safety story.
+ *
+ * A 'posting' row with a NULL `posting_started_at` is never taken over: the
+ * comparison yields NULL, which is not TRUE, so the claim is refused. That
+ * state should not exist, and failing closed on it is better than guessing that
+ * a run with no recorded start is dead.
+ *
+ * @returns {Promise<{ ok: true, batch: Record<string, unknown>, tookOver: boolean } | { ok: false, code: string, error: string }>}
  */
 async function claimBatchForPosting(pool, office, batchId, actor) {
   const res = await pool.query(
     `UPDATE fees_import_batch
         SET status = 'posting',
             posting_started_at = now(),
-            post_error = NULL,
+            -- The CASE reads the OLD status, as every SET expression does, so
+            -- this records a takeover only when one actually happened. A normal
+            -- claim clears the previous run's error, which is what makes a
+            -- resume's banner describe THIS attempt rather than the last one.
+            post_error = CASE
+              WHEN status = 'posting'
+                THEN $4 || ' It started ' ||
+                     to_char(posting_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') ||
+                     ' UTC and never finished.'
+              ELSE NULL
+            END,
             updated_at = now()
       WHERE office = $1
         AND batch_id = $2
-        AND status IN ('ready', 'post_failed')
+        AND (
+          status IN ('ready', 'post_failed')
+          OR (
+            status = 'posting'
+            AND posting_started_at IS NOT NULL
+            AND posting_started_at < now() - make_interval(secs => $3)
+          )
+        )
       RETURNING ${BATCH_COLUMNS}`,
-    [office, batchId]
+    [office, batchId, STALE_POSTING_MS / 1000, TAKEOVER_NOTE]
   );
   if (res.rows.length === 0) {
     return fail(
@@ -218,15 +292,30 @@ async function claimBatchForPosting(pool, office, batchId, actor) {
       'This import is not ready to post, or a post is already running for it.'
     );
   }
-  // Attribution is stamped only on the FIRST claim, so a resume does not
-  // overwrite who authorised the post with whoever happened to retry it.
+
+  const claimed = res.rows[0];
+  const tookOver =
+    typeof claimed.post_error === 'string' && claimed.post_error.startsWith(TAKEOVER_NOTE);
+  if (tookOver) {
+    // Logged as well as stored, because `post_error` is the IN-FLIGHT
+    // explanation: a run that then fails replaces it with the reason it failed,
+    // which is the more useful fact at that point. The log line is what
+    // survives to say a takeover happened at all.
+    console.warn(
+      `[fees] took over a stale post for batch ${batchId} (${office}) — previous run left it 'posting'`
+    );
+  }
+
+  // Attribution is stamped only on the FIRST claim, so neither a resume nor a
+  // takeover overwrites who authorised the post with whoever happened to be
+  // around when it was picked up. The COALESCE is what makes that true for both.
   await pool.query(
     `UPDATE fees_import_batch
         SET posted_by = COALESCE(posted_by, $3)
       WHERE office = $1 AND batch_id = $2 AND posted_at IS NULL`,
     [office, batchId, actor]
   );
-  return { ok: true, batch: res.rows[0] };
+  return { ok: true, batch: claimed, tookOver };
 }
 
 /**
@@ -684,6 +773,8 @@ async function runRollback({ withDb, office, batchId, actor }) {
 module.exports = {
   BLOCKING,
   WRITABLE,
+  STALE_POSTING_MS,
+  TAKEOVER_NOTE,
   countBlockingRows,
   summarise,
   claimBatchForPosting,

@@ -343,7 +343,16 @@ class FakeFeesDb {
 
     const matched = batches.filter((b) => {
       if (/status IN \('ready', 'post_failed'\)/.test(text)) {
-        return ['ready', 'post_failed'].includes(b.status);
+        if (['ready', 'post_failed'].includes(b.status)) return true;
+        // THE STALE-POSTING TAKEOVER, honoured exactly — including the
+        // IS NOT NULL, so a 'posting' row with no recorded start is never taken
+        // over. A fake that skipped this would let the takeover tests pass with
+        // the WHERE condition reverted, which is the one thing they exist for.
+        if (!/make_interval\(secs => \$3\)/.test(text)) return false;
+        if (b.status !== 'posting') return false;
+        if (!b.posting_started_at) return false;
+        const staleAfterMs = Number(params[2]) * 1000;
+        return Date.now() - new Date(b.posting_started_at).getTime() > staleAfterMs;
       }
       if (/status IN \('parsed', 'ready'\)/.test(text)) {
         return ['parsed', 'ready'].includes(b.status);
@@ -359,9 +368,19 @@ class FakeFeesDb {
       if (/SET status = 'ready'/.test(text)) {
         b.status = 'ready';
       } else if (/SET status = 'posting'/.test(text)) {
+        // The CASE reads the OLD status, as every SQL SET expression does, so
+        // the takeover note is recorded only when one actually happened. Read
+        // before the overwrite, or this always says "no takeover".
+        const tookOver = b.status === 'posting';
+        const startedAt = b.posting_started_at;
         b.status = 'posting';
+        b.post_error = tookOver
+          ? `${params[3]} It started ${new Date(startedAt)
+              .toISOString()
+              .slice(0, 16)
+              .replace('T', ' ')} UTC and never finished.`
+          : null;
         b.posting_started_at = new Date();
-        b.post_error = null;
       } else if (/SET status = 'post_failed'/.test(text)) {
         b.status = 'post_failed';
         b.post_error = params[2];
