@@ -847,6 +847,23 @@ export default function CallDetail() {
     ? !!mangoRecordingUrl && (displayCall.hasTranscript || displayCall.duration > 0)
     : !!audioSrc;
 
+  /**
+   * The "Call Details" rows. The Date row is built here rather than inline so it
+   * can be DROPPED when the timestamp is unparseable — this card used to render
+   * `new Date(...).toLocaleString()` raw, which printed the string "Invalid Date"
+   * into the panel and showed the time in the VIEWER's zone rather than the
+   * practice's. Same stamp, same rule, as the patient card above.
+   */
+  const detailStamp = formatCallStamp(displayCall.date);
+  const detailRows: Array<{ label: string; value: string; mono?: boolean }> = [
+    { label: "Call ID", value: displayCall.id, mono: true },
+    ...(detailStamp ? [{ label: "Date", value: detailStamp }] : []),
+    { label: "Duration", value: formatDuration(displayCall.duration), mono: true },
+    { label: "Agent", value: displayCall.agentName || "Staff" },
+    { label: "Source", value: displayCall.source === "retell" ? "Retell AI" : "Mango Voice" },
+    { label: "Intent", value: displayCall.intent || "—" },
+  ];
+
   return (
     <div className="p-6 space-y-6">
       {/* Shared Pick Patient modal — candidates-first / OD search, then hands off
@@ -1225,14 +1242,7 @@ export default function CallDetail() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2.5 text-sm">
-                {[
-                  { label: "Call ID", value: displayCall.id, mono: true },
-                  { label: "Date", value: new Date(displayCall.date).toLocaleString() },
-                  { label: "Duration", value: formatDuration(displayCall.duration), mono: true },
-                  { label: "Agent", value: displayCall.agentName || "Staff" },
-                  { label: "Source", value: displayCall.source === "retell" ? "Retell AI" : "Mango Voice" },
-                  { label: "Intent", value: displayCall.intent || "—" },
-                ].map(({ label, value, mono }) => (
+                {detailRows.map(({ label, value, mono }) => (
                   <div key={label} className="flex items-start justify-between gap-2">
                     <span className="text-muted-foreground text-xs">{label}</span>
                     <span className={`text-xs font-medium text-right ${mono ? "font-mono" : ""}`}>{value}</span>

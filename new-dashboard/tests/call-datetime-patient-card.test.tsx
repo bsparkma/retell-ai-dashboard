@@ -145,16 +145,17 @@ async function renderDetail(c: UnifiedCall, matched: boolean) {
 }
 
 /**
- * Assertions are scoped to the Patient Record card on purpose. The "Call Details"
- * card lower down the page renders its own unguarded `Date` row in the VIEWER's
- * zone, so a page-wide query would be answered by a different component.
+ * Both cards print a stamp, so assertions name which one they mean rather than
+ * querying the whole page and being answered by the other.
  */
-function patientCard(): HTMLElement {
-  const title = screen.getByText("Patient Record");
-  const card = title.closest('[data-slot="card"]');
-  if (!(card instanceof HTMLElement)) throw new Error("Patient Record card not found");
+function cardTitled(title: string): HTMLElement {
+  const card = screen.getByText(title).closest('[data-slot="card"]');
+  if (!(card instanceof HTMLElement)) throw new Error(`${title} card not found`);
   return card;
 }
+
+const patientCard = () => cardTitled("Patient Record");
+const detailsCard = () => cardTitled("Call Details");
 
 beforeEach(() => {
   for (const fn of Object.values(apiMock)) fn.mockReset();
@@ -196,5 +197,47 @@ describe("the patient card shows when the call came in", () => {
     expect(card.queryByText(/NaN/)).toBeNull();
     // The caller block is still intact — only the stamp is gone.
     expect(card.getByText("Synthetic Caller")).toBeTruthy();
+  });
+});
+
+/**
+ * The "Call Details" card below the patient card had the same defect the patient
+ * card was written to avoid: it rendered `new Date(call.date).toLocaleString()`
+ * with no guard, so an unparseable timestamp printed the literal string
+ * "Invalid Date" into the panel, and a parseable one was shown in whatever zone
+ * the viewer's machine happened to be set to.
+ */
+describe("the Call Details card stamps the same way", () => {
+  it("renders the Date row in office time", async () => {
+    await renderDetail(call(), false);
+
+    await waitFor(() => expect(screen.getByText("Call Details")).toBeTruthy());
+    const card = within(detailsCard());
+    expect(card.getByText("Date")).toBeTruthy();
+    expect(card.getByText(MORNING_LOCAL)).toBeTruthy();
+  });
+
+  it("uses the practice's zone, not the viewer's, across the UTC day boundary", async () => {
+    await renderDetail(call({ call_date: "2026-09-23T02:30:00.000Z" }), false);
+
+    await waitFor(() => expect(screen.getByText("Call Details")).toBeTruthy());
+    const card = within(detailsCard());
+    expect(card.getByText("Sep 22, 2026 · 9:30 PM")).toBeTruthy();
+    expect(card.queryByText(/Sep 23, 2026/)).toBeNull();
+  });
+
+  it("drops the Date row entirely when the timestamp is unparseable", async () => {
+    await renderDetail(call({ call_date: "not-a-date" }), false);
+
+    await waitFor(() => expect(screen.getByText("Call Details")).toBeTruthy());
+    const card = within(detailsCard());
+    // The row label goes with the value — a "Date" with nothing beside it would
+    // read as a loading state rather than as an absent fact.
+    expect(card.queryByText("Date")).toBeNull();
+    // The rest of the card is untouched.
+    expect(card.getByText("Call ID")).toBeTruthy();
+    expect(card.getByText("Duration")).toBeTruthy();
+    // And now that both cards are guarded, the whole page is clean.
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
   });
 });
