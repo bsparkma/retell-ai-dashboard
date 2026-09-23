@@ -341,6 +341,32 @@ async function bootstrap() {
     require('./routes/hyg')
   );
 
+  /*
+   * FEES (Fee Schedule) module — slice 1: scaffold, parse, preview. ONE mount
+   * for the whole /api/fees/* surface. Ships DARK for the same reason TC, RCM
+   * and HYG did: 'fees' entered the tenant_module vocabulary in migration
+   * 1788700000000 and no tenant is entitled to it, so everything under it 403s
+   * MODULE_NOT_ENTITLED until the entitlement flips from the Platform Console.
+   *
+   * requireReadWrite, applied by HTTP METHOD, so POST /imports — the upload —
+   * demands fees.write by construction rather than by the route remembering to
+   * decorate itself.
+   *
+   * NO exemption list. Slice 1 needs none, and one added speculatively is one
+   * nobody reviewed — see routes/fees/index.js.
+   *
+   * Office scoping is router-wide one level down, so a route added under this
+   * mount cannot forget it. There is no third, per-office gate here as there is
+   * for hygiene: this slice reaches no Open Dental database at all, so there is
+   * no per-office readiness to check.
+   */
+  app.use(
+    '/api/fees',
+    requireModule('fees'),
+    requireReadWrite('fees.read', 'fees.write'),
+    require('./routes/fees')
+  );
+
   // Required once, above the mount, because the mount's own guard needs the
   // router's exported QUEUE_PATHS — the exceptions belong to the module that
   // owns those routes, not to this file.

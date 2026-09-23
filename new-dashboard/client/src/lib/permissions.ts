@@ -17,6 +17,8 @@ import type { TenantRole } from "@/lib/auth";
 /** Every action the backend map defines. Keep sorted, keep in sync. */
 export const ACTIONS = [
   "admin.all",
+  "fees.read",
+  "fees.write",
   "hyg.read",
   "hyg.write",
   "rcm.post",
