@@ -61,6 +61,8 @@ import TcGuide from "./pages/tc/TcGuide";
 import HygDay from "./pages/hyg/HygDay";
 import HygVisit from "./pages/hyg/HygVisit";
 import HygPerio from "./pages/hyg/HygPerio";
+import FeesImports from "./pages/fees/FeesImports";
+import FeesImportDetail from "./pages/fees/FeesImportDetail";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
@@ -175,6 +177,23 @@ export function Router() {
             the visit route so the longer path is matched first. */}
         <Route path="/hyg/visit/:aptNum/perio" component={HygPerio} />
         <Route path="/hyg/visit/:aptNum" component={HygVisit} />
+        {/* FEES module - entitlement-gated server-side (requireModule('fees')).
+            Slice 2 is the import list and the preview behind it.
+
+            `/fees` RENDERS rather than redirecting, unlike `/hyg`: the import
+            list IS this module's front door, so there is no second page to send
+            a bare prefix to.
+
+            The detail route is more specific and sits after the list, which is
+            safe because wouter matches exact paths — `/fees` does not swallow
+            `/fees/imports/:batchId`. Both inherit fees.read from the `/fees`
+            prefix in ROUTE_PERMISSIONS; the upload demands fees.write
+            server-side, which no page needs to know to render.
+
+            NOTHING under here reaches Open Dental. The preview says so on its
+            face, and it stays true until the posting slice. */}
+        <Route path="/fees" component={FeesImports} />
+        <Route path="/fees/imports/:batchId" component={FeesImportDetail} />
         {/* TC module — entitlement-gated server-side (requireModule('tc')). */}
         <Route path="/tc" component={TcPipeline} />
         <Route path="/tc/dashboard" component={TcDashboard} />
