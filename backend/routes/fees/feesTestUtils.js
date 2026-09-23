@@ -29,6 +29,8 @@ const { tenantContext, requireModule } = require('../../middleware/tenantContext
 const { requireDashboardAuth } = require('../../middleware/auth');
 const { requireReadWrite } = require('../../config/permissions');
 
+const { effectiveFeeCents } = require('../../services/fees/effectiveFee');
+
 const REGISTRY_KEYS = [
   'getUserByEmail',
   'getTenantById',
@@ -37,6 +39,41 @@ const REGISTRY_KEYS = [
   'getPlatformAdminByEmail',
   'touchUserLogin',
 ];
+
+/**
+ * The decisions the row CHECK admits, straight from the migration that widened
+ * it — not a copy. A fake that carried its own list would go on accepting a
+ * decision the schema had stopped allowing.
+ */
+const { ROW_DECISIONS, MAX_FEE_CENTS } = require('../../migrations-tenant/1789100000000_fees_edited_rows');
+
+/**
+ * The pair CHECKs `fees_import_row_edited_value_check` and
+ * `fees_import_row_edited_only_check`, enforced here so a route test cannot
+ * pass with them deleted from the migration.
+ *
+ * Both directions, for the reason the migration's header gives: the one that is
+ * easy to leave out is "no override unless the decision is `edited`", and
+ * without it every reader would have to decide for itself whether an override
+ * on an `accepted` row counts.
+ *
+ * @param {Record<string, unknown>} row
+ */
+function assertEditedPair(row) {
+  if (row.decision === 'edited') {
+    const cents = row.edited_fee_cents;
+    if (cents === null || cents === undefined || !Number.isInteger(Number(cents))) {
+      throw new Error('new row violates check constraint "fees_import_row_edited_value_check"');
+    }
+    if (Number(cents) < 0 || Number(cents) > MAX_FEE_CENTS) {
+      throw new Error('new row violates check constraint "fees_import_row_edited_value_check"');
+    }
+    return;
+  }
+  if (row.edited_fee_cents !== null && row.edited_fee_cents !== undefined) {
+    throw new Error('new row violates check constraint "fees_import_row_edited_only_check"');
+  }
+}
 
 /**
  * A Postgres stand-in that executes importStore.js's six statements.
@@ -256,6 +293,11 @@ class FakeFeesDb {
         decided_at: null,
         od_fee_num: null,
         written_at: null,
+        // The override column, at its migration default. NULL until somebody
+        // types a correction, and NULL again the moment they re-decide the row
+        // any other way — `assertEditedPair` is what makes that a property here
+        // rather than a habit, exactly as the pair CHECKs do in Postgres.
+        edited_fee_cents: null,
       };
       this.table('fees_import_row').push(row);
       out.push(row);
@@ -263,17 +305,31 @@ class FakeFeesDb {
     return { rows: out, rowCount: out.length };
   }
 
+  /**
+   * A read returns a SNAPSHOT, not the live rows.
+   *
+   * Postgres hands back values; this fake stores objects, and returning them by
+   * reference made a read-then-update sequence lie: the handler that reads a
+   * row to record what it was about to change would find the row had already
+   * changed, because it was holding the same object the UPDATE went on to
+   * mutate. Copying is what makes "what did this row say before" answerable
+   * here, as it is against a real database.
+   */
+  static snapshot(rows) {
+    return rows.map((r) => ({ ...r }));
+  }
+
   selectBatches(text, params) {
     let rows = this.table('fees_import_batch').filter((r) => r.office === params[0]);
     if (/batch_id = \$2/.test(text)) {
       rows = rows.filter((r) => r.batch_id === params[1]);
-      return { rows, rowCount: rows.length };
+      return { rows: FakeFeesDb.snapshot(rows), rowCount: rows.length };
     }
     rows = [...rows].sort((a, b) => b.created_at - a.created_at);
     const limit = Number(params[1]);
     const offset = Number(params[2]);
     rows = rows.slice(offset, offset + limit);
-    return { rows, rowCount: rows.length };
+    return { rows: FakeFeesDb.snapshot(rows), rowCount: rows.length };
   }
 
   selectRows(text, params) {
@@ -283,12 +339,13 @@ class FakeFeesDb {
     // The job's own scans narrow further. Recognised by their WHERE text rather
     // than guessed, so a statement this fake does not understand is a loud
     // failure instead of a quietly wrong row set.
+    if (/row_id = \$3/.test(text)) rows = rows.filter((r) => r.row_id === params[2]);
     if (/decision <> 'excluded'/.test(text)) rows = rows.filter((r) => r.decision !== 'excluded');
     if (/od_fee_num IS NOT NULL/.test(text)) {
       rows = rows.filter((r) => r.od_fee_num !== null && r.od_fee_num !== undefined);
     }
     rows = [...rows].sort((a, b) => a.row_order - b.row_order);
-    return { rows, rowCount: rows.length };
+    return { rows: FakeFeesDb.snapshot(rows), rowCount: rows.length };
   }
 
   // ── Slice 3: posting ──────────────────────────────────────────────────────
@@ -318,8 +375,13 @@ class FakeFeesDb {
           writable: writable.length,
           excluded: rows.filter((r) => r.decision === 'excluded').length,
           accepted: rows.filter((r) => r.decision === 'accepted').length,
+          edited: rows.filter((r) => r.decision === 'edited').length,
           blocking: rows.filter((r) => this.isBlocking(r)).length,
-          total_cents: writable.reduce((sum, r) => sum + Number(r.fee_cents || 0), 0),
+          // THE TOTAL IS OF EFFECTIVE FEES, through the same function the job
+          // writes by — not a second copy of the rule. A fake that summed
+          // `fee_cents` would let the confirm dialog state the parsed total
+          // while the job wrote the edited one, and no test would notice.
+          total_cents: writable.reduce((sum, r) => sum + effectiveFeeCents(r), 0),
         },
       ],
       rowCount: 1,
@@ -443,9 +505,18 @@ class FakeFeesDb {
     for (const r of matched) {
       if (/SET decision = \$4/.test(text)) {
         const decision = params[3];
+        if (!ROW_DECISIONS.includes(decision)) {
+          throw new Error('new row violates check constraint "fees_import_row_decision_check"');
+        }
         r.decision = decision;
+        // The statement's own CASE: the override is set only by 'edited' and
+        // cleared by everything else. Honoured exactly, because the whole point
+        // of the pair is that re-deciding a row is a real transition rather
+        // than a flag that leaves a stale number behind.
+        r.edited_fee_cents = decision === 'edited' ? Number(params[5]) : null;
         r.decided_by = decision === 'pending' ? null : params[4];
         r.decided_at = decision === 'pending' ? null : new Date();
+        assertEditedPair(r);
       } else if (/SET od_fee_num = \$4/.test(text)) {
         r.od_fee_num = params[3];
         r.written_at = new Date();

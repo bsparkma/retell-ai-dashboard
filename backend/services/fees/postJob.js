@@ -56,6 +56,17 @@
  * the braces.
  *
  * ═════════════════════════════════════════════════════════════════════════════
+ * WHAT GETS WRITTEN IS THE EFFECTIVE FEE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A row can carry a human's correction (`decision = 'edited'`), and that is
+ * what reaches Open Dental. This file never picks between the two amounts
+ * itself: `effectiveFee.js` owns the rule in both forms — a JS function for the
+ * per-row write and the read-back comparison, and a SQL expression for the
+ * totals the confirm dialog and the audit row state. A confirmation that
+ * disagreed with what the job wrote would look like review-then-send without
+ * being it.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
  * FAILURE IS A STATE, NOT AN ABSENCE
  * ═════════════════════════════════════════════════════════════════════════════
  * Any failure leaves `status: 'post_failed'`, `post_error` set, and
@@ -67,6 +78,7 @@
 
 const tenantDb = require('../../platform/tenantDb');
 const od = require('./odFeesWrites');
+const { EFFECTIVE_FEE_CENTS_SQL, effectiveFeeCents } = require('./effectiveFee');
 
 /**
  * In-process registry of running jobs, keyed by batchId.
@@ -106,6 +118,10 @@ const ROW_COLUMNS = [
   'row_id',
   'proc_code',
   'fee_cents',
+  // The override, read ALONGSIDE the parsed value and never instead of it.
+  // What gets written is effectiveFeeCents(row); both numbers stay on the row
+  // so "edited from $X" is still answerable a year later.
+  'edited_fee_cents',
   'decision',
   'od_fee_num',
   'row_order',
@@ -127,6 +143,12 @@ const WRITABLE = "decision <> 'excluded'";
  * One predicate, used by the route's gate and by the job's re-check, so the two
  * cannot disagree about what "resolved" means. A clean row is postable without
  * anybody clicking anything.
+ *
+ * `edited` RESOLVES A ROW, and gets that for free by being "not pending". A
+ * person who typed the fee they hold has answered the warning more completely
+ * than one who accepted the parsed number — listing the resolving decisions
+ * explicitly instead would have meant a fifth decision blocking every batch
+ * until somebody remembered to add it here.
  */
 const BLOCKING =
   "jsonb_array_length(parse_warnings) > 0 AND decision = 'pending'";
@@ -157,6 +179,10 @@ async function countBlockingRows(pool, office, batchId) {
 /**
  * The totals the confirm dialog states and the audit row records.
  *
+ * THE TOTAL IS OF EFFECTIVE FEES, summed with the same expression the job
+ * writes by. A confirm dialog stating the parsed total while the job wrote the
+ * edited one would be a person approving a number that never existed.
+ *
  * @param {import('pg').Pool} pool
  * @param {string} office
  * @param {string} batchId
@@ -167,8 +193,10 @@ async function summarise(pool, office, batchId) {
             COUNT(*) FILTER (WHERE ${WRITABLE})::int AS writable,
             COUNT(*) FILTER (WHERE decision = 'excluded')::int AS excluded,
             COUNT(*) FILTER (WHERE decision = 'accepted')::int AS accepted,
+            COUNT(*) FILTER (WHERE decision = 'edited')::int AS edited,
             COUNT(*) FILTER (WHERE ${BLOCKING})::int AS blocking,
-            COALESCE(SUM(fee_cents) FILTER (WHERE ${WRITABLE}), 0)::bigint AS total_cents
+            COALESCE(SUM(${EFFECTIVE_FEE_CENTS_SQL}) FILTER (WHERE ${WRITABLE}), 0)::bigint
+              AS total_cents
        FROM fees_import_row
       WHERE office = $1 AND batch_id = $2`,
     [office, batchId]
@@ -179,6 +207,8 @@ async function summarise(pool, office, batchId) {
     writable: Number(r.writable || 0),
     excluded: Number(r.excluded || 0),
     accepted: Number(r.accepted || 0),
+    /** How many fees a person typed by hand. The confirm dialog says this out loud. */
+    edited: Number(r.edited || 0),
     blocking: Number(r.blocking || 0),
     totalCents: Number(r.total_cents || 0),
   };
@@ -454,6 +484,12 @@ async function runPost({ withDb, office, batchId, actor }) {
         continue;
       }
 
+      // THE ONE NUMBER THAT GETS WRITTEN. An edited row posts what the person
+      // typed, not what the file said — and the same value is what the
+      // read-back is compared against, so a resume over an edited row does not
+      // mistake the parsed amount for a match.
+      const amountCents = effectiveFeeCents(row);
+
       // ── VERIFY BY READ. See the header: a row with no stored FeeNum may
       //    still have been written, if a crash landed between Open Dental's
       //    commit and ours.
@@ -462,7 +498,7 @@ async function runPost({ withDb, office, batchId, actor }) {
         await withDb((pool) => markFailed(pool, office, batchId, already.error));
         return already;
       }
-      if (already.fee && Math.round(Number(already.fee.Amount) * 100) === Number(row.fee_cents)) {
+      if (already.fee && Math.round(Number(already.fee.Amount) * 100) === amountCents) {
         // It is there, at the right amount. Adopt the FeeNum and issue NO write.
         await withDb((pool) =>
           recordWritten(pool, office, batchId, row.row_id, Number(already.fee.FeeNum))
@@ -473,7 +509,7 @@ async function runPost({ withDb, office, batchId, actor }) {
       const written = await od.writeFee(office, {
         feeSchedNum,
         codeNum,
-        amountCents: Number(row.fee_cents),
+        amountCents,
       });
       if (!written.ok) {
         await withDb((pool) =>
@@ -590,6 +626,8 @@ async function getProgress(pool, office, batchId) {
     rowsWritten: Number(b.rows_written || 0),
     writableCount: counts.writable,
     excludedCount: counts.excluded,
+    /** Fees a person typed by hand. The confirm dialog names this number. */
+    editedCount: counts.edited,
     blockingCount: counts.blocking,
     totalCents: counts.totalCents,
     target:

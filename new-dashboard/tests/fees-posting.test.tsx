@@ -75,6 +75,7 @@ function row(over: Record<string, unknown> = {}) {
     decision: "pending",
     decidedBy: null,
     decidedAt: null,
+    editedFeeCents: null,
     odFeeNum: null,
     ...over,
   };
@@ -105,6 +106,7 @@ function progress(over: Record<string, unknown> = {}) {
     rowsWritten: 0,
     writableCount: 2,
     excludedCount: 0,
+    editedCount: 0,
     blockingCount: 1,
     totalCents: 124200,
     target: null,
@@ -125,7 +127,7 @@ const server = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   progress: null as Record<string, unknown> | null,
   schedules: [] as Array<Record<string, unknown>>,
-  decided: [] as Array<{ rowId: string; decision: string }>,
+  decided: [] as Array<{ rowId: string; decision: string; feeCents?: number }>,
   posted: 0,
   rolledBack: 0,
   rollbackNote: "",
@@ -178,10 +180,20 @@ vi.mock("@/features/fees/api", async (importOriginal) => {
       office: "roland",
       schedules: server.schedules,
     })),
-    decideRow: vi.fn(async (_o: string, _b: string, rowId: string, decision: string) => {
-      server.decided.push({ rowId, decision });
-      return { success: true as const, row: { rowId, decision }, status: "ready" as const };
-    }),
+    // The 4th argument is a VERDICT object as of the review-UX slice — an
+    // `edited` decision carries the corrected amount with it, so the two cannot
+    // arrive separately. Recorded whole rather than flattened, so a test can
+    // assert the fee that was sent.
+    decideRow: vi.fn(
+      async (_o: string, _b: string, rowId: string, verdict: { decision: string }) => {
+        server.decided.push({ rowId, ...verdict });
+        return {
+          success: true as const,
+          row: { rowId, decision: verdict.decision },
+          status: "ready" as const,
+        };
+      },
+    ),
     setTarget: vi.fn(async (_o: string, _b: string, t: Record<string, unknown>) => ({
       success: true as const,
       target: {
