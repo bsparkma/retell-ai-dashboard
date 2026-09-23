@@ -4,7 +4,7 @@
  * /api/fees/imports/:batchId/… — deciding a preview and posting it.
  *
  *   GET   /feescheds                        the office's fee schedules (target picker)
- *   PATCH /imports/:id/rows/:rowId          accept | exclude | reset one warned row
+ *   PATCH /imports/:id/rows/:rowId          accept | edit | exclude | reset one warned row
  *   PUT   /imports/:id/target               choose the target schedule
  *   POST  /imports/:id/post                 THE HUMAN ACTION. Starts the job.
  *   GET   /imports/:id/progress             what the UI polls
@@ -48,11 +48,21 @@ const { audit } = require('../../platform/audit');
 const { h, refuse, actorEmail, isUuid } = require('./helpers');
 const od = require('../../services/fees/odFeesWrites');
 const postJob = require('../../services/fees/postJob');
+const { MAX_FEE_CENTS } = require('../../services/fees/feeValues');
 
 const router = express.Router();
 
 /** Decisions a human may record on a row. `reset` returns it to undecided. */
-const DECISIONS = Object.freeze(['accepted', 'excluded', 'reset']);
+const DECISIONS = Object.freeze(['accepted', 'excluded', 'edited', 'reset']);
+
+/**
+ * Decisions that come with a corrected amount.
+ *
+ * One entry today. It is a list rather than an `=== 'edited'` so that the
+ * validation below reads as a rule about decisions carrying values, which is
+ * what it is.
+ */
+const VALUED_DECISIONS = Object.freeze(['edited']);
 
 /**
  * Bind the tenant db to a runner the JOB can keep using after this request has
@@ -120,15 +130,38 @@ router.get(
  *
  * `accepted` — they read the raw line and confirm the parsed value is the fee
  *              this office holds.
+ * `edited`   — it is not, and THIS is the fee, in integer cents. The parsed
+ *              value stays on the row untouched; the override goes in its own
+ *              column. See below.
  * `excluded` — it is not, and the row must never be written. The database
  *              additionally refuses to store a FeeNum on an excluded row.
  * `reset`    — back to undecided, which re-blocks the post. Offered because a
  *              decision made by mistake must be undoable BEFORE the post, and
  *              after it the only remedy is a rollback.
  *
+ * ── WHY `edited` EXISTS ────────────────────────────────────────────────────
+ * The commonest warned row is the multi-column one: three tier columns, the
+ * parser took the first and said so. The office knows which column their
+ * contract is in. Without this they could only accept a number they know is
+ * wrong or drop the code out of the schedule entirely, and both are worse than
+ * typing the right one.
+ *
+ * ── THE PARSED VALUE IS NEVER UPDATED ──────────────────────────────────────
+ * `fee_cents` keeps saying what the file said, forever. That is what lets the
+ * preview show "edited from $1,150.00" and lets the audit trail answer what the
+ * file contained before anybody changed it.
+ *
+ * ── RE-DECIDING IS ORDINARY ────────────────────────────────────────────────
+ * edited → accepted, a new edited value, or back to pending are all the same
+ * statement with different parameters; there is no special case, and the
+ * override is cleared by every decision that is not `edited` because the
+ * database's pair CHECK refuses the alternative.
+ *
  * Refused once a batch has left `parsed`/`ready`: changing a decision while a
  * post is running, or after one finished, would make the stored decisions
- * disagree with what was actually written.
+ * disagree with what was actually written. That refusal is why a posted or
+ * rolled-back batch renders its rows read-only rather than merely uneditable
+ * in the UI.
  */
 router.patch(
   '/imports/:batchId/rows/:rowId',
@@ -149,6 +182,45 @@ router.patch(
       );
     }
 
+    // ── The corrected amount, validated SERVER-SIDE, in integer cents.
+    //
+    // The client sends cents because dollars are a display format and parsing
+    // them is where rounding gets invented. Every refusal below is a refusal
+    // the input mask also makes, and the input mask is not the guard.
+    let editedFeeCents = null;
+    if (VALUED_DECISIONS.includes(decision)) {
+      const raw = req.body ? req.body.feeCents : undefined;
+      // `typeof raw === 'number'` first: "11000" would otherwise coerce and be
+      // accepted, and a client sending strings for money is a client that will
+      // eventually send "1,150.00".
+      if (typeof raw !== 'number' || !Number.isInteger(raw)) {
+        return refuse(
+          res,
+          400,
+          'BAD_FEE',
+          'feeCents must be a whole number of cents — 11000 for $110.00.'
+        );
+      }
+      if (raw < 0) {
+        // $0.00 IS allowed: in a fee schedule zero means not covered, bundled
+        // or no charge, and that is a fact an office needs to be able to state.
+        // Negative is not a fee.
+        return refuse(res, 400, 'BAD_FEE', 'A fee cannot be negative.');
+      }
+      if (raw > MAX_FEE_CENTS) {
+        // The same ceiling the parser applies, and just under what the integer
+        // column can hold — so this is a refusal rather than a 500 from the
+        // INSERT. The migration carries it as a CHECK too.
+        return refuse(
+          res,
+          400,
+          'BAD_FEE',
+          'That is larger than any real fee; it was not accepted.'
+        );
+      }
+      editedFeeCents = raw;
+    }
+
     const batch = await loadBatch(req, batchId);
     if (!batch) return refuse(res, 404, 'BATCH_NOT_FOUND', 'No such import.');
     if (!['parsed', 'ready'].includes(batch.status)) {
@@ -163,16 +235,36 @@ router.patch(
     const actor = actorEmail(req);
     const stored = decision === 'reset' ? 'pending' : decision;
 
+    // Read BEFORE the write, so the audit row can carry what changed rather
+    // than only what it changed to. "The fee was corrected" is not an answer to
+    // "corrected from what".
+    const prior = await tenantDb.withTenantDb(req, (pool) =>
+      pool
+        .query(
+          `SELECT proc_code, fee_cents, edited_fee_cents, decision
+             FROM fees_import_row
+            WHERE office = $1 AND batch_id = $2 AND row_id = $3`,
+          [office, batchId, rowId]
+        )
+        .then((r) => (r.rows.length > 0 ? r.rows[0] : null))
+    );
+    if (!prior) return refuse(res, 404, 'ROW_NOT_FOUND', 'No such row.');
+
     const updated = await tenantDb.withTenantDb(req, (pool) =>
       pool
         .query(
           `UPDATE fees_import_row
               SET decision = $4,
+                  -- Cleared by every decision that is not 'edited'. The pair
+                  -- CHECK refuses the alternative, so this is the statement
+                  -- agreeing with the schema rather than the schema catching it.
+                  edited_fee_cents = CASE WHEN $4 = 'edited' THEN $6::int ELSE NULL END,
                   decided_by = CASE WHEN $4 = 'pending' THEN NULL ELSE $5 END,
                   decided_at = CASE WHEN $4 = 'pending' THEN NULL ELSE now() END
             WHERE office = $1 AND batch_id = $2 AND row_id = $3
-            RETURNING row_id, proc_code, fee_cents, decision, decided_by, decided_at`,
-          [office, batchId, rowId, stored, actor]
+            RETURNING row_id, proc_code, fee_cents, edited_fee_cents, decision,
+                      decided_by, decided_at`,
+          [office, batchId, rowId, stored, actor, editedFeeCents]
         )
         .then((r) => (r.rows.length > 0 ? r.rows[0] : null))
     );
@@ -195,13 +287,33 @@ router.patch(
       )
     );
 
+    // ── The audit row CARRIES THE VALUES, not just the fact.
+    //
+    // "Somebody edited a row" is not an answer to "who changed a crown from
+    // $1,150 to $920, and what did the payer's file actually say". Both
+    // amounts are in the trail, alongside the decision that moved, so the
+    // question is answerable from the trail alone months later — the same rule
+    // the post's own audit row follows.
+    //
+    // ASCII only: the arrow is `->`. These lines are read back through
+    // container exec, which mangles anything else.
+    const effectiveBefore =
+      prior.decision === 'edited' ? Number(prior.edited_fee_cents) : Number(prior.fee_cents);
+    const effectiveAfter =
+      updated.decision === 'edited'
+        ? Number(updated.edited_fee_cents)
+        : Number(updated.fee_cents);
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'fees_import_row',
       resourceId: rowId,
       result: 'SUCCESS',
       office,
-      sourceRef: null,
+      sourceRef:
+        `code:${updated.proc_code}` +
+        `|decision:${prior.decision}->${updated.decision}` +
+        `|cents:${effectiveBefore}->${effectiveAfter}` +
+        `|parsed:${Number(updated.fee_cents)}`,
     });
 
     return res.json({ success: true, row: updated, status: nextStatus, counts });
@@ -448,7 +560,7 @@ router.post(
       resourceId: batchId,
       result: 'SUCCESS',
       office,
-      sourceRef: `feesched:${target.feeSchedNum}|rows:${counts.writable}|excluded:${counts.excluded}|cents:${counts.totalCents}`,
+      sourceRef: `feesched:${target.feeSchedNum}|rows:${counts.writable}|excluded:${counts.excluded}|edited:${counts.edited}|cents:${counts.totalCents}`,
     });
 
     // Fire and DO NOT await — the job runs for minutes. Its own error handling
