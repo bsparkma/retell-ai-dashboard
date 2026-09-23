@@ -45,6 +45,7 @@ import { can } from "@/lib/permissions";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { usePolling } from "@/hooks/usePolling";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
+import { formatCallStampCompact } from "@/lib/callTime";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { toast } from "sonner";
@@ -76,6 +77,15 @@ const SIGNAL_CHIPS: Chip[] = [
 ];
 /** Chips that only make sense outside the "Needs attention" view. */
 const ALL_CALLS_ONLY_CHIPS = new Set(["ai_duplicate"]);
+
+/**
+ * Join the segments of a row's meta line with " · ", dropping the ones that
+ * aren't known. A segment that returns null — an unparseable timestamp, say —
+ * disappears along with its separator instead of leaving a dangling dot.
+ */
+function metaLine(...parts: Array<string | null | undefined>): string {
+  return parts.filter((p): p is string => Boolean(p)).join(" · ");
+}
 
 /** Short first-name + clock attribution, e.g. "Sarah, 9:14a". */
 function formatAttribution(name: string | null | undefined, iso: string | null | undefined): string {
@@ -761,8 +771,16 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
                       </span>
                     </div>
                     <div className="text-xs font-mono text-muted-foreground">{call.fromNumber}</div>
-                    <div className="text-[11px] text-muted-foreground/70">
-                      {formatDuration(call.duration)} · {formatTimeAgo(call.date)}
+                    {/* How long · WHEN, in office time · how long ago. The absolute
+                        stamp sits between the two because "3h ago" on its own cannot
+                        tell you which of yesterday's calls this was. An unparseable
+                        timestamp drops out of the join rather than printing a defect. */}
+                    <div data-testid="row-meta" className="text-[11px] text-muted-foreground/70">
+                      {metaLine(
+                        formatDuration(call.duration),
+                        formatCallStampCompact(call.date),
+                        formatTimeAgo(call.date),
+                      )}
                     </div>
                     {/* M7 — the PBX copy of a call the AI answered end to end. Says so
                         plainly, and links to the row that actually holds the transcript.
@@ -921,7 +939,7 @@ function PrunedRow({
             Pruned call
           </div>
           <div data-testid="pruned-date" className="text-[11px] text-muted-foreground/70">
-            {formatTimeAgo(call.date)}
+            {metaLine(formatCallStampCompact(call.date), formatTimeAgo(call.date))}
           </div>
         </div>
       </Link>
