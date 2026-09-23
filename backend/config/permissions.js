@@ -91,6 +91,45 @@ const PERMISSIONS = Object.freeze({
    */
   'hyg.write': Object.freeze(['admin', 'office', 'hygiene']),
 
+  // --- fees -----------------------------------------------------------------
+  /*
+   * THE FEE SCHEDULE MODULE (slice 1: scaffold, parse, preview).
+   *
+   * A fee schedule is a PAYER CONTRACT, not a chart. Nothing under /api/fees
+   * carries patient data in this slice, and nothing under it reaches Open
+   * Dental at all — the slice parses an uploaded PDF or CSV and shows the
+   * office what the file says. That is why the roles here are the business
+   * roles rather than the clinical ones.
+   *
+   * `rcm_biller` holds both actions. Fee schedules are the input to every
+   * allowed-amount question RCM asks, so the person who works denials is the
+   * person who most needs to see what the payer's schedule actually says.
+   *
+   * `hygiene` and `tc` deliberately hold NEITHER. A hygienist standing at a
+   * chair and a treatment coordinator presenting a case both read fees through
+   * their own surfaces; neither has any reason to import a payer contract, and
+   * granting it here would make "who can change what a procedure is worth"
+   * unanswerable from this file.
+   *
+   * `reviewer` also holds neither: its whole definition is "can work the RCM
+   * queue but commit nothing", and an import that a later slice posts into Open
+   * Dental is a commit.
+   */
+
+  /** Read the fee-schedule surface: the import list, a batch, its parsed rows. */
+  'fees.read': Object.freeze(['admin', 'office', 'rcm_biller']),
+  /**
+   * Any fee-schedule MUTATION — today, uploading a file and creating the import
+   * batch it parses into.
+   *
+   * POST /api/fees/imports needs it already, so unlike `hyg.write` this is not
+   * declared ahead of its first use. The mount is
+   * requireReadWrite('fees.read', 'fees.write'), applied by HTTP METHOD, so the
+   * upload demands the strong action BY CONSTRUCTION rather than by whoever
+   * wrote the route remembering to decorate it.
+   */
+  'fees.write': Object.freeze(['admin', 'office', 'rcm_biller']),
+
   // --- rcm ------------------------------------------------------------------
   /*
    * THREE TIERS, NOT TWO (decision D-9).
