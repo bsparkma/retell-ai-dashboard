@@ -56,6 +56,10 @@ const ROW_COLUMNS = [
   'decided_by',
   'decided_at',
   'od_fee_num',
+  // The override a person typed. Read alongside `fee_cents`, never instead of
+  // it — the preview shows both, because "edited from $1,150.00" is the whole
+  // reason the parsed value is kept.
+  'edited_fee_cents',
 ].join(', ');
 
 /**
@@ -101,6 +105,14 @@ function toRow(r) {
     decision: typeof r.decision === 'string' ? r.decision : 'pending',
     decidedBy: r.decided_by === undefined ? null : r.decided_by,
     decidedAt: iso(r.decided_at),
+    // Null on every row nobody has edited — the pair CHECK guarantees it, so a
+    // reader never has to work out whether an override on an `accepted` row
+    // counts. `num()` is not used here: 0 is a legitimate edited fee and
+    // coercing null to 0 would present an un-edited row as edited to $0.00.
+    editedFeeCents:
+      r.edited_fee_cents === null || r.edited_fee_cents === undefined
+        ? null
+        : num(r.edited_fee_cents),
     // Present ⇒ this row is in Open Dental. The resume key, and what the
     // rollback deletes.
     odFeeNum: r.od_fee_num === null || r.od_fee_num === undefined ? null : num(r.od_fee_num),
