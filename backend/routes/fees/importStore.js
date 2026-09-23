@@ -49,6 +49,13 @@ const ROW_COLUMNS = [
   'raw_line',
   'parse_warnings',
   'row_order',
+  // Slice 3. The preview has to show what a human already decided about a
+  // warned row, and by whom — a decision the reader cannot see is one they
+  // make twice.
+  'decision',
+  'decided_by',
+  'decided_at',
+  'od_fee_num',
 ].join(', ');
 
 /**
@@ -89,6 +96,14 @@ function toRow(r) {
     rawLine: r.raw_line,
     warnings: Array.isArray(r.parse_warnings) ? r.parse_warnings : [],
     rowOrder: num(r.row_order),
+    // `pending` rather than null when the column is absent, so a client never
+    // has to distinguish "no decision" from "this backend is older".
+    decision: typeof r.decision === 'string' ? r.decision : 'pending',
+    decidedBy: r.decided_by === undefined ? null : r.decided_by,
+    decidedAt: iso(r.decided_at),
+    // Present ⇒ this row is in Open Dental. The resume key, and what the
+    // rollback deletes.
+    odFeeNum: r.od_fee_num === null || r.od_fee_num === undefined ? null : num(r.od_fee_num),
   };
 }
 

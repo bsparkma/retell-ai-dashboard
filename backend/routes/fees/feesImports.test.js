@@ -291,12 +291,10 @@ test('the module guard runs BEFORE the office guard — entitlement is not probe
   });
 });
 
-test('only admin and office reach this module — every other role is refused outright', async () => {
-  // The permission map grants fees.read/fees.write to admin and office and to
-  // nobody else. `rcm_biller` is a DEFERRED decision rather than an oversight —
-  // see the fees block in config/permissions.js, and rcmGuard.test.js:273,
-  // which pins that role to RCM actions only.
-  for (const role of ['tc', 'hygiene', 'reviewer', 'rcm_biller', 'staff']) {
+test('tc, hygiene, reviewer and staff are refused this module outright', async () => {
+  // fees.read is admin, office and rcm_biller. Everyone else holds neither
+  // action, so both the read and the upload refuse.
+  for (const role of ['tc', 'hygiene', 'reviewer', 'staff']) {
     await withApp({ role }, async (app) => {
       const list = await api(app.baseUrl, 'GET', '/api/fees/imports?office=roland');
       assert.equal(list.status, 403, `${role} must not read fee schedules`);
@@ -306,6 +304,28 @@ test('only admin and office reach this module — every other role is refused ou
       assert.equal(app.db.table('fees_import_batch').length, 0);
     });
   }
+});
+
+test('RATIFIED: rcm_biller READS fee schedules and cannot post one', async () => {
+  // Beau, 2026-09-22: billers read fee schedules; write stays admin + office.
+  // A biller working a denial needs to see what the payer's schedule says, and
+  // the alternative is asking an office manager for a screenshot. Posting one
+  // reprices every procedure in the practice, which belongs on the same
+  // exception list as the acts that reach a chart or retire money.
+  //
+  // Slice 2 deferred this rather than editing rcmGuard.test.js's pin from an
+  // unrelated slice. That pin now states the exception by name and still holds
+  // everything else.
+  await withApp({ role: 'rcm_biller' }, async (app) => {
+    const list = await api(app.baseUrl, 'GET', '/api/fees/imports?office=roland');
+    assert.equal(list.status, 200, 'a biller reads the import list');
+
+    // And is refused every write, BY HTTP METHOD at the mount — no route had to
+    // remember to decorate itself.
+    const upload = await post(app, cleanCsv(), 'x.csv', CSV);
+    assert.equal(upload.status, 403, 'a biller does not import a fee schedule');
+    assert.equal(app.db.table('fees_import_batch').length, 0);
+  });
 });
 
 test('office reaches the whole surface, and the write gate applies BY METHOD', async () => {

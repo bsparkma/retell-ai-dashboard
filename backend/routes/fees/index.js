@@ -13,30 +13,47 @@
  *
  * One route family:
  *
- *   POST /imports?office=      upload a payer fee schedule (PDF or CSV),
- *                              parse it, persist the batch and its rows
- *   GET  /imports?office=      what this office has uploaded
- *   GET  /imports/:id?office=  one batch and every row parsed out of it
+ *   POST /imports?office=              upload a payer fee schedule (PDF or CSV),
+ *                                      parse it, persist the batch and its rows
+ *   GET  /imports?office=              what this office has uploaded
+ *   GET  /imports/:id?office=          one batch and every row parsed out of it
+ *
+ * and, as of slice 3, deciding a preview and posting it into Open Dental:
+ *
+ *   GET   /feescheds                   the office's fee schedules (target picker)
+ *   PATCH /imports/:id/rows/:rowId     accept | exclude | reset one warned row
+ *   PUT   /imports/:id/target          choose the target schedule
+ *   POST  /imports/:id/post            THE HUMAN ACTION — starts the posting job
+ *   GET   /imports/:id/progress        what the UI polls
+ *   POST  /imports/:id/rollback        undo it
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ZERO OPEN DENTAL ACCESS, AND NOT BY POLICY
+ * ONE FILE TOUCHES OPEN DENTAL, AND IT IS NOT THIS ONE
  * ─────────────────────────────────────────────────────────────────────────────
- * Nothing under this mount requires config/odOffices.js, config/openDental.js,
- * or any office client — not to write, and not to read. The reference
- * implementation this module's parser was ported from
+ * Slice 1 shipped with a flat invariant: nothing under routes/fees or
+ * services/fees could reach Open Dental at all. Slice 3 is the reviewed edit
+ * that invariant anticipated — it is now a ONE-FILE ALLOW-LIST naming
+ * `services/fees/odFeesWrites.js`, exactly as RCM's (`odPostingWrites.js`) and
+ * hygiene's (`odPerioWriter.js`) did before it. Every other file in the module,
+ * this one included, is still forbidden from importing the seam, and
+ * `feesNoOdAccess.test.js` fails the build if a second one does.
+ *
+ * The `mysql2` ban stays ABSOLUTE and is not part of the allow-list. The
+ * reference implementation this module's parser was ported from
  * (`RCM Project v2/fee-schedule-importer`) did all of its work in raw MySQL
  * against Open Dental: it created carriers, created insurance plans, created
  * fee schedules, deleted and re-inserted `fee` rows, and kept an in-memory
- * "backup" it could revert from. NONE of that is ported. See
- * services/fees/README-PORT.md, deviation D10.
+ * "backup" it could revert from. Slice 3 does the one thing on that list that
+ * was worth having — writing fees — through the office-keyed cloud API, with a
+ * persisted snapshot behind it. v1 writes FEES ONLY: no carrier creation, no
+ * insurance-plan creation, no plan attachment (ratified 2026-09-22). A schedule
+ * attached to no plan reprices nothing, which is what makes a mistaken post
+ * recoverable.
  *
- * What the reference got right is the parsing, and that is what slice 1 is:
- * bytes in, a preview out. Deciding that the preview is correct, and then
- * posting it into Open Dental through the office-keyed cloud API — never MySQL
- * — is a later slice, and it will introduce exactly one writer file the way
- * RCM's and HYG's did, with a one-file allow-list in the guard test.
- * `feesNoOdAccess.test.js` scans this module's whole source for an Open Dental
- * import of any kind and for a MySQL driver, and fails on either.
+ * REVIEW-THEN-SEND. There is no path from parsing a file to writing a fee that
+ * does not pass through a human pressing Post: the upload route does not call
+ * into the posting router, and there is no scheduler, no webhook and no
+ * "auto-post when clean" flag anywhere in this module.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * TWO ORDERING FACTS
@@ -64,6 +81,18 @@ const router = express.Router();
 /** Office scoping is router-wide. See note 1 above before adding a mount. */
 router.use(requireOffice);
 
+/*
+ * POSTING IS MOUNTED FIRST, and the order matters.
+ *
+ * `./posting` owns the deeper paths — /imports/:id/post, /imports/:id/rows/:rowId,
+ * /imports/:id/progress — while `./imports` owns /imports/:id itself. Express
+ * matches mounts in order, so registering the specific router first means its
+ * routes are reached before the general one can consider them. Reversed, a GET
+ * /imports/:id/progress would still work (it falls through), but the ordering
+ * would be load-bearing by accident rather than on purpose, and the first
+ * route added to ./imports with a wildcard segment would silently swallow it.
+ */
+router.use('/', require('./posting'));
 router.use('/imports', require('./imports'));
 
 module.exports = router;

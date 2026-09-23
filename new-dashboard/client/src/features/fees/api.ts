@@ -57,8 +57,15 @@ export const FEES_OFFICE_LABELS: Record<FeesOfficeId, string> = {
 export const FEES_SOURCE_TYPES = ["pdf", "csv"] as const;
 export type FeesSourceType = (typeof FEES_SOURCE_TYPES)[number];
 
-/** The two states a batch can hold — the `status` CHECK, straight from the schema. */
-export type FeesBatchStatus = "parsed" | "failed";
+/**
+ * Every state a batch can hold — the `status` CHECK, straight from the schema.
+ *
+ * Slice 1 had two. `FeesPostStatus` below is the full vocabulary and this is an
+ * alias for it, kept so slice 1 and 2's call sites still read naturally. The
+ * union is deliberately closed: a status the server adds is a compile error
+ * here rather than a screen that silently renders nothing.
+ */
+export type FeesBatchStatus = FeesPostStatus;
 
 /**
  * One parse warning.
@@ -105,6 +112,18 @@ export interface FeesImportRow {
   rawLine: string;
   warnings: FeesWarning[];
   rowOrder: number;
+  /**
+   * What a human decided about this row (slice 3).
+   *
+   * A CLEAN row stays `pending` forever and that is correct — the posting gate
+   * is warned-AND-pending, not a checklist, so a row with no warnings never
+   * needs a decision and never blocks anything.
+   */
+  decision: FeesRowDecision;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  /** Present ⇒ this row is in Open Dental. The resume key, and what rollback deletes. */
+  odFeeNum: number | null;
 }
 
 export interface FeesImportDetailResponse {
@@ -411,4 +430,239 @@ export function groupRowsByCode(rows: readonly FeesImportRow[]): FeesRowGroup[] 
       conflicting: grouped.length > 1 && distinctFees.size > 1,
     };
   });
+}
+
+// ─── Slice 3: posting ───────────────────────────────────────────────────────
+
+/**
+ * The batch state machine.
+ *
+ *   parsed ──► ready ──► posting ──► posted
+ *                           └──────► post_failed ──► rolled_back
+ *                              posted ─────────────► rolled_back
+ *
+ * `failed` is slice 1's PARSE failure and is unrelated: a file that never
+ * parsed can never be posted. Widening this union is how the UI finds out a
+ * status was added — the compiler refuses an unhandled one rather than the
+ * screen quietly rendering nothing.
+ */
+export type FeesPostStatus =
+  | "parsed"
+  | "failed"
+  | "ready"
+  | "posting"
+  | "posted"
+  | "post_failed"
+  | "rolled_back";
+
+/** What a human decided about one warned row. Clean rows stay `pending`. */
+export type FeesRowDecision = "pending" | "accepted" | "excluded";
+
+/** One of the office's Open Dental fee schedules. */
+export interface FeeSchedule {
+  feeSchedNum: number;
+  description: string;
+  feeSchedType: string;
+  /** Hidden schedules are LISTED, not filtered — a rolled-back batch's is hidden. */
+  isHidden: boolean;
+  isGlobal: boolean;
+}
+
+export interface FeesPostTarget {
+  feeSchedNum: number | null;
+  description: string | null;
+  /** True when this batch would CREATE the schedule. Decides which rollback applies. */
+  isNew: boolean;
+}
+
+export interface FeesBackupState {
+  odFeeSchedNum: number;
+  isNewSchedule: boolean;
+  rowCount: number;
+  takenAt: string;
+  restoredAt: string | null;
+  restoreNote: string | null;
+}
+
+/**
+ * What the progress endpoint returns.
+ *
+ * `rowsWritten` IS PRESENT IN EVERY STATE, including `post_failed`. That is the
+ * point of it: a post that died at row 300 of 500 put 299 fees into a real
+ * practice's database, and a screen that shows only "failed" invites somebody
+ * to assume nothing happened and post again.
+ */
+export interface FeesPostProgress {
+  batchId: string;
+  office: FeesOfficeId;
+  filename: string;
+  status: FeesPostStatus;
+  rowCount: number;
+  rowsWritten: number;
+  writableCount: number;
+  excludedCount: number;
+  /** Warned AND undecided. Non-zero means the Post button must refuse. */
+  blockingCount: number;
+  totalCents: number;
+  target: FeesPostTarget | null;
+  postError: string | null;
+  postingStartedAt: string | null;
+  postedAt: string | null;
+  postedBy: string | null;
+  rolledBackAt: string | null;
+  rolledBackBy: string | null;
+  backup: FeesBackupState | null;
+  /** Advisory: the server process is working on it right now. */
+  running: boolean;
+}
+
+export interface FeesRollbackResult {
+  success: true;
+  deleted: number;
+  restored: number;
+  problems: string[];
+  /** The honest sentence, including the bit about a new schedule's shell. */
+  note: string;
+}
+
+async function send<T>(
+  path: string,
+  method: "POST" | "PUT" | "PATCH",
+  office: FeesOfficeId,
+  body: unknown,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/fees${path}?office=${encodeURIComponent(office)}`, {
+      method,
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch (err) {
+    throw new FeesApiError(
+      err instanceof Error ? err.message : "Could not reach CareIN",
+      0,
+      "NETWORK",
+    );
+  }
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new FeesApiError("Not signed in", 401, null);
+  }
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as T;
+}
+
+/** The office's fee schedules, for the target picker. */
+export async function listFeeSchedules(
+  office: FeesOfficeId,
+  signal?: AbortSignal,
+): Promise<{ success: true; office: FeesOfficeId; schedules: FeeSchedule[] }> {
+  return get("/feescheds", { office }, signal);
+}
+
+/** Record a decision about one warned row. `reset` returns it to undecided. */
+export async function decideRow(
+  office: FeesOfficeId,
+  batchId: string,
+  rowId: string,
+  decision: "accepted" | "excluded" | "reset",
+): Promise<{ success: true; row: { rowId: string; decision: FeesRowDecision }; status: FeesPostStatus }> {
+  return send(
+    `/imports/${encodeURIComponent(batchId)}/rows/${encodeURIComponent(rowId)}`,
+    "PATCH",
+    office,
+    { decision },
+  );
+}
+
+/**
+ * Choose where this batch posts.
+ *
+ * A NEW schedule is NOT created by this call — the server creates it on the
+ * Post click, so that pressing Post is the only act that changes anything in
+ * Open Dental. Naming one here is a decision, not a write.
+ */
+export async function setTarget(
+  office: FeesOfficeId,
+  batchId: string,
+  target: { feeSchedNum: number } | { newScheduleName: string },
+): Promise<{ success: true; target: FeesPostTarget }> {
+  return send(`/imports/${encodeURIComponent(batchId)}/target`, "PUT", office, target);
+}
+
+/**
+ * THE HUMAN ACTION.
+ *
+ * Resolves with 202 — the server ACCEPTED a job that runs for minutes against a
+ * throttled credential. It is not a report that anything has been written; the
+ * progress endpoint is.
+ */
+export async function postImport(
+  office: FeesOfficeId,
+  batchId: string,
+): Promise<{ success: true; accepted: true; batchId: string; target: FeesPostTarget }> {
+  return send(`/imports/${encodeURIComponent(batchId)}/post`, "POST", office, {});
+}
+
+/** What the UI polls while a post runs. */
+export async function getProgress(
+  office: FeesOfficeId,
+  batchId: string,
+  signal?: AbortSignal,
+): Promise<{ success: true; progress: FeesPostProgress }> {
+  return get(`/imports/${encodeURIComponent(batchId)}/progress`, { office }, signal);
+}
+
+/** Undo a post. Synchronous on the server — bounded by what this batch wrote. */
+export async function rollbackImport(
+  office: FeesOfficeId,
+  batchId: string,
+): Promise<FeesRollbackResult> {
+  return send(`/imports/${encodeURIComponent(batchId)}/rollback`, "POST", office, {});
+}
+
+/**
+ * Is this status one the UI should keep polling?
+ *
+ * Only `posting`. Everything else is terminal for the purposes of a poll, and a
+ * screen that kept polling a `posted` batch would hammer the endpoint forever
+ * for an answer that cannot change.
+ */
+export function isInFlight(status: FeesPostStatus): boolean {
+  return status === "posting";
+}
+
+/**
+ * Can this batch be posted, and if not, WHY?
+ *
+ * Returns the reason rather than a boolean, because the button shows it. A
+ * disabled control with no explanation is the thing people file tickets about,
+ * and the server refuses with the same facts — this is the courtesy, not the
+ * guard.
+ */
+export function postBlockedReason(
+  progress: FeesPostProgress,
+  canWrite: boolean,
+): string | null {
+  if (!canWrite) return "You do not have permission to post fee schedules.";
+  if (progress.status === "posting") return "A post is already running.";
+  if (progress.status === "posted") {
+    return "This import has already been posted. Roll it back first if you need to post it again.";
+  }
+  if (progress.status === "failed") return "This file never parsed, so there is nothing to post.";
+  if (progress.status === "rolled_back") return "This import was rolled back.";
+  if (progress.blockingCount > 0) {
+    // Both halves agree in number. "1 row still need a decision" reads as a
+    // typo, and a sentence that reads as a typo is one people stop reading.
+    return progress.blockingCount === 1
+      ? "1 row still needs a decision."
+      : `${progress.blockingCount} rows still need a decision.`;
+  }
+  if (progress.writableCount === 0) return "Every row is excluded, so there is nothing to write.";
+  if (progress.target === null || (progress.target.feeSchedNum === null && !progress.target.isNew)) {
+    return "Choose which fee schedule this posts into.";
+  }
+  return null;
 }

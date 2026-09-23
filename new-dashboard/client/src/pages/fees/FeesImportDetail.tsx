@@ -37,21 +37,29 @@
  *     among presences.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * THE BANNER IS LOAD-BEARING
+ * THE BANNER IS LOAD-BEARING, AND AS OF SLICE 3 IT IS CONDITIONAL
  * ═════════════════════════════════════════════════════════════════════════════
- * "Preview only — nothing has been sent to Open Dental." It is true today and
- * it stays true until the posting slice: this module has no Open Dental access
- * of any kind, which the backend guard (feesNoOdAccess.test.js) proves rather
- * than asserts. When posting lands, that banner is the first thing that must
- * change — and a reader who has learned to trust it is exactly who would be
- * misled if it were left behind.
+ * Slice 2 said "Preview only — nothing has been sent to Open Dental" on every
+ * batch, and its header recorded that this banner would be "the first thing
+ * that must change" when posting landed, because "a reader who has learned to
+ * trust it is exactly who would be misled if it were left behind".
+ *
+ * This is that change. The line is now shown only for a batch that has NOT been
+ * posted; a posted, failed-partway or rolled-back one gets a different banner
+ * and the posting panel underneath, which says what actually reached the
+ * practice. `post_failed` counts as posted for this purpose — a run that
+ * stopped at row 300 still put 299 fees in, and that is the worst possible
+ * moment for this page to claim otherwise.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
 import { AlertTriangle, ArrowLeft, Info, Loader2, XCircle } from "lucide-react";
 
+import { useAuth } from "@/contexts/AuthContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
+import { can } from "@/lib/permissions";
 import {
+  decideRow,
   getImport,
   groupRowsByCode,
   formatFeeCents,
@@ -64,6 +72,7 @@ import {
   type FeesImportRow,
   type FeesOfficeId,
 } from "@/features/fees/api";
+import { PostingPanel } from "@/features/fees/PostingPanel";
 import { cn } from "@/lib/utils";
 
 type DetailState =
@@ -103,13 +112,29 @@ export default function FeesImportDetail() {
   const [, params] = useRoute("/fees/imports/:batchId");
   const batchId = params?.batchId ?? "";
   const { office: selection, loading: rosterLoading } = useOffice();
+  const auth = useAuth();
+  /**
+   * UX ONLY. The server's requireReadWrite is the boundary; this decides
+   * whether the Post button is offered with its reason or offered at all. A
+   * reader without fees.write still opens the page and sees everything.
+   */
+  const canWrite = can(
+    auth.status === "authenticated" ? auth.user.permissions : undefined,
+    "fees.write",
+  );
 
   const [state, setState] = useState<DetailState>({ kind: "loading" });
+  /** Bumped when a decision, a post or a rollback changes what the rows say. */
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = useCallback(() => setReloadToken((n) => n + 1), []);
 
   useEffect(() => {
     if (rosterLoading || batchId === "") return;
     const abort = new AbortController();
-    setState({ kind: "loading" });
+    // NOT a loading state on a re-read. Blanking the page every time somebody
+    // accepts a row would make the list jump under the cursor they are about to
+    // click again.
+    if (reloadToken === 0) setState({ kind: "loading" });
 
     const candidates = officesToTry(selection);
 
@@ -147,7 +172,7 @@ export default function FeesImportDetail() {
     })();
 
     return () => abort.abort();
-  }, [batchId, selection, rosterLoading]);
+  }, [batchId, selection, rosterLoading, reloadToken]);
 
   return (
     <div className="p-6" data-testid="fees-import-detail">
@@ -182,13 +207,43 @@ export default function FeesImportDetail() {
         </div>
       )}
 
-      {state.kind === "ready" && <Preview batch={state.batch} rows={state.rows} />}
+      {state.kind === "ready" && (
+        <Preview
+          batch={state.batch}
+          rows={state.rows}
+          canWrite={canWrite}
+          onSettled={reload}
+        />
+      )}
     </div>
   );
 }
 
-function Preview({ batch, rows }: { batch: FeesImportBatch; rows: readonly FeesImportRow[] }) {
+/**
+ * Statuses in which the preview-only banner would be a lie.
+ *
+ * `post_failed` is on this list deliberately. A run that stopped partway still
+ * put fees into the practice, and a screen telling that reader "nothing has
+ * been sent" is the worst moment for this page to be wrong.
+ */
+const POSTED_STATUSES: readonly string[] = ["posting", "posted", "post_failed", "rolled_back"];
+
+/** A batch whose rows can still be decided. */
+const EDITABLE_STATUSES: readonly string[] = ["parsed", "ready"];
+
+function Preview({
+  batch,
+  rows,
+  canWrite,
+  onSettled,
+}: {
+  batch: FeesImportBatch;
+  rows: readonly FeesImportRow[];
+  canWrite: boolean;
+  onSettled: () => void;
+}) {
   const groups = groupRowsByCode(rows);
+  const decidable = EDITABLE_STATUSES.includes(batch.status);
 
   return (
     <>
@@ -206,22 +261,58 @@ function Preview({ batch, rows }: { batch: FeesImportBatch; rows: readonly FeesI
         </p>
       </div>
 
-      {/* ── The banner. See the header — this is load-bearing. ─────────────── */}
-      <div
-        className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-4"
-        data-testid="fees-preview-banner"
-      >
-        <Info size={18} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
-        <div>
-          <div className="text-sm font-medium text-foreground">
-            Preview only — nothing has been sent to Open Dental.
+      {/* ── The banner. See the header — this is load-bearing, and as of slice 3
+             it is CONDITIONAL. "Nothing has been sent to Open Dental" was true
+             of every batch while posting did not exist; it is now true only of
+             one that has not been posted. A reader who has learned to trust
+             this line is exactly who would be misled by leaving it up after the
+             fees are in their practice's database. ─────────────────────────── */}
+      {POSTED_STATUSES.includes(batch.status) ? (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-4"
+          data-testid="fees-posted-banner"
+        >
+          <Info size={18} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+          <div>
+            <div className="text-sm font-medium text-foreground">
+              {batch.status === "rolled_back"
+                ? "This import was posted and then rolled back."
+                : "These fees have been written to Open Dental."}
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              What is below is what CareIN read out of the file. The panel underneath says what
+              actually reached the practice.
+            </p>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            This is what CareIN read out of the file. Posting these fees to a practice's fee
-            schedule is a separate step that does not exist yet.
-          </p>
         </div>
-      </div>
+      ) : (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-4"
+          data-testid="fees-preview-banner"
+        >
+          <Info size={18} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+          <div>
+            <div className="text-sm font-medium text-foreground">
+              Preview only — nothing has been sent to Open Dental.
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This is what CareIN read out of the file. Nothing reaches the practice until somebody
+              presses Post below.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* The posting panel: target, Post, progress, rollback. Absent for a file
+          that never parsed — there is nothing to post. */}
+      {batch.status !== "failed" && (
+        <PostingPanel
+          office={batch.office}
+          batchId={batch.batchId}
+          canWrite={canWrite}
+          onSettled={onSettled}
+        />
+      )}
 
       {/* ── A failed batch has no rows, and says why. ──────────────────────── */}
       {batch.status === "failed" && (
@@ -384,6 +475,19 @@ function Preview({ batch, rows }: { batch: FeesImportBatch; rows: readonly FeesI
                             >
                               {row.rawLine}
                             </pre>
+
+                            {/* THE DECISION. A warned row blocks the post until
+                                somebody who has read the line above says
+                                whether the number is the fee this office holds.
+                                The gate is enforced server-side; these are the
+                                controls, not the guard. */}
+                            <RowDecision
+                              office={batch.office}
+                              batchId={batch.batchId}
+                              row={row}
+                              editable={decidable && canWrite}
+                              onDecided={onSettled}
+                            />
                           </>
                         )}
                       </div>
@@ -405,5 +509,106 @@ function Preview({ batch, rows }: { batch: FeesImportBatch; rows: readonly FeesI
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * Accept or exclude ONE warned row.
+ *
+ * `accepted` — the reader looked at the raw line above and confirms the parsed
+ *              value is the fee this office holds.
+ * `excluded` — it is not, and the row must never be written. The database
+ *              refuses to store a FeeNum on an excluded row, so the promise is
+ *              kept there rather than by a filter somebody might reorder.
+ * `reset`    — offered only once a decision exists, because a decision made by
+ *              mistake must be undoable BEFORE the post. Afterwards the only
+ *              remedy is a rollback.
+ *
+ * Clean rows never render this: the gate is warned-AND-undecided, not a
+ * checklist, so a hundred-row file with two flagged rows needs exactly two
+ * clicks.
+ */
+function RowDecision({
+  office,
+  batchId,
+  row,
+  editable,
+  onDecided,
+}: {
+  office: FeesOfficeId;
+  batchId: string;
+  row: FeesImportRow;
+  editable: boolean;
+  onDecided: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const decision = row.decision ?? "pending";
+
+  const choose = async (next: "accepted" | "excluded" | "reset") => {
+    setBusy(true);
+    setError(null);
+    try {
+      await decideRow(office, batchId, row.rowId, next);
+      onDecided();
+    } catch (err: unknown) {
+      setError(err instanceof FeesApiError ? err.message : "Could not record that");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="fees-row-decision" data-decision={decision}>
+      {decision === "pending" ? (
+        <>
+          <span className="text-xs text-muted-foreground">Is this the fee you hold?</span>
+          <button
+            type="button"
+            disabled={!editable || busy}
+            onClick={() => void choose("accepted")}
+            data-testid="fees-row-accept"
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+          >
+            Accept
+          </button>
+          <button
+            type="button"
+            disabled={!editable || busy}
+            onClick={() => void choose("excluded")}
+            data-testid="fees-row-exclude"
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+          >
+            Do not post it
+          </button>
+        </>
+      ) : (
+        <>
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-foreground"
+            data-testid="fees-row-decided"
+          >
+            {decision === "accepted" ? "Accepted" : "Excluded"}
+            {row.decidedBy ? ` · ${row.decidedBy}` : ""}
+          </span>
+          {editable && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void choose("reset")}
+              data-testid="fees-row-reset"
+              className="text-xs font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:opacity-50"
+            >
+              Undo
+            </button>
+          )}
+        </>
+      )}
+      {error !== null && (
+        <span className="text-xs text-destructive" data-testid="fees-row-decision-error">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }

@@ -265,13 +265,37 @@ test('rcm_biller: the workbench tiers a biller DOES hold', async () => {
    */
   const { PERMISSIONS, permissionsForRole } = require('../../config/permissions');
   const held = permissionsForRole('rcm_biller');
-  assert.deepEqual(held, ['rcm.queue', 'rcm.read', 'rcm.write']);
+  assert.deepEqual(held, ['fees.read', 'rcm.queue', 'rcm.read', 'rcm.write']);
   for (const action of ['rcm.post', 'rcm.settings', 'admin.all']) {
     assert.ok(!held.includes(action), `rcm_biller must not hold ${action}`);
     assert.ok(Object.prototype.hasOwnProperty.call(PERMISSIONS, action));
   }
-  // And nothing outside RCM. A biller is not a voice user or a coordinator.
-  assert.deepEqual(held.filter((a) => !a.startsWith('rcm.')), []);
+
+  /*
+   * NOTHING OUTSIDE RCM — WITH ONE RATIFIED EXCEPTION.
+   *
+   * The rule this assertion has always expressed is that a biller is not a
+   * voice user and not a coordinator, and that is still pinned below: every
+   * action outside the exception must be an rcm.* one.
+   *
+   * THE EXCEPTION (Beau, 2026-09-22): billers READ fee schedules; write stays
+   * admin + office. Fee schedules are the input to every allowed-amount
+   * question RCM asks, so a biller working a denial needs to see what the
+   * payer's schedule says — the alternative is asking an office manager for a
+   * screenshot. Posting one changes what every procedure in the practice is
+   * worth, which belongs on the same exception list as the acts that reach a
+   * chart or retire money, so `fees.write` is deliberately NOT here.
+   *
+   * Stated as a named exception rather than by deleting the assertion: a guard
+   * removed to permit one change stops guarding the other twenty.
+   */
+  const RATIFIED_NON_RCM = ['fees.read'];
+  assert.deepEqual(
+    held.filter((a) => !a.startsWith('rcm.') && !RATIFIED_NON_RCM.includes(a)),
+    [],
+    'a biller is not a voice user or a coordinator'
+  );
+  assert.ok(!held.includes('fees.write'), 'a biller reads fee schedules but does not post them');
 });
 
 test('a role holding neither tier is refused the batch match at runtime', async () => {
