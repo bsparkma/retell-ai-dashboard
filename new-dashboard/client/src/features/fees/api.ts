@@ -122,6 +122,16 @@ export interface FeesImportRow {
   decision: FeesRowDecision;
   decidedBy: string | null;
   decidedAt: string | null;
+  /**
+   * What a person typed when the parsed value was not the fee they hold.
+   *
+   * NULL on every row nobody has edited — the database's pair CHECK guarantees
+   * the override is cleared by any other decision, so a reader never has to
+   * work out whether an override on an `accepted` row counts. `fee_cents`
+   * beside it still says what the FILE said, which is what lets this screen
+   * render "edited from $1,150.00".
+   */
+  editedFeeCents: number | null;
   /** Present ⇒ this row is in Open Dental. The resume key, and what rollback deletes. */
   odFeeNum: number | null;
 }
@@ -356,6 +366,84 @@ export function formatFeeCents(cents: number): string {
   return `${negative ? "-" : ""}$${whole}.${String(abs % 100).padStart(2, "0")}`;
 }
 
+/**
+ * The fee that will actually be written, in integer cents.
+ *
+ * MIRRORS backend/services/fees/effectiveFee.js, which is the authority — the
+ * job writes by that function and the totals are summed by its SQL twin. This
+ * copy exists because the preview has to render the same number BEFORE the post
+ * exists to be asked, and a screen that showed the parsed value where the job
+ * would write the edited one is the disagreement this whole feature is built to
+ * avoid.
+ *
+ * Kept deliberately trivial for that reason: the rule is one line, so the two
+ * languages can hold the same one line. Anything more complex belongs on the
+ * server, with the client reading the answer off the wire.
+ */
+export function effectiveFeeCents(row: FeesImportRow): number {
+  return row.decision === "edited" && row.editedFeeCents !== null
+    ? row.editedFeeCents
+    : row.feeCents;
+}
+
+/** True when a person typed this row's fee, rather than the parser reading it. */
+export function isEdited(row: FeesImportRow): boolean {
+  return row.decision === "edited" && row.editedFeeCents !== null;
+}
+
+/**
+ * The largest fee the parser admits, in cents ($20,000,000.00).
+ *
+ * Mirrors MAX_FEE_CENTS in backend/services/fees/feeValues.js. The server
+ * refuses anything past it and the column CHECK refuses it again; this is the
+ * courtesy that keeps a typo from making a round trip.
+ */
+export const MAX_FEE_CENTS = 2_000_000_000;
+
+/**
+ * What somebody typed into the fee box → integer cents, or null.
+ *
+ * Accepts what a person actually types when copying a number off a payer PDF:
+ * `920`, `920.00`, `$920`, `$1,150.00`, with surrounding spaces. Everything
+ * else is null, and the input shows the refusal rather than guessing.
+ *
+ * TWO THINGS IT DELIBERATELY REFUSES:
+ *
+ *  - More than two decimal places. `92.005` is not a fee; rounding it would
+ *    silently store a number nobody typed, and this module already carries one
+ *    documented defect from an importer that rounded quietly.
+ *  - A bare `-`. Negative is not a fee, and the server refuses it too.
+ *
+ * ONE THING IT DELIBERATELY ACCEPTS: `0`, and `0.00`. In a fee schedule zero
+ * means not covered, bundled, or no charge — a fact the office needs to be able
+ * to state. The reference importer dropped every zero with a `> 0` guard, and
+ * this module has spent three slices not repeating that.
+ */
+export function parseFeeInput(text: string): number | null {
+  const cleaned = text.trim().replace(/^\$/, "").replace(/,/g, "").trim();
+  if (cleaned === "") return null;
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(cleaned);
+  if (!match) return null;
+  const whole = Number(match[1]);
+  // `padEnd`, not `Number("5")`: `.5` is fifty cents, not five.
+  const frac = Number((match[2] ?? "0").padEnd(2, "0"));
+  const cents = whole * 100 + frac;
+  if (!Number.isSafeInteger(cents) || cents > MAX_FEE_CENTS) return null;
+  return cents;
+}
+
+/**
+ * Integer cents → what the edit box starts with.
+ *
+ * Plain digits and a decimal point, with no `$` and no thousands separators, so
+ * the field round-trips through `parseFeeInput` unchanged and a person editing
+ * $1,150.00 does not have to delete punctuation before typing.
+ */
+export function feeInputValue(cents: number): string {
+  const abs = Math.abs(Math.round(cents));
+  return `${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+
 /** Bytes → a size an office reads. Used on the failed-batch card. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
@@ -455,8 +543,13 @@ export type FeesPostStatus =
   | "post_failed"
   | "rolled_back";
 
-/** What a human decided about one warned row. Clean rows stay `pending`. */
-export type FeesRowDecision = "pending" | "accepted" | "excluded";
+/**
+ * What a human decided about one warned row. Clean rows stay `pending`.
+ *
+ * `edited` carries a value — `editedFeeCents` — and every other decision
+ * clears it. That is a database CHECK, not a convention here.
+ */
+export type FeesRowDecision = "pending" | "accepted" | "excluded" | "edited";
 
 /** One of the office's Open Dental fee schedules. */
 export interface FeeSchedule {
@@ -501,6 +594,8 @@ export interface FeesPostProgress {
   rowsWritten: number;
   writableCount: number;
   excludedCount: number;
+  /** Fees a person typed by hand. The confirm dialog names this number. */
+  editedCount: number;
   /** Warned AND undecided. Non-zero means the Post button must refuse. */
   blockingCount: number;
   totalCents: number;
@@ -562,18 +657,56 @@ export async function listFeeSchedules(
   return get("/feescheds", { office }, signal);
 }
 
-/** Record a decision about one warned row. `reset` returns it to undecided. */
+/**
+ * What a human can say about one warned row.
+ *
+ * `edited` is the only one that carries a value, and it is modelled as a
+ * discriminated union rather than an optional `feeCents` so that "edited with
+ * no amount" and "accepted with an amount" are both unrepresentable. The server
+ * refuses either; this makes the compiler refuse them first.
+ */
+export type FeesRowVerdict =
+  | { decision: "accepted" | "excluded" | "reset" }
+  | { decision: "edited"; feeCents: number };
+
+export interface FeesDecideResponse {
+  success: true;
+  row: {
+    rowId: string;
+    decision: FeesRowDecision;
+    feeCents?: number;
+    editedFeeCents?: number | null;
+  };
+  status: FeesPostStatus;
+  counts: {
+    total: number;
+    writable: number;
+    excluded: number;
+    accepted: number;
+    edited: number;
+    blocking: number;
+    totalCents: number;
+  };
+}
+
+/**
+ * Record a decision about one warned row. `reset` returns it to undecided.
+ *
+ * CENTS GO OVER THE WIRE, never dollars. Dollars are a display format, and
+ * parsing them is where rounding gets invented; the server refuses a
+ * non-integer outright.
+ */
 export async function decideRow(
   office: FeesOfficeId,
   batchId: string,
   rowId: string,
-  decision: "accepted" | "excluded" | "reset",
-): Promise<{ success: true; row: { rowId: string; decision: FeesRowDecision }; status: FeesPostStatus }> {
+  verdict: FeesRowVerdict,
+): Promise<FeesDecideResponse> {
   return send(
     `/imports/${encodeURIComponent(batchId)}/rows/${encodeURIComponent(rowId)}`,
     "PATCH",
     office,
-    { decision },
+    verdict,
   );
 }
 

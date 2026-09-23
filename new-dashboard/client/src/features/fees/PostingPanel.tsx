@@ -200,7 +200,8 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
           <p className="mt-1 text-sm text-muted-foreground">
             {FEES_OFFICE_LABELS[progress.office] ?? progress.office} ·{" "}
             {progress.writableCount} {progress.writableCount === 1 ? "fee" : "fees"} to write
-            {progress.excludedCount > 0 && `, ${progress.excludedCount} excluded`} ·{" "}
+            {progress.excludedCount > 0 && `, ${progress.excludedCount} excluded`}
+            {progress.editedCount > 0 && `, ${progress.editedCount} edited by hand`} ·{" "}
             {formatFeeCents(progress.totalCents)} total
           </p>
         </div>
@@ -446,7 +447,25 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
               {confirm.progress.excludedCount > 0 &&
                 `, ${confirm.progress.excludedCount} excluded`}
             </li>
+            {/* HANDS WERE INVOLVED, and the confirm says so. A corrected fee is
+                the one kind this dialog cannot be checked against the payer's
+                file for — the file says something else, on purpose — so the
+                count belongs beside the total rather than only on the rows
+                somebody has already scrolled past. */}
+            {confirm.progress.editedCount > 0 && (
+              <li data-testid="fees-confirm-edited">
+                <strong>
+                  {confirm.progress.editedCount}{" "}
+                  {confirm.progress.editedCount === 1 ? "fee" : "fees"}
+                </strong>{" "}
+                edited by hand
+              </li>
+            )}
             <li>
+              {/* The total is of EFFECTIVE fees — summed on the server by the
+                  same expression the job writes by. A dialog stating the parsed
+                  total while the job wrote the edited one would be a person
+                  approving a number that never existed. */}
               Total: <strong>{formatFeeCents(confirm.progress.totalCents)}</strong>
             </li>
           </ul>
