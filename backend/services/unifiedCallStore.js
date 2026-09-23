@@ -62,6 +62,41 @@ function cleanCallerName(value) {
     .join(' ');
 }
 
+/**
+ * The two post-call analysis facts the caller states about themselves: what kind of
+ * patient they are, and who insures them.
+ *
+ * Derived rather than read straight off the record because `call_analysis` is consulted
+ * during normalization and never stored — so before this, nothing downstream (the chart
+ * note, the worklist chips) could reach either value.
+ *
+ * BOTH field names are read. `patient_status` / `insurance_name` are what the agent
+ * emits today; "new_patient or existing_patient" / `dental_insurance` are what calls
+ * already in the store were captured under, and a re-delivered webhook for one of those
+ * should still render what it actually captured. Same mapping, same order, as
+ * routes/webhooks.js.
+ *
+ * `||` (not `??`) throughout: an empty string is not an answer, and must fall through
+ * to the next name and finally to null rather than being stored as a blank.
+ *
+ * These are the caller's OWN words, never a verified fact. Nothing here decides which
+ * chart gets written, or which patient a call is matched to — office and PatNum stay
+ * server-derived, exactly as before.
+ */
+function analysisPatientStatus(call) {
+  return call.patient_status
+    || call.call_analysis?.patient_status
+    || call.call_analysis?.['new_patient or existing_patient']
+    || null;
+}
+
+function analysisInsuranceName(call) {
+  return call.insurance_name
+    || call.call_analysis?.insurance_name
+    || call.call_analysis?.dental_insurance
+    || null;
+}
+
 function extractCallerNameFromCall(call) {
   const analysis = call.call_analysis || {};
   const explicitName =
@@ -605,6 +640,11 @@ class UnifiedCallStore {
       patient_id: call.patient_id || null,
       patient_matched_by: call.patient_matched_by || null,
       is_new_patient: call.is_new_patient || null,
+
+      // What the caller SAID they are and who they SAID insures them. See
+      // analysisPatientStatus / analysisInsuranceName for why both field names are read.
+      patient_status: analysisPatientStatus(call),
+      insurance_name: analysisInsuranceName(call),
       
       // QA
       qa_score: call.qa_score || null,
@@ -742,6 +782,17 @@ class UnifiedCallStore {
       transcript_json:
         call.transcript_json ?? call.transcript_object ?? existing?.transcript_json ?? null,
       recording_url: call.recording_url ?? existing?.recording_url ?? null,
+      // Inherited for exactly the reason the transcript above is: the analysis fields
+      // ride `call_analysis`, which POST /v3/list-calls does not return. normalizeCall
+      // would then derive null from a payload that simply never mentioned them, and the
+      // 15-minute poller would erase what the call_analyzed webhook captured — inside
+      // the hour, and silently, because a chart note that has lost its Insurance line
+      // looks exactly like a call where the caller never named one.
+      // Derive FIRST, then inherit. These ride `call_analysis`, never the top level, so
+      // a plain `call.patient_status ?? existing?...` would let a stale stored value beat
+      // the fresh analysis on every webhook — the incoming payload would never win.
+      patient_status: analysisPatientStatus(call) ?? existing?.patient_status ?? null,
+      insurance_name: analysisInsuranceName(call) ?? existing?.insurance_name ?? null,
       // Preserve OD commlog sync state across re-adds: a raw webhook re-delivery or the
       // 15-min poller payload has no od_* fields, so carry them from the existing record
       // (the incoming value wins only when explicitly set). This is what keeps the

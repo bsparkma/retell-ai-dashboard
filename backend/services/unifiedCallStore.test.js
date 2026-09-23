@@ -459,3 +459,113 @@ test('od_patient_office survives a Mango re-ingest inside the watermark overlap'
   assert.equal(unifiedCallStore.getCall(added.id).od_patient_office, 'valley');
   assert.equal(unifiedCallStore.getCall(added.id).od_patient_id, 7115);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// patient_status / insurance_name
+//
+// What the caller said they are, and who they said insures them. Both ride
+// `call_analysis`, which is read during normalization and never stored — so before
+// these fields existed, nothing downstream could reach either value and the chart
+// note simply never carried them.
+//
+// Caller's own words. Nothing here touches which office or which PatNum a call is
+// aimed at; those stay server-derived.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const analysisCall = (analysis) => ({
+  call_id: 'analysis-1',
+  from_number: '+15550000000',
+  call_date: '2026-09-22T12:57:00.000Z',
+  call_analysis: analysis,
+});
+
+test('analysis fields: derived from the names the agent emits today', () => {
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: 'existing_patient',
+    insurance_name: 'Humana',
+  }));
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, 'existing_patient');
+  assert.equal(stored.insurance_name, 'Humana');
+});
+
+test('analysis fields: derived from the OLD names for calls captured under them', () => {
+  unifiedCallStore.addRetellCall(analysisCall({
+    'new_patient or existing_patient': 'new_patient',
+    dental_insurance: 'Delta Dental Premier',
+  }));
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, 'new_patient');
+  assert.equal(stored.insurance_name, 'Delta Dental Premier');
+});
+
+test('analysis fields: the new name wins when a call carries both', () => {
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: 'existing_patient',
+    'new_patient or existing_patient': 'new_patient',
+    insurance_name: 'Aetna',
+    dental_insurance: 'Cigna',
+  }));
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, 'existing_patient');
+  assert.equal(stored.insurance_name, 'Aetna');
+});
+
+test('analysis fields: absent stays null rather than becoming a guess', () => {
+  unifiedCallStore.addRetellCall(analysisCall({}));
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, null);
+  assert.equal(stored.insurance_name, null);
+});
+
+test('analysis fields: an empty value is not an answer — it falls through', () => {
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: '',
+    insurance_name: '',
+    dental_insurance: 'Guardian',
+  }));
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, null);
+  assert.equal(stored.insurance_name, 'Guardian');
+});
+
+test('analysis fields SURVIVE a slimmed Retell re-add (preservation whitelist)', () => {
+  // POST /v3/list-calls omits call_analysis entirely. normalizeCall rebuilds the record
+  // and addCallInternal REPLACES the stored call, so without Layer B inheritance the
+  // 15-minute poller would erase what the call_analyzed webhook captured — within the
+  // hour, and invisibly: a chart note that has lost its Insurance line looks exactly
+  // like a call where the caller never named one.
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: 'existing_patient',
+    insurance_name: 'Humana',
+  }));
+
+  unifiedCallStore.addRetellCall({
+    call_id: 'analysis-1',
+    from_number: '+15550000000',
+    call_date: '2026-09-22T12:57:00.000Z',
+  });
+
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, 'existing_patient');
+  assert.equal(stored.insurance_name, 'Humana');
+});
+
+test('analysis fields: a corrected webhook still beats the stored value', () => {
+  // The inheritance must not freeze the first answer: derive from the incoming payload
+  // FIRST, inherit only when it says nothing. These arrive nested in call_analysis and
+  // never at the top level, so a plain `call.x ?? existing?.x` would mean the incoming
+  // payload could never win.
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: 'existing_patient',
+    insurance_name: 'Humana',
+  }));
+  unifiedCallStore.addRetellCall(analysisCall({
+    patient_status: 'new_patient',
+    insurance_name: 'MetLife',
+  }));
+
+  const stored = unifiedCallStore.getCall('analysis-1');
+  assert.equal(stored.patient_status, 'new_patient');
+  assert.equal(stored.insurance_name, 'MetLife');
+});

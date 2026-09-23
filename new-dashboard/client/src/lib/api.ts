@@ -731,7 +731,18 @@ export interface BackendUnifiedCall {
   appointment_booked?: boolean | null;
   appointment_requested?: boolean | null;
   callback_required?: boolean | null;
-  dental_insurance?: boolean | null;
+  /**
+   * What the caller said about themselves, from Retell's post-call analysis and now
+   * stored on the call record. Strings, not booleans: `patient_status` is the agent's
+   * enum ('new_patient' | 'existing_patient' | …) and `insurance_name` is a carrier
+   * NAME. The caller's own words — neither is verified coverage, and neither decides
+   * which chart a note lands in.
+   *
+   * These replace `dental_insurance`, which was declared here as a boolean, was never
+   * a field on a call record, and is no longer emitted by the agent under that name.
+   */
+  patient_status?: string | null;
+  insurance_name?: string | null;
   // Slice A — Open Dental sync state
   od_sync_status?: OdSyncStatus;
   od_patient_id?: number | string | null;
@@ -1142,9 +1153,16 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     recording_url: c.recording_url,
 
     // Disposition signals for the worklist chips (from call analysis; absent → false).
-    isNewPatient: c.is_new_patient ?? false,
+    //
+    // Both of these used to read fields that do not exist on a call record, so the
+    // chips they drive could never light up: `dental_insurance` was an analysis field
+    // name the agent stopped emitting and which was never stored at all, and
+    // `is_new_patient` is only ever set by a manual PATCH, never derived from the
+    // analysis. They now read the stored `insurance_name` / `patient_status`, keeping
+    // `is_new_patient` as a fallback so a manually-corrected call still reads as new.
+    isNewPatient: c.patient_status === "new_patient" || Boolean(c.is_new_patient),
     appointmentBooked: c.appointment_booked ?? false,
-    insuranceMentioned: c.dental_insurance ?? false,
+    insuranceMentioned: Boolean(c.insurance_name),
 
     // Slice A — Open Dental patient linkage / review state
     odSyncStatus: (c.od_sync_status ?? null) as OdSyncStatus,
