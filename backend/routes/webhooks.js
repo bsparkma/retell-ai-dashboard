@@ -383,10 +383,26 @@ async function writeCommlogForAnalyzedCall(callData) {
     const endTime = callData.end_timestamp ? new Date(callData.end_timestamp).getTime() : 0;
     const durationSeconds = startTime && endTime ? Math.round((endTime - startTime) / 1000) : 0;
 
-    const patientType = callData.call_analysis?.["new_patient or existing_patient"] || 'unknown';
+    // The agent's post-call analysis fields were renamed, and this read was never
+    // updated: it asked for "new_patient or existing_patient" and `dental_insurance`,
+    // which the agent has not emitted for a long time, so every note printed
+    // "Patient Type: unknown" and "Insurance: not provided" no matter what the
+    // caller said. The names it emits today are `patient_status` and
+    // `insurance_name`, read first here.
+    //
+    // The old names stay as a fallback rather than being replaced: calls already in
+    // the store were captured under them, and a re-delivered webhook for one of
+    // those should still render what it actually captured. `||` (not `??`) on
+    // purpose — an empty string is not an answer, and should fall through to the
+    // default rather than print a blank line into a chart note.
+    const patientType = callData.call_analysis?.patient_status
+      || callData.call_analysis?.["new_patient or existing_patient"]
+      || 'unknown';
     const appointmentBooked = callData.call_analysis?.appointment_booked ? 'yes' : 'no';
     const emergency = callData.call_analysis?.emergency_caller ? 'yes' : 'no';
-    const insurance = callData.call_analysis?.dental_insurance || 'not provided';
+    const insurance = callData.call_analysis?.insurance_name
+      || callData.call_analysis?.dental_insurance
+      || 'not provided';
     const summary = callData.call_analysis?.detailed_call_summary || callData.call_analysis?.call_summary || 'No summary available';
     const transcript = typeof callData.transcript === 'string' ? callData.transcript : 'No transcript available';
 
