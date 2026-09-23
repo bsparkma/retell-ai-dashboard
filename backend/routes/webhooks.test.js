@@ -217,3 +217,91 @@ test('non-string transcript does not throw on persist path or fallback analysis'
   );
   assert.doesNotThrow(() => callAnalyzer.fallbackAnalysis({ transcript: transcriptObject }));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-call analysis field names
+//
+// The commlog builder read "new_patient or existing_patient" and `dental_insurance`.
+// The agent emits `patient_status` and `insurance_name`, and has for a long time —
+// so every auto-written note said "Patient Type: unknown" and "Insurance: not
+// provided" regardless of what the caller actually said. These pin the mapping in
+// both directions: the names emitted today, and the old names still sitting on
+// calls already in the store.
+//
+// Read-mapping only. Nothing below asserts a change in WHAT gets written or when —
+// the note format, the write behaviour and the review-then-send default are
+// untouched, and are pinned by the tests above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Run one call through the legacy auto-write path and hand back the note text. */
+async function noteFor(id, analysis) {
+  process.env.COMMLOG_AUTO_WRITE = 'true';
+  const payload = { ...baseCall(id), call_analysis: { ...baseCall(id).call_analysis, ...analysis } };
+  unifiedCallStore.addRetellCall(payload);
+  const od = stubOD({ match: confidentMatch });
+  try {
+    await webhooks.writeCommlogForAnalyzedCall(payload);
+    assert.equal(od.createCalls.length, 1, 'expected exactly one commlog write');
+    return od.createCalls[0].entry.Note;
+  } finally { od.restore(); }
+}
+
+const lineOf = (note, label) => (note.split('\n').find((l) => l.startsWith(`${label}:`)) || '').trim();
+
+test('analysis fields: the names the agent emits today are read', async () => {
+  const note = await noteFor('wh-fields-new', {
+    patient_status: 'existing_patient',
+    insurance_name: 'Humana',
+  });
+  assert.equal(lineOf(note, 'Patient Type'), 'Patient Type: existing_patient');
+  assert.equal(lineOf(note, 'Insurance'), 'Insurance: Humana');
+});
+
+test('analysis fields: the OLD names still render for calls captured under them', async () => {
+  const note = await noteFor('wh-fields-old', {
+    'new_patient or existing_patient': 'new_patient',
+    dental_insurance: 'Delta Dental Premier',
+  });
+  assert.equal(lineOf(note, 'Patient Type'), 'Patient Type: new_patient');
+  assert.equal(lineOf(note, 'Insurance'), 'Insurance: Delta Dental Premier');
+});
+
+test('analysis fields: the new name wins when a call carries both', async () => {
+  const note = await noteFor('wh-fields-both', {
+    patient_status: 'existing_patient',
+    'new_patient or existing_patient': 'new_patient',
+    insurance_name: 'Aetna',
+    dental_insurance: 'Cigna',
+  });
+  assert.equal(lineOf(note, 'Patient Type'), 'Patient Type: existing_patient');
+  assert.equal(lineOf(note, 'Insurance'), 'Insurance: Aetna');
+});
+
+test('analysis fields: both absent falls back to the honest defaults', async () => {
+  const note = await noteFor('wh-fields-absent', {});
+  assert.equal(lineOf(note, 'Patient Type'), 'Patient Type: unknown');
+  assert.equal(lineOf(note, 'Insurance'), 'Insurance: not provided');
+});
+
+test('analysis fields: an empty value is not an answer — it falls through', async () => {
+  // An empty string must not print a blank line into a chart note, and must not
+  // stop the older name from being read.
+  const note = await noteFor('wh-fields-empty', {
+    patient_status: '',
+    insurance_name: '',
+    dental_insurance: 'Guardian',
+  });
+  assert.equal(lineOf(note, 'Patient Type'), 'Patient Type: unknown');
+  assert.equal(lineOf(note, 'Insurance'), 'Insurance: Guardian');
+});
+
+test('analysis fields: the rest of the note is unchanged by the mapping', async () => {
+  const note = await noteFor('wh-fields-shape', {
+    patient_status: 'existing_patient',
+    insurance_name: 'MetLife',
+  });
+  assert.match(note, /^\[CareIN AI — Inbound Call\] Duration: \d+s/);
+  assert.ok(note.includes('--- Full Transcript ---'), 'transcript section still present');
+  assert.equal(lineOf(note, 'Appointment Booked'), 'Appointment Booked: no');
+  assert.equal(lineOf(note, 'Emergency'), 'Emergency: no');
+});
