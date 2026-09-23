@@ -118,6 +118,13 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   // when slice 2 adds one it demands hyg.write server-side at the mount.
   // A page renders the same for everyone who can open it.
   "/hyg": "hyg.read",
+  // Fee schedules. Read-gated at the route, which covers the import list and
+  // every import's preview. The UPLOAD demands fees.write server-side at the
+  // mount (requireReadWrite applies by HTTP method), so a reader who cannot
+  // import still opens the same page and is refused by the server if they try —
+  // the same shape RCM uses, and for the same reason: a button that is hidden
+  // teaches nobody why they cannot press it.
+  "/fees": "fees.read",
 };
 
 /** The action a path requires, or null if it is unrestricted. */
