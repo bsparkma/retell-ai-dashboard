@@ -111,26 +111,32 @@ const PERMISSIONS = Object.freeze({
    * queue but commit nothing", and an import a later slice posts into Open
    * Dental is a commit.
    *
-   * ─── rcm_biller is a DEFERRED decision, not an oversight ──────────────────
+   * ─── rcm_biller READS fee schedules. It does NOT post them. ───────────────
    *
-   * A biller is the person who most needs to see what a payer's schedule
-   * actually says — fee schedules are the input to every allowed-amount
-   * question RCM asks — so there is a real argument for granting both actions
-   * here. It is not taken in this slice, because
-   * routes/rcm/rcmGuard.test.js:273 pins `permissionsForRole('rcm_biller')` to
-   * RCM actions ONLY, with the reason stated at the assertion: "A biller is not
-   * a voice user or a coordinator." Widening a role across a module boundary is
-   * a product decision about what that job is, and taking it by editing
-   * somebody else's invariant inside an unrelated slice is how a permission map
-   * stops being readable as one table.
+   * Slice 2 deferred this rather than taking it, because
+   * routes/rcm/rcmGuard.test.js pinned `permissionsForRole('rcm_biller')` to
+   * RCM actions only and widening a role across a module boundary is a product
+   * decision, not a refactor.
    *
-   * So: raise it deliberately, with that test, when the module stops shipping
-   * dark. Adding a role to these two lists is a one-line change; a loosened
-   * guard is not a one-line change back.
+   * RATIFIED BY BEAU, 2026-09-22: billers read fee schedules; write stays
+   * admin + office. The argument for the read is that fee schedules are the
+   * input to every allowed-amount question RCM asks — a biller working a denial
+   * needs to see what the payer's schedule actually says, and sending them to
+   * ask an office manager for a screenshot is the workflow this replaces.
+   *
+   * The argument against the WRITE is the one that survived: posting a schedule
+   * changes what every procedure in a practice is worth, and `rcm_biller` is
+   * defined as "RCM end to end EXCEPT the acts that reach a chart or retire
+   * money". Repricing a practice belongs on that exception list, so the biller
+   * reads the preview and an office manager presses Post.
+   *
+   * The pin in rcmGuard.test.js is kept, with this exception stated AT the
+   * assertion rather than removed — a guard that is deleted to permit one
+   * change stops guarding the other twenty.
    */
 
   /** Read the fee-schedule surface: the import list, a batch, its parsed rows. */
-  'fees.read': Object.freeze(['admin', 'office']),
+  'fees.read': Object.freeze(['admin', 'office', 'rcm_biller']),
   /**
    * Any fee-schedule MUTATION — today, uploading a file and creating the import
    * batch it parses into.
@@ -140,6 +146,13 @@ const PERMISSIONS = Object.freeze({
    * requireReadWrite('fees.read', 'fees.write'), applied by HTTP METHOD, so the
    * upload demands the strong action BY CONSTRUCTION rather than by whoever
    * wrote the route remembering to decorate it.
+   *
+   * As of slice 3 this ALSO guards the act that writes fees into a practice's
+   * Open Dental database — POST /imports/:id/post and its rollback. Deliberately
+   * the SAME action rather than a new `fees.post`: uploading a schedule and
+   * posting one are the same job done by the same person, and splitting them
+   * would invent a role nobody at either practice holds. `rcm_biller` holds
+   * fees.read and NOT this, which is where the read/write line was drawn.
    */
   'fees.write': Object.freeze(['admin', 'office']),
 
