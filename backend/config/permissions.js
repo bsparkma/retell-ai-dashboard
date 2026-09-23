@@ -98,12 +98,8 @@ const PERMISSIONS = Object.freeze({
    * A fee schedule is a PAYER CONTRACT, not a chart. Nothing under /api/fees
    * carries patient data in this slice, and nothing under it reaches Open
    * Dental at all — the slice parses an uploaded PDF or CSV and shows the
-   * office what the file says. That is why the roles here are the business
-   * roles rather than the clinical ones.
-   *
-   * `rcm_biller` holds both actions. Fee schedules are the input to every
-   * allowed-amount question RCM asks, so the person who works denials is the
-   * person who most needs to see what the payer's schedule actually says.
+   * office what the file says. So the roles here are the business roles rather
+   * than the clinical ones, and today that means `admin` and `office` only.
    *
    * `hygiene` and `tc` deliberately hold NEITHER. A hygienist standing at a
    * chair and a treatment coordinator presenting a case both read fees through
@@ -111,13 +107,30 @@ const PERMISSIONS = Object.freeze({
    * granting it here would make "who can change what a procedure is worth"
    * unanswerable from this file.
    *
-   * `reviewer` also holds neither: its whole definition is "can work the RCM
-   * queue but commit nothing", and an import that a later slice posts into Open
+   * `reviewer` holds neither either: its whole definition is "can work the RCM
+   * queue but commit nothing", and an import a later slice posts into Open
    * Dental is a commit.
+   *
+   * ─── rcm_biller is a DEFERRED decision, not an oversight ──────────────────
+   *
+   * A biller is the person who most needs to see what a payer's schedule
+   * actually says — fee schedules are the input to every allowed-amount
+   * question RCM asks — so there is a real argument for granting both actions
+   * here. It is not taken in this slice, because
+   * routes/rcm/rcmGuard.test.js:273 pins `permissionsForRole('rcm_biller')` to
+   * RCM actions ONLY, with the reason stated at the assertion: "A biller is not
+   * a voice user or a coordinator." Widening a role across a module boundary is
+   * a product decision about what that job is, and taking it by editing
+   * somebody else's invariant inside an unrelated slice is how a permission map
+   * stops being readable as one table.
+   *
+   * So: raise it deliberately, with that test, when the module stops shipping
+   * dark. Adding a role to these two lists is a one-line change; a loosened
+   * guard is not a one-line change back.
    */
 
   /** Read the fee-schedule surface: the import list, a batch, its parsed rows. */
-  'fees.read': Object.freeze(['admin', 'office', 'rcm_biller']),
+  'fees.read': Object.freeze(['admin', 'office']),
   /**
    * Any fee-schedule MUTATION — today, uploading a file and creating the import
    * batch it parses into.
@@ -128,7 +141,7 @@ const PERMISSIONS = Object.freeze({
    * upload demands the strong action BY CONSTRUCTION rather than by whoever
    * wrote the route remembering to decorate it.
    */
-  'fees.write': Object.freeze(['admin', 'office', 'rcm_biller']),
+  'fees.write': Object.freeze(['admin', 'office']),
 
   // --- rcm ------------------------------------------------------------------
   /*

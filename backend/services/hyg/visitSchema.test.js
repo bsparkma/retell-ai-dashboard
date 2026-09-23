@@ -154,9 +154,25 @@ test('the hyg migrations sort after everything that came before them', () => {
   const hyg = files.filter((f) => f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
   const others = files.filter((f) => !f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
   assert.ok(hyg.length >= 2, 'expected the slice 2 and slice 3 migrations');
-  assert.ok(
-    Math.min(...hyg) > Math.max(...others),
-    'a hygiene migration sorts before one that already existed'
+
+  // NOT `min(hyg) > max(others)`, which is what this assertion used to say.
+  // That formulation held only while hygiene owned the NEWEST tenant migration
+  // in the repo, and it goes false the first time any other module adds one
+  // after the block — which is a normal thing to do, and which the fees module
+  // (migrations-tenant/1788700000000_fees_import.js) duly did. A test that has
+  // to be edited by every unrelated slice is a test that gets edited without
+  // being read.
+  //
+  // The property that actually protects a deploy is that nothing sorts INSIDE
+  // the hygiene block. A migration authored after the whole block is fine by
+  // construction — checkOrder only refuses one that lands BEHIND an
+  // already-deployed migration.
+  const lo = Math.min(...hyg);
+  const hi = Math.max(...hyg);
+  assert.deepEqual(
+    others.filter((n) => n > lo && n < hi),
+    [],
+    'a non-hygiene migration sorts inside the hygiene block'
   );
   // And they are in slice order among themselves.
   assert.deepEqual(hyg, [...hyg].sort((a, b) => a - b));

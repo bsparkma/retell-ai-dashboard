@@ -87,6 +87,7 @@ test('server.js: every non-voice module mount carries its OWN module guard', () 
     { mount: '/api/tc', module: 'tc' },
     { mount: '/api/rcm', module: 'rcm' },
     { mount: '/api/hyg', module: 'hyg' },
+    { mount: '/api/fees', module: 'fees' },
   ];
   for (const { mount, module } of guarded) {
     const line = mountLine(mount);
