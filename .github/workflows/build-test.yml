@@ -129,6 +129,19 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/rcm-verify-queries.js
 
+      # The fee-posting lifecycle, EXECUTED against the real migrated schema
+      # with synthetic data. Its sibling above proves statements PARSE; that
+      # cannot catch a CHECK, which is only evaluated when a row is really
+      # written. On 2026-09-24 claimBatchForPosting wrote half of
+      # posted_pair_check and the module had never posted a fee, with a green
+      # suite throughout — this step is what makes that unshippable. It runs in
+      # one transaction and rolls back, so it leaves nothing behind.
+      - name: fees lifecycle verification (real statements, real rows, real schema)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/fees-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:
