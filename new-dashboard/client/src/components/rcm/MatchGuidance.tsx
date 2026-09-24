@@ -57,10 +57,17 @@ import { Building2, Check, CheckCircle2, Info, Search } from "lucide-react";
 import Explainer from "@/components/rcm/Explainer";
 import { Link } from "wouter";
 import type { MatchCandidate, MatchSnapshot } from "@/features/rcm/api";
-import { agreement, fieldReadings, likelihood, type FieldReading } from "@/features/rcm/matchWords";
+import {
+  agreement,
+  claimNumberNote,
+  fieldReadings,
+  likelihood,
+  type FieldReading,
+} from "@/features/rcm/matchWords";
 import { CONFIDENCE_TONE, day, money } from "@/features/rcm/format";
 import { remittanceHref } from "@/features/rcm/flow";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import OdAccountFold from "@/components/rcm/OdAccountFold";
 
 export interface MatchGuidanceProps {
   snapshot: MatchSnapshot | null;
@@ -266,18 +273,30 @@ export default function MatchGuidance({
   const agrees = agreement(subject, eob);
   const readings = fieldReadings(subject, eob);
   /*
-   * "FITS PERFECTLY" IS A CLAIM, AND IT IS ONLY MADE WHEN IT IS TRUE.
+   * THE CONFIDENT HEADING IS A CLAIM, AND IT IS ONLY MADE WHEN IT IS TRUE.
    *
-   * The board's confident heading is "Found it — one claim in Open Dental fits
-   * this one perfectly." That is honest on exactly one shape: the carrier's
-   * claim number names this claim (the scorer's own tag) AND nothing the app can
-   * compare differs (`agreement()` returned a sentence rather than null). A
-   * clear leader that is merely AHEAD — the server did not call it ambiguous,
-   * but a date or an amount is off — keeps the shipped "This looks like the
-   * one", because "perfectly" over an amber row would be the heading
-   * contradicting the card under it.
+   * It is earned when nothing the app could compare differs — `agreement()`
+   * returned a sentence rather than null. A clear leader that is merely AHEAD
+   * (the server did not call it ambiguous, but a date or an amount is off) keeps
+   * the shipped "This looks like the one", because a confident heading over an
+   * amber row would be the heading contradicting the card under it.
+   *
+   * ── S8 FLOW-SPEED · THE CLAIM NUMBER NO LONGER GATES IT ───────────────────
+   * It used to require `readings.claimNumber.status === "agrees"` as well, and
+   * the heading read "fits this one perfectly". Both went, together, and for
+   * one reason: payers routinely echo a claim id of their own, so on the
+   * commonest harmless shape in the whole module — every comparable field
+   * agreeing, the claim number not tying — this screen hedged its heading and
+   * gave a biller nothing to tell that case apart from a real disagreement.
+   *
+   * The heading now says exactly what it can stand behind, in the words of the
+   * sentence under it: everything the app compared agrees. What the claim
+   * number did is one muted line of its own (`claimNumberNote`), and the
+   * ceremony it earns is still the press — `confirmMatch` raises the Q2
+   * interstitial on this exact fact, untouched.
    */
-  const perfect = agrees !== null && readings.claimNumber.status === "agrees";
+  const perfect = agrees !== null;
+  const claimNumber = claimNumberNote(subject, eob);
 
   // ── One clear candidate ────────────────────────────────────────────────────
   if (clear) {
@@ -299,7 +318,7 @@ export default function MatchGuidance({
           {linked
             ? "How the two sides line up"
             : perfect
-              ? "Found it — one claim in Open Dental fits this one perfectly."
+              ? "Found it — everything the app compared agrees."
               : "This looks like the one"}
         </h2>
 
@@ -353,6 +372,31 @@ export default function MatchGuidance({
           {agrees ??
             "There is not enough recorded on both sides to say they agree — read the evidence below before linking."}
         </p>
+
+        {/*
+          THE CARRIER'S CLAIM NUMBER, AS SMALL PRINT AND IN ONE TONE.
+
+          Muted whichever of the three cases it is: a number that does not tie is
+          the commonest harmless shape on this screen, and painting it would
+          teach a reader to discount the colour that is supposed to stop her. The
+          press is where that fact earns ceremony — `confirmMatch` raises the Q2
+          interstitial on it, unchanged. See `claimNumberNote`.
+        */}
+        <p
+          className="mt-1 text-xs text-muted-foreground"
+          data-testid="match-guidance-claim-number"
+          data-agrees={claimNumber.agrees ? "true" : "false"}
+        >
+          {claimNumber.text}
+        </p>
+
+        {/*
+          S8 FLOW-SPEED, ITEM 2 · WHAT IS ACTUALLY ON THE CHART CLAIM.
+          Folded, so it costs four words on arrival and the whole account when
+          somebody asks. Every figure is off the snapshot this panel already
+          reads — no new endpoint. See `OdAccountFold`.
+        */}
+        <OdAccountFold candidate={subject} testId="match-guidance-account" />
 
         {!linked && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -713,6 +757,15 @@ function CandidateSummary({
           </div>
         ))}
       </dl>
+
+      {/*
+        S8 FLOW-SPEED, ITEM 2 · THE SAME FOLD ON EVERY CARD.
+
+        A person choosing between two chart claims for one payment is choosing
+        between two sets of procedures, and the four rows above cannot show that.
+        Closed, it costs this card four words; open, it is the account.
+      */}
+      <OdAccountFold candidate={c} testId={`match-guidance-account-${c.odClaimNum}`} />
 
       <div className="mt-2 flex flex-col items-start gap-1">
         <button

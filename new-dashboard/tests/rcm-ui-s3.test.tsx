@@ -1142,6 +1142,13 @@ describe("the keys, and every case they stand down on", () => {
     });
     renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
     const cta = (await screen.findByTestId("rcm-cta")) as HTMLButtonElement;
+    /*
+     * WAIT FOR IT TO BE PRESSABLE, not merely present. The bar clicks the first
+     * ENABLED control in its primary slot, so a CTA still carrying `busy` from
+     * the page's own load is one Enter does nothing to — which is the correct
+     * behaviour and, unwaited, an intermittently failing test.
+     */
+    await waitFor(() => expect(cta.disabled).toBe(false));
     const pressed = vi.fn();
     cta.addEventListener("click", pressed);
 
@@ -1289,5 +1296,210 @@ describe("arriving from an approval", () => {
     const panel = await screen.findByTestId("post-this-check", {}, { timeout: 4000 });
     await new Promise((r) => setTimeout(r, 200));
     expect(seen).not.toContain(panel);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// S8 FLOW-SPEED, ITEM 2 — "In the patient's account"
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("what Open Dental holds, on the match panel", () => {
+  /** A chart line that disagrees with the carrier about what was billed. */
+  const DISAGREEING = {
+    lineId: "pl-1",
+    position: 1,
+    code: "D0150",
+    odClaimProcNum: 99001,
+    odCode: "D0150",
+    billedDeltaCents: 5400,
+    reason: null,
+  };
+
+  function odLine(over: Record<string, unknown> = {}) {
+    return {
+      claimProcNum: 99001,
+      procNum: 5001,
+      code: "D0150",
+      status: "C",
+      feeBilledCents: 21000,
+      insPayAmtCents: 0,
+      writeOffCents: 0,
+      dedAppliedCents: 0,
+      insEstCents: 15000,
+      isTransfer: false,
+      claimPaymentNum: null,
+      deleted: false,
+      blockedStatus: false,
+      ...over,
+    };
+  }
+
+  function withLines(over: Record<string, unknown> = {}) {
+    const base = candidate();
+    return snapshot({
+      candidates: [
+        { ...base, od: { ...base.od, lines: [odLine()] }, ...over },
+      ],
+    });
+  }
+
+  it("shows the chart claim's procedures, folded away until asked", async () => {
+    state.claim = { ...claim({ odMatchStatus: "candidates" }), matchSnapshot: withLines() };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const fold = await screen.findByTestId("match-guidance-account");
+    // A real <details>: shut on arrival, which is what keeps it off the budget.
+    expect(fold.tagName).toBe("DETAILS");
+    expect(fold.hasAttribute("open")).toBe(false);
+    expect(fold.querySelector("summary")?.textContent).toContain("In the patient’s account");
+
+    // The procedure, its billed fee and the estimate are all in there.
+    const row = within(fold).getByTestId("match-guidance-account-line-99001");
+    expect(row.textContent).toContain("D0150");
+    expect(row.textContent).toContain("$210.00");
+    expect(row.textContent).toContain("$150.00");
+  });
+
+  /*
+   * THE COLOUR RULING. A chart claim that has not been received is the NORMAL
+   * state of a claim this check is about to pay, so it renders neutral and says
+   * so in words. Amber and rose on these screens mean the two sides disagree.
+   */
+  it("renders a pending claim in the neutral style, and labels it", async () => {
+    state.claim = { ...claim({ odMatchStatus: "candidates" }), matchSnapshot: withLines() };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const standing = await screen.findByTestId("match-guidance-account-standing");
+    expect(standing.textContent).toBe("Pending in Open Dental");
+    expect(standing.getAttribute("data-received")).toBe("false");
+    expect(standing.className).not.toMatch(/amber|rose|red|destructive/);
+
+    const detail = screen.getByTestId("match-guidance-account-standing-detail");
+    expect(detail.textContent).toMatch(/usual state of a claim this check is about to pay/);
+    expect(detail.className).not.toMatch(/amber|rose|red|destructive/);
+  });
+
+  it("colours a line ONLY where it differs from the EOB", async () => {
+    const base = candidate();
+    state.claim = {
+      ...claim({ odMatchStatus: "candidates" }),
+      matchSnapshot: snapshot({
+        candidates: [
+          {
+            ...base,
+            od: { ...base.od, lines: [odLine(), odLine({ claimProcNum: 99002, code: "D1110" })] },
+            linePairs: [
+              DISAGREEING,
+              /* PAIRED, AND THEY AGREE. This is the row that separates "the
+                 match compared these and they differ" from "the match compared
+                 these at all" — colouring it would paint every matched line. */
+              { ...DISAGREEING, lineId: "pl-2", position: 2, code: "D1110", odClaimProcNum: 99002, odCode: "D1110", billedDeltaCents: 0 },
+            ],
+          },
+        ],
+      }),
+    };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const differs = await screen.findByTestId("match-guidance-account-line-99001");
+    expect(differs.getAttribute("data-differs")).toBe("true");
+    expect(differs.textContent).toContain("$54.00 apart");
+
+    // PAIRED AND EQUAL: compared, and they agree. Not coloured.
+    const agreeing = screen.getByTestId("match-guidance-account-line-99002");
+    expect(agreeing.getAttribute("data-differs")).toBeNull();
+    expect(agreeing.textContent).not.toContain("apart");
+  });
+
+  it("leaves a line nobody compared uncoloured too — silence is not disagreement", async () => {
+    const base = candidate();
+    state.claim = {
+      ...claim({ odMatchStatus: "candidates" }),
+      matchSnapshot: snapshot({
+        candidates: [
+          { ...base, od: { ...base.od, lines: [odLine({ claimProcNum: 99003, code: "D0274" })] }, linePairs: [] },
+        ],
+      }),
+    };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const row = await screen.findByTestId("match-guidance-account-line-99003");
+    expect(row.getAttribute("data-differs")).toBeNull();
+  });
+
+  it("puts the same fold on every candidate when the app has not chosen", async () => {
+    const base = candidate();
+    const other = candidate({ odClaimNum: 53712, evidence: [] as unknown[] });
+    state.claim = {
+      ...claim({ odMatchStatus: "candidates" }),
+      matchSnapshot: snapshot({
+        ambiguous: true,
+        candidates: [
+          { ...base, od: { ...base.od, lines: [odLine()] } },
+          { ...other, od: { ...other.od, lines: [odLine({ claimProcNum: 99009 })] } },
+        ],
+      }),
+    };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    await screen.findByTestId("match-guidance-unsure");
+    expect(screen.getByTestId("match-guidance-account-53648")).toBeTruthy();
+    expect(screen.getByTestId("match-guidance-account-53712")).toBeTruthy();
+  });
+});
+
+describe("the agreement summary leads with what the team verifies", () => {
+  it("names patient, service and money before the claim number", async () => {
+    state.claim = { ...claim({ odMatchStatus: "candidates" }), matchSnapshot: snapshot() };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const sentence = (await screen.findByTestId("match-guidance-agreement")).textContent ?? "";
+    const claimNumberAt = sentence.toLowerCase().indexOf("claim number");
+    for (const field of ["name", "service date", "billed total"]) {
+      expect(sentence.toLowerCase().indexOf(field)).toBeLessThan(claimNumberAt);
+    }
+  });
+
+  /*
+   * AND ITS MISMATCH ALONE IS NOT A WARNING. Payers routinely echo a claim id of
+   * their own; a screen that paints that amber teaches a reader to discount the
+   * colour that is supposed to stop her. The ceremony it earns is the press —
+   * `MatchAnywayConfirm` (ruling Q2), which is untouched.
+   */
+  it("drops the claim number to small print, in one muted tone either way", async () => {
+    for (const [evidence, agrees] of [
+      [[{ tag: "CLAIM_NUMBER_MATCH", weight: 35, label: "", detail: "" }], "true"],
+      [[], "false"],
+    ] as const) {
+      state.claim = {
+        ...claim({ odMatchStatus: "candidates" }),
+        matchSnapshot: snapshot({ candidates: [candidate({ evidence: evidence as unknown[] })] }),
+      };
+      renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+      const note = await screen.findByTestId("match-guidance-claim-number");
+      expect(note.getAttribute("data-agrees")).toBe(agrees);
+      expect(note.className).not.toMatch(/amber|rose|red|destructive/);
+      expect(note.className).toMatch(/text-xs/);
+      cleanup();
+    }
+  });
+
+  /*
+   * THE HEADING NO LONGER HEDGES OVER A CLAIM NUMBER ALONE. Everything the app
+   * could compare agrees, and that is exactly what it says.
+   */
+  it("stays confident when every compared field agrees and only the claim number does not", async () => {
+    state.claim = {
+      ...claim({ odMatchStatus: "candidates" }),
+      matchSnapshot: snapshot({ candidates: [candidate({ evidence: [] as unknown[] })] }),
+    };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const panel = await screen.findByTestId("match-guidance-confident");
+    expect(panel.textContent).toContain("Found it — everything the app compared agrees.");
+    expect(screen.getByTestId("match-guidance-claim-number").getAttribute("data-agrees")).toBe(
+      "false",
+    );
   });
 });
