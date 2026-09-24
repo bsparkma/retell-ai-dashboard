@@ -30,7 +30,7 @@
  * GET behind "Match it up".
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link, useRoute, useSearchParams } from "wouter";
+import { Link, useLocation, useRoute, useSearchParams } from "wouter";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Info, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOffice } from "@/contexts/OfficeContext";
@@ -56,6 +56,7 @@ import { claimFlow, claimHref, claimStateLine, remittanceHref } from "@/features
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench, { BenchHeader } from "@/components/rcm/ClaimWorkbench";
 import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
+import RcmActionBar from "@/components/rcm/RcmActionBar";
 import MatchGuidance from "@/components/rcm/MatchGuidance";
 import MatchAnywayConfirm from "@/components/rcm/MatchAnywayConfirm";
 import { claimNumberAgrees, disagreements } from "@/features/rcm/matchWords";
@@ -74,8 +75,22 @@ const NOTICE_TONE = {
   bad: "border-rose-300 bg-rose-50/70 text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200",
 } as const;
 
+/**
+ * The keys this screen answers, as the overlay prints them.
+ *
+ * A module constant so the overlay's copy and `useRcmKeys`'s handler are read
+ * side by side in review; a legend that drifts from the keys is worse than no
+ * legend, because it teaches a press that does nothing.
+ */
+const KEY_HINTS = [
+  { keys: "Enter", does: "the button on the right" },
+  { keys: "[ or k", does: "previous claim" },
+  { keys: "] or j", does: "next claim" },
+];
+
 export default function ClaimMatchPage() {
   const [, params] = useRoute("/rcm/claims/:id");
+  const [, navigate] = useLocation();
   const claimId = params?.id ?? "";
   const { office: selected } = useOffice();
   const auth = useAuth();
@@ -356,6 +371,17 @@ export default function ClaimMatchPage() {
         }
       : null;
 
+  /**
+   * The keyboard's half of the pager — the SAME destination its two links use.
+   *
+   * `claimHref` is what `BenchHeader` builds its hrefs from, so `]` and *Next*
+   * cannot disagree about which claim comes next. Returns null at either end of
+   * the check, which is how `useRcmKeys` learns to leave that key alone rather
+   * than wrapping round to a claim nobody asked for.
+   */
+  const pagerGo = (id: string | null) =>
+    id ? () => navigate(claimHref(id, fromBatchId)) : null;
+
   /*
    * ── THE NEXT STEP'S ONE CONTROL, DECIDED ONCE (S8) ───────────────────────────
    *
@@ -373,9 +399,18 @@ export default function ClaimMatchPage() {
    *
    * S8 · WHERE IT IS DRAWN MOVED, NOT HOW IT IS DECIDED. It used to be the
    * rail's own CTA; it is now drawn by `RcmPrimaryAction` — the same component
-   * the check's header uses, with the same testids, label, disabled state and
-   * printed reason — inside the verdict band at the bottom of the workbench.
-   * The rail is told to draw none (`hideCta`), so there is still one copy.
+   * the check's page uses, with the same testids, label, disabled state and
+   * printed reason. The rail is told to draw none (`hideCta`), so there is
+   * still one copy.
+   *
+   * S8 FLOW-SPEED · AND IT MOVED AGAIN, FOR A MEASURED REASON. The verdict band
+   * sits under two tall panels of evidence: at 1280x800 this button rendered at
+   * y=2190 on a linked claim and y=1566 on a decided one, on a screen 800px
+   * high. The band still carries the verdict SENTENCE — the S8 reading order,
+   * conclusion last, is intact — and the one control that acts on it moved to
+   * the sticky `RcmActionBar` at the foot, which is the same slot the check and
+   * approve screens use. One copy, one component, in reach at every scroll
+   * depth instead of only at the bottom.
    */
   const claimflow = claimFlow(
     claim,
@@ -658,13 +693,15 @@ export default function ClaimMatchPage() {
           </Link>
         )}
         {/*
-          It renders whenever there is a check to save OR a claim either side, so
-          a one-claim check still gets the header rather than losing the control
-          because there is nobody to page to.
+          S8 FLOW-SPEED · THE PAGER AND *SAVE FOR TOMORROW* MOVED TO THE BAR.
+
+          They were up here, opposite the way back, at y=24 — which is out of
+          reach the moment anybody scrolls, on a page between 1,900 and 2,300
+          pixels tall. Neither opens a panel, so neither is bound by Stage C §8's
+          anchored-panel ruling the way the check page's pair is, and both now
+          ride in the same slot on every flow screen: the left of
+          `RcmActionBar`. See the bar at the foot of this page.
         */}
-        {(park || (pager && pager.total > 1)) && (
-          <BenchHeader siblings={pager} fromBatchId={fromBatchId} park={park} />
-        )}
       </div>
 
       {/*
@@ -908,7 +945,26 @@ export default function ClaimMatchPage() {
         onConfirm={confirmMatch}
         onDecide={decide}
         documentHref={documentHref(office, data.claim.provenance?.uploadId)}
-        bandAction={
+      />
+
+      {/*
+        ── THE BAR (S8 flow-speed, item 1) ─────────────────────────────────────
+        The claim screen's one primary, the pager, and *Save for tomorrow* — all
+        of it at the foot, sticky, in reach wherever the reader is on a page two
+        and a half screens tall.
+
+        `[` / `]` and `k` / `j` walk the check's claims without the hand leaving
+        the keyboard, and they go exactly where the two links go: `href(...)` is
+        the pager's own, built once in `BenchHeader`, so a key and a click cannot
+        land on different claims.
+      */}
+      <RcmActionBar
+        left={
+          park || (pager && pager.total > 1) ? (
+            <BenchHeader siblings={pager} fromBatchId={fromBatchId} park={park} />
+          ) : null
+        }
+        primary={
           bandCta ? (
             <RcmPrimaryAction
               cta={bandCta}
@@ -920,7 +976,16 @@ export default function ClaimMatchPage() {
             />
           ) : null
         }
-        nextUp={nextUp}
+        note={
+          nextUp ? (
+            <span data-testid="verdict-band-next">
+              Next: claim {nextUp.position} of {nextUp.total} — {nextUp.name}
+            </span>
+          ) : null
+        }
+        onPrev={pagerGo(pager?.prevId ?? null)}
+        onNext={pagerGo(pager?.nextId ?? null)}
+        hints={KEY_HINTS}
       />
     </div>
   );

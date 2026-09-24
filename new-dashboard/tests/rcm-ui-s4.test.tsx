@@ -264,6 +264,8 @@ const state = vi.hoisted(() => ({
   parked: [] as { batchId: string; note?: string }[],
   parkFails: null as Error | null,
   odHealth: null as unknown,
+  /** What POST /approve answers — S8 flow-speed, item 3. */
+  approveResult: null as unknown,
 }));
 
 vi.mock("@/contexts/AuthContext", async (importOriginal) => {
@@ -348,6 +350,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       drainEnabled: false,
     })),
     unparkRemittance: vi.fn(async () => ({ wasParked: false })),
+    approveRemittance: vi.fn(async () => {
+      if (!state.approveResult) throw new Error("no approve fixture");
+      return state.approveResult;
+    }),
   };
 });
 
@@ -382,6 +388,7 @@ beforeEach(() => {
   state.parked = [];
   state.parkFails = null;
   state.odHealth = null;
+  state.approveResult = null;
 });
 
 afterEach(cleanup);
@@ -471,8 +478,10 @@ describe("W-1 · the headline and the ticks come from one function", () => {
     expect(line.textContent).not.toMatch(/waiting/i);
     expect(screen.queryByTestId("approve-nothing-postable")).toBeNull();
     // The forward path W-1 said was missing.
+    /* S8 flow-speed item 3: it lands on the Post step itself. The label has
+       said "to post it" since W-1; the link now agrees with the label. */
     expect(screen.getByTestId("approve-onward-post").getAttribute("href")).toBe(
-      "/rcm/remittances/b-1",
+      "/rcm/remittances/b-1?next=post",
     );
     /*
      * And no sentence about a moment that has already passed. Approving froze
@@ -1190,6 +1199,100 @@ describe("sentence cells still wrap", () => {
       const cls = typeof el.className === "string" ? el.className : "";
       expect(cls, `${el.tagName}.${cls} clips the sentence`).not.toMatch(CLIPPING);
       if (el.dataset.testid === "chart-panel") break;
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// S8 FLOW-SPEED, ITEM 3 — where an approval lands
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Approving is the MIDDLE of the job. This screen used to end it with one solid
+// *Back to the check* — a direction rather than a next step, dropping a biller
+// at the top of a 1,300px page with nothing said about what to do there, and the
+// Post step some 500px down it.
+//
+// The result itself says which of the two honest destinations applies, so both
+// are pinned here, and so is the thing neither may ever be: a list.
+
+describe("approving lands on the work, never on a list", () => {
+  /** The result shape the route returns. Synthetic throughout. */
+  function approveResult(over: Record<string, unknown> = {}) {
+    return {
+      office: "roland",
+      batchId: "b-1",
+      queued: [{ claimId: "c-1", claimNumber: "53648", patientName: "Test 2, Stedi" }],
+      withheld: [] as Record<string, unknown>[],
+      intendedTotalCents: 15000,
+      note: "Nothing has reached Open Dental. The check is lined up to post.",
+      approvedBy: "Billing Person",
+      ...over,
+    };
+  }
+
+  async function approve() {
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    fireEvent.click(await screen.findByTestId("approve-button"));
+    return screen.findByTestId("approve-result");
+  }
+
+  it("goes to THIS check's Post step when nothing was held back", async () => {
+    state.approveResult = approveResult();
+    await approve();
+
+    const onward = screen.getByTestId("approve-back-after");
+    expect(onward.getAttribute("href")).toBe("/rcm/remittances/b-1?next=post");
+    expect(onward.textContent).toContain("Take me to the check to post it");
+    expect(screen.getByTestId("approve-onward-next").textContent).toBe(
+      "Next: the Post step on this check.",
+    );
+  });
+
+  it("goes to the claim that was held back, and names it, when one was", async () => {
+    state.approveResult = approveResult({
+      queued: [],
+      withheld: [
+        {
+          claimId: "c-2",
+          claimNumber: "53712",
+          patientName: "Test, MangoTest",
+          checks: [{ code: "reviewed", label: "Checked over", passed: false, detail: null }],
+        },
+      ],
+    });
+    await approve();
+
+    const onward = screen.getByTestId("approve-back-after");
+    expect(onward.getAttribute("href")).toBe("/rcm/claims/c-2?from=b-1");
+    expect(onward.textContent).toContain("Open Test, MangoTest");
+    expect(screen.getByTestId("approve-onward-next").textContent).toBe(
+      "Next: 1 claim on this check still needs you.",
+    );
+  });
+
+  /*
+   * A list is where somebody goes when they have FINISHED. This check is not
+   * finished either way, and sending a person to a list to find their way back
+   * into the thing they were already holding is the navigation this slice is
+   * about. Asserted over both destinations at once, because the failure this
+   * catches is a future edit picking the easy href.
+   */
+  it("never lands on the Checks list, whichever destination it picked", async () => {
+    for (const result of [
+      approveResult(),
+      approveResult({
+        queued: [],
+        withheld: [
+          { claimId: "c-2", claimNumber: "53712", patientName: "Test, MangoTest", checks: [] },
+        ],
+      }),
+    ]) {
+      state.approveResult = result;
+      await approve();
+      const href = screen.getByTestId("approve-back-after").getAttribute("href");
+      expect(href).not.toBe("/rcm/remittances");
+      expect(href).not.toBe("/rcm");
+      cleanup();
     }
   });
 });

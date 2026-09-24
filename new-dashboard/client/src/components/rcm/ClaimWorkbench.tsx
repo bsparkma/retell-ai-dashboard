@@ -129,25 +129,6 @@ export interface ClaimWorkbenchProps {
   onDecide: (lineId: string, decision: LineDecision, reason: string | null) => void;
   /** The document this claim's numbers were read from, when there is one. */
   documentHref: string | null;
-  /**
-   * S8 · THE NEXT STEP'S ONE CONTROL, drawn inside the verdict band.
-   *
-   * The PAGE builds it — it owns `claimFlow`, the handlers and the rule for when
-   * the matching guidance is already offering the link — and hands this
-   * component the finished node. So there is still exactly one place the CTA is
-   * decided and one place it is drawn; only the place moved, from the top rail
-   * to the band that says whether the patient's number is right, which is the
-   * thing a person reads just before pressing it. Null draws nothing.
-   */
-  bandAction?: React.ReactNode;
-  /**
-   * S8 · "Next: claim 3 of 6 — so-and-so", printed under an ENABLED primary.
-   *
-   * From the check's own claim list, which the page already reads for the
-   * pager. Null when there is no next claim, or the list did not load — the
-   * line is dropped rather than guessed at.
-   */
-  nextUp?: { position: number; total: number; name: string } | null;
 }
 
 export default function ClaimWorkbench({
@@ -166,8 +147,6 @@ export default function ClaimWorkbench({
   onConfirm,
   onDecide,
   documentHref,
-  bandAction = null,
-  nextUp = null,
 }: ClaimWorkbenchProps) {
   const verdict = claim.verdict ?? null;
   const identity = claim.identity ?? null;
@@ -247,8 +226,12 @@ export default function ClaimWorkbench({
         ── THE VERDICT BAND, ACROSS THE BOTTOM ─────────────────────────────────
         The verdict module's own sentence, registers and figures, rendered by
         the same `VerdictLine` as before — nothing re-derived, nothing reworded.
-        What is new is only what sits beside it: the next step's one control,
-        and when that control is live, which claim comes after this one.
+
+        S8 FLOW-SPEED: the control that ACTS on the conclusion left this band for
+        the sticky bar at the foot of the page. The reading order S8 chose is
+        unchanged — panels, then conclusion — and the band is still the last
+        thing read before the press; the button is simply no longer 1,400 pixels
+        below the fold when the reader gets there. See `RcmActionBar`.
       */}
       <div className="mt-4" data-testid="verdict-band">
         <VerdictLine
@@ -257,19 +240,6 @@ export default function ClaimWorkbench({
           confirmedAt={confirmedAt}
           patientName={claim.patientName}
         />
-        {bandAction && (
-          <div
-            className="mt-3 flex flex-col items-end gap-1"
-            data-testid="verdict-band-action"
-          >
-            {bandAction}
-            {nextUp && (
-              <p className="text-xs text-muted-foreground" data-testid="verdict-band-next">
-                Next: claim {nextUp.position} of {nextUp.total} — {nextUp.name}
-              </p>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );

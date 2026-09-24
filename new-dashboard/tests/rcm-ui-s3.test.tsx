@@ -350,6 +350,56 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       postingEnabled: false,
       drainEnabled: false,
     })),
+    /* S8 flow-speed item 3: the check page only draws `PostThisCheck` once the
+       check HAS a posting, and the panel reads its own plan. Both are needed
+       for the arrival to have anywhere to land. */
+    getPostingPlan: vi.fn(async (office: string, queueId: string) => ({
+      office,
+      lines: [] as unknown[],
+      claims: [] as unknown[],
+      canDrain: true,
+      drainRequires: "rcm.post",
+      postingEnabled: true,
+      drainEnabled: true,
+      documentAttach: {
+        implemented: true,
+        status: null,
+        error: null,
+        at: null,
+        documents: [] as unknown[],
+        canRetry: true,
+        retryRequires: "rcm.post",
+      },
+      plan: {
+        queueId,
+        office,
+      batchId: "b-1",
+      status: "approved",
+      statusLabel: "queued",
+      blockedReason: null,
+      withdrawnReason: null,
+      withdrawnNote: null,
+      withdrawnAt: null,
+      step: null,
+      isRecoupment: false,
+      documentAttachStatus: null,
+      carrierEobDate: "2026-03-01",
+      intendedTotalCents: 15000,
+      postedTotalCents: 0,
+      odClaimPaymentNum: null,
+      reconciledAt: null,
+      approvedAt: "2026-03-05T18:50:00.000Z",
+      approvedBy: "Billing Person",
+      startedAt: null,
+      finishedAt: null,
+      drainAttemptAt: null,
+      drainedBy: null,
+      attemptCount: 0,
+      lastError: null,
+        checkNumber: "830200001",
+        payer: "SYNTHETIC DENTAL",
+      },
+    })),
     getRecoupmentChecklist: vi.fn(async () => {
       throw new Error("no takeback on this fixture");
     }),
@@ -938,7 +988,7 @@ describe("the check's header", () => {
     expect(summary.textContent).not.toContain("—");
   });
 
-  it("carries Save for tomorrow and Set aside beside the next verb", async () => {
+  it("carries Save for tomorrow and Set aside above the rail", async () => {
     renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
     const page = await screen.findByTestId("rcm-remittance-detail");
 
@@ -947,14 +997,297 @@ describe("the check's header", () => {
     expect(within(actions).getByTestId("check-set-aside")).toBeTruthy();
 
     /*
-     * ALL THREE ABOVE THE RAIL — the header asks "what happens to this check
-     * now", and its three answers belong together rather than one at the top
-     * and two below a five-step diagram.
+     * THE TWO QUIET ANSWERS STAY ABOVE THE RAIL, and they stay in NORMAL FLOW:
+     * Stage C §8 rules that their panels push the claim list down rather than
+     * covering it, because deciding to set a check aside is deciding about the
+     * claims underneath. Nothing in S8 flow-speed touched that.
      */
     const rail = screen.getByTestId("rcm-stepper");
     const order = Node.DOCUMENT_POSITION_FOLLOWING;
     expect(page.contains(actions)).toBe(true);
     expect(actions.compareDocumentPosition(rail) & order).toBeTruthy();
-    expect(screen.getByTestId("rcm-cta").compareDocumentPosition(rail) & order).toBeTruthy();
+  });
+
+  /*
+   * ── S8 FLOW-SPEED · THE NEXT VERB MOVED, AND THIS IS WHERE IT WENT ─────────
+   *
+   * Until this slice the CTA was asserted ABOVE the rail, with the two quiet
+   * actions, on the reasoning that the header asks "what happens to this check
+   * now" and its three answers belong together.
+   *
+   * Measuring the shipped screens at 1280x800 with the app's own CSS said what
+   * that reasoning missed: it is true of THIS page, whose header sits at y=60,
+   * and false of the two screens either side of it — the claim page's primary
+   * rendered at y=2190 and the approve page's at y=1122, both well past an
+   * 800px fold. A slot that is only in reach on one of three flow screens is
+   * not a slot a biller can learn.
+   *
+   * So the CTA is now in `RcmActionBar`, sticky, at the foot — the same place
+   * on every flow screen, in reach at every scroll depth. It is still exactly
+   * one control, still `flow.cta`, still drawn by `RcmPrimaryAction`, and the
+   * rail is still told not to draw a second copy. Only the position moved.
+   */
+  it("draws the next verb once, in the sticky bar at the foot", async () => {
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    const bar = await screen.findByTestId("rcm-action-bar");
+    const cta = screen.getByTestId("rcm-cta");
+
+    // ONE copy, and it is inside the bar.
+    expect(screen.getAllByTestId("rcm-cta")).toHaveLength(1);
+    expect(bar.contains(cta)).toBe(true);
+
+    // The bar comes after the rail and after the claim list: it is the foot of
+    // the page, not a second header.
+    const order = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(screen.getByTestId("rcm-stepper").compareDocumentPosition(bar) & order).toBeTruthy();
+
+    // And it sticks, which is the whole point of having moved it.
+    expect(bar.className.split(/\s+/)).toContain("sticky");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// S8 FLOW-SPEED, ITEM 1 — the sticky bar, and the keys
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The owner worked a real EOB and could not find the button. Measuring the
+// shipped screens at 1280x800 with the app's own CSS said why: the claim page's
+// primary rendered at y=2190 when the claim was linked and y=1566 once its lines
+// were decided, on a screen 800px high. These pin the fix — and, more usefully,
+// pin the two things that would quietly undo it: a second copy of the primary
+// appearing where the old one was, and Enter drifting away from the button.
+
+describe("the claim screen's next press is in the bar, once", () => {
+  it("draws the primary in the bar and nowhere else", async () => {
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot({ confirmed: { odClaimNum: 53648 } }),
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const bar = await screen.findByTestId("rcm-action-bar");
+    const cta = screen.getByTestId("rcm-cta");
+    expect(screen.getAllByTestId("rcm-cta")).toHaveLength(1);
+    expect(bar.contains(cta)).toBe(true);
+
+    /*
+     * AND NOT IN THE VERDICT BAND ANY MORE. The band still carries the verdict
+     * SENTENCE — S8's reading order, panels then conclusion, is untouched — and
+     * the control that acts on the conclusion is what moved.
+     */
+    const band = screen.getByTestId("verdict-band");
+    expect(band.contains(cta)).toBe(false);
+  });
+
+  it("puts the pager and Save for tomorrow in the same slot, on the left", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: remittance(),
+      claims: [claim({ claimId: "c-1" }), claim({ claimId: "c-2", claimNumber: "53712" })],
+    };
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+
+    const left = await screen.findByTestId("rcm-action-bar-left");
+    await waitFor(() => expect(within(left).getByTestId("claim-next")).toBeTruthy());
+    expect(within(left).getByTestId("claim-park")).toBeTruthy();
+  });
+});
+
+describe("the keys, and every case they stand down on", () => {
+  /** The claim page, with a sibling either side so the pager is real. */
+  async function threeClaims() {
+    state.detail = {
+      office: "roland",
+      remittance: remittance(),
+      claims: [
+        claim({ claimId: "c-0", claimNumber: "53600" }),
+        claim({ claimId: "c-1" }),
+        claim({ claimId: "c-2", claimNumber: "53712" }),
+      ],
+    };
+    const memory = renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    await screen.findByTestId("rcm-action-bar");
+    await waitFor(() => expect(screen.getByTestId("claim-next")).toBeTruthy());
+    return memory;
+  }
+
+  it("walks the check with the brackets and with j and k, to the pager's own targets", async () => {
+    const memory = await threeClaims();
+    const next = screen.getByTestId("claim-next").getAttribute("href");
+
+    fireEvent.keyDown(window, { key: "]" });
+    expect(`${memory.history.at(-1)}`).toBe(next);
+  });
+
+  it("k goes the other way", async () => {
+    const memory = await threeClaims();
+    const prev = screen.getByTestId("claim-prev").getAttribute("href");
+
+    fireEvent.keyDown(window, { key: "k" });
+    expect(`${memory.history.at(-1)}`).toBe(prev);
+  });
+
+  /*
+   * ENTER PRESSES THE BUTTON THE BAR IS DRAWING — the same node, not a second
+   * implementation of what it does. `RcmActionBar` clicks its own primary, so a
+   * page that changed its CTA's handler could not hand the keyboard a different
+   * act from the mouse.
+   */
+  it("Enter presses the bar's own primary", async () => {
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot({ confirmed: { odClaimNum: 53648 } }),
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    const cta = (await screen.findByTestId("rcm-cta")) as HTMLButtonElement;
+    const pressed = vi.fn();
+    cta.addEventListener("click", pressed);
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * THE REVIEW NOTE AND THE SET-ASIDE REASON ARE BOTH ON THESE SCREENS. Enter
+   * inside a note must end a line; it must never approve, review or navigate.
+   */
+  it("stands down while the caret is in a field", async () => {
+    await threeClaims();
+    const box = document.createElement("textarea");
+    document.body.appendChild(box);
+    const before = screen.getByTestId("claim-next").getAttribute("href");
+
+    fireEvent.keyDown(box, { key: "]" });
+    fireEvent.keyDown(box, { key: "j" });
+    // Still on the same claim: the pager's target has not become the page.
+    expect(screen.getByTestId("claim-next").getAttribute("href")).toBe(before);
+    box.remove();
+  });
+
+  it("stands down when a modifier is held", async () => {
+    const memory = await threeClaims();
+    const depth = memory.history.length;
+    fireEvent.keyDown(window, { key: "]", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(memory.history.length).toBe(depth);
+  });
+
+  /*
+   * A BUTTON WITH THE FOCUS RING ON IT ALREADY ANSWERS ENTER. Firing the page's
+   * primary as well would be one press doing two things — the "two controls, one
+   * act" shape this module keeps deleting, arrived at through the keyboard.
+   */
+  it("stands down when the focus is already on a control", async () => {
+    state.claim = claim({
+      odMatchStatus: "confirmed",
+      odClaimNum: 53648,
+      matchSnapshot: snapshot({ confirmed: { odClaimNum: 53648 } }),
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
+    const cta = (await screen.findByTestId("rcm-cta")) as HTMLButtonElement;
+    const pressed = vi.fn();
+    cta.addEventListener("click", pressed);
+
+    screen.getByTestId("run-match").focus();
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(pressed).not.toHaveBeenCalled();
+  });
+
+  it("opens and closes the key list, and costs no words while it is shut", async () => {
+    await threeClaims();
+    expect(screen.queryByTestId("rcm-action-bar-keys")).toBeNull();
+
+    fireEvent.keyDown(window, { key: "?" });
+    const keys = await screen.findByTestId("rcm-action-bar-keys");
+    // The legend names the keys the handler actually answers.
+    expect(keys.textContent).toContain("Enter");
+    expect(keys.textContent).toContain("[ or k");
+    expect(keys.textContent).toContain("] or j");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("rcm-action-bar-keys")).toBeNull());
+  });
+
+  /*
+   * THE TRIGGER IS A GLYPH, NOT A WORD. The budget counts what a reader reads,
+   * and a legend for a legend is the first thing that should not cost a
+   * sentence; the name a screen reader speaks is on `aria-label`, which the
+   * sweep's banned-word and office-key scans still read.
+   */
+  it("names the trigger for a screen reader without printing a word", async () => {
+    await threeClaims();
+    const toggle = screen.getByTestId("rcm-action-bar-keys-toggle");
+    expect(toggle.getAttribute("aria-label")).toBe("Keyboard shortcuts");
+    expect((toggle.textContent ?? "").trim()).toBe("");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// S8 FLOW-SPEED, ITEM 3 — arriving at the Post step
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `?next=post` is the approve screen saying which step it is handing over to.
+// It is a SCROLL HINT and nothing else: no path, slug or state machine changed,
+// and the page renders identically without it, which is what a bookmark gets.
+
+describe("arriving from an approval", () => {
+  /** jsdom implements neither, and the page is entitled to call both. */
+  function stubScrolling() {
+    const seen: HTMLElement[] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: HTMLElement) {
+      seen.push(this);
+    } as unknown as typeof Element.prototype.scrollIntoView;
+    return seen;
+  }
+
+  /** A check whose claims are approved, so the post panel is the live step. */
+  function readyToPost() {
+    state.detail = {
+      office: "roland",
+      remittance: remittance({
+        attentionReasons: [] as string[],
+        attentionObservations: [] as string[],
+        unmatchedClaimCount: 0,
+        queuedClaimCount: 1,
+        needsAttention: false,
+        plans: [{ queueId: "q-1", status: "approved" }],
+      }),
+      claims: [
+        claim({
+          odMatchStatus: "confirmed",
+          odClaimNum: 53648,
+          reviewedAt: "2026-03-03T16:00:00.000Z",
+          reviewedBy: "Billing Person",
+          postingQueueId: "q-1",
+          approvedAt: "2026-03-03T16:05:00.000Z",
+        }),
+      ],
+    };
+  }
+
+  it("takes the reader to the post panel, not to the top of the page", async () => {
+    const seen = stubScrolling();
+    readyToPost();
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1", "next=post");
+
+    const panel = await screen.findByTestId("post-this-check", {}, { timeout: 4000 });
+    await waitFor(() => expect(seen).toContain(panel));
+  });
+
+  /*
+   * AND IT IS A HINT, NOT A ROUTE. Without it the page is the page it has always
+   * been: nothing is scrolled, nothing is focused, and a bookmark to this check
+   * behaves exactly as it did before this slice.
+   */
+  it("does nothing at all without it", async () => {
+    const seen = stubScrolling();
+    readyToPost();
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+
+    const panel = await screen.findByTestId("post-this-check", {}, { timeout: 4000 });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(seen).not.toContain(panel);
   });
 });
