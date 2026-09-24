@@ -974,4 +974,55 @@ describe.skipIf(!enabled)("workbench screenshots", () => {
     await screen.findByTestId("approve-needs-permission");
     dump("approve-04-reviewer");
   });
+
+  /*
+   * S8 FLOW-SPEED, ITEM 3 — the OTHER landing.  above is the
+   * branch where a claim was held back and the way onward is that claim; this is
+   * the branch where nothing was, and the way onward is this check's Post step.
+   */
+  it("s8-approve-onward-post — approved clean, and the next step is Post", async () => {
+    shotState.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [CLAIM_FLAGGED],
+    };
+    shotState.approval = {
+      office: "roland",
+      batchId: "b-1",
+      canApprove: true,
+      approveRequires: "rcm.write",
+      claims: [POSTABLE_CLAIM],
+      postableCount: 1,
+      withheldCount: 0,
+      queuedCount: 0,
+      balanced: true,
+      differenceCents: 0,
+    };
+    shotState.approveResult = {
+      office: "roland",
+      batchId: "b-1",
+      queueId: "43ae34f7-690c-5f10-b264-6211b95fca8a",
+      approvedBy: "Fixture Lead",
+      queued: [
+        {
+          claimId: "c-1",
+          claimNumber: "FIXCLM-ROL-0001",
+          patientName: "Stedi Test 2",
+          odClaimNum: 9800000001,
+          lines: 2,
+          totalCents: 11200,
+        },
+      ],
+      withheld: [],
+      alreadyQueued: [],
+      intendedTotalCents: 11200,
+      note: "Queued for posting — nothing has been written to Open Dental yet.",
+    };
+
+    renderAt(<ApproveCheck />, "/rcm/remittances/b-1/approve");
+    await screen.findByTestId("rcm-approve-check");
+    fireEvent.click(screen.getByTestId("approve-button"));
+    await waitFor(() => screen.getByTestId("approve-result"));
+    dump("s8-approve-onward-post");
+  });
 });

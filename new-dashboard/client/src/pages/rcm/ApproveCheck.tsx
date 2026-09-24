@@ -94,6 +94,7 @@ import {
   type RcmOfficeId,
   type RemittanceDetail,
 } from "@/features/rcm/api";
+import { claimHref, remittanceHref } from "@/features/rcm/flow";
 import { money, stamp } from "@/features/rcm/format";
 import { checkDetail, checkTitle, checkWhy } from "@/features/rcm/checks";
 import { decisionsWithClaim, rollUp, rollUpSentence } from "@/features/rcm/rollup";
@@ -275,6 +276,52 @@ export default function ApproveCheck() {
   const takebackOnly = isTakebackOnly(detail.claims);
 
   const canPress = p.canApprove && p.postableCount > 0 && p.balanced;
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * WHERE AN APPROVAL LANDS — S8 flow-speed, item 3
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Approving is the middle of the job and this screen used to end it: one solid
+   * *Back to the check*, which is a direction rather than a next step, dropping
+   * a biller at the TOP of a 1,300px page with nothing said about what to do
+   * there — and the Post step, the actual next thing, some 500px down it.
+   *
+   * There are exactly two honest answers and the RESULT decides which:
+   *
+   *   NOTHING WAS HELD BACK  every claim on this check is decided, so the next
+   *                          step is the check's own Post step, with the
+   *                          check-level roll-up on it.
+   *   SOMETHING WAS HELD     the withheld claims are the undecided ones, and the
+   *                          first of them is where the work actually is. It is
+   *                          named, so the press is not a leap.
+   *
+   * NEVER A LIST. A list is where somebody goes when they have finished; this
+   * check is not finished, and sending a person to a list to find their way back
+   * into the thing they were already holding is the navigation this slice is
+   * about.
+   *
+   * `?next=post` IS A SCROLL HINT, NOT A ROUTE. The check page reads it and
+   * takes the reader to the post panel instead of the top of the page; without
+   * it — a bookmark, a typed URL — the page renders exactly as it always has. No
+   * path, slug or state machine changed.
+   *
+   * `patientName` is PHI: rendered here, never logged.
+   */
+  const heldBack = result?.withheld ?? [];
+  const onward =
+    heldBack.length === 0
+      ? {
+          href: `${remittanceHref(batchId)}?next=post`,
+          label: "Take me to the check to post it",
+          next: "Next: the Post step on this check.",
+        }
+      : {
+          href: claimHref(heldBack[0].claimId, batchId),
+          label: `Open ${heldBack[0].patientName}`,
+          next: `Next: ${heldBack.length} claim${
+            heldBack.length === 1 ? "" : "s"
+          } on this check still needs you.`,
+        };
 
   return (
     <div className="p-6" data-testid="rcm-approve-check">
@@ -865,12 +912,20 @@ export default function ApproveCheck() {
                 <p className="mt-1 text-xs text-muted-foreground" data-testid="approve-attribution">
                   Approved by {result.approvedBy} · {stamp(new Date().toISOString())}
                 </p>
+                {/*
+                  S8 FLOW-SPEED, ITEM 3 · THE NEXT STEP, NOT A DIRECTION.
+                  This was *Back to the check*. See `onward` for which of the two
+                  destinations this is and why the result decides it.
+                */}
+                <p className="mt-2 text-xs text-muted-foreground" data-testid="approve-onward-next">
+                  {onward.next}
+                </p>
                 <Link
-                  href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                  href={onward.href}
                   data-testid="approve-back-after"
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+                  className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
                 >
-                  Back to the check
+                  {onward.label}
                   <ChevronRight size={13} />
                 </Link>
               </div>
@@ -972,7 +1027,15 @@ export default function ApproveCheck() {
                 */}
                 {st.state === "all_approved" && (
                   <Link
-                    href={`/rcm/remittances/${encodeURIComponent(batchId)}`}
+                    /*
+                      S8 FLOW-SPEED, ITEM 3 · IT NOW LANDS ON THE POST STEP.
+                      W-1 gave a finished check a way forward and this is it; the
+                      label has said "to post it" since, and the link took the
+                      reader to the top of the check page instead, leaving the
+                      last 500px of scroll as the unspoken rest of the
+                      instruction. `?next=post` closes that gap.
+                    */
+                    href={`${remittanceHref(batchId)}?next=post`}
                     data-testid="approve-onward-post"
                     className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
                   >
