@@ -328,6 +328,15 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
                   {progress.postError}
                 </p>
               )}
+              {/* WHO STARTED IT. `postedBy` is null in this state and must be —
+                  it only lands with `postedAt` on completion — so without this
+                  a failed post named nobody, which is the state in which
+                  somebody most needs to know who to ask. */}
+              {progress.requestedBy !== null && (
+                <p className="mt-1 text-xs text-muted-foreground" data-testid="fees-post-requested-by">
+                  Started by {progress.requestedBy}.
+                </p>
+              )}
             </div>
           </div>
         </div>
