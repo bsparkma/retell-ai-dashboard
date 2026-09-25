@@ -310,9 +310,24 @@ export function agreement(
   if (diffs.length > 0) return null;
 
   const compared: string[] = [];
-  // First, because it is the strongest and because the interstitial lists it
-  // first when it is the thing that does NOT agree.
-  if (claimNumberAgrees(candidate)) compared.push("claim number");
+  /*
+   * ── S8 FLOW-SPEED · THE ORDER IS WHAT THE TEAM VERIFIES ────────────────────
+   * The claim number used to lead, on the reasoning that it is the strongest
+   * field and the one the confirm interstitial names first.
+   *
+   * Both halves of that are still true and neither makes it the right opener
+   * HERE. A biller checking that a payment belongs to a chart claim reads, in
+   * this order, WHO the patient is, WHAT was done and WHAT it cost — and the
+   * carrier's claim number is a string she has no independent way to verify,
+   * which is precisely why it is the field the app checks for her. Leading with
+   * it put the one item she cannot confirm at the front of the sentence she is
+   * being asked to confirm.
+   *
+   * So it goes last, and the panel prints it as small print beneath the
+   * sentence. `disagreements()` — ruling Q2's order, for the interstitial — is
+   * untouched: there the claim number still leads, because there it is the
+   * thing that did NOT agree and the whole reason the question is being asked.
+   */
   if (eob.patientName && candidate.od.patientName) compared.push("name");
   if (at(eob.serviceDate) !== null && at(candidate.od.dateService) !== null) {
     compared.push("service date");
@@ -324,6 +339,7 @@ export function agreement(
   if (candidate.linePairs.length > 0 && paired === candidate.linePairs.length) {
     compared.push("every line");
   }
+  if (claimNumberAgrees(candidate)) compared.push("claim number");
 
   if (compared.length === 0) return null;
   const sentence =
@@ -331,6 +347,64 @@ export function agreement(
       ? `${compared[0]} agrees.`
       : `${compared.slice(0, -1).join(", ")} and ${compared[compared.length - 1]} agree.`;
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+/**
+ * THE CARRIER'S CLAIM NUMBER, AS SMALL PRINT — S8 flow-speed, item 2.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A MISMATCH HERE, ON ITS OWN, IS NOT A WARNING
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Payers echo the claim id they were sent, and plenty of them echo something
+ * else, or nothing. The app checks it because a biller cannot, and the check is
+ * worth making — but a screen that paints it amber teaches her to see a warning
+ * over the commonest harmless case, and a colour that cries wolf is worse than
+ * no colour. The place that ceremony belongs is the press: `confirmMatch` raises
+ * the named-difference interstitial (ruling Q2) on exactly this fact, unchanged.
+ *
+ * So this is one muted line under the agreement sentence, in the neutral tone,
+ * and it states which of the three cases it is:
+ *
+ *   NAMES IT     the app tied the two together.
+ *   NAMES ANOTHER the carrier's number is not this chart claim's.
+ *   NONE SENT    there was nothing to check, which is not the same as a clash.
+ *
+ * It reads the SERVER's `CLAIM_NUMBER_MATCH` tag through `claimNumberAgrees`,
+ * never a string comparison written here — see that function's header for why
+ * a client-side `===` would disagree with the score beside it the first time a
+ * payer padded a number with a zero.
+ */
+export interface ClaimNumberNote {
+  text: string;
+  agrees: boolean;
+}
+
+export function claimNumberNote(
+  candidate: MatchCandidate,
+  eob: { claimNumber?: string | null },
+): ClaimNumberNote {
+  const ours = eob.claimNumber?.trim();
+  if (claimNumberAgrees(candidate)) {
+    return {
+      agrees: true,
+      text: ours
+        ? `Carrier claim number ${ours} names this Open Dental claim.`
+        : "The carrier's claim number names this Open Dental claim.",
+      };
+  }
+  return {
+    agrees: false,
+    /*
+     * SHORT ON PURPOSE. The claim page measured 430 of its 430-word budget with
+     * the first draft of this line, and the instruction on a full screen is to
+     * pay by cutting before asking for a higher ceiling. What was cut is the
+     * clause explaining WHY payers do this; what stays is the fact and the one
+     * thing a reader must not conclude from it.
+     */
+    text: ours
+      ? `Carrier claim number ${ours} is not Open Dental claim ${candidate.odClaimNum}. On its own that settles nothing.`
+      : `The carrier sent no claim number to check against Open Dental claim ${candidate.odClaimNum}.`,
+  };
 }
 
 /**

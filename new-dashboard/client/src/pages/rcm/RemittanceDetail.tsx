@@ -47,7 +47,7 @@
  * the path to success against a client whose every verb throws.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link, useRoute } from "wouter";
+import { Link, useRoute, useSearchParams } from "wouter";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -102,6 +102,7 @@ import { matchRunSummary } from "@/features/rcm/matchWords";
 import { RecoupmentPanel } from "@/pages/rcm/RecoupmentPanel";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
+import RcmActionBar from "@/components/rcm/RcmActionBar";
 import PostThisCheck from "@/components/rcm/PostThisCheck";
 import NextCheck from "@/components/rcm/NextCheck";
 import ShadowModeBanner from "@/components/rcm/ShadowModeBanner";
@@ -115,6 +116,7 @@ import { can } from "@/lib/permissions";
 
 export default function RemittanceDetailPage() {
   const [, params] = useRoute("/rcm/remittances/:id");
+  const [search] = useSearchParams();
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
   const auth = useAuth();
@@ -292,6 +294,43 @@ export default function RemittanceDetailPage() {
     setMatchResult(null);
     setMatchError(null);
   }, [batchId]);
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ARRIVING FROM AN APPROVAL — S8 flow-speed, item 3
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Approving is the middle of the job. The approve screen used to end it with
+   * *Back to the check*, which drops a person at the TOP of a 1,300px page with
+   * nothing said about what to do there — and the Post step, the actual next
+   * thing, is some 500px down it.
+   *
+   * `?next=post` is that screen saying which step it is handing over to. On
+   * arrival this scrolls the post panel into view and puts the focus on its
+   * button, using the SAME `goToPostPanel` the rail's own Post CTA uses — one
+   * behaviour, one place, so a link and a CTA cannot land differently.
+   *
+   * A HINT, NOT A ROUTE. No path, slug or state machine changed; the page
+   * renders identically without it, which is what a bookmark or a typed URL
+   * gets. It runs once per arrival — `next` and `batchId` are the whole
+   * dependency list — and it waits for the panel to exist, because
+   * `PostThisCheck` loads its own state and is not in the DOM on first paint.
+   */
+  const next = search.get("next");
+  useEffect(() => {
+    if (next !== "post" || state.kind !== "loaded") return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const panel = document.querySelector('[data-testid="post-this-check"]');
+      if (panel || ++tries > 20) {
+        window.clearInterval(timer);
+        if (panel) goToPostPanel();
+      }
+    }, 50);
+    return () => window.clearInterval(timer);
+    // `goToPostPanel` is a stable page-local function; re-running on every
+    // render would re-scroll a page somebody has since scrolled away from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [next, batchId, state.kind]);
 
   if (state.kind === "loading") {
     return (
@@ -476,6 +515,56 @@ export default function RemittanceDetailPage() {
     }
   }
 
+  /**
+   * ── S7 · ONE PRIMARY, AND IT IS THE NEXT STEP ──────────────────────────────
+   * Two facts about what this slot draws, both from the Phase 0 count of THREE
+   * primary-styled buttons on this one screen:
+   *
+   *   1. `flow.cta === null` means every step through Post is done. The slot
+   *      used to render nothing, and a finished check became a dead end with
+   *      *Review and approve* as its only solid button — a verb for something
+   *      already approved. It now carries the next check.
+   *
+   *   2. When the CTA's step is `post`, the slot renders NOTHING, because the
+   *      act itself is on this same page. That CTA never posted anything: it
+   *      scrolled to `PostThisCheck`. Two solid buttons reading *Post to Open
+   *      Dental*, one of which is a scroll, is the exact shape W-11 deleted from
+   *      the match step — it had simply survived one step further down the rail.
+   *
+   *   3. A post step this person cannot press — blocked, or held by shadow mode,
+   *      which is the whole of the next few weeks — is a check this person has
+   *      FINISHED. Every human decision on it is made and recorded; switching
+   *      posting on is an administrator's act on another screen. So it takes the
+   *      next check too, rather than leaving a biller on a screen whose every
+   *      control is greyed. The greyed Post button and its reason are still on
+   *      the page, in the post panel and in the rail, twice over.
+   *
+   *      Shadow is checked explicitly because the RAIL does not call that step
+   *      blocked and should not: nothing is wrong, the work is just waiting.
+   *      `step-post` reads `current` and the CTA reads enabled while the button
+   *      it scrolls to is refused — which is exactly the state that used to put
+   *      a solid button on this screen pointing at a greyed one.
+   *
+   * S8 FLOW-SPEED: it is a NODE now rather than JSX inlined in the header, so
+   * the sticky bar at the foot can draw it. Nothing about which of the three
+   * branches renders changed, and there is still exactly one of it on the page.
+   */
+  const primaryAction =
+    flow.cta === null || (flow.cta.step === "post" && (flow.cta.disabled || shadowMode)) ? (
+      <NextCheck office={office} currentBatchId={r.batchId} />
+    ) : flow.cta.step === "post" ? null : (
+      <RcmPrimaryAction
+        cta={flow.cta}
+        onAction={{
+          "run-match": runBatchMatch,
+          approve: goToApprovalGate,
+          drain: goToPostPanel,
+        }}
+        busy={matching}
+        busyLabel="Matching…"
+      />
+    );
+
   return (
     <div className="p-6" data-testid="rcm-remittance-detail">
       <Breadcrumb title={r.payer} />
@@ -598,74 +687,19 @@ export default function RemittanceDetailPage() {
         </div>
 
         {/*
-          ── THE NEXT CLICK, ONCE ────────────────────────────────────────────
+          ── THE NEXT CLICK, ONCE, AND NOW AT THE FOOT ───────────────────────
           W-11, ONE MATCH VERB. This header used to carry a *Match all claims*
           button while the rail below carried its own CTA reading *Match it up* —
           two controls, two names, one act, and a biller had no way to know they
           were the same press.
 
-          There is now exactly ONE page-level verb and `flow.ts` names it: on a
-          check waiting to be matched it reads *Match it up* and fires the batch
-          match; on one waiting to be approved it links to the approve screen.
-          The rail is told not to draw a second copy (`hideCta`), and re-running
-          a single claim moved to that claim's own row, where it says which claim
-          it means.
+          There is still exactly ONE page-level verb and `flow.ts` still names
+          it. S8 flow-speed moved WHERE it draws and nothing else: it is built in
+          `primaryAction` above, out of the same `flow.cta`, and handed to the
+          sticky `RcmActionBar` at the bottom of this page, which is the one slot
+          the claim and approve screens use too. The rail is still told not to
+          draw a second copy (`hideCta`).
         */}
-        <div className="flex flex-col items-start gap-1 sm:items-end">
-          {/*
-            ── S7 · ONE PRIMARY, AND IT IS THE NEXT STEP ─────────────────────
-            Two changes to what this slot draws, both from the Phase 0 count of
-            THREE primary-styled buttons on this one screen:
-
-            1. `flow.cta === null` means every step through Post is done. The
-               slot used to render nothing, and a finished check became a dead
-               end with *Review and approve* as its only solid button — a verb
-               for something already approved. It now carries the next check.
-
-            2. When the CTA's step is `post`, the slot renders NOTHING, because
-               the act itself is on this same page. That CTA never posted
-               anything: it scrolled to `PostThisCheck`. Two solid buttons
-               reading *Post to Open Dental*, one of which is a scroll, is the
-               exact shape W-11 deleted from the match step — it had simply
-               survived one step further down the rail.
-
-            3. A post step this person cannot press — blocked, or held by
-               shadow mode, which is the whole of the next few weeks — is a
-               check this person has FINISHED. Every human decision on it is
-               made and recorded; switching posting on is an administrator's
-               act on another screen. So it takes the next check too, rather
-               than leaving a biller on a screen whose every control is greyed.
-               The greyed Post button and its reason are still on the page, in
-               the post panel and in the rail, twice over.
-
-               Shadow is checked explicitly because the RAIL does not call that
-               step blocked and should not: nothing is wrong, the work is just
-               waiting. `step-post` reads `current` and the CTA reads enabled
-               while the button it scrolls to is refused — which is exactly the
-               state that used to put a solid button on this screen pointing at
-               a greyed one.
-          */}
-          {flow.cta === null ||
-          (flow.cta.step === "post" && (flow.cta.disabled || shadowMode)) ? (
-            <NextCheck office={office} currentBatchId={r.batchId} />
-          ) : flow.cta.step === "post" ? null : (
-            <RcmPrimaryAction
-              cta={flow.cta}
-              onAction={{
-                "run-match": runBatchMatch,
-                approve: goToApprovalGate,
-                drain: goToPostPanel,
-              }}
-              busy={matching}
-              busyLabel="Matching…"
-            />
-          )}
-          {matching && (
-            <DisabledReason testId="match-in-flight">
-              A match is running. It reads Open Dental and writes nothing.
-            </DisabledReason>
-          )}
-        </div>
       </div>
 
       {/*
@@ -1244,6 +1278,44 @@ export default function RemittanceDetailPage() {
           ))}
         </div>
       )}
+
+      {/*
+        ── THE BAR (S8 flow-speed, item 1) ─────────────────────────────────────
+        The page's ONE primary, at the foot, sticky, in reach at every scroll
+        depth. The left side says what this check is, so a biller who has
+        scrolled past the header still knows which one she is pressing about —
+        the same job the check's own title does at the top, in the words the
+        header already uses.
+
+        `matching` rides here rather than in the header for the same reason: the
+        sentence that says a match is running belongs beside the button that
+        started it.
+      */}
+      <RcmActionBar
+        primary={
+          <div className="flex flex-col items-start gap-1 sm:items-end">
+            {primaryAction}
+            {matching && (
+              <DisabledReason testId="match-in-flight">
+                A match is running. It reads Open Dental and writes nothing.
+              </DisabledReason>
+            )}
+          </div>
+        }
+        left={
+          <span className="truncate text-xs text-muted-foreground" data-testid="action-bar-check">
+            <span className="font-medium text-foreground">{r.payer}</span>
+            {(r.checkNumber || r.eftNumber || r.traceNumber) && (
+              <span className="font-mono">
+                {" · "}
+                {r.checkNumber || r.eftNumber || r.traceNumber}
+              </span>
+            )}
+            <span className="font-mono">{` · ${money(r.totalAmountCents)}`}</span>
+          </span>
+        }
+        hints={[{ keys: "Enter", does: "the button on the right" }]}
+      />
     </div>
   );
 }

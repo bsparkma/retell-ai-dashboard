@@ -33,6 +33,25 @@ function computeOdBackoffMs(attempt, retryAfterSec) {
 const OD_SLOTS = new Map();
 
 /**
+ * THE COMPLETE LIST OF RESOURCES `apiDeleteRaw` MAY DELETE.
+ *
+ * An enumerated allow-list, checked in the transport, so no argument any caller
+ * can construct deletes a claim, a payment, a patient or a document. Each entry
+ * is one resource shape and exists for one named caller:
+ *
+ *   /perioexams/{n}   the hygiene perio undo    — services/hyg/odPerioWriter.js
+ *   /fees/{n}         the fee schedule rollback — services/fees/odFeesWrites.js
+ *
+ * Adding a third is a third reviewed edit, with its caller named here and held
+ * to one file by that module's own no-OD-writes guard. It is deliberately a
+ * list of patterns rather than a parameter: a parameter would make the set of
+ * deletable things a property of the call site instead of of this file.
+ *
+ * @type {ReadonlyArray<RegExp>}
+ */
+const DELETABLE_PATHS = Object.freeze([/^\/perioexams\/[1-9]\d*$/, /^\/fees\/[1-9]\d*$/]);
+
+/**
  * The slot key for a client. Never logged, never returned — it is only ever a
  * Map key inside this module.
  * @param {{ customerKey?: string, apiUrl?: string }} client
@@ -1754,7 +1773,14 @@ class OpenDentalService extends EventEmitter {
   }
 
   /**
-   * THE ONE DELETE THIS APPLICATION MAY ISSUE: `DELETE /perioexams/{PerioExamNum}`.
+   * THE TWO DELETES THIS APPLICATION MAY ISSUE, and nothing else:
+   *
+   *   DELETE /perioexams/{PerioExamNum}   the hygiene perio undo
+   *   DELETE /fees/{FeeNum}               the fee schedule posting rollback
+   *
+   * The second was added for Fee Schedules slice 3 and IS the "second, reviewed
+   * edit" the paragraph below asks for — an enumerated pattern, not a parameter.
+   * Each entry names one resource shape, and a third is a third reviewed edit.
    *
    * Why it exists at all: a perio Probing row, once written, can never be
    * deleted on its own (`DELETE /periomeasures` accepts only Mobility and
@@ -1764,26 +1790,33 @@ class OpenDentalService extends EventEmitter {
    * that undo for an exam it created seconds earlier — services/hyg/odPerioWriter.js
    * is the only caller, and routes/hyg/hygNoOdWrites.test.js holds it there.
    *
+   * Why the FEE delete exists: rolling back a posted fee schedule has to remove
+   * the fees the post created. Open Dental supports `DELETE /fees/{FeeNum}` and
+   * offers NO delete for /feescheds at all, so this is the only rollback the API
+   * makes possible; services/fees/odFeesWrites.js is the only caller, and
+   * routes/fees/feesNoOdAccess.test.js holds it there.
+   *
    * Why it can do nothing else: the PATH is checked here, in the transport,
-   * against one pattern. There is no argument that deletes a claim, a payment, a
-   * patient or a document through this method. A second resource that needs a
-   * delete is a second, reviewed edit to this pattern — not a parameter.
+   * against an explicit list of patterns. There is no argument that deletes a
+   * claim, a payment, a patient or a document through this method. A third
+   * resource that needs a delete is a third, reviewed edit to this list — not a
+   * parameter.
    *
    * Same guard, same throttle, same shape as `apiWriteRaw`: refused under
    * OPENDENTAL_WRITE_DISABLED, a refusal returned rather than thrown, and a 200 is
    * NOT proof — the caller reads the exam list back.
    *
-   * @param {string} path exactly `/perioexams/<positive integer>`
+   * @param {string} path exactly `/perioexams/<n>` or `/fees/<n>`, n a positive integer
    * @param {{ timeoutMs?: number, quiet?: boolean, minIntervalMs?: number, module?: string }} [opts]
    * @returns {Promise<{ ok: boolean, status: number, data: unknown, error?: string }>}
    */
   async apiDeleteRaw(path, opts = {}) {
-    if (!/^\/perioexams\/[1-9]\d*$/.test(String(path))) {
+    if (!DELETABLE_PATHS.some((pattern) => pattern.test(String(path)))) {
       return {
         ok: false,
         status: 0,
         data: null,
-        error: `apiDeleteRaw deletes a perio exam and nothing else; refused '${String(path).slice(0, 80)}'`,
+        error: `apiDeleteRaw deletes a perio exam or a fee and nothing else; refused '${String(path).slice(0, 80)}'`,
       };
     }
     if (require('../middleware/envGuards').isOdWriteDisabled()) {

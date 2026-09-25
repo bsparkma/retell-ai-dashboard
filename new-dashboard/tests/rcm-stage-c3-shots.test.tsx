@@ -257,7 +257,46 @@ function candidate(over: Record<string, unknown> = {}) {
       patientName: "Test 2, Stedi",
       patientBirthdate: "1990-01-01",
       subscriberId: "ABC123456",
-      lines: [],
+      /*
+       * S8 FLOW-SPEED · THE CHART CLAIM'S OWN PROCEDURES.
+       *
+       * These were `[]`, which was harmless while nothing drew them and is not
+       * any more: "In the patient's account" is exactly this list, and a shot
+       * fixture with none photographs the fold saying it has nothing to show.
+       * The match has fetched claimprocs since Slice 6a — see `MatchCandidate.od`.
+       */
+      lines: [
+        {
+          claimProcNum: 535780,
+          procNum: 88101,
+          code: "D2740",
+          status: "Received",
+          feeBilledCents: 120000,
+          insPayAmtCents: 0,
+          writeOffCents: 0,
+          dedAppliedCents: 0,
+          insEstCents: 48500,
+          isTransfer: false,
+          claimPaymentNum: null,
+          deleted: false,
+          blockedStatus: false,
+        },
+        {
+          claimProcNum: 535781,
+          procNum: 88102,
+          code: "D0150",
+          status: "Received",
+          feeBilledCents: 21000,
+          insPayAmtCents: 0,
+          writeOffCents: 0,
+          dedAppliedCents: 0,
+          insEstCents: null,
+          isTransfer: false,
+          claimPaymentNum: null,
+          deleted: false,
+          blockedStatus: false,
+        },
+      ],
       deletedLineCount: 0,
       unknownDeletedLineCount: 0,
     },

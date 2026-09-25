@@ -91,6 +91,71 @@ const PERMISSIONS = Object.freeze({
    */
   'hyg.write': Object.freeze(['admin', 'office', 'hygiene']),
 
+  // --- fees -----------------------------------------------------------------
+  /*
+   * THE FEE SCHEDULE MODULE (slice 1: scaffold, parse, preview).
+   *
+   * A fee schedule is a PAYER CONTRACT, not a chart. Nothing under /api/fees
+   * carries patient data in this slice, and nothing under it reaches Open
+   * Dental at all — the slice parses an uploaded PDF or CSV and shows the
+   * office what the file says. So the roles here are the business roles rather
+   * than the clinical ones, and today that means `admin` and `office` only.
+   *
+   * `hygiene` and `tc` deliberately hold NEITHER. A hygienist standing at a
+   * chair and a treatment coordinator presenting a case both read fees through
+   * their own surfaces; neither has any reason to import a payer contract, and
+   * granting it here would make "who can change what a procedure is worth"
+   * unanswerable from this file.
+   *
+   * `reviewer` holds neither either: its whole definition is "can work the RCM
+   * queue but commit nothing", and an import a later slice posts into Open
+   * Dental is a commit.
+   *
+   * ─── rcm_biller READS fee schedules. It does NOT post them. ───────────────
+   *
+   * Slice 2 deferred this rather than taking it, because
+   * routes/rcm/rcmGuard.test.js pinned `permissionsForRole('rcm_biller')` to
+   * RCM actions only and widening a role across a module boundary is a product
+   * decision, not a refactor.
+   *
+   * RATIFIED BY BEAU, 2026-09-22: billers read fee schedules; write stays
+   * admin + office. The argument for the read is that fee schedules are the
+   * input to every allowed-amount question RCM asks — a biller working a denial
+   * needs to see what the payer's schedule actually says, and sending them to
+   * ask an office manager for a screenshot is the workflow this replaces.
+   *
+   * The argument against the WRITE is the one that survived: posting a schedule
+   * changes what every procedure in a practice is worth, and `rcm_biller` is
+   * defined as "RCM end to end EXCEPT the acts that reach a chart or retire
+   * money". Repricing a practice belongs on that exception list, so the biller
+   * reads the preview and an office manager presses Post.
+   *
+   * The pin in rcmGuard.test.js is kept, with this exception stated AT the
+   * assertion rather than removed — a guard that is deleted to permit one
+   * change stops guarding the other twenty.
+   */
+
+  /** Read the fee-schedule surface: the import list, a batch, its parsed rows. */
+  'fees.read': Object.freeze(['admin', 'office', 'rcm_biller']),
+  /**
+   * Any fee-schedule MUTATION — today, uploading a file and creating the import
+   * batch it parses into.
+   *
+   * POST /api/fees/imports needs it already, so unlike `hyg.write` this is not
+   * declared ahead of its first use. The mount is
+   * requireReadWrite('fees.read', 'fees.write'), applied by HTTP METHOD, so the
+   * upload demands the strong action BY CONSTRUCTION rather than by whoever
+   * wrote the route remembering to decorate it.
+   *
+   * As of slice 3 this ALSO guards the act that writes fees into a practice's
+   * Open Dental database — POST /imports/:id/post and its rollback. Deliberately
+   * the SAME action rather than a new `fees.post`: uploading a schedule and
+   * posting one are the same job done by the same person, and splitting them
+   * would invent a role nobody at either practice holds. `rcm_biller` holds
+   * fees.read and NOT this, which is where the read/write line was drawn.
+   */
+  'fees.write': Object.freeze(['admin', 'office']),
+
   // --- rcm ------------------------------------------------------------------
   /*
    * THREE TIERS, NOT TWO (decision D-9).

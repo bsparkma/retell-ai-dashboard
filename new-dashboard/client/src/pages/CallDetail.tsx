@@ -28,6 +28,7 @@ import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
 import { formatDuration, formatTimeAgo } from "@/lib/utils";
+import { formatCallStamp } from "@/lib/callTime";
 import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
 import { SendToChartDialog } from "./calls/SendToChartDialog";
@@ -143,6 +144,9 @@ function CallPatientPanel({
   const matchedName = odPatientName || (odPatientId ? `PatNum ${odPatientId}` : "matched patient");
   const sent = syncStatus === "synced";
   const matchedUnsent = !sent && odPatientId != null;
+  // When the call came in. Read off the call already loaded for this view — no
+  // extra request, and nothing new stored on the call record.
+  const callStamp = formatCallStamp(call.date);
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -193,7 +197,7 @@ function CallPatientPanel({
             <Skeleton className="h-3 w-3/4" />
           </div>
         ) : patient ? (
-          <PatientFoundView patient={patient} source={source} />
+          <PatientFoundView patient={patient} source={source} callStamp={callStamp} />
         ) : odPatientId == null ? (
           <PatientNoMatchView
             callerName={callerName}
@@ -201,6 +205,7 @@ function CallPatientPanel({
             notAPatient={notAPatient}
             notAPatientReason={notAPatientReason}
             onLinkPatient={onLinkPatient}
+            callStamp={callStamp}
           />
         ) : null}
       </CardContent>
@@ -209,13 +214,15 @@ function CallPatientPanel({
 }
 
 function PatientNoMatchView({
-  callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient,
+  callerName, callerPhone, notAPatient, notAPatientReason, onLinkPatient, callStamp,
 }: {
   callerName: string;
   callerPhone: string;
   notAPatient: boolean;
   notAPatientReason: NotAPatientReason | null;
   onLinkPatient: () => void;
+  /** When the call came in, office time. Null when unknown — the line is omitted. */
+  callStamp: string | null;
 }) {
   const initials = initialsOf(callerName) || "?";
   return (
@@ -227,6 +234,7 @@ function PatientNoMatchView({
         <div className="min-w-0">
           <div className="font-medium text-sm truncate">{callerName || "Unknown caller"}</div>
           <div className="text-xs text-muted-foreground font-mono">{callerPhone || "—"}</div>
+          {callStamp && <div className="text-xs text-muted-foreground mt-0.5">{callStamp}</div>}
         </div>
       </div>
       {notAPatient ? (
@@ -245,7 +253,12 @@ function PatientNoMatchView({
   );
 }
 
-function PatientFoundView({ patient, source }: { patient: OdPatient; source: PatientMatchSource }) {
+function PatientFoundView({ patient, source, callStamp }: {
+  patient: OdPatient;
+  source: PatientMatchSource;
+  /** When the call came in, office time. Null when unknown — the line is omitted. */
+  callStamp: string | null;
+}) {
   const fullName = patient.fullName?.trim()
     ? patient.fullName
     : `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim();
@@ -316,6 +329,9 @@ function PatientFoundView({ patient, source }: { patient: OdPatient; source: Pat
             >
               {sourceBadge.text}
             </div>
+          )}
+          {callStamp && (
+            <div className="text-[11px] mt-0.5 text-muted-foreground">{callStamp}</div>
           )}
         </div>
       </div>
@@ -798,6 +814,23 @@ export default function CallDetail() {
     ? !!mangoRecordingUrl && (displayCall.hasTranscript || displayCall.duration > 0)
     : !!audioSrc;
 
+  /**
+   * The "Call Details" rows. The Date row is built here rather than inline so it
+   * can be DROPPED when the timestamp is unparseable — this card used to render
+   * `new Date(...).toLocaleString()` raw, which printed the string "Invalid Date"
+   * into the panel and showed the time in the VIEWER's zone rather than the
+   * practice's. Same stamp, same rule, as the patient card above.
+   */
+  const detailStamp = formatCallStamp(displayCall.date);
+  const detailRows: Array<{ label: string; value: string; mono?: boolean }> = [
+    { label: "Call ID", value: displayCall.id, mono: true },
+    ...(detailStamp ? [{ label: "Date", value: detailStamp }] : []),
+    { label: "Duration", value: formatDuration(displayCall.duration), mono: true },
+    { label: "Agent", value: displayCall.agentName || "Staff" },
+    { label: "Source", value: displayCall.source === "retell" ? "Retell AI" : "Mango Voice" },
+    { label: "Intent", value: displayCall.intent || "—" },
+  ];
+
   return (
     <div className="p-6 space-y-6">
       {/* Shared Pick Patient modal — candidates-first / OD search, then hands off
@@ -1176,14 +1209,7 @@ export default function CallDetail() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2.5 text-sm">
-                {[
-                  { label: "Call ID", value: displayCall.id, mono: true },
-                  { label: "Date", value: new Date(displayCall.date).toLocaleString() },
-                  { label: "Duration", value: formatDuration(displayCall.duration), mono: true },
-                  { label: "Agent", value: displayCall.agentName || "Staff" },
-                  { label: "Source", value: displayCall.source === "retell" ? "Retell AI" : "Mango Voice" },
-                  { label: "Intent", value: displayCall.intent || "—" },
-                ].map(({ label, value, mono }) => (
+                {detailRows.map(({ label, value, mono }) => (
                   <div key={label} className="flex items-start justify-between gap-2">
                     <span className="text-muted-foreground text-xs">{label}</span>
                     <span className={`text-xs font-medium text-right ${mono ? "font-mono" : ""}`}>{value}</span>

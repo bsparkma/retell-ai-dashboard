@@ -2415,7 +2415,11 @@ describe("1 · enter a check, the whole road", () => {
     const ticks = [...screen.getByTestId("approve-conditions").querySelectorAll("li")];
     expect(ticks.length).toBeGreaterThan(0);
     expect(ticks.every((li) => li.getAttribute("data-passed") === "true")).toBe(true);
-    expect(screen.getByTestId("approve-onward-post").getAttribute("href")).toBe(remittanceHref(A));
+    /* S8 flow-speed item 3: the way forward lands ON the Post step, not at the
+       top of the check page with the last 500px of scroll left unsaid. */
+    expect(screen.getByTestId("approve-onward-post").getAttribute("href")).toBe(
+      `${remittanceHref(A)}?next=post`,
+    );
     // The button stays, greyed — and the reason beside it IS the headline above.
     const button = screen.getByTestId("approve-button") as HTMLButtonElement;
     expect(button.disabled).toBe(true);

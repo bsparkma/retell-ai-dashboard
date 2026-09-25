@@ -277,3 +277,68 @@ test('formatCommLogEntry: no-content call writes the minimal stub (item 5)', () 
   }, {}).Note;
   assert.match(note2, /no recording available\./);
 });
+
+// ── Patient type + insurance lines ───────────────────────────────────────────
+//
+// What the caller said about themselves, carried into the chart as their own lines
+// rather than left buried in the summary prose. Each is OMITTED when unknown: a line
+// reading "Insurance: not provided" asserts something about the caller that nobody
+// established, and a front-desk reader cannot tell it apart from an answer.
+
+const callerBase = {
+  id: 'pt1', source: 'retell', call_date: '2026-09-22T12:57:00.000Z',
+  transcript: 'Caller asked about a cleaning.',
+  caller_name: 'Synthetic Caller', call_reason: 'Cleaning',
+  action_needed: 'Call back', callback_number: '5550000000',
+};
+
+test('formatCommLogEntry: patient type and insurance get their own lines', () => {
+  const note = sync.formatCommLogEntry({
+    ...callerBase, patient_status: 'existing_patient', insurance_name: 'Humana',
+  }, {}).Note;
+  assert.match(note, /^Patient Type: existing_patient$/m);
+  assert.match(note, /^Insurance: Humana$/m);
+  // Placed with the caller, above why they rang.
+  assert.ok(note.indexOf('Caller: ') < note.indexOf('Patient Type: '));
+  assert.ok(note.indexOf('Insurance: ') < note.indexOf('Reason: '));
+});
+
+test('formatCommLogEntry: an unknown value is OMITTED, never printed as a finding', () => {
+  const note = sync.formatCommLogEntry(callerBase, {}).Note;
+  assert.ok(!/Patient Type/.test(note), 'no Patient Type line when unknown');
+  assert.ok(!/^Insurance:/m.test(note), 'no Insurance line when unknown');
+  assert.ok(!/not provided/.test(note));
+  assert.ok(!/unknown/i.test(note));
+  // The block is still well formed — no blank line where the omitted ones were.
+  assert.ok(!/\n\n(Reason|Action)/.test(note));
+  assert.match(note, /^Caller: Synthetic Caller\nReason: Cleaning$/m);
+});
+
+test('formatCommLogEntry: one known and one not prints only the known one', () => {
+  const note = sync.formatCommLogEntry({
+    ...callerBase, insurance_name: 'Delta Dental Premier',
+  }, {}).Note;
+  assert.match(note, /^Insurance: Delta Dental Premier$/m);
+  assert.ok(!/Patient Type/.test(note));
+  assert.match(note, /^Caller: Synthetic Caller\nInsurance: Delta Dental Premier\nReason: Cleaning$/m);
+});
+
+test('formatCommLogEntry: the lines are ASCII, so sanitizeForOd is a no-op', () => {
+  const entry = sync.formatCommLogEntry({
+    ...callerBase, patient_status: 'new_patient', insurance_name: 'Blue Cross Blue Shield',
+  }, {});
+  // eslint-disable-next-line no-control-regex
+  assert.ok(!/[^\x00-\x7F]/.test(entry.Note.split('\n').filter((l) =>
+    l.startsWith('Patient Type:') || l.startsWith('Insurance:')).join('\n')));
+});
+
+test('formatCommLogEntry: the no-content stub is unaffected', () => {
+  // A call with nothing to say still writes the minimal stub — these lines never
+  // resurrect the compact block for a call that has no content (item 5).
+  const note = sync.formatCommLogEntry({
+    id: 'pt2', source: 'retell', call_date: '2026-09-22T12:57:00.000Z',
+    patient_status: 'new_patient', insurance_name: 'Humana',
+  }, {}).Note;
+  assert.match(note, /^Call received .+, no recording available\.$/);
+  assert.ok(!/Patient Type/.test(note));
+});
