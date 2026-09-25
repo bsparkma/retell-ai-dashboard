@@ -108,6 +108,10 @@ const BATCH_COLUMNS = [
   'od_feesched_is_new',
   'post_error',
   'posting_started_at',
+  // Who pressed Post. Stamped at CLAIM time, which `posted_by` cannot be —
+  // see claimBatchForPosting. It is the only attribution an in-flight or
+  // failed run has.
+  'post_requested_by',
   'posted_at',
   'posted_by',
   'rolled_back_at',
@@ -336,12 +340,28 @@ async function claimBatchForPosting(pool, office, batchId, actor) {
     );
   }
 
-  // Attribution is stamped only on the FIRST claim, so neither a resume nor a
-  // takeover overwrites who authorised the post with whoever happened to be
-  // around when it was picked up. The COALESCE is what makes that true for both.
+  /*
+   * WHO ASKED FOR THIS POST — stamped on the FIRST claim only, so neither a
+   * resume nor a stale takeover overwrites the person who authorised it with
+   * whoever's container happened to pick it up. The COALESCE is what makes that
+   * true for both.
+   *
+   * IT WRITES `post_requested_by`, NOT `posted_by`, AND THAT IS THE WHOLE FIX.
+   * `posted_by` is half of a pair the schema requires whole —
+   * `(posted_by IS NULL) = (posted_at IS NULL)` — and there is no `posted_at`
+   * to pair with until the run finishes. The earlier version of this statement
+   * set `posted_by` here, with `posted_at IS NULL` in its own WHERE, which is
+   * precisely the row the CHECK forbids; it threw on the first post of every
+   * batch and killed the job at its first database write. See
+   * docs/reports/fees-post-failure-recon.md.
+   *
+   * `markPosted` lands the pair together at the end and takes `posted_by` from
+   * this column, so the finished post is still attributed to the original
+   * requester rather than to the resumer.
+   */
   await pool.query(
     `UPDATE fees_import_batch
-        SET posted_by = COALESCE(posted_by, $3)
+        SET post_requested_by = COALESCE(post_requested_by, $3)
       WHERE office = $1 AND batch_id = $2 AND posted_at IS NULL`,
     [office, batchId, actor]
   );
@@ -466,6 +486,41 @@ async function runPost({ withDb, office, batchId, actor }) {
         .then((r) => r.rows)
     );
 
+    /*
+     * ── 4a. A RUN THAT CAN ONLY WRITE NOTHING IS A FAILURE, NOT A POST.
+     *
+     * Before this, a batch whose codes matched nothing walked the whole loop
+     * skipping every row, reached `markPosted`, and ended at status 'posted'
+     * with rows_written = 0 — and the preview page then told the office their
+     * fees had been written to Open Dental. Nothing had. That is the same lie
+     * as a failed post claiming nothing was written, pointed the other way, and
+     * it is worse for being the cheerful direction: nobody investigates a
+     * success.
+     *
+     * A row counts as able to land if it is ALREADY WRITTEN (a resume finishing
+     * off a partial run legitimately issues no new writes) or if its code
+     * exists in this practice. Zero of either means the run's best possible
+     * outcome is an empty schedule.
+     *
+     * Individual unmatched codes stay non-fatal — a payer schedule can
+     * legitimately list procedures an office never performs, and they are
+     * counted and named in the completion note. It is only ALL of them that
+     * says the two sides do not describe the same practice.
+     */
+    const landable = pending.filter(
+      (row) =>
+        (row.od_fee_num !== null && row.od_fee_num !== undefined) ||
+        codes.codeNums[String(row.proc_code).toUpperCase()] !== undefined
+    ).length;
+    if (pending.length > 0 && landable === 0) {
+      const reason =
+        `None of the ${pending.length} code${pending.length === 1 ? '' : 's'} in this import ` +
+        `exist in this practice's procedure list, so there is nothing that could be written. ` +
+        `Check that this schedule is for the right office.`;
+      await withDb((pool) => markFailed(pool, office, batchId, reason));
+      return fail('NO_MATCHING_CODES', reason, { total: pending.length });
+    }
+
     /** @type {string[]} */
     const skipped = [];
 
@@ -583,8 +638,13 @@ async function markPosted(pool, office, batchId, skipped) {
   const res = await pool.query(
     `UPDATE fees_import_batch
         SET status = 'posted',
+            -- THE PAIR LANDS TOGETHER, in one statement, which is the only way
+            -- posted_pair_check can be satisfied. posted_by comes from the
+            -- requester recorded at claim time, so a run that was resumed or
+            -- taken over is still attributed to whoever pressed Post.
+            -- 'unknown' only for a batch posted before that column existed.
             posted_at = now(),
-            posted_by = COALESCE(posted_by, 'unknown'),
+            posted_by = COALESCE(post_requested_by, 'unknown'),
             post_error = NULL,
             updated_at = now()
       WHERE office = $1 AND batch_id = $2
@@ -639,6 +699,10 @@ async function getProgress(pool, office, batchId) {
             isNew: b.od_feesched_is_new === true,
           },
     postError: b.post_error ?? null,
+    // WHO PRESSED POST. The only attribution a 'posting' or 'post_failed' run
+    // has — `postedBy` is necessarily null in both, because it is half of a
+    // pair that only lands on completion.
+    requestedBy: b.post_requested_by ?? null,
     postingStartedAt: b.posting_started_at ? new Date(b.posting_started_at).toISOString() : null,
     postedAt: b.posted_at ? new Date(b.posted_at).toISOString() : null,
     postedBy: b.posted_by ?? null,
@@ -820,5 +884,17 @@ module.exports = {
   runPost,
   runRollback,
   getProgress,
+  /*
+   * The three terminal-state writers, exported for scripts/fees-verify-queries.js
+   * — which walks a synthetic batch through the whole lifecycle against a REAL
+   * migrated schema, because a Map cannot refuse a row a CHECK constraint
+   * refuses. That is the gap the posted-pair defect went through.
+   *
+   * Not part of the module's interface for anything else: `runPost` and
+   * `runRollback` are how the module is used.
+   */
+  recordWritten,
+  markFailed,
+  markPosted,
   _running: running,
 };

@@ -40,22 +40,48 @@ const { FakeFeesDb } = require('./feesTestUtils');
 
 const BATCH_ID = '33333333-3333-4333-8333-333333333333';
 
-/** A batch row in whatever posting state a test needs. */
+/**
+ * A batch row in whatever posting state a test needs.
+ *
+ * COMPLETE, AND VALID UNDER EVERY CHECK the migrations declare — `FakeFeesDb`
+ * now asserts them on every mutation, so a fixture that omitted `source_type`
+ * or `file_sha256` would fail on the first UPDATE rather than on anything the
+ * test is about.
+ *
+ * The earlier version of this helper seeded `posted_by: 'manager@carein.ai'`
+ * beside `posted_at: null`, which is precisely the row
+ * `fees_import_batch_posted_pair_check` forbids. The fixture encoded the bug
+ * these tests were meant to be standing guard over, which is part of why they
+ * could not see it: attribution before completion now lives in
+ * `post_requested_by`, and that is what a takeover must preserve.
+ */
 function seedBatch(db, over = {}) {
   const row = {
     batch_id: BATCH_ID,
     office: 'roland',
     filename: 'northstar.pdf',
+    file_sha256: 'a'.repeat(64),
+    file_size_bytes: 240_000,
+    source_type: 'pdf',
     status: 'posting',
     row_count: 500,
+    warning_count: 0,
+    parse_warnings: [],
+    failure_reason: null,
+    failure_code: null,
+    created_by: 'manager@carein.ai',
     rows_written: 299,
     od_feesched_num: 55,
     od_feesched_desc: 'Northstar PPO 2026',
     od_feesched_is_new: false,
     post_error: null,
     posting_started_at: new Date(),
+    // Who pressed Post. Survives a resume and a takeover; see the header.
+    post_requested_by: 'manager@carein.ai',
+    // Both null together, because this run has not finished. The pair only
+    // lands in `markPosted`.
     posted_at: null,
-    posted_by: 'manager@carein.ai',
+    posted_by: null,
     rolled_back_at: null,
     rolled_back_by: null,
     created_at: new Date(),
@@ -153,8 +179,12 @@ test('THE FIX: a STALE posting row is claimed, and the takeover is recorded', as
   assert.match(batch.post_error, /never finished/);
 
   // Attribution is NOT overwritten. Whoever authorised the post still did; a
-  // takeover is not a second authorisation.
-  assert.equal(batch.posted_by, 'manager@carein.ai');
+  // takeover is not a second authorisation. It lives in `post_requested_by`
+  // because `posted_by` cannot be written before there is a `posted_at` to
+  // pair with — the defect this file's fixture used to encode.
+  assert.equal(batch.post_requested_by, 'manager@carein.ai');
+  assert.equal(batch.posted_by, null, 'and the completed-post pair stays empty until it completes');
+  assert.equal(batch.posted_at, null);
   // And what the dead run already wrote is left alone for the resume to verify.
   assert.equal(batch.rows_written, 299);
 });
@@ -178,7 +208,12 @@ test('an ordinary resume is not a takeover, and clears the previous error', asyn
 
 test('a ready batch still claims normally, with no takeover note', async () => {
   const db = new FakeFeesDb();
-  seedBatch(db, { status: 'ready', rows_written: 0, posting_started_at: null, posted_by: null });
+  seedBatch(db, {
+    status: 'ready',
+    rows_written: 0,
+    posting_started_at: null,
+    post_requested_by: null,
+  });
 
   const res = await claim(db, 'manager@carein.ai');
 
@@ -186,7 +221,15 @@ test('a ready batch still claims normally, with no takeover note', async () => {
   assert.equal(res.tookOver, false);
   const batch = db.table('fees_import_batch')[0];
   assert.equal(batch.post_error, null);
-  assert.equal(batch.posted_by, 'manager@carein.ai', 'a first claim DOES stamp attribution');
+  assert.equal(
+    batch.post_requested_by,
+    'manager@carein.ai',
+    'a first claim DOES stamp who asked for it'
+  );
+  // And it does NOT touch the completed-post pair, which is what makes the
+  // statement storable at all.
+  assert.equal(batch.posted_by, null);
+  assert.equal(batch.posted_at, null);
 });
 
 // ─── The race ───────────────────────────────────────────────────────────────

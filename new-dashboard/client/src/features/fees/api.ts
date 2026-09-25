@@ -601,6 +601,15 @@ export interface FeesPostProgress {
   totalCents: number;
   target: FeesPostTarget | null;
   postError: string | null;
+  /**
+   * Who pressed Post.
+   *
+   * The ONLY attribution a `posting` or `post_failed` run has — `postedBy` is
+   * necessarily null in both, because it is half of a pair the schema only
+   * lets land on completion. Writing it early is what broke the first real
+   * post; see docs/reports/fix-fees-post-attribution.md.
+   */
+  requestedBy: string | null;
   postingStartedAt: string | null;
   postedAt: string | null;
   postedBy: string | null;

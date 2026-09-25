@@ -76,6 +76,127 @@ function assertEditedPair(row) {
 }
 
 /**
+ * EVERY CHECK CONSTRAINT ON `fees_import_batch`, IN ONE LIST.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS
+ * ═════════════════════════════════════════════════════════════════════════════
+ * This fake used to enforce the batch table's constraints only at INSERT, and
+ * only the ones slice 1 declared. Every UPDATE went through unchecked. So when
+ * `claimBatchForPosting` started writing `posted_by` while `posted_at` was
+ * still NULL — exactly the row `fees_import_batch_posted_pair_check` forbids —
+ * the whole posting suite stayed green against a fake that permitted it, and
+ * the defect shipped. It then failed on the first real post of every batch.
+ * (docs/reports/fees-post-failure-recon.md.)
+ *
+ * The lesson is not "add a posted_pair check to the fake". It is that a fake
+ * modelling a table must model that table's CONSTRAINTS, or every test using it
+ * is asserting against rows Postgres would refuse. So this is the whole set,
+ * applied after every mutation, insert and update alike.
+ *
+ * ONE LIST, NAMED LIKE THE MIGRATION. Each entry carries the constraint's real
+ * name, so a failure here reads the same as the failure Postgres would have
+ * raised, and adding the next CHECK is a one-line change in one place rather
+ * than a hunt through the mutation branches.
+ *
+ * Sources: migrations-tenant/1788700000000_fees_import.js (slice 1),
+ * 1788900000000_fees_posting.js (slice 3, which REPLACES status_check and
+ * parsed_clean_check), 1789300000000_fees_post_requested_by.js (adds a column,
+ * no constraint). 1789100000000 touches only `fees_import_row`.
+ *
+ * `holds` returns true when the row SATISFIES the constraint — the same
+ * polarity as the SQL, so each line can be read against the migration it came
+ * from without inverting it in your head.
+ */
+const BATCH_CHECKS = [
+  {
+    name: 'fees_import_batch_office_check',
+    holds: (b) => ['roland', 'valley'].includes(b.office),
+  },
+  {
+    name: 'fees_import_batch_source_type_check',
+    holds: (b) => ['pdf', 'csv'].includes(b.source_type),
+  },
+  {
+    name: 'fees_import_batch_status_check',
+    holds: (b) =>
+      ['parsed', 'failed', 'ready', 'posting', 'posted', 'post_failed', 'rolled_back'].includes(
+        b.status
+      ),
+  },
+  {
+    name: 'fees_import_batch_sha256_check',
+    holds: (b) => /^[0-9a-f]{64}$/.test(String(b.file_sha256)),
+  },
+  {
+    name: 'fees_import_batch_filename_check',
+    holds: (b) => String(b.filename ?? '').trim().length > 0,
+  },
+  {
+    name: 'fees_import_batch_sizes_check',
+    holds: (b) =>
+      Number(b.file_size_bytes) > 0 && Number(b.row_count) >= 0 && Number(b.warning_count) >= 0,
+  },
+  {
+    name: 'fees_import_batch_failed_reason_check',
+    holds: (b) => b.status !== 'failed' || b.failure_reason != null,
+  },
+  {
+    // Slice 3's replacement: only a PARSE failure carries a parse failure
+    // reason. Slice 1's version named 'parsed' explicitly and every new status
+    // would have violated it.
+    name: 'fees_import_batch_parsed_clean_check',
+    holds: (b) => b.status === 'failed' || (b.failure_reason == null && b.failure_code == null),
+  },
+  {
+    name: 'fees_import_batch_failed_no_rows_check',
+    holds: (b) => b.status !== 'failed' || Number(b.row_count) === 0,
+  },
+  {
+    name: 'fees_import_batch_post_failed_reason_check',
+    holds: (b) => b.status !== 'post_failed' || b.post_error != null,
+  },
+  {
+    name: 'fees_import_batch_rows_written_check',
+    holds: (b) => Number(b.rows_written) >= 0 && Number(b.rows_written) <= Number(b.row_count),
+  },
+  {
+    name: 'fees_import_batch_target_check',
+    holds: (b) =>
+      !['posting', 'posted', 'post_failed', 'rolled_back'].includes(b.status) ||
+      b.od_feesched_num != null,
+  },
+  {
+    // THE ONE THAT WAS MISSING. Half an attribution is worse than none, because
+    // it looks like a whole one.
+    name: 'fees_import_batch_posted_pair_check',
+    holds: (b) => (b.posted_by == null) === (b.posted_at == null),
+  },
+  {
+    name: 'fees_import_batch_rolled_back_pair_check',
+    holds: (b) => (b.rolled_back_by == null) === (b.rolled_back_at == null),
+  },
+];
+
+/**
+ * Refuse a batch row Postgres would refuse, with the message Postgres would
+ * use.
+ *
+ * Called after EVERY mutation — the insert and every branch of updateBatch —
+ * because a constraint checked only on insert is a constraint the job's own
+ * statements never meet.
+ *
+ * @param {Record<string, unknown>} row
+ */
+function assertBatchChecks(row) {
+  for (const c of BATCH_CHECKS) {
+    if (!c.holds(row)) {
+      throw new Error(`new row for relation "fees_import_batch" violates check constraint "${c.name}"`);
+    }
+  }
+}
+
+/**
  * A Postgres stand-in that executes importStore.js's six statements.
  *
  * It enforces the things the real schema enforces and the tests depend on:
@@ -195,27 +316,19 @@ class FakeFeesDb {
       created_by,
     ] = params;
 
-    const check = (ok, name) => {
-      if (!ok) throw new Error(`new row violates check constraint "${name}"`);
-    };
-    check(['roland', 'valley'].includes(office), 'fees_import_batch_office_check');
-    check(['pdf', 'csv'].includes(source_type), 'fees_import_batch_source_type_check');
-    check(['parsed', 'failed'].includes(status), 'fees_import_batch_status_check');
-    check(/^[0-9a-f]{64}$/.test(String(file_sha256)), 'fees_import_batch_sha256_check');
-    check(String(filename).trim().length > 0, 'fees_import_batch_filename_check');
-    check(
-      Number(file_size_bytes) > 0 && Number(row_count) >= 0 && Number(warning_count) >= 0,
-      'fees_import_batch_sizes_check'
-    );
-    check(
-      status !== 'failed' || failure_reason != null,
-      'fees_import_batch_failed_reason_check'
-    );
-    check(
-      status !== 'parsed' || (failure_reason == null && failure_code == null),
-      'fees_import_batch_parsed_clean_check'
-    );
-    check(status !== 'failed' || Number(row_count) === 0, 'fees_import_batch_failed_no_rows_check');
+    // The CHECKs are asserted below, against the assembled row, through the one
+    // shared BATCH_CHECKS list — not inline against the parameters. An insert
+    // and an update must be held to the same constraints, and the way to
+    // guarantee that is for there to be only one description of them.
+    //
+    // One narrowing the shared list cannot express: the INSERT's own statement
+    // only ever writes 'parsed' or 'failed'. A caller asking this statement for
+    // 'posting' is a caller misusing it, and the route never does.
+    if (!['parsed', 'failed'].includes(status)) {
+      throw new Error(
+        `FakeFeesDb: importStore.insertBatch only writes 'parsed' or 'failed', got '${status}'`
+      );
+    }
 
     const now = new Date();
     const row = {
@@ -248,7 +361,12 @@ class FakeFeesDb {
       posted_by: null,
       rolled_back_at: null,
       rolled_back_by: null,
+      // Slice 4's column: who pressed Post. NOT part of any pair, which is the
+      // entire reason it exists — `posted_by` cannot be written before there is
+      // a `posted_at` to pair with.
+      post_requested_by: null,
     };
+    assertBatchChecks(row);
     this.table('fees_import_batch').push(row);
     return { rows: [row], rowCount: 1 };
   }
@@ -448,8 +566,10 @@ class FakeFeesDb {
         b.post_error = params[2];
       } else if (/SET status = 'posted'/.test(text)) {
         b.status = 'posted';
+        // THE PAIR LANDS TOGETHER, taking the name from the requester stamped
+        // at claim time — the same statement production runs.
         b.posted_at = new Date();
-        b.posted_by = b.posted_by || 'unknown';
+        b.posted_by = b.post_requested_by || 'unknown';
         b.post_error = null;
       } else if (/SET status = 'rolled_back'/.test(text)) {
         b.status = 'rolled_back';
@@ -457,7 +577,22 @@ class FakeFeesDb {
         b.rolled_back_by = params[2];
       } else if (/SET status = \$3/.test(text)) {
         b.status = params[2];
+      } else if (/SET post_requested_by = COALESCE/.test(text)) {
+        // First-claim-wins, on a column that is NOT half of a pair.
+        b.post_requested_by = b.post_requested_by || params[2];
       } else if (/SET posted_by = COALESCE/.test(text)) {
+        /*
+         * THE OLD, BROKEN CLAIM-TIME STAMP — recognised on purpose.
+         *
+         * This branch is not reachable from current code. It is here so that
+         * restoring the old statement makes the suite fail on the CONSTRAINT
+         * rather than on "FakeFeesDb: unrecognised UPDATE". A fake that refuses
+         * to parse a statement proves only that it has not been taught it; one
+         * that executes it faithfully and is then refused by
+         * `assertBatchChecks` proves the row is unstorable, which is the actual
+         * claim. Deleting this would quietly weaken the guard that this whole
+         * change is about.
+         */
         b.posted_by = b.posted_by || params[2];
       } else if (/SET od_feesched_num = \$3, od_feesched_desc = \$4, od_feesched_is_new = \$5/.test(text)) {
         b.od_feesched_num = params[2];
@@ -474,6 +609,10 @@ class FakeFeesDb {
       // test cannot pass against a counter that drifted from its rows.
       if (/rows_written = \(/.test(text)) b.rows_written = this.writtenCount(office, batchId);
       b.updated_at = new Date();
+      // EVERY mutation, not just the insert. A constraint checked only on
+      // insert is a constraint the job's own statements never meet — which is
+      // exactly how the posted-pair defect reached staging.
+      assertBatchChecks(b);
     }
 
     return { rows: matched.map((b) => ({ ...b })), rowCount: matched.length };
