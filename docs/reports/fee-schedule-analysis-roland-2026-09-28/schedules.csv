@@ -1,48 +1,48 @@
 fee_sched_num,description,fee_sched_type,is_hidden,is_ucr,plan_count,listed_carriers_using_it,coverage_of_22,priced_codes_of_22,weighted_pct_ucr,hygiene_pct_ucr,hygiene_coverage_of_9,restorative_pct_ucr,restorative_coverage_of_13,zero_amount_basket_codes
-92,Standard Fees 04/2025,Normal,no,yes,380,Aetna; Ameritas; Blue Cross Blue Shield; Cigna; Delta Dental; GEHA; Guardian; Humana; Lincoln Financial Group; United Healthcare,22,22,100.0,100.0,9,100.0,13,0
-78,Standard 6-2023,Normal,no,no,3,United Healthcare,22,22,89.4,90.1,9,89.3,13,0
-77,Valley family Dental ( Smile Savers),Normal,no,no,0,,22,22,88.9,87.7,9,89.3,13,0
-99,Test Connection Dental 2025,OutNetwork,yes,no,0,,22,22,87.9,85.2,9,88.6,13,0
-98,Connection Dental 2025 new Fee Schedule (Plan #14600),OutNetwork,no,no,0,,22,22,87.9,85.2,9,88.6,13,0
-53,Standard 2/2021,Normal,no,no,1,,22,22,85.7,83.7,9,86.2,13,0
-81,United Healthcare 2023,Normal,no,no,0,,22,22,84.5,79.6,9,85.8,13,0
-74,Careington CP50,Normal,no,no,312,Blue Cross Blue Shield; Cigna; Guardian; Humana; Lincoln Financial Group; MetLife; United Healthcare,20,20,80.9,77.9,8,81.8,12,0
-88,Mutual of Omaha 10/2023,Normal,no,no,0,,20,20,80.9,77.9,8,81.8,12,0
-100,Test Good-Luck-Dental-Ins,OutNetwork,yes,no,0,,21,21,73.1,66.3,9,75.2,12,0
-73,Zelis 07/2024,Normal,no,no,47,Ameritas,22,22,68.1,60.9,9,70.1,13,0
-79,Aetna 2024,Normal,no,no,68,Guardian,22,22,65.3,55.6,9,68.0,13,0
-56,Healthchoice,Normal,no,no,25,,22,22,65.2,64.9,9,65.3,13,0
-86,Arkansas BCBS Blue/Grid + 10/2023,Normal,no,no,158,Anthem; Blue Cross Blue Shield,22,22,65.0,51.0,9,68.9,13,0
-55,Cigna PPO 2023,Normal,no,no,0,,22,22,63.5,58.2,9,64.9,13,0
-57,DNOA-UC-BCBS '20,Normal,no,no,0,,22,22,61.7,50.1,9,64.9,13,0
-96,Test Payless Dental Fee Schedule (Plan #14590),OutNetwork,yes,no,0,,22,22,59.8,53.3,9,61.6,13,0
-93,Test Fee Schedule,Normal,yes,no,0,,22,22,59.8,53.3,9,61.6,13,0
-89,Municipal Health 10/2023,Normal,no,no,3,,22,22,54.3,48.0,9,56.0,13,0
-85,Arkansas BCBS PPP General 10/2023,Normal,no,no,0,,22,22,54.1,47.7,9,55.8,13,0
-71,Delta Arkansas/PREMIER 09/2023,Normal,no,no,193,Delta Dental,22,22,54.0,48.0,9,55.6,13,0
-54,Delta Arkansas /PPO '20,Normal,no,no,25,Delta Dental,22,22,53.5,49.3,9,54.7,13,0
-72,Delta Oklahoma '23,Normal,no,no,113,Delta Dental,22,22,53.4,49.0,9,54.6,13,0
-103,Test-PaylessDental,Normal,no,no,0,,13,13,51.2,44.3,5,53.0,8,0
-68,Connection Dental 2024,Normal,no,no,269,Aetna; Blue Cross Blue Shield; Cigna; GEHA; Humana; MetLife; United Healthcare,22,22,50.3,48.6,9,50.7,13,0
-87,Arkansas BCBS Medicare Advantage 10/2023,Normal,yes,no,0,,22,22,50.1,44.3,9,51.6,13,0
-101,Test-PaylesDental,Normal,yes,no,0,,21,21,49.7,45.2,9,51.1,12,0
-104,Test_PaylessDental_v3,Normal,no,no,0,,21,21,49.7,45.2,9,51.1,12,0
-105,Test-PaylessDental-v4,Normal,no,no,0,,21,21,49.7,45.2,9,51.1,12,0
-83,Arkansas BCBS PPO General 10/2023,Normal,no,no,2,Blue Cross Blue Shield,22,22,48.4,43.1,9,49.9,13,0
-80,MetLife 2023,Normal,no,no,0,,22,22,48.3,43.7,9,49.6,13,0
-82,DNOA BCBS OK/TX/IL/MI/NM/KS,Normal,no,no,8,Blue Cross Blue Shield,22,22,45.3,41.7,9,46.3,13,0
-60,Dentemax,Normal,no,no,3,,19,19,41.6,39.4,8,42.4,11,0
-64,United Concordia/TDP/Tricare ONLY,Normal,no,no,11,,22,22,40.8,36.5,9,42.0,13,0
-58,Soonercare CHILD 1/23,Normal,no,no,4,,20,20,40.2,37.0,8,41.1,12,0
-67,MCNA Ark Medicaid 09-2023,Normal,no,no,2,,20,20,39.5,39.3,9,39.6,11,0
-76,Soonercare ADULT 1/23,Normal,no,no,4,,18,18,38.3,40.2,8,37.0,10,2
-70,Delta Dental SMILES Child 21-,Normal,no,no,1,Delta Dental,17,17,37.2,40.2,8,34.7,9,0
-66,Delta Dental SMILES ADULT 21+,Normal,no,no,1,Delta Dental,14,14,35.6,41.0,6,30.8,8,1
-61,Assruant supplemental,OutNetwork,yes,no,0,,4,4,24.8,,0,24.8,4,0
-65,APL,Normal,yes,no,0,,1,1,22.1,22.1,1,,0,0
-69,Rural Carrier Benefit,CoPay,yes,no,0,,1,1,18.4,18.4,1,,0,0
-63,Delta Dental of OK Copay,CoPay,no,no,0,,22,22,15.0,7.3,9,17.2,13,0
-62,Dental Dental choice out of network,Normal,no,no,0,,6,6,7.2,7.4,3,6.7,3,0
+92,Standard Fees 04/2025,Normal,no,no,380,Aetna; Ameritas; Blue Cross Blue Shield; Cigna; Delta Dental; GEHA; Guardian; Humana; Lincoln Financial Group; United Concordia TDP & Active Duty; United Healthcare,22,22,111.8,111.0,9,112.0,13,0
+78,Standard 6-2023,Normal,no,yes,3,United Healthcare,22,22,100.0,100.0,9,100.0,13,0
+77,Valley family Dental ( Smile Savers),Normal,no,no,0,,22,22,99.4,97.4,9,100.0,13,0
+99,Test Connection Dental 2025,OutNetwork,yes,no,0,,22,22,98.2,94.6,9,99.2,13,0
+98,Connection Dental 2025 new Fee Schedule (Plan #14600),OutNetwork,no,no,0,,22,22,98.2,94.6,9,99.2,13,0
+53,Standard 2/2021,Normal,no,no,1,Health Choice,22,22,95.8,93.0,9,96.6,13,0
+81,United Healthcare 2023,Normal,no,no,0,,22,22,94.5,88.4,9,96.1,13,0
+74,Careington CP50,Normal,no,no,312,Blue Cross Blue Shield; Cigna; Guardian; Humana; Lincoln Financial Group; MetLife; United Healthcare,20,20,90.9,86.5,8,92.2,12,0
+88,Mutual of Omaha 10/2023,Normal,no,no,0,,20,20,90.9,86.5,8,92.2,12,0
+100,Test Good-Luck-Dental-Ins,OutNetwork,yes,no,0,,21,21,82.0,73.6,9,84.7,12,0
+73,Zelis 07/2024,Normal,no,no,47,Ameritas; United Concordia TDP & Active Duty,22,22,76.1,67.6,9,78.5,13,0
+79,Aetna 2024,Normal,no,no,68,Guardian,22,22,73.0,61.7,9,76.2,13,0
+56,Healthchoice,Normal,no,no,25,Health Choice,22,22,72.9,72.0,9,73.1,13,0
+86,Arkansas BCBS Blue/Grid + 10/2023,Normal,no,no,158,Anthem; Blue Cross Blue Shield,22,22,72.7,56.6,9,77.2,13,0
+55,Cigna PPO 2023,Normal,no,no,0,,22,22,70.9,64.6,9,72.7,13,0
+57,DNOA-UC-BCBS '20,Normal,no,no,0,,22,22,69.0,55.7,9,72.7,13,0
+96,Test Payless Dental Fee Schedule (Plan #14590),OutNetwork,yes,no,0,,22,22,66.9,59.2,9,69.0,13,0
+93,Test Fee Schedule,Normal,yes,no,0,,22,22,66.9,59.2,9,69.0,13,0
+89,Municipal Health 10/2023,Normal,no,no,3,,22,22,60.7,53.3,9,62.7,13,0
+85,Arkansas BCBS PPP General 10/2023,Normal,no,no,0,,22,22,60.5,52.9,9,62.5,13,0
+71,Delta Arkansas/PREMIER 09/2023,Normal,no,no,193,Delta Dental,22,22,60.4,53.3,9,62.3,13,0
+54,Delta Arkansas /PPO '20,Normal,no,no,25,Delta Dental,22,22,59.9,54.8,9,61.3,13,0
+72,Delta Oklahoma '23,Normal,no,no,113,Delta Dental,22,22,59.7,54.4,9,61.2,13,0
+103,Test-PaylessDental,Normal,no,no,0,,13,13,57.3,48.9,5,59.6,8,0
+68,Connection Dental 2024,Normal,no,no,269,Aetna; Blue Cross Blue Shield; Cigna; GEHA; Humana; MetLife; Principal Life Insurance Company; United Healthcare,22,22,56.2,53.9,9,56.9,13,0
+87,Arkansas BCBS Medicare Advantage 10/2023,Normal,yes,no,0,,22,22,56.0,49.1,9,57.9,13,0
+101,Test-PaylesDental,Normal,yes,no,0,,21,21,55.7,50.1,9,57.5,12,0
+104,Test_PaylessDental_v3,Normal,no,no,0,,21,21,55.7,50.1,9,57.5,12,0
+105,Test-PaylessDental-v4,Normal,no,no,0,,21,21,55.7,50.1,9,57.5,12,0
+83,Arkansas BCBS PPO General 10/2023,Normal,no,no,2,Blue Cross Blue Shield,22,22,54.2,47.8,9,55.9,13,0
+80,MetLife 2023,Normal,no,no,0,,22,22,54.0,48.5,9,55.6,13,0
+82,DNOA BCBS OK/TX/IL/MI/NM/KS,Normal,no,no,8,Blue Cross Blue Shield,22,22,50.7,46.3,9,51.9,13,0
+60,Dentemax,Normal,no,no,3,,19,19,46.5,43.8,8,47.6,11,0
+64,United Concordia/TDP/Tricare ONLY,Normal,no,no,11,United Concordia TDP & Active Duty,22,22,45.6,40.5,9,47.0,13,0
+58,Soonercare CHILD 1/23,Normal,no,no,4,,20,20,45.2,41.0,8,46.3,12,0
+67,MCNA Ark Medicaid 09-2023,Normal,no,no,2,,20,20,44.2,43.6,9,44.5,11,0
+76,Soonercare ADULT 1/23,Normal,no,no,4,,18,18,43.1,44.6,8,42.1,10,2
+70,Delta Dental SMILES Child 21-,Normal,no,no,1,Delta Dental,17,17,41.8,44.5,8,39.5,9,0
+66,Delta Dental SMILES ADULT 21+,Normal,no,no,1,Delta Dental,14,14,40.2,45.8,6,35.1,8,1
+61,Assruant supplemental,OutNetwork,yes,no,0,,4,4,28.2,,0,28.2,4,0
+65,APL,Normal,yes,no,0,,1,1,25.4,25.4,1,,0,0
+69,Rural Carrier Benefit,CoPay,yes,no,0,,1,1,21.2,21.2,1,,0,0
+63,Delta Dental of OK Copay,CoPay,no,no,0,,22,22,16.8,8.1,9,19.2,13,0
+62,Dental Dental choice out of network,Normal,no,no,0,,6,6,8.2,8.4,3,7.7,3,0
 94,TEST TEST Fee Schedule (Plan #14586),OutNetwork,yes,no,0,,0,0,,,0,,0,0
 84,Arkansas BCBS PPO Specialist 10/2023 ,Normal,yes,no,0,,0,0,,,0,,0,0
 59,aetna,Normal,yes,no,0,,0,0,,,0,,0,0

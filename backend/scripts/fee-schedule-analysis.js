@@ -32,12 +32,15 @@
  * getOdOffice(key))` idiom every other office-scoped caller uses, so a run
  * against one practice can never reach the other's database.
  *
- * The five resources read — /feescheds, /fees, /procedurecodes, /carriers,
- * /insplans — plus /preferences are PRACTICE CONFIGURATION. None of them
- * carries a patient. No patient-scoped endpoint is called, no PatNum is
- * requested, and nothing written to docs/reports/ contains a person's name.
- * `insplan.GroupName` is an EMPLOYER group name and is not read here; only the
- * nine fields named in PLAN_FIELDS are kept.
+ * The six resources read — /feescheds, /fees, /procedurecodes, /carriers,
+ * /insplans, /providers — are PRACTICE CONFIGURATION. None of them carries a
+ * patient. No patient-scoped endpoint is called, no PatNum is requested, and
+ * nothing written to docs/reports/ contains a person's name.
+ *
+ * Two responses DO carry names, and both are projected down before anything is
+ * kept: `insplan.GroupName` is an employer group name (not read — see
+ * PLAN_FIELDS), and /providers carries staff `LName`/`FName`/`SSN` (not read —
+ * see fetchProviders, which keeps four config fields and discards the row).
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * THROTTLE
@@ -185,6 +188,39 @@ const LISTED_CARRIERS = Object.freeze([
   'Lincoln Financial Group',
   'MetLife',
 ]);
+
+/**
+ * Extra needles for listed carriers whose name in Open Dental is not a
+ * punctuation-variant of the listed one.
+ *
+ * Normalisation alone fixes spacing ("Health Choice" -> `HEALTHCHOICE`), but it
+ * cannot fix a DIFFERENT name. These three were found by the first Roland run's
+ * near-miss diagnostic and confirmed against the live carrier table:
+ *
+ *   Health Choice                      -> HEALTHCHOICE (one word)
+ *   Principal Life Insurance Company   -> PRINCIPAL FINANCIAL (different suffix)
+ *   United Concordia TDP & Active Duty -> UNITED CONCORDIA, UNITED CONCORDIA
+ *                                         TRICARE TDP, UNITED CONCORDIA ADDP
+ *                                         ACTIVE DUTY (three records, one payer)
+ *
+ * `UNITED CONCORDIA` is deliberately the broad needle: the brief asks for all
+ * variants including TRICARE, and every record in the table beginning that way
+ * is the same payer.
+ *
+ * NOT aliased, and worth knowing: "Anthem Blue Cross and Blue Shield" still
+ * matches nothing, because the table spells it `ANTHEM BLUE CROSS BLUE SHIELD`
+ * — no "and" — and no amount of punctuation-stripping bridges a missing word.
+ * It is left to the near-miss diagnostic rather than quietly aliased, because
+ * the listed name and "Anthem" (which does match) would then double-count the
+ * same record under two rows with no way to see it had happened.
+ *
+ * @type {Readonly<Record<string, ReadonlyArray<string>>>}
+ */
+const CARRIER_ALIASES = Object.freeze({
+  'Health Choice': ['HEALTHCHOICE'],
+  'Principal Life Insurance Company': ['PRINCIPAL'],
+  'United Concordia TDP & Active Duty': ['UNITED CONCORDIA'],
+});
 
 /**
  * Minimum basket codes a schedule must price before it earns a place in the
@@ -537,47 +573,91 @@ async function fetchInsPlans(od) {
   }));
 }
 
+/**
+ * Providers, projected to the four CONFIGURATION fields this analysis uses.
+ *
+ * `GET /providers` is a staff table, not a patient one, and it is the only
+ * place Open Dental states what UCR actually is: `provider.FeeSched`. UCR is a
+ * PROVIDER attribute in Open Dental — there is no practice-level default
+ * anywhere in /preferences, which the first run established by sweeping all
+ * ~1,250 of them.
+ *
+ * THE RESPONSE CARRIES STAFF NAMES (`LName`, `FName`, `PreferredName`) AND
+ * `SSN`. None of them is read. The projection below names four fields and the
+ * row is discarded, so nothing that could identify a person reaches a variable,
+ * a log line or a report — the same discipline PLAN_FIELDS applies to
+ * /insplans. `Abbr` is deliberately excluded too: at a two-dentist practice a
+ * provider abbreviation IS a person's name.
+ *
+ * @param {OdReader} od
+ * @returns {Promise<Array<{ provNum: number, feeSched: number, isHidden: boolean, isNotPerson: boolean }>>}
+ */
+async function fetchProviders(od) {
+  const rows = await listAll(od, '/providers', {}, 'ProvNum');
+  return rows.map((p) => ({
+    provNum: num(p.ProvNum),
+    feeSched: num(p.FeeSched),
+    isHidden: odBool(p.IsHidden),
+    isNotPerson: odBool(p.IsNotPerson),
+  }));
+}
+
 // ─── UCR resolution ──────────────────────────────────────────────────────────
 
 /**
  * Which schedule is this practice's UCR (full fee) schedule?
  *
- * THIS IS AN INFERENCE, and the report says so. What was checked:
+ * NOW READ, NOT INFERRED — with the inference kept as a cross-check.
  *
- *   - `/preferences` was swept in full (13 pages, ~1,250 preferences) looking
- *     for a practice-default fee schedule. THERE IS NOT ONE. The only
- *     fee-schedule-shaped preferences are behavioural switches
- *     (`InsPpoAlwaysUseUcrFee`, `InsBlueBookUcrFeePercent`,
- *     `CoPay_FeeSchedule_BlankLikeZero`), none of which names a schedule.
+ * In Open Dental, UCR is `provider.FeeSched`. It is a PROVIDER attribute: there
+ * is no practice-level default anywhere, which the first run established the
+ * hard way by sweeping all ~1,250 preferences and finding only behavioural
+ * switches (`InsPpoAlwaysUseUcrFee`, `InsBlueBookUcrFeePercent`,
+ * `CoPay_FeeSchedule_BlankLikeZero`), none of which names a schedule.
  *
- *   - In Open Dental proper, UCR is `provider.FeeSched` — it is a PROVIDER
- *     attribute, not a practice one. `GET /providers` exposes it. That endpoint
- *     is outside the resource allow-list this script was given, so it is NOT
- *     called, and this function uses the brief's prescribed fallback instead.
- *     Running the one extra read would settle the question outright; that is a
- *     decision for whoever authorises the resource list, and it is raised in
- *     summary.md rather than taken here.
+ * So the answer comes from the providers, and the previous insplan inference is
+ * retained as INDEPENDENT CORROBORATION rather than deleted. Two different
+ * routes to the same schedule is worth far more than either alone, and when
+ * they disagree that is itself the finding — it means either the providers are
+ * set up inconsistently or the plan population has drifted onto a newer
+ * schedule than the providers point at. Both are things an office would want to
+ * know before renegotiating anything.
  *
- * The fallback, exactly as prescribed: the modal non-zero `FeeSched` among
- * NON-HIDDEN plans whose `PlanType` is blank. A blank PlanType is Open Dental's
- * "category percentage" plan — the traditional indemnity shape that pays a
- * percentage of the office's own fee — so the schedule most of them point at is
- * the office's own fee schedule.
+ * PROVIDERS CAN DISAGREE WITH EACH OTHER, and often do: a hygienist, an
+ * associate and a retired owner may each carry a different FeeSched. Every
+ * distinct value is reported with its provider count; the MODAL one is used.
+ * Hidden providers and non-person providers (Open Dental uses those for labs
+ * and equipment) are excluded — a retired dentist's stale FeeSched should not
+ * outvote the people actually producing.
+ *
+ * Precedence: explicit `--ucr` > providers > the insplan inference.
  *
  * @param {ReadonlyArray<{ feeSched: number, planType: string, isHidden: boolean }>} plans
+ * @param {ReadonlyArray<{ provNum: number, feeSched: number, isHidden: boolean, isNotPerson: boolean }>} providers
  * @param {number|null} override explicit --ucr, or null
  * @returns {{
  *   feeSchedNum: number|null,
+ *   source: 'override'|'providers'|'insplan-inference'|'none',
  *   basis: string,
+ *   providerRanked: Array<{ feeSchedNum: number, providerCount: number }>,
+ *   providerModal: number|null,
+ *   providersConsidered: number,
+ *   providersDisagree: boolean,
+ *   inferred: number|null,
+ *   inferredBasis: string,
  *   evidence: Array<{ feeSchedNum: number, planCount: number }>,
+ *   agrees: boolean|null,
  *   corroborated: boolean,
  *   overallModal: number|null
  * }}
  */
-function resolveUcr(plans, override) {
+function resolveUcr(plans, providers, override) {
   const visible = plans.filter((p) => !p.isHidden);
 
-  /** @param {ReadonlyArray<{ feeSched: number }>} rows */
+  /**
+   * @param {ReadonlyArray<{ feeSched: number }>} rows
+   * @returns {Array<{ feeSchedNum: number, count: number }>}
+   */
   const modal = (rows) => {
     /** @type {Map<number, number>} */
     const tally = new Map();
@@ -586,46 +666,81 @@ function resolveUcr(plans, override) {
       tally.set(r.feeSched, (tally.get(r.feeSched) || 0) + 1);
     }
     return [...tally.entries()]
-      .map(([feeSchedNum, planCount]) => ({ feeSchedNum, planCount }))
-      .sort((a, b) => b.planCount - a.planCount || a.feeSchedNum - b.feeSchedNum);
+      .map(([feeSchedNum, count]) => ({ feeSchedNum, count }))
+      .sort((a, b) => b.count - a.count || a.feeSchedNum - b.feeSchedNum);
   };
 
-  const blankRanked = modal(visible.filter((p) => p.planType === ''));
+  // ── The inference, still computed whatever the providers say ──────────────
+  const blankPlans = visible.filter((p) => p.planType === '');
+  const blankRanked = modal(blankPlans).map((r) => ({ feeSchedNum: r.feeSchedNum, planCount: r.count }));
   const allRanked = modal(visible);
   const overallModal = allRanked.length ? allRanked[0].feeSchedNum : null;
+  const inferred = blankRanked.length ? blankRanked[0].feeSchedNum : null;
+  const inferredBasis = blankRanked.length
+    ? `modal FeeSched among non-hidden plans with blank PlanType (${blankRanked[0].planCount} of ${blankPlans.length} such plans)`
+    : 'no non-hidden plan with a blank PlanType points at any fee schedule';
+
+  // ── The providers ─────────────────────────────────────────────────────────
+  const considered = providers.filter((p) => !p.isHidden && !p.isNotPerson);
+  const providerRanked = modal(considered).map((r) => ({
+    feeSchedNum: r.feeSchedNum,
+    providerCount: r.count,
+  }));
+  const providerModal = providerRanked.length ? providerRanked[0].feeSchedNum : null;
+  const providersDisagree = providerRanked.length > 1;
+
+  /** @type {Omit<ReturnType<typeof resolveUcr>, 'feeSchedNum'|'source'|'basis'>} */
+  const common = {
+    providerRanked,
+    providerModal,
+    providersConsidered: considered.length,
+    providersDisagree,
+    inferred,
+    inferredBasis,
+    evidence: blankRanked.slice(0, 6),
+    // Do the two independent routes land on the same schedule?
+    agrees: providerModal === null || inferred === null ? null : providerModal === inferred,
+    corroborated: overallModal === (providerModal ?? inferred),
+    overallModal,
+  };
 
   if (override !== null) {
+    return { feeSchedNum: override, source: 'override', basis: `explicit --ucr ${override}`, ...common };
+  }
+
+  if (providerModal !== null) {
+    const top = providerRanked[0];
     return {
-      feeSchedNum: override,
-      basis: `explicit --ucr ${override}`,
-      evidence: blankRanked.slice(0, 6),
-      corroborated: overallModal === override,
-      overallModal,
+      feeSchedNum: providerModal,
+      source: 'providers',
+      basis: (() => {
+        const withSched = providerRanked.reduce((n, r) => n + r.providerCount, 0);
+        const scope =
+          withSched === considered.length
+            ? `all ${considered.length} non-hidden providers carry one`
+            : `${withSched} of ${considered.length} non-hidden providers carry one`;
+        return providersDisagree
+          ? `provider.FeeSched — ${scope}, and they DISAGREE; the modal value is set on ${top.providerCount} of them`
+          : `provider.FeeSched — ${scope}, unanimously`;
+      })(),
+      ...common,
     };
   }
 
-  if (!blankRanked.length) {
+  if (inferred !== null) {
     return {
-      feeSchedNum: null,
-      basis: 'no non-hidden plan with a blank PlanType points at any fee schedule',
-      evidence: [],
-      corroborated: false,
-      overallModal,
+      feeSchedNum: inferred,
+      source: 'insplan-inference',
+      basis: `no non-hidden provider carries a fee schedule; fell back to ${inferredBasis}`,
+      ...common,
     };
   }
 
-  const chosen = blankRanked[0];
   return {
-    feeSchedNum: chosen.feeSchedNum,
-    basis:
-      `modal FeeSched among non-hidden plans with blank PlanType ` +
-      `(${chosen.planCount} of ${visible.filter((p) => p.planType === '').length} such plans)`,
-    evidence: blankRanked.slice(0, 6),
-    // The same schedule also being the most-used across ALL plans is independent
-    // corroboration: an office's own fee schedule is normally what the largest
-    // number of plans is written against.
-    corroborated: overallModal === chosen.feeSchedNum,
-    overallModal,
+    feeSchedNum: null,
+    source: 'none',
+    basis: 'no provider carries a fee schedule and no blank-PlanType plan points at one',
+    ...common,
   };
 }
 
@@ -736,8 +851,23 @@ function mapCarriers(carriers, plans, scoreByNum) {
   }
 
   return LISTED_CARRIERS.map((listed) => {
-    const needle = listed.toLowerCase();
-    const matched = carriers.filter((c) => c.carrierName.toLowerCase().includes(needle));
+    // THE STRICT PASS — the literal case-insensitive substring the brief
+    // originally specified. No longer what anything is counted from, but kept
+    // and reported beside the counted figure so the difference normalisation
+    // and aliases make is visible rather than asserted. On Roland it is the
+    // difference between "Health Choice: 0 plans" and "Health Choice: 26".
+    const strictNeedle = listed.toLowerCase();
+    const strictMatched = carriers.filter((c) => c.carrierName.toLowerCase().includes(strictNeedle));
+
+    // THE COUNTED PASS — both sides squashed to letters and digits, plus any
+    // aliases. Everything below this line uses `matched`.
+    const needles = [listed, ...(CARRIER_ALIASES[listed] || [])]
+      .map(squash)
+      .filter((n) => n.length > 0);
+    const matched = carriers.filter((c) => {
+      const name = squash(c.carrierName);
+      return needles.some((n) => name.includes(n));
+    });
 
     /** @type {Map<number, number>} plans per fee schedule */
     const bySchedule = new Map();
@@ -776,10 +906,17 @@ function mapCarriers(carriers, plans, scoreByNum) {
       weightBase += s.planCount;
     }
 
+    // Plans the strict pass alone would have found, for the same visibility.
+    const strictNums = new Set(strictMatched.map((c) => c.carrierNum));
+    const strictPlanCount = plans.filter((p) => !p.isHidden && strictNums.has(p.carrierNum)).length;
+
     /** @type {string[]} */
     const flags = [];
     if (!matched.length) flags.push('NO_CARRIER_RECORD');
     else if (planCount === 0) flags.push('NO_PLANS');
+    if (matched.length > strictMatched.length) {
+      flags.push(`RECOVERED_BY_NORMALISATION:${matched.length - strictMatched.length}:${planCount - strictPlanCount}`);
+    }
     if (bySchedule.has(0)) flags.push(`UCR_NO_SCHEDULE:${bySchedule.get(0)}`);
     if (schedules.length > 1) flags.push(`SPLIT_ACROSS_${schedules.length}_SCHEDULES`);
     if (weightBase > 0 && weightBase < planCount) {
@@ -789,6 +926,8 @@ function mapCarriers(carriers, plans, scoreByNum) {
     return {
       listed,
       matched,
+      strictMatched,
+      strictPlanCount,
       planCount,
       schedules,
       effectivePctUcr: weightBase > 0 ? weighted / weightBase : null,
@@ -801,37 +940,6 @@ function mapCarriers(carriers, plans, scoreByNum) {
 /** Lower-case and strip everything that is not a letter or digit. */
 function squash(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-/**
- * What the STRICT rule missed.
- *
- * The brief specifies case-insensitive substring on `CarrierName`, and that is
- * what `mapCarriers` does and what every number in this report is built from.
- * But the rule is punctuation-sensitive in a way that matters here: Roland's
- * carrier table spells it `HEALTHCHOICE`, one word, so the listed "Health
- * Choice" matches **nothing** — while the practice has a `Healthchoice` fee
- * schedule carrying live plans. Reporting a bare zero there would be accurate
- * and useless.
- *
- * So a second, LOOSER pass runs for diagnosis only: both sides squashed to
- * letters and digits. Its results are never counted, never averaged, and never
- * reach a CSV percentage — they appear in the flag line as "the strict rule
- * missed this", so the reader can decide whether the listed name or the
- * practice's spelling is the one to change.
- *
- * @param {string} listed
- * @param {ReadonlyArray<{ carrierNum: number, carrierName: string }>} carriers
- * @param {ReadonlyArray<{ carrierNum: number, isHidden: boolean }>} plans
- * @returns {{ names: string[], planCount: number }}
- */
-function looseMatch(listed, carriers, plans) {
-  const needle = squash(listed);
-  if (!needle) return { names: [], planCount: 0 };
-  const matched = carriers.filter((c) => squash(c.carrierName).includes(needle));
-  const nums = new Set(matched.map((c) => c.carrierNum));
-  const planCount = plans.filter((p) => !p.isHidden && nums.has(p.carrierNum)).length;
-  return { names: matched.map((c) => c.carrierName.trim()).sort(), planCount };
 }
 
 /**
@@ -901,6 +1009,25 @@ function writeReports(ctx) {
     }
   }
 
+  // EVERY carrier with a live plan on a schedule, by its own Open Dental name —
+  // not just the 17 listed ones. The empty-schedule section needs this: a
+  // schedule's problem is whoever is actually on it, which is frequently a payer
+  // nobody thought to put on the list.
+  /** @type {Map<number, string[]>} */
+  const carrierNamesOnSchedule = new Map();
+  {
+    /** @type {Map<number, string>} */
+    const nameByNum = new Map(carriers.map((c) => [c.carrierNum, c.carrierName.trim()]));
+    /** @type {Map<number, Set<string>>} */
+    const acc = new Map();
+    for (const p of plans) {
+      if (p.isHidden) continue;
+      if (!acc.has(p.feeSched)) acc.set(p.feeSched, new Set());
+      acc.get(p.feeSched).add(nameByNum.get(p.carrierNum) || `(CarrierNum ${p.carrierNum})`);
+    }
+    for (const [sched, names] of acc) carrierNamesOnSchedule.set(sched, [...names].sort());
+  }
+
   const schedRows = [
     [
       'fee_sched_num', 'description', 'fee_sched_type', 'is_hidden', 'is_ucr',
@@ -946,7 +1073,11 @@ function writeReports(ctx) {
   const carrierCsv = [
     [
       'listed_carrier', 'matched_carrier_records', 'matched_carrier_nums',
-      'non_hidden_plan_count', 'fee_schedules_used', 'best_guess_effective_pct_ucr', 'flags',
+      'non_hidden_plan_count',
+      // The strict pass, side by side, so the effect of normalisation and
+      // aliases is a number the reader can see rather than a claim.
+      'strict_match_records', 'strict_match_plan_count',
+      'fee_schedules_used', 'best_guess_effective_pct_ucr', 'flags',
     ],
   ];
   for (const row of carrierRows) {
@@ -955,6 +1086,8 @@ function writeReports(ctx) {
       row.matched.map((c) => `${c.carrierName.trim()}${c.isHidden ? ' (hidden)' : ''}`).join('; '),
       row.matched.map((c) => c.carrierNum).join('; '),
       row.planCount,
+      row.strictMatched.length,
+      row.strictPlanCount,
       row.schedules
         .map((s) => `${s.feeSched}:${s.description} [${s.planCount} plans, ${pct(s.weightedPctUcr)}]`)
         .join('; '),
@@ -981,8 +1114,31 @@ function writeReports(ctx) {
   md.push(
     `**UCR schedule: ${ucr.feeSchedNum === null ? '_not resolved_' : `\`${ucr.feeSchedNum}\` — ${ucrSchedule ? ucrSchedule.description : '(unknown)'}`}**  `
   );
-  md.push(`Basis: ${ucr.basis}.`);
+  md.push(`Read from \`provider.FeeSched\`. ${ucr.basis}.`);
   md.push('');
+  md.push(
+    ucr.agrees === true
+      ? `✅ **The two independent routes agree.** The providers' schedule and the insurance-plan ` +
+          `inference (${ucr.inferredBasis}) both land on \`${ucr.feeSchedNum}\`.`
+      : ucr.agrees === false
+        ? `⚠️ **The two routes DISAGREE.** The providers carry \`${ucr.providerModal}\`, but the ` +
+            `insurance-plan inference points at \`${ucr.inferred}\` (${ucr.inferredBasis}). The ` +
+            `providers win — that is what Open Dental actually prices new procedures from — but ` +
+            `the gap means either the providers are on a stale schedule or the plan population has ` +
+            `moved onto a newer one. **Confirm by hand before acting on the ranking.**`
+        : `ℹ️ Only one route produced an answer, so there is no cross-check. ` +
+            `Providers: ${ucr.providerModal === null ? 'none carry a schedule' : `\`${ucr.providerModal}\``}. ` +
+            `Insurance-plan inference: ${ucr.inferred === null ? 'none' : `\`${ucr.inferred}\``}.`
+  );
+  md.push('');
+  if (ucr.providerRanked.length) {
+    md.push(
+      `Providers (${ucr.providersConsidered} non-hidden, excluding non-person entries) carry: ` +
+        `${ucr.providerRanked.map((r) => `\`${r.feeSchedNum}\` ×${r.providerCount}`).join(', ')}` +
+        `${ucr.providersDisagree ? ' — **they do not all agree**; the modal value is used.' : ' — unanimous.'}`
+    );
+    md.push('');
+  }
   md.push(
     `Every percentage below is **weighted % of that UCR schedule**, over a fixed 22-code ` +
       `general-practice basket, computed only across codes priced in _both_ schedules. ` +
@@ -1031,12 +1187,15 @@ function writeReports(ctx) {
   md.push('');
   md.push(
     'In the order given. "Plans" counts non-hidden insurance plans across every carrier ' +
-      'record whose name contains the listed text. "Effective %" is those plans\' ' +
-      'plan-count-weighted average of the schedules they actually sit on.'
+      'record matching the listed name — **normalised** (both sides reduced to letters and ' +
+      'digits) plus any alias. "Strict" is what the literal case-insensitive substring rule ' +
+      'alone would have found; where the two differ, the strict rule was undercounting. ' +
+      '"Effective %" is the matched plans\' plan-count-weighted average of the schedules ' +
+      'they actually sit on.'
   );
   md.push('');
-  md.push('| Carrier | Recs | Plans | Effective % UCR | Schedules actually used |');
-  md.push('|---|---:|---:|---:|---|');
+  md.push('| Carrier | Recs | Plans | Strict | Effective % UCR | Schedules actually used |');
+  md.push('|---|---:|---:|---:|---:|---|');
   for (const row of carrierRows) {
     const sched = row.schedules.length
       ? row.schedules
@@ -1044,9 +1203,61 @@ function writeReports(ctx) {
           .map((s) => `${s.description} — ${s.planCount} (${pct(s.weightedPctUcr)})`)
           .join('<br>') + (row.schedules.length > 4 ? `<br>_+${row.schedules.length - 4} more_` : '')
       : '—';
+    const strict =
+      row.strictPlanCount === row.planCount
+        ? `${row.strictPlanCount}`
+        : `**${row.strictPlanCount}**`;
     md.push(
-      `| **${row.listed}** | ${row.matched.length} | ${row.planCount} | ${pct(row.effectivePctUcr)} | ${sched} |`
+      `| **${row.listed}** | ${row.matched.length} | ${row.planCount} | ${strict} | ${pct(row.effectivePctUcr)} | ${sched} |`
     );
+  }
+  md.push('');
+  const recovered = carrierRows.filter((r) => r.planCount !== r.strictPlanCount);
+  if (recovered.length) {
+    md.push(
+      `> ${recovered.length} carrier(s) above would have been undercounted by the strict ` +
+        `substring rule, by ${recovered.reduce((n, r) => n + (r.planCount - r.strictPlanCount), 0)} plans in total: ` +
+        `${recovered.map((r) => `**${r.listed}** (${r.strictPlanCount}→${r.planCount})`).join(', ')}.`
+    );
+    md.push('');
+  }
+
+  // ── Plans on empty schedules ───────────────────────────────────────────────
+  //
+  // Its own section rather than a flag bullet, because it is the one finding
+  // here that is a live misconfiguration rather than a negotiating datum: a plan
+  // pointed at a schedule with no fees has nothing to adjudicate against, so
+  // whatever it pays is not what anyone intended. Roland's first run turned up
+  // "Connection Dental 2025" carrying 20 plans and pricing nothing, while a
+  // near-identically named schedule beside it was fully priced.
+  //
+  // Non-hidden schedules only: a hidden schedule with live plans still on it is
+  // a different problem, and hiding it was probably deliberate.
+  const emptyLive = scores
+    .filter((s) => !s.isHidden && s.planCount > 0 && s.pricedCodes === 0)
+    .sort((a, b) => b.planCount - a.planCount);
+
+  md.push(`## Plans on empty fee schedules`);
+  md.push('');
+  if (!emptyLive.length) {
+    md.push('None. Every non-hidden schedule carrying a live plan prices at least one basket code.');
+  } else {
+    md.push(
+      `**${emptyLive.length} non-hidden schedule(s) carry live plans but price none of the 22 basket codes.** ` +
+        'A plan pointed at an empty schedule has nothing to adjudicate against, so what it actually ' +
+        'pays is not what the setup intends. Worth checking in Open Dental before anything else here.'
+    );
+    md.push('');
+    md.push('| Fee schedule | Live plans | Carriers on it |');
+    md.push('|---|---:|---|');
+    for (const s of emptyLive) {
+      const names = (carrierNamesOnSchedule.get(s.feeSchedNum) || []).slice(0, 8);
+      const extra = (carrierNamesOnSchedule.get(s.feeSchedNum) || []).length - names.length;
+      md.push(
+        `| ${s.description} (\`${s.feeSchedNum}\`) | ${s.planCount} | ` +
+          `${names.length ? names.join('; ') : '—'}${extra > 0 ? ` _+${extra} more_` : ''} |`
+      );
+    }
   }
   md.push('');
 
@@ -1065,22 +1276,16 @@ function writeReports(ctx) {
           const base =
             f === 'NO_PLANS'
               ? 'carrier records exist but carry no non-hidden plans'
-              : 'no carrier record contains that text';
-          // The punctuation-insensitive second pass. Louder than the "nearest
-          // names" hint because a hit here is almost always THE carrier, spelled
-          // without the space the listed name has.
-          const loose = looseMatch(row.listed, carriers, plans);
-          if (loose.names.length) {
-            return (
-              `${base} — but ignoring spaces and punctuation it matches ` +
-              `${loose.names.map((n) => `\`${n}\``).join(', ')}, carrying **${loose.planCount} non-hidden plans**. ` +
-              'Not counted above (the specified rule is a literal substring); almost certainly the same payer.'
-            );
-          }
+              : 'no carrier record matches, even normalised and with aliases';
           const near = nearestNames(row.listed, carriers);
           return near.length
-            ? `${base} — the table does have: ${near.map((n) => `\`${n}\``).join(', ')}`
+            ? `${base} — the table does have: ${near.map((n) => `\`${n}\``).join(', ')}. ` +
+                'If one of those is the payer, it needs an alias in `CARRIER_ALIASES`.'
             : `${base}, and nothing similar either`;
+        }
+        if (f.startsWith('RECOVERED_BY_NORMALISATION')) {
+          const [, recs, pl] = f.split(':');
+          return `**${recs} carrier record(s) and ${pl} plan(s) that the strict substring rule missed** — recovered by normalisation/alias`;
         }
         if (f.startsWith('UCR_NO_SCHEDULE')) {
           return `${f.split(':')[1]} plan(s) have no fee schedule attached — adjudicated off UCR`;
@@ -1104,14 +1309,60 @@ function writeReports(ctx) {
   /** @type {string[]} */
   const dataFlags = [];
 
-  // A schedule with live plans and no basket fees is a live misconfiguration:
-  // those plans adjudicate against an empty schedule. Worth its own line.
-  const emptyWithPlans = scores.filter((s) => s.planCount > 0 && s.pricedCodes === 0);
-  if (emptyWithPlans.length) {
+  // Hidden schedules that still carry live plans. The non-hidden case has its
+  // own section above; this is the quieter sibling and still worth a line.
+  const hiddenWithPlans = scores.filter((s) => s.isHidden && s.planCount > 0);
+  if (hiddenWithPlans.length) {
     dataFlags.push(
-      `- **${emptyWithPlans.length} fee schedule(s) carry live plans but price none of the 22 basket codes**: ` +
-        `${emptyWithPlans.map((s) => `\`${s.feeSchedNum}\` ${s.description} (${s.planCount} plans)`).join(', ')}. ` +
-        'A plan pointed at an empty schedule has nothing to adjudicate against — worth checking in Open Dental.'
+      `- **${hiddenWithPlans.length} HIDDEN fee schedule(s) still carry live plans**: ` +
+        `${hiddenWithPlans.map((s) => `\`${s.feeSchedNum}\` ${s.description} (${s.planCount} plans)`).join(', ')}. ` +
+        'Hiding a schedule removes it from the picker but does not move the plans off it.'
+    );
+  }
+
+  if (ucr.providersDisagree) {
+    dataFlags.push(
+      `- **The providers do not agree on a fee schedule**: ` +
+        `${ucr.providerRanked.map((r) => `\`${r.feeSchedNum}\` ×${r.providerCount}`).join(', ')}. ` +
+        'The modal value is used as UCR. A hygienist or associate on a different schedule than the ' +
+        'owner prices the same procedure differently depending on who is credited with it.'
+    );
+  }
+  if (ucr.agrees === false) {
+    dataFlags.push(
+      `- **UCR routes disagree**: providers say \`${ucr.providerModal}\`, the insurance-plan ` +
+        `inference says \`${ucr.inferred}\`. See the header — every percentage in this report is ` +
+        'relative to the providers\' schedule.'
+    );
+  }
+
+  // THE STRUCTURAL TELL THAT THE UCR PICK IS TOO LOW.
+  //
+  // A fee schedule is what a payer ALLOWS; UCR is what the office charges. A
+  // payer allowing materially more than the office charges is not a thing that
+  // happens — the office would simply be leaving that money on the table on
+  // every claim. So a schedule scoring well above 100% almost always means the
+  // denominator is wrong: the schedule named as UCR is an OLD fee schedule the
+  // providers were never moved off, while the office's real current fee lives
+  // somewhere else.
+  //
+  // 105% is the threshold rather than 100% because a handful of individual codes
+  // legitimately round above their UCR counterpart on a schedule that is
+  // otherwise at parity; a weighted basket 5% clear of UCR is not rounding.
+  const aboveUcr = scores.filter(
+    (s) => s.weightedPctUcr !== null && s.weightedPctUcr > 1.05 && s.coverage >= MIN_COVERAGE_FOR_RANKING
+  );
+  if (aboveUcr.length) {
+    const worst = aboveUcr.reduce((a, b) => (b.weightedPctUcr > a.weightedPctUcr ? b : a));
+    dataFlags.push(
+      `- **${aboveUcr.length} schedule(s) score ABOVE 100% of the schedule named as UCR** — ` +
+        `highest is \`${worst.feeSchedNum}\` ${worst.description} at ${pct(worst.weightedPctUcr)} ` +
+        `on ${worst.planCount} live plans. A payer does not allow more than the practice charges, ` +
+        `so this is the signature of a **stale UCR**: the schedule named as UCR is almost certainly ` +
+        `an older fee schedule the providers were never moved off, and the practice's real current ` +
+        `fee is the higher one. Open Dental prices new procedures from \`provider.FeeSched\`, so if ` +
+        `that is what happened the practice is charging the older fees. ` +
+        `**Re-run with \`--ucr ${worst.feeSchedNum}\` to see the ranking against that schedule instead.**`
     );
   }
   if (missingBasketCodes.length) {
@@ -1136,7 +1387,7 @@ function writeReports(ctx) {
   }
   if (!ucr.corroborated && ucr.feeSchedNum !== null) {
     dataFlags.push(
-      `- **The UCR inference is not corroborated.** The modal schedule across _all_ non-hidden plans is \`${ucr.overallModal}\`, not \`${ucr.feeSchedNum}\`. Normally an office's own fee schedule is both. Worth confirming by hand before acting on the ranking.`
+      `- **The most-used schedule across _all_ non-hidden plans is \`${ucr.overallModal}\`, not the UCR schedule \`${ucr.feeSchedNum}\`.** That is normal at a practice whose book is mostly PPO, but worth noticing: it means most plans are written against a discounted schedule rather than the office's own fee.`
     );
   }
   md.push(...(dataFlags.length ? dataFlags : ['- No data flags.']));
@@ -1146,29 +1397,34 @@ function writeReports(ctx) {
   md.push(`## Assumptions and method`);
   md.push('');
   md.push(
-    `1. **UCR is inferred, not read.** \`/preferences\` was swept in full and Open Dental's ` +
-      `cloud API exposes **no practice-default fee schedule preference** — the ` +
-      `fee-schedule-shaped preferences are behavioural switches ` +
-      `(\`InsPpoAlwaysUseUcrFee\`, \`InsBlueBookUcrFeePercent\`, ` +
-      `\`CoPay_FeeSchedule_BlankLikeZero\`), none of which names a schedule. So the ` +
-      `brief's prescribed fallback was used: ${ucr.basis}. ` +
-      (ucr.corroborated
-        ? 'It is corroborated by being the most-used schedule across all non-hidden plans as well.'
-        : 'It is **not** corroborated by the all-plans modal schedule — see Flags.')
+    `1. **UCR is READ from \`provider.FeeSched\`, and cross-checked.** In Open Dental UCR is a ` +
+      `**provider** attribute — there is no practice-level default, which was established by ` +
+      `sweeping all ~1,250 \`/preferences\`: the fee-schedule-shaped ones are behavioural ` +
+      `switches (\`InsPpoAlwaysUseUcrFee\`, \`InsBlueBookUcrFeePercent\`, ` +
+      `\`CoPay_FeeSchedule_BlankLikeZero\`) and none names a schedule. ${ucr.basis}. ` +
+      `Hidden and non-person providers (labs, equipment) are excluded so a retired dentist's ` +
+      `stale schedule cannot outvote the people producing.`
   );
   md.push(
-    `   In Open Dental proper, UCR is \`provider.FeeSched\` — a **provider** attribute, ` +
-      `which \`GET /providers\` would give outright. That endpoint sits outside the ` +
-      `resource allow-list for this analysis, so it was not called. One extra read would ` +
-      `settle it.`
+    `   The previous insurance-plan inference is kept as an **independent cross-check**: ` +
+      `${ucr.inferredBasis} → \`${ucr.inferred === null ? 'none' : ucr.inferred}\`. ` +
+      (ucr.agrees === true
+        ? 'It agrees with the providers.'
+        : ucr.agrees === false
+          ? '**It disagrees** — see the header and Flags.'
+          : 'No cross-check was possible.')
   );
   md.push('');
   const evid = ucr.evidence.length
-    ? ucr.evidence
-        .map((e) => `\`${e.feeSchedNum}\` ×${e.planCount}`)
-        .join(', ')
+    ? ucr.evidence.map((e) => `\`${e.feeSchedNum}\` ×${e.planCount}`).join(', ')
     : '(none)';
   md.push(`   Blank-PlanType plans point at: ${evid}.`);
+  md.push('');
+  md.push(
+    `   \`/providers\` is read for \`ProvNum\`, \`FeeSched\`, \`IsHidden\` and \`IsNotPerson\` only. ` +
+      `The response also carries staff names and SSN; none is read, retained, logged or reported, ` +
+      `and \`Abbr\` is excluded too because at a small practice an abbreviation is a person's name.`
+  );
   md.push('');
   md.push(
     `2. **A fee of 0.00 is "not priced", not "free".** Open Dental cannot distinguish the two; ` +
@@ -1195,16 +1451,27 @@ function writeReports(ctx) {
       `Open Dental list filters are sometimes silently ignored.`
   );
   md.push(
-    `7. **Carrier matching is case-insensitive substring on \`CarrierName\`**, exactly as ` +
-      `specified. "Anthem" therefore also matches every "Anthem Blue Cross and Blue Shield" ` +
-      `record; both listed names are reported separately and their plan counts overlap.`
+    `7. **Carrier matching is NORMALISED substring on \`CarrierName\`** — both sides reduced to ` +
+      `letters and digits before comparison — plus an explicit alias table. The original literal ` +
+      `substring rule undercounted: the table spells it \`HEALTHCHOICE\`, so "Health Choice" ` +
+      `matched nothing at all. The strict count is reported beside the real one in every row and ` +
+      `in \`carriers.csv\` so the difference is visible. Aliases in effect: ` +
+      `${Object.entries(CARRIER_ALIASES).map(([k, v]) => `"${k}" → ${v.map((x) => `\`${x}\``).join(', ')}`).join('; ')}.`
+  );
+  md.push(
+    `   Overlap is preserved, not deduplicated: "Anthem" matches the same ` +
+      `\`ANTHEM BLUE CROSS BLUE SHIELD\` record that "Blue Cross Blue Shield" does, and both rows ` +
+      `count it. "Anthem Blue Cross and Blue Shield" is deliberately **not** aliased — the table ` +
+      `has no "and", and aliasing it would double-count that record under two listed names with ` +
+      `no way to see it had happened.`
   );
   md.push('');
   md.push(`## Scope of this run`);
   md.push('');
   md.push(`- Office: \`${officeKey}\` (${officeName}) — its own Open Dental database, asserted via \`assertOfficeMatch\`. Roland and Riley are never merged.`);
-  md.push(`- ${scores.length} fee schedules (${scores.filter((s) => s.isHidden).length} hidden), ${plans.length} insurance plans (${plans.filter((p) => !p.isHidden).length} non-hidden), ${carriers.length} carrier records.`);
+  md.push(`- ${scores.length} fee schedules (${scores.filter((s) => s.isHidden).length} hidden), ${plans.length} insurance plans (${plans.filter((p) => !p.isHidden).length} non-hidden), ${carriers.length} carrier records, ${ucr.providersConsidered} non-hidden providers.`);
   md.push(`- Read-only: every call is \`apiGetRaw\`. No POST, PUT or DELETE exists in this script.`);
+  md.push(`- Resources read: \`/feescheds\`, \`/fees\`, \`/procedurecodes\`, \`/carriers\`, \`/insplans\`, \`/providers\` — all practice configuration.`);
   md.push(`- No patient-scoped endpoint was called and no patient data appears in any output.`);
   md.push('');
 
@@ -1260,11 +1527,17 @@ async function main() {
   const plans = await fetchInsPlans(od);
   console.log(`${plans.length} (${plans.filter((p) => !p.isHidden).length} non-hidden)`);
 
+  process.stdout.write('  /providers      ... ');
+  const providers = await fetchProviders(od);
+  console.log(
+    `${providers.length} (${providers.filter((p) => !p.isHidden && !p.isNotPerson).length} non-hidden people)`
+  );
+
   process.stdout.write('  /fees (basket)  ... ');
   const { fees, zeroAmount, overrideRows, filterIgnoredOn } = await fetchBasketFees(od, codeNumByProcCode);
   console.log(`${[...fees.values()].reduce((n, m) => n + m.size, 0)} priced fees across ${fees.size} schedules`);
 
-  const ucr = resolveUcr(plans, ucrOverride);
+  const ucr = resolveUcr(plans, providers, ucrOverride);
   const ucrSchedule = schedules.find((s) => s.feeSchedNum === ucr.feeSchedNum) || null;
   if (ucr.feeSchedNum === null) {
     throw new OdReadError(
@@ -1273,8 +1546,18 @@ async function main() {
       'UCR_UNRESOLVED'
     );
   }
-  console.log(`\n  UCR -> ${ucr.feeSchedNum} "${ucrSchedule ? ucrSchedule.description : '?'}"  (${ucr.basis})`);
-  console.log(`  corroborated by all-plans modal schedule: ${ucr.corroborated ? 'yes' : `NO (all-plans modal is ${ucr.overallModal})`}`);
+  console.log(`\n  UCR -> ${ucr.feeSchedNum} "${ucrSchedule ? ucrSchedule.description : '?'}"  [${ucr.source}]`);
+  console.log(`         ${ucr.basis}`);
+  if (ucr.providerRanked.length) {
+    console.log(
+      `  providers set: ${ucr.providerRanked.map((r) => `${r.feeSchedNum} x${r.providerCount}`).join(', ')}` +
+        `${ucr.providersDisagree ? '   <-- DISAGREE' : ''}`
+    );
+  }
+  console.log(
+    `  insplan inference: ${ucr.inferred === null ? '(none)' : ucr.inferred}` +
+      `   agrees with providers: ${ucr.agrees === null ? 'n/a' : ucr.agrees ? 'yes' : 'NO'}`
+  );
 
   /** @type {Map<number, number>} non-hidden plan count per fee schedule */
   const planCounts = new Map();
