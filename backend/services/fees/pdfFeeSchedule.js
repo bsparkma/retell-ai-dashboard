@@ -76,6 +76,7 @@ const {
   parseFeeCents,
   findProcCodes,
   findAmounts,
+  findMeasurements,
   formatCents,
   warn,
 } = require('./feeValues');
@@ -253,14 +254,44 @@ function parsePdfFeeScheduleText(text) {
     /** @type {Array<{code: string, message: string}>} */
     const rowWarnings = [...code.warnings];
     let amounts = findAmounts(line);
+    // Numbers this line carries that are SIZES, not fees — "up to 1.25 cm" on
+    // the D74xx excision family. Read here so that a line left with no amount
+    // can say WHY, below.
+    const measurements = findMeasurements(line);
 
     if (amounts.length === 0) {
       // The cross-line pair, narrowed. Only the immediately following line, and
       // only when it is unambiguously an amount and nothing else.
       const next = lines[i + 1];
-      if (next === undefined) continue;
-      const nextAmounts = findAmounts(next);
-      if (nextAmounts.length !== 1 || findProcCodes(next).length > 0) continue;
+      const nextAmounts = next === undefined ? [] : findAmounts(next);
+      const pairable =
+        next !== undefined && nextAmounts.length === 1 && findProcCodes(next).length === 0;
+
+      if (!pairable) {
+        /*
+         * A LINE WHOSE ONLY NUMBER WAS A MEASUREMENT SAYS SO.
+         *
+         * A code line with no number at all is most of a PDF — a heading, a
+         * category row, a continuation — and is skipped in silence, as it
+         * always was. But a line where the unit filter removed the only
+         * candidate is a line this parser DECIDED not to read a fee from, and
+         * the whole design rule of this module is that an interpretation nobody
+         * is told about is the defect. Without this, tightening the scanner
+         * would have quietly turned "wrong fee, flagged" into "no fee, silent",
+         * which is better but still not honest.
+         */
+        if (measurements.length > 0) {
+          fileWarnings.push(
+            warn(
+              'measurement_not_a_fee',
+              `Line ${lineNumber} (${code.value}) carries no fee — ${measurements.join(', ')} ` +
+                `${measurements.length === 1 ? 'is a measurement' : 'are measurements'}, not an amount. ` +
+                `No fee was read from it: ${raw}`
+            )
+          );
+        }
+        continue;
+      }
 
       amounts = nextAmounts;
       consumed.add(i + 1);

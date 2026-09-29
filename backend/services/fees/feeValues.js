@@ -193,6 +193,29 @@ function parseFeeCents(raw) {
 
   // Accounting parentheses mean a negative, and a negative is refused below
   // rather than quietly read as its absolute value.
+  /*
+   * A CELL THAT IS A MEASUREMENT, not a fee — the CSV lane's half of the D74xx
+   * defect. `1.25 cm` in a fee column already failed to parse, but it failed as
+   * "could not be read as a dollar amount", which tells an office nothing about
+   * why. Naming it means somebody can see they pointed the importer at a size
+   * column.
+   *
+   * Only when the cell yields NO fee-shaped token at all: a cell holding a real
+   * amount is never diverted here, whatever else is written beside it.
+   */
+  const scan = scanAmounts(String(raw));
+  if (scan.amounts.length === 0 && scan.measurements.length > 0) {
+    return {
+      value: null,
+      warnings: [
+        warn(
+          'measurement_not_a_fee',
+          `"${String(raw).trim()}" is a measurement, not a fee. It was not read as one.`
+        ),
+      ],
+    };
+  }
+
   const negated = /^\((.*)\)$/.test(cleaned);
   const unwrapped = negated ? cleaned.slice(1, -1) : cleaned;
   const isNegative = negated || unwrapped.startsWith('-');
@@ -281,8 +304,80 @@ function findProcCodes(line) {
  * @param {string} line
  * @returns {string[]}
  */
+const MEASUREMENT_UNIT = /^ ?(?:cm|mm)\b/i;
+
+/**
+ * Split a line's money-shaped tokens into fees and measurements.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * WHY MEASUREMENTS HAD TO BE SEPARATED OUT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The D74xx surgical family prints its size thresholds in the description:
+ *
+ *     D7410  excision of benign lesion up to 1.25 cm ...  285.00
+ *
+ * `1.25` is money-shaped — digits, a point, two decimals — so the scanner read
+ * it, found two amounts on the line, flagged the row ambiguous and took the
+ * FIRST. The office was offered $1.25 as the fee for a surgical excision, under
+ * a warning that said the line was ambiguous rather than that the number was a
+ * lesion diameter.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ONLY `cm` AND `mm`, AND ONLY IMMEDIATELY AFTER
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Deliberately the narrowest rule that covers the observed defect:
+ *
+ *  - TWO UNITS. `%` is not here: a schedule really does print "80%" beside a
+ *    fee, and a percentage is not money-shaped anyway (no two decimals), so
+ *    adding it would be inventing a rule for a case nobody has hit. `x` is not
+ *    here either — "2 x 285.00" means the fee twice over, not a dimension.
+ *  - AT MOST ONE SPACE. The gap between two columns in a PDF text layer is
+ *    several spaces, so one space is what keeps a real fee in one column from
+ *    being discarded because the next column happens to begin with "cm".
+ *  - WORD-BOUNDED. "1.25 cmx" is not a measurement. A unit is a whole word.
+ *
+ * ONE SCANNER, so `findAmounts` and `findMeasurements` cannot disagree about
+ * which bucket a token fell into — and so a caller explaining why a line
+ * yielded no fee is looking at the same decision the caller that read the fee
+ * made.
+ *
+ * @param {string} line
+ * @returns {{ amounts: string[], measurements: string[] }}
+ */
+function scanAmounts(line) {
+  const text = String(line);
+  /** @type {string[]} */
+  const amounts = [];
+  /** @type {string[]} */
+  const measurements = [];
+  for (const m of text.matchAll(MONEY_IN_TEXT)) {
+    // What FOLLOWS the token decides which it is. `m.index + m[0].length` is
+    // the character after the match, so "1.25 cm" is caught and "1.25  cm" —
+    // two spaces, i.e. the next column — is not.
+    const after = text.slice(m.index + m[0].length);
+    (MEASUREMENT_UNIT.test(after) ? measurements : amounts).push(m[0].trim());
+  }
+  return { amounts, measurements };
+}
+
 function findAmounts(line) {
-  return [...String(line).matchAll(MONEY_IN_TEXT)].map((m) => m[0].trim());
+  return scanAmounts(line).amounts;
+}
+
+/**
+ * The tokens on this line that are MEASUREMENTS rather than fees.
+ *
+ * Exists so a caller can tell "this line has no fee on it" from "this line's
+ * only number was a lesion diameter". The first is most of a PDF and is skipped
+ * in silence; the second is a line the parser deliberately declined to read a
+ * fee from, and saying nothing about it would be exactly the silent
+ * interpretation this module exists to not make.
+ *
+ * @param {string} line
+ * @returns {string[]}
+ */
+function findMeasurements(line) {
+  return scanAmounts(line).measurements;
 }
 
 /** Format cents back to `$1,234.00`, for warning text an office reads. */
@@ -303,6 +398,8 @@ module.exports = {
   parseFeeCents,
   findProcCodes,
   findAmounts,
+  findMeasurements,
+  MEASUREMENT_UNIT,
   formatCents,
   warn,
 };

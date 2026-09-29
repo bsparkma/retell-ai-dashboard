@@ -405,3 +405,56 @@ test('no fixture in this suite contains anything that could be a patient', () =>
   assert.equal(/\b\d{3}-\d{2}-\d{4}\b/.test(everything), false, 'SSN-shaped digits');
   assert.equal(/\b\d{3}[-.]\d{3}[-.]\d{4}\b/.test(everything), false, 'phone-shaped digits');
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// Measurement units, end to end through the PDF lane
+// ════════════════════════════════════════════════════════════════════════════
+
+test('THE D74xx DEFECT: a lesion size is not read as the fee', () => {
+  const r = parsePdfFeeScheduleText(asText(fx.PDF_LESION_UNITS));
+  assert.equal(r.ok, true);
+
+  // Each excision reads its REAL fee. Before the unit filter D7410 came back at
+  // 125 cents — $1.25, the lesion diameter — under an `ambiguous_amount`
+  // warning that blamed the line rather than naming the number.
+  assert.equal(asMap(r.rows).D7410, 28500);
+  assert.equal(asMap(r.rows).D7411, 39500);
+  assert.equal(asMap(r.rows).D7412, 47000);
+
+  // AND THEY PARSE CLEAN. One candidate after exclusion means no ambiguity, so
+  // there is nothing for a person to adjudicate — the point of the fix is that
+  // these rows stop consuming a human decision each.
+  const withWarnings = r.rows.filter((row) => row.warnings.length > 0);
+  assert.deepEqual(withWarnings, [], 'a resolved line carries no row warning');
+  assert.equal(codesOf(r).includes('ambiguous_amount'), false);
+});
+
+test('a line whose ONLY number was a measurement warns, and is not silently dropped', () => {
+  const r = parsePdfFeeScheduleText(asText(fx.PDF_LESION_UNITS));
+
+  // D7413 has a size and no fee. It yields no row — correctly, there is no fee
+  // on it — but the filter is what emptied the set, so the file says so. A code
+  // line with no number at all is still skipped in silence; this is the
+  // difference between "nothing here" and "we decided not to read that".
+  assert.equal(Object.prototype.hasOwnProperty.call(asMap(r.rows), 'D7413'), false);
+  const note = r.warnings.find((w) => w.code === 'measurement_not_a_fee');
+  assert.ok(note, 'the emptied line is reported');
+  assert.match(note.message, /D7413/);
+  assert.match(note.message, /1\.25/);
+  assert.match(note.message, /is a measurement/);
+});
+
+test('a genuine $1.25 fee still parses as a fee', () => {
+  // The control for the whole rule: it keys on the unit, never on the number.
+  const r = parsePdfFeeScheduleText(asText(fx.PDF_SMALL_REAL_FEE));
+  assert.equal(r.ok, true);
+  assert.deepEqual(asMap(r.rows), { D9230: 125, D9944: 45000 });
+  assert.deepEqual(codesOf(r), [], 'and with nothing to flag');
+});
+
+test('the multi-column file still warns — the filter did not weaken ambiguity', () => {
+  // The unit filter must not have quietly resolved genuine multi-column rows.
+  // Two real tier amounts are still two amounts.
+  const r = parsePdfFeeScheduleText(asText(fx.PDF_MULTI_COLUMN));
+  assert.ok(codesOf(r).includes('ambiguous_amount'));
+});
