@@ -246,6 +246,16 @@ async function get<T>(
   path: string,
   params: Record<string, string>,
   signal?: AbortSignal,
+  /**
+   * `no-store` for a deliberate re-read.
+   *
+   * Express sets an ETag on every JSON response, so a repeat GET can legally be
+   * answered from the browser's cache. That is fine for a poll and wrong for a
+   * Refresh button: somebody presses it BECAUSE they believe what they are
+   * looking at is stale, and answering from the cache is the one response that
+   * cannot help them.
+   */
+  cache?: RequestCache,
 ): Promise<T> {
   const qs = new URLSearchParams(params).toString();
 
@@ -261,6 +271,7 @@ async function get<T>(
     res = await fetch(`${BASE}/fees${path}?${qs}`, {
       credentials: "include",
       signal: abort.signal,
+      ...(cache === undefined ? {} : { cache }),
     });
   } catch (err) {
     if (signal?.aborted) throw err;
@@ -658,12 +669,44 @@ async function send<T>(
   return (await res.json()) as T;
 }
 
-/** The office's fee schedules, for the target picker. */
+/**
+ * The office's fee schedules, for the target picker.
+ *
+ * The server reads them from Open Dental on every call — there is no cache on
+ * that side, and `listFeeSchedules` pages through all of them. `refresh` exists
+ * only to defeat the BROWSER's cache on a deliberate re-read, which is what a
+ * Refresh button is.
+ */
 export async function listFeeSchedules(
   office: FeesOfficeId,
   signal?: AbortSignal,
+  opts?: { refresh?: boolean },
 ): Promise<{ success: true; office: FeesOfficeId; schedules: FeeSchedule[] }> {
-  return get("/feescheds", { office }, signal);
+  return get("/feescheds", { office }, signal, opts?.refresh === true ? "no-store" : undefined);
+}
+
+/**
+ * Filter a schedule list by what somebody typed.
+ *
+ * Matches the DESCRIPTION and the FeeSchedNum, because both are how a person
+ * identifies a schedule: the name is what they read in Open Dental, and the
+ * number is what a colleague pastes into a message. Case-insensitive, substring
+ * — not fuzzy, because a fuzzy match on a list this consequential would offer
+ * "Delta Premier" for a search for "Delta PPO".
+ *
+ * Pure and exported so the filtering rule is testable without a screen.
+ */
+export function filterSchedules(
+  schedules: readonly FeeSchedule[],
+  query: string,
+): FeeSchedule[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [...schedules];
+  return schedules.filter(
+    (s) =>
+      s.description.toLowerCase().includes(needle) ||
+      String(s.feeSchedNum).includes(needle),
+  );
 }
 
 /**

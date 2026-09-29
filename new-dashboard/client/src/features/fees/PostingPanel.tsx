@@ -23,11 +23,21 @@
  * the wrong place. Roland and Riley hold different contracts with the same
  * payers, so naming the office is not decoration.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2, RotateCcw, Send, XCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  Check,
+  Loader2,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Send,
+  XCircle,
+} from "lucide-react";
 
 import {
   listFeeSchedules,
+  filterSchedules,
   getProgress,
   setTarget,
   postImport,
@@ -77,6 +87,11 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
   const [busy, setBusy] = useState(false);
   const [rollback, setRollback] = useState<FeesRollbackResult | null>(null);
   const [newName, setNewName] = useState("");
+  /** What the reader typed into the schedule search. Client-side only. */
+  const [scheduleQuery, setScheduleQuery] = useState("");
+  /** Bumped by Refresh. Re-reading is the ONLY way a new schedule appears. */
+  const [scheduleToken, setScheduleToken] = useState(0);
+  const [loadingSchedules, setLoadingSchedules] = useState(false);
   const settled = useRef(onSettled);
   settled.current = onSettled;
 
@@ -113,23 +128,66 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
     return () => clearInterval(timer);
   }, [progress, refresh]);
 
-  // The target picker's options. Fetched once, and only when a target could
-  // still be chosen — a posted batch's schedule is already recorded on it.
+  /*
+   * The target picker's options, read only when a target could still be
+   * chosen — a posted batch's schedule is already recorded on it.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE `schedules !== null` GUARD THAT USED TO BE HERE WAS THE BUG
+   * ═══════════════════════════════════════════════════════════════════════════
+   * It made this a fetch-once-per-mount, and the panel stays mounted across a
+   * re-read of the batch. So a fee schedule created in Open Dental after the
+   * panel first loaded could not appear in this list at all, short of a full
+   * page reload — which is not an instruction anybody was given, so the
+   * schedule simply "was not there".
+   *
+   * The backend was never at fault: `listFeeSchedules` pages through every
+   * schedule at Limit 100 and holds no cache. The staleness was entirely this
+   * component's own state.
+   *
+   * `office` is now a live dependency too. It was already in the array, but the
+   * guard short-circuited before the fetch, so switching office would have kept
+   * showing the previous one's schedules — a latent version of the same bug
+   * that this shape closes.
+   */
   const needsTarget =
     progress !== null && (progress.status === "parsed" || progress.status === "ready");
   useEffect(() => {
-    if (!needsTarget || schedules !== null) return;
+    if (!needsTarget) return;
     const abort = new AbortController();
-    listFeeSchedules(office, abort.signal)
-      .then((res) => setSchedules(res.schedules))
+    setLoadingSchedules(true);
+    // `refresh` only on a deliberate re-read: the first load may legitimately
+    // be served from cache, a Refresh press may not.
+    listFeeSchedules(office, abort.signal, { refresh: scheduleToken > 0 })
+      .then((res) => {
+        if (abort.signal.aborted) return;
+        setSchedules(res.schedules);
+        setScheduleError(null);
+      })
       .catch((err: unknown) => {
+        if (abort.signal.aborted) return;
         // A missing Open Dental key or an office switched off is a SETTING, not
         // an outage — surfaced as itself so nobody retries into a wall.
         if (err instanceof FeesApiError) setScheduleError(err);
         setSchedules([]);
+      })
+      .finally(() => {
+        if (!abort.signal.aborted) setLoadingSchedules(false);
       });
     return () => abort.abort();
-  }, [needsTarget, schedules, office]);
+  }, [needsTarget, office, scheduleToken]);
+
+  /**
+   * What the list shows after the search box.
+   *
+   * Client-side over the schedules already fetched, deliberately: a server read
+   * costs an Open Dental request against a credential paced at one per second
+   * and shared with every other module, so typing must not issue one.
+   */
+  const visibleSchedules = useMemo(
+    () => filterSchedules(schedules ?? [], scheduleQuery),
+    [schedules, scheduleQuery],
+  );
 
   const choose = async (choice: { feeSchedNum: number } | { newScheduleName: string }) => {
     setBusy(true);
@@ -211,7 +269,23 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
       {/* ── Target ─────────────────────────────────────────────────────────── */}
       {needsTarget && (
         <div className="mt-4" data-testid="fees-target-picker">
-          <div className="text-sm font-medium text-foreground">Which fee schedule?</div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-medium text-foreground">Which fee schedule?</div>
+            {/* REFRESH. A schedule created in Open Dental a minute ago cannot be
+                in a list that was read before it existed, and re-reading is the
+                only thing that can fix that. Without this the answer was
+                "reload the page", which nobody had been told. */}
+            <button
+              type="button"
+              disabled={loadingSchedules}
+              onClick={() => setScheduleToken((n) => n + 1)}
+              data-testid="fees-schedules-refresh"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={cn(loadingSchedules && "animate-spin")} aria-hidden />
+              {loadingSchedules ? "Reading Open Dental…" : "Refresh"}
+            </button>
+          </div>
           {scheduleError !== null && (
             <p className="mt-1 text-sm text-muted-foreground" data-testid="fees-schedules-error">
               {scheduleError.message}
@@ -220,8 +294,21 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
               )}
             </p>
           )}
+          {/* Search, client-side over what was already fetched. */}
+          {(schedules ?? []).length > 0 && (
+            <input
+              type="search"
+              value={scheduleQuery}
+              onChange={(e) => setScheduleQuery(e.target.value)}
+              placeholder="Search by name or number…"
+              aria-label="Search fee schedules"
+              data-testid="fees-schedule-search"
+              className="mt-2 min-h-[36px] w-full rounded-md border border-border bg-background px-3 text-sm text-foreground"
+            />
+          )}
+
           <div className="mt-2 flex flex-wrap gap-2">
-            {(schedules ?? []).map((s) => (
+            {visibleSchedules.map((s) => (
               <button
                 key={s.feeSchedNum}
                 type="button"
@@ -229,36 +316,80 @@ export function PostingPanel({ office, batchId, canWrite, onSettled }: Props) {
                 onClick={() => void choose({ feeSchedNum: s.feeSchedNum })}
                 data-testid={`fees-target-${s.feeSchedNum}`}
                 aria-pressed={progress.target?.feeSchedNum === s.feeSchedNum}
+                data-hidden={s.isHidden ? "true" : "false"}
                 className={cn(
                   "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50",
                   progress.target?.feeSchedNum === s.feeSchedNum
                     ? "border-foreground bg-foreground text-background"
                     : "border-border text-foreground hover:bg-accent",
+                  // HIDDEN SCHEDULES ARE STILL SHOWN, and drawn differently. They
+                  // are offered because a rolled-back batch's schedule is hidden
+                  // and may legitimately be posted into again — but hidden in
+                  // Open Dental usually means retired, so choosing one should be
+                  // a deliberate act rather than a slip of the eye.
+                  s.isHidden &&
+                    progress.target?.feeSchedNum !== s.feeSchedNum &&
+                    "border-dashed text-muted-foreground",
                 )}
               >
                 {s.description}
-                {s.isHidden && <span className="ml-1 text-xs opacity-70">(hidden)</span>}
+                <span className="ml-1.5 font-mono text-[11px] opacity-60">#{s.feeSchedNum}</span>
+                {s.isHidden && (
+                  <span className="ml-1.5 text-[11px] uppercase tracking-wide opacity-70">
+                    hidden
+                  </span>
+                )}
               </button>
             ))}
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="…or name a new schedule"
-              data-testid="fees-new-schedule-name"
-              className="min-h-[36px] flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground"
-            />
-            <button
-              type="button"
-              disabled={busy || !canWrite || newName.trim() === ""}
-              onClick={() => void choose({ newScheduleName: newName.trim() })}
-              data-testid="fees-use-new-schedule"
-              className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-            >
-              Use a new schedule
-            </button>
+
+          {(schedules ?? []).length > 0 && visibleSchedules.length === 0 && (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="fees-schedule-no-matches">
+              No fee schedule matches that search. If you have just created it in Open Dental,
+              press Refresh.
+            </p>
+          )}
+          {schedules !== null && schedules.length === 0 && scheduleError === null && (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="fees-schedule-none">
+              This office has no fee schedules yet. Create one below.
+            </p>
+          )}
+          {/* ── Creating one is a CHOICE, not a fallback ──────────────────────
+              It was an unlabelled text box under the list reading "…or name a
+              new schedule", which made the SAFEST option — a brand new schedule
+              attached to no plan, which reprices nothing — look like an
+              afterthought, while posting into a live schedule was the one that
+              looked ordinary. That is the wrong way round. */}
+          <div
+            className="mt-4 rounded-md border border-border bg-muted/30 p-3"
+            data-testid="fees-new-schedule-block"
+          >
+            <div className="text-sm font-medium text-foreground">Create a new fee schedule</div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Created in Open Dental when you press Post, attached to no insurance plan — so it
+              reprices nothing until somebody attaches it.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Name it, e.g. Northstar PPO 2027"
+                aria-label="New fee schedule name"
+                data-testid="fees-new-schedule-name"
+                className="min-h-[36px] flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground"
+              />
+              <button
+                type="button"
+                disabled={busy || !canWrite || newName.trim() === ""}
+                onClick={() => void choose({ newScheduleName: newName.trim() })}
+                data-testid="fees-use-new-schedule"
+                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+              >
+                <Plus size={14} aria-hidden />
+                Use a new schedule
+              </button>
+            </div>
           </div>
           {progress.target?.isNew && (
             <p className="mt-2 text-sm text-muted-foreground" data-testid="fees-target-is-new">

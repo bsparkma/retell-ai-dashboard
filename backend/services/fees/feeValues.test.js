@@ -13,6 +13,7 @@ const {
   parseFeeCents,
   findProcCodes,
   findAmounts,
+  findMeasurements,
   formatCents,
 } = require('./feeValues');
 
@@ -160,4 +161,72 @@ test('formatCents renders what a warning message shows an office', () => {
   assert.equal(formatCents(0), '$0.00');
   assert.equal(formatCents(4500), '$45.00');
   assert.equal(formatCents(123456700), '$1,234,567.00');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Measurement units are not fees (the D74xx defect)
+// ════════════════════════════════════════════════════════════════════════════
+
+test('a number followed by cm or mm is a measurement, not an amount', () => {
+  // The reported line. `1.25` is money-shaped, and before the filter the
+  // scanner returned both — two amounts, so the row was flagged ambiguous and
+  // the FIRST was taken as the fee. An office was offered $1.25 for a surgical
+  // excision.
+  const line = 'D7410   Excision of benign lesion up to 1.25 cm              285.00';
+  assert.deepEqual(findAmounts(line), ['285.00']);
+  assert.deepEqual(findMeasurements(line), ['1.25']);
+});
+
+test('the unit matches with one space, with none, and in upper case', () => {
+  assert.deepEqual(findAmounts('lesion to 1.25 cm   285.00'), ['285.00']);
+  assert.deepEqual(findAmounts('lesion to 1.25 CM   285.00'), ['285.00']);
+  assert.deepEqual(findAmounts('lesion to 1.25 Mm   285.00'), ['285.00']);
+  // No space: MONEY_IN_TEXT's own trailing \b already refuses "1.25cm",
+  // because `5` and `c` are both word characters. So this case was never read
+  // as a fee — but it is asserted here because the outcome, not the mechanism,
+  // is the promise, and a future widening of the money scanner must not
+  // reintroduce it.
+  assert.deepEqual(findAmounts('lesion over 1.25cm   395.00'), ['395.00']);
+});
+
+test('TWO spaces is the next column, not a unit', () => {
+  // The gap between columns in a PDF text layer is several spaces. A rule that
+  // allowed any distance would discard a real fee whenever the following
+  // column happened to start with "cm".
+  assert.deepEqual(findAmounts('D7410 excision   285.00  cm column header'), ['285.00']);
+});
+
+test('only cm and mm — not %, not x, not other letters', () => {
+  // Deliberately the narrowest rule that covers the defect. A schedule really
+  // does print a percentage beside a fee, and "2 x 285.00" means the fee twice
+  // over rather than a dimension.
+  assert.deepEqual(findAmounts('coverage 80.00% of 285.00'), ['80.00', '285.00']);
+  assert.deepEqual(findAmounts('quantity 2.00 x 285.00'), ['2.00', '285.00']);
+  // Word-bounded: the unit is a whole word.
+  assert.deepEqual(findAmounts('code 1.25 cmx 285.00'), ['1.25', '285.00']);
+});
+
+test('a genuine small fee with no unit is still a fee', () => {
+  // The control. The filter keys on the UNIT, never on the size of the number —
+  // nitrous really is billed at $1.25 per unit.
+  assert.deepEqual(findAmounts('D9230   Nitrous oxide, per unit       1.25'), ['1.25']);
+  assert.deepEqual(findMeasurements('D9230   Nitrous oxide, per unit       1.25'), []);
+});
+
+test('a CSV cell that is a measurement says so, rather than "unparseable"', () => {
+  // The CSV lane never used findAmounts — it hands a whole cell to
+  // parseFeeCents, which already refused "1.25 cm". It refused it as "could not
+  // be read as a dollar amount", which tells an office nothing about why.
+  const r = parseFeeCents('1.25 cm');
+  assert.equal(r.value, null);
+  assert.equal(r.warnings[0].code, 'measurement_not_a_fee');
+  assert.match(r.warnings[0].message, /measurement, not a fee/);
+});
+
+test('a cell holding a real amount is never diverted to the measurement branch', () => {
+  assert.equal(parseFeeCents('285.00').value, 28500);
+  assert.equal(parseFeeCents('1.25').value, 125);
+  assert.equal(parseFeeCents('$1,150.00').value, 115000);
+  // $0.00 still parses as $0.00 — not covered, bundled, or no charge.
+  assert.equal(parseFeeCents('0.00').value, 0);
 });
