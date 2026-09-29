@@ -630,11 +630,20 @@ async function fetchProviders(od) {
  * and equipment) are excluded — a retired dentist's stale FeeSched should not
  * outvote the people actually producing.
  *
- * Precedence: explicit `--ucr` > providers > the insplan inference.
+ * Precedence: explicit `--ucr` > the preferred source > the other one as fallback.
+ *
+ * `preferSource` exists because the right tie-break is a JUDGEMENT ABOUT THE
+ * PRACTICE, not a property of the data. At Roland the providers' schedule turned
+ * out to be a stale 2023 one, so the plan population was the better witness to
+ * what the office actually charges; at another office the providers could just as
+ * easily be right and the plans stale. Whoever knows the practice decides, and
+ * the report states which way it was decided either way. Defaults to `providers`
+ * because that is what Open Dental itself prices from.
  *
  * @param {ReadonlyArray<{ feeSched: number, planType: string, isHidden: boolean }>} plans
  * @param {ReadonlyArray<{ provNum: number, feeSched: number, isHidden: boolean, isNotPerson: boolean }>} providers
  * @param {number|null} override explicit --ucr, or null
+ * @param {'providers'|'inference'} preferSource which route wins when they disagree
  * @returns {{
  *   feeSchedNum: number|null,
  *   source: 'override'|'providers'|'insplan-inference'|'none',
@@ -651,7 +660,7 @@ async function fetchProviders(od) {
  *   overallModal: number|null
  * }}
  */
-function resolveUcr(plans, providers, override) {
+function resolveUcr(plans, providers, override, preferSource) {
   const visible = plans.filter((p) => !p.isHidden);
 
   /**
@@ -706,6 +715,25 @@ function resolveUcr(plans, providers, override) {
 
   if (override !== null) {
     return { feeSchedNum: override, source: 'override', basis: `explicit --ucr ${override}`, ...common };
+  }
+
+  // The preferred route, then the other as fallback. When they agree this is a
+  // distinction without a difference; it only bites on a disagreement, which is
+  // exactly when someone should have chosen deliberately.
+  const preferInference = preferSource === 'inference';
+  if (preferInference && inferred !== null) {
+    return {
+      feeSchedNum: inferred,
+      source: 'insplan-inference',
+      basis:
+        `${inferredBasis} — chosen over the providers' schedule by \`--ucr-source inference\`` +
+        (providerModal === null
+          ? ' (no provider carries one)'
+          : providerModal === inferred
+            ? ' (they agree, so it makes no difference)'
+            : ` (providers carry \`${providerModal}\`; see the disagreement note)`),
+      ...common,
+    };
   }
 
   if (providerModal !== null) {
@@ -1114,22 +1142,43 @@ function writeReports(ctx) {
   md.push(
     `**UCR schedule: ${ucr.feeSchedNum === null ? '_not resolved_' : `\`${ucr.feeSchedNum}\` — ${ucrSchedule ? ucrSchedule.description : '(unknown)'}`}**  `
   );
-  md.push(`Read from \`provider.FeeSched\`. ${ucr.basis}.`);
+  md.push(`How it was chosen: ${ucr.basis}.`);
   md.push('');
-  md.push(
-    ucr.agrees === true
-      ? `✅ **The two independent routes agree.** The providers' schedule and the insurance-plan ` +
-          `inference (${ucr.inferredBasis}) both land on \`${ucr.feeSchedNum}\`.`
-      : ucr.agrees === false
-        ? `⚠️ **The two routes DISAGREE.** The providers carry \`${ucr.providerModal}\`, but the ` +
-            `insurance-plan inference points at \`${ucr.inferred}\` (${ucr.inferredBasis}). The ` +
-            `providers win — that is what Open Dental actually prices new procedures from — but ` +
-            `the gap means either the providers are on a stale schedule or the plan population has ` +
-            `moved onto a newer one. **Confirm by hand before acting on the ranking.**`
-        : `ℹ️ Only one route produced an answer, so there is no cross-check. ` +
-            `Providers: ${ucr.providerModal === null ? 'none carry a schedule' : `\`${ucr.providerModal}\``}. ` +
-            `Insurance-plan inference: ${ucr.inferred === null ? 'none' : `\`${ucr.inferred}\``}.`
-  );
+  if (ucr.agrees === true) {
+    md.push(
+      `✅ **The two independent routes agree.** The providers' schedule and the insurance-plan ` +
+        `inference (${ucr.inferredBasis}) both land on \`${ucr.feeSchedNum}\`.`
+    );
+  } else if (ucr.agrees === false) {
+    // Whether the chosen schedule is the providers' one changes what the reader
+    // has to do about the gap, so say which it is rather than asserting "the
+    // providers win" regardless of what actually happened.
+    const chosenIsProviders = ucr.feeSchedNum === ucr.providerModal;
+    md.push(
+      `⚠️ **The two routes DISAGREE.** The providers carry \`${ucr.providerModal}\`; the ` +
+        `insurance-plan inference points at \`${ucr.inferred}\` (${ucr.inferredBasis}).`
+    );
+    md.push('');
+    md.push(
+      chosenIsProviders
+        ? `   This report ranks against the **providers'** schedule \`${ucr.providerModal}\`, which is ` +
+            `what Open Dental prices new procedures from. The gap means either the providers are on a ` +
+            `stale schedule or the plan population has moved onto a newer one. ` +
+            `**Confirm by hand before acting on the ranking.**`
+        : `   This report ranks against \`${ucr.feeSchedNum}\` — **not** the providers' schedule. ` +
+            `That is a deliberate ruling about which schedule represents the practice's real full fee. ` +
+            `**It does not change what Open Dental charges:** new procedures are still priced from ` +
+            `\`provider.FeeSched\` = \`${ucr.providerModal}\`, so until the providers are moved, the ` +
+            `practice is billing \`${ucr.providerModal}\`'s fees while this ranking measures payers ` +
+            `against \`${ucr.feeSchedNum}\`.`
+    );
+  } else {
+    md.push(
+      `ℹ️ Only one route produced an answer, so there is no cross-check. ` +
+        `Providers: ${ucr.providerModal === null ? 'none carry a schedule' : `\`${ucr.providerModal}\``}. ` +
+        `Insurance-plan inference: ${ucr.inferred === null ? 'none' : `\`${ucr.inferred}\``}.`
+    );
+  }
   md.push('');
   if (ucr.providerRanked.length) {
     md.push(
@@ -1321,18 +1370,44 @@ function writeReports(ctx) {
   }
 
   if (ucr.providersDisagree) {
+    // Name what each minority schedule COSTS, in the report's own units. "Two
+    // providers are on schedule 78" is a fact nobody can act on; "two providers
+    // are pricing at 89.4% of the practice's full fee" is the same fact with the
+    // consequence attached.
+    const pctOf = new Map(scores.map((s) => [s.feeSchedNum, s.weightedPctUcr]));
+    const detail = ucr.providerRanked
+      .map((r) => {
+        const p = pctOf.get(r.feeSchedNum);
+        const tag =
+          r.feeSchedNum === ucr.feeSchedNum
+            ? ' — the UCR schedule'
+            : p === null || p === undefined
+              ? ''
+              : ` — ${pct(p)} of UCR`;
+        return `\`${r.feeSchedNum}\` ×${r.providerCount}${tag}`;
+      })
+      .join('; ');
+    const behind = ucr.providerRanked.filter((r) => r.feeSchedNum !== ucr.feeSchedNum);
     dataFlags.push(
-      `- **The providers do not agree on a fee schedule**: ` +
-        `${ucr.providerRanked.map((r) => `\`${r.feeSchedNum}\` ×${r.providerCount}`).join(', ')}. ` +
-        'The modal value is used as UCR. A hygienist or associate on a different schedule than the ' +
-        'owner prices the same procedure differently depending on who is credited with it.'
+      `- **The providers do not agree on a fee schedule**: ${detail}. ` +
+        `Open Dental prices a procedure from the fee schedule of whichever provider is credited ` +
+        `with it, so the same procedure bills differently depending on who did it. ` +
+        `${behind.reduce((n, r) => n + r.providerCount, 0)} provider(s) are not on ` +
+        `\`${ucr.feeSchedNum}\`.`
     );
   }
   if (ucr.agrees === false) {
+    const chosenIsProviders = ucr.feeSchedNum === ucr.providerModal;
     dataFlags.push(
-      `- **UCR routes disagree**: providers say \`${ucr.providerModal}\`, the insurance-plan ` +
-        `inference says \`${ucr.inferred}\`. See the header — every percentage in this report is ` +
-        'relative to the providers\' schedule.'
+      `- **UCR routes disagree**: providers carry \`${ucr.providerModal}\`, the insurance-plan ` +
+        `inference says \`${ucr.inferred}\`. Every percentage here is relative to ` +
+        `\`${ucr.feeSchedNum}\`.` +
+        (chosenIsProviders
+          ? ''
+          : ` **The providers were NOT moved:** Open Dental still prices new procedures from ` +
+            `\`${ucr.providerModal}\`, so the practice is charging that schedule's fees. Moving the ` +
+            `providers onto \`${ucr.feeSchedNum}\` is a separate action in Open Dental and this ` +
+            `report does not perform it.`)
     );
   }
 
@@ -1490,17 +1565,20 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i].startsWith('--')) out[argv[i].slice(2)] = argv[i + 1] ?? '';
   }
+  const usage =
+    'usage: node scripts/fee-schedule-analysis.js --office roland|valley ' +
+    '[--ucr <FeeSchedNum>] [--ucr-source providers|inference]';
   const office = String(out.office || '').trim();
-  if (office !== 'roland' && office !== 'valley') {
-    throw new Error('usage: node scripts/fee-schedule-analysis.js --office roland|valley [--ucr <FeeSchedNum>]');
-  }
+  if (office !== 'roland' && office !== 'valley') throw new Error(usage);
   const ucr = out.ucr ? Number(out.ucr) : null;
   if (ucr !== null && !Number.isFinite(ucr)) throw new Error('--ucr must be a FeeSchedNum');
-  return { office, ucr };
+  const ucrSource = String(out['ucr-source'] || 'providers').trim();
+  if (ucrSource !== 'providers' && ucrSource !== 'inference') throw new Error(usage);
+  return { office, ucr, ucrSource };
 }
 
 async function main() {
-  const { office, ucr: ucrOverride } = parseArgs(process.argv.slice(2));
+  const { office, ucr: ucrOverride, ucrSource } = parseArgs(process.argv.slice(2));
 
   // The customer key lives in process.env and only this loader puts it there.
   // Awaited before the first odOffices call, as every other script does.
@@ -1537,7 +1615,7 @@ async function main() {
   const { fees, zeroAmount, overrideRows, filterIgnoredOn } = await fetchBasketFees(od, codeNumByProcCode);
   console.log(`${[...fees.values()].reduce((n, m) => n + m.size, 0)} priced fees across ${fees.size} schedules`);
 
-  const ucr = resolveUcr(plans, providers, ucrOverride);
+  const ucr = resolveUcr(plans, providers, ucrOverride, ucrSource);
   const ucrSchedule = schedules.find((s) => s.feeSchedNum === ucr.feeSchedNum) || null;
   if (ucr.feeSchedNum === null) {
     throw new OdReadError(
