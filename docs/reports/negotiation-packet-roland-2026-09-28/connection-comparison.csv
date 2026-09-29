@@ -1,0 +1,23 @@
+proc_code,description,basket_weight,roland_connection_2024_fee,valley_connection_2024_fee,roland_ucr_fee,gap_dollars,gap_pct_of_current,roland_pct_of_ucr,valley_pct_of_ucr,weighted_gap
+D2740,"Crown, porcelain/ceramic",4,724.00,1258.59,1377.00,534.59,73.8,52.6,91.4,2138.36
+D2750,"Crown, porcelain fused to metal",2,681.00,1191.30,1401.00,510.30,74.9,48.6,85.0,1020.60
+D6010,"Implant, surgical placement",1,1307.00,2041.15,2251.00,734.15,56.2,58.1,90.7,734.15
+D3330,"Root canal, molar",1,694.00,1272.55,1300.00,578.55,83.4,53.4,97.9,578.55
+D1110,Prophylaxis (adult cleaning),10,57.00,105.59,118.00,48.59,85.2,48.3,89.5,485.90
+D2392,"Composite filling, 2 surfaces (posterior)",3,133.00,231.43,296.00,98.43,74.0,44.9,78.2,295.29
+D0120,Periodic exam,10,31.00,56.23,68.00,25.23,81.4,45.6,82.7,252.30
+D2393,"Composite filling, 3 surfaces (posterior)",2,161.00,278.07,360.00,117.07,72.7,44.7,77.2,234.14
+D2391,"Composite filling, 1 surface (posterior)",3,104.00,180.47,232.00,76.47,73.5,44.8,77.8,229.41
+D4910,Periodontal maintenance,3,86.00,150.87,169.00,64.87,75.4,50.9,89.3,194.61
+D1120,Prophylaxis (child cleaning),5,43.00,80.13,87.00,37.13,86.3,49.4,92.1,185.65
+D4341,"Scaling and root planing, 4+ teeth per quadrant",2,154.00,244.69,319.00,90.69,58.9,48.3,76.7,181.38
+D7140,"Extraction, erupted tooth",2,95.00,164.70,250.00,69.70,73.4,38.0,65.9,139.40
+D2950,Core buildup,2,163.00,232.30,340.00,69.30,42.5,47.9,68.3,138.60
+D0274,Four bitewing X-rays,4,40.00,66.86,81.00,26.86,67.2,49.4,82.5,107.44
+D7210,Surgical extraction,1,168.00,273.75,361.00,105.75,62.9,46.5,75.8,105.75
+D0140,Limited exam (problem-focused),3,48.00,81.16,99.00,33.16,69.1,48.5,82.0,99.48
+D1206,Fluoride varnish,5,30.00,49.36,50.00,19.36,64.5,60.0,98.7,96.80
+D0150,Comprehensive exam,3,51.00,81.85,118.00,30.85,60.5,43.2,69.4,92.55
+D0210,Full-mouth series of X-rays,1,86.00,139.37,166.00,53.37,62.1,51.8,84.0,53.37
+D0330,Panoramic X-ray,1,73.00,118.42,145.00,45.42,62.2,50.3,81.7,45.42
+D1208,Fluoride (topical),2,23.00,41.84,49.00,18.84,81.9,46.9,85.4,37.68
