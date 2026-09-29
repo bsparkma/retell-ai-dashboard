@@ -91,6 +91,45 @@ const PDF_MULTI_COLUMN = [
 ];
 
 /**
+ * MEASUREMENT UNITS IN THE DESCRIPTION — the D74xx surgical family.
+ *
+ * Every one of these lines carries a size threshold that is money-shaped:
+ * `1.25` is digits, a point and two decimals, exactly like a fee. Before the
+ * unit filter the scanner found two amounts on each line, flagged the row
+ * ambiguous and took the FIRST — offering the office $1.25 for a surgical
+ * excision.
+ *
+ * Three spellings on purpose, because the filter has to hold for all of them:
+ * a space before the unit, none, and upper case. The last line is the one that
+ * matters most for the empty-set rule — its ONLY number is the measurement, so
+ * the filter leaves nothing behind and the line must say so rather than being
+ * dropped in silence.
+ */
+const PDF_LESION_UNITS = [
+  'SOUTHVALE ORAL SURGERY - EXCISIONS',
+  '',
+  'Code    Description                                          Fee',
+  'D7410   Excision of benign lesion up to 1.25 cm              285.00',
+  'D7411   Excision of benign lesion greater than 1.25cm        395.00',
+  'D7412   Excision of benign lesion, complicated, to 1.25 CM   470.00',
+  'D7413   Excision of malignant lesion up to 1.25 cm',
+];
+
+/**
+ * A GENUINE $1.25 FEE, with no unit after it.
+ *
+ * The control for the fixture above: the filter must key on the UNIT and not on
+ * the number. A per-unit nitrous charge really is $1.25, and a rule that
+ * discarded small amounts would silently drop it.
+ */
+const PDF_SMALL_REAL_FEE = [
+  'SOUTHVALE - ANCILLARY',
+  '',
+  'D9230   Nitrous oxide, per unit                    1.25',
+  'D9944   Occlusal guard, hard, full arch          450.00',
+];
+
+/**
  * SEVERAL CODES ON ONE LINE — the reference wrote the line's single amount
  * against every one of them. Here it yields no rows and one file warning.
  */
@@ -199,6 +238,8 @@ module.exports = {
   syntheticFeePdf,
   PDF_CLEAN,
   PDF_MULTI_COLUMN,
+  PDF_LESION_UNITS,
+  PDF_SMALL_REAL_FEE,
   PDF_MULTIPLE_CODES,
   PDF_WRAPPED,
   PDF_DUPLICATE_CODES,
