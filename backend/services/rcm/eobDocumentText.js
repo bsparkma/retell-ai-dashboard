@@ -238,44 +238,14 @@ function tooLargeError(chars, pages, source) {
  *         as one. Also propagates `documentOcr`'s own transport codes.
  */
 async function extractPdfText(buffer, deps = {}) {
-  const { PDFParse } = require('pdf-parse');
-  const parser = new PDFParse({ data: buffer });
-
-  /** @type {{ text?: string, total?: number }} */
-  let parsed;
-  try {
-    parsed = await parser.getText();
-  } catch (err) {
-    // An encrypted, corrupt, or password-protected PDF lands here. The message
-    // is from pdf-parse and describes the FILE, not its contents — safe to
-    // surface, and the only thing that makes this state actionable.
-    //
-    // DELIBERATELY NOT ESCALATED TO OCR. pdf.js failing to open the container is
-    // a different fact from "the pages are pictures": there are no pages to
-    // rasterise, and sending an unopenable file to Azure spends money to be told
-    // the same thing in a slower way.
-    throw new DocumentTextError(
-      `PDF could not be read: ${err && err.message ? err.message : String(err)}`,
-      'PDF_UNREADABLE'
-    );
-  } finally {
-    // pdf.js holds worker state; release it rather than leaning on GC.
-    try {
-      if (typeof parser.destroy === 'function') await parser.destroy();
-    } catch {
-      /* releasing is best-effort */
-    }
-  }
-
-  const raw = typeof parsed.text === 'string' ? parsed.text.trim() : '';
-  const pageCount = Number(parsed.total) || 0;
+  const { raw, pageCount } = await readTextLayer(buffer);
 
   // ── The escalation, triggered by the honest failure we already detect ──────
   //
   // Measured on real text, NOT on the raw string: pdf-parse's per-page
   // `-- N of M --` markers otherwise carry a multi-page scan over the floor on
   // page furniture alone. See PDF_PAGE_MARKER.
-  if (meaningfulTextLength(raw) < MIN_DOCUMENT_CHARS) {
+  if (!textLayerIsUsable(raw)) {
     return readByOcr(buffer, pageCount, deps);
   }
 
@@ -306,8 +276,77 @@ async function extractPdfText(buffer, deps = {}) {
 }
 
 /**
- * The OCR path. Reached ONLY from the `raw.length < MIN_DOCUMENT_CHARS` branch
- * above — there is no other caller and no other trigger.
+ * Does this PDF carry its own usable text, so that reading it needs no OCR?
+ *
+ * THE SAME PREDICATE THE WORKER ESCALATES ON, shared rather than re-stated. The
+ * upload route refuses a scan up front when OCR is unconfigured, and that refusal
+ * is only honest if "needs OCR" means exactly what it means inside
+ * `extractPdfText`. Two copies of `meaningfulTextLength < MIN_DOCUMENT_CHARS`
+ * would drift, and the drift would either refuse a document the worker could
+ * have read or accept one it could not.
+ *
+ * Throws `DocumentTextError('PDF_UNREADABLE')` for an encrypted or corrupt file,
+ * exactly as the worker does — the caller decides whether that is its business.
+ *
+ * @param {Buffer} buffer
+ * @returns {Promise<boolean>}
+ */
+async function hasUsableTextLayer(buffer) {
+  const { raw } = await readTextLayer(buffer);
+  return textLayerIsUsable(raw);
+}
+
+/** The floor, in one place. @param {string} raw @returns {boolean} */
+function textLayerIsUsable(raw) {
+  return meaningfulTextLength(raw) >= MIN_DOCUMENT_CHARS;
+}
+
+/**
+ * pdf-parse, plus the worker-release dance it needs. Split out so the route's
+ * pre-check and the worker's read cannot open a PDF two different ways.
+ *
+ * @param {Buffer} buffer
+ * @returns {Promise<{ raw: string, pageCount: number }>}
+ */
+async function readTextLayer(buffer) {
+  const { PDFParse } = require('pdf-parse');
+  const parser = new PDFParse({ data: buffer });
+
+  /** @type {{ text?: string, total?: number }} */
+  let parsed;
+  try {
+    parsed = await parser.getText();
+  } catch (err) {
+    // An encrypted, corrupt, or password-protected PDF lands here. The message
+    // is from pdf-parse and describes the FILE, not its contents — safe to
+    // surface, and the only thing that makes this state actionable.
+    //
+    // DELIBERATELY NOT ESCALATED TO OCR. pdf.js failing to open the container is
+    // a different fact from "the pages are pictures": there are no pages to
+    // rasterise, and sending an unopenable file to Azure spends money to be told
+    // the same thing in a slower way.
+    throw new DocumentTextError(
+      `PDF could not be read: ${err && err.message ? err.message : String(err)}`,
+      'PDF_UNREADABLE'
+    );
+  } finally {
+    // pdf.js holds worker state; release it rather than leaning on GC.
+    try {
+      if (typeof parser.destroy === 'function') await parser.destroy();
+    } catch {
+      /* releasing is best-effort */
+    }
+  }
+
+  return {
+    raw: typeof parsed.text === 'string' ? parsed.text.trim() : '',
+    pageCount: Number(parsed.total) || 0,
+  };
+}
+
+/**
+ * The OCR path. Reached ONLY from the `textLayerIsUsable` branch in
+ * `extractPdfText` — there is no other caller and no other trigger.
  *
  * @param {Buffer} buffer
  * @param {number} pageCount pages the PDF itself declares, used to price the job
@@ -405,6 +444,7 @@ async function readByOcr(buffer, pageCount, deps) {
 
 module.exports = {
   extractPdfText,
+  hasUsableTextLayer,
   looksLikePdf,
   DocumentTextError,
   MAX_DOCUMENT_CHARS,

@@ -19,11 +19,27 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { FakeRcmDb, bootRcmApp, api, auditRows, filePart, syntheticPdf } = require('./rcmTestUtils');
 const blobStore = require('../../services/rcm/eobBlobStore');
+const documentOcr = require('../../services/rcm/documentOcr');
 const queue = require('../../services/rcm/eobExtractionQueue');
 const budget = require('../../services/rcm/extractionBudget');
+
+/*
+ * THE COMMITTED FIXTURES, not PDFs built in the test body.
+ *
+ * The up-front scan refusal turns on what `pdf-parse` actually finds in a real
+ * document, so it has to be tested against real documents — the same two files
+ * `eobDocumentText.test.js` drives. `syntheticPdf()` is not one of them: it has
+ * no xref table, so pdf-parse cannot open it at all, which is a THIRD case
+ * (`PDF_UNREADABLE`) and not the one these tests are about.
+ */
+const FIXTURES = path.join(__dirname, '..', '..', 'test', 'fixtures', 'rcm', 'eob');
+const TEXT_LAYER_PDF = fs.readFileSync(path.join(FIXTURES, 'Test_EOB_TextLayer.pdf'));
+const SCANNED_PDF = fs.readFileSync(path.join(FIXTURES, 'Test_EOB_Scanned.pdf'));
 
 /**
  * Boot the app with storage and the queue stubbed.
@@ -37,7 +53,22 @@ async function bootEob(opts = {}) {
     isConfigured: blobStore.isConfigured,
     putEob: blobStore.putEob,
     accountUrl: process.env.RCM_BLOB_ACCOUNT_URL,
+    ocrEndpoint: process.env.RCM_OCR_ENDPOINT,
   };
+
+  /*
+   * OCR IS CONFIGURED BY DEFAULT HERE, because every armed environment has it —
+   * staging since 2026-08-19, prod since 2026-09-29 — and the route's up-front
+   * scan refusal is deliberately inert in that configuration. Leaving it
+   * unconfigured would have made every upload case in this file exercise the
+   * refusal path by accident, which is how a suite ends up proving nothing about
+   * the behaviour it is named for.
+   *
+   * `ocrConfigured: false` is the opt-in for the tests that ARE about the
+   * refusal. The endpoint is never called — the route only asks `isConfigured()`.
+   */
+  if (opts.ocrConfigured === false) delete process.env.RCM_OCR_ENDPOINT;
+  else process.env.RCM_OCR_ENDPOINT = 'https://docint.example.cognitiveservices.azure.com';
 
   if (opts.storageConfigured === false) {
     blobStore.isConfigured = () => false;
@@ -68,6 +99,9 @@ async function bootEob(opts = {}) {
       blobStore.putEob = originals.putEob;
       if (originals.accountUrl === undefined) delete process.env.RCM_BLOB_ACCOUNT_URL;
       else process.env.RCM_BLOB_ACCOUNT_URL = originals.accountUrl;
+      if (originals.ocrEndpoint === undefined) delete process.env.RCM_OCR_ENDPOINT;
+      else process.env.RCM_OCR_ENDPOINT = originals.ocrEndpoint;
+      documentOcr._resetForTests();
       queue._resetForTests();
       await booted.close();
     },
@@ -455,6 +489,155 @@ test('an upload still SUCCEEDS while the breaker is tripped — extraction waits
     if (prior === undefined) delete process.env.RCM_EXTRACTION_MAX_CENTS_PER_DAY;
     else process.env.RCM_EXTRACTION_MAX_CENTS_PER_DAY = prior;
     budget._resetForTests();
+    await close();
+  }
+});
+
+// ─── No document reader in this deployment ────────────────────────────────────
+//
+// THE BUG THESE PIN. Prod ran from 2026-09-25 to 2026-09-29 with the `rcm`
+// module entitled, real logins on it, and no Document Intelligence resource at
+// all. A scanned EOB was accepted, stored in the blob container, given a row,
+// queued, and only then failed with `no_extractable_text` — rendered to the
+// biller as "This PDF has no text layer — most likely a scan". True about the
+// file, silent about the deployment, and it points her at a scanner that was
+// never the problem.
+
+test('with no document reader configured, a SCAN is refused at the front door and nothing is kept', async () => {
+  const { baseUrl, db, jobs, stored, close } = await bootEob({ ocrConfigured: false });
+  try {
+    const res = await api(baseUrl, 'POST', '/api/rcm/eob?office=roland', {
+      body: filePart(SCANNED_PDF, 'SYNTHETIC-scan.pdf'),
+    });
+
+    assert.equal(res.status, 503);
+    assert.equal(res.body.code, 'EOB_OCR_UNAVAILABLE');
+    assert.equal(res.body.success, false);
+
+    // The SENTENCE is the point, not just the code — it is what she reads.
+    assert.match(
+      res.body.error,
+      /isn't set up here yet/,
+      'the refusal must blame the environment, not the document'
+    );
+    assert.doesNotMatch(
+      res.body.error,
+      /text layer|scan(ner)? (it|the document) again|rescan/i,
+      'and must not describe the file as the thing at fault'
+    );
+
+    // NOTHING ACCEPTED INTO NOTHING. All four, because each one is a different
+    // way the old behaviour lied: bytes banked, a row promising a result, a job
+    // that will fail later, and a spend.
+    assert.equal(stored.length, 0, 'no bytes may be stored');
+    assert.equal(db.table('rcm_eob_uploads').length, 0, 'no row may be written');
+    assert.equal(jobs.length, 0, 'no extraction may be queued');
+    assert.equal(auditRows(db).length, 0, 'and nothing happened, so nothing is audited');
+
+    // The state that caused it travels with the refusal, so a screen can explain.
+    assert.equal(res.body.ocr.configured, false);
+    assert.equal(res.body.ocr.reachable, null, 'never called, so never claimed reachable');
+  } finally {
+    await close();
+  }
+});
+
+test('with no document reader configured, a TEXT-LAYER document is still accepted', async () => {
+  // The refusal is scoped to documents that actually need OCR. An environment
+  // with no reader is a legal state for digital EOBs — most payer-portal PDFs —
+  // and refusing those would turn an honest message into an outage.
+  const { baseUrl, db, jobs, stored, close } = await bootEob({ ocrConfigured: false });
+  try {
+    const res = await api(baseUrl, 'POST', '/api/rcm/eob?office=roland', {
+      body: filePart(TEXT_LAYER_PDF, 'SYNTHETIC-digital.pdf'),
+    });
+
+    assert.equal(res.status, 201, 'a readable document does not need OCR and must go through');
+    assert.equal(res.body.upload.status, 'uploaded');
+    assert.equal(stored.length, 1);
+    assert.equal(db.table('rcm_eob_uploads').length, 1);
+    assert.equal(jobs.length, 1);
+  } finally {
+    await close();
+  }
+});
+
+test('with a document reader configured, a SCAN is accepted — the pre-check is inert', async () => {
+  // The guard must cost nothing in every armed environment. If this ever turns
+  // red, the refusal has escaped the one configuration it belongs in and is
+  // rejecting documents prod can read.
+  const { baseUrl, db, jobs, close } = await bootEob();
+  try {
+    const res = await api(baseUrl, 'POST', '/api/rcm/eob?office=roland', {
+      body: filePart(SCANNED_PDF, 'SYNTHETIC-scan.pdf'),
+    });
+
+    assert.equal(res.status, 201);
+    assert.equal(db.table('rcm_eob_uploads').length, 1);
+    assert.equal(jobs.length, 1, 'the worker does the OCR, on the path it already walks');
+  } finally {
+    await close();
+  }
+});
+
+test('the list says whether a document reader exists, separately from its cap', async () => {
+  const { baseUrl, close } = await bootEob({ ocrConfigured: false });
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/eob?office=roland');
+    assert.equal(res.status, 200);
+
+    // `paused: false` and `configured: false` together are the state that used to
+    // be unrepresentable: no cap has been hit, and no scan will ever be read.
+    assert.equal(res.body.ocr.configured, false);
+    assert.equal(res.body.ocr.paused, false);
+    assert.equal(res.body.ocr.reachable, null);
+    assert.equal(res.body.ocr.rail, 'ocr', 'still the same rail object, still labelled');
+  } finally {
+    await close();
+  }
+});
+
+test('the list reports a configured reader, and still does not claim it is reachable', async () => {
+  const { baseUrl, close } = await bootEob();
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/eob?office=roland');
+    assert.equal(res.body.ocr.configured, true);
+    assert.equal(
+      res.body.ocr.reachable,
+      null,
+      'configured is not reachable — reachability needs a call, and rendering a list must not make one'
+    );
+  } finally {
+    await close();
+  }
+});
+
+test('with no document reader configured, a PDF that will not OPEN is not blamed on the deployment', async () => {
+  // `%PDF-` magic bytes over a body pdf.js cannot parse at all. That clears
+  // `looksLikePdf` and then raises `PDF_UNREADABLE` — a different fact from "the
+  // pages are pictures". Answering it with "reading isn't set up here yet" would
+  // repeat the original bug with the blame merely pointed the other way, so this
+  // document goes through and the worker gives it the accurate reason.
+  //
+  // NOTE `syntheticPdf()` is NOT this case: pdf-parse opens it and finds almost
+  // no text, which is the scan-shaped branch above. Measured, not assumed.
+  const unopenable = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(800, 0x41)]);
+  const { baseUrl, db, jobs, close } = await bootEob({ ocrConfigured: false });
+  try {
+    const res = await postPdf(baseUrl, 'roland', {
+      bytes: unopenable,
+      filename: 'SYNTHETIC-corrupt.pdf',
+    });
+
+    assert.notEqual(
+      res.body.code,
+      'EOB_OCR_UNAVAILABLE',
+      'an unopenable file must never be reported as a missing document reader'
+    );
+    assert.equal(res.status, 201);
+    assert.equal(db.table('rcm_eob_uploads').length, 1);
+    assert.equal(jobs.length, 1, 'the worker reports PDF_UNREADABLE, which is the true reason');
+  } finally {
     await close();
   }
 });

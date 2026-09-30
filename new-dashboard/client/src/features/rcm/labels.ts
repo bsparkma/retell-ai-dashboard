@@ -109,6 +109,31 @@ export const FAILURE_LABELS: Record<string, string> = {
   ocr_document_exceeds_cap: "This document is larger than a whole day's scan-reading cap — split it",
 };
 
+/**
+ * THERE IS NO DOCUMENT READER IN THIS DEPLOYMENT.
+ *
+ * Said BEFORE an upload, on the lane itself, and again in the server's refusal if
+ * someone drops a scan anyway. Two places, one sentence — the backend holds the
+ * other copy in `routes/rcm/eob.js`.
+ *
+ * WHAT THIS REPLACED, and why the wording matters. Prod ran with the module live
+ * and no reader from 2026-09-25 to 2026-09-29. A scan was accepted, banked, and
+ * then failed with `no_extractable_text` → "This PDF has no text layer — most
+ * likely a scan". Every word true; the whole thing misleading. It describes her
+ * FILE, so she goes back to the scanner and feeds it again, and it fails again,
+ * because nothing was ever wrong with the paper.
+ *
+ * "isn't set up here yet" names the deployment. "yet" says a switch is missing
+ * rather than that she did something wrong. And the second sentence gives her the
+ * thing she can still do today, because a lane that only says no is a dead end.
+ */
+export const OCR_NOT_CONFIGURED =
+  "Scanned document reading isn't set up here yet.";
+
+/** What still works meanwhile — never leave her without a next move. */
+export const OCR_NOT_CONFIGURED_DETAIL =
+  "PDFs that carry their own text still read normally. A scan or a photo will be turned away until someone switches this on.";
+
 
 /**
  * Line flags — `rcm_procedure_lines.flags`.
