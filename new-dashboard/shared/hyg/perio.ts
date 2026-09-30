@@ -661,7 +661,110 @@ export const PerioPriorSchema = z.discriminatedUnion("status", [
 ]);
 export type PerioPrior = z.infer<typeof PerioPriorSchema>;
 
-/** GET /api/hyg/visit/:aptNum/perio/prior — Open Dental's last exam. */
+/**
+ * One site that differs between two charts: `#14 B: 3 mm → 4 mm`.
+ *
+ * Lives HERE rather than beside the comparison that produces it
+ * (`perioChartChanges`, in perioSend.ts) because the drift check below needs the
+ * shape and perio.ts cannot import from perioSend.ts — the import runs one way
+ * only. The formatters stay with the comparison.
+ */
+export const PerioSiteChangeSchema = z.object({
+  tooth: z.number().int(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: z.enum(["depth", "flags", "skipped"]),
+  from: z.string(),
+  to: z.string(),
+});
+export type PerioSiteChange = z.infer<typeof PerioSiteChangeSchema>;
+
+/**
+ * One perio exam Open Dental holds for this patient on the visit's date.
+ *
+ * `careinWrote` is false for an exam CareIN has no send row for — a hygienist
+ * who deleted CareIN's exam and re-charted by hand in Open Dental. The resend
+ * confirmation lists those too, which is the entire reason this carries a flag
+ * instead of being filtered down to CareIN's own.
+ */
+export const PerioSameDateExamSchema = z.object({
+  examNum: z.number().int(),
+  examDate: z.string().nullable(),
+  provNum: z.number().int().nullable(),
+  careinWrote: z.boolean(),
+});
+export type PerioSameDateExam = z.infer<typeof PerioSameDateExamSchema>;
+
+/**
+ * IS THE EXAM CAREIN WROTE STILL THE EXAM OPEN DENTAL HOLDS? (item 14)
+ *
+ * `Written` means every site was read back and matched — AT THE MOMENT IT WAS
+ * READ BACK. Open Dental's own perio chart has a Delete button on that screen,
+ * so the claim can stop being true without CareIN ever hearing about it. This is
+ * the answer to asking again, when a `Written` chart is OPENED.
+ *
+ * FIVE ANSWERS, AND THE SCREEN SAYS SOMETHING FOR ONLY TWO OF THEM:
+ *
+ *   `not_applicable` — the chart is not `Written`, so there is no claim to check.
+ *   `matches`        — the exam is there and every site still agrees. The
+ *                      existing `Written` line stands. NOTHING is said.
+ *   `missing`        — the exam is not in `/perioexams` at all. SAID, and the
+ *                      resend is offered: this is the one dead end #180 left.
+ *   `changed`        — the exam is there and the readings DIFFER. SAID, naming
+ *                      the sites, and NO resend is offered.
+ *   `unknown`        — Open Dental could not be read. NOTHING is said, and the
+ *                      `Written` line stands unqualified.
+ *
+ * ⚠️ `changed` OFFERS NO RESEND, AND THAT IS THE DESIGN. A reading that differs
+ * is a human who corrected the chart in Open Dental. Resending would create a
+ * second exam and bury their correction under CareIN's stale numbers. "It does
+ * not match, so send it again" is precisely the bug this union exists to make
+ * unrepresentable.
+ *
+ * ⚠️ `unknown` SAYS NOTHING, AND THAT IS ALSO THE DESIGN. A failed read is not
+ * evidence the exam is gone — the same doctrine as `NOTE_PRECHECK_UNAVAILABLE`.
+ * When CareIN cannot see, it does not guess in either direction.
+ */
+export const PerioDriftSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("not_applicable") }),
+  z.object({ status: z.literal("matches"), examNum: z.number().int() }),
+  z.object({
+    status: z.literal("missing"),
+    examNum: z.number().int(),
+    /**
+     * EVERY exam this patient has on the visit's date, CareIN's or not. The
+     * hygienist sees this before she creates a second one for the same visit.
+     */
+    sameDateExams: z.array(PerioSameDateExamSchema),
+  }),
+  z.object({
+    status: z.literal("changed"),
+    examNum: z.number().int(),
+    /** What Open Dental holds now, against what CareIN wrote. Never empty here. */
+    changes: z.array(PerioSiteChangeSchema),
+  }),
+  z.object({ status: z.literal("unknown"), examNum: z.number().int() }),
+]);
+export type PerioDrift = z.infer<typeof PerioDriftSchema>;
+
+/**
+ * POST /api/hyg/visit/:aptNum/perio/resend — send a vanished chart again.
+ *
+ * The exam number is REPEATED by the client, the same way the undo repeats it:
+ * the server refuses unless it is exactly the exam the live send wrote, and
+ * refuses again if that exam turns out to still be in Open Dental.
+ */
+export const PerioResendRequestSchema = z.object({ examNum: z.number().int().positive() }).strict();
+export type PerioResendRequest = z.infer<typeof PerioResendRequestSchema>;
+
+/**
+ * GET /api/hyg/visit/:aptNum/perio/prior — Open Dental's last exam, and whether
+ * the exam CareIN wrote is still the exam Open Dental holds.
+ *
+ * `drift` rides on THIS response rather than on one of its own because it is
+ * answered from the SAME `/perioexams?PatNum=` read the prior panel already
+ * makes. A second endpoint would be a second request per open of a chart, for a
+ * question the first request has already answered.
+ */
 export const HygPerioPriorResponseSchema = z.object({
   success: z.literal(true),
   office: OfficeIdSchema,
@@ -669,5 +772,6 @@ export const HygPerioPriorResponseSchema = z.object({
   date: z.string(),
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema,
+  drift: PerioDriftSchema,
 });
 export type HygPerioPriorResponse = z.infer<typeof HygPerioPriorResponseSchema>;

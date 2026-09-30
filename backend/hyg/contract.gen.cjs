@@ -14892,10 +14892,13 @@ __export(contract_entry_exports, {
   PerioCursorSchema: () => PerioCursorSchema,
   PerioDeleteExamRequestSchema: () => PerioDeleteExamRequestSchema,
   PerioDirectionSchema: () => PerioDirectionSchema,
+  PerioDriftSchema: () => PerioDriftSchema,
   PerioGradeSchema: () => PerioGradeSchema,
   PerioMismatchKindSchema: () => PerioMismatchKindSchema,
   PerioMismatchSchema: () => PerioMismatchSchema,
   PerioPriorSchema: () => PerioPriorSchema,
+  PerioResendRequestSchema: () => PerioResendRequestSchema,
+  PerioSameDateExamSchema: () => PerioSameDateExamSchema,
   PerioSegmentSchema: () => PerioSegmentSchema,
   PerioSendRequestSchema: () => PerioSendRequestSchema,
   PerioSendSequenceTypeSchema: () => PerioSendSequenceTypeSchema,
@@ -16447,13 +16450,48 @@ var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
     detail: import_zod3.z.string().nullable()
   })
 ]);
+var PerioSiteChangeSchema = import_zod3.z.object({
+  tooth: import_zod3.z.number().int(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: import_zod3.z.enum(["depth", "flags", "skipped"]),
+  from: import_zod3.z.string(),
+  to: import_zod3.z.string()
+});
+var PerioSameDateExamSchema = import_zod3.z.object({
+  examNum: import_zod3.z.number().int(),
+  examDate: import_zod3.z.string().nullable(),
+  provNum: import_zod3.z.number().int().nullable(),
+  careinWrote: import_zod3.z.boolean()
+});
+var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
+  import_zod3.z.object({ status: import_zod3.z.literal("not_applicable") }),
+  import_zod3.z.object({ status: import_zod3.z.literal("matches"), examNum: import_zod3.z.number().int() }),
+  import_zod3.z.object({
+    status: import_zod3.z.literal("missing"),
+    examNum: import_zod3.z.number().int(),
+    /**
+     * EVERY exam this patient has on the visit's date, CareIN's or not. The
+     * hygienist sees this before she creates a second one for the same visit.
+     */
+    sameDateExams: import_zod3.z.array(PerioSameDateExamSchema)
+  }),
+  import_zod3.z.object({
+    status: import_zod3.z.literal("changed"),
+    examNum: import_zod3.z.number().int(),
+    /** What Open Dental holds now, against what CareIN wrote. Never empty here. */
+    changes: import_zod3.z.array(PerioSiteChangeSchema)
+  }),
+  import_zod3.z.object({ status: import_zod3.z.literal("unknown"), examNum: import_zod3.z.number().int() })
+]);
+var PerioResendRequestSchema = import_zod3.z.object({ examNum: import_zod3.z.number().int().positive() }).strict();
 var HygPerioPriorResponseSchema = import_zod3.z.object({
   success: import_zod3.z.literal(true),
   office: OfficeIdSchema,
   aptNum: import_zod3.z.number().int(),
   date: import_zod3.z.string(),
   appointment: HygAppointmentSchema,
-  prior: PerioPriorSchema
+  prior: PerioPriorSchema,
+  drift: PerioDriftSchema
 });
 
 // shared/hyg/perioSend.ts
@@ -16908,13 +16946,6 @@ function comparePerioReadback(expected, found) {
   }
   return out;
 }
-var PerioSiteChangeSchema = import_zod4.z.object({
-  tooth: import_zod4.z.number().int(),
-  surface: ToothSurfaceSchema.nullable(),
-  kind: import_zod4.z.enum(["depth", "flags", "skipped"]),
-  from: import_zod4.z.string(),
-  to: import_zod4.z.string()
-});
 function perioChartChanges(before, after) {
   const out = [];
   for (const m of comparePerioReadback(before, after)) {
@@ -17069,10 +17100,13 @@ var import_zod5 = __toESM(require_zod());
   PerioCursorSchema,
   PerioDeleteExamRequestSchema,
   PerioDirectionSchema,
+  PerioDriftSchema,
   PerioGradeSchema,
   PerioMismatchKindSchema,
   PerioMismatchSchema,
   PerioPriorSchema,
+  PerioResendRequestSchema,
+  PerioSameDateExamSchema,
   PerioSegmentSchema,
   PerioSendRequestSchema,
   PerioSendSequenceTypeSchema,
