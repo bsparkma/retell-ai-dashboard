@@ -1779,7 +1779,27 @@ const SCREENS: Record<string, ScreenSpec> = {
    * all present, AND the sum-to-check banner is showing with a named difference.
    * A screen with figures confirmed says strictly less.
    */
-  confirm: { id: "confirm", label: "Check the figures against the page", kind: "flow", budget: 170 },
+  /*
+   * ── RE-PINNED 170 → 180 BY THE FLOW FIX ───────────────────────────────────
+   *
+   * The screen read as an island, so it now carries the same header rail and
+   * breadcrumb as every other flow screen. That is +28 measured: five step
+   * titles AND their sentences (`variant="board"` renders both — `BoardStep`
+   * prints `step.detail` under the title), "Back to the check", and the viewer's
+   * caption and new-tab escape.
+   *
+   * 24 of those 28 were PAID BY CUTTING, all of it duplication the rail created:
+   *   −17  the scan caveat's first half, now said by the current step itself
+   *   −15  "work down the list — each one is either right, or you type what the
+   *        page says", which the two buttons on every row already say
+   *    −9  "still worth checking each figure against the page", which the
+   *        outstanding count at the foot already says
+   *
+   * Measured 173 after the cuts, against 161 before the fix: net +12, and the
+   * re-pin is +10 — inside the Bring-in-step-sentence cap the brief allows.
+   * Rounded up to the next ten from 173, per this file's own rule.
+   */
+  confirm: { id: "confirm", label: "Check the figures against the page", kind: "flow", budget: 180 },
   "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: 130 },
   posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: 270 },
   stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: 510 },
