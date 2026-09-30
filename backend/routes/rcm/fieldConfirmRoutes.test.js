@@ -596,3 +596,88 @@ test('ONE bad field refuses the WHOLE request — a confirm list is all or nothi
     await close();
   }
 });
+
+// ─── The check page needs to know whether bringing this check in is finished ──
+
+test('the check detail carries how much of a scanned read is still unchecked', async () => {
+  /*
+   * A SUMMARY, not the figures. The check page's rail and its one primary need
+   * exactly two things — is the confirm step finished, and if not how much is
+   * left — and shipping the amounts as well would put a second copy of every
+   * figure on a page that does not render them.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'GET', `/api/rcm/remittances/${BATCH}${Q}`);
+    assert.equal(res.status, 200);
+
+    const fc = res.body.remittance.fieldConfirm;
+    assert.ok(fc, 'the check page cannot draw the step without this');
+    assert.equal(fc.required, true);
+    assert.equal(fc.ok, false);
+    // One check total + one claim total + five line fields.
+    assert.equal(fc.outstanding, 7);
+    // And no figures rode along with it.
+    assert.ok(!('claims' in fc));
+    assert.ok(!('checkTotal' in fc));
+  } finally {
+    await close();
+  }
+});
+
+test('the count falls as the work is done, and clears when it is', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ field: 'check_total', confirmedCents: 18400 }] }),
+    });
+    const part = await api(baseUrl, 'GET', `/api/rcm/remittances/${BATCH}${Q}`);
+    assert.equal(part.body.remittance.fieldConfirm.outstanding, 6);
+    assert.equal(part.body.remittance.fieldConfirm.ok, false);
+
+    const rest = [
+      { claimId: CLAIM, field: 'claim_total_paid', confirmedCents: 18400 },
+      { claimId: CLAIM, lineId: LINE, field: 'line_paid', confirmedCents: null },
+      { claimId: CLAIM, lineId: LINE, field: 'line_billed', confirmedCents: 131500 },
+      { claimId: CLAIM, lineId: LINE, field: 'line_allowed', confirmedCents: 122900 },
+      { claimId: CLAIM, lineId: LINE, field: 'line_deductible', confirmedCents: 0 },
+      { claimId: CLAIM, lineId: LINE, field: 'line_copay', confirmedCents: 0 },
+    ];
+    await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, { ...json({ fields: rest }) });
+
+    const done = await api(baseUrl, 'GET', `/api/rcm/remittances/${BATCH}${Q}`);
+    assert.equal(done.body.remittance.fieldConfirm.ok, true);
+    assert.equal(done.body.remittance.fieldConfirm.outstanding, 0);
+  } finally {
+    await close();
+  }
+});
+
+test('an 835 reports the step as NOT REQUIRED, so its rail is untouched', async () => {
+  /*
+   * The 835 flow is untouched BY CONSTRUCTION: `required: false` makes the
+   * client draw exactly what it drew before the confirm step existed, rather
+   * than by a branch on the screen that somebody has to remember to write.
+   */
+  const { baseUrl, close } = await bootConfirm({ textSource: null });
+  try {
+    const res = await api(baseUrl, 'GET', `/api/rcm/remittances/${BATCH}${Q}`);
+    assert.deepEqual(res.body.remittance.fieldConfirm, {
+      required: false,
+      ok: true,
+      outstanding: 0,
+    });
+  } finally {
+    await close();
+  }
+});
+
+test('a text-layer PDF is not confirmed either — only a scan is', async () => {
+  const { baseUrl, close } = await bootConfirm({ textSource: 'text_layer' });
+  try {
+    const res = await api(baseUrl, 'GET', `/api/rcm/remittances/${BATCH}${Q}`);
+    assert.equal(res.body.remittance.fieldConfirm.required, false);
+  } finally {
+    await close();
+  }
+});

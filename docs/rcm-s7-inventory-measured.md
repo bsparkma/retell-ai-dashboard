@@ -6,7 +6,7 @@
 | Check page | flow | 465 | 465 | 17 | 1 | “Match it up” · “Pick the right claim for Stedi Test 2” · “Approve 2 claims for posting” · “Check over Test, MangoTest” · “Post to Open Dental” · “Approve 1 claim for posting” · “Pick the right claim for Test, MangoTest” | 47 |
 | Claim page (Match + Workbench) | flow | 430 | 488 | 18 | 1 | “Yes, that’s the one” · “Mark checked over” · “Approve for posting” | 9 |
 | Approve | flow | 239 | 241 | 5 | 1 | “Yes — this check is right” · “Take me to the check to post it” | 4 |
-| Check the figures against the page | flow | 161 | 161 | 16 | 0 | — | 1 |
+| Check the figures against the page | flow | 173 | 173 | 20 | 0 | — | 1 |
 | Approve → takeback | flow | 127 | 138 | 2 | 1 | “Take me to the takeback” | 1 |
 | Posted / Done | terminal | 256 | 256 | 17 | 0 | — | 1 |
 | Stuck / Failed | terminal | 494 | 494 | 18 | 1 | “Post to Open Dental” | 11 |

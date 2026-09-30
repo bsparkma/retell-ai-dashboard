@@ -1519,6 +1519,14 @@ export interface RemittanceDetail {
      * screen reads the first.
      */
     plans: { queueId: string; status: PostingQueueStatus }[];
+    /**
+     * HOW MUCH OF A SCANNED READ IS STILL UNCHECKED — a summary, never figures.
+     *
+     * Optional so a client can talk to a server that predates it, and
+     * `required: false` on an 835 or a text-layer PDF. The check page reads it
+     * for one thing: whether bringing this check in is actually finished.
+     */
+    fieldConfirm?: { required: boolean; ok: boolean; outstanding: number };
   };
   claims: RemittanceClaim[];
 }

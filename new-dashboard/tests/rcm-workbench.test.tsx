@@ -1280,6 +1280,63 @@ describe("the remittance detail", () => {
 
 // ─── The match panel ─────────────────────────────────────────────────────────
 
+describe("the EOB opens in place, on the claim page", () => {
+  const PROVENANCE = {
+    uploadId: "f4c1a0de-6b52-4a1e-9f77-2c6a0b9d4e31",
+    textSource: "ocr" as const,
+    ocrPageCount: 1,
+    ocrMeanConfidence: 0.991,
+  };
+
+  it("offers the document as a BUTTON, and opens it beside the figures", async () => {
+    /*
+     * DEFECT 3, through the assembled page. "Open the EOB" was
+     * `<a target="_blank">`, which took this screen away at the exact moment a
+     * biller wanted to compare a figure against the paper — and put the whole
+     * exchange somewhere this app cannot observe, which is why the prod logs
+     * carry no record of the attempt that failed on 2026-09-30.
+     */
+    state.claim = claim({ provenance: PROVENANCE });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const open = await waitFor(() => screen.getByTestId("open-source-document"));
+    expect(open.tagName).toBe("BUTTON");
+    expect(open.getAttribute("target")).toBeNull();
+    expect(open.textContent).toContain("See the EOB");
+
+    // Closed until asked: the document does not take the page by default.
+    expect(screen.queryByTestId("eob-panel")).toBeNull();
+
+    fireEvent.click(open);
+    const panel = await waitFor(() => screen.getByTestId("eob-panel"));
+    const frame = panel.querySelector('[data-testid="eob-panel-viewer-frame"]');
+    expect(frame?.getAttribute("src")).toContain("/document");
+    expect(frame?.getAttribute("src")).toContain("office=roland");
+
+    // The escape hatch lives INSIDE the viewer, and only there.
+    expect(
+      panel.querySelector('[data-testid="eob-panel-viewer-new-tab"]')?.getAttribute("target"),
+    ).toBe("_blank");
+  });
+
+  it("closes again, so the figures get the page back", async () => {
+    state.claim = claim({ provenance: PROVENANCE });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    fireEvent.click(await waitFor(() => screen.getByTestId("open-source-document")));
+    await waitFor(() => screen.getByTestId("eob-panel"));
+    fireEvent.click(screen.getByTestId("eob-panel-close"));
+    await waitFor(() => expect(screen.queryByTestId("eob-panel")).toBeNull());
+  });
+
+  it("offers nothing when there is no document — an 835 was parsed, not scanned", async () => {
+    state.claim = claim({ provenance: null });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("claim-parsed")).toBeTruthy());
+    expect(screen.queryByTestId("open-source-document")).toBeNull();
+    expect(screen.queryByTestId("eob-panel")).toBeNull();
+  });
+});
+
 describe("the claim match panel", () => {
   it("says nobody has looked yet, and that looking writes nothing", async () => {
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");

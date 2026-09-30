@@ -360,7 +360,7 @@ export default function RemittanceDetailPage() {
    * same fact the banner below explains at length, in one line, where the
    * reader is already looking.
    */
-  const flow = remittanceFlow(r, claims, { shadowMode });
+  const flow = remittanceFlow(r, claims, { shadowMode, fieldConfirm: r.fieldConfirm ?? null });
   const waiting = waitingFor(r, { office, shadowMode });
   const headerChip = checkChip(waiting.state);
   /*

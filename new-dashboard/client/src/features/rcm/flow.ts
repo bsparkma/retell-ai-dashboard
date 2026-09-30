@@ -430,7 +430,20 @@ export function remittanceFlow(
    * switched off for this practice. Optional, and absent means "not asked" —
    * never "posting is on".
    */
-  ctx: { shadowMode?: boolean } = {},
+  ctx: {
+    shadowMode?: boolean;
+    /**
+     * How much of a SCANNED read is still unchecked — the summary the check's
+     * own payload now carries.
+     *
+     * Absent, or `required: false`, means this check needs no confirm step: an
+     * 835, a PDF read from its own text layer, or a server that predates the
+     * field. Each of those draws the rail exactly as it drew before the step
+     * existed, which is what keeps the 835 flow untouched BY CONSTRUCTION rather
+     * than by a branch somebody has to remember to write.
+     */
+    fieldConfirm?: { required: boolean; ok: boolean; outstanding: number } | null;
+  } = {},
 ): RcmFlow {
   const batchId = remittance.batchId;
   const total = rows.length;
@@ -462,16 +475,52 @@ export function remittanceFlow(
    * steps on one rail speak one register.
    */
   const readOn = remittance.createdAt ? officeStamp(remittance.createdAt, remittance.officeId) : null;
-  const upload = view(
-    "upload",
-    "done",
-    (remittance.source === "eob"
-      ? "EOB PDF read"
-      : remittance.source === "835"
-        ? "The carrier's 835 file read"
-        : "This check is in CareIN") + (readOn ? ` ${readOn}.` : "."),
-    "/rcm/remittances",
-  );
+
+  /*
+   * ── BRINGING A CHECK IN IS NOT FINISHED UNTIL THE FIGURES ARE CHECKED ─────
+   *
+   * PLACEMENT RULING. Confirming a scanned read is the TAIL END OF BRING-IN, not
+   * a step of its own and not an errand off to one side. Reading a picture of a
+   * document is half of taking that document in; the other half is a person
+   * agreeing that what was read is what is printed.
+   *
+   * So while any money figure is unchecked this step stays CURRENT, and
+   * `oneCurrent` below demotes Match to `todo` for free — a biller is not asked
+   * to tie a claim to a chart on figures nobody has read yet.
+   *
+   * That also makes the check page's one primary point at the confirm screen,
+   * because `ctaFor` takes the first current or blocked step. One rule, not a
+   * second CTA override to keep in step with this one.
+   *
+   * An 835 never reaches this branch: `required` is false and the step is `done`
+   * with the same sentence it has always had.
+   */
+  const confirmOutstanding =
+    ctx.fieldConfirm && ctx.fieldConfirm.required && !ctx.fieldConfirm.ok
+      ? ctx.fieldConfirm.outstanding
+      : 0;
+
+  const upload =
+    confirmOutstanding > 0
+      ? view(
+          "upload",
+          "current",
+          `Read from the scan${readOn ? ` ${readOn}` : ""} — ${confirmOutstanding} ${plural(
+            confirmOutstanding,
+            "figure",
+          )} not yet checked against the page.`,
+          confirmHref(batchId),
+        )
+      : view(
+          "upload",
+          "done",
+          (remittance.source === "eob"
+            ? "EOB PDF read"
+            : remittance.source === "835"
+              ? "The carrier's 835 file read"
+              : "This check is in CareIN") + (readOn ? ` ${readOn}.` : "."),
+          "/rcm/remittances",
+        );
 
   // ── Match it up ───────────────────────────────────────────────────────────
   // Searching and choosing are ONE step. `done` requires CONFIRMED, so folding
@@ -1116,6 +1165,29 @@ export function ctaFor(steps: StepView[], ctx: CtaContext = {}): RcmCta | null {
   const base = { step: live.step, disabled: blocked, reason: blocked ? live.detail : null };
 
   switch (live.step) {
+    /*
+     * BRING IN IS ONLY `current` WHEN A SCANNED READ IS STILL UNCHECKED.
+     *
+     * Before the confirm step existed this case could not be reached: the upload
+     * step was always `done` by the time any screen drew the rail, so `ctaFor`
+     * fell through to `default` and returned null. Now it is the FIRST live step
+     * on a scanned check, and without a case here the check page's one primary
+     * would be null — the screen would show a rail saying "not yet checked" and
+     * offer nothing to press about it.
+     *
+     * The href is the confirm screen, which is also exactly what the step's own
+     * `href` is. One rule — the first live step — decides both the rail and the
+     * button, so they cannot disagree about what comes next.
+     */
+    case "upload": {
+      return {
+        ...base,
+        label: "Check the figures against the page",
+        href: ctx.batchId ? confirmHref(ctx.batchId) : live.href,
+        action: null,
+        note: "Reads nothing from Open Dental and writes nothing anywhere.",
+      };
+    }
     case "match": {
       /*
        * TWO VERBS BEHIND ONE STEP, and which one is offered depends on whether
