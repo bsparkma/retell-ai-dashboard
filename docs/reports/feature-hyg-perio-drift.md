@@ -321,14 +321,20 @@ ephemeral server it starts, in `finally`. **No test was weakened and no RCM file
 
 ## 6. Gates
 
+Run on the MERGED tree — `origin/develop` merged in at `aea9ca9`, so the working tree is the one CI
+builds (`git rev-parse HEAD^{tree}` = `2305ff2209d05c578a7ab5ce5ca2aae89499874e`, CI's exactly). The
+pre-merge numbers, on 78 fewer tests, are not quoted: they were green and they were also green with
+the collision in place, which is the whole lesson of §4a.
+
 | Gate | Result |
 |---|---|
 | `node --check server.js` | clean |
-| `node scripts/shard-runner.mjs` | **4/4 green** — 2732 tests, 2729 pass, 0 fail, 3 skipped |
+| `node scripts/shard-runner.mjs` | **4/4 green** — 2810 tests, 2807 pass, 0 fail, 3 skipped |
 | `pnpm run check` (`tsc --noEmit`) | clean |
-| `pnpm run test` (vitest) | 120 files, **1985 pass, 0 fail**, 126 skipped |
+| `pnpm run test` (vitest) | 121 files, **2020 pass, 0 fail**, 130 skipped |
 | `hyg-contract-bundle.test.ts` | green on a `--frozen-lockfile` install with the pinned esbuild |
 | `hygNoOdWrites.test.js` | 15/15 — `perioDrift.js` reaches no write transport |
+| `visitSchema.test.js` | 7/7 — including the uniqueness clause that caught §4a's collision |
 | No `any` in the changed TypeScript | verified |
 
 ## 7. Not yet done, and what it needs
@@ -345,5 +351,6 @@ staging, which is where the two new CHECKs are first exercised by the real DDL.
 
 ## 8. PUSH / PR STATUS
 
-Pushed to `origin/feature/hyg-perio-drift`. PR opened against `develop`. **Not merged** — as
+Pushed to `origin/feature/hyg-perio-drift`; PR **#207** against `develop`, with `origin/develop`
+merged in (`aea9ca9`) and the §4a collision fixed. **Not merged** — as
 instructed.
