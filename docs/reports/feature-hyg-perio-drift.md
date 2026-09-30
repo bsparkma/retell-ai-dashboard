@@ -352,12 +352,16 @@ rehearsal — write a chart on roland 12827, delete the exam in Open Dental's ow
 the page, press Send again — needs this branch deployed, and it will run under the #189 fixture gate
 on designated test patients only. It is a staging step for after the merge, not a code gap.
 
-**The migration has not been run against a real Postgres.** `backend/scripts/rehearse-hyg-visit.js`
-is the instrument for that; CI runs the migrations against an ephemeral Postgres on the way to
-staging, which is where the two new CHECKs are first exercised by the real DDL.
+**The migration HAS now run against a real Postgres.** CI run
+[36769524191](https://github.com/bsparkma/retell-ai-dashboard/actions/runs/36769524191) on `12a9a95`
+is green end to end, including `migrate control + tenant (ephemeral, as owner)` — so
+`hyg_perio_send_exam_gone_check` and `hyg_perio_send_exam_gone_exam_check` have been accepted by the
+real DDL, at the renumbered timestamp, on a database that already held every migration before them.
+What that step does NOT do is exercise the CHECKs with rows that violate them;
+`backend/scripts/rehearse-hyg-visit.js` is the instrument for that and has not been run.
 
 ## 8. PUSH / PR STATUS
 
 Pushed to `origin/feature/hyg-perio-drift`; PR **#207** against `develop`, with `origin/develop`
-merged in (`aea9ca9`) and the §4a collision fixed. **Not merged** — as
-instructed.
+merged in (`aea9ca9`) and the §4a collision fixed. **CI green** — run 36769524191 on `12a9a95`, all
+steps including the previously-failing `backend unit tests (sharded)`. **Not merged** — as instructed.
