@@ -427,3 +427,98 @@ test('a confirmation row outside the vocabulary is ignored, not trusted', () => 
   assert.equal(result.fieldConfirm.sums.claimsTotalCents, 18400);
   assert.equal(result.fieldConfirm.sums.ok, true);
 });
+
+// ─── The category-subtotal document can actually be finished ─────────────────
+
+test('a CONFIRMED absence of per-line payment clears CLAIM_TOTALS_AGREE, so the check is not a dead end', () => {
+  /*
+   * THE CASE THE WHOLE SLICE IS FOR, and the one this nearly walled off.
+   *
+   * A category-subtotal EOB states payment at a benefit-type subtotal and never
+   * per line. `Σ(lines)` is not a number anybody printed. Before this, a biller
+   * could work every field on the confirm screen — all seven — and still meet
+   * `CLAIM_TOTALS_AGREE` refusing forever, over an absence she had just
+   * confirmed. That is a wall, not a gate.
+   *
+   * What protects the money instead is the anchor: the claim total IS printed on
+   * such a document, it IS confirmed against the page, and
+   * CONFIRMED_SUMS_TO_CHECK reconciles it to the cheque exactly.
+   */
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: null }]]]);
+
+  const rows = fullyConfirmed();
+  const linePaid = rows.find((r) => r.field === 'line_paid');
+  linePaid.extracted_cents = null;
+  linePaid.confirmed_cents = null;
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: rows,
+  });
+
+  const check = checkOn(result, 'CLAIM_TOTALS_AGREE');
+  assert.equal(check.passed, true);
+  assert.match(check.detail, /states payment by category, not per line/);
+  assert.match(check.detail, /stands on its own/);
+
+  // The two confirm conditions are satisfied too, so nothing else withholds it.
+  assert.equal(checkOn(result, 'FIELDS_CONFIRMED').passed, true);
+  assert.equal(checkOn(result, 'CONFIRMED_SUMS_TO_CHECK').passed, true);
+});
+
+test('an UNCONFIRMED absence still fails — the reader guessed; nobody has answered', () => {
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: null }]]]);
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: fullyConfirmed().filter((r) => r.field !== 'line_paid'),
+  });
+
+  const check = checkOn(result, 'CLAIM_TOTALS_AGREE');
+  assert.equal(check.passed, false);
+  assert.match(check.detail, /have not been checked against the page/);
+});
+
+test('the sum is taken over a CORRECTED line payment, not the figure the read produced', () => {
+  // A person reads $52.00 off the page where the scan said nothing. The lines
+  // then DO sum, and they have to sum to the claim total like any other check.
+  const base = remittance({ claimTotalPaidCents: 5200, checkTotalCents: 5200 });
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: null }]]]);
+
+  const rows = fullyConfirmed({ claimTotalPaidCents: 5200, checkTotalCents: 5200 });
+  const linePaid = rows.find((r) => r.field === 'line_paid');
+  linePaid.state = 'corrected';
+  linePaid.extracted_cents = null;
+  linePaid.confirmed_cents = 5200;
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: rows,
+  });
+  assert.equal(checkOn(result, 'CLAIM_TOTALS_AGREE').passed, true);
+});
+
+test('a corrected line payment that does NOT reach the claim total is still refused', () => {
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: null }]]]);
+
+  const rows = fullyConfirmed();
+  const linePaid = rows.find((r) => r.field === 'line_paid');
+  linePaid.state = 'corrected';
+  linePaid.extracted_cents = null;
+  linePaid.confirmed_cents = 5200; // the claim total is 18400
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: rows,
+  });
+  const check = checkOn(result, 'CLAIM_TOTALS_AGREE');
+  assert.equal(check.passed, false);
+  assert.match(check.detail, /lines 5200/);
+});

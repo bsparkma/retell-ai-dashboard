@@ -240,6 +240,14 @@ const CHECK_ORDER = Object.freeze(Object.keys(CHECKS));
  */
 const NOT_CONFIRM_REQUIRED = Object.freeze({
   required: false,
+  /*
+   * NULL, not an empty Map, and the difference is deliberate: `CLAIM_TOTALS_AGREE`
+   * branches on it to decide whether to read confirmed figures at all. An empty
+   * Map would take the confirmed path and resolve everything to the extraction,
+   * which happens to be the same answer today — and would silently stop being so
+   * the moment `figure()` gained a default.
+   */
+  index: null,
   confirmed: Object.freeze({ ok: true, outstanding: 0, first: null }),
   sums: Object.freeze({
     ok: true,
@@ -993,19 +1001,68 @@ function evaluateClaim({
    * differs is the sentence, and the sentence is the only part of a refusal a
    * person can act on.
    */
-  const unstatedLines = lines.filter((l) => l.paidCents === null);
-  const lineSum = unstatedLines.length > 0 ? null : lines.reduce((n, l) => n + l.paidCents, 0);
+  /*
+   * THE FIGURES A PERSON STANDS BEHIND, where there are any.
+   *
+   * On an OCR-sourced check the confirmed value is the real one — that is what
+   * the confirm step is for — so the sum goes through `figure()` like every
+   * other money read in this module. With no index (an 835, or a caller that
+   * predates the slice) `figure()` returns the extracted value and this is the
+   * old arithmetic, unchanged.
+   */
+  const paidOf = (line) =>
+    fieldConfirm.index
+      ? confirmedFigures.figure(
+          fieldConfirm.index,
+          { claimId: claim.claimId, lineId: line.lineId, field: 'line_paid' },
+          line.paidCents
+        )
+      : { cents: line.paidCents, stated: line.paidCents !== null, confirmed: false };
+
+  const paid = lines.map(paidOf);
+  const unstated = paid.filter((p) => !p.stated);
+  const unstatedAndUnconfirmed = unstated.filter((p) => !p.confirmed);
+
+  /*
+   * A SUM THAT DOES NOT EXIST IS NOT A DISAGREEMENT — and this is the exact case
+   * the slice was built for.
+   *
+   * A category-subtotal EOB states payment at a benefit-type subtotal and never
+   * per line. Once a person has read the page and CONFIRMED that those lines
+   * genuinely state nothing, `Σ(lines)` is not a number anybody printed, and
+   * asserting it against the claim total would withhold the check FOREVER — she
+   * would work every field on the confirm screen and meet a refusal she has
+   * already done everything about. That is a wall, and this module does not
+   * build walls.
+   *
+   * So a CONFIRMED absence passes, and says why. What protects the money is the
+   * anchor: `CONFIRMED_SUMS_TO_CHECK` reconciles the claim totals to the cheque
+   * exactly, with no tolerance — and on such a document the claim total IS
+   * printed and IS confirmed against the page.
+   *
+   * An UNCONFIRMED absence still fails: nobody has looked, so "the document does
+   * not state it" is the reader's guess rather than a person's answer.
+   */
+  const lineSum = unstated.length > 0 ? null : paid.reduce((n, p) => n + p.cents, 0);
   const paymentCents = payment ? payment.paidCents : claim.totalPaidCents;
   const totalsAgree =
-    lineSum !== null && lineSum === claim.totalPaidCents && paymentCents === claim.totalPaidCents;
+    lineSum === null
+      ? unstatedAndUnconfirmed.length === 0 && paymentCents === claim.totalPaidCents
+      : lineSum === claim.totalPaidCents && paymentCents === claim.totalPaidCents;
   add(
     'CLAIM_TOTALS_AGREE',
     totalsAgree,
-    totalsAgree
-      ? null
-      : lineSum === null
-        ? `${unstatedLines.length} line(s) state no payment of their own, so the lines cannot be ` +
-          `summed against the claim total of ${claim.totalPaidCents} (cents)`
+    lineSum === null
+      ? unstatedAndUnconfirmed.length > 0
+        ? `${unstatedAndUnconfirmed.length} line(s) state no payment of their own and have not ` +
+          `been checked against the page, so the lines cannot be summed against the claim total ` +
+          `of ${claim.totalPaidCents} (cents)`
+        : totalsAgree
+          ? `this payer states payment by category, not per line — the claim total of ` +
+            `${claim.totalPaidCents} (cents) stands on its own and was checked against the page`
+          : `claim ${claim.totalPaidCents}, remittance ${paymentCents} (cents)`
+      : totalsAgree
+        ? null
         : `claim ${claim.totalPaidCents}, lines ${lineSum}, remittance ${paymentCents} (cents)`
   );
 
@@ -1290,6 +1347,9 @@ function deriveFieldConfirm({ batch, claims, linesByClaim, confirmations, proven
 
   return {
     required: true,
+    // Handed on so `CLAIM_TOTALS_AGREE` sums the figures a person stands behind,
+    // rather than building a second index from the same rows.
+    index,
     confirmed: confirmedFigures.allConfirmed(index, shape),
     sums: confirmedFigures.sumsToCheck(index, {
       /*

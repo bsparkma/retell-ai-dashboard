@@ -225,9 +225,31 @@ so a screen that showed "all confirmed" a moment before somebody corrected a fig
 get a claim past the gate. Both `previewApproval` and `approveRemittance` spread `...loaded`,
 so neither could be wired and the other forgotten.
 
-`CLAIM_TOTALS_AGREE` also stopped coercing: an unstated line payment now produces *"3 line(s)
-state no payment of their own"* rather than *"claim 139100, lines 0"*. The claim is refused
-either way; what changed is that the sentence is true.
+### `CLAIM_TOTALS_AGREE`, and the wall it nearly became
+
+It stopped coercing: an unstated line payment used to be summed as 0, reporting *"claim
+139100, lines 0"* — a refusal whose sentence sends a biller to re-read a correct column.
+
+**Then it turned out to be worse than a bad sentence.** Walking the finished slice against a
+category-subtotal check — the exact document it was built for — a person could confirm all
+seven figures and the check would *still* be withheld, forever, because `Σ(lines)` can never
+equal the claim total when the lines state no payment. She would do every piece of work the
+screen asked for and meet a refusal she had already answered. A wall, not a gate.
+
+So the condition now reads the **confirmed** figures through the accessor, and:
+
+| Lines state no payment… | `CLAIM_TOTALS_AGREE` |
+| --- | --- |
+| …and nobody has confirmed it | **fails** — the reader guessed; nobody has answered |
+| …and a person confirmed it against the page | **passes**, saying *"this payer states payment by category, not per line"* |
+| …but a person typed figures that do sum | compared normally, against the typed values |
+
+What protects the money is the anchor, not this sum: on such a document the claim total **is**
+printed, **is** confirmed against the page, and `CONFIRMED_SUMS_TO_CHECK` reconciles it to the
+cheque exactly, with no tolerance.
+
+This is also why `lineDecisions` reading through the accessor moved from a want to a
+requirement for the sum itself — see §10.
 
 ---
 
@@ -375,7 +397,7 @@ Both guards the brief names, plus the touched expectations.
 | `line_paid_not_stated` becomes blocking instead of annotating | ✅ |
 | a stated zero payment flattened to "not stated" | ✅ |
 
-### Guard 2 — the sum-to-check gate (11/11 caught)
+### Guard 2 — the sum-to-check gate (14/14 caught)
 
 | Mutation | |
 | --- | --- |
@@ -390,6 +412,9 @@ Both guards the brief names, plus the touched expectations.
 | only the check total required, not the line fields | ✅ |
 | a row outside the vocabulary trusted as a confirmation | ✅ |
 | unstated line payments summed as zero in `CLAIM_TOTALS_AGREE` | ✅ |
+| a CONFIRMED absence walls the check instead of clearing it | ✅ |
+| an UNCONFIRMED absence clears the claim-totals check | ✅ |
+| the line sum ignores corrections and reads the extraction | ✅ |
 
 **Two mutations initially survived, and both found real gaps rather than test gaps.**
 
@@ -424,11 +449,13 @@ Things this slice worked around, in the order I would fix them.
 3. **The check's own image.** The slot is reserved (§7) and the biller is holding the cheque;
    a photo of it beside the anchor would make the one figure everything reconciles to
    verifiable on screen rather than from memory.
-4. **`lineDecisions` reading through the accessor.** The verdict and the workbench still read
-   the extraction rows directly. That is safe today — the gate blocks an OCR-sourced check
-   until every money field is confirmed, so a null or an unconfirmed figure cannot reach
-   posting — but it is safe by *ordering*, not by construction, and the accessor exists
-   precisely so it could be by construction.
+4. **`lineDecisions` reading through the accessor.** `CLAIM_TOTALS_AGREE` now does (§5), because
+   it had to — without it a confirmed category-subtotal check could never be approved. The
+   **verdict and the workbench still read the extraction rows directly.** That is safe today,
+   since the gate blocks an OCR-sourced check until every money field is confirmed, so an
+   unconfirmed figure cannot reach posting — but it is safe by *ordering* rather than by
+   construction, and a biller can still see a verdict computed from the machine's figure while
+   the gate judges her own. Finishing this is the next slice's first job.
 
 ---
 
@@ -439,9 +466,9 @@ Things this slice worked around, in the order I would fix them.
 | `pnpm run check` (tsc --noEmit) | ✅ clean |
 | `pnpm run test` (vitest) | ✅ **2013 passed**, 130 skipped, 0 failed |
 | `node --check server.js` | ✅ |
-| `node scripts/shard-runner.mjs` (what CI runs) | ✅ **2794 tests, 2791 pass, 0 fail**, 3 skipped |
+| `node scripts/shard-runner.mjs` (what CI runs) | ✅ **2798 tests, 2795 pass, 0 fail**, 3 skipped |
 
-New tests: 10 extraction, 4 vocabulary, 15 accessor, 16 gate, 24 route, 29 screen, 4 shot dumps.
+New tests: 10 extraction, 4 vocabulary, 15 accessor, 20 gate, 24 route, 29 screen, 4 shot dumps.
 
 **No Open Dental writes anywhere in this slice.** `rcmNoOdWrites.test.js` and
 `eobNoOdImports.test.js` both pass; nothing added here imports an OD module.
