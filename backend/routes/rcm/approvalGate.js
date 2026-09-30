@@ -51,6 +51,7 @@ const rcmVocabulary = require('../../services/rcm/rcmVocabulary');
 const claimMatch = require('../../services/rcm/claimMatch');
 const claimWorkbench = require('../../services/rcm/claimWorkbench');
 const lineDecisions = require('../../services/rcm/lineDecisions');
+const confirmedFigures = require('../../services/rcm/confirmedFigures');
 const { buildBatchRemittanceKey } = require('../../services/rcm/remittanceKey');
 const { resolveRcmActor, describeActors } = require('../../services/rcm/rcmUserMap');
 const { SNAPSHOT_VERSION, CLAIM_DETAIL_COLUMNS, LINE_COLUMNS } = require('./matchService');
@@ -187,10 +188,67 @@ const CHECKS = Object.freeze({
     label: 'The amounts reconcile',
     fix: 'What the remittance says this claim was paid does not equal the sum of its lines. The difference is money nobody can account for.',
   },
+
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE TWO FIELD-CONFIRM CONDITIONS. OCR-SOURCED CHECKS ONLY.
+   * ─────────────────────────────────────────────────────────────────────────
+   * Both are facts about the CHECK, not about one claim, and both therefore
+   * withhold every claim on it — the same shape as the batch balance rule, and
+   * for the same reason: until the read is confirmed, nobody knows which claim
+   * the wrong figure is on.
+   *
+   * They PASS UNCONDITIONALLY on an 835 and on a text-layer PDF. An 835's
+   * numbers are delimited data, not a picture of a table; there is nothing for a
+   * person to squint at, and a confirm step on it would be ceremony — which is
+   * how billers learn that a review step is ceremony.
+   *
+   * WHY A GATE CONDITION AND NOT A BLOCKING REVIEW REASON. A review reason says
+   * something about the document and is cleared by disposing of the claim. This
+   * says a PERSON has not done a piece of work yet, and it is cleared by doing
+   * it. Putting it in the checklist means the refusal names the confirm step,
+   * instead of naming a document property she cannot change.
+   */
+  FIELDS_CONFIRMED: {
+    label: 'Scanned figures checked against the page',
+    fix: 'This check was read from a scan, and at least one money figure has not been checked against the page image yet. Open the check, work down the fields, and confirm each one — or type the figure that is actually printed.',
+  },
+  CONFIRMED_SUMS_TO_CHECK: {
+    label: 'The confirmed figures add up to the check',
+    /*
+     * THE CHECK IS THE ANCHOR (owner ruling). The biller is holding the physical
+     * cheque, so its total is the one figure in the document she can verify
+     * against something outside the document. Everything else reconciles to it.
+     *
+     * The `fix` does not name a dollar difference, because the copy is shared by
+     * every check while the number belongs to one. The failed check's `detail`
+     * carries it, and the confirm screen prints it as its own line.
+     */
+    fix: 'What the confirmed claim totals add up to is not what the check is for. Go back to the confirm step — the difference is named there — and correct whichever figure disagrees with the page.',
+  },
 });
 
 /** @type {ReadonlyArray<string>} */
 const CHECK_ORDER = Object.freeze(Object.keys(CHECKS));
+
+/**
+ * The confirm state of a check that needs no confirming — an 835, or a PDF read
+ * from its own text layer.
+ *
+ * Frozen and shared rather than rebuilt, so the two conditions read the same
+ * object shape on every path and a caller cannot hand in a half-built one.
+ */
+const NOT_CONFIRM_REQUIRED = Object.freeze({
+  required: false,
+  confirmed: Object.freeze({ ok: true, outstanding: 0, first: null }),
+  sums: Object.freeze({
+    ok: true,
+    comparable: true,
+    checkTotalCents: null,
+    claimsTotalCents: null,
+    differenceCents: null,
+  }),
+});
 
 /**
  * Plan statuses that mean "a drain has already had this plan" (Slice 6c).
@@ -441,7 +499,27 @@ function isRecoupment(claim, payment) {
  *               lines: Array<{ lineId: string, position: number, odClaimProcNum: number,
  *                              insPayAmtCents: number, writeOffCents: number, dedAppliedCents: number }> } }}
  */
-function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaimprocs = new Map(), recoupmentAllowed = false }) {
+function evaluateClaim({
+  office,
+  claim,
+  lines,
+  payment,
+  batchFlags,
+  plannedClaimprocs = new Map(),
+  recoupmentAllowed = false,
+  /*
+   * The check's confirm state, already derived by `evaluateRemittance`.
+   *
+   * Defaulted to NOT REQUIRED so a caller that predates this slice — and every
+   * 835 path — evaluates exactly as before. The default is the permissive one on
+   * purpose: `required: true` with an empty confirm state would withhold every
+   * 835 in the system, which is a fail-closed default in the wrong place. What
+   * makes this safe is that `evaluateRemittance` always computes it, and
+   * `approvalGate.test.js` pins that an OCR-sourced check with no confirmations
+   * is withheld.
+   */
+  fieldConfirm = NOT_CONFIRM_REQUIRED,
+}) {
   /** @type {Array<{ code: string, label: string, passed: boolean, detail: string|null, fix: string }>} */
   const checks = [];
   const add = (code, passed, detail) =>
@@ -901,15 +979,65 @@ function evaluateClaim({ office, claim, lines, payment, batchFlags, plannedClaim
    * cost of this module being wrong is money moving to the wrong place, and a
    * warning is something a busy person clicks past.
    */
-  const lineSum = lines.reduce((n, l) => n + l.paidCents, 0);
+  /*
+   * AN UNSTATED LINE PAYMENT MAKES THIS SUM UNKNOWABLE, NOT ZERO.
+   *
+   * `paid_cents` became nullable in the field-confirm slice, because a
+   * category-subtotal EOB states payment only at a subtotal and a required
+   * integer left the read no way to say so. `reduce((n, l) => n + l.paidCents)`
+   * would coerce those nulls to 0 and then report `claim 139100, lines 0` — a
+   * refusal with a sentence that sends a biller to look for a column error that
+   * is not there.
+   *
+   * So the two cases are separated. The claim is refused either way; what
+   * differs is the sentence, and the sentence is the only part of a refusal a
+   * person can act on.
+   */
+  const unstatedLines = lines.filter((l) => l.paidCents === null);
+  const lineSum = unstatedLines.length > 0 ? null : lines.reduce((n, l) => n + l.paidCents, 0);
   const paymentCents = payment ? payment.paidCents : claim.totalPaidCents;
-  const totalsAgree = lineSum === claim.totalPaidCents && paymentCents === claim.totalPaidCents;
+  const totalsAgree =
+    lineSum !== null && lineSum === claim.totalPaidCents && paymentCents === claim.totalPaidCents;
   add(
     'CLAIM_TOTALS_AGREE',
     totalsAgree,
     totalsAgree
       ? null
-      : `claim ${claim.totalPaidCents}, lines ${lineSum}, remittance ${paymentCents} (cents)`
+      : lineSum === null
+        ? `${unstatedLines.length} line(s) state no payment of their own, so the lines cannot be ` +
+          `summed against the claim total of ${claim.totalPaidCents} (cents)`
+        : `claim ${claim.totalPaidCents}, lines ${lineSum}, remittance ${paymentCents} (cents)`
+  );
+
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE FIELD-CONFIRM CONDITIONS — batch facts, applied to every claim.
+   * ─────────────────────────────────────────────────────────────────────────
+   * `fieldConfirm.required` is false for an 835 and for a text-layer PDF, and
+   * both conditions then pass with no detail. They are still ADDED rather than
+   * omitted, because the checklist is rendered in `CHECK_ORDER` and a condition
+   * that appears on some checks and not others reads as a missing check.
+   */
+  add(
+    'FIELDS_CONFIRMED',
+    !fieldConfirm.required || fieldConfirm.confirmed.ok,
+    !fieldConfirm.required || fieldConfirm.confirmed.ok
+      ? null
+      : `${fieldConfirm.confirmed.outstanding} money field(s) on this check have not been ` +
+        `checked against the page image yet`
+  );
+
+  const sums = fieldConfirm.sums;
+  add(
+    'CONFIRMED_SUMS_TO_CHECK',
+    !fieldConfirm.required || sums.ok,
+    !fieldConfirm.required || sums.ok
+      ? null
+      : sums.comparable
+        ? `the confirmed claim totals come to ${lineDecisions.formatDollars(sums.claimsTotalCents)} ` +
+          `and the check is for ${lineDecisions.formatDollars(sums.checkTotalCents)} — a difference of ` +
+          `${lineDecisions.formatDollars(Math.abs(sums.differenceCents))}`
+        : 'the check total, or one claim total, is not confirmed yet, so nothing can be added up'
   );
 
   const failed = checks.filter((c) => !c.passed).map((c) => c.code);
@@ -1050,7 +1178,17 @@ function evaluateRemittance({
   paymentsByClaim,
   plannedClaimprocs = new Map(),
   recoupmentAllowed = false,
+  /**
+   * Rows from `rcm_eob_field_confirmations` for THIS batch, and the batch's
+   * document provenance. Both default to "nothing", which resolves to
+   * `required: false` for any caller that does not read them — see
+   * `deriveFieldConfirm`.
+   */
+  confirmations = [],
+  provenance = null,
 }) {
+  const fieldConfirm = deriveFieldConfirm({ batch, claims, linesByClaim, confirmations, provenance });
+
   const evaluated = claims.map((claim) =>
     evaluateClaim({
       office,
@@ -1060,6 +1198,7 @@ function evaluateRemittance({
       batchFlags: batch.flags,
       plannedClaimprocs,
       recoupmentAllowed,
+      fieldConfirm,
     })
   );
 
@@ -1118,6 +1257,57 @@ function evaluateRemittance({
     alreadyQueued: evaluated.filter((c) => c.alreadyQueued),
     batchBalanced: differenceCents === 0,
     batchDifferenceCents: differenceCents,
+    /*
+     * Surfaced on the result so the workbench can render the confirm state
+     * beside the checklist without asking a second question, and so a test can
+     * assert the derivation without reaching into a claim's checks.
+     */
+    fieldConfirm,
+  };
+}
+
+/**
+ * The check's confirm state, derived ONCE per approve.
+ *
+ * Everything about which number is real comes from
+ * `services/rcm/confirmedFigures.js` — this function reads no confirmation row
+ * itself. That is the rule the whole slice rests on: one accessor decides
+ * confirmed-else-extracted, so the gate and the screen cannot disagree about a
+ * dollar figure.
+ *
+ * @param {object} args
+ * @returns {{ required: boolean, confirmed: object, sums: object }}
+ */
+function deriveFieldConfirm({ batch, claims, linesByClaim, confirmations, provenance }) {
+  if (!confirmedFigures.isOcrSourced(provenance)) return NOT_CONFIRM_REQUIRED;
+
+  const index = confirmedFigures.indexConfirmations(confirmations);
+
+  const shape = claims.map((claim) => ({
+    claimId: claim.claimId,
+    lines: (linesByClaim.get(claim.claimId) || []).map((line) => ({ lineId: line.lineId })),
+  }));
+
+  return {
+    required: true,
+    confirmed: confirmedFigures.allConfirmed(index, shape),
+    sums: confirmedFigures.sumsToCheck(index, {
+      /*
+       * THE CHECK'S OWN TOTAL, not the claim sum and not minus the PLB.
+       *
+       * `total_amount_cents` is what the remittance says the cheque is for, and
+       * it is the figure the biller can read off the paper in her hand. The
+       * batch-balance rule above subtracts the PLB because it is reconciling
+       * claim payments against what reached the practice; this is reconciling a
+       * READ against a document, which is a different question about the same
+       * number.
+       */
+      checkTotalCents: batch.totalAmountCents,
+      claims: claims.map((claim) => ({
+        claimId: claim.claimId,
+        totalPaidCents: claim.totalPaidCents,
+      })),
+    }),
   };
 }
 
@@ -1405,10 +1595,45 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
     }
   }
 
+  /*
+   * ── The field-confirm state, read INSIDE the same transaction ─────────────
+   *
+   * Two office-scoped reads, shaped like every other read in this loader.
+   *
+   * Reading them HERE rather than in the route is what makes the gate's promise
+   * true: `approveRemittance` re-reads everything under its own lock and
+   * re-evaluates, so a screen that showed "all confirmed" a moment before
+   * somebody corrected a figure cannot get a claim past the gate.
+   *
+   * PROVENANCE COMES FROM THE UPLOAD, NOT THE BATCH. `rcm_payment_batches` has
+   * no `text_source`: how the figures were obtained is a fact about the
+   * document, and one upload produces one batch (`result_batch_id`). An 835
+   * arrives with `text_source` null, which `isOcrSourced` reads as not-OCR — so
+   * the ERA path needs no special case here at all.
+   */
+  const confirmationRows = await client.query(confirmedFigures.QUERIES.readForBatch, [
+    office,
+    batchId,
+  ]);
+
+  const uploads = await client.query(
+    `SELECT text_source FROM rcm_eob_uploads WHERE office_id = $1 AND result_batch_id = $2`,
+    [office, batchId]
+  );
+  const provenance = uploads.rows[0] ? { textSource: uploads.rows[0].text_source || null } : null;
+
   // Ordered by the batch's own positions, so the checklist reads in the order
   // the remittance lists its claims.
   const ordered = claimIds.map((id) => byId.get(id)).filter(Boolean);
-  return { batch, claims: ordered, linesByClaim, paymentsByClaim, plannedClaimprocs };
+  return {
+    batch,
+    claims: ordered,
+    linesByClaim,
+    paymentsByClaim,
+    plannedClaimprocs,
+    confirmations: confirmationRows.rows,
+    provenance,
+  };
 }
 
 /**

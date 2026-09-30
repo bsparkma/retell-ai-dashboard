@@ -165,6 +165,33 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     fail: "Check the remittance against its lines — what this claim was paid does not equal the sum of its procedures, and the difference is money nobody can account for.",
     pass: "The amounts add up.",
   },
+
+  /*
+   * ── The two field-confirm rows ──────────────────────────────────────────
+   *
+   * Both appear on every checklist and pass silently on an 835 and on a PDF with
+   * its own text layer, so a biller who only ever handles electronic remittances
+   * sees two more green rows and never has to learn what they mean.
+   *
+   * Both `fail` strings start with a verb and name the SCREEN to go to, because
+   * that is the action. These are the only conditions on the list cleared by
+   * doing a piece of work rather than by fixing a document or a match.
+   */
+  FIELDS_CONFIRMED: {
+    title: "Scanned figures checked",
+    fail: "Open the confirm step and work down the money fields — this check was read from a scan, and at least one figure has not been checked against the page yet.",
+    pass: "Checked against the page.",
+  },
+  CONFIRMED_SUMS_TO_CHECK: {
+    title: "The figures add up to the check",
+    fail: "Go back to the confirm step and correct whichever figure disagrees with the page — what the confirmed claim totals come to is not what the check is for.",
+    pass: "Adds up to the check.",
+    /*
+     * `passUsesDetail` stays off. The server's detail carries the difference in
+     * dollars, which is the most useful thing on the row when it fails and
+     * nothing at all when it passes — so a pass is one short line.
+     */
+  },
 };
 
 /**

@@ -63,6 +63,16 @@ export const REVIEW_LABELS: Record<string, string> = {
   // against the document, which is the one action this reason implies.
   ocr_low_confidence:
     "This document was scanned — check the amounts against the image before approving",
+
+  // ── Field confirm ──
+  // States the fact about the LAYOUT, then what it means for her.
+  //
+  // Not "the amounts do not add up": the printed numbers do not disagree, one of
+  // them was simply never printed. Saying they disagree would send her to hunt a
+  // column error that is not there — which is exactly what the reason it
+  // replaced, `paid_total_mismatch`, used to do on these documents.
+  line_paid_not_stated:
+    "This payer states payment by category, not per line — the per-line amounts are not on the page",
 };
 
 /**
@@ -213,6 +223,16 @@ export const REASON_GATE: Record<string, "blocking" | "annotating"> = {
   // that any stored amount is wrong. The arithmetic checks above are the ones
   // that catch a misreading which actually moved a number, and they all block.
   ocr_low_confidence: "annotating",
+  /*
+   * Annotating, mirroring the backend. The document is not wrong — a payer is
+   * allowed to print payment at a subtotal — and the figure it concerns reads
+   * "not stated" rather than as a number.
+   *
+   * What keeps the money safe on these documents is the field-confirm gate, not
+   * this verdict. Blocking here would withhold the claim a second time for the
+   * same fact, and name a reason she cannot clear instead of the step she can.
+   */
+  line_paid_not_stated: "annotating",
 
   // ── Remittance flags ──
   plb_adjustments_present: "annotating",

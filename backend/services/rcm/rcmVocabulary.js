@@ -129,6 +129,24 @@ const EOB_REVIEW_REASONS = Object.freeze({
    * ANNOTATING because it does not by itself say any amount is wrong.
    */
   OCR_LOW_CONFIDENCE: 'ocr_low_confidence',
+
+  // ── Field-confirm slice ──
+  /**
+   * At least one procedure line on this claim has NO per-line payment printed
+   * for it, so `Σ(line paid)` does not exist and cannot be checked against the
+   * claim total.
+   *
+   * WHY THIS IS ITS OWN REASON rather than `paid_total_mismatch`. The first real
+   * scanned EOB was a category-subtotal layout: payment appeared only at
+   * benefit-type subtotals, never per line. `paid_total_mismatch` would have been
+   * the wrong sentence — it says the printed numbers disagree, and it sends a
+   * biller to re-read a column hunting an error that is not there. The document
+   * is internally consistent; it simply does not break payment out by line.
+   *
+   * It WIDENS review and resolves nothing, like `ocr_low_confidence`. The claim
+   * total stands on its own and is still checked against the check total.
+   */
+  LINE_PAID_NOT_STATED: 'line_paid_not_stated',
 });
 
 /**
@@ -443,6 +461,25 @@ const REASON_GATE = Object.freeze({
    */
   ocr_low_confidence: 'annotating',
 
+  /**
+   * ANNOTATING, and the reasoning is worth spelling out because BLOCKING looks
+   * defensible at first glance.
+   *
+   * The document is not wrong and no figure is in doubt: it states payment at a
+   * subtotal instead of per line, which is an ordinary way for a payer to print
+   * an EOB. The claim total was read from the page and is still checked against
+   * the check total, and `line_paid` on each affected line reads "not stated"
+   * rather than a number.
+   *
+   * What actually keeps this safe is not a blocking review reason but the
+   * field-confirm gate: an OCR-sourced check cannot reach approve until a person
+   * has confirmed every money field against the page image and the confirmed
+   * figures sum to the check. Making this BLOCKING as well would withhold the
+   * claim a second time for the same fact, and the refusal a biller met would
+   * name a review reason she cannot clear instead of the confirm step she can.
+   */
+  line_paid_not_stated: 'annotating',
+
   // ── Remittance flags ──────────────────────────────────────────────────────
   /** Provider-level money acted on by nobody here. It does not make claims wrong. */
   plb_adjustments_present: 'annotating',
@@ -515,10 +552,83 @@ function blockingReasonsIn(reasons) {
 /** Every slug the gate map covers — the exhaustiveness test reads this. */
 const GATED_REASONS = Object.freeze(Object.keys(REASON_GATE));
 
+// ─── Field confirm — the money fields a person confirms against the page ─────
+
+/**
+ * THE MONEY FIELDS AN OCR-SOURCED READ MUST HAVE CONFIRMED BEFORE IT CAN POST.
+ *
+ * Slugs, frozen, additive only. The prefix IS the scope — `check_`, `claim_`,
+ * `line_` — and the migration's scope CHECK enforces that the row's `claim_id` /
+ * `line_id` match the prefix, so a field cannot be recorded against the wrong
+ * thing.
+ *
+ * WHY THESE SEVEN AND NOT EVERY NUMBER ON THE PAGE. The list is exactly the
+ * figures that decide money movement or a patient's balance:
+ *
+ *   check_total          the anchor. The whole read reconciles to it.
+ *   claim_total_paid     what this claim contributes to that anchor.
+ *   line_paid            what the plan paid for this line — the field the
+ *                        category-subtotal layout invented.
+ *   line_billed          the basis of the write-off (billed − allowed).
+ *   line_allowed         the other half of it.
+ *   line_deductible      patient responsibility, and
+ *   line_copay           the rest of it.
+ *
+ * A procedure code or a service date being misread is a different problem with a
+ * different remedy — the match refuses to pair a line it cannot find in the
+ * chart, and it says so. Confirming those here would add fields a biller must
+ * click through without making any figure safer, which is how a review step
+ * turns into something people route around.
+ */
+const CONFIRMABLE_FIELDS = Object.freeze([
+  'check_total',
+  'claim_total_paid',
+  'line_paid',
+  'line_billed',
+  'line_allowed',
+  'line_deductible',
+  'line_copay',
+]);
+
+/**
+ * What a confirmation row records.
+ *
+ * `confirmed` = a person read the page and the figure is what the machine said.
+ * `corrected` = a person read the page and typed a different one. The migration
+ * refuses a `confirmed` row whose value differs, and a `corrected` row whose
+ * value does not, so the word and the arithmetic cannot come apart.
+ */
+const CONFIRM_STATES = Object.freeze(['confirmed', 'corrected']);
+
+/** Is `field` something the confirm step is allowed to record? */
+function isConfirmableField(field) {
+  return CONFIRMABLE_FIELDS.includes(String(field == null ? '' : field));
+}
+
+/**
+ * The scope a field belongs to, from its own prefix — `check`, `claim`, `line`,
+ * or null for a slug outside the vocabulary.
+ *
+ * One reading of the prefix, used by the route's validation and the accessor
+ * alike, so neither can decide a field's scope differently from the CHECK.
+ */
+function fieldScope(field) {
+  const f = String(field == null ? '' : field);
+  if (!isConfirmableField(f)) return null;
+  if (f === 'check_total') return 'check';
+  if (f.startsWith('claim_')) return 'claim';
+  if (f.startsWith('line_')) return 'line';
+  return null;
+}
+
 module.exports = {
   ERA_REVIEW_REASONS,
   EOB_REVIEW_REASONS,
   REVIEW_REASONS,
+  CONFIRMABLE_FIELDS,
+  CONFIRM_STATES,
+  isConfirmableField,
+  fieldScope,
   UNCERTAIN_LINE_PATTERN,
   isReviewReason,
   LINE_FLAGS,
