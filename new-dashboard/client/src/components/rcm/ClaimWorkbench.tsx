@@ -51,6 +51,7 @@
  * without the control at all.
  */
 import { Fragment, useState } from "react";
+import { EobViewerPanel } from "@/components/rcm/EobViewer";
 import {
   AlertTriangle,
   Ban,
@@ -693,6 +694,9 @@ function CarrierPanel({
    */
   const notLinked = claim.odMatchStatus !== "confirmed";
 
+  /** Whether the document is showing beside the figures. Closed by default. */
+  const [docOpen, setDocOpen] = useState(false);
+
   return (
     <section data-testid="claim-parsed">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -709,18 +713,34 @@ function CarrierPanel({
           offering none.
         */}
         {documentHref && (
-          <a
-            href={documentHref}
-            target="_blank"
-            rel="noreferrer"
+          /*
+            IN PLACE, NOT A NEW TAB.
+            The reason a biller opens the document is that she doubts a figure on
+            THIS screen, and a new tab takes that screen away at the moment she
+            needs to compare the two. It also put the whole exchange somewhere
+            this app cannot observe: a blocked popup, a tab that downloads, or a
+            bare refusal all looked identical from in here, which is why the prod
+            logs carry no record of the attempt that failed on 2026-09-30.
+          */
+          <button
+            type="button"
+            onClick={() => setDocOpen((v) => !v)}
+            aria-expanded={docOpen}
             data-testid="open-source-document"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted"
           >
             <FileText size={13} />
-            Open the EOB
-          </a>
+            {docOpen ? "Hide the EOB" : "See the EOB"}
+          </button>
         )}
       </div>
+
+      <EobViewerPanel
+        href={documentHref}
+        caption={provenanceLabel(provenance)}
+        open={docOpen}
+        onClose={() => setDocOpen(false)}
+      />
 
       <div className="mt-2 rounded-xl border border-border bg-card">
         {provenanceLabel(provenance) && (

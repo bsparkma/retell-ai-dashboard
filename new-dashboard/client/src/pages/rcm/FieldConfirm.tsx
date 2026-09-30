@@ -57,12 +57,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useRoute } from "wouter";
-import { AlertCircle, Check, FileText, Loader2, Pencil } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, Loader2, Pencil } from "lucide-react";
 
 import {
   confirmFields,
   documentUrl,
   getFieldConfirm,
+  getRemittance,
   isRcmOfficeId,
   type ConfirmClaim,
   type ConfirmField,
@@ -71,6 +72,7 @@ import {
   type ConfirmableField,
   type FieldConfirmState,
   type RcmOfficeId,
+  type RemittanceDetail,
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import {
@@ -80,14 +82,29 @@ import {
   CONFIRM_SCAN_CAVEAT,
   confirmedByLine,
 } from "@/features/rcm/labels";
-import { remittanceHref } from "@/features/rcm/flow";
+import { remittanceFlow, remittanceHref } from "@/features/rcm/flow";
 import { useOffice } from "@/contexts/OfficeContext";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import EobViewer from "@/components/rcm/EobViewer";
+import RcmStepper from "@/components/rcm/RcmStepper";
 
 type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "loaded"; office: RcmOfficeId; data: FieldConfirmState };
+  | {
+      kind: "loaded";
+      office: RcmOfficeId;
+      data: FieldConfirmState;
+      /**
+       * The CHECK this step belongs to, for the rail.
+       *
+       * Null when it could not be read — the confirm work does not depend on it,
+       * so a failure here costs the breadcrumb and the rail, never the screen.
+       * An island with no rail is the defect being fixed; a blank page would be
+       * a worse one.
+       */
+      check: RemittanceDetail | null;
+    };
 
 /** A field's address, which is also its identity on this screen. */
 function addressOf(field: ConfirmableField, claimId: string | null, lineId: string | null): string {
@@ -153,7 +170,21 @@ export default function FieldConfirm() {
       for (const office of offices) {
         try {
           const data = await getFieldConfirm(office, batchId);
-          if (!cancelled) setState({ kind: "loaded", office, data });
+          /*
+            The rail's data, and it must not be able to fail the screen.
+            `allSettled` on purpose: the confirm work is the point, the rail is
+            orientation, and a biller who can see the figures but not the
+            breadcrumb is far better off than one who can see neither.
+          */
+          const [check] = await Promise.allSettled([getRemittance(office, batchId)]);
+          if (!cancelled) {
+            setState({
+              kind: "loaded",
+              office,
+              data,
+              check: check.status === "fulfilled" ? check.value : null,
+            });
+          }
           return;
         } catch (err) {
           lastError = err;
@@ -268,9 +299,36 @@ export default function FieldConfirm() {
   const { outstanding, sums } = loaded;
   const done = outstanding.ok && sums.ok;
 
+  /*
+    THE SAME RAIL THE OTHER FLOW SCREENS DRAW, so this reads as a STEP and not an
+    island. Confirming a scanned read is the tail end of BRING IN — the rail
+    below shows that step as the current one, which is the same computation the
+    check page runs, from the same payload.
+
+    `hideCta`: the way on from this screen is its own primary at the bottom,
+    which knows what is still outstanding. Two CTAs saying different things about
+    the same work is the thing W-11 settled on the check page.
+  */
+  const rail =
+    state.check && state.check.remittance
+      ? remittanceFlow(state.check.remittance, state.check.claims, {
+          fieldConfirm: state.check.remittance.fieldConfirm ?? null,
+        })
+      : null;
+
   return (
     <div className="p-4 md:p-6" data-testid="rcm-confirm-page">
-      <div className="mb-4">
+      <Link
+        href={remittanceHref(loaded.batchId)}
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        data-testid="rcm-confirm-breadcrumb"
+      >
+        <ArrowLeft size={14} /> Back to the check
+      </Link>
+
+      {rail ? <RcmStepper flow={rail} here="upload" hideCta variant="board" /> : null}
+
+      <div className="mb-4 mt-4">
         <h1 className="text-lg font-semibold">{CONFIRM_HEADLINE}</h1>
         <p className="mt-1 max-w-prose text-sm text-muted-foreground">{CONFIRM_SCAN_CAVEAT}</p>
       </div>
@@ -334,34 +392,29 @@ export default function FieldConfirm() {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* ── The document. Evidence, not a control. ───────────────────── */}
         <div className="order-2 lg:order-1">
+          {/*
+            STICKY, NOT A SECOND SCROLLBAR.
+
+            The panel travels with the page as the figures column scrolls, and
+            the ONE internal scroll on this screen is the document frame itself —
+            which is the exception the rule allows, because a page image has to
+            be scrollable to be usable. No `overflow-y-auto` wrapper here: a
+            second full-height scrollbar beside the main one is the thing being
+            removed, and it is the reason this is `sticky` and not `h-screen`.
+          */}
           <div className="sticky top-4 rounded-xl border border-border bg-card p-2">
-            <p className="px-1 pb-2 text-xs text-muted-foreground">
-              <FileText size={12} className="mr-1 inline" />
-              The document
-              {loaded.provenance?.ocrPageCount
-                ? ` · ${loaded.provenance.ocrPageCount} page${loaded.provenance.ocrPageCount === 1 ? "" : "s"}`
-                : ""}
-            </p>
-            {office && loaded.provenance ? (
-              <iframe
-                title="The scanned document"
-                /*
-                 * `key` on the page number so a change to it REMOUNTS the frame.
-                 * A PDF viewer does not re-navigate on a `#page=` fragment change
-                 * alone, so without this the panel would silently stay on page 1
-                 * while the screen claimed to be showing the selected line.
-                 */
-                key={activePage}
-                src={documentUrl(office, loaded.provenance.uploadId, { page: activePage })}
-                className="h-[60vh] w-full rounded-lg border border-border bg-background"
-                data-testid="rcm-confirm-document"
-              />
-            ) : (
-              <p className="p-3 text-sm text-muted-foreground" data-testid="rcm-confirm-no-document">
-                The original file is not attached to this check, so there is nothing to compare
-                against. Check the figures against your own copy before approving.
-              </p>
-            )}
+            <EobViewer
+              href={office && loaded.provenance ? documentUrl(office, loaded.provenance.uploadId) : null}
+              page={activePage}
+              caption={
+                loaded.provenance?.ocrPageCount
+                  ? `The document · ${loaded.provenance.ocrPageCount} page${
+                      loaded.provenance.ocrPageCount === 1 ? "" : "s"
+                    }`
+                  : "The document"
+              }
+              testId="rcm-confirm-document"
+            />
           </div>
         </div>
 
@@ -400,9 +453,19 @@ export default function FieldConfirm() {
            * button with a tooltip would be one more thing to click at.
            */
           <DisabledReason tone="muted" testId="rcm-confirm-not-done">
+            {/*
+              WHAT IS LEFT, AND NOTHING ELSE.
+
+              This used to add "work down the list — each one is either right, or
+              you type what the page says", which is the instruction the two
+              buttons on every row already give, in those words. The rail above
+              now says where the figures came from as well, so the sentence was
+              the third telling. Cut, and the screen's budget paid for the rail
+              with it.
+            */}
             {outstanding.outstanding > 0
-              ? `${outstanding.outstanding} figure${outstanding.outstanding === 1 ? "" : "s"} still to check. Work down the list — each one is either right, or you type what the page says.`
-              : "The figures are all checked, but they do not add up to the check yet. Fix the one that disagrees with the page."}
+              ? `${outstanding.outstanding} figure${outstanding.outstanding === 1 ? "" : "s"} still to check.`
+              : "All checked, but they do not add up to the check yet."}
           </DisabledReason>
         )}
       </div>
@@ -426,7 +489,11 @@ function SumLine({
       >
         <Check size={14} className="mr-1 inline" />
         The claim totals add up to the check.
-        {outstanding > 0 ? " Still worth checking each figure against the page." : ""}
+        {/*
+          The "still worth checking each figure" half is gone: the row at the
+          foot already counts what is outstanding, and this line is about the
+          arithmetic, not about the work left.
+        */}
       </p>
     );
   }

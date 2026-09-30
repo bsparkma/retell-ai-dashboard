@@ -212,8 +212,13 @@ describe("a figure read off the scan", () => {
     const text = screen.getByTestId("rcm-confirm-page").textContent ?? "";
     expect(text).not.toMatch(/\d+\s?%/);
     expect(text).not.toMatch(/confidence/i);
-    // The honest framing instead.
-    expect(text).toContain("read off a picture");
+    /*
+     * The honest framing instead. "read off a picture" now lives on the RAIL's
+     * current step rather than in the caveat — saying it in both places cost
+     * this screen seventeen words and told a biller nothing twice — so what is
+     * pinned here is the part that is this screen's own.
+     */
+    expect(text).toContain("needs a person's eye");
   });
 
   it("confirming AS READ sends the figure the screen showed", async () => {
@@ -505,20 +510,31 @@ describe("the way out", () => {
 // ─── The document panel is evidence, not a control ───────────────────────────
 
 describe("the document panel", () => {
-  it("renders the source document through the audited proxy", async () => {
+  it("renders the source document IN PLACE, through the audited proxy", async () => {
+    /*
+     * The frame is `EobViewer`'s now — one viewer everywhere the document is
+     * offered, so it behaves identically on the confirm step, the claim page and
+     * the workbench. It used to be a bare `<iframe>` written here.
+     */
     renderConfirm();
-    const frame = await waitFor(() => screen.getByTestId("rcm-confirm-document"));
+    const frame = await waitFor(() => screen.getByTestId("rcm-confirm-document-frame"));
     const src = frame.getAttribute("src") ?? "";
     expect(src).toContain(`/uploads/${UPLOAD}/document`);
     expect(src).toContain("office=roland");
   });
 
+  it("keeps a new-tab escape inside the viewer, never as the default", async () => {
+    renderConfirm();
+    const escape = await waitFor(() => screen.getByTestId("rcm-confirm-document-new-tab"));
+    expect(escape.getAttribute("target")).toBe("_blank");
+  });
+
   it("says so honestly when there is no document to compare against", async () => {
     S.state = confirmState({ provenance: null });
     renderConfirm();
-    const note = await waitFor(() => screen.getByTestId("rcm-confirm-no-document"));
-    expect(note.textContent).toContain("not attached");
-    expect(screen.queryByTestId("rcm-confirm-document")).toBeNull();
+    const note = await waitFor(() => screen.getByTestId("rcm-confirm-document-none"));
+    expect(note.textContent).toContain("the computer read directly");
+    expect(screen.queryByTestId("rcm-confirm-document-frame")).toBeNull();
   });
 
   it("selecting a line is how the page is navigated — the image is never the control", async () => {

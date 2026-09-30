@@ -386,10 +386,14 @@ export const CONFIRM_HEADLINE = "Check these figures against the page";
  * page. Neither is a score for an individual amount, and printing "92%" beside
  * one would be a number we made up about a number a payer printed.
  *
- * So the caveat says where the figures came from and what that means, and stops.
+ * So the caveat says what it means for her, and stops.
+ *
+ * IT NO LONGER SAYS WHERE THE FIGURES CAME FROM. The rail above it now does —
+ * the Bring-in step is the current one and reads "Read from the scan … not yet
+ * checked against the page". Saying it twice cost this screen seventeen words
+ * and told a biller nothing she had not read two lines earlier.
  */
-export const CONFIRM_SCAN_CAVEAT =
-  "These were read off a picture of the document, so every money figure needs a person's eye.";
+export const CONFIRM_SCAN_CAVEAT = "Every money figure needs a person's eye.";
 
 /**
  * WHAT A FIGURE THE DOCUMENT DOES NOT STATE IS CALLED.
