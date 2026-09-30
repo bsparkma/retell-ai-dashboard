@@ -164,7 +164,12 @@ test('the hyg migrations sort after everything that came before them', () => {
    * v2 said nothing sorts INSIDE the hygiene block. That held only while
    * hygiene's migrations were contiguous, and went false the first time hygiene
    * added one after the fees block (item 14's
-   * 1789500000000_hyg_perio_exam_gone.js) — which is also a normal thing to do.
+   * 1789700000000_hyg_perio_exam_gone.js) — which is also a normal thing to do.
+   *
+   * The UNIQUENESS assertion above, which both versions kept, is the one that has
+   * earned its place: item 14 and the RCM field-confirm slice independently chose
+   * 1789500000000, and this is what caught it. Two files with one timestamp make
+   * the apply order depend on the rest of the FILENAME, which nobody chose.
    *
    * Both were proxies for something they did not measure. Interleaving between
    * modules is HARMLESS: node-pg-migrate's `checkOrder` refuses a migration that

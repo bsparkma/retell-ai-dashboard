@@ -197,7 +197,7 @@ hyg_perio_resend · prior_state exam_gone` row.
 
 `services/hyg/visitSchema.test.js` › *the hyg migrations sort after everything that came before them*
 went red: it asserted that no non-hygiene migration sorts **inside** the hygiene block, and this
-slice's `1789500000000_hyg_perio_exam_gone.js` sits above the fees block.
+slice's `1789700000000_hyg_perio_exam_gone.js` sits above the fees block.
 
 That assertion has now been wrong twice, in opposite directions. v1 said `min(hyg) > max(others)` and
 went false when fees added one after the block. v2 said nothing sorts inside the block and went false
@@ -214,14 +214,87 @@ It now asserts the two properties that are real and that no unrelated slice can 
 2. Hygiene's own are in slice order, so a later hygiene slice cannot land behind an earlier deployed
    one.
 
-This slice's migration is the **highest in the repo** (1789500000000 vs fees' 1789300000000), so
-`checkOrder` cannot refuse it.
+This slice's migration is the **highest in the repo** (1789700000000; see §4a for why it is not
+1789500000000 any more), so `checkOrder` cannot refuse it.
 
 `PerioSiteChangeSchema` also moved from `shared/hyg/perioSend.ts` to `shared/hyg/perio.ts`: the drift
 union needs the shape, and `perio.ts` cannot import from `perioSend.ts` — the import runs one way
 only. The comparison that produces one and the two formatters that read one stayed put. Only
 `PerioSendConfirm.tsx` imported the type and was updated; the bundle re-exports both files, so
 `contract.PerioSiteChangeSchema` is unchanged for every consumer.
+
+## 4a. The CI red on PR #207, and what it actually was
+
+**Reported as:** shard 3/4, one failing test —
+`backend/routes/rcm/shadowComparison.test.js` › *"the prior state is a SLUG — her sentence never
+reaches the audit row"* — a file this branch does not touch. Local runs were green, which pointed at
+a cross-test leak from this branch's new test files.
+
+**It was none of those things.** The failing assertion is this branch's own:
+
+```
+not ok 295 - the hyg migrations sort after everything that came before them
+  location: backend/services/hyg/visitSchema.test.js:142:1
+  error: two migrations share a timestamp
+
+    31 !== 32
+
+  expected: 32   actual: 31   operator: 'strictEqual'
+  stack: visitSchema.test.js:152:10
+```
+
+**Root cause: a timestamp collision between this branch and `develop`.** PR #206 (the RCM EOB
+field-confirm slice) merged to develop at 2026-09-30T17:06Z carrying
+`1789500000000_rcm_eob_field_confirm.js`. This branch, cut before that, had independently chosen
+**the same timestamp** for `1789500000000_hyg_perio_exam_gone.js`. Thirty-two migration files, thirty-one
+distinct timestamps. Two files with one timestamp make the apply order depend on the rest of the
+FILENAME, which nobody chose — so `node-pg-migrate` would apply them in an order no author decided.
+
+Renumbered to **`1789700000000_hyg_perio_exam_gone.js`**, above develop's newest. The RCM one is left
+alone: `services/rcm/rcmVocabulary.test.js` pins its filename in three places.
+
+### Why it did not reproduce, and why the report named the wrong test
+
+Two separate reasons, and both are worth writing down.
+
+1. **CI tests the MERGE, not the branch.** `actions/checkout@v4` on a `pull_request` event checks out
+   `refs/pull/207/merge`; the log says `HEAD is now at a23ef82 Merge 518dd83 into aea9ca9`. That tree
+   carries develop's **six** newer backend test files, which this branch's working tree did not — and
+   `--test-shard` partitions by the discovered file list, so every shard's contents differ. Merging
+   develop in locally reproduced it on the first run; `git rev-parse HEAD^{tree}` then matched CI's
+   `2305ff2209d05c578a7ab5ce5ca2aae89499874e` exactly. **Check the tree hash against the merge ref
+   before concluding a CI-only failure is environmental.**
+
+2. **The shard number and the test name in the report were artifacts of a truncated log.** GitHub
+   dropped most of the step's output: `═══ shard 1/4 ═══` is the only shard header in it, no
+   `# tests` / `# pass` / `# fail` counters survive, and `[shard-runner] FAILED` (stderr) is printed
+   *before* a stray `# Subtest: the prior state ` fragment (stdout, cut mid-name) that belongs to an
+   earlier shard. Reading the two adjacent lines as one event named a shard and a test that had
+   nothing to do with it. The real failure was in shard **4**.
+
+### It was not the Node 22 IPC flake either, and here is how that was ruled out
+
+`backend/scripts/shard-runner.mjs` documents a Node 22 bug that produces "a failure with no assertion
+in it, blaming a file that did nothing wrong". The absent assertion in the log made that the first
+hypothesis. Three things ruled it out:
+
+- `gh run rerun --failed` on the same commit came back red. The run is on **attempt 4**, all failing.
+  A flake that survives four runs is not a flake.
+- The test COUNT did not drop, which is that bug's signature.
+- Once the merge was reproduced locally, there was a real `ERR_ASSERTION` with an `expected` and an
+  `actual`.
+
+Re-running first was still the right first move — one re-run is minutes, and a deterministic red
+rules the flake out just as fast as a green rules it in.
+
+### Nothing was leaked, and nothing could have been
+
+The leak hypothesis is not merely unsupported, it is unavailable in this runner: `node --test` runs
+every test FILE in its own child process (`--experimental-test-isolation=none` is not used and is
+documented as unusable here), so env vars, module-level caches and shared fakes cannot cross files.
+The only genuine cross-file channels are the filesystem, a bound port, and the parent's IPC stream.
+This branch's new test file writes no files (it only `readFileSync`s sources) and closes every
+ephemeral server it starts, in `finally`. **No test was weakened and no RCM file was touched.**
 
 ## 5. Files
 
@@ -234,7 +307,7 @@ only. The comparison that produces one and the two formatters that read one stay
 | `backend/services/hyg/perioDrift.js` | **new** — `readDriftContext`, `checkDrift`, `resendVanishedChart` |
 | `backend/services/hyg/perioSendStore.js` | `getLiveSend` excludes a gone exam; `markExamGone`, `getSendExamNums` |
 | `backend/services/hyg/visitStore.js` | `restagePerioForResend` (`Written → Staged`) |
-| `backend/migrations-tenant/1789500000000_hyg_perio_exam_gone.js` | **new** — `exam_gone_at`, `exam_gone_by`, two CHECKs |
+| `backend/migrations-tenant/1789700000000_hyg_perio_exam_gone.js` | **new** — `exam_gone_at`, `exam_gone_by`, two CHECKs |
 | `backend/routes/hyg/visit.js` | the drift folded into `GET /perio/prior` + its disclosure audit; `POST /perio/resend` |
 | `backend/routes/hyg/hygTestUtils.js` | the fake learns four statements; `perioOd()` exposes `publish` |
 | `backend/routes/hyg/hygPerioDrift.test.js` | **new** — 12 tests, acceptance 1–8 |
