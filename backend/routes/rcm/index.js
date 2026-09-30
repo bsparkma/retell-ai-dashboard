@@ -227,6 +227,22 @@ router.use('/era', require('./era'));
 router.use('/remittances', require('./remittances'));
 router.use('/uploads', require('./documents'));
 /*
+ * THE CONFIRM STEP for a check whose figures were read off a scan.
+ *
+ *   GET  /field-confirm/:batchId   the page beside the extracted figures
+ *   POST /field-confirm/:batchId   confirm a figure, or type the one on the page
+ *
+ * Mounted BELOW `requireOffice` like everything else, so office comes from the
+ * validated query param and a cross-office read is a miss rather than a refusal.
+ *
+ * The POST lands on `rcm.write` through the mount's method-based gate, and it is
+ * deliberately NOT one of the enumerated read-tier exceptions above: confirming
+ * a figure is what lets money reach a chart, so it belongs to the same tier as
+ * approving. A reviewer proposes, somebody with write authority accepts — the
+ * split this module keeps everywhere else.
+ */
+router.use('/field-confirm', require('./fieldConfirm'));
+/*
  * Slice 6c — THE DRAIN. The first Open Dental WRITE under this mount, and the
  * only one anywhere in the module.
  *

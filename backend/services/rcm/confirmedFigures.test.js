@@ -213,22 +213,23 @@ test('only an OCR read needs confirming', () => {
 
 // ─── ONE ACCESSOR, and this is what enforces it ──────────────────────────────
 
-test('nothing outside this module reads rcm_eob_field_confirmations', () => {
-  /*
-   * The rule the slice rests on. A second reader would be a second opinion about
-   * which number is real, and the two would diverge the first time either was
-   * edited — which is exactly the class of defect that put a fabricated
-   * $1,229.00 on a biller's screen.
-   *
-   * Migrations are exempt: they CREATE the table. Test files are exempt so a
-   * suite can build rows. Everything else must go through `figure()`.
-   */
+/**
+ * Every non-test, non-migration `.js` under `backend/`, as { path, source }.
+ *
+ * Migrations are excluded because they CREATE the table; test files because a
+ * suite has to be able to build rows.
+ */
+function backendSources() {
   const backend = path.join(__dirname, '..', '..');
-  const offenders = [];
-
+  /** @type {Array<{ rel: string, source: string }>} */
+  const files = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name === 'migrations' || entry.name === 'migrations-tenant') {
+      if (
+        entry.name === 'node_modules' ||
+        entry.name === 'migrations' ||
+        entry.name === 'migrations-tenant'
+      ) {
         continue;
       }
       const full = path.join(dir, entry.name);
@@ -236,31 +237,68 @@ test('nothing outside this module reads rcm_eob_field_confirmations', () => {
         walk(full);
         continue;
       }
-      if (!entry.name.endsWith('.js')) continue;
-      if (entry.name.endsWith('.test.js')) continue;
-      if (full === path.join(__dirname, 'confirmedFigures.js')) continue;
-      const source = fs.readFileSync(full, 'utf8');
-      /*
-       * SQL USAGE, not any mention. A comment naming the table — "rows from
-       * rcm_eob_field_confirmations for this batch" — is exactly the kind of
-       * signposting that should be encouraged, and a scan that banned it would
-       * teach people to describe the table without naming it.
-       *
-       * So the pattern is the table in a position only a query can put it:
-       * after FROM, JOIN, INTO or UPDATE.
-       */
-      if (/\b(?:from|join|into|update)\s+rcm_eob_field_confirmations\b/i.test(source)) {
-        offenders.push(path.relative(backend, full).replace(/\\/g, '/'));
-      }
+      if (!entry.name.endsWith('.js') || entry.name.endsWith('.test.js')) continue;
+      files.push({
+        rel: path.relative(backend, full).replace(/\\/g, '/'),
+        source: fs.readFileSync(full, 'utf8'),
+      });
     }
   };
   walk(backend);
+  return files;
+}
 
+/*
+ * WHY THE SCAN LOOKS FOR SQL AND NOT FOR THE NAME.
+ *
+ * A comment naming the table — "rows from rcm_eob_field_confirmations for this
+ * batch" — is exactly the signposting that should be encouraged, and a scan that
+ * banned it would teach people to describe the table without naming it. So both
+ * patterns below require the table in a position only a query can put it.
+ */
+const READS_TABLE = /\b(?:from|join)\s+rcm_eob_field_confirmations\b/i;
+const WRITES_TABLE = /\b(?:insert\s+into|update|delete\s+from)\s+rcm_eob_field_confirmations\b/i;
+
+test('exactly ONE file reads rcm_eob_field_confirmations', () => {
+  /*
+   * The rule the slice rests on. A second reader would be a second opinion about
+   * which number is real, and the two would diverge the first time either was
+   * edited — which is exactly the class of defect that put a fabricated
+   * $1,229.00 on a biller's screen.
+   *
+   * READS specifically, not writes: the invariant is about who gets to ANSWER
+   * "which figure is real", and only a reader answers that. The writer is
+   * pinned separately below.
+   */
+  const readers = backendSources()
+    .filter((f) => READS_TABLE.test(f.source))
+    .map((f) => f.rel);
   assert.deepEqual(
-    offenders,
-    [],
-    `these files read rcm_eob_field_confirmations directly instead of going through ` +
-      `confirmedFigures: ${offenders.join(', ')}`
+    readers,
+    ['services/rcm/confirmedFigures.js'],
+    `only confirmedFigures may read the table; everything else goes through figure(). Found: ${readers.join(', ')}`
+  );
+});
+
+test('exactly ONE file writes rcm_eob_field_confirmations', () => {
+  /*
+   * The write lives in the route, not in the accessor, and that split is
+   * deliberate: the accessor is a pure mapping with no I/O so the gate can
+   * re-evaluate inside its own transaction and a test can drive it with no
+   * database. Putting an INSERT in it would give it a client, a transaction and
+   * a reason to be mocked.
+   *
+   * But there must be exactly one writer, or two routes could record a
+   * confirmation with different ideas of what `state` means — and `state` is
+   * what puts "corrected by <name>" under a figure.
+   */
+  const writers = backendSources()
+    .filter((f) => WRITES_TABLE.test(f.source))
+    .map((f) => f.rel);
+  assert.deepEqual(
+    writers,
+    ['routes/rcm/fieldConfirm.js'],
+    `only the confirm route may write the table. Found: ${writers.join(', ')}`
   );
 });
 

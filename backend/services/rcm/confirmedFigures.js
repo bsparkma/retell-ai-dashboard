@@ -71,6 +71,29 @@ const QUERIES = Object.freeze({
 });
 
 /**
+ * WHICH EXTRACTION COLUMN EACH CONFIRMABLE FIELD IS ABOUT.
+ *
+ * Here rather than in the route, because the route and the gate must read the
+ * SAME extracted figure for a field or they will disagree about whether a
+ * confirmation is a correction. `state` is derived from
+ * `confirmed_cents IS DISTINCT FROM extracted_cents`, so a route that read
+ * `allowed_cents` where the gate read `paid_cents` would file agreements as
+ * corrections and put "corrected by <name>" under a figure nobody changed.
+ *
+ * The scope says which ROW the column is on: `check` → the batch, `claim` → the
+ * claim, `line` → the procedure line.
+ */
+const FIELD_COLUMNS = Object.freeze({
+  check_total: 'total_amount_cents',
+  claim_total_paid: 'total_paid_cents',
+  line_paid: 'paid_cents',
+  line_billed: 'billed_cents',
+  line_allowed: 'allowed_cents',
+  line_deductible: 'deductible_cents',
+  line_copay: 'copay_cents',
+});
+
+/**
  * How a figure came to be what it is.
  * @typedef {'extracted'|'confirmed'|'corrected'} FigureSource
  */
@@ -319,8 +342,27 @@ function isOcrSourced(provenance) {
   return Boolean(provenance && provenance.textSource === 'ocr');
 }
 
+/**
+ * The extracted figure for one field, read off the row its scope names.
+ *
+ * `undefined` when the field is outside the vocabulary or the row is missing —
+ * distinguishable from `null`, which means the row exists and states nothing.
+ *
+ * @param {string} field
+ * @param {Record<string, unknown>|null|undefined} row batch, claim or line row
+ * @returns {number|null|undefined}
+ */
+function extractedFor(field, row) {
+  const column = FIELD_COLUMNS[field];
+  if (!column || !row) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(row, column)) return undefined;
+  return centsOrNull(row[column]);
+}
+
 module.exports = {
   QUERIES,
+  FIELD_COLUMNS,
+  extractedFor,
   scopeKey,
   indexConfirmations,
   figure,
