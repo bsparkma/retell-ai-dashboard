@@ -80,6 +80,7 @@ const sendVisitService = require('../../services/hyg/sendVisit');
 const odPerio = require('../../services/hyg/odPerio');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
+const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
 const contract = require('../../hyg/contract.gen.cjs');
 
@@ -964,9 +965,25 @@ router.get(
       return resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
     };
 
+    /*
+     * ITEM 14: THE DRIFT CHECK RIDES THIS READ, IT DOES NOT ADD ONE.
+     *
+     * `Written` claims every site was read back and matched, and goes on
+     * claiming it after somebody deletes or edits the exam in Open Dental's own
+     * perio chart. So a `Written` chart is re-checked when it is OPENED — against
+     * the exam list this read already fetches, and against the readings it
+     * already fetched whenever CareIN's exam is the newest one, which it is on
+     * every ordinary open. Nothing here writes, and a person presses the resend.
+     */
+    const context = await tenantDb.withTenantDb(req, (pool) =>
+      visit ? perioDrift.readDriftContext(pool, { office, visit }) : { staged: null, live: null }
+    );
+
     let prior;
+    let read = { ok: false, list: [], error: 'the exam list read threw' };
+    let latest = null;
     try {
-      ({ prior } = await odPerio.readPriorPerio(odGet, { patNum }));
+      ({ prior, exams: read, latest } = await odPerio.readPriorPerio(odGet, { patNum }));
     } catch (err) {
       prior = {
         status: 'unavailable',
@@ -975,15 +992,57 @@ router.get(
       };
     }
 
+    let drift = perioDrift.NOT_APPLICABLE;
+    try {
+      ({ drift } = await perioDrift.checkDrift({
+        staged: context.staged,
+        live: context.live,
+        exams: read,
+        latest,
+        odGet,
+        careinExamNums: context.careinExamNums,
+      }));
+    } catch (err) {
+      // A drift check that throws must not cost the chart its prior panel, and
+      // must not say anything either: an unfinished comparison is exactly the
+      // `unknown` row of the table.
+      drift =
+        context.live && context.live.exam_num !== null
+          ? { status: 'unknown', examNum: context.live.exam_num }
+          : perioDrift.NOT_APPLICABLE;
+      console.error(`[hygperio] drift check failed: ${String((err && err.message) || err)}`);
+    }
+
     // The appointment (a name) and a perio history are both in this body, so
     // both are audited before it is sent — including when the history came
     // back `none`, because the name did not.
     await auditHygRead(req, 'hyg_perio_prior', { office, resourceId: aptNum });
     await auditHygReads(req, [{ resourceType: 'hyg_perio_prior_patient', office, resourceId: patNum }]);
+    /*
+     * THE RE-READ IS A FETCH AND DOES NOT AUDIT. THE MOMENT IT TELLS HER
+     * SOMETHING, IT DOES.
+     *
+     * `matches` and `unknown` say nothing to the user, so there is nothing
+     * disclosed and nothing to record. `missing` and `changed` are a statement
+     * about what a chart of record does and does not contain — that is the
+     * disclosure, and it carries which of the answers it was and the exam number.
+     * Fail-CLOSED, like every other audit on this path: no trail, no answer.
+     */
+    if (drift.status === 'missing' || drift.status === 'changed') {
+      await audit(req, {
+        action: 'READ',
+        resourceType: 'hyg_perio_drift',
+        resourceId: aptNum,
+        result: 'SUCCESS',
+        office,
+        sourceRef: `perio_exam:${drift.examNum}`,
+        priorState: drift.status,
+      });
+    }
 
     // Counts and milliseconds only — never a PatNum, never a reading.
     console.log(
-      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} ` +
+      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status} ` +
         `od_perio_reads=${odPerioReads} ms=${Date.now() - startedAt}`
     );
 
@@ -994,6 +1053,7 @@ router.get(
       date,
       appointment: resolved.appointment,
       prior,
+      drift,
     });
   })
 );
@@ -1394,6 +1454,66 @@ router.post(
       }
       return res.status(outcome.status).json({ success: false, error: outcome.error, code: outcome.code, office });
     }
+    return res.json(await perioSendPayload(req, office, aptNum, cont.visit, null));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sending a chart again when its exam has GONE from Open Dental (H4 item 14)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//   POST /:aptNum/perio/resend   the exam is gone; re-arm the send
+//
+// The drift check that offers this lives on GET /:aptNum/perio/prior, which is a
+// READ and writes nothing. This route is the only thing item 14 adds that changes
+// state, it is only ever reached because a person pressed a button, and it still
+// writes NOTHING to Open Dental: it records that the exam is gone and puts the
+// chart back to `Staged`. The ordinary send routes above then post a NEW exam,
+// with their own confirmation and their own site-by-site read-back.
+//
+// There is deliberately no resend for a chart whose readings merely DIFFER. See
+// services/hyg/perioDrift.js — a reading that differs is somebody's correction.
+
+router.post(
+  '/:aptNum/perio/resend',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const body = parseBody(res, contract.PerioResendRequestSchema, req.body);
+    if (body === null) return undefined;
+    const cont = await perioContinuation(req, res, office, aptNum);
+    if (!cont) return undefined;
+
+    const outcome = await tenantDb.withTenantDb(req, (pool) =>
+      perioDrift.resendVanishedChart({
+        pool,
+        office,
+        visit: cont.visit,
+        odGet: perioOdGet(cont.od),
+        request: body,
+        actor: actorEmail(req),
+      })
+    );
+    if (!outcome.ok) {
+      await auditHygDenial(req, 'hyg_perio_resend', aptNum, {
+        office,
+        result: outcome.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(outcome.status).json({ success: false, error: outcome.error, code: outcome.code, office });
+    }
+    // A `Written` chart becoming sendable again is a recorded act: it is the
+    // moment CareIN stopped claiming exam N is in Open Dental, and by whom.
+    // Identifiers only — the exam number, never a reading.
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_perio_resend',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: `perio_exam:${outcome.examNum}`,
+      priorState: 'exam_gone',
+    });
     return res.json(await perioSendPayload(req, office, aptNum, cont.visit, null));
   })
 );
