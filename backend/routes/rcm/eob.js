@@ -36,7 +36,8 @@ const ocrBudget = require('../../services/rcm/ocrBudget');
 const odPacer = require('../../services/rcm/odPacer');
 const openDental = require('../../config/openDental');
 const queue = require('../../services/rcm/eobExtractionQueue');
-const { looksLikePdf } = require('../../services/rcm/eobDocumentText');
+const { looksLikePdf, hasUsableTextLayer } = require('../../services/rcm/eobDocumentText');
+const documentOcr = require('../../services/rcm/documentOcr');
 
 const router = express.Router();
 
@@ -56,6 +57,42 @@ const MIN_UPLOAD_BYTES = 256;
 /** Page size for the list. */
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
+
+/**
+ * WHAT THE BILLER IS TOLD WHEN THIS DEPLOYMENT HAS NO DOCUMENT READER.
+ *
+ * It names the ENVIRONMENT, not the document. "This PDF has no text layer" sends
+ * her to the scanner; "isn't set up here yet" sends her to whoever sets things up
+ * — and "yet" says it is a missing switch rather than something she did wrong.
+ *
+ * Kept next to the refusal that sends it so the two cannot drift. The dashboard
+ * carries its own copy of this sentence in `features/rcm/labels.ts` because it
+ * also has to say it BEFORE an upload, where there is no response to read; both
+ * are the same sentence on purpose.
+ */
+const OCR_UNAVAILABLE_MESSAGE = "Scanned document reading isn't set up here yet.";
+
+/**
+ * The OCR rail's cost state PLUS whether there is a reader at all.
+ *
+ * The budget and the configuration are different questions and a screen needs
+ * both: `paused: false, configured: false` means "no cap has been hit and no scan
+ * will ever be read", which neither field says alone. Before this existed the GET
+ * returned the cap and the clock for a rail that could not run.
+ *
+ * `reachable` is `null` until real traffic has proven it either way — see
+ * `documentOcr.lastOutcome`. Null is sent as null; a screen that wants to say
+ * "working" must wait for evidence.
+ */
+function ocrStatus() {
+  const last = documentOcr.lastOutcome();
+  return {
+    ...ocrBudget.status(),
+    configured: documentOcr.isConfigured(),
+    reachable: last.reachable,
+    lastOutcomeCode: last.code,
+  };
+}
 
 /**
  * Bytes are held in memory, never on disk.
@@ -289,8 +326,65 @@ router.post(
         requeued,
         upload: { ...toWire(prior), status: 'uploaded', message: null },
         extraction: budget.status(),
-        ocr: ocrBudget.status(),
+        ocr: ocrStatus(),
       });
+    }
+
+    /*
+     * ─── THE ENVIRONMENT CANNOT READ THIS DOCUMENT, SO SAY SO NOW ─────────────
+     *
+     * Before this check, a scan uploaded into an environment with no OCR resource
+     * was accepted, stored, queued, and only then failed with
+     * `no_extractable_text` — "This PDF has no text layer — most likely a scan".
+     * Every word of that is true and the whole of it is misleading: it describes
+     * the biller's FILE when the fact is about the DEPLOYMENT. She would go and
+     * rescan a page that was never the problem.
+     *
+     * So the refusal moves to the front door, and the copy blames the
+     * environment. Nothing is stored, nothing is queued, no row is written, and
+     * no money is spent.
+     *
+     * WHY THE PARSE IS INSIDE THE `isConfigured()` GUARD, not beside it: when OCR
+     * IS configured — every armed environment, which is the normal case — this
+     * costs exactly nothing, because we never need to know whether the document
+     * is a scan. The worker finds that out for free on the path it already walks.
+     * The pre-check only runs in the one configuration where the answer changes
+     * what we do.
+     *
+     * WHY AFTER THE DEDUP PROBE: a document already extracted in this office was
+     * read by something, and handing back the proposal we hold is not a claim
+     * about OCR. Refusing a re-upload of a scan we have already read would be its
+     * own dishonesty.
+     *
+     * A PDF THAT WILL NOT OPEN IS NOT THIS REFUSAL'S BUSINESS. An encrypted or
+     * corrupt file raises `PDF_UNREADABLE`, and answering that with "reading
+     * isn't set up here yet" would commit the very error this guard exists to
+     * undo — a message about the deployment when the fact is about the file. It
+     * is simply a different failure, it already has an accurate one
+     * (`PDF could not be read: …`) on the worker's path, and that path still
+     * runs. So a parse error falls THROUGH: we refuse only what we affirmatively
+     * know needs OCR, which is a document that opened cleanly and came up short
+     * of the floor.
+     *
+     * This is the narrow reading on purpose. The guard claims one thing and the
+     * one thing is true.
+     */
+    if (!documentOcr.isConfigured()) {
+      let needsOcr = false;
+      try {
+        needsOcr = !(await hasUsableTextLayer(file.buffer));
+      } catch {
+        // Unopenable — see above. Not a claim about OCR, so not refused here.
+        needsOcr = false;
+      }
+      if (needsOcr) {
+        return res.status(503).json({
+          success: false,
+          error: OCR_UNAVAILABLE_MESSAGE,
+          code: 'EOB_OCR_UNAVAILABLE',
+          ocr: ocrStatus(),
+        });
+      }
     }
 
     // Store the bytes FIRST. A row pointing at a blob that does not exist is a
@@ -352,7 +446,7 @@ router.post(
         duplicate: true,
         upload: toWire(winner),
         extraction: budget.status(),
-        ocr: ocrBudget.status(),
+        ocr: ocrStatus(),
       });
     }
 
@@ -383,7 +477,7 @@ router.post(
        * read when the extraction budget shows $3 left?" unanswerable from the
        * screen.
        */
-      ocr: ocrBudget.status(),
+      ocr: ocrStatus(),
     });
   })
 );
@@ -462,7 +556,7 @@ router.get(
       // row is waiting on the clock, not stuck — and `resetsAt` says when.
       extraction: { ...budget.status(), queue: queue.stats() },
       /** The OCR rail. Separate cap, separate clock — see the POST above. */
-      ocr: ocrBudget.status(),
+      ocr: ocrStatus(),
       /*
        * WHAT D-8 COSTS, MEASURED.
        *

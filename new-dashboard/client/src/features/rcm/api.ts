@@ -505,6 +505,31 @@ export interface EobExtractionState {
   /** OCR only: pages read today, and the price the cap is denominated in. */
   pagesRead?: number;
   centsPerKPage?: number;
+  /**
+   * OCR only: is there a document reader in this deployment AT ALL?
+   *
+   * A DIFFERENT QUESTION FROM `paused`, and the reason this field had to exist.
+   * `paused: false, configured: false` means "no cap has been hit and no scan
+   * will ever be read" — a state neither field says alone, and the one prod sat
+   * in from 2026-09-25 to 2026-09-29 while the screen showed a healthy cap for a
+   * rail that could not run.
+   *
+   * Optional so a client can talk to a server that predates it; `undefined` means
+   * "this server does not say", which is not the same as `false`.
+   */
+  configured?: boolean;
+  /**
+   * OCR only: `true` once a real call reached Azure, `false` once one failed,
+   * `null` until either has happened since the server started.
+   *
+   * NULL IS NOT "BROKEN" AND NOT "FINE". Reachability costs a request and a
+   * request costs a page, so the server reports what live traffic already proved
+   * and says nothing the rest of the time. A screen must not render null as
+   * either outcome.
+   */
+  reachable?: boolean | null;
+  /** OCR only: the transport code behind `reachable`, for a diagnostic line. */
+  lastOutcomeCode?: string | null;
 }
 
 export interface EobUploadPage {

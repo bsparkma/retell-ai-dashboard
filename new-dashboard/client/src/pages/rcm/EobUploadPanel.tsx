@@ -38,7 +38,11 @@ import {
   type EobUploadStatus,
   type RcmOfficeId,
 } from "@/features/rcm/api";
-import { provenanceLabel } from "@/features/rcm/labels";
+import {
+  OCR_NOT_CONFIGURED,
+  OCR_NOT_CONFIGURED_DETAIL,
+  provenanceLabel,
+} from "@/features/rcm/labels";
 
 type LoadState =
   | { kind: "loading" }
@@ -391,6 +395,37 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
           A single "cost cap reached" line would leave "why did my scan not read
           when there is $3 of extraction budget left?" unanswerable from the
           screen — which is the question the split exists to answer. */}
+      {/* NO DOCUMENT READER AT ALL — a different kind of fact from the two caps
+          below, and it comes first because it is the one that changes what she
+          should put in the lane.
+
+          NOT AMBER. The paused banners mean "waiting on a clock" and resolve
+          themselves; this one means "a switch is missing here" and resolves only
+          when somebody flips it. Borrowing their colour would say "try again
+          later" about a state that will look identical tomorrow.
+
+          THE LANE STAYS OPEN. Text-layer PDFs — most payer-portal exports —
+          extract perfectly well with no reader, so disabling the input would take
+          away work she can do today. The server turns away exactly the documents
+          that need OCR and nothing else.
+
+          `=== false` DELIBERATELY, not `!ocr?.configured`: the field is optional
+          so a dashboard can talk to a server that predates it, and `undefined`
+          means "this server does not say". Rendering a missing field as a missing
+          resource would put this banner on every healthy deployment. */}
+      {ocr?.configured === false && (
+        <div
+          className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/50 p-3 text-sm text-muted-foreground"
+          data-testid={`rcm-eob-ocr-unconfigured-${office}`}
+        >
+          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+          <span>
+            <span className="font-medium text-foreground">{OCR_NOT_CONFIGURED}</span>{" "}
+            {OCR_NOT_CONFIGURED_DETAIL}
+          </span>
+        </div>
+      )}
+
       {extraction?.paused && (
         <div
           className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
@@ -578,7 +613,12 @@ export default function EobUploadPanel({ office }: { office: RcmOfficeId }) {
               {formatCents(extraction.capCents)}.
             </p>
           )}
-          {ocr && !ocr.paused && (
+          {/* A CAP IS ONLY WORTH PRINTING FOR A RAIL THAT CAN RUN. With no reader
+              configured this line read "Scan-reading (OCR) spend today: $0.00 of
+              $2.00" — which invites exactly the wrong conclusion, that scans are
+              working and simply have not been used. The banner above says the
+              true thing instead. */}
+          {ocr && !ocr.paused && ocr.configured !== false && (
             <p className="text-xs text-muted-foreground" data-testid={`rcm-eob-ocr-spend-${office}`}>
               Scan-reading (OCR) spend today: {formatCents(ocr.usedCents)} of{" "}
               {formatCents(ocr.capCents)}
