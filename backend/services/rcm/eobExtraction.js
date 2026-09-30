@@ -121,7 +121,29 @@ const PROCEDURE_SCHEMA = {
     allowedCents: { type: 'integer', description: 'Allowed/contracted amount for this procedure, in cents' },
     deductibleCents: { type: 'integer', description: 'Deductible applied to this procedure, in cents' },
     copayCents: { type: 'integer', description: 'Patient copay/coinsurance for this procedure, in cents' },
-    paidCents: { type: 'integer', description: 'Insurance payment for this procedure, in cents' },
+    /*
+     * NULLABLE, AND THAT IS THE WHOLE POINT OF THIS FIELD.
+     *
+     * It used to be a required integer, which left the model no way to say "this
+     * document does not state a per-line payment" — so on the first real scanned
+     * EOB, a category-subtotal layout that printed payment ONLY at benefit-type
+     * subtotals, it filled each line's paidCents with that line's COVERED amount.
+     * One line rendered a fabricated $1,229.00 paid. The claim-level totals were
+     * read correctly and the sum warnings fired and blocked approve, so no money
+     * moved — but the screen showed numbers that were never on the page, and they
+     * understated what the patient owed.
+     *
+     * A required integer cannot express absence. `null` can, so the schema says
+     * null and the prompt says when to use it.
+     */
+    paidCents: {
+      type: ['integer', 'null'],
+      description:
+        'Insurance payment for THIS procedure line, in cents. Use null when the document ' +
+        'does not state a payment for this individual line — for example when payment is ' +
+        'printed only at a category or benefit-type subtotal. NEVER put an allowed, ' +
+        'covered, eligible or approved amount here.',
+    },
     confidence: {
       type: 'integer',
       description:
@@ -266,10 +288,15 @@ For monetary amounts, always convert to cents (integer). If a field is not prese
 - Missing DOB: "${PLACEHOLDER_DOB}"
 - Set confidence based on document quality: 90-100 for clear digital PDFs, 70-89 for scanned documents, 50-69 for poor quality.
 
+COVERED IS NOT PAID. This is the most important rule here.
+- A procedure's paidCents is the amount the PLAN PAID for that line, and nothing else. An "allowed", "covered", "eligible", "approved" or "benefit" amount is a DIFFERENT column and must never be copied into paidCents. Copying one across invents a payment that is not on the page and makes the patient appear to owe less than they do.
+- Many layouts state payment only at a CATEGORY or BENEFIT-TYPE SUBTOTAL (for example "Preventive ... paid 120.00" over several lines), and never per line. When a line has no payment of its own printed for it, set that line's paidCents to null. Do not spread a subtotal across the lines beneath it, do not divide it, and do not substitute the covered column. null is the correct, expected answer for those layouts.
+- The claim's totalPaidCents is read from the document's own claim total and STANDS ALONE. It is still required even when every line's paidCents is null.
+
 Rules that MUST hold — read amounts digit-by-digit and RECONCILE before returning:
-- Extract ALL procedure lines for EACH claim. Read each procedure's PLAN PAID amount carefully, then set that claim's totalPaidCents to the exact SUM of its procedure paidCents.
+- Extract ALL procedure lines for EACH claim. Read each procedure's PLAN PAID amount carefully. When EVERY line states its own payment, set that claim's totalPaidCents to the exact SUM of its procedure paidCents. When any line's payment is not stated, read totalPaidCents from the document instead and leave the unstated lines null.
 - Patient responsibility (deductible, copay, coinsurance such as PR-2) belongs in each claim's totalCopayCents/totalDeductibleCents and the matching procedure fields — never drop it.
-- Then verify: the sum of every claim's totalPaidCents MUST equal payment.totalPaidCents (the printed check/EFT total). If they do NOT match, you have misread a procedure or claim amount — RE-READ the document and correct the figures before returning.
+- Then verify: the sum of every claim's totalPaidCents MUST equal payment.totalPaidCents (the printed check/EFT total). If they do NOT match, you have misread a claim amount — RE-READ the document and correct the figures before returning. Do NOT reconcile by adjusting a line's paidCents, and never fill a null paidCents to make a total add up: the check total and the claim totals are what must agree.
 
 Adjustment reason codes (CARC/RARC): when the document prints them, put them in that procedure's adjustments array as structured entries — groupCode is the CARC group (CO, PR, OA, PI, CR), reasonCode is the numeric CARC, remarkCode is the RARC (e.g. N130) when one is printed. If the document prints NO reason codes for a line, return an empty adjustments array. Never invent a code to explain a difference you cannot account for; flag the line "unexplained_adj" instead.
 
@@ -286,6 +313,28 @@ function buildUserPrompt(documentText) {
 function int(v, fallback = 0) {
   const n = typeof v === 'number' ? v : Number.parseInt(String(v ?? ''), 10);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+/**
+ * An integer, or `null` for anything that is not one — the coercion for a field
+ * where ABSENCE IS DATA.
+ *
+ * `int()` above answers "give me a number whatever happens", which is right for
+ * a billed amount: a missing one is 0 and 0 is harmless. It is wrong for a
+ * per-line payment, where 0 asserts "the plan paid nothing for this line" and
+ * null says "this document does not state it". Those are different facts about a
+ * patient's balance, and `int()` cannot tell them apart.
+ *
+ * A non-numeric string, an object, undefined and explicit null all become null.
+ * Nothing here invents a zero.
+ *
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function intOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : Number.parseInt(String(v), 10);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
 /** A trimmed string, or '' — never null, never "null", never an object. */
@@ -413,7 +462,14 @@ function normalizeProcedure(rawProc, index) {
     allowedCents: allowed,
     deductibleCents: deductible,
     copayCents: copay,
-    paidCents: int(p.paidCents),
+    /*
+     * NOT `int()`. See `intOrNull` — and note what is NOT here: there is no
+     * fallback to `allowedCents`, no `paidCents || allowedCents`, and no
+     * "if paid is missing assume the covered amount". A layout that states no
+     * per-line payment yields null, all the way through to the screen, which
+     * prints "not stated" rather than a number nobody can find on the page.
+     */
+    paidCents: intOrNull(p.paidCents),
     // Derived, not asked for — the source derived them the same way, and a
     // model-supplied "write-off" that disagreed with billed − allowed would be
     // a third number nobody could reconcile.
@@ -494,9 +550,28 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
 
   // Math sanity: the per-procedure sums should reach the claim totals.
   if (claim.procedures.length > 0) {
-    const paidSum = claim.procedures.reduce((acc, p) => acc + p.paidCents, 0);
-    if (Math.abs(paidSum - claim.totalPaidCents) > TOTAL_TOLERANCE_CENTS) {
-      reasons.push(R.PAID_TOTAL_MISMATCH);
+    /*
+     * A SUM OVER AN UNSTATED FIGURE IS NOT A MISMATCH — it is not a sum.
+     *
+     * When a category-subtotal layout leaves per-line payment null, Σ(line paid)
+     * is undefined, not zero. Reducing with `acc + null` would coerce those
+     * lines to 0, and the reduce would then "discover" that the lines do not
+     * reach the claim total — reporting PAID_TOTAL_MISMATCH, which says the
+     * numbers disagree, when the truth is that one of them was never printed.
+     *
+     * So the two cases are reported separately: LINE_PAID_NOT_STATED when the
+     * document did not state them, PAID_TOTAL_MISMATCH only when it stated every
+     * one and they still do not add up. Both widen review; they send a biller to
+     * different places.
+     */
+    const unstated = claim.procedures.filter((p) => p.paidCents === null);
+    if (unstated.length > 0) {
+      reasons.push(R.LINE_PAID_NOT_STATED);
+    } else {
+      const paidSum = claim.procedures.reduce((acc, p) => acc + p.paidCents, 0);
+      if (Math.abs(paidSum - claim.totalPaidCents) > TOTAL_TOLERANCE_CENTS) {
+        reasons.push(R.PAID_TOTAL_MISMATCH);
+      }
     }
     const billedSum = claim.procedures.reduce((acc, p) => acc + p.billedCents, 0);
     if (Math.abs(billedSum - claim.totalBilledCents) > TOTAL_TOLERANCE_CENTS) {
@@ -517,7 +592,10 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
   if (
     claim.totalPaidCents < 0 ||
     claim.totalBilledCents < 0 ||
-    claim.procedures.some((p) => p.paidCents < 0 || p.billedCents < 0)
+    // `null < 0` is false, so an unstated payment is not a negative amount —
+    // but the predicate is written out rather than left to coercion, because
+    // relying on that would be relying on an accident.
+    claim.procedures.some((p) => (p.paidCents !== null && p.paidCents < 0) || p.billedCents < 0)
   ) {
     reasons.push(R.NEGATIVE_AMOUNT);
   }
@@ -595,7 +673,8 @@ module.exports = {
  * @property {number} allowedCents
  * @property {number} deductibleCents
  * @property {number} copayCents
- * @property {number} paidCents
+ * @property {number|null} paidCents `null` = the document states no payment for
+ *           this line. NOT zero — see `intOrNull`.
  * @property {number} adjustmentCents
  * @property {number} writeOffCents
  * @property {number} patientRespCents

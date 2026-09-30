@@ -284,6 +284,17 @@ export function remittanceHref(batchId: string): string {
 }
 
 /**
+ * "Check these figures against the page" — the confirm step for a scanned read.
+ *
+ * A step ON a check rather than a screen of its own in the nav: it is reachable
+ * from the check and from the approve checklist's refusal, and a biller whose
+ * payer sends electronic remittances never meets it.
+ */
+export function confirmHref(batchId: string): string {
+  return `/rcm/remittances/${encodeURIComponent(batchId)}/confirm`;
+}
+
+/**
  * "Review and approve" — the ONE place approving happens.
  *
  * A helper rather than a template literal at each call site, because Stage C-3

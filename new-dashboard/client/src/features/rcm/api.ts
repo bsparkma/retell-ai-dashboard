@@ -505,6 +505,31 @@ export interface EobExtractionState {
   /** OCR only: pages read today, and the price the cap is denominated in. */
   pagesRead?: number;
   centsPerKPage?: number;
+  /**
+   * OCR only: is there a document reader in this deployment AT ALL?
+   *
+   * A DIFFERENT QUESTION FROM `paused`, and the reason this field had to exist.
+   * `paused: false, configured: false` means "no cap has been hit and no scan
+   * will ever be read" — a state neither field says alone, and the one prod sat
+   * in from 2026-09-25 to 2026-09-29 while the screen showed a healthy cap for a
+   * rail that could not run.
+   *
+   * Optional so a client can talk to a server that predates it; `undefined` means
+   * "this server does not say", which is not the same as `false`.
+   */
+  configured?: boolean;
+  /**
+   * OCR only: `true` once a real call reached Azure, `false` once one failed,
+   * `null` until either has happened since the server started.
+   *
+   * NULL IS NOT "BROKEN" AND NOT "FINE". Reachability costs a request and a
+   * request costs a page, so the server reports what live traffic already proved
+   * and says nothing the rest of the time. A screen must not render null as
+   * either outcome.
+   */
+  reachable?: boolean | null;
+  /** OCR only: the transport code behind `reachable`, for a diagnostic line. */
+  lastOutcomeCode?: string | null;
 }
 
 export interface EobUploadPage {
@@ -2658,4 +2683,225 @@ export function drainPostingQueue(
     opts.queueId ? { queueId: opts.queueId } : {},
     { timeoutMs: BATCH_TIMEOUT_MS },
   );
+}
+
+// ─── The confirm step, for a check read off a scan ───────────────────────────
+
+/**
+ * ONE MONEY FIELD, as the confirm screen renders it.
+ *
+ * THREE OUTCOMES ON TWO AXES, and collapsing them is how a fabricated figure
+ * reached a biller's screen in the first place:
+ *
+ *   `stated`    is there a figure on the page at all?
+ *   `confirmed` has a person signed off on this field?
+ *
+ * `stated: false, confirmed: false` — the read found nothing and nobody has
+ * looked. The screen says "not stated".
+ * `stated: false, confirmed: true`  — a person read the page and there is
+ * genuinely no figure there. A real answer, and the gate accepts it: a
+ * category-subtotal EOB has no per-line payment to type.
+ * `stated: true, source: "corrected"` — a person typed a figure from the page
+ * that differs from the read.
+ *
+ * `cents` is null whenever `stated` is false, and NEVER 0 as a stand-in: zero
+ * asserts the plan paid nothing, which is a claim about a patient's balance.
+ */
+export interface ConfirmField {
+  field: ConfirmableField;
+  /** The figure to USE. null ⇔ `stated === false`. */
+  cents: number | null;
+  stated: boolean;
+  source: "extracted" | "confirmed" | "corrected";
+  confirmed: boolean;
+  /** What the read produced, always preserved — even after a correction. */
+  extractedCents: number | null;
+  /** A NAME, never a crosswalk key: the screen prints it in a sentence. */
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+}
+
+/**
+ * The money fields this step can confirm. Frozen slugs, additive only, and the
+ * prefix is the scope — the server refuses a field recorded against the wrong
+ * one.
+ */
+export const CONFIRMABLE_FIELDS = [
+  "check_total",
+  "claim_total_paid",
+  "line_paid",
+  "line_billed",
+  "line_allowed",
+  "line_deductible",
+  "line_copay",
+] as const;
+export type ConfirmableField = (typeof CONFIRMABLE_FIELDS)[number];
+
+/**
+ * Where on the page a line was read from, for the cropped strip beside it.
+ *
+ * ALWAYS NULL TODAY, and the server sends it as an explicit null rather than
+ * omitting it. The stored OCR result carries no geometry — the reader keeps
+ * text, page count, word count and mean confidence and discards Azure's
+ * polygons — and re-running OCR to recover a box would spend money to redraw
+ * something. So the screen falls back to the whole page, scrolled to the page
+ * the selected row is on, and this is the seam a later slice fills.
+ */
+export interface PageRegion {
+  page: number;
+  /** Fractions of the page, 0–1, so a crop survives any render width. */
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface ConfirmLine {
+  lineId: string;
+  position: number;
+  code: string;
+  description: string;
+  region: PageRegion | null;
+  fields: ConfirmField[];
+}
+
+export interface ConfirmClaim {
+  claimId: string;
+  patientName: string | null;
+  claimNumber: string | null;
+  serviceDate: string | null;
+  totalPaid: ConfirmField;
+  lines: ConfirmLine[];
+}
+
+/** How the figures were obtained, and how sure the reader was. */
+export interface ConfirmProvenance {
+  uploadId: string;
+  textSource: "text_layer" | "ocr" | null;
+  ocrPageCount: number | null;
+  ocrMeanConfidence: number | null;
+}
+
+/**
+ * Does the read add up to the cheque?
+ *
+ * `comparable: false` means one of the figures is not stated, so there is no sum
+ * — and `differenceCents` is then null rather than a number computed from a
+ * missing value. A difference the screen invented is one a biller would go
+ * looking for on the page.
+ */
+export interface ConfirmSums {
+  ok: boolean;
+  comparable: boolean;
+  checkTotalCents: number | null;
+  claimsTotalCents: number | null;
+  differenceCents: number | null;
+}
+
+export interface FieldConfirmState {
+  office: RcmOfficeId;
+  batchId: string;
+  payer: string | null;
+  checkNumber: string | null;
+  depositDate: string | null;
+  /** THE ANCHOR. Its own top-level field, because everything reconciles to it. */
+  checkTotal: ConfirmField;
+  /**
+   * False for an 835 and for a PDF read from its own text layer. The screen then
+   * says the step does not apply, rather than rendering an empty confirm list
+   * that looks broken.
+   */
+  required: boolean;
+  provenance: ConfirmProvenance | null;
+  claims: ConfirmClaim[];
+  outstanding: {
+    ok: boolean;
+    outstanding: number;
+    first: { claimId: string | null; lineId: string | null; field: ConfirmableField } | null;
+  };
+  sums: ConfirmSums;
+  /**
+   * The check's own image, for the slot beside the anchor.
+   *
+   * Always null today — nothing in this slice uploads or captures one, and the
+   * slot renders nothing until that separate slice lands. It is typed now so the
+   * layout is built around it rather than retrofitted.
+   */
+  checkImage: { url: string } | null;
+}
+
+/** What one confirmation or correction asks for. */
+export interface ConfirmInstruction {
+  claimId?: string | null;
+  lineId?: string | null;
+  field: ConfirmableField;
+  /**
+   * The figure, in cents — or null for "the page genuinely does not state this".
+   *
+   * The key must be PRESENT. An omitted figure is refused by the server, because
+   * recording "the page says nothing" on a field nobody looked at is the same
+   * class of lie as inventing a number for it.
+   */
+  confirmedCents: number | null;
+}
+
+export interface ConfirmResult {
+  office: RcmOfficeId;
+  batchId: string;
+  confirmed: Array<{
+    field: ConfirmableField;
+    claimId: string | null;
+    lineId: string | null;
+    state: "confirmed" | "corrected";
+    cents: number | null;
+    extractedCents: number | null;
+    confirmedAt: string | null;
+  }>;
+}
+
+/** The page beside the figures, for one check. */
+export function getFieldConfirm(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<FieldConfirmState> {
+  return get<FieldConfirmState>(`/field-confirm/${encodeURIComponent(batchId)}`, { office });
+}
+
+/**
+ * Confirm figures, or correct them from the page.
+ *
+ * ALL OR NOTHING: one field the server refuses refuses the whole request. A
+ * partial write would leave a line with four figures confirmed and one silently
+ * not, under a success toast.
+ *
+ * The request never carries what the extraction said — the server reads that
+ * itself and derives `confirmed` vs `corrected` from the comparison. A client
+ * that supplied both sides could file a correction as an agreement, and the
+ * "corrected by …" line would never appear over a number somebody changed.
+ */
+export function confirmFields(
+  office: RcmOfficeId,
+  batchId: string,
+  fields: ConfirmInstruction[],
+): Promise<ConfirmResult> {
+  return post<ConfirmResult>(`/field-confirm/${encodeURIComponent(batchId)}`, { office }, { fields });
+}
+
+/**
+ * The URL of the source document, for the page image beside the figures.
+ *
+ * A plain URL rather than a fetch: the browser renders the PDF itself, and the
+ * bytes only reach it through the audited, office-scoped proxy that serves them
+ * — the container is private, shared-key auth is off, and no SAS token is ever
+ * minted. `#page=N` is the standard PDF fragment, which is how the viewer is
+ * scrolled to the page a selected line is on.
+ */
+export function documentUrl(
+  office: RcmOfficeId,
+  uploadId: string,
+  opts: { page?: number } = {},
+): string {
+  const qs = new URLSearchParams({ office }).toString();
+  const fragment = opts.page && opts.page > 0 ? `#page=${opts.page}` : "";
+  return `${BASE}/rcm/uploads/${encodeURIComponent(uploadId)}/document?${qs}${fragment}`;
 }

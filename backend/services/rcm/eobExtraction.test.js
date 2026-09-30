@@ -378,3 +378,184 @@ test('an extraction with no claims at all says so', () => {
   const doc = normalizeExtraction({ payment: {}, confidence: 90, claims: [] });
   assert.deepEqual(deriveBatchReviewReasons(doc), ['no_claims_extracted']);
 });
+
+// ─── COVERED IS NOT PAID ─────────────────────────────────────────────────────
+//
+// THE REAL CASE, as a fixture. The first genuine scanned EOB was a
+// category-subtotal layout: it printed payment only at benefit-type subtotals
+// and never per line. `paidCents` was a REQUIRED integer, so the model had no
+// way to say "not stated" — and it filled each line with that line's COVERED
+// amount. One line rendered a fabricated $1,229.00 paid. The claim totals were
+// read correctly, the non-summing warnings fired, and approve was blocked, so no
+// money moved. The numbers on screen were still invented.
+//
+// The schema now permits null and the prompt says when to use it. These pin both
+// halves, plus the review reason that replaced the false mismatch.
+
+/**
+ * A category-subtotal claim: every line states billed and covered/allowed, none
+ * states its own payment, and the CLAIM total is printed and correct.
+ *
+ * `allowedCents` is deliberately generous on the third line — 122900 is the
+ * $1,229.00 that was once promoted into paid, so a regression that reinstates
+ * the promotion produces that exact number again.
+ */
+function subtotalDoc() {
+  const doc = cleanDoc();
+  const claim = doc.claims[0];
+  claim.totalBilledCents = 150000;
+  claim.totalAllowedCents = 139100;
+  claim.totalPaidCents = 139100;
+  doc.payment.totalPaidCents = 139100;
+  claim.procedures = [
+    {
+      code: 'D0120', description: 'Periodic oral evaluation',
+      billedCents: 6500, allowedCents: 5200, deductibleCents: 0, copayCents: 0,
+      paidCents: null, confidence: 88, flags: [], adjustments: [],
+    },
+    {
+      code: 'D1110', description: 'Prophylaxis - adult',
+      billedCents: 12000, allowedCents: 11000, deductibleCents: 0, copayCents: 0,
+      paidCents: null, confidence: 86, flags: [], adjustments: [],
+    },
+    {
+      code: 'D2750', description: 'Crown - porcelain/ceramic',
+      billedCents: 131500, allowedCents: 122900, deductibleCents: 0, copayCents: 0,
+      paidCents: null, confidence: 84, flags: [], adjustments: [],
+    },
+  ];
+  return doc;
+}
+
+test('the schema lets a per-line payment be NOT STATED, because a required integer cannot', () => {
+  const line =
+    EOB_EXTRACTION_SCHEMA.schema.properties.claims.items.properties.procedures.items;
+  assert.deepEqual(
+    line.properties.paidCents.type,
+    ['integer', 'null'],
+    'a required integer is what forced the model to invent a number'
+  );
+  // Still REQUIRED — the model must answer, and null is the answer. Dropping it
+  // from `required` would let the key go missing, which is indistinguishable
+  // from a model that forgot to look.
+  assert.ok(line.required.includes('paidCents'));
+  // The claim total is NOT nullable: it stands alone and is always printed.
+  const claim = EOB_EXTRACTION_SCHEMA.schema.properties.claims.items;
+  assert.equal(claim.properties.totalPaidCents.type, 'integer');
+});
+
+test('the prompt forbids the promotion in the words that caused it', () => {
+  assert.match(SYSTEM_PROMPT, /COVERED IS NOT PAID/);
+  // The four column names a layout might print, each named so the model cannot
+  // reason that only "covered" was meant.
+  for (const word of ['allowed', 'covered', 'eligible', 'approved']) {
+    assert.match(
+      SYSTEM_PROMPT,
+      new RegExp(`"${word}"`, 'i'),
+      `the prompt must name the "${word}" column it must not copy`
+    );
+  }
+  assert.match(SYSTEM_PROMPT, /subtotal/i, 'and it must name the layout that triggers null');
+});
+
+test('an unstated per-line payment stays NULL — it never becomes 0 and never becomes the covered amount', () => {
+  const { claims } = normalizeExtraction(subtotalDoc());
+  const lines = claims[0].procedures;
+
+  for (const line of lines) {
+    assert.equal(line.paidCents, null, `${line.code} must report no payment, not a number`);
+  }
+  // The specific fabrication, by value: $1,229.00 was the covered amount on the
+  // crown line and the figure that reached the screen.
+  assert.notEqual(lines[2].paidCents, 122900, 'the covered amount must not reappear as paid');
+  // And the covered amounts themselves are untouched — they ARE on the page.
+  assert.deepEqual(lines.map((l) => l.allowedCents), [5200, 11000, 122900]);
+  // The claim total is read from the document and stands alone.
+  assert.equal(claims[0].totalPaidCents, 139100);
+});
+
+test('every falsy and malformed paid value becomes null, and a real 0 stays 0', () => {
+  const doc = cleanDoc();
+  // A stated zero is DATA: the plan adjudicated this line and paid nothing.
+  // It must survive, or "denied" becomes indistinguishable from "not printed".
+  doc.claims[0].procedures[0].paidCents = 0;
+  doc.claims[0].procedures[1].paidCents = undefined;
+  doc.claims[0].procedures[2].paidCents = 'not a number';
+  const lines = normalizeExtraction(doc).claims[0].procedures;
+  assert.equal(lines[0].paidCents, 0, 'a stated zero payment is not an absent one');
+  assert.equal(lines[1].paidCents, null);
+  assert.equal(lines[2].paidCents, null);
+});
+
+test('derived money does not depend on the payment, so it survives an unstated one', () => {
+  // billed − allowed, and deductible + copay. Neither reads paid, which is why a
+  // subtotal layout still produces a usable write-off and patient-responsibility
+  // figure. A derivation that reached for paid would have had to invent one.
+  const lines = normalizeExtraction(subtotalDoc()).claims[0].procedures;
+  assert.equal(lines[2].writeOffCents, 131500 - 122900);
+  assert.equal(lines[2].adjustmentCents, 131500 - 122900);
+  assert.equal(lines[2].patientRespCents, 0);
+});
+
+test('unstated line payments raise line_paid_not_stated, NOT a false paid_total_mismatch', () => {
+  const doc = subtotalDoc();
+  const reasons = deriveClaimReviewReasons(doc.claims[0], doc.confidence, doc.payment, {
+    today: TODAY,
+  });
+  assert.ok(reasons.includes('line_paid_not_stated'), 'the layout fact has to be said out loud');
+  assert.ok(
+    !reasons.includes('paid_total_mismatch'),
+    'the printed numbers do not disagree — one of them was never printed, and ' +
+      'paid_total_mismatch sends a biller to hunt an error that is not there'
+  );
+  // Σ(line paid) is undefined, not zero, so it cannot be a negative amount either.
+  assert.ok(!reasons.includes('negative_amount'));
+});
+
+test('a stated-but-not-summing claim still raises paid_total_mismatch', () => {
+  // The other branch, kept honest: when the document states EVERY line payment
+  // and they do not reach the claim total, that IS a disagreement between
+  // printed figures, and the old reason is the right one.
+  const doc = cleanDoc();
+  doc.claims[0].procedures[0].paidCents = 100;
+  const reasons = deriveClaimReviewReasons(doc.claims[0], doc.confidence, doc.payment, {
+    today: TODAY,
+  });
+  assert.ok(reasons.includes('paid_total_mismatch'));
+  assert.ok(!reasons.includes('line_paid_not_stated'));
+});
+
+test('one unstated line among stated ones is enough to stop the sum being claimed', () => {
+  // A partial layout — some categories broken out, one not. The sum is still not
+  // a sum, so it is still not checked.
+  const doc = cleanDoc();
+  doc.claims[0].procedures[1].paidCents = null;
+  const reasons = deriveClaimReviewReasons(doc.claims[0], doc.confidence, doc.payment, {
+    today: TODAY,
+  });
+  assert.ok(reasons.includes('line_paid_not_stated'));
+  assert.ok(!reasons.includes('paid_total_mismatch'));
+});
+
+test('a genuinely negative stated payment is still caught beside an unstated one', () => {
+  const doc = cleanDoc();
+  doc.claims[0].procedures[0].paidCents = null;
+  doc.claims[0].procedures[1].paidCents = -500;
+  const reasons = deriveClaimReviewReasons(doc.claims[0], doc.confidence, doc.payment, {
+    today: TODAY,
+  });
+  assert.ok(reasons.includes('negative_amount'), 'null must not mask a real negative');
+  assert.ok(reasons.includes('line_paid_not_stated'));
+});
+
+test('the check total is still checked against the claim totals on a subtotal layout', () => {
+  // The whole safety story for this layout: per-line payment is unknown, but the
+  // claim total and the check total are both printed, and they still must agree.
+  const doc = subtotalDoc();
+  const extracted = normalizeExtraction(doc);
+  assert.deepEqual(deriveBatchReviewReasons(extracted), []);
+  assert.equal(claimsPaidSum(extracted), 139100);
+
+  extracted.payment.totalPaidCents = 140000;
+  assert.deepEqual(deriveBatchReviewReasons(extracted), ['batch_paid_total_mismatch']);
+});
