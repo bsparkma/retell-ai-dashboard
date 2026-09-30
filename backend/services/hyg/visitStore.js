@@ -856,6 +856,37 @@ async function beginPerioAmendment(pool, { office, visitId }) {
 }
 
 /**
+ * Written → Staged: the exam this chart claims is GONE from Open Dental, and a
+ * person has confirmed sending it again (item 14).
+ *
+ * NOT the amendment path, and the difference matters. `beginPerioAmendment` goes
+ * to `Amending` and loads the readings OPEN DENTAL HOLDS, because there is an
+ * exam there to correct. Here there is not: the readings CareIN wrote — already
+ * on this row, in `payload` — are the only ones that exist, so the payload and
+ * the preview are left exactly as they are and the row simply becomes sendable
+ * again. The ordinary send path then posts a NEW exam; the old number is never
+ * resurrected.
+ *
+ * `written_ref` is cleared because the CHECK is a biconditional: only a `Written`
+ * row may carry one, and the sentence it carries — "exam 2260, every site read
+ * back and match" — is the false claim this whole slice exists to stop making.
+ *
+ * Nothing here reaches Open Dental.
+ *
+ * @returns {Promise<boolean>} whether this call restaged it
+ */
+async function restagePerioForResend(pool, { office, visitId, actor }) {
+  const res = await pool.query(
+    `UPDATE hyg_staged_write
+        SET state = 'Staged', written_ref = NULL, error_message = NULL, updated_at = now()
+      WHERE visit_id = $1 AND office = $2 AND kind = $3 AND state = 'Written'`,
+    [visitId, office, PERIO_KIND]
+  );
+  if (res.rowCount === 1) await touchVisit(pool, { office, visitId, actor });
+  return res.rowCount === 1;
+}
+
+/**
  * Amending/Staged → Written: the correction is abandoned.
  *
  * The chart goes back to the readings Open Dental holds — passed in, because
@@ -898,6 +929,7 @@ module.exports = {
   perioRestingState,
   beginPerioAmendment,
   cancelPerioAmendment,
+  restagePerioForResend,
   getPerio,
   savePerioDraft,
   readPerioChart,

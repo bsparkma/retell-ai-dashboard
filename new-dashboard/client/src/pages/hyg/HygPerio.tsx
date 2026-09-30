@@ -58,12 +58,14 @@ import {
   type HygPerioPriorResponse,
   type HygPerioResponse,
   type PerioChart,
+  type PerioDrift,
 } from "@shared/hyg/perio";
 import { perioChartChanges, type HygPerioSendResponse } from "@shared/hyg/perioSend";
 import {
   beginPerioAmendment,
   cancelPerioAmendment,
   removePerioReplacedExam,
+  resendPerioChart,
   deletePerioSendExam,
   fetchPerio,
   fetchPerioPrior,
@@ -85,6 +87,7 @@ import {
   reducePerioEntry,
   type PerioEntryAction,
 } from "@/features/hyg/perio/entry";
+import { PerioDriftNotice, PerioResendConfirm } from "@/features/hyg/perio/PerioDriftNotice";
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
 import { PerioKeyLegend, PerioKeyLegendShow } from "@/features/hyg/perio/PerioKeyLegend";
 import { PerioSendConfirm, perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
@@ -274,6 +277,14 @@ export default function HygPerio() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   /** Item 13: an amend or cancel request is in flight. */
   const [amending, setAmending] = useState(false);
+  /**
+   * Item 14: the resend dialog, for a `Written` chart whose exam has GONE from
+   * Open Dental. Opening it is the only thing the notice does; the send itself is
+   * the ordinary confirm below, run afterwards.
+   */
+  const [resendOpen, setResendOpen] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
   /** Stops the step loop when the page goes away — leaving pauses, it does not lose. */
   const mounted = useRef(true);
   useEffect(() => {
@@ -594,6 +605,34 @@ export default function HygPerio() {
     }
   }, [office, aptNum, applySend, loadChart]);
 
+  /**
+   * Item 14: withdraw the claim and put the chart back on the list.
+   *
+   * It writes NOTHING to Open Dental. The server re-reads the exam list first and
+   * refuses if the exam turns out to be there after all, so a stale notice cannot
+   * arm a duplicate. What lands here is a `Staged` chart and the ordinary Send —
+   * a second, separate confirmation — which is why this does not send.
+   */
+  const onResend = useCallback(
+    async (examNum: number) => {
+      if (!isOfficeId(office)) return;
+      setResending(true);
+      setResendError(null);
+      try {
+        applySend(await resendPerioChart(office, aptNum, examNum));
+        setResendOpen(false);
+        await Promise.all([loadChart(), loadPrior()]);
+      } catch (err) {
+        setResendError(
+          err instanceof HygApiError ? err.message : "Could not put this chart back on the list.",
+        );
+      } finally {
+        setResending(false);
+      }
+    },
+    [office, aptNum, applySend, loadChart, loadPrior],
+  );
+
   const onRemoveReplaced = useCallback(
     async (examNum: number) => {
       if (!isOfficeId(office)) return;
@@ -669,6 +708,14 @@ export default function HygPerio() {
     ? countPerioChart(priorChart).teethSkipped.filter((t) => !perioTooth(entry.chart, t).skipped)
     : [];
   const appointment = prior.phase === "loaded" ? prior.res.appointment : null;
+  /*
+   * ITEM 14: whether the exam this chart claims is still the one Open Dental
+   * holds. It arrives on the prior read because it is answered from the SAME
+   * `/perioexams` request, and it is `not_applicable` until that read lands —
+   * never a guess in either direction while it is in flight.
+   */
+  const drift: PerioDrift =
+    prior.phase === "loaded" ? prior.res.drift : { status: "not_applicable" };
   const staged = stored.stagedWrite;
   const locked =
     staged !== null && (staged.state === "Sending" || staged.state === "Failed" || staged.state === "Written");
@@ -895,6 +942,25 @@ export default function HygPerio() {
         </p>
       ) : null}
 
+      {/*
+        ITEM 14: above the prior panel, because it is about THIS chart's claim and
+        not about the patient's history. It draws nothing at all for three of the
+        five answers — `matches` and `unknown` included, on purpose.
+      */}
+      <div className="mt-3">
+        <PerioDriftNotice
+          drift={drift}
+          busy={resending || sendRunning || amending}
+          onResend={() => {
+            setResendError(null);
+            setResendOpen(true);
+            // The list in the dialog is only as fresh as the last read, so read
+            // again while she looks at it. The server re-checks at confirm too.
+            void loadPrior();
+          }}
+        />
+      </div>
+
       <div className="mt-3">
         <PriorPanel
           prior={prior}
@@ -1081,6 +1147,24 @@ export default function HygPerio() {
               startPerioSend(office, aptNum, date, { previewFingerprint: fingerprint, examDate: date, provNum }),
             );
           }}
+        />
+      ) : null}
+
+      {/*
+        Only ever rendered for `missing`. A chart whose readings merely DIFFER
+        cannot reach this dialog, because there is no path that opens it.
+      */}
+      {drift.status === "missing" ? (
+        <PerioResendConfirm
+          open={resendOpen}
+          examNum={drift.examNum}
+          examDate={date}
+          patientName={appointment?.patientName ?? "this patient"}
+          sameDateExams={drift.sameDateExams}
+          busy={resending}
+          error={resendError}
+          onCancel={() => setResendOpen(false)}
+          onConfirm={() => void onResend(drift.examNum)}
         />
       ) : null}
 

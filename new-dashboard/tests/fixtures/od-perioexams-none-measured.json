@@ -1,0 +1,25 @@
+{
+  "question": "What does Open Dental answer for GET /perioexams?PatNum= when the patient has NO perio exams? Item 21 measured the same question for /procedurelogs/GroupNotes and got an HTTP 404 with a sentence, not []. Item 14's drift check depends on the answer: the one case it exists for — a `Written` chart whose only exam was DELETED — is exactly a patient with zero exams, and reading a refusal as 'could not be read' would make the feature silently never fire.",
+  "verdict": "HTTP 200 with an EMPTY ARRAY. Not a 404, and not a sentence. /perioexams?PatNum= is NOT like /procedurelogs/GroupNotes?PatNum=.",
+  "method": "Measured from the application's OWN logs rather than from a probe, because the app already makes exactly this read on every open of a perio chart and already reports its outcome. `services/hyg/odPerio.js readPriorPerio` can only reach `prior: 'none'` when `pagedList` returned `error: null` — which `pagedList` only does after `res.ok === true` on a short page — AND zero exams survived the PatNum filter. So a logged `prior=none` is proof the read was a successful 200 that carried no exams for that patient. A 404 would have set `error`, taken the `!latest.ok` branch, and logged `prior=unavailable`.",
+  "evidence": {
+    "oneRequestInFull": [
+      "2026-09-29T21:58:53.2249749Z  [OD API] GET /perioexams",
+      "2026-09-29T21:58:54.1993509Z  [OD API] Response: 200 /perioexams",
+      "2026-09-29T21:58:54.1993509Z  [hygperio] office=roland apt=106142 prior=none od_perio_reads=1 ms=646"
+    ],
+    "counts": {
+      "priorNone": "10 observations — 8 on staging (log-carein-staging, 2026-09-21T00:28:57Z .. 2026-09-29T21:58:54Z) and 2 on production (log-carein-prod, 2026-09-21T23:07:24Z .. 2026-09-22T14:46:43Z). Every one with od_perio_reads=1.",
+      "priorUnavailable": "0 observations in 120 days, in either environment.",
+      "http404OnPerioexams": "0 in 90 days in either environment. Every logged /perioexams response was 200 or 201."
+    },
+    "contrastMeasured": "GET /periomeasures?PerioExamNum=<a DELETED exam> DOES answer a 404 with a sentence: `[OD API] Response Error: PerioExamNum not found.` (staging, 2026-09-21T14:33:03Z and 14:33:06Z). That sentence echoes NEITHER the exam number nor the PatNum, so it cannot be narrowly matched the way isNoGroupNotesAnswer matches its own. Item 14 therefore never treats it as an absence: the exam LIST is the only authority on whether an exam is present, and a measures read that refuses is `unknown`.",
+    "reproduce": "Log Analytics, either workspace:\n  ContainerAppConsoleLogs_CL\n  | where TimeGenerated > ago(120d)\n  | where Log_s startswith '[hygperio]' and Log_s contains 'prior='\n  | extend st = extract('prior=([a-z]+)', 1, Log_s)\n  | summarize n = count(), earliest = min(TimeGenerated), latest = max(TimeGenerated) by st\nAny `none` row is a measurement of this answer. Run it with `az rest --method post --url https://api.loganalytics.io/v1/workspaces/<customerId>/query --body @query.json` — `az monitor log-analytics query` drops the KQL."
+  },
+  "consequences": [
+    "No `isNoPerioExamsAnswer` recogniser exists, and none should be added: there is no refusal to recognise.",
+    "hygTestUtils' perioOd() fake already answers `[]` for a patient with no exams, which is now known to be faithful rather than assumed.",
+    "A /perioexams read that DOES fail stays a failure: the drift check answers `unknown` and the screen says nothing."
+  ],
+  "noPhi": "Only apt=106142 and counts appear above. No PatNum, no name, no reading. The [hygperio] log line is built to carry counts and milliseconds only."
+}
