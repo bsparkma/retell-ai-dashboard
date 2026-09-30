@@ -31,6 +31,7 @@ import BringInRedirect from "./pages/rcm/BringInRedirect";
 import RemittanceList from "./pages/rcm/RemittanceList";
 import RemittanceDetail from "./pages/rcm/RemittanceDetail";
 import ApproveCheck from "./pages/rcm/ApproveCheck";
+import FieldConfirm from "./pages/rcm/FieldConfirm";
 import ClaimMatch from "./pages/rcm/ClaimMatch";
 import PostingQueue from "./pages/rcm/PostingQueue";
 import TakebackSop from "./pages/rcm/TakebackSop";
@@ -146,6 +147,11 @@ export function Router() {
             matches in order, and `/rcm/remittances/:id` would otherwise swallow
             `/rcm/remittances/:id/approve` and render the check instead. */}
         <Route path="/rcm/remittances/:id/approve" component={ApproveCheck} />
+        {/* THE CONFIRM STEP for a check read off a scan. Like /approve, it is
+            more specific than `/rcm/remittances/:id` and must be registered
+            ABOVE it — wouter matches in order, and the check page would
+            otherwise swallow it and render the check instead. */}
+        <Route path="/rcm/remittances/:id/confirm" component={FieldConfirm} />
         <Route path="/rcm/remittances/:id" component={RemittanceDetail} />
         <Route path="/rcm/claims/:id" component={ClaimMatch} />
         {/* Slice 6c — the posting queue and the one button in this product that
