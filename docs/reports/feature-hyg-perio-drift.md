@@ -292,6 +292,13 @@ rules the flake out just as fast as a green rules it in.
 The leak hypothesis is not merely unsupported, it is unavailable in this runner: `node --test` runs
 every test FILE in its own child process (`--experimental-test-isolation=none` is not used and is
 documented as unusable here), so env vars, module-level caches and shared fakes cannot cross files.
+Measured rather than cited — two throwaway files under `--test-concurrency=1`, one setting an env var
+and one reading it:
+
+```
+A pid=25968 LEAK_PROBE=set-by-a
+B pid=50108 LEAK_PROBE=undefined
+```
 The only genuine cross-file channels are the filesystem, a bound port, and the parent's IPC stream.
 This branch's new test file writes no files (it only `readFileSync`s sources) and closes every
 ephemeral server it starts, in `finally`. **No test was weakened and no RCM file was touched.**
