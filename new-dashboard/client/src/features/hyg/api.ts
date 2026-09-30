@@ -611,11 +611,17 @@ export async function savePerio(
 }
 
 /**
- * Open Dental's last perio exam for this appointment's patient.
+ * Open Dental's last perio exam for this appointment's patient — AND whether the
+ * exam CareIN wrote is still the exam Open Dental holds (item 14).
  *
  * A 200 carries one of three answers — found, none, unavailable — and a screen
  * draws each differently. A THROWN error is a refusal about the appointment
  * itself (not ready, moved to another patient, no schedule), which is a fourth.
+ *
+ * `drift` rides the same response because it is answered from the same
+ * `/perioexams` read. Two of its five answers say NOTHING to the user: `matches`
+ * (checked, still true) and `unknown` (Open Dental could not be read). Drawing
+ * either of them would be worse than silence.
  */
 export async function fetchPerioPrior(
   office: OfficeId,
@@ -720,6 +726,27 @@ export async function cancelPerioAmendment(
   aptNum: number,
 ): Promise<HygPerioSendResponse> {
   return mutate("POST", `/visit/${aptNum}/perio/amend/cancel`, { office }, parsePerioSend);
+}
+
+/**
+ * Send a chart again whose exam has GONE from Open Dental (item 14).
+ *
+ * Writes NOTHING to Open Dental. It records that the exam is gone and puts the
+ * chart back to `Staged`; the ORDINARY send then posts a new exam, with its own
+ * confirmation and its own site-by-site read-back. The exam number is repeated as
+ * the explicit confirmation of which claim is being withdrawn, and the server
+ * re-reads Open Dental before it believes the exam is absent — an exam that turns
+ * out to be there refuses with `PERIO_EXAM_PRESENT`.
+ *
+ * There is deliberately no equivalent for a chart whose readings merely DIFFER.
+ * A difference is somebody's correction, and resending would bury it.
+ */
+export async function resendPerioChart(
+  office: OfficeId,
+  aptNum: number,
+  examNum: number,
+): Promise<HygPerioSendResponse> {
+  return mutate("POST", `/visit/${aptNum}/perio/resend`, { office }, parsePerioSend, { examNum });
 }
 
 /**

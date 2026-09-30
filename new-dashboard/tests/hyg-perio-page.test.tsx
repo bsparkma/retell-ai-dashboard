@@ -27,6 +27,7 @@ import {
   withPerioSite,
   type HygPerioPriorResponse,
   type PerioChart,
+  type PerioDrift,
   type PerioPrior,
 } from "@shared/hyg/perio";
 import { planPerioSend, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
@@ -38,6 +39,11 @@ const server = vi.hoisted(() => ({
   visitStarted: false,
   stagedWrite: null as unknown,
   prior: null as unknown,
+  /**
+   * Item 14: whether the exam a `Written` chart claims is still in Open Dental.
+   * `not_applicable` is what an unsent chart gets, and is the default here.
+   */
+  drift: null as unknown,
   /** When set, the prior request never answers — "not read yet". */
   priorPending: false,
   priorRefusal: null as { status: number; message: string; code: string } | null,
@@ -53,6 +59,8 @@ const server = vi.hoisted(() => ({
   // Item 13: what amend / cancel / remove-replaced answer, in order.
   amendScript: [] as unknown[],
   removed: [] as number[],
+  /** Item 14: every exam number a resend was confirmed for. */
+  resent: [] as number[],
 }));
 
 /** A send answer the server then HOLDS, the way the real one does. */
@@ -150,6 +158,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         date: "2026-09-08",
         appointment: APPOINTMENT,
         prior: server.prior as PerioPrior,
+        drift: server.drift as PerioDrift,
       };
     }),
     openVisit: vi.fn(async () => {
@@ -203,6 +212,17 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       server.removed.push(examNum);
       return applyToServer(server.amendScript.shift() as HygPerioSendResponse);
     }),
+    // Item 14: the resend. It writes nothing to Open Dental; it hands back a
+    // Staged chart, which the ordinary Send then takes from the top.
+    resendPerioChart: vi.fn(async (_o: string, _a: number, examNum: number) => {
+      server.calls.push("RESEND");
+      server.resent.push(examNum);
+      const next = server.amendScript.shift();
+      if (next instanceof real.HygApiError) throw next;
+      // The claim is withdrawn with the chart: no live send any more.
+      server.drift = { status: "not_applicable" };
+      return applyToServer(next as HygPerioSendResponse);
+    }),
     startPerioSend: vi.fn(async (_o: string, _a: number, _d: string, request: unknown) => {
       server.calls.push("SEND_START");
       server.sendRequests.push(request);
@@ -248,6 +268,7 @@ beforeEach(() => {
   server.visitStarted = false;
   server.stagedWrite = null;
   server.prior = { status: "none" };
+  server.drift = { status: "not_applicable" };
   server.priorPending = false;
   server.priorRefusal = null;
   server.saves = [];
@@ -258,6 +279,7 @@ beforeEach(() => {
   server.afterDelete = null;
   server.deletes = [];
   server.amendScript = [];
+  server.resent = [];
   server.removed = [];
 });
 afterEach(cleanup);
@@ -822,5 +844,192 @@ describe("correcting a sent chart (item 13)", () => {
     expect(screen.getByTestId("hyg-perio-amended").textContent).toMatch(
       /1 site corrected · #1 DB: 2 mm → 7 mm · exam 7001 deleted/,
     );
+  });
+});
+
+/**
+ * THE CHART IN OPEN DENTAL IS NO LONGER WHAT CAREIN WROTE (item 14), on screen.
+ *
+ * The server's four answers, and what the page is and is NOT allowed to draw for
+ * each. Two of these tests exist to stop an obvious-looking fix:
+ *
+ *   `changed` MUST NOT offer Send again — a difference is somebody's correction.
+ *   `unknown` MUST draw nothing — a failed read is not evidence of anything.
+ */
+describe("a Written chart whose exam has drifted in Open Dental", () => {
+  function writtenChartView(chart: PerioChart, over: Partial<PerioSendView> = {}): PerioSendView {
+    return view(chart, {
+      state: "written",
+      examNum: 7001,
+      rowsWritten: 0,
+      finishedAt: "2026-09-08T13:21:00.000Z",
+      writtenChart: chart,
+      ...over,
+    });
+  }
+
+  /** A chart that is Written in Open Dental — the state every answer starts from. */
+  function writtenAndSent(): PerioChart {
+    const chart = chartWithDeepPocket();
+    server.chart = chart;
+    server.visitStarted = true;
+    server.stagedWrite = staged("Written", "Perio chart");
+    const live = writtenChartView(chart);
+    server.send = sendResponse("Written", live);
+    return chart;
+  }
+
+  it("the exam is GONE: it says so, and Send again asks first, listing every same-date exam", async () => {
+    const chart = writtenAndSent();
+    server.drift = {
+      status: "missing",
+      examNum: 7001,
+      sameDateExams: [
+        { examNum: 7050, examDate: "2026-09-08", provNum: 7, careinWrote: false },
+        { examNum: 7051, examDate: "2026-09-08", provNum: 7, careinWrote: true },
+      ],
+    };
+    server.amendScript = [sendResponse("Staged", writtenChartView(chart), null, null)];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    const notice = await screen.findByTestId("hyg-perio-drift-missing");
+    expect(notice.textContent).toMatch(/Exam 7001 is no longer in Open Dental/);
+    expect(notice.textContent).toMatch(/These readings are not in the chart/);
+    // NOT AUTOMATIC. Nothing sent, and nothing asked of the server.
+    expect(server.calls.filter((c) => c === "RESEND")).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-drift-resend"));
+    const dialog = await screen.findByTestId("hyg-perio-resend-confirm");
+    // EVERY exam the patient has on this date, CareIN's or not, with its number.
+    const listed = screen.getByTestId("hyg-perio-resend-samedate").textContent ?? "";
+    expect(listed).toMatch(/Exam 7050/);
+    expect(listed).toMatch(/not written by CareIN/);
+    expect(listed).toMatch(/Exam 7051/);
+    expect(dialog.textContent).toMatch(/two exams for the same day/);
+    // It says it will be a NEW exam, and that 7001 is not coming back.
+    expect(dialog.textContent).toMatch(/7001 is not brought back/);
+    // Still nothing sent, because she has not confirmed.
+    expect(server.calls.filter((c) => c === "RESEND")).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("hyg-perio-resend-confirm-go"));
+    await screen.findByTestId("hyg-perio-state-Staged");
+    expect(server.resent).toEqual([7001]);
+    // And the chart is back on the list, to be SENT: a second, separate confirm.
+    expect(screen.getByTestId("hyg-perio-send-open")).toBeTruthy();
+    expect(screen.queryByTestId("hyg-perio-drift-missing")).toBeNull();
+  });
+
+  it("no perio exam at all on that date: the dialog says so rather than showing an empty list", async () => {
+    writtenAndSent();
+    server.drift = { status: "missing", examNum: 7001, sameDateExams: [] };
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    fireEvent.click(await screen.findByTestId("hyg-perio-drift-resend"));
+    await screen.findByTestId("hyg-perio-resend-confirm");
+    expect(screen.getByTestId("hyg-perio-resend-none").textContent).toMatch(
+      /no perio exam in Open Dental at all/,
+    );
+    expect(screen.queryByTestId("hyg-perio-resend-samedate")).toBeNull();
+  });
+
+  it("the sites DIFFER: it names them, and offers NO Send again anywhere on the page", async () => {
+    writtenAndSent();
+    server.drift = {
+      status: "changed",
+      examNum: 7001,
+      changes: [
+        { tooth: 3, surface: "DB", kind: "depth", from: "12 mm", to: "4 mm" },
+        { tooth: 14, surface: "B", kind: "depth", from: "3 mm", to: "5 mm" },
+      ],
+    };
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    const notice = await screen.findByTestId("hyg-perio-drift-changed");
+    expect(notice.textContent).toMatch(/Exam 7001 was changed in Open Dental after CareIN wrote it/);
+    // IT NAMES THE SITES.
+    expect(notice.textContent).toContain("#3 DB: 12 mm");
+    expect(notice.textContent).toContain("#14 B: 3 mm");
+
+    // AND OFFERS NO RESEND. A difference is a person's correction; sending again
+    // would post a second exam and bury it.
+    expect(screen.queryByTestId("hyg-perio-drift-resend")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-resend-confirm")).toBeNull();
+    expect(server.calls.filter((c) => c === "RESEND")).toEqual([]);
+    // What it points at instead is the correction path, which starts from what
+    // Open Dental holds now.
+    expect(notice.textContent).toMatch(/Amend chart/);
+    expect(screen.getByTestId("hyg-perio-amend")).toBeTruthy();
+  });
+
+  it("Open Dental could not be read: the Written line stands unqualified, and nothing is drawn", async () => {
+    writtenAndSent();
+    server.drift = { status: "unknown", examNum: 7001 };
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    await screen.findByTestId("hyg-perio-state-Written");
+
+    // NOTHING. Not a notice, not a warning, not a "could not check".
+    expect(screen.queryByTestId("hyg-perio-drift-missing")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-drift-changed")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-drift-resend")).toBeNull();
+    // And the Written line is the one it always was.
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/In Open Dental as exam 7001/);
+  });
+
+  it("the exam MATCHES: nothing is drawn either, because the Written line already says it", async () => {
+    writtenAndSent();
+    server.drift = { status: "matches", examNum: 7001 };
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    await screen.findByTestId("hyg-perio-state-Written");
+
+    expect(screen.queryByTestId("hyg-perio-drift-missing")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-drift-changed")).toBeNull();
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(/In Open Dental as exam 7001/);
+  });
+
+  it("a refused resend is said in the dialog, and the chart stays Written", async () => {
+    writtenAndSent();
+    server.drift = { status: "missing", examNum: 7001, sameDateExams: [] };
+    const { HygApiError } = await import("@/features/hyg/api");
+    server.amendScript = [
+      new HygApiError(
+        "Exam 7001 IS in Open Dental. Sending this chart again would create a second exam for the " +
+          "same visit, so nothing was changed.",
+        409,
+        "PERIO_EXAM_PRESENT",
+      ),
+    ];
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+
+    fireEvent.click(await screen.findByTestId("hyg-perio-drift-resend"));
+    await screen.findByTestId("hyg-perio-resend-confirm");
+    fireEvent.click(screen.getByTestId("hyg-perio-resend-confirm-go"));
+
+    const error = await screen.findByTestId("hyg-perio-resend-error");
+    expect(error.textContent).toMatch(/IS in Open Dental/);
+    expect(error.textContent).toMatch(/nothing was changed/);
+    // The chart never left Written, and the notice is still there to try again.
+    expect(screen.getByTestId("hyg-perio-state-Written")).toBeTruthy();
+    expect(screen.getByTestId("hyg-perio-drift-missing")).toBeTruthy();
+  });
+
+  it("a chart that was never sent draws nothing, and the page asks for no drift of its own", async () => {
+    server.chart = chartWithDeepPocket();
+    server.visitStarted = true;
+    server.stagedWrite = staged("Staged", "Perio chart");
+    server.drift = { status: "not_applicable" };
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    await screen.findByTestId("hyg-perio-state-Staged");
+
+    expect(screen.queryByTestId("hyg-perio-drift-missing")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-drift-changed")).toBeNull();
+    // ONE prior read on open, and the drift rides it. No second request for it.
+    expect(server.calls.filter((c) => c === "PRIOR")).toHaveLength(1);
   });
 });
