@@ -1,3 +1,5 @@
+import type { ConfirmableField } from "@/features/rcm/api";
+
 /**
  * The RCM vocabulary, in words a biller reads.
  *
@@ -362,4 +364,77 @@ export function provenanceNote(
 ): string | null {
   if (!provenance || provenance.textSource !== "ocr") return null;
   return "These figures were read off a page image, not parsed from the file.";
+}
+
+// ─── The confirm step — checking a scanned read against the page ─────────────
+
+/**
+ * THE SCREEN'S OWN SENTENCE. What she is doing, in the fewest words that say it.
+ *
+ * Not "field confirmation" and not "validate extracted figures": the object of
+ * the verb is the page, because the page is the thing she has and the thing the
+ * figures are being judged against.
+ */
+export const CONFIRM_HEADLINE = "Check these figures against the page";
+
+/**
+ * THE HONEST FRAMING, in place of a confidence score this product does not have.
+ *
+ * There IS no per-field confidence. The reader reports one mean word confidence
+ * for a whole document; the extraction model reports a per-LINE confidence,
+ * which already reaches her as an uncertain-line review reason on the check
+ * page. Neither is a score for an individual amount, and printing "92%" beside
+ * one would be a number we made up about a number a payer printed.
+ *
+ * So the caveat says where the figures came from and what that means, and stops.
+ */
+export const CONFIRM_SCAN_CAVEAT =
+  "These were read off a picture of the document, so every money figure needs a person's eye.";
+
+/**
+ * WHAT A FIGURE THE DOCUMENT DOES NOT STATE IS CALLED.
+ *
+ * "Not stated", never "$0.00" and never blank. Zero asserts that the plan paid
+ * nothing, which is a claim about a patient's balance; blank reads as a bug. A
+ * category-subtotal EOB genuinely has no per-line payment, and confirming that
+ * is a real answer she is allowed to give.
+ */
+export const CONFIRM_NOT_STATED = "Not stated";
+
+/** What each confirmable field is called on the screen. */
+export const CONFIRM_FIELD_LABELS: Record<ConfirmableField, string> = {
+  check_total: "This check is for",
+  claim_total_paid: "Paid on this claim",
+  line_paid: "Paid",
+  line_billed: "Billed",
+  line_allowed: "Covered",
+  line_deductible: "Deductible",
+  line_copay: "Patient share",
+};
+
+/**
+ * THE TRAIL, IN A SENTENCE, under the figure it belongs to.
+ *
+ * "corrected by <name> from the page image" is the wording the ruling asked for,
+ * and the reason a typed amount is safe: anybody reading this number later can
+ * see that it was typed, by whom, and what the machine had said instead. A
+ * confirmation gets the quieter half of the same sentence.
+ *
+ * An unknown author reads as "someone" rather than as a crosswalk key — a key in
+ * a sentence is worse than an honest indefinite.
+ */
+export function confirmedByLine(field: {
+  source: "extracted" | "confirmed" | "corrected";
+  confirmedBy: string | null;
+  extractedCents: number | null;
+}): string {
+  const who = field.confirmedBy ?? "someone";
+  if (field.source === "corrected") {
+    const was =
+      field.extractedCents === null
+        ? "the scan showed nothing here"
+        : `the scan read ${(field.extractedCents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" })}`;
+    return `corrected by ${who} from the page image — ${was}`;
+  }
+  return `checked by ${who} against the page image`;
 }
