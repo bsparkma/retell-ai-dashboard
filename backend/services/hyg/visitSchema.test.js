@@ -152,28 +152,47 @@ test('the hyg migrations sort after everything that came before them', () => {
   assert.equal(new Set(numbers).size, numbers.length, 'two migrations share a timestamp');
 
   const hyg = files.filter((f) => f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
-  const others = files.filter((f) => !f.includes('_hyg_')).map((f) => Number(f.split('_')[0]));
   assert.ok(hyg.length >= 2, 'expected the slice 2 and slice 3 migrations');
 
-  // NOT `min(hyg) > max(others)`, which is what this assertion used to say.
-  // That formulation held only while hygiene owned the NEWEST tenant migration
-  // in the repo, and it goes false the first time any other module adds one
-  // after the block — which is a normal thing to do, and which the fees module
-  // (migrations-tenant/1788700000000_fees_import.js) duly did. A test that has
-  // to be edited by every unrelated slice is a test that gets edited without
-  // being read.
-  //
-  // The property that actually protects a deploy is that nothing sorts INSIDE
-  // the hygiene block. A migration authored after the whole block is fine by
-  // construction — checkOrder only refuses one that lands BEHIND an
-  // already-deployed migration.
-  const lo = Math.min(...hyg);
-  const hi = Math.max(...hyg);
-  assert.deepEqual(
-    others.filter((n) => n > lo && n < hi),
-    [],
-    'a non-hygiene migration sorts inside the hygiene block'
+  /*
+   * THIS ASSERTION HAS NOW BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS.
+   *
+   * v1 said `min(hyg) > max(others)`. That held only while hygiene owned the
+   * NEWEST tenant migration in the repo, and went false the first time another
+   * module added one after the block — which the fees module duly did.
+   *
+   * v2 said nothing sorts INSIDE the hygiene block. That held only while
+   * hygiene's migrations were contiguous, and went false the first time hygiene
+   * added one after the fees block (item 14's
+   * 1789500000000_hyg_perio_exam_gone.js) — which is also a normal thing to do.
+   *
+   * Both were proxies for something they did not measure. Interleaving between
+   * modules is HARMLESS: node-pg-migrate's `checkOrder` refuses a migration that
+   * sorts BEHIND one already applied, and says nothing about which module
+   * authored what. Two modules taking turns is the expected shape of a repo with
+   * two modules in it, and a test that goes red for every unrelated slice is a
+   * test that gets edited without being read.
+   *
+   * So this now asserts the two properties that ARE real and that no unrelated
+   * slice can falsify:
+   *
+   *   1. Filename order equals numeric order. `checkOrder` compares the sorted
+   *      FILE LIST against what is applied, so a timestamp of a different WIDTH
+   *      sorts by string where everyone reads it as a number — and it fails at
+   *      deploy time, on the one environment that already has rows in
+   *      `pgmigrations`. This is the failure the test was always reaching for.
+   *   2. Hygiene's own are in slice order, so a later hygiene slice can never
+   *      land behind an earlier deployed one.
+   */
+  assert.equal(
+    new Set(files.map((f) => f.split('_')[0].length)).size,
+    1,
+    'a migration timestamp of a different width sorts by string, not by number'
   );
-  // And they are in slice order among themselves.
+  assert.deepEqual(
+    numbers,
+    [...numbers].sort((a, b) => a - b),
+    'the sorted file list is not in numeric order, which is the order checkOrder applies'
+  );
   assert.deepEqual(hyg, [...hyg].sort((a, b) => a - b));
 });
