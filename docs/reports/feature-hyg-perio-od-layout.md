@@ -221,8 +221,33 @@ Run on the merge tree — see §8 for the tree-hash confirmation.
 | `node scripts/shard-runner.mjs` | **4/4 green** — 2866 tests, 2863 pass, 0 fail, 3 skipped |
 | `pnpm run check` (`tsc --noEmit`) | clean |
 | `pnpm run test` (vitest) | 125 files, **2089 pass, 0 fail**, 139 skipped |
+| CI `build-test` on #211 | **SUCCESS** — red once on the Node 22 flake, green on re-run; see §6a |
 | `HYG_SHOTS=1 … hyg-perio-shots.test.tsx` | **19/19** (was 2/18 on develop — §1.6) |
 | No `any` in the changed TypeScript | verified |
+
+## 6a. CI went red once on the known Node 22 flake, and green on re-run
+
+Run 36806966952 (`24620f5`) failed at `backend unit tests (sharded)`, shard 2. **Re-run on
+the same commit, no code change: green.** `build-test` on #211 is SUCCESS.
+
+It was ruled a flake on evidence, not on hope:
+
+- **Shard 2 is 647/647 green locally** on the identical tree, and the whole suite 4/4.
+- **`origin/develop` at `bbe6b83` — this branch's exact base — is green in CI**, and this
+  branch adds **no backend test file**, so `--test-shard` partitions the backend suite
+  identically on both. There is no composition change to blame.
+- **The log named a shard and a file that cannot be the failure.** It carried no `not ok`,
+  no `# tests` / `# pass` / `# fail` counters, and ended with
+  `[shard-runner] FAILED: shard 2/4` (stderr) followed by a stray
+  `# Subtest: a CORRECTION is what the sum is taken over — not the figur` — cut mid-word,
+  from `confirmedFigures.test.js`, **which is in shard 3**. Measured, not assumed. That is
+  the same truncation that sent #207's diagnosis after an innocent file.
+- A failure with no assertion in it is `shard-runner.mjs`'s own documented signature for
+  `nodejs/node#64061`, the signed size-decode in the test runner's parent that is fixed in
+  v24.20/v26.7 and in no Node 22. The runtime image is `node:22-alpine`, so CI stays on 22.
+
+Re-running first was the right move and cost three minutes: a green re-run proves the flake,
+and a second identical red would have ruled it out just as fast.
 
 ## 7. What I need from you
 
