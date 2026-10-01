@@ -763,6 +763,14 @@ export default function HygPerio() {
   const skipSuggestion = priorChart
     ? countPerioChart(priorChart).teethSkipped.filter((t) => !perioTooth(entry.chart, t).skipped)
     : [];
+  /*
+   * ITEM 27: the pre-skip notice describes the chart AS IT IS, not as the
+   * pre-skip left it. She un-skips the implant, the implant leaves the
+   * sentence, and when she has un-skipped them all the line goes away. A
+   * standing claim that teeth are skipped when they are not is the sort of
+   * small lie that teaches her to stop reading the panels.
+   */
+  const preSkipStillSkipped = preSkipped.filter((t) => perioTooth(entry.chart, t).skipped);
   const appointment = prior.phase === "loaded" ? prior.res.appointment : null;
   /*
    * ITEM 14: whether the exam this chart claims is still the one Open Dental
@@ -1036,16 +1044,16 @@ export default function HygPerio() {
         This line is about teeth that are no longer in the mouth, so it survives
         the chart being locked -- a sent chart still shows why it skipped them.
       */}
-      {preSkipped.length > 0 ? (
+      {preSkipStillSkipped.length > 0 ? (
         <p
           className="mt-3 rounded-xl border border-dashed border-border px-3 py-2 text-sm text-muted-foreground"
           data-testid="hyg-perio-preskipped"
         >
           <span className="font-medium text-foreground">
-            {preSkipped.map((t) => "#" + t).join(", ")} skipped
+            {preSkipStillSkipped.map((t) => "#" + t).join(", ")} skipped
           </span>{" "}
-          because Open Dental records {preSkipped.length === 1 ? "it" : "them"} as missing. Select a
-          skipped tooth to un-skip it and chart it.
+          because Open Dental records {preSkipStillSkipped.length === 1 ? "it" : "them"} as missing.
+          Select a skipped tooth to un-skip it and chart it.
         </p>
       ) : null}
 

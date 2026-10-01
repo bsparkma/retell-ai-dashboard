@@ -1097,6 +1097,29 @@ describe("item 27: a fresh chart opens with Open Dental's missing teeth skipped"
     expect(line.getAttribute("role")).toBeNull();
   });
 
+  it("the notice describes the chart AS IT IS — un-skipping a tooth drops it", async () => {
+    odSaysMissing([19, 30]);
+    renderPerio();
+    const line = await screen.findByTestId("hyg-perio-preskipped");
+    expect(line.textContent).toMatch(/#19, #30 skipped/);
+
+    // She un-skips the implant.
+    fireEvent.click(screen.getByTestId("hyg-perio-skipped-19-facial"));
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), { key: "x", code: "KeyX" });
+    await waitFor(() =>
+      expect(screen.getByTestId("hyg-perio-preskipped").textContent).toMatch(/#30 skipped/),
+    );
+    // #19 is gone from the sentence, and the singular reads correctly.
+    expect(screen.getByTestId("hyg-perio-preskipped").textContent).not.toMatch(/#19/);
+    expect(screen.getByTestId("hyg-perio-preskipped").textContent).toMatch(/records it as missing/);
+
+    // And when she has un-skipped them all, the line goes away rather than
+    // standing there claiming teeth are skipped when none are.
+    fireEvent.click(screen.getByTestId("hyg-perio-skipped-30-facial"));
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), { key: "x", code: "KeyX" });
+    await waitFor(() => expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull());
+  });
+
   it("NOTHING IS SAVED, and no visit is started, by a pre-skip alone", async () => {
     /*
      * The serious one. `save` starts a visit that has not been started, so a

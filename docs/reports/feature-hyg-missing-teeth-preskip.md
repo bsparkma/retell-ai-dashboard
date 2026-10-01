@@ -131,6 +131,12 @@ or whether the grid is broken. One dashed line names the teeth, names the source
 and says it can be undone. It is deliberately **not** a warning and carries no
 `role="alert"`: a correct default is not a problem to report.
 
+The sentence is derived from the **live chart**, not from what the pre-skip did,
+so un-skipping the implant drops it from the list and un-skipping them all
+removes the line. A panel that went on claiming teeth were skipped after she
+un-skipped them is the sort of small lie that teaches her to stop reading the
+panels.
+
 ### 2.5 Fail-soft, and `200 []` is not a failure
 
 A non-ok read, a non-list body, a throw, or no PatNum → `unavailable`: the chart
@@ -192,7 +198,7 @@ counts is a budget that grows.
 | 6 | Exactly one added OD request per chart open, asserted | `ACCEPTANCE 6` ×2 (fresh = +1, stored = +0) |
 | 7 | The report quotes the probe facts, including the unfiltered hazard | §1, and §1.4 for the hazard |
 
-Tests added: **18** reader unit tests, **15** route tests, **11** client tests.
+Tests added: **18** reader unit tests, **15** route tests, **12** client tests.
 
 ---
 
