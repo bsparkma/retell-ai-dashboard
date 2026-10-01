@@ -68,7 +68,7 @@ const DEFAULT_LIMIT = 50;
  * statements about two populations, which is the Slice 6a defect the whole-office
  * scan exists to prevent.
  */
-const REMITTANCE_VIEWS = Object.freeze(['attention', 'parked', 'set_aside', 'all']);
+const REMITTANCE_VIEWS = Object.freeze(['attention', 'parked', 'set_aside', 'archived', 'all']);
 
 /**
  * The CURRENT set-aside vocabulary.
@@ -200,6 +200,14 @@ const BATCH_COLUMNS = [
   'set_aside_reason',
   'set_aside_reason_note',
   /*
+   * ARCHIVED (1790000000000) — a check with no posting history, off the board
+   * entirely. Selected on the list and the detail because it changes what a row
+   * says about itself, exactly as the two worklist states above do.
+   */
+  'archived_at',
+  'archived_by',
+  'archived_reason',
+  /*
    * DID THE APP GET THIS CHECK RIGHT? (1787900000000, Stage C-2).
    *
    * The shadow-mode comparison. Selected on the DETAIL and on the list, for the
@@ -315,7 +323,20 @@ function attentionFor(batch, claims, approval = {}) {
   const observations = [];
 
   /*
-   * ── SET ASIDE SHORT-CIRCUITS, AND IT IS THE ONLY THING HERE THAT DOES ─────
+   * ── ARCHIVED SHORT-CIRCUITS FIRST ─────────────────────────────────────────
+   *
+   * Stronger than set-aside, and allowed to be: the archive route refuses any
+   * check with posting history, so an archived check explains no money by
+   * construction. It is off the board entirely — the list excludes it from
+   * every view but its own — and this early return is what keeps it out of the
+   * attention counts with the same one-rule-one-place property set-aside has.
+   */
+  if (batch.archived) {
+    return { needsAttention: false, reasons: [], observations: ['archived'] };
+  }
+
+  /*
+   * ── SET ASIDE SHORT-CIRCUITS, AND IT IS THE ONLY OTHER THING THAT DOES ────
    *
    * A person has said, on the record and with a reason, that nobody is coming
    * back to this check. That is a DISPOSITION, exactly like marking a claim
@@ -488,7 +509,12 @@ function patientNamesFor(claims) {
 function toBatchWire(batch, claims, source, actors, approval = {}, decided = null) {
   const batchFlags = Array.isArray(batch.flags) ? batch.flags : [];
   const attention = attentionFor(
-    { status: batch.status, flags: batchFlags, setAside: batch.set_aside_at != null },
+    {
+      status: batch.status,
+      flags: batchFlags,
+      setAside: batch.set_aside_at != null,
+      archived: batch.archived_at != null,
+    },
     claims,
     {
       ...approval,
@@ -599,6 +625,17 @@ function toBatchWire(batch, claims, source, actors, approval = {}, decided = nul
       : null,
     setAsideReason: batch.set_aside_reason || null,
     setAsideNote: batch.set_aside_reason_note || null,
+
+    /**
+     * ARCHIVED — off the board entirely, and only reachable for a check with
+     * no posting history. Null throughout means not archived. The reason is
+     * the person's own required line; PHI-capable, so never audited.
+     */
+    archivedAt: iso(batch.archived_at),
+    archivedBy: batch.archived_by
+      ? (actors[batch.archived_by] || {}).displayName || batch.archived_by
+      : null,
+    archivedReason: batch.archived_reason || null,
 
     /**
      * DID THE APP GET THIS CHECK RIGHT? — the shadow-mode comparison (C-2).
@@ -1016,7 +1053,7 @@ router.get(
           // `approval_attempted_at` does. Reading them on the page alone would
           // put the filter and the counts back on two populations — the Slice 6a
           // defect the whole-office scan exists to prevent.
-          `SELECT batch_id, status, flags, approval_attempted_at, set_aside_at, parked_at ` +
+          `SELECT batch_id, status, flags, approval_attempted_at, set_aside_at, parked_at, archived_at ` +
             `FROM rcm_payment_batches ` +
             `WHERE office_id = $1 ORDER BY deposit_date DESC NULLS LAST, created_at DESC`,
           [office]
@@ -1036,11 +1073,13 @@ router.get(
         batchId: row.batch_id,
         setAside: row.set_aside_at != null,
         parked: row.parked_at != null,
+        archived: row.archived_at != null,
         needsAttention: attentionFor(
           {
             status: row.status,
             flags: Array.isArray(row.flags) ? row.flags : [],
             setAside: row.set_aside_at != null,
+            archived: row.archived_at != null,
           },
           scan.get(row.batch_id) || [],
           {
@@ -1054,9 +1093,20 @@ router.get(
         ).needsAttention,
       }));
 
-      const attentionCount = marked.filter((m) => m.needsAttention).length;
       /*
-       * FOUR VIEWS, AND THE DEFAULT STILL SHOWS EVERYTHING.
+       * ARCHIVED IS A PARTITION OF THE WHOLE LIST, NOT A FILTER OVER IT.
+       *
+       * Every other view — `all` included — pages over `live`. An archived
+       * check appears in exactly one place, `view=archived`, which is the one
+       * deliberate exception to "all shows everything": the rows are not
+       * silently hidden, they have their own named tab, its count is returned
+       * beside the others, and the route can only archive a check that has no
+       * posting history — so no view that explains money ever loses a row.
+       */
+      const live = marked.filter((m) => !m.archived);
+      const attentionCount = live.filter((m) => m.needsAttention).length;
+      /*
+       * FIVE VIEWS, AND THE DEFAULT STILL SHOWS EVERY LIVE CHECK.
        *
        *   attention  what a human still owes an action on. Set-aside rows are
        *              already excluded by the predicate itself, not filtered out
@@ -1066,22 +1116,28 @@ router.get(
        *   set_aside  the checks nobody is coming back to. Its own view because
        *              set-aside is REVERSIBLE, and a state you can undo must have
        *              somewhere you can find it.
-       *   all        everything, set-aside included. The default, because a list
-       *              endpoint that silently hides rows is a trap for the next
-       *              caller — the same reasoning that keeps `all` the default
-       *              while the screen opens on "Needs attention".
+       *   archived   the checks that were never real work — a test upload, the
+       *              wrong office's file — with no posting history, by the
+       *              route's own refusal. Reversible, so it has its own view on
+       *              the same argument set_aside does.
+       *   all        every live check, set-aside included. The default, because
+       *              a list endpoint that silently hides rows is a trap for the
+       *              next caller — the same reasoning that keeps `all` the
+       *              default while the screen opens on "Needs attention".
        *
        * An unrecognised value falls back to `all` rather than 400ing: refusing a
        * whole list over a typo in a display preference is the worse failure.
        */
       const selected =
         view === 'attention'
-          ? marked.filter((m) => m.needsAttention)
+          ? live.filter((m) => m.needsAttention)
           : view === 'parked'
-            ? marked.filter((m) => m.parked && !m.setAside)
+            ? live.filter((m) => m.parked && !m.setAside)
             : view === 'set_aside'
-              ? marked.filter((m) => m.setAside)
-              : marked;
+              ? live.filter((m) => m.setAside)
+              : view === 'archived'
+                ? marked.filter((m) => m.archived)
+                : live;
       const pageIds = selected.slice(offset, offset + limit).map((m) => m.batchId);
 
       if (pageIds.length === 0) {
@@ -1092,10 +1148,11 @@ router.get(
           decided: new Map(),
           actors: {},
           queued,
-          total: marked.length,
+          total: live.length,
           attentionCount,
-          parkedCount: marked.filter((m) => m.parked && !m.setAside).length,
-          setAsideCount: marked.filter((m) => m.setAside).length,
+          parkedCount: live.filter((m) => m.parked && !m.setAside).length,
+          setAsideCount: live.filter((m) => m.setAside).length,
+          archivedCount: marked.filter((m) => m.archived).length,
           matching: selected.length,
         };
       }
@@ -1125,6 +1182,7 @@ router.get(
         // that could only print a crosswalk key would not do that job.
         ...ordered.map((b) => b.parked_by),
         ...ordered.map((b) => b.set_aside_by),
+        ...ordered.map((b) => b.archived_by),
         // …whoever answered the shadow-mode comparison on each check (C-2), on
         // the same argument again: a panel reading "answered by u-7" is a panel
         // that has forgotten who works here.
@@ -1142,10 +1200,11 @@ router.get(
         decided,
         actors,
         queued,
-        total: marked.length,
+        total: live.length,
         attentionCount,
-        parkedCount: marked.filter((m) => m.parked && !m.setAside).length,
-        setAsideCount: marked.filter((m) => m.setAside).length,
+        parkedCount: live.filter((m) => m.parked && !m.setAside).length,
+        setAsideCount: live.filter((m) => m.setAside).length,
+        archivedCount: marked.filter((m) => m.archived).length,
         matching: selected.length,
       };
     });
@@ -1195,7 +1254,12 @@ router.get(
       /** Which population `remittances` was paged out of. */
       view,
       remittances,
-      /** Every remittance this office holds — NOT the page, and NOT the filter. */
+      /**
+       * Every LIVE remittance this office holds — NOT the page, and NOT the
+       * filter. Archived checks sit outside it, counted in `archivedCount`:
+       * they are the one partition, and "N total" on every tab must not count
+       * rows no tab but Archived will ever show.
+       */
       total: loaded.total,
       /**
        * How many of that same population need attention. Computed over the
@@ -1211,6 +1275,8 @@ router.get(
        */
       parkedCount: loaded.parkedCount,
       setAsideCount: loaded.setAsideCount,
+      /** The archived partition's size — the one population `total` excludes. */
+      archivedCount: loaded.archivedCount,
       /** How many rows the CURRENT view holds — what `offset`/`limit` page. */
       matchingCount: loaded.matching,
       limit,
@@ -2004,7 +2070,7 @@ async function loadWorklistState(client, office, batchId) {
      * is loaded inside the same transaction — and under the same row read — that
      * the write then acts on.
      */
-    `SELECT batch_id, parked_at, set_aside_at, ` +
+    `SELECT batch_id, parked_at, set_aside_at, archived_at, ` +
       `comparison_verdict, comparison_reason, comparison_note, comparison_revision ` +
       `FROM rcm_payment_batches WHERE office_id = $1 AND batch_id = $2`,
     [office, batchId]
@@ -2330,6 +2396,243 @@ router.post(
     }
 
     return res.json({ success: true, office, batchId, setAside: false, wasSetAside });
+  })
+);
+
+// ─── Archive: a check that never went anywhere, off the board ────────────────
+
+/**
+ * POST /:id/archive — take a check that was never queued and never posted off
+ * the board entirely.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE GUARD IS THE FEATURE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Archive exists for the check that was never real work — a test upload, the
+ * wrong office's PDF, a duplicate scan caught early. Those can disappear from
+ * Today, Checks and every count precisely BECAUSE hiding them hides no money.
+ * The moment a posting plan exists for a check — queued, posted, failed,
+ * partially posted, blocked, retired, anything — that stops being true: the
+ * check is part of the explanation of what did or did not reach a chart, and
+ * records that explain money are never hidden by archive. The refusal names
+ * the plan's state and points at Set aside, which is the affordance built for
+ * a real check nobody is coming back to.
+ *
+ * The guard is evaluated INSIDE the same transaction as the stamp, on the same
+ * connection, so an approve landing between the read and the write cannot slip
+ * a plan under an archive.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ARCHIVING FREES THE DUP-HASH
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The point of archiving a test check is that the same file can come in again,
+ * cleanly, without the dedupe refusing it as already here:
+ *
+ *   EOB — the linked `rcm_eob_uploads` rows flip to `archived`, which the
+ *   behavioural probe in routes/rcm/eob.js skips and the partial unique index
+ *   (1790000000000) no longer covers.
+ *
+ *   ERA — the check's `rcm_remittance_keys` row is released to `failed`, the
+ *   state `reserveRemittanceKey` takes over atomically on the next upload.
+ *
+ * Blobs and rows are kept; nothing is deleted anywhere, and `audit_log` is
+ * untouched as ever — one UPDATE row is filed, carrying no free text.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `rcm.write`, BY THE MOUNT, AND DELIBERATELY NOT IN QUEUE_PATHS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Park and set-aside run on `rcm.queue` because they change which queue a row
+ * appears in and nothing else. Archiving re-arms a dedupe guard — it is what
+ * lets the same money's file be ingested a second time — so it belongs to the
+ * same tier as the other acts that can lead to money moving, by the mount's
+ * method gate, with no exemption to maintain.
+ */
+router.post(
+  '/:id/archive',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    const rawReason = req.body && req.body.reason;
+    const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
+    if (reason.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Say in a line why this check is being archived',
+        code: 'ARCHIVE_REASON_REQUIRED',
+      });
+    }
+    if (reason.length > MAX_WORKLIST_NOTE) {
+      return res.status(400).json({
+        success: false,
+        error: `That reason is too long (max ${MAX_WORKLIST_NOTE} characters)`,
+        code: 'NOTE_TOO_LONG',
+      });
+    }
+
+    /** Set inside the transaction when the posting-history guard refuses. */
+    let refusedStatuses = null;
+    const done = await withWorklistWrite(req, office, batchId, async (client, userKey) => {
+      /*
+       * THE NEVER-ARCHIVE-POSTED GUARD. Any plan at all refuses — not only the
+       * unhappy states. A `posted` plan is the clearest case of money this
+       * check explains, and even a retired one is the record of a decision
+       * about money. There is no override and no force flag.
+       */
+      const plans = await client.query(
+        `SELECT queue_id, status FROM rcm_posting_queue ` +
+          `WHERE office_id = $1 AND batch_id = $2`,
+        [office, batchId]
+      );
+      if (plans.rows.length > 0) {
+        refusedStatuses = plans.rows.map((p) => String(p.status));
+        return;
+      }
+
+      await client.query(
+        `UPDATE rcm_payment_batches SET archived_at = now(), archived_by = $3, ` +
+          `archived_reason = $4, updated_at = now() ` +
+          `WHERE office_id = $1 AND batch_id = $2`,
+        [office, batchId, userKey, reason]
+      );
+
+      // Free the EOB dup-hash: the linked uploads stop holding it. Only an
+      // `extracted` row can be linked to a batch, so that is the one state
+      // this flips — a row mid-`processing` belongs to a different batch-less
+      // world and is not touched.
+      await client.query(
+        `UPDATE rcm_eob_uploads SET status = 'archived', updated_at = now() ` +
+          `WHERE office_id = $1 AND result_batch_id = $2 AND status = 'extracted'`,
+        [office, batchId]
+      );
+
+      // Free the ERA remittance key: `failed` is the one state a later
+      // reserveRemittanceKey takes over atomically. Scoped to THIS batch's
+      // key, so a key already re-claimed by a newer upload is never touched.
+      await client.query(
+        `UPDATE rcm_remittance_keys SET status = 'failed', updated_at = now() ` +
+          `WHERE office_id = $1 AND batch_id = $2 AND status = 'posted'`,
+        [office, batchId]
+      );
+    });
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    if (refusedStatuses) {
+      // Named, not generic: the state of the plan is the whole reason, and the
+      // way forward is a different affordance.
+      return res.status(409).json({
+        success: false,
+        error:
+          `This check has posting history (${refusedStatuses.join(', ')}) — it is part of the ` +
+          `record of what reached Open Dental, so it cannot be archived. Use Set aside instead.`,
+        code: 'ARCHIVE_POSTING_HISTORY',
+        statuses: refusedStatuses,
+      });
+    }
+
+    // The reason is PHI-capable free text and stays out of the trail, exactly
+    // as the park note and set-aside note do.
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'rcm_remittance_archive',
+      resourceId: batchId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+
+    return res.json({ success: true, office, batchId, archived: true });
+  })
+);
+
+/**
+ * POST /:id/unarchive — put an archived check back on the board.
+ *
+ * The half that makes archive safe to press, on the same argument `restore`
+ * makes for set-aside. The stamps are CLEARED rather than kept (the pairing
+ * CHECK requires it; the audit row is the history), and the dedupe guards are
+ * re-armed where that is still honest:
+ *
+ *   EOB — each `archived` upload flips back to `extracted` ONLY while no other
+ *   live upload holds its hash. If the same file was re-uploaded while this
+ *   was archived, the hash now belongs to the newer upload and this row stays
+ *   `archived` — flipping it would violate the unique index, and the newer
+ *   upload's dedupe is the one that should win.
+ *
+ *   ERA — the key flips back to `posted` only while it still names this batch
+ *   and is still `failed`; a key a newer upload has taken over is left alone.
+ *
+ * IDEMPOTENT over a check nobody archived, for the same reason `unpark` is.
+ */
+router.post(
+  '/:id/unarchive',
+  h(async (req, res) => {
+    const office = req.rcmOffice;
+    const batchId = String(req.params.id);
+    if (!isUuid(batchId)) return notFound(req, res, office, batchId);
+
+    let wasArchived = false;
+    const done = await withWorklistWrite(
+      req,
+      office,
+      batchId,
+      async (client, _userKey, row) => {
+        wasArchived = row.archived_at != null;
+        if (!wasArchived) return;
+
+        await client.query(
+          `UPDATE rcm_payment_batches SET archived_at = NULL, archived_by = NULL, ` +
+            `archived_reason = NULL, updated_at = now() WHERE office_id = $1 AND batch_id = $2`,
+          [office, batchId]
+        );
+
+        // Re-arm the EOB dedupe, per upload, only while nothing else holds the
+        // hash — see the header.
+        const uploads = await client.query(
+          `SELECT upload_id, file_hash FROM rcm_eob_uploads ` +
+            `WHERE office_id = $1 AND result_batch_id = $2 AND status = 'archived'`,
+          [office, batchId]
+        );
+        for (const upload of uploads.rows) {
+          if (upload.file_hash) {
+            const holders = await client.query(
+              `SELECT upload_id FROM rcm_eob_uploads ` +
+                `WHERE office_id = $1 AND file_hash = $2 AND status IN ('uploaded', 'processing', 'extracted')`,
+              [office, upload.file_hash]
+            );
+            if (holders.rows.length > 0) continue;
+          }
+          await client.query(
+            `UPDATE rcm_eob_uploads SET status = 'extracted', updated_at = now() ` +
+              `WHERE office_id = $1 AND upload_id = $2 AND status = 'archived'`,
+            [office, upload.upload_id]
+          );
+        }
+
+        // Re-arm the ERA dedupe, only while the key is still this batch's.
+        await client.query(
+          `UPDATE rcm_remittance_keys SET status = 'posted', updated_at = now() ` +
+            `WHERE office_id = $1 AND batch_id = $2 AND status = 'failed'`,
+          [office, batchId]
+        );
+      },
+      { needsActor: false }
+    );
+    if (!done.ok) return notFound(req, res, office, batchId);
+
+    if (wasArchived) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'rcm_remittance_archive',
+        resourceId: batchId,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+    }
+
+    return res.json({ success: true, office, batchId, archived: false, wasArchived });
   })
 );
 

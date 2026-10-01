@@ -270,10 +270,15 @@ router.post(
     // line; `sanitizeFilename` only bounds its length for the text column.
     const filename = sanitizeFilename(file.originalname);
 
+    // `status <> 'archived'`: an archived upload belongs to an archived check
+    // (1790000000000), and the whole point of archiving one is that the same
+    // file can come in again cleanly. The partial unique index below the
+    // INSERT excludes 'archived' for the same reason, so the probe and the
+    // index cannot disagree about whether this document is "already here".
     const existing = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads
-          WHERE office_id = $1 AND file_hash = $2
+          WHERE office_id = $1 AND file_hash = $2 AND status <> 'archived'
           ORDER BY uploaded_at DESC LIMIT 1`,
         [office, fileHash]
       )
@@ -431,7 +436,7 @@ router.post(
       const raced = await tenantDb.withTenantDb(req, (pool) =>
         pool.query(
           `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads
-            WHERE office_id = $1 AND file_hash = $2
+            WHERE office_id = $1 AND file_hash = $2 AND status <> 'archived'
             ORDER BY uploaded_at DESC LIMIT 1`,
           [office, fileHash]
         )

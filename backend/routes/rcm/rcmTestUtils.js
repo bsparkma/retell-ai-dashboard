@@ -139,6 +139,20 @@ const UNIQUE_INDEXES = Object.freeze({
   rcm_posting_queue: [
     { name: 'rcm_posting_queue_office_remittance_unique', columns: ['office_id', 'remittance_key'] },
   ],
+  rcm_eob_uploads: [
+    {
+      /*
+       * 1790000000000's widened partiality. A `failed` row has always been
+       * allowed to share its hash with a retry; an `archived` one now shares
+       * it with a re-upload of the same file after its check was archived —
+       * which is the whole of what "archiving frees the dup-hash" means, and
+       * the thing the archive tests drive through a real INSERT.
+       */
+      name: 'rcm_eob_uploads_office_hash_unique',
+      columns: ['office_id', 'file_hash'],
+      where: (row) => !['failed', 'archived'].includes(String(row.status)),
+    },
+  ],
 });
 
 /** Throw a pg-shaped unique violation if `row` collides with an existing one. */
@@ -229,6 +243,23 @@ const CHECK_CONSTRAINTS = Object.freeze({
       name: 'rcm_posting_queue_line_writeoff_adj_check',
       ok: (row) =>
         row.od_writeoff_adjustment_num == null || Number(row.decided_write_off_cents || 0) !== 0,
+    },
+  ],
+  rcm_payment_batches: [
+    {
+      /*
+       * 1790000000000 — archived implies its evidence, both directions. Every
+       * site that archives writes all three in one statement; every site that
+       * unarchives clears all three. Reachable from both routes, which is what
+       * earns it a place here (see the header's rule).
+       */
+      name: 'rcm_payment_batches_archived_check',
+      ok: (row) => {
+        const stamped = row.archived_at != null;
+        return stamped
+          ? row.archived_by != null && row.archived_reason != null
+          : row.archived_by == null && row.archived_reason == null;
+      },
     },
   ],
   rcm_posting_queue: [
