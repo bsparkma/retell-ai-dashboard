@@ -454,13 +454,13 @@ describe("Today answers in sentences", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("the Checks list says whose move it is", () => {
-  it("renders four tabs with whole-office counts, and a footer that says how the list behaves", async () => {
+  it("renders five tabs with whole-office counts, and a footer that says how the list behaves", async () => {
     state.checks = [check()];
     const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;
     renderAt(<RemittanceList />, "/rcm/remittances");
 
     await screen.findByTestId("remittances-roland");
-    for (const tab of ["attention", "parked", "set_aside", "all"]) {
+    for (const tab of ["attention", "parked", "set_aside", "archived", "all"]) {
       expect(screen.getByTestId(`remittance-filter-${tab}`), `no ${tab} tab`).toBeTruthy();
     }
     // The four work-state filters are NOT tabs any more — a row says which of
@@ -472,7 +472,7 @@ describe("the Checks list says whose move it is", () => {
       expect(screen.getByTestId("remittance-filter-count-all").textContent).toBe("1"),
     );
     expect(screen.getByTestId("remittance-list-footer").textContent).toContain(
-      "A check leaves this list only when it is posted or set aside",
+      "A check leaves this list only when it is posted, set aside or archived",
     );
   });
 

@@ -51,6 +51,7 @@ export const WORKLIST_FILTERS = [
   "blocked",
   "parked",
   "set_aside",
+  "archived",
   "all",
 ] as const;
 export type WorklistFilter = (typeof WORKLIST_FILTERS)[number];
@@ -63,6 +64,7 @@ export const SERVER_VIEWS: ReadonlySet<WorklistFilter> = new Set<WorklistFilter>
   "attention",
   "parked",
   "set_aside",
+  "archived",
   "all",
 ]);
 
@@ -104,6 +106,13 @@ export const CHECK_TABS: readonly WorklistFilter[] = Object.freeze([
   "attention",
   "parked",
   "set_aside",
+  /*
+   * ARCHIVED — the partition's one home. An archived check is off every other
+   * tab INCLUDING All (the server excludes it from `total` and every other
+   * view), so without this tab it would be findable nowhere, which is the
+   * silent-hiding failure the All tab exists to prevent.
+   */
+  "archived",
   "all",
 ] as const);
 
@@ -183,9 +192,15 @@ export const FILTER_COPY: Record<WorklistFilter, FilterCopy> = {
     empty: "Nothing has been set aside.",
     arrives: "Set a check aside and it waits here, out of the counts and still on file.",
   },
+  archived: {
+    label: "Archived",
+    hint: "Checks that were never real work — a test file, the wrong office's. Nothing here was ever posted, and any of them comes back in one click.",
+    empty: "Nothing has been archived.",
+    arrives: "Archive a check that was never posted and it waits here, with the same file free to come in again.",
+  },
   all: {
     label: "All",
-    hint: "Every check this practice has taken in, set-aside ones included.",
+    hint: "Every check this practice has taken in, set-aside ones included. Archived ones live under their own tab.",
     empty: "No checks yet.",
     arrives: "Add an 835 file or an EOB PDF under Get work in on Today, and it appears here.",
   },
@@ -254,6 +269,7 @@ export const CHECK_CHIPS: Record<WaitingState, CheckChip | null> = {
      only state in the set that is finished, and it should read finished. */
   posted: { label: "✓ Posted", tone: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300" },
   set_aside: { label: FILTER_COPY.set_aside.label, tone: NEUTRAL },
+  archived: { label: FILTER_COPY.archived.label, tone: NEUTRAL },
 
   // ── No chip. See the header. ──
   takeback: null,
@@ -292,6 +308,7 @@ export const STATE_DOT: Record<WaitingState, string> = {
   approve: "bg-emerald-500",
   posted: "bg-sky-500",
   set_aside: "bg-muted-foreground/40",
+  archived: "bg-muted-foreground/40",
   takeback: "bg-amber-500",
   shadow: "bg-muted-foreground/40",
   other_office: "bg-muted-foreground/40",
@@ -309,9 +326,19 @@ export const STATE_DOT: Record<WaitingState, string> = {
  */
 export function matchesFilter(r: Remittance, filter: WorklistFilter): boolean {
   const setAside = r.setAsideAt != null;
+  /*
+   * Archived is the one TRUE partition: a row in it matches `archived` and
+   * nothing else, `all` included. The server never ships an archived row under
+   * any other view, so the clauses below are the browser agreeing with the
+   * server rather than a second filter doing the hiding.
+   */
+  const archived = r.archivedAt != null;
+  if (archived) return filter === "archived";
   switch (filter) {
     case "all":
       return true;
+    case "archived":
+      return false;
     case "set_aside":
       return setAside;
     case "parked":
@@ -388,6 +415,7 @@ export function countByFilter(rows: Remittance[]): Record<WorklistFilter, number
     blocked: 0,
     parked: 0,
     set_aside: 0,
+    archived: 0,
     all: rows.length,
   } as Record<WorklistFilter, number>;
   for (const r of rows) {

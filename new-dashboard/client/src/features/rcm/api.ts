@@ -1325,6 +1325,17 @@ export interface Remittance {
   setAsideNote: string | null;
 
   /**
+   * ARCHIVED — off the board entirely, and only reachable for a check with no
+   * posting history (the server refuses anything else by name). Unlike
+   * set-aside it leaves `view=all` too: an archived check appears in exactly
+   * one place, the Archived tab. Reversible. The reason is the person's own
+   * required line, not a slug. Null throughout means not archived.
+   */
+  archivedAt: string | null;
+  archivedBy: string | null;
+  archivedReason: string | null;
+
+  /**
    * DID THE APP GET THIS CHECK RIGHT? — the shadow-mode comparison (C-2).
    *
    * Null means NOBODY HAS ANSWERED, never "no difference found". The panel
@@ -1529,6 +1540,11 @@ export interface RemittanceListPage {
    */
   parkedCount: number;
   setAsideCount: number;
+  /**
+   * The archived partition's size — the one population `total` excludes. An
+   * archived check is counted here and nowhere else.
+   */
+  archivedCount: number;
   /** How many rows the current view holds — what limit/offset page. */
   matchingCount: number;
   limit: number;
@@ -1542,7 +1558,7 @@ export interface RemittanceListPage {
  * are applied in the browser to whatever page came back, and the screens say so.
  * See `features/rcm/worklist.ts`.
  */
-export type RemittanceView = "attention" | "parked" | "set_aside" | "all";
+export type RemittanceView = "attention" | "parked" | "set_aside" | "archived" | "all";
 
 export interface RemittanceDetail {
   office: RcmOfficeId;
@@ -2620,6 +2636,33 @@ export function restoreRemittance(
   batchId: string,
 ): Promise<{ batchId: string; setAside: boolean; wasSetAside: boolean }> {
   return post(`/remittances/${encodeURIComponent(batchId)}/restore`, { office }, {});
+}
+
+/**
+ * ARCHIVE a check that was never queued and never posted. `rcm.write`, unlike
+ * the four worklist acts above, because archiving re-arms the dedupe so the
+ * same file can be brought in again — it is the one of these that can lead to
+ * money's file moving twice.
+ *
+ * The reason is required and is her own line, not a slug. The server refuses
+ * any check with posting history (409 `ARCHIVE_POSTING_HISTORY`, naming the
+ * state) — records that explain money are never hidden by archive; Set aside
+ * is the affordance for those.
+ */
+export function archiveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+  reason: string,
+): Promise<{ batchId: string; archived: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/archive`, { office }, { reason });
+}
+
+/** Put an archived check back on the board. Re-arms the dedupe where honest. */
+export function unarchiveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<{ batchId: string; archived: boolean; wasArchived: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/unarchive`, { office }, {});
 }
 
 /**
