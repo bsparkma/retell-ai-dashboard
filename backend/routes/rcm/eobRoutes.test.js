@@ -421,6 +421,33 @@ test('re-uploading a FAILED document is the retry path — it re-queues and clea
   }
 });
 
+test('re-uploading a document whose check was ARCHIVED is a fresh upload, not a duplicate', async () => {
+  /*
+   * The whole point of archiving a test check (1790000000000): the same file
+   * can come in again, cleanly. The probe skips `archived` rows and the fake's
+   * partial unique index — mirroring the real one — no longer holds the hash,
+   * so the second POST takes the INSERT path rather than any duplicate branch.
+   */
+  const db = new FakeRcmDb();
+  const { baseUrl, jobs, close } = await bootEob({ db });
+  try {
+    await postPdf(baseUrl, 'roland');
+    // As the archive route leaves it: extracted once, check archived since.
+    const row = db.table('rcm_eob_uploads')[0];
+    row.status = 'archived';
+    row.result_batch_id = 'batch-1';
+
+    const again = await postPdf(baseUrl, 'roland');
+    assert.equal(again.status, 201);
+    assert.equal(again.body.duplicate, false);
+    assert.equal(db.table('rcm_eob_uploads').length, 2, 'a fresh row beside the kept one');
+    assert.equal(db.table('rcm_eob_uploads')[0].status, 'archived', 'the archived row is untouched');
+    assert.equal(jobs.length, 2, 'the fresh upload queues its own extraction');
+  } finally {
+    await close();
+  }
+});
+
 test('re-uploading while an attempt is IN FLIGHT does not queue a second one', async () => {
   const db = new FakeRcmDb();
   const { baseUrl, jobs, close } = await bootEob({ db });

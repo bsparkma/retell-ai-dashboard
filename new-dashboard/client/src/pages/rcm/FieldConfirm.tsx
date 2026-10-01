@@ -56,7 +56,7 @@
  * her what to see on her own document.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useRoute } from "wouter";
+import { Link, useRoute, useSearchParams } from "wouter";
 import { AlertCircle, ArrowLeft, Check, Loader2, Pencil, Plus } from "lucide-react";
 
 import {
@@ -202,6 +202,17 @@ export default function FieldConfirm() {
   const [, params] = useRoute("/rcm/remittances/:id/confirm");
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
+  /**
+   * ARRIVING ANCHORED AT ONE CLAIM — the "Fix a figure on this claim" door.
+   *
+   * `?claim=` names the claim the reader pressed the door on, and the effect
+   * below scrolls its panel into view and selects its first line so the
+   * document panel follows. A scroll target, nothing more: the screen behaves
+   * identically once she is here, because this is the ONE audited place a
+   * figure is edited and the door must not create a second mode of it.
+   */
+  const [search] = useSearchParams();
+  const anchorClaimId = search.get("claim");
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [saving, setSaving] = useState<string | null>(null);
@@ -282,6 +293,23 @@ export default function FieldConfirm() {
 
   const data = state.kind === "loaded" ? state.data : null;
   const office = state.kind === "loaded" ? state.office : null;
+
+  /*
+   * The anchor fires ONCE, on the first load that holds the named claim.
+   * `?.()` on scrollIntoView because jsdom does not implement it — the same
+   * guard `FieldRow` carries, for the same reason.
+   */
+  const anchored = useRef(false);
+  useEffect(() => {
+    if (anchored.current || !anchorClaimId || !data) return;
+    const claim = data.claims.find((c) => c.claimId === anchorClaimId);
+    if (!claim) return;
+    anchored.current = true;
+    if (claim.lines[0]) setActiveLineId(claim.lines[0].lineId);
+    document
+      .querySelector(`[data-testid="rcm-confirm-claim-${anchorClaimId}"]`)
+      ?.scrollIntoView?.({ block: "start" });
+  }, [anchorClaimId, data]);
 
   /** The page the document panel should show. */
   const activePage = useMemo(() => {

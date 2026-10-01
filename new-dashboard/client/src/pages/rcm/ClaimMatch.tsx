@@ -52,7 +52,7 @@ import {
   type RcmOfficeId,
 } from "@/features/rcm/api";
 import { day, MATCH_STATUS_TONE, money } from "@/features/rcm/format";
-import { claimFlow, claimHref, claimStateLine, remittanceHref } from "@/features/rcm/flow";
+import { claimFlow, claimHref, claimStateLine, confirmHref, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import ClaimWorkbench, { BenchHeader } from "@/components/rcm/ClaimWorkbench";
 import RcmPrimaryAction from "@/components/rcm/RcmPrimaryAction";
@@ -144,6 +144,13 @@ export default function ClaimMatchPage() {
     names: Record<string, string>;
     /** Which claims on the check a person has linked — for "Match it up"'s count. */
     linked: Record<string, boolean>;
+    /**
+     * Whether this check HAS a confirm step — a scanned read whose figures are
+     * checked against the page. It is what decides whether the workbench
+     * offers "Fix a figure on this claim": an 835's figures were parsed, and
+     * there is no page to fix them against.
+     */
+    confirmRequired: boolean;
   } | null>(null);
   /**
    * THE ONE-LINE ANSWER TO THE LAST THING THAT HAPPENED.
@@ -265,6 +272,7 @@ export default function ClaimMatchPage() {
           linked: Object.fromEntries(
             r.claims.map((c) => [c.claimId, c.odMatchStatus === "confirmed"]),
           ),
+          confirmRequired: r.remittance.fieldConfirm?.required ?? false,
         });
       })
       .catch(() => {
@@ -945,6 +953,14 @@ export default function ClaimMatchPage() {
         onConfirm={confirmMatch}
         onDecide={decide}
         documentHref={documentHref(office, data.claim.provenance?.uploadId)}
+        /*
+          THE DOOR TO THE EDITS. Only when the URL named the check AND the
+          check has a confirm step — without `?from=` there is no honest batch
+          id to route to, and an 835 has no page to fix a figure against.
+        */
+        fixFigureHref={
+          fromBatchId && checkContext?.confirmRequired ? confirmHref(fromBatchId, claimId) : null
+        }
       />
 
       {/*

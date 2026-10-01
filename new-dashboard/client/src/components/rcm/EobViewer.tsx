@@ -200,12 +200,19 @@ export function EobViewerPanel({
   caption,
   open,
   onClose,
+  heightClass = "h-[55vh]",
   testId = "eob-panel",
 }: {
   href: string | null;
   caption?: string | null;
   open: boolean;
   onClose: () => void;
+  /**
+   * The frame's height. The workbench passes a taller, viewport-derived class
+   * when the panel rides beside the figures at ≥1280px — side by side, the
+   * document gets the full column height rather than a fixed strip of it.
+   */
+  heightClass?: string;
   testId?: string;
 }) {
   if (!open) return null;
@@ -226,7 +233,7 @@ export function EobViewerPanel({
           Close
         </button>
       </div>
-      <EobViewer href={href} caption={caption} heightClass="h-[55vh]" testId={`${testId}-viewer`} />
+      <EobViewer href={href} caption={caption} heightClass={heightClass} testId={`${testId}-viewer`} />
     </aside>
   );
 }

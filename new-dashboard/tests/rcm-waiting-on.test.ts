@@ -91,6 +91,9 @@ function check(over: Partial<Remittance> = {}): Remittance {
     setAsideBy: null,
     setAsideReason: null,
     setAsideNote: null,
+    archivedAt: null,
+    archivedBy: null,
+    archivedReason: null,
     ...over,
   } as Remittance;
 }
@@ -103,6 +106,7 @@ describe("every waiting state speaks in both registers", () => {
    * bare fixture; the rest turn on one thing each.
    */
   const CASES: Record<WaitingState, Remittance> = {
+    archived: check({ archivedAt: "2026-03-04T23:00:00.000Z" }),
     set_aside: check({ setAsideAt: "2026-03-04T23:00:00.000Z" }),
     other_office: check({ officeId: "valley" }),
     takeback: check({ totalAmountCents: -4_000 }),
@@ -215,6 +219,24 @@ describe("precedence, at the rungs that actually collide", () => {
     expect(w.state).toBe("set_aside");
   });
 
+  it("archived outranks even set aside — the one true partition wins the sentence", () => {
+    /*
+     * A check can honestly carry both stamps (set aside first, archived later).
+     * Only the Archived tab will ever render it, and that tab's row must say
+     * why it is THERE rather than re-raising a state it has left behind.
+     */
+    const w = waitingFor(
+      check({
+        archivedAt: "2026-03-05T23:00:00.000Z",
+        setAsideAt: "2026-03-04T23:00:00.000Z",
+        totalAmountCents: -4_000,
+      }),
+      { office: "roland" },
+    );
+    expect(w.state).toBe("archived");
+    expect(w.urgent).toBe(false);
+  });
+
   it("still waiting to be approved is HER move, even in shadow mode", () => {
     // Shadow only speaks once there is nothing left for her to approve.
     const w = waitingFor(
@@ -248,11 +270,13 @@ describe("precedence, at the rungs that actually collide", () => {
 
 // ─── The chip vocabulary ─────────────────────────────────────────────────────
 
-describe("one chip vocabulary, six words, taken from the tabs", () => {
-  it("renders exactly the six states the design named", () => {
+describe("one chip vocabulary, seven words, taken from the tabs", () => {
+  it("renders exactly the seven states the design named", () => {
+    // Six since Stage C; `archived` joined with its tab in the
+    // match-layout-archive slice, on the same taken-from-the-tab contract.
     const withChips = WAITING_STATES.filter((s) => CHECK_CHIPS[s] !== null);
     expect([...withChips].sort()).toEqual(
-      ["approve", "match", "posted", "review", "set_aside", "stuck"].sort(),
+      ["approve", "archived", "match", "posted", "review", "set_aside", "stuck"].sort(),
     );
     expect(withChips.map((s) => CHECK_CHIPS[s]!.label)).toEqual(
       expect.arrayContaining([
@@ -262,6 +286,7 @@ describe("one chip vocabulary, six words, taken from the tabs", () => {
         "Ready to post",
         "✓ Posted",
         "Set aside",
+        "Archived",
       ]),
     );
   });
@@ -278,6 +303,7 @@ describe("one chip vocabulary, six words, taken from the tabs", () => {
     expect(checkChip("stuck")!.label).toBe(FILTER_COPY.blocked.label);
     expect(checkChip("approve")!.label).toBe(FILTER_COPY.approve.label);
     expect(checkChip("set_aside")!.label).toBe(FILTER_COPY.set_aside.label);
+    expect(checkChip("archived")!.label).toBe(FILTER_COPY.archived.label);
   });
 
   it("gives no chip to the four states that are sentences", () => {

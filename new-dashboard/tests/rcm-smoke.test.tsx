@@ -1331,6 +1331,7 @@ const WAITING_VOCAB = (() => {
   for (const n of [1, 4]) {
     const b = { ...base, claimCount: n };
     variants.push(
+      [{ ...b, archivedAt: NOW }, {}],
       [{ ...b, setAsideAt: NOW }, {}],
       [{ ...b, officeId: "valley" }, { office: "roland" }],
       [{ ...b, totalAmountCents: -100 }, {}],
@@ -1770,7 +1771,14 @@ const SCREENS: Record<string, ScreenSpec> = {
    * This was found by walking to it. Until the 5h cases below existed, no case
    * in this suite rendered an empty list and the figure was never measured.
    */
-  checks: { id: "checks", label: "Checks list", kind: "list", budget: 100 },
+  /*
+   * 105, up from 100 — the match-layout-archive slice's capped re-pin, scoped
+   * to the Archived tab. The words are the tab itself and the footer's third
+   * way a check leaves the list ("posted, set aside or archived"): the one
+   * partition that is off every other tab must be named on the strip, or it
+   * is findable nowhere. Nothing else on this screen grew.
+   */
+  checks: { id: "checks", label: "Checks list", kind: "list", budget: 105 },
   check: { id: "check", label: "Check page", kind: "flow", budget: 480 },
   /* MATCH AND WORKBENCH ARE ONE SCREEN, not two. `ClaimMatch` renders
      `MatchGuidance` and `ClaimWorkbench` together, always — see its §5 note.
@@ -2319,12 +2327,12 @@ describe("1 · enter a check, the whole road", () => {
     sweep(container);
   });
 
-  it("1.3 Checks: four tabs, no upload door, and every Waiting on names WHO", async () => {
+  it("1.3 Checks: five tabs, no upload door, and every Waiting on names WHO", async () => {
     const { container } = renderAt(<RemittanceList />, "/rcm/remittances");
     await screen.findByTestId("remittances-roland");
 
-    expect(screen.getByRole("tablist").querySelectorAll('[role="tab"]')).toHaveLength(4);
-    for (const tab of ["attention", "parked", "set_aside", "all"]) {
+    expect(screen.getByRole("tablist").querySelectorAll('[role="tab"]')).toHaveLength(5);
+    for (const tab of ["attention", "parked", "set_aside", "archived", "all"]) {
       expect(screen.getByTestId(`remittance-filter-${tab}`)).toBeTruthy();
     }
     // No second upload surface — the button leaves for Today.
@@ -3883,14 +3891,14 @@ describe("5h · an empty panel says what will appear, and how", () => {
     }
   });
 
-  it("every filter's empty panel teaches — all eight, not the ones the walk reaches", () => {
+  it("every filter's empty panel teaches — all nine, not the ones the walk reaches", () => {
     /*
      * The sweep above only judges the panels a walk happens to render. This
      * drives the product's OWN copy for every member of `WORKLIST_FILTERS`, so
-     * a ninth filter, or a reworded empty, is caught the day it is written
+     * a tenth filter, or a reworded empty, is caught the day it is written
      * rather than the day somebody walks to that tab.
      */
-    expect(WORKLIST_FILTERS.length).toBe(8);
+    expect(WORKLIST_FILTERS.length).toBe(9);
     for (const filter of WORKLIST_FILTERS) {
       const copy = FILTER_COPY[filter];
       const { container } = render(
