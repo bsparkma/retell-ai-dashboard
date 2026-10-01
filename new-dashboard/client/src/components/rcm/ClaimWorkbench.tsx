@@ -1051,7 +1051,25 @@ function CarrierLine({
           {money(line.allowedCents)}
         </td>
         <td className="px-2 py-3 text-right font-mono font-semibold tabular-nums text-foreground">
-          {money(line.paidCents)}
+          {/*
+            AN UNSTATED PAYMENT SAYS SO — in words, never as $0.00. The night
+            #206 reached prod this cell printed a fabricated zero on every line
+            of a category-subtotal scan, because the wire coerced the stored
+            NULL to 0 and this cell priced it. $0.00 asserts "the plan paid
+            nothing for this line"; the page simply does not say. Same register
+            as the field-confirm screen, lowercase like the hand-entered lines'.
+          */}
+          {line.paidCents === null ? (
+            <span
+              className="font-sans font-normal text-muted-foreground"
+              title="The page states payment at a category subtotal, not for this line."
+              data-testid={`paid-not-stated-${line.lineId}`}
+            >
+              not stated
+            </span>
+          ) : (
+            money(line.paidCents)
+          )}
         </td>
         {/*
           THE CARRIER'S OWN WRITE-OFF, AS A FACT. A figure in its own column, with
@@ -1064,7 +1082,18 @@ function CarrierLine({
           {money(line.contractualWriteOffCents)}
         </td>
         <td className="px-2 py-3 text-right font-mono tabular-nums text-foreground">
-          {money(remainder)}
+          {/* R = allowed − paid is not a number when paid was never stated. */}
+          {remainder === null ? (
+            <span
+              className="font-sans text-muted-foreground"
+              title="No remainder can be worked out from a payment the page does not state."
+              data-testid={`remainder-not-stated-${line.lineId}`}
+            >
+              not stated
+            </span>
+          ) : (
+            money(remainder)
+          )}
         </td>
 
         {/*
@@ -1074,7 +1103,20 @@ function CarrierLine({
           control invites somebody to look for a way to enable it.
         */}
         <td className="px-4 py-3">
-          {remainder === 0 ? (
+          {remainder === null ? (
+            /*
+              NO FIGURE, NO DECISION. Offering "bill the patient" / "write it
+              off" over a remainder derived from an unstated payment would be a
+              control over a number nobody read. The way forward is the
+              check-the-numbers screen, where a person states the figure.
+            */
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid={`decision-unstated-${line.lineId}`}
+            >
+              Nothing to decide yet — the page does not state this line's payment.
+            </p>
+          ) : remainder === 0 ? (
             /*
               NOTHING TO DECIDE — AND THE TWO WAYS THAT HAPPENS ARE DIFFERENT
               FACTS. A line the carrier PAID IN FULL and a line that ended at
@@ -1084,7 +1126,7 @@ function CarrierLine({
               server's own figure for that.
             */
             <p className="text-xs text-muted-foreground" data-testid={`decision-none-${line.lineId}`}>
-              {line.paidCents > 0
+              {line.paidCents !== null && line.paidCents > 0
                 ? "Nothing to decide — the carrier paid it in full."
                 : "Nothing to decide — this line leaves the patient owing nothing."}
             </p>
@@ -1104,7 +1146,7 @@ function CarrierLine({
         </td>
       </tr>
 
-      {remainder !== 0 && (picking || writtenOff) && (
+      {remainder !== 0 && remainder !== null && (picking || writtenOff) && (
         <tr className="align-top">
           <td colSpan={7} className="px-4 pb-3">
             {picking && (

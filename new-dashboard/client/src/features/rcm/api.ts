@@ -960,7 +960,14 @@ export interface ClaimLine {
   allowedCents: number;
   deductibleCents: number;
   copayCents: number;
-  paidCents: number;
+  /**
+   * `null` = the page does not state a payment for THIS line (a category-subtotal
+   * layout, #206). Render it as "not stated" — never as $0.00, which asserts the
+   * plan paid nothing. This was `number` while the server already shipped null,
+   * which is how a column of fabricated zeros reached the claim screen with tsc
+   * green; the type now refuses that at the call site.
+   */
+  paidCents: number | null;
   adjustmentCents: number;
   patientRespCents: number;
   writeOffCents: number;
@@ -991,7 +998,12 @@ export interface ClaimLine {
    * a rounding habit to make this screen disagree with the gate about money.
    */
   contractualWriteOffCents: number;
-  patientRemainderCents: number;
+  /**
+   * `null` when `paidCents` is null: R = allowed − paid is only arithmetic when
+   * the page stated a payment, and a remainder of "the whole allowed amount"
+   * over an unstated figure is an invitation to write off money nobody read.
+   */
+  patientRemainderCents: number | null;
   /** `null` = nobody has said. Reads as `bill_patient` for the money. */
   decision: LineDecision | null;
   /** A canned reason slug. Present exactly when the decision is a write-off. */
