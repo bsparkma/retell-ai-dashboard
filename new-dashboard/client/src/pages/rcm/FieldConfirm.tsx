@@ -179,6 +179,15 @@ export function centsFromTyped(raw: string): number | undefined {
 
 /** What this field's state is called, in a biller's words. */
 function stateLabel(f: ConfirmField): string {
+  /*
+   * "TYPED", NOT "CHECKED", on a line a person added.
+   *
+   * "Checked" says a figure was compared against what the machine read, and on an
+   * added line the machine read nothing to compare it against. An unstated figure
+   * on such a line is "Not stated" rather than "Not on the page": the LINE is on
+   * the page — she is reading it — and it is this one figure the page omits.
+   */
+  if (f.source === "added") return f.stated ? "Typed" : CONFIRM_NOT_STATED;
   if (f.source === "corrected") return "Corrected";
   if (f.confirmed) return f.stated ? "Checked" : "Not on the page";
   return f.stated ? "From the scan" : CONFIRM_NOT_STATED;
