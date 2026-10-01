@@ -141,6 +141,23 @@ export const CHECK_COPY: Record<string, CheckCopy> = {
     fail: "Re-run the match. If a line still will not pair, the chart and the remittance disagree about what was done.",
     pass: "Every line matched.",
   },
+  /**
+   * A LINE TYPED IN BY HAND, OR STRUCK, on the confirm screen.
+   *
+   * Both make a claim's lines differ from the ones the match paired and the drain
+   * would post, and this slice does not extend the posting spine to cover either.
+   * So the claim is withheld, and the `fail` names the one thing that moves the
+   * money: post it in Open Dental by hand.
+   *
+   * It is NOT a complaint about the edit. Adding the line the scan missed is how
+   * the claim came to add up at all, and the sentence says so rather than reading
+   * as though she did something wrong.
+   */
+  LINES_UNEDITED_BY_HAND: {
+    title: "The lines are the ones the scan read",
+    fail: "Post this claim in Open Dental by hand — a line on it was typed in or struck on the confirm screen, and CareIN will not pay money against a line it never matched to the chart.",
+    pass: "The lines are the ones the scan read.",
+  },
   CLAIMPROC_NOT_ALREADY_PLANNED: {
     title: "No chart line is spoken for",
     fail: "Release the other approved check first — another claim is already lined up to pay money against one of these chart lines.",

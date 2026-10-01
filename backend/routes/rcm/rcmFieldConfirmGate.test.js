@@ -522,3 +522,212 @@ test('a corrected line payment that does NOT reach the claim total is still refu
   assert.equal(check.passed, false);
   assert.match(check.detail, /lines 5200/);
 });
+
+// ─── A line typed in by hand, and a line struck ───────────────────────────────
+
+const ADDED_LINE = 'c7d41f08-2e5b-4a9c-b108-6f3a2d9e4b71';
+const OTHER_LINE = 'f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b';
+
+/** An `rcm_eob_added_lines` row, as the loader reads it. */
+function addedLine({ claimId = CLAIM, paidCents = 3100, addedLineId = ADDED_LINE } = {}) {
+  return {
+    added_line_id: addedLineId,
+    claim_id: claimId,
+    code: 'D0220',
+    description: 'Intraoral periapical first film',
+    billed_cents: 4200,
+    allowed_cents: paidCents,
+    deductible_cents: 0,
+    copay_cents: 0,
+    paid_cents: paidCents,
+    added_by: ACTOR,
+    added_at: null,
+  };
+}
+
+/** An `rcm_eob_line_strikes` row. */
+function strike({ claimId = CLAIM, lineId = LINE, addedLineId = null, withdrawn = false } = {}) {
+  return {
+    strike_id: '5a1c9e22-0b47-4d81-9e3f-7c2a6b8d4e90',
+    claim_id: claimId,
+    line_id: lineId,
+    added_line_id: addedLineId,
+    reason: 'The scan read the benefit subtotal row as a procedure.',
+    struck_by: ACTOR,
+    struck_at: null,
+    withdrawn_at: withdrawn ? new Date() : null,
+    withdrawn_by: withdrawn ? ACTOR : null,
+  };
+}
+
+/** Every required field confirmed, with the line payment CORRECTED to a figure. */
+function confirmedWithLinePaid(cents) {
+  return fullyConfirmed().map((row) =>
+    row.field === 'line_paid'
+      ? { ...row, state: 'corrected', extracted_cents: null, confirmed_cents: cents }
+      : row
+  );
+}
+
+test('an 835 can carry neither, and the new condition passes with nothing to say', () => {
+  const result = approvalGate.evaluateRemittance({ ...remittance(), provenance: null });
+  const check = checkOn(result, 'LINES_UNEDITED_BY_HAND');
+  assert.equal(check.passed, true);
+  assert.equal(check.detail, null);
+});
+
+test('ADDING A LINE IS NOT A BYPASS — the sum reconciles, and the claim is still withheld', () => {
+  /*
+   * THE WHOLE SHAPE OF THE FEATURE, at the gate.
+   *
+   * The claim was paid $184.00. The read found one line, confirmed at $153.00, so
+   * the lines are $31.00 short of the claim total — the scan missed an x-ray.
+   * Typing that line in makes CLAIM_TOTALS_AGREE pass, because the arithmetic is
+   * now COMPLETE rather than relaxed.
+   *
+   * And the claim does not become postable. A hand-entered line has no
+   * ClaimProcNum, and this slice does not extend the posting spine to give it
+   * one, so LINES_UNEDITED_BY_HAND withholds it by name and the refusal says to
+   * post it in Open Dental by hand. The arithmetic going honest and the money
+   * moving are two different permissions.
+   */
+  const base = remittance();
+  const confirmations = confirmedWithLinePaid(15300);
+
+  const short = approvalGate.evaluateRemittance({
+    ...base,
+    confirmations,
+    provenance: FROM_A_SCAN,
+  });
+  const before = checkOn(short, 'CLAIM_TOTALS_AGREE');
+  assert.equal(before.passed, false);
+  assert.match(before.detail, /lines 15300/);
+
+  const whole = approvalGate.evaluateRemittance({
+    ...base,
+    confirmations,
+    provenance: FROM_A_SCAN,
+    addedLineRows: [addedLine({ paidCents: 3100 })],
+  });
+  assert.equal(checkOn(whole, 'CLAIM_TOTALS_AGREE').passed, true, '15300 + 3100 = 18400');
+
+  const withheld = checkOn(whole, 'LINES_UNEDITED_BY_HAND');
+  assert.equal(withheld.passed, false);
+  assert.match(withheld.detail, /1 line\(s\) typed in by hand/);
+  assert.equal(whole.claims[0].postable, false);
+});
+
+test('an added line that does NOT close the gap leaves the sum refused', () => {
+  // Adding lines cannot talk a claim into reconciling. It can only supply what
+  // the page actually says, and if that still does not reach the claim total the
+  // refusal stands.
+  const result = approvalGate.evaluateRemittance({
+    ...remittance(),
+    confirmations: confirmedWithLinePaid(15300),
+    provenance: FROM_A_SCAN,
+    addedLineRows: [addedLine({ paidCents: 1000 })],
+  });
+  const check = checkOn(result, 'CLAIM_TOTALS_AGREE');
+  assert.equal(check.passed, false);
+  assert.match(check.detail, /lines 16300/);
+});
+
+test('an added line needs no confirmation of its own — she typed it off the page', () => {
+  const result = approvalGate.evaluateRemittance({
+    ...remittance(),
+    confirmations: fullyConfirmed(),
+    provenance: FROM_A_SCAN,
+    addedLineRows: [addedLine()],
+  });
+  assert.equal(checkOn(result, 'FIELDS_CONFIRMED').passed, true);
+});
+
+test('a STRUCK line stops counting towards the sum, and also withholds the claim', () => {
+  /*
+   * The read invented the only line on this claim. Striking it takes its money
+   * out of the sum — and because the posting spine still holds a pairing for a
+   * line a person has just said is not on the page, the claim is withheld too.
+   * Same consequence, same reason as an added line, which is why they share one
+   * condition.
+   */
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: 18400 }]]]);
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    confirmations: fullyConfirmed(),
+    provenance: FROM_A_SCAN,
+    strikeRows: [strike()],
+  });
+
+  const withheld = checkOn(result, 'LINES_UNEDITED_BY_HAND');
+  assert.equal(withheld.passed, false);
+  assert.match(withheld.detail, /1 line\(s\) struck as not on the page/);
+
+  /*
+   * EVERY LINE STRUCK IS NOT "payment by category". A claim with nothing left to
+   * sum has had no line checked against a page, and the permissive branch is for
+   * a document that states payment at a subtotal — not for one with no lines.
+   */
+  assert.equal(checkOn(result, 'CLAIM_TOTALS_AGREE').passed, false);
+});
+
+test('a WITHDRAWN strike says nothing about the line — it counts again', () => {
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: 18400 }]]]);
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    confirmations: confirmedWithLinePaid(18400),
+    provenance: FROM_A_SCAN,
+    strikeRows: [strike({ withdrawn: true })],
+  });
+
+  assert.equal(checkOn(result, 'LINES_UNEDITED_BY_HAND').passed, true);
+  assert.equal(checkOn(result, 'CLAIM_TOTALS_AGREE').passed, true);
+});
+
+test('a strike on ANOTHER claim does not touch this one', () => {
+  const base = remittance({ claims: 2 });
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: fullyConfirmed({ claimTotalPaidCents: 9200 }),
+    strikeRows: [strike({ claimId: CLAIM2, lineId: OTHER_LINE })],
+  });
+  assert.equal(checkOn(result, 'LINES_UNEDITED_BY_HAND').passed, true, 'the first claim is clean');
+});
+
+test('an added line on ANOTHER claim does not withhold this one', () => {
+  const base = remittance({ claims: 2 });
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    provenance: FROM_A_SCAN,
+    confirmations: fullyConfirmed({ claimTotalPaidCents: 9200 }),
+    addedLineRows: [addedLine({ claimId: CLAIM2 })],
+  });
+  assert.equal(checkOn(result, 'LINES_UNEDITED_BY_HAND').passed, true);
+  const second = result.claims[1].checks.find((c) => c.code === 'LINES_UNEDITED_BY_HAND');
+  assert.equal(second.passed, false, 'and it does withhold the one it is on');
+});
+
+test('a malformed strike naming neither line is IGNORED, so the line keeps counting', () => {
+  /*
+   * The CHECK makes this unreachable through the route, so reaching it means the
+   * constraint was bypassed. Ignoring the row leaves the line COUNTING, which is
+   * the safe direction: a line nobody can account for keeps the claim from
+   * reconciling, where trusting a malformed strike would quietly remove money
+   * from a sum.
+   */
+  const base = remittance();
+  base.linesByClaim = new Map([[CLAIM, [{ lineId: LINE, paidCents: 18400 }]]]);
+
+  const result = approvalGate.evaluateRemittance({
+    ...base,
+    confirmations: confirmedWithLinePaid(18400),
+    provenance: FROM_A_SCAN,
+    strikeRows: [strike({ lineId: null, addedLineId: null })],
+  });
+  assert.equal(checkOn(result, 'LINES_UNEDITED_BY_HAND').passed, true);
+  assert.equal(checkOn(result, 'CLAIM_TOTALS_AGREE').passed, true, 'the line still counts');
+});

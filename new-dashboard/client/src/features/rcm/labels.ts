@@ -428,11 +428,17 @@ export const CONFIRM_FIELD_LABELS: Record<ConfirmableField, string> = {
  * a sentence is worse than an honest indefinite.
  */
 export function confirmedByLine(field: {
-  source: "extracted" | "confirmed" | "corrected";
+  source: "extracted" | "confirmed" | "corrected" | "added";
   confirmedBy: string | null;
   extractedCents: number | null;
 }): string {
   const who = field.confirmedBy ?? "someone";
+  /*
+   * ADDED IS NOT CORRECTED. A correction is a person disagreeing with the machine
+   * about a figure; this is a person supplying one the machine never offered, and
+   * "the scan showed nothing here" would read as a misread rather than a miss.
+   */
+  if (field.source === "added") return `added by ${who} from the page image`;
   if (field.source === "corrected") {
     const was =
       field.extractedCents === null
@@ -441,4 +447,32 @@ export function confirmedByLine(field: {
     return `corrected by ${who} from the page image — ${was}`;
   }
   return `checked by ${who} against the page image`;
+}
+
+/**
+ * THE ADD-A-LINE CONTROL, on the confirm screen only.
+ *
+ * A scanned read can miss a line as easily as it can misread a figure, and the
+ * refusal that follows — the lines do not sum to the claim total — is one a
+ * biller can do nothing about: every figure on screen is right and the missing
+ * one is not on screen to correct.
+ *
+ * The copy says where the line comes FROM, because that is the whole licence for
+ * typing a money figure here: she is copying what is printed, not deciding
+ * anything. The same ruling and the same scope as a correction.
+ */
+export const ADD_LINE_CONTROL = "Add a line from the page";
+export const ADD_LINE_HINT = "Type it exactly as the page prints it.";
+
+/** The mark an added line carries, wherever it appears. */
+export const ADDED_BY_HAND_MARK = "Typed from the page";
+
+/** What striking a line is called, and what it asks for. */
+export const STRIKE_LINE_CONTROL = "Not a line on the page";
+export const STRIKE_LINE_HINT = "Say what it actually is.";
+export const UNSTRIKE_LINE_CONTROL = "Put this line back";
+
+/** A line struck, in a sentence, with the reason the person gave. */
+export function struckByLine(struck: { reason: string; struckBy: string | null }): string {
+  return `struck by ${struck.struckBy ?? "someone"} — ${struck.reason}`;
 }

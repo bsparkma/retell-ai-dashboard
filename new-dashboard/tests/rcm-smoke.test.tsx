@@ -614,13 +614,30 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
             claimNumber: "clm-900201",
             serviceDate: "2026-08-01",
             totalPaid: f("claim_total_paid", 122900),
+            /*
+             * The claim's own lines do not add up either: the one line states no
+             * payment at all, so there is nothing to sum. The walk reads the
+             * CHECK-level gap; this is here because the wire carries it.
+             */
+            lineSum: {
+              lineCount: 1,
+              comparable: false,
+              lineSumCents: null,
+              claimTotalCents: 122900,
+              differenceCents: null,
+              unstatedCount: 1,
+              unconfirmedUnstatedCount: 1,
+              ok: false,
+            },
             lines: [
               {
                 lineId: "a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90",
                 position: 0,
+                kind: "extracted" as const,
                 code: "D2750",
                 description: "Crown",
                 region: null,
+                struck: null,
                 fields: [
                   f("line_paid", null),
                   f("line_billed", 131500),
@@ -646,7 +663,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
 
     confirmFields: async (office: string, batchId: string, fields: unknown[]) => {
       log(`confirmFields:${batchId}:${fields.length}`);
-      return { office, batchId, confirmed: [] };
+      // The whole recomputed state comes back, which is what lets the screen save
+      // in place. The walk does not confirm anything, so re-reporting the state
+      // unchanged is all this fake owes it.
+      return { office, batchId, state: await api.getFieldConfirm(office, batchId), confirmed: [] };
     },
 
     approveRemittance: async (office: string, batchId: string) => {
@@ -1799,7 +1819,38 @@ const SCREENS: Record<string, ScreenSpec> = {
    * re-pin is +10 — inside the Bring-in-step-sentence cap the brief allows.
    * Rounded up to the next ten from 173, per this file's own rule.
    */
-  confirm: { id: "confirm", label: "Check the figures against the page", kind: "flow", budget: 180 },
+  /*
+   * ── RE-PINNED 180 → 200 BY ADD-A-LINE ─────────────────────────────────
+   *
+   * The screen gained three things that are always on it, and one of them is the
+   * whole point of the slice:
+   *
+   *   +6   "Add a line from the page" — the control, once per claim
+   *   +6   "Not a line on the page" — the strike control, once per line
+   *   +9   the claim's own line-sum row, which is the sentence that goes from
+   *        "does not add up" to "adds up" when she types the missing line in
+   *
+   * Measured 203 before paying, 195 after. 8 PAID BY CUTTING:
+   *   −5  the line-sum row's long form — "The lines come to X and this claim was
+   *       paid Y" became "Lines X, claim Y", and the two instruction tails
+   *       ("If the scan missed a line, add it from the page" / "Check each line
+   *       against the page") became "A line may be missing" / "A figure may be
+   *       wrong". The direction of the difference IS the instruction.
+   *   −3  the add-a-line and strike hints, which said in a sentence what the
+   *       boxes beside them say by being there.
+   *
+   * Two further cuts are real but do not show in THIS measurement, because the
+   * smoke world renders neither state: "Start at the top" left the check-level
+   * sum line (since the in-place fix the screen takes her to the next figure
+   * itself, so telling her where to begin is a sentence the software performs),
+   * and the struck chip left the line row (the strikethrough and the
+   * "struck by <name> — <reason>" sentence already said it twice).
+   *
+   * 195 measured, rounded up to the next ten per this file's rule. The re-pin is
+   * +20 and the brief caps it at the add-a-line control copy; the 15 that remain
+   * after paying are exactly the three affordances above, which are the feature.
+   */
+  confirm: { id: "confirm", label: "Check the figures against the page", kind: "flow", budget: 200 },
   "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: 130 },
   posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: 270 },
   stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: 510 },

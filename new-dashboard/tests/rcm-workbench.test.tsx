@@ -1761,3 +1761,97 @@ describe("the claim match panel", () => {
     expect(screen.queryByTestId("approve-link")).toBeNull();
   });
 });
+
+// ─── Hand-entered and struck lines, on the claim page ─────────────────────────
+
+describe("a line the scan missed, and a line it invented, on the claim page", () => {
+  const HAND = {
+    addedLineId: "c7d41f08-2e5b-4a9c-b108-6f3a2d9e4b71",
+    code: "D0220",
+    description: "Intraoral periapical first film",
+    billedCents: 4200,
+    allowedCents: 3100,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 3100,
+    addedBy: "A Biller",
+    addedAt: "2026-09-30T20:00:00.000Z",
+    struck: null,
+  };
+
+  it("lists a typed line SEPARATELY from the carrier lines, and says why it cannot post", async () => {
+    /*
+     * NOT IN THE CARRIER TABLE. That table is the lines paired to a chart claim,
+     * and the verdict measures each one against what Open Dental holds for it. A
+     * typed line has no chart counterpart — which is exactly why the approval gate
+     * withholds the claim — so putting it there would make the verdict compare a
+     * line against nothing and report the difference as a patient's balance.
+     */
+    state.claim = claim({ handEnteredLines: [HAND] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("hand-entered-lines")).toBeTruthy());
+
+    const row = screen.getByTestId(`hand-entered-${HAND.addedLineId}`).textContent ?? "";
+    expect(row).toContain("D0220");
+    expect(row).toContain("$31.00");
+    expect(row).toContain("added by A Biller from the page image");
+
+    // The carrier table does not carry it.
+    expect(screen.queryByTestId(`carrier-line-${HAND.addedLineId}`)).toBeNull();
+
+    // And the reason it cannot post is here, where the lines are — not only two
+    // screens away on the checklist.
+    expect(screen.getByTestId("hand-entered-lines").textContent).toContain(
+      "Post this claim in Open Dental by hand",
+    );
+  });
+
+  it("says NOT STATED for a figure the page did not print, never a zero", async () => {
+    state.claim = claim({ handEnteredLines: [{ ...HAND, paidCents: null }] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("hand-entered-lines")).toBeTruthy());
+    expect(screen.getByTestId(`hand-entered-${HAND.addedLineId}`).textContent).toContain(
+      "not stated",
+    );
+  });
+
+  it("shows nothing at all when no line was typed in", async () => {
+    state.claim = claim();
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+    // An empty panel teaching nothing is its own defect (S7 h).
+    expect(screen.queryByTestId("hand-entered-lines")).toBeNull();
+  });
+
+  it("drops a typed line that was itself struck", async () => {
+    state.claim = claim({
+      handEnteredLines: [
+        { ...HAND, struck: { reason: "Typed the wrong code.", struckBy: "A Biller", struckAt: null } },
+      ],
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+    expect(screen.queryByTestId("hand-entered-lines")).toBeNull();
+  });
+
+  it("marks a carrier line a person struck, and keeps its figures and its verdict", async () => {
+    const struck = {
+      reason: "The scan read the benefit subtotal row as a procedure.",
+      struckBy: "A Biller",
+      struckAt: "2026-09-30T20:05:00.000Z",
+    };
+    const base = claim();
+    const lines = (base as Record<string, unknown>).lines as Record<string, unknown>[];
+    state.claim = claim({ lines: [{ ...lines[0], struck }] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const lineId = String(lines[0].lineId);
+    await waitFor(() => expect(screen.getByTestId(`line-struck-${lineId}`)).toBeTruthy());
+    const said = screen.getByTestId(`line-struck-${lineId}`).textContent ?? "";
+    expect(said).toContain("struck by A Biller");
+    expect(said).toContain("subtotal row");
+
+    // NOTHING WAS DELETED. The row, its figures and its decision are all still here.
+    expect(screen.getByTestId(`carrier-line-${lineId}`)).toBeTruthy();
+  });
+});
