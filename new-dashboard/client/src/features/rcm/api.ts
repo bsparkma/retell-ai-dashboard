@@ -927,6 +927,27 @@ export interface ClaimAdjustment {
   remarkDescription: string | null;
 }
 
+/**
+ * A line a person typed in from the page image, as the workbench reads it.
+ *
+ * No `odClaimProcNum`, no decision, no verdict arithmetic: it is evidence that
+ * the read was incomplete and a person completed it, and the thing the gate names
+ * when it withholds the claim.
+ */
+export interface HandEnteredLine {
+  addedLineId: string;
+  code: string;
+  description: string | null;
+  billedCents: number | null;
+  allowedCents: number | null;
+  deductibleCents: number | null;
+  copayCents: number | null;
+  paidCents: number | null;
+  addedBy: string | null;
+  addedAt: string | null;
+  struck: LineStruck | null;
+}
+
 export interface ClaimLine {
   lineId: string;
   position: number;
@@ -950,6 +971,14 @@ export interface ClaimLine {
   flags: string[];
   odClaimProcNum: number | null;
   adjustments: ClaimAdjustment[];
+  /**
+   * Non-null when a person read the page image and said this line is not on it.
+   *
+   * The extraction row is untouched and so is the verdict over it; this is the
+   * mark that lets the workbench explain why the claim is being withheld, instead
+   * of a line whose money quietly stopped adding up.
+   */
+  struck?: LineStruck | null;
   /**
    * THE CARRIER'S ARITHMETIC, computed once on the server.
    *
@@ -1036,6 +1065,21 @@ export interface WorkbenchClaim {
   approvedAt: string | null;
   createdAt: string | null;
   lines: ClaimLine[];
+  /**
+   * LINES A PERSON TYPED IN on the confirm screen, because the scan missed them.
+   *
+   * Their own list, not folded into `lines`. `lines` here means the lines that
+   * were paired to a chart claim, and the verdict measures each one against what
+   * Open Dental holds for it; a hand-entered line has no chart counterpart — which
+   * is exactly why the approval gate withholds the claim — so putting it in that
+   * list would make the verdict compare a line against nothing and report the
+   * difference as a patient's balance.
+   *
+   * They DO count in what the claim was paid. That arithmetic lives in
+   * `confirmedFigures.claimLineSum` on the server, which both the confirm screen
+   * and the gate read.
+   */
+  handEnteredLines?: HandEnteredLine[];
   matchSnapshot?: MatchSnapshot | null;
   /**
    * A match HAS run, but under an older snapshot shape — so its contents are
@@ -2720,7 +2764,15 @@ export interface ConfirmField {
   /** The figure to USE. null ⇔ `stated === false`. */
   cents: number | null;
   stated: boolean;
-  source: "extracted" | "confirmed" | "corrected";
+  /**
+   * `added` is a figure on a line a person TYPED IN because the scan missed it.
+   *
+   * Its own value rather than `corrected`: a correction is a person disagreeing
+   * with the machine about a figure, and this is a person supplying one the
+   * machine never offered. `extractedCents` is then null because the read
+   * produced no figure, not because it produced a blank one.
+   */
+  source: "extracted" | "confirmed" | "corrected" | "added";
   confirmed: boolean;
   /** What the read produced, always preserved — even after a correction. */
   extractedCents: number | null;
@@ -2764,13 +2816,59 @@ export interface PageRegion {
   height: number;
 }
 
+/**
+ * A LINE A PERSON SAYS IS NOT ON THE PAGE.
+ *
+ * Nothing is deleted: the extraction row stays exactly as the read produced it,
+ * and this is a statement recorded beside it. The reason is required, because a
+ * line leaving a claim's arithmetic with no recorded reason is money that changed
+ * and cannot be accounted for.
+ */
+export interface LineStruck {
+  reason: string;
+  struckBy: string | null;
+  struckAt: string | null;
+}
+
 export interface ConfirmLine {
   lineId: string;
+  /** `added` is a line a person typed in; the screen marks it as one. */
+  kind: "extracted" | "added";
   position: number;
   code: string;
   description: string;
   region: PageRegion | null;
+  /**
+   * Non-null when this line has been struck. A struck line is still SENT and
+   * still rendered — a line that silently vanished would be a claim whose
+   * arithmetic changed with nothing on screen to account for it, and the only way
+   * back from a mis-strike is to be able to see the strike.
+   */
+  struck: LineStruck | null;
   fields: ConfirmField[];
+}
+
+/**
+ * DO A CLAIM'S LINES ADD UP TO WHAT IT WAS PAID?
+ *
+ * The same `claimLineSum` the approval gate refuses on, so a green line here
+ * beside a red check there is not a state this code can reach. It is the figure
+ * that goes from "does not add up" to "adds up" when a biller types in the line
+ * the scan missed — which is why adding a line is not a bypass.
+ *
+ * `comparable: false` means there is no sum to take: a line payment the document
+ * does not state, or a claim total that is not a figure. `differenceCents` is
+ * then null rather than a number computed from a missing value.
+ */
+export interface ConfirmLineSum {
+  lineCount: number;
+  comparable: boolean;
+  lineSumCents: number | null;
+  claimTotalCents: number | null;
+  differenceCents: number | null;
+  unstatedCount: number;
+  unconfirmedUnstatedCount: number;
+  ok: boolean;
 }
 
 export interface ConfirmClaim {
@@ -2780,6 +2878,7 @@ export interface ConfirmClaim {
   serviceDate: string | null;
   totalPaid: ConfirmField;
   lines: ConfirmLine[];
+  lineSum: ConfirmLineSum;
 }
 
 /** How the figures were obtained, and how sure the reader was. */
@@ -2908,6 +3007,77 @@ export function confirmFields(
   fields: ConfirmInstruction[],
 ): Promise<ConfirmResult> {
   return post<ConfirmResult>(`/field-confirm/${encodeURIComponent(batchId)}`, { office }, { fields });
+}
+
+/**
+ * A LINE THE SCAN MISSED, typed in from the page.
+ *
+ * Every money key must be PRESENT. `null` is legal and means "the page does not
+ * state this for this line", which is the ordinary case on a category-subtotal
+ * EOB; an OMITTED key is refused, because recording "the page says nothing" about
+ * a figure nobody looked at is the same class of lie as inventing a number for it.
+ */
+export interface AddLineInstruction {
+  code: string;
+  description?: string | null;
+  billedCents: number | null;
+  allowedCents: number | null;
+  deductibleCents: number | null;
+  copayCents: number | null;
+  paidCents: number | null;
+}
+
+/**
+ * Add a line to a claim on this check.
+ *
+ * ADDING LINES IS HOW AN INCOMPLETE READ BECOMES ABLE TO RECONCILE, never a way
+ * around the arithmetic: the added line counts in the claim's sum exactly like a
+ * read one. And it does not open the posting path — a hand-entered line has no
+ * chart line to pair with, so the approval gate withholds the claim by name and
+ * says to post it in Open Dental by hand.
+ *
+ * Returns the whole recomputed state, like a confirm does, so the screen updates
+ * in place.
+ */
+export function addConfirmLine(
+  office: RcmOfficeId,
+  batchId: string,
+  claimId: string,
+  line: AddLineInstruction,
+): Promise<{ addedLineId: string; state: FieldConfirmState }> {
+  return post<{ addedLineId: string; state: FieldConfirmState }>(
+    `/field-confirm/${encodeURIComponent(batchId)}/claims/${encodeURIComponent(claimId)}/lines`,
+    { office },
+    line,
+  );
+}
+
+/**
+ * Strike a line as not on the page — or take that back.
+ *
+ * NOTHING IS DELETED either way. A strike is a row saying a person read the page
+ * and the line is not there; a withdrawal is an update on that row, so the trail
+ * keeps both halves of "she struck it, then changed her mind".
+ *
+ * `reason` is required when striking. A line leaving a claim's arithmetic with no
+ * recorded reason is money that changed and cannot be accounted for.
+ */
+export function strikeConfirmLine(
+  office: RcmOfficeId,
+  batchId: string,
+  body: {
+    claimId: string;
+    lineId?: string;
+    addedLineId?: string;
+    reason?: string;
+    struck?: boolean;
+  },
+): Promise<{ struck: boolean; state: FieldConfirmState }> {
+  return post<{ struck: boolean; state: FieldConfirmState }>(
+    `/field-confirm/${encodeURIComponent(batchId)}/strikes`,
+    { office },
+    body,
+  );
 }
 
 /**

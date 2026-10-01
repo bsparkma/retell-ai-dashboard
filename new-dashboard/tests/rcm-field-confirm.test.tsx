@@ -122,6 +122,20 @@ function confirmState(over: Record<string, unknown> = {}) {
         claimNumber: "SYNCLM0001",
         serviceDate: "2026-09-15",
         totalPaid: field({ field: "claim_total_paid", cents: 18400, extractedCents: 18400 }),
+        /**
+         * DOES THIS CLAIM ADD UP? The same `claimLineSum` the gate refuses on,
+         * sent so the screen can render it rather than work it out.
+         */
+        lineSum: {
+          lineCount: 1,
+          comparable: true,
+          lineSumCents: 18400,
+          claimTotalCents: 18400,
+          differenceCents: 0,
+          unstatedCount: 0,
+          unconfirmedUnstatedCount: 0,
+          ok: true,
+        },
         lines: [
           {
             lineId: LINE,
@@ -129,6 +143,8 @@ function confirmState(over: Record<string, unknown> = {}) {
             code: "D2750",
             description: "Crown - porcelain/ceramic",
             region: null,
+            kind: "extracted" as const,
+            struck: null,
             fields: lineFields(),
           },
         ],
@@ -284,6 +300,20 @@ describe("a figure the document does not state", () => {
       claims: [
         {
           ...confirmState().claims[0],
+          /**
+           * DOES THIS CLAIM ADD UP? The same `claimLineSum` the gate refuses on,
+           * sent so the screen can render it rather than work it out.
+           */
+          lineSum: {
+            lineCount: 1,
+            comparable: true,
+            lineSumCents: 18400,
+            claimTotalCents: 18400,
+            differenceCents: 0,
+            unstatedCount: 0,
+            unconfirmedUnstatedCount: 0,
+            ok: true,
+          },
           lines: [
             {
               ...confirmState().claims[0].lines[0],
@@ -586,6 +616,20 @@ describe("confirming a line at once", () => {
       claims: [
         {
           ...confirmState().claims[0],
+          /**
+           * DOES THIS CLAIM ADD UP? The same `claimLineSum` the gate refuses on,
+           * sent so the screen can render it rather than work it out.
+           */
+          lineSum: {
+            lineCount: 1,
+            comparable: true,
+            lineSumCents: 18400,
+            claimTotalCents: 18400,
+            differenceCents: 0,
+            unstatedCount: 0,
+            unconfirmedUnstatedCount: 0,
+            ok: true,
+          },
           lines: [
             {
               ...confirmState().claims[0].lines[0],

@@ -32,6 +32,12 @@ const odOffices = require('../../config/odOffices');
 const tenantDb = require('../../platform/tenantDb');
 const claimMatch = require('../../services/rcm/claimMatch');
 const claimWorkbench = require('../../services/rcm/claimWorkbench');
+/*
+ * THE ONE ACCESSOR. Nothing in this file reads `rcm_eob_added_lines` or
+ * `rcm_eob_line_strikes` by hand — `rcmFieldConfirmAccessor.test.js` asserts that
+ * of every file in the module.
+ */
+const confirmedFigures = require('../../services/rcm/confirmedFigures');
 const lineDecisions = require('../../services/rcm/lineDecisions');
 const odClaimReads = require('../../services/rcm/odClaimReads');
 const odPacer = require('../../services/rcm/odPacer');
@@ -451,13 +457,72 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
    * keys where a person's name belongs would be read as a bug by the one reader
    * it exists for.
    */
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * THE CLAIM'S HAND EDITS — lines a person added, and lines she struck
+   * ─────────────────────────────────────────────────────────────────────────
+   * Through `confirmedFigures`, the one thing that decides what a claim's lines
+   * are, so the workbench and the confirm screen cannot disagree about what was
+   * paid.
+   *
+   * A HAND-ENTERED LINE IS ITS OWN FIELD, not appended to `lines`. `lines` here
+   * means "the lines that were paired to a chart claim", and `buildWorkbenchView`
+   * measures each one against what Open Dental holds for it. An added line has no
+   * chart counterpart to measure — that is precisely why the approval gate
+   * withholds the claim — so folding it into that list would make the verdict
+   * compare a line against nothing and report the difference as a patient's
+   * balance.
+   *
+   * A STRIKE IS A MARK ON THE LINE IT IS ABOUT. The line stays in `lines` and the
+   * verdict over it is unchanged; the mark is what lets the screen show why the
+   * claim is being withheld, rather than a line silently not adding up.
+   */
+  const [addedLineRows, strikeRows] = await Promise.all([
+    pool.query(confirmedFigures.QUERIES.readAddedLinesForClaim, [office, claimId]),
+    pool.query(confirmedFigures.QUERIES.readStrikesForClaim, [office, claimId]),
+  ]);
+  const strikeIndex = confirmedFigures.indexStrikes(strikeRows.rows);
+
   const decidedKeys = rawLines.map((l) => l.decidedByKey).filter(Boolean);
   const decidedActors = decidedKeys.length ? await describeActors(pool, decidedKeys) : {};
+  const handKeys = [
+    ...addedLineRows.rows.map((r) => r.added_by),
+    ...strikeRows.rows.flatMap((r) => [r.struck_by, r.withdrawn_by]),
+  ].filter(Boolean);
+  const handActors = handKeys.length ? await describeActors(pool, handKeys) : {};
+  const nameOf = (key) => (key ? (handActors[key] || {}).displayName || null : null);
+
+  const struckWire = (kind, id) => {
+    const row = strikeIndex.get(confirmedFigures.strikeKey(kind, id));
+    if (!row) return null;
+    return {
+      reason: String(row.reason || ''),
+      struckBy: nameOf(row.struck_by),
+      struckAt: row.struck_at ? new Date(row.struck_at).toISOString() : null,
+    };
+  };
+
   const wireLines = rawLines.map(({ decidedByKey, ...line }) => ({
     ...line,
     decidedBy: decidedByKey
       ? (decidedActors[decidedByKey] || {}).displayName || decidedByKey
       : null,
+    /** Non-null when a person read the page and said this line is not on it. */
+    struck: struckWire('extracted', line.lineId),
+  }));
+
+  const handEnteredLines = addedLineRows.rows.map((row) => ({
+    addedLineId: String(row.added_line_id),
+    code: String(row.code || ''),
+    description: row.description || null,
+    billedCents: row.billed_cents == null ? null : Number(row.billed_cents),
+    allowedCents: row.allowed_cents == null ? null : Number(row.allowed_cents),
+    deductibleCents: row.deductible_cents == null ? null : Number(row.deductible_cents),
+    copayCents: row.copay_cents == null ? null : Number(row.copay_cents),
+    paidCents: row.paid_cents == null ? null : Number(row.paid_cents),
+    addedBy: nameOf(row.added_by),
+    addedAt: row.added_at ? new Date(row.added_at).toISOString() : null,
+    struck: struckWire('added', String(row.added_line_id)),
   }));
 
   return {
@@ -476,6 +541,14 @@ async function loadClaimBundle(pool, office, claimId, { includeSnapshot = true }
      */
     batchPaidCents,
     lines: wireLines,
+    /**
+     * Lines a person typed in on the confirm screen because the scan missed them.
+     *
+     * Their own list, for the reason above: they count in what the claim was paid
+     * and they have no chart line to be measured against, so they are evidence
+     * the biller has to see and not rows the verdict can judge.
+     */
+    handEnteredLines,
     ...(includeSnapshot
       ? {
           matchSnapshot: usable ? stored : null,

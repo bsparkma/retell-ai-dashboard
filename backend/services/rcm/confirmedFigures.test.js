@@ -314,3 +314,270 @@ test('the module names its own queries, so CI can send them to a real Postgres',
     'columns are named explicitly, per the repo rule'
   );
 });
+
+// ─── What a claim's lines ARE: read, minus struck, plus added ─────────────────
+
+const ADDED = 'c7d41f08-2e5b-4a9c-b108-6f3a2d9e4b71';
+
+function readLine(over = {}) {
+  return {
+    line_id: LINE,
+    claim_id: CLAIM,
+    position: 0,
+    code: 'D2750',
+    description: 'Crown - porcelain/ceramic',
+    billed_cents: 131500,
+    allowed_cents: 122900,
+    deductible_cents: 0,
+    copay_cents: 0,
+    paid_cents: 15300,
+    ...over,
+  };
+}
+
+function typedLine(over = {}) {
+  return {
+    added_line_id: ADDED,
+    claim_id: CLAIM,
+    code: 'D0220',
+    description: 'Intraoral periapical first film',
+    billed_cents: 4200,
+    allowed_cents: 3100,
+    deductible_cents: 0,
+    copay_cents: 0,
+    paid_cents: 3100,
+    added_by: 'user-key-1',
+    added_at: new Date('2026-09-30T20:00:00.000Z'),
+    ...over,
+  };
+}
+
+function strikeRow(over = {}) {
+  return {
+    strike_id: '5a1c9e22-0b47-4d81-9e3f-7c2a6b8d4e90',
+    claim_id: CLAIM,
+    line_id: LINE,
+    added_line_id: null,
+    reason: 'A subtotal row, not a procedure.',
+    struck_by: 'user-key-1',
+    struck_at: new Date('2026-09-30T20:05:00.000Z'),
+    withdrawn_at: null,
+    withdrawn_by: null,
+    ...over,
+  };
+}
+
+/** The lines for one claim, through the one accessor. */
+function linesFor({ extracted = [readLine()], added = [], strikes = [], rows = [] } = {}) {
+  return confirmedFigures.effectiveLines({
+    claimId: CLAIM,
+    extracted,
+    added: confirmedFigures.indexAddedLines(added),
+    strikes: confirmedFigures.indexStrikes(strikes),
+    index: confirmedFigures.indexConfirmations(rows),
+  });
+}
+
+test('with nothing added and nothing struck, a claim is exactly what the read produced', () => {
+  const lines = linesFor();
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].kind, 'extracted');
+  assert.equal(lines[0].struck, null);
+  assert.deepEqual(
+    lines[0].fields.map((f) => f.field),
+    ['line_paid', 'line_billed', 'line_allowed', 'line_deductible', 'line_copay']
+  );
+  const paid = lines[0].fields.find((f) => f.field === 'line_paid');
+  assert.equal(paid.cents, 15300);
+  assert.equal(paid.source, 'extracted');
+  assert.equal(paid.confirmed, false);
+});
+
+test('an added line comes AFTER the read lines, in the order she typed them', () => {
+  const second = typedLine({
+    added_line_id: 'bb4e1a60-9c22-4f7d-83b1-0e5a6c7d8e90',
+    code: 'D0274',
+    added_at: new Date('2026-09-30T20:10:00.000Z'),
+  });
+  const lines = linesFor({ added: [typedLine(), second] });
+  assert.deepEqual(
+    lines.map((l) => `${l.kind}:${l.code}`),
+    ['extracted:D2750', 'added:D0220', 'added:D0274']
+  );
+  // The position is where it sits in the list, not a claim about the page.
+  assert.deepEqual(
+    lines.map((l) => l.position),
+    [0, 1, 2]
+  );
+});
+
+test('every figure on an added line is typed, confirmed, and has no extraction behind it', () => {
+  const [, added] = linesFor({ added: [typedLine()] });
+  for (const f of added.fields) {
+    assert.equal(f.source, 'added', `${f.field} is added, never corrected`);
+    assert.equal(f.confirmed, true, 'typing it off the page IS the confirmation');
+    assert.equal(f.extractedCents, null, 'the read produced no figure, not a blank one');
+    assert.equal(f.confirmedByKey, 'user-key-1');
+    assert.equal(f.confirmedAt, '2026-09-30T20:00:00.000Z');
+  }
+  const unstated = added.fields.find((f) => f.field === 'line_deductible');
+  assert.equal(unstated.cents, 0, 'a typed zero is a figure she read');
+  assert.equal(unstated.stated, true);
+});
+
+test('a typed NULL on an added line stays unstated, never a zero', () => {
+  const [, added] = linesFor({ added: [typedLine({ allowed_cents: null })] });
+  const allowed = added.fields.find((f) => f.field === 'line_allowed');
+  assert.equal(allowed.cents, null);
+  assert.equal(allowed.stated, false);
+});
+
+test('a struck line is RETURNED, marked, with the reason and who struck it', () => {
+  const lines = linesFor({ strikes: [strikeRow()] });
+  assert.equal(lines.length, 1, 'not dropped');
+  assert.equal(lines[0].struck.reason, 'A subtotal row, not a procedure.');
+  assert.equal(lines[0].struck.struckByKey, 'user-key-1');
+  assert.equal(lines[0].struck.struckAt, '2026-09-30T20:05:00.000Z');
+});
+
+test('a WITHDRAWN strike is not a strike', () => {
+  const lines = linesFor({ strikes: [strikeRow({ withdrawn_at: new Date(), withdrawn_by: 'u' })] });
+  assert.equal(lines[0].struck, null);
+});
+
+test('a strike naming both targets, or neither, is ignored — the line keeps counting', () => {
+  const both = linesFor({ strikes: [strikeRow({ added_line_id: ADDED })] });
+  assert.equal(both[0].struck, null);
+  const neither = linesFor({ strikes: [strikeRow({ line_id: null })] });
+  assert.equal(neither[0].struck, null);
+});
+
+test('countableLines drops the struck ones and keeps the added ones', () => {
+  const lines = linesFor({ added: [typedLine()], strikes: [strikeRow()] });
+  const counted = confirmedFigures.countableLines(lines);
+  assert.deepEqual(
+    counted.map((l) => l.kind),
+    ['added']
+  );
+  assert.equal(confirmedFigures.hasAddedLine(lines), true);
+  assert.equal(confirmedFigures.hasAddedLine(linesFor()), false);
+});
+
+test('a struck added line is not countable either, and is not a hand-added line any more', () => {
+  const lines = linesFor({
+    added: [typedLine()],
+    strikes: [strikeRow({ line_id: null, added_line_id: ADDED })],
+  });
+  assert.equal(confirmedFigures.countableLines(lines).length, 1, 'the read line only');
+  assert.equal(confirmedFigures.hasAddedLine(lines), false);
+});
+
+// ─── What still has to be checked against the page ───────────────────────────
+
+test('a struck line and an added line each ask for nothing', () => {
+  const shape = [{ claimId: CLAIM, lines: linesFor({ added: [typedLine()], strikes: [strikeRow()] }) }];
+  const required = confirmedFigures.requiredFields(shape);
+  /*
+   * The check total and the claim total, and nothing else. Demanding the five
+   * figures on a line she has said is not on the page would leave a count that
+   * could never reach zero — a wall — and demanding she confirm her own
+   * transcription would be ceremony.
+   */
+  assert.deepEqual(
+    required.map((r) => r.field),
+    ['check_total', 'claim_total_paid']
+  );
+});
+
+// ─── Does a claim add up? ────────────────────────────────────────────────────
+
+function sumOf(args) {
+  const lines = linesFor(args);
+  return confirmedFigures.claimLineSum(confirmedFigures.indexConfirmations(args.rows || []), {
+    claimId: CLAIM,
+    totalPaidCents: args.totalPaidCents === undefined ? 18400 : args.totalPaidCents,
+    lines,
+  });
+}
+
+test('an incomplete read does not add up, and the difference is named', () => {
+  const sum = sumOf({});
+  assert.equal(sum.comparable, true);
+  assert.equal(sum.lineSumCents, 15300);
+  assert.equal(sum.claimTotalCents, 18400);
+  assert.equal(sum.differenceCents, -3100);
+  assert.equal(sum.ok, false);
+});
+
+test('ADDING THE MISSING LINE is what makes it add up', () => {
+  const sum = sumOf({ added: [typedLine({ paid_cents: 3100 })] });
+  assert.equal(sum.lineSumCents, 18400);
+  assert.equal(sum.differenceCents, 0);
+  assert.equal(sum.ok, true);
+});
+
+test('ONE CENT out is still out — there is no tolerance', () => {
+  const sum = sumOf({ added: [typedLine({ paid_cents: 3099 })] });
+  assert.equal(sum.ok, false);
+  assert.equal(sum.differenceCents, -1);
+});
+
+test('an unstated line payment makes the sum unknowable, not zero', () => {
+  const sum = sumOf({ extracted: [readLine({ paid_cents: null })] });
+  assert.equal(sum.comparable, false);
+  assert.equal(sum.lineSumCents, null);
+  assert.equal(sum.differenceCents, null, 'no difference is invented from a missing figure');
+  assert.equal(sum.ok, false, 'nobody has looked yet');
+  assert.equal(sum.unconfirmedUnstatedCount, 1);
+});
+
+test('a CONFIRMED absence passes — the document states payment by category', () => {
+  const sum = sumOf({
+    extracted: [readLine({ paid_cents: null })],
+    rows: [
+      {
+        claim_id: CLAIM,
+        line_id: LINE,
+        field: 'line_paid',
+        state: 'confirmed',
+        extracted_cents: null,
+        confirmed_cents: null,
+        confirmed_by: 'user-key-1',
+        confirmed_at: null,
+      },
+    ],
+  });
+  assert.equal(sum.ok, true);
+  assert.equal(sum.unstatedCount, 1);
+  assert.equal(sum.unconfirmedUnstatedCount, 0);
+});
+
+test('a claim with every line struck cannot pass as payment-by-category', () => {
+  // Nothing was checked against a page. The permissive branch is for a document
+  // that states payment at a subtotal, not for one with no lines left.
+  const sum = sumOf({ strikes: [strikeRow()] });
+  assert.equal(sum.lineCount, 0);
+  assert.equal(sum.ok, false);
+});
+
+test('a claim total that is not a figure cannot be compared against', () => {
+  const sum = sumOf({ totalPaidCents: null });
+  assert.equal(sum.comparable, false);
+  assert.equal(sum.differenceCents, null);
+  assert.equal(sum.ok, false);
+});
+
+// ─── The field→column mapping reads either spelling ──────────────────────────
+
+test('extractedFor reads a raw pg row and an already-mapped one identically', () => {
+  assert.equal(confirmedFigures.extractedFor('line_paid', { paid_cents: 15300 }), 15300);
+  assert.equal(confirmedFigures.extractedFor('line_paid', { paidCents: 15300 }), 15300);
+  /*
+   * ONE mapping, read two ways. A second FIELD_COLUMNS keyed by camelCase is the
+   * drift this avoids: the route and the gate must read the SAME extracted figure
+   * for a field, or they will disagree about whether a confirmation is a
+   * correction.
+   */
+  assert.equal(confirmedFigures.extractedFor('line_paid', {}), undefined);
+  assert.equal(confirmedFigures.extractedFor('not_a_field', { paid_cents: 1 }), undefined);
+});

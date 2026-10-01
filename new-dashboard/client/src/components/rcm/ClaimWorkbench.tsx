@@ -74,6 +74,7 @@ import {
   type ClaimIdentity,
   type ClaimLine,
   type ClaimVerdict,
+  type HandEnteredLine,
   type LineDecision,
   type MatchCandidate,
   type MatchSnapshot,
@@ -89,7 +90,7 @@ import {
   reviewReasonLabel,
   stamp,
 } from "@/features/rcm/format";
-import { provenanceLabel, provenanceNote } from "@/features/rcm/labels";
+import { provenanceLabel, provenanceNote, struckByLine } from "@/features/rcm/labels";
 import { approveHref } from "@/features/rcm/flow";
 import { verdictBlock, type VerdictBlock } from "@/features/rcm/verdictBlock";
 import { readAgo } from "@/features/rcm/time";
@@ -891,8 +892,65 @@ function CarrierPanel({
           Contract w/o = Billed − Allowed. The contract requires it — shown for the arithmetic, not a
           choice.
         </p>
+
+        <HandEnteredLines lines={claim.handEnteredLines ?? []} />
       </div>
     </section>
+  );
+}
+
+/**
+ * LINES A PERSON TYPED IN, because the scan missed them.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THEY ARE NOT IN THE TABLE ABOVE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * That table is the lines that were paired to a chart claim, and the verdict
+ * measures each one against what Open Dental holds for it. A hand-entered line
+ * has no chart counterpart — which is exactly why the approval gate withholds the
+ * claim — so putting it in that table would make the verdict compare a line
+ * against nothing and report the difference as a patient's balance.
+ *
+ * It still counts in what the claim was paid. That arithmetic lives on the server
+ * in one function, which both the confirm screen and the gate read.
+ *
+ * NO DECISION CONTROLS. Writing off or billing the remainder of a line Open
+ * Dental does not have is not an act this screen can honour, and a control that
+ * looked like it could would be the dishonest kind.
+ */
+function HandEnteredLines({ lines }: { lines: HandEnteredLine[] }) {
+  const live = lines.filter((l) => !l.struck);
+  if (live.length === 0) return null;
+  return (
+    <div className="border-t border-border px-4 py-3" data-testid="hand-entered-lines">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Typed in from the page
+      </p>
+      <ul className="mt-1 space-y-1">
+        {live.map((line) => (
+          <li
+            key={line.addedLineId}
+            className="text-xs text-muted-foreground"
+            data-testid={`hand-entered-${line.addedLineId}`}
+          >
+            <span className="font-mono text-foreground">{line.code}</span>
+            {line.description ? ` ${line.description}` : ""} · paid{" "}
+            <span className="font-mono tabular-nums text-foreground">
+              {line.paidCents === null ? "not stated" : money(line.paidCents)}
+            </span>
+            {line.addedBy ? ` · added by ${line.addedBy} from the page image` : ""}
+          </li>
+        ))}
+      </ul>
+      {/*
+        WHY IT CANNOT POST, said here rather than only in the checklist. A biller
+        looking at the lines is the person who needs to know, and the gate's row is
+        two screens away.
+      */}
+      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+        A typed line has no chart line to pay. Post this claim in Open Dental by hand.
+      </p>
+    </div>
   );
 }
 
@@ -933,7 +991,26 @@ function CarrierLine({
     <Fragment>
       <tr className="border-t border-border align-top" data-testid={`carrier-line-${line.lineId}`}>
         <td className="px-4 py-3">
-          <div className="font-mono text-sm text-foreground">{line.billedCode}</div>
+          <div
+            className={`font-mono text-sm text-foreground ${line.struck ? "line-through" : ""}`}
+          >
+            {line.billedCode}
+          </div>
+          {/*
+            A LINE A PERSON SAID IS NOT ON THE PAGE.
+            The figures and the verdict over this line are untouched — nothing was
+            deleted — and this is why the approval gate is withholding the claim.
+            Without it the refusal would name an edit the biller cannot see from
+            here.
+          */}
+          {line.struck ? (
+            <div
+              className="text-xs text-muted-foreground"
+              data-testid={`line-struck-${line.lineId}`}
+            >
+              {struckByLine(line.struck)}
+            </div>
+          ) : null}
           {line.paidCode && line.paidCode !== line.billedCode && (
             <div className="font-mono text-xs text-amber-700 dark:text-amber-400">
               submitted as {line.paidCode}

@@ -64,6 +64,8 @@ const PRIMARY_KEYS = Object.freeze({
   rcm_remittance_keys: 'remittance_key_id',
   rcm_user_map: 'user_key',
   rcm_activity_events: 'activity_id',
+  rcm_eob_added_lines: 'added_line_id',
+  rcm_eob_line_strikes: 'strike_id',
 });
 
 /**

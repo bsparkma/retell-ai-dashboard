@@ -614,13 +614,30 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
             claimNumber: "clm-900201",
             serviceDate: "2026-08-01",
             totalPaid: f("claim_total_paid", 122900),
+            /*
+             * The claim's own lines do not add up either: the one line states no
+             * payment at all, so there is nothing to sum. The walk reads the
+             * CHECK-level gap; this is here because the wire carries it.
+             */
+            lineSum: {
+              lineCount: 1,
+              comparable: false,
+              lineSumCents: null,
+              claimTotalCents: 122900,
+              differenceCents: null,
+              unstatedCount: 1,
+              unconfirmedUnstatedCount: 1,
+              ok: false,
+            },
             lines: [
               {
                 lineId: "a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90",
                 position: 0,
+                kind: "extracted" as const,
                 code: "D2750",
                 description: "Crown",
                 region: null,
+                struck: null,
                 fields: [
                   f("line_paid", null),
                   f("line_billed", 131500),
@@ -646,7 +663,10 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
 
     confirmFields: async (office: string, batchId: string, fields: unknown[]) => {
       log(`confirmFields:${batchId}:${fields.length}`);
-      return { office, batchId, confirmed: [] };
+      // The whole recomputed state comes back, which is what lets the screen save
+      // in place. The walk does not confirm anything, so re-reporting the state
+      // unchanged is all this fake owes it.
+      return { office, batchId, state: await api.getFieldConfirm(office, batchId), confirmed: [] };
     },
 
     approveRemittance: async (office: string, batchId: string) => {

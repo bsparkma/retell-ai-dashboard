@@ -99,6 +99,20 @@ function confirmState() {
         claimNumber: "SYNCLM0001",
         serviceDate: "2026-09-15",
         totalPaid: f("claim_total_paid", 18400),
+        /**
+         * DOES THIS CLAIM ADD UP? The same `claimLineSum` the gate refuses on,
+         * sent so the screen can render it rather than work it out.
+         */
+        lineSum: {
+          lineCount: 1,
+          comparable: true,
+          lineSumCents: 18400,
+          claimTotalCents: 18400,
+          differenceCents: 0,
+          unstatedCount: 0,
+          unconfirmedUnstatedCount: 0,
+          ok: true,
+        },
         lines: [
           {
             lineId: LINE,
@@ -106,6 +120,8 @@ function confirmState() {
             code: "D2750",
             description: "Crown - porcelain/ceramic",
             region: null,
+            kind: "extracted" as const,
+            struck: null,
             fields: [
               f("line_paid", null),
               f("line_billed", 131500),

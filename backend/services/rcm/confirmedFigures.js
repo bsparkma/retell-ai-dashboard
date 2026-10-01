@@ -68,6 +68,56 @@ const QUERIES = Object.freeze({
       FROM rcm_eob_field_confirmations
      WHERE office_id = $1 AND batch_id = $2
   `,
+  /**
+   * Every line a person added to this check, in the order she added them.
+   *
+   * Ordered here rather than by the caller so every surface lists a claim's
+   * hand-entered lines the same way. There is no `position` to order by: an added
+   * line sits after the read ones because that is where it was typed, and
+   * inventing a printed position for it would assert something about the page.
+   */
+  readAddedLinesForBatch: `
+    SELECT added_line_id, claim_id, code, description,
+           billed_cents, allowed_cents, deductible_cents, copay_cents, paid_cents,
+           added_by, added_at
+      FROM rcm_eob_added_lines
+     WHERE office_id = $1 AND batch_id = $2
+     ORDER BY added_at ASC, added_line_id ASC
+  `,
+  /**
+   * Every strike on this check, withdrawn ones included.
+   *
+   * Read whole rather than filtered in SQL so `indexStrikes` is the one place
+   * that decides what "struck" means. A WHERE here and a predicate there would be
+   * two answers to that question.
+   */
+  readStrikesForBatch: `
+    SELECT strike_id, claim_id, line_id, added_line_id, reason,
+           struck_by, struck_at, withdrawn_at, withdrawn_by
+      FROM rcm_eob_line_strikes
+     WHERE office_id = $1 AND batch_id = $2
+  `,
+  /*
+   * THE SAME TWO READS, FOR ONE CLAIM.
+   *
+   * The workbench opens a claim, not a check, and it must show the same lines
+   * the confirm screen does or the two screens disagree about what was paid. The
+   * `(office_id, claim_id)` index exists for exactly these two.
+   */
+  readAddedLinesForClaim: `
+    SELECT added_line_id, claim_id, code, description,
+           billed_cents, allowed_cents, deductible_cents, copay_cents, paid_cents,
+           added_by, added_at
+      FROM rcm_eob_added_lines
+     WHERE office_id = $1 AND claim_id = $2
+     ORDER BY added_at ASC, added_line_id ASC
+  `,
+  readStrikesForClaim: `
+    SELECT strike_id, claim_id, line_id, added_line_id, reason,
+           struck_by, struck_at, withdrawn_at, withdrawn_by
+      FROM rcm_eob_line_strikes
+     WHERE office_id = $1 AND claim_id = $2
+  `,
 });
 
 /**
@@ -226,6 +276,20 @@ function requiredFields(claims) {
   for (const claim of Array.isArray(claims) ? claims : []) {
     required.push({ claimId: claim.claimId, lineId: null, field: 'claim_total_paid' });
     for (const line of Array.isArray(claim.lines) ? claim.lines : []) {
+      /*
+       * A STRUCK LINE ASKS FOR NOTHING. A person read the page and said this line
+       * is not on it; demanding she then check its five figures against the page
+       * would be asking her to confirm figures she has just said do not exist,
+       * and the count would never reach zero.
+       */
+      if (line.struck) continue;
+      /*
+       * AN ADDED LINE IS ALREADY ANSWERED. She typed every figure on it off the
+       * page, which is the same act the confirm step records for a read figure.
+       * Asking her to confirm her own transcription would be ceremony, and a
+       * review step that teaches billers it is ceremony is worse than none.
+       */
+      if (line.kind === 'added') continue;
       for (const field of CONFIRMABLE_FIELDS) {
         if (fieldScope(field) !== 'line') continue;
         required.push({ claimId: claim.claimId, lineId: line.lineId, field });
@@ -355,13 +419,319 @@ function isOcrSourced(provenance) {
 function extractedFor(field, row) {
   const column = FIELD_COLUMNS[field];
   if (!column || !row) return undefined;
-  if (!Object.prototype.hasOwnProperty.call(row, column)) return undefined;
-  return centsOrNull(row[column]);
+  if (Object.prototype.hasOwnProperty.call(row, column)) return centsOrNull(row[column]);
+  /*
+   * THE SAME MAPPING, IN THE OTHER SPELLING.
+   *
+   * The confirm route hands in raw `pg` rows (`paid_cents`); the approval gate
+   * hands in rows it has already mapped to its own wire shape (`paidCents`). Both
+   * ask this function which figure a field is about, and the alternative to
+   * accepting both spellings is a second FIELD_COLUMNS keyed by camelCase — which
+   * is the drift this function exists to prevent. One mapping, read two ways.
+   */
+  const property = column.replace(/_([a-z])/g, (_m, c) => c.toUpperCase());
+  if (Object.prototype.hasOwnProperty.call(row, property)) return centsOrNull(row[property]);
+  return undefined;
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT A CLAIM'S LINES ARE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * After the add-a-line slice there are three facts to combine, not one:
+ *
+ *   · what the read produced            `rcm_procedure_lines`
+ *   · what a person added from the page `rcm_eob_added_lines`
+ *   · what a person says is not there   `rcm_eob_line_strikes`
+ *
+ * Four surfaces need the answer — the confirm screen, the check detail, the
+ * workbench, and the approval gate — and the first time one of them combined
+ * them itself they would disagree about how much a claim was paid. So
+ * `effectiveLines()` is the one function that combines them, the way `figure()`
+ * is the one function that decides which figure is real.
+ *
+ * A STRUCK LINE IS RETURNED, NOT DROPPED. The screen has to show that a line was
+ * struck, who struck it and why — a line that silently vanished would be a claim
+ * whose arithmetic changed with nothing on screen to explain it. Arithmetic uses
+ * `countableLines()`, which is the one predicate for "counts towards the sum".
+ */
+
+/** How a line came to be on the claim. */
+/** @typedef {'extracted'|'added'} LineKind */
+
+/** `extracted:<uuid>` / `added:<uuid>` — one id space for two tables. */
+function strikeKey(kind, id) {
+  return `${kind}:${id || ''}`;
+}
+
+/**
+ * Lines a person added, by claim.
+ *
+ * @param {Array<Record<string, unknown>>} rows from `QUERIES.readAddedLinesForBatch`
+ * @returns {Map<string, Array<Record<string, unknown>>>}
+ */
+function indexAddedLines(rows) {
+  const byClaim = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const claimId = row.claim_id ? String(row.claim_id) : '';
+    if (!claimId) continue;
+    if (!byClaim.has(claimId)) byClaim.set(claimId, []);
+    byClaim.get(claimId).push(row);
+  }
+  return byClaim;
+}
+
+/**
+ * LIVE strikes, by the line each is about.
+ *
+ * A withdrawn strike is dropped here and nowhere else. The row stays in the
+ * table — "she struck it, then changed her mind" is two true statements and the
+ * trail keeps both — but a withdrawn strike says nothing about the line now, and
+ * one predicate deciding that is what stops the gate and the screen disagreeing
+ * about whether a line counts.
+ *
+ * A strike naming neither target, or both, is dropped. The CHECK makes that
+ * unreachable through the route, so reaching it means the constraint was
+ * bypassed — and in that case ignoring the row leaves the line COUNTING, which
+ * is the safe direction: a line nobody can account for keeps the claim from
+ * reconciling, where trusting a malformed strike would quietly remove money from
+ * a sum.
+ *
+ * @param {Array<Record<string, unknown>>} rows from `QUERIES.readStrikesForBatch`
+ * @returns {Map<string, Record<string, unknown>>}
+ */
+function indexStrikes(rows) {
+  const index = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row.withdrawn_at) continue;
+    const onExtracted = row.line_id ? String(row.line_id) : null;
+    const onAdded = row.added_line_id ? String(row.added_line_id) : null;
+    if (Boolean(onExtracted) === Boolean(onAdded)) continue;
+    index.set(
+      onExtracted ? strikeKey('extracted', onExtracted) : strikeKey('added', onAdded),
+      row
+    );
+  }
+  return index;
+}
+
+/**
+ * One figure on a line a PERSON typed in.
+ *
+ * There is no extraction behind it, so there is nothing to fall back to and
+ * nothing to compare against: `extractedCents` is null because the read produced
+ * no figure, not because it produced a blank one. `confirmed` is true because the
+ * act of typing it from the page IS the confirmation — the same act the confirm
+ * step records for a read figure, which is why an added line does not then have
+ * to be confirmed a second time.
+ *
+ * `source: 'added'` is its own value rather than 'corrected'. A correction is a
+ * person disagreeing with the machine about a figure; this is a person supplying
+ * one the machine never offered, and the screen says so differently.
+ *
+ * @param {Record<string, unknown>} row an `rcm_eob_added_lines` row
+ * @param {string} field
+ * @returns {Figure}
+ */
+function addedFigure(row, field) {
+  const cents = centsOrNull(extractedFor(field, row));
+  return {
+    cents,
+    stated: cents !== null,
+    source: 'added',
+    confirmed: true,
+    extractedCents: null,
+    confirmedByKey: row && row.added_by ? String(row.added_by) : null,
+    confirmedAt: isoOrNull(row && row.added_at),
+  };
+}
+
+/** The five line-scoped fields, in vocabulary order. */
+const LINE_SCOPED_FIELDS = Object.freeze(
+  CONFIRMABLE_FIELDS.filter((f) => fieldScope(f) === 'line')
+);
+
+/**
+ * A claim's lines as they really are.
+ *
+ * @param {object} args
+ * @param {string} args.claimId
+ * @param {Array<Record<string, unknown>>} args.extracted `rcm_procedure_lines` rows
+ * @param {Map<string, Array<Record<string, unknown>>>} [args.added] from `indexAddedLines`
+ * @param {Map<string, Record<string, unknown>>} [args.strikes] from `indexStrikes`
+ * @param {Map<string, Record<string, unknown>>} [args.index] from `indexConfirmations`
+ * @returns {Array<object>}
+ */
+function effectiveLines({ claimId, extracted, added, strikes, index }) {
+  const strikeOf = (kind, id) => {
+    const row = strikes instanceof Map ? strikes.get(strikeKey(kind, id)) : undefined;
+    if (!row) return null;
+    return {
+      reason: String(row.reason || ''),
+      struckByKey: row.struck_by ? String(row.struck_by) : null,
+      struckAt: isoOrNull(row.struck_at),
+    };
+  };
+
+  const fromRead = (Array.isArray(extracted) ? extracted : []).map((line, i) => {
+    const lineId = String(line.line_id != null ? line.line_id : line.lineId);
+    return {
+      lineId,
+      kind: /** @type {LineKind} */ ('extracted'),
+      position: Number(line.position != null ? line.position : i),
+      code: String(line.code || ''),
+      description: String(line.description || ''),
+      /*
+       * Where on the page this line was read from. Always null today: the stored
+       * OCR result keeps text, page count, word count and mean confidence and
+       * discards Azure's polygons, and re-running OCR to recover a box would
+       * spend money to redraw it. The seam a later slice fills.
+       */
+      region: null,
+      struck: strikeOf('extracted', lineId),
+      fields: LINE_SCOPED_FIELDS.map((field) => ({
+        field,
+        ...figure(index, { claimId, lineId, field }, extractedFor(field, line)),
+      })),
+    };
+  });
+
+  const typed = ((added instanceof Map ? added.get(String(claimId)) : null) || []).map(
+    (row, i) => {
+      const lineId = String(row.added_line_id);
+      return {
+        lineId,
+        kind: /** @type {LineKind} */ ('added'),
+        /*
+         * AFTER THE READ LINES, in the order she typed them.
+         *
+         * Not a printed position: nobody knows where on the page this line sits,
+         * and a number here would assert that somebody did.
+         */
+        position: fromRead.length + i,
+        code: String(row.code || ''),
+        description: String(row.description || ''),
+        region: null,
+        struck: strikeOf('added', lineId),
+        fields: LINE_SCOPED_FIELDS.map((field) => ({ field, ...addedFigure(row, field) })),
+      };
+    }
+  );
+
+  return [...fromRead, ...typed];
+}
+
+/**
+ * THE LINES THAT COUNT TOWARDS A SUM.
+ *
+ * One predicate, so the gate, the confirm screen and the workbench cannot
+ * disagree about whether a struck line is money. A line a person read the page
+ * for and said is not there contributes nothing; an added line contributes
+ * exactly like a read one, because adding lines is how an incomplete read becomes
+ * able to reconcile.
+ *
+ * @param {Array<{ struck: unknown }>} lines
+ */
+function countableLines(lines) {
+  return (Array.isArray(lines) ? lines : []).filter((l) => l && !l.struck);
+}
+
+/** Does this claim carry a line a person typed in, and not since struck? */
+function hasAddedLine(lines) {
+  return countableLines(lines).some((l) => l.kind === 'added');
+}
+
+/**
+ * DO A CLAIM'S LINES ADD UP TO WHAT IT WAS PAID?
+ *
+ * Lifted out of the approval gate so the confirm screen can render the same
+ * arithmetic the gate refuses on. ONE arithmetic, two renderers: a green line on
+ * the confirm screen beside a red check at the gate is not a bug that can be
+ * introduced, which is the same guarantee `lineDecisions` gives the workbench.
+ *
+ * AN UNSTATED LINE PAYMENT MAKES THE SUM UNKNOWABLE, NOT ZERO. A
+ * category-subtotal EOB states payment at a benefit-type subtotal and never per
+ * line; summing those nulls as zeroes would report "claim 139100, lines 0" and
+ * send a biller looking for a column error that is not there.
+ *
+ * A CONFIRMED absence passes, and an UNCONFIRMED one does not. Once a person has
+ * read the page and confirmed those lines genuinely state nothing, Σ(lines) is
+ * not a number anybody printed and asserting it would withhold the check for
+ * ever — she would work every field on the confirm screen and meet a refusal she
+ * has already done everything about. What protects the money on such a document
+ * is the anchor: the claim total IS printed, and it reconciles to the cheque
+ * exactly, with no tolerance.
+ *
+ * @param {Map<string, Record<string, unknown>>} index from `indexConfirmations`
+ * @param {{ claimId: string, totalPaidCents: number|null, lines: Array<object> }} claim
+ *   with `lines` from `effectiveLines`
+ */
+function claimLineSum(index, claim) {
+  const lines = countableLines(claim && claim.lines);
+  const claimTotalCents = centsOrNull(claim && claim.totalPaidCents);
+
+  const paid = lines.map((line) => {
+    const found = (line.fields || []).find((f) => f.field === 'line_paid');
+    return found || { cents: null, stated: false, confirmed: false };
+  });
+  const unstated = paid.filter((p) => !p.stated);
+  const unstatedAndUnconfirmed = unstated.filter((p) => !p.confirmed);
+
+  const lineSumCents =
+    lines.length === 0 || unstated.length > 0
+      ? null
+      : paid.reduce((n, p) => n + /** @type {number} */ (p.cents), 0);
+
+  if (lineSumCents === null) {
+    return {
+      lineCount: lines.length,
+      comparable: false,
+      lineSumCents: null,
+      claimTotalCents,
+      differenceCents: null,
+      unstatedCount: unstated.length,
+      unconfirmedUnstatedCount: unstatedAndUnconfirmed.length,
+      /*
+       * A claim with NO countable lines at all cannot pass this way. Every line
+       * struck, or none read, leaves nothing that was checked against a page —
+       * and "the claim total stands on its own" is a statement about a document
+       * that states payment by category, not about one with no lines.
+       */
+      ok: lines.length > 0 && unstatedAndUnconfirmed.length === 0,
+    };
+  }
+
+  if (claimTotalCents === null) {
+    return {
+      lineCount: lines.length,
+      comparable: false,
+      lineSumCents,
+      claimTotalCents: null,
+      differenceCents: null,
+      unstatedCount: 0,
+      unconfirmedUnstatedCount: 0,
+      ok: false,
+    };
+  }
+
+  const differenceCents = lineSumCents - claimTotalCents;
+  return {
+    lineCount: lines.length,
+    comparable: true,
+    lineSumCents,
+    claimTotalCents,
+    differenceCents,
+    unstatedCount: 0,
+    unconfirmedUnstatedCount: 0,
+    /** EXACT. A cent of disagreement is a cent somebody has to account for. */
+    ok: differenceCents === 0,
+  };
 }
 
 module.exports = {
   QUERIES,
   FIELD_COLUMNS,
+  LINE_SCOPED_FIELDS,
   extractedFor,
   scopeKey,
   indexConfirmations,
@@ -370,4 +740,13 @@ module.exports = {
   allConfirmed,
   sumsToCheck,
   isOcrSourced,
+  // ── lines a person added, and lines a person struck ──
+  strikeKey,
+  indexAddedLines,
+  indexStrikes,
+  addedFigure,
+  effectiveLines,
+  countableLines,
+  hasAddedLine,
+  claimLineSum,
 };
