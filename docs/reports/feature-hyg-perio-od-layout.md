@@ -240,6 +240,21 @@ spells "this patient has none" — and this module has already been bitten by th
 
 ## 8. PUSH / PR STATUS
 
-Pushed to `origin/feature/hyg-perio-od-layout`. PR against `develop`. **Not merged** — as
-instructed. Tree confirmed equal to `refs/pull/<PR>/merge` before the §6 gates were run; the
-hash is recorded with the PR.
+Pushed to `origin/feature/hyg-perio-od-layout`. **PR #211** against `develop`. **Not merged**
+— as instructed.
+
+**The gates in §6 are merge-tree gates, confirmed by hash, not branch-local ones.**
+
+```
+git rev-parse HEAD^{tree}              64a72c2c3106926fcb2fe78d65d0e23448092583
+git rev-parse pull/211/merge^{tree}    64a72c2c3106926fcb2fe78d65d0e23448092583
+pull/211/merge   c557990 Merge 1d3e643 into bbe6b83
+HEAD..origin/develop                   0 commits
+```
+
+They are equal because `origin/develop` has not moved since this branch was cut, so the
+merge is a fast-forward and the two trees coincide. That is a FACT ABOUT RIGHT NOW, not a
+property of the branch — #207 was green branch-local and red on its merge tree because
+develop had gained six test files that re-partitioned every shard. If develop moves before
+this merges, re-fetch `refs/pull/211/merge`, compare the hashes again, and re-run §6 on the
+merge rather than trusting this line.
