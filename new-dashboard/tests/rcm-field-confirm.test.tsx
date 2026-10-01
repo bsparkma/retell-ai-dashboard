@@ -29,6 +29,8 @@ const S = vi.hoisted(() => ({
   /** Every confirm request the screen sent. */
   sent: [] as Array<{ batchId: string; fields: unknown[] }>,
   confirmError: null as Error | null,
+  /** What the fake server reports AFTER a save. Unset = unchanged. */
+  nextState: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@/contexts/OfficeContext", async (importOriginal) => {
@@ -57,7 +59,14 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     confirmFields: vi.fn(async (_office: string, batchId: string, fields: unknown[]) => {
       S.sent.push({ batchId, fields });
       if (S.confirmError) throw S.confirmError;
-      return { office: "roland", batchId, confirmed: [] };
+      /*
+       * THE SERVER HANDS ITS WHOLE RECOMPUTED STATE BACK, which is what lets the
+       * screen save in place instead of re-fetching the page. `S.nextState` is
+       * the state the fake server reports afterwards; unset means "nothing the
+       * screen renders changed", which is all these tests need — the in-place
+       * behaviour itself is pinned in `rcm-confirm-in-place.test.tsx`.
+       */
+      return { office: "roland", batchId, state: S.nextState ?? S.state, confirmed: [] };
     }),
   };
 });
@@ -151,6 +160,7 @@ beforeEach(() => {
   S.state = confirmState();
   S.sent = [];
   S.confirmError = null;
+  S.nextState = null;
 });
 afterEach(() => cleanup());
 
@@ -409,8 +419,13 @@ describe("typing what the page says", () => {
     const address = `${CLAIM}||claim_total_paid`;
     await waitFor(() => expect(screen.getByTestId(`rcm-confirm-yes-${address}`)).toBeTruthy());
     fireEvent.click(screen.getByTestId(`rcm-confirm-yes-${address}`));
-    await waitFor(() => expect(screen.getByTestId("rcm-confirm-save-error")).toBeTruthy());
-    expect(screen.getByTestId("rcm-confirm-save-error").textContent).toContain("200 fields");
+    /*
+     * AT THE ROW, not in a banner at the top of the page. A biller fifteen rows
+     * down a long EOB cannot see a banner above the fold, and the banner could
+     * not have told her which figure it was about.
+     */
+    await waitFor(() => expect(screen.getByTestId(`rcm-confirm-error-${address}`)).toBeTruthy());
+    expect(screen.getByTestId(`rcm-confirm-error-${address}`).textContent).toContain("200 fields");
   });
 });
 

@@ -2856,6 +2856,21 @@ export interface ConfirmInstruction {
 export interface ConfirmResult {
   office: RcmOfficeId;
   batchId: string;
+  /**
+   * THE WHOLE SCREEN STATE, AS THE SERVER NOW HOLDS IT.
+   *
+   * Identical in shape to what a GET returns, recomputed after the write. The
+   * screen replaces what it has with this and re-renders in place — which is
+   * what keeps the document viewer and the figure list from being thrown back
+   * to the top on every confirm.
+   *
+   * It is the SERVER'S recomputation and not the browser's: `outstanding`,
+   * `sums` and each field's confirmed-or-corrected state are decided by one
+   * accessor on the server, and a screen that worked them out for itself would
+   * be a second opinion about which number is real.
+   */
+  state: FieldConfirmState;
+  /** What THIS request changed — which is how the screen knows where to go next. */
   confirmed: Array<{
     field: ConfirmableField;
     claimId: string | null;

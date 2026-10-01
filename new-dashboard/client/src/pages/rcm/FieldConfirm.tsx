@@ -106,6 +106,15 @@ type State =
       check: RemittanceDetail | null;
     };
 
+/**
+ * A save that did not take, and where it was made.
+ *
+ * `address` is a field's address, or a line's `line:<id>` label for the button
+ * that confirms five figures at once — so the message renders at the control
+ * that was pressed and nowhere else.
+ */
+type SaveFailure = { address: string; message: string } | null;
+
 /** A field's address, which is also its identity on this screen. */
 function addressOf(field: ConfirmableField, claimId: string | null, lineId: string | null): string {
   return `${claimId ?? ""}|${lineId ?? ""}|${field}`;
@@ -147,9 +156,25 @@ export default function FieldConfirm() {
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * A FAILED SAVE SAYS SO WHERE IT HAPPENED, AND NOTHING MOVES.
+   *
+   * Keyed by the address the save was made under — a field's own address, or a
+   * line's `line:<id>` label for the "these N are right" button. A banner at the
+   * top of a long list is a message about a figure she cannot see from where the
+   * banner is, and she has no way to tell which of fifteen rows it is about.
+   */
+  const [fieldError, setFieldError] = useState<{ address: string; message: string } | null>(null);
   /** Which line the document panel is showing, so the two stay in step. */
   const [activeLineId, setActiveLineId] = useState<string | null>(null);
+  /**
+   * WHICH FIGURE THE WORK IS AT, by address.
+   *
+   * Set from the server's own `outstanding.first` after every save, so the
+   * screen walks the list in the same order the count counts it — not in an
+   * order the browser worked out for itself.
+   */
+  const [focus, setFocus] = useState<string | null>(null);
   /** Open transcription inputs, by field address. */
   const [typing, setTyping] = useState<Record<string, string>>({});
 
@@ -220,34 +245,76 @@ export default function FieldConfirm() {
     return 1;
   }, [data, activeLineId]);
 
-  /** Send one or more figures, then re-read so the screen shows the server's answer. */
+  /**
+   * Save one or more figures, IN PLACE.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────
+   * WHY THIS DOES NOT RE-FETCH THE PAGE
+   * ─────────────────────────────────────────────────────────────────────────────
+   * It used to call `load()`, which sets `kind: "loading"` — so the whole tree
+   * came down and went back up on every single confirm. Both panes were thrown
+   * to the top: the document viewer remounted and lost its scroll position and
+   * its page, and the figure list reset, so a biller working down a long EOB had
+   * to find her place again after each of thirty figures. That is the defect.
+   *
+   * The old comment here was right about WHY it re-fetched — the server decides
+   * whether a figure was confirmed or corrected, recounts what is outstanding and
+   * re-runs the sum against the anchor, and a screen that guessed any of those
+   * would be a second opinion about which number is real. It was wrong only
+   * about what that requires. The server now returns its whole recomputed state
+   * in the POST response, so the screen can take the server's answer verbatim
+   * WITHOUT going back for the page. Nothing is guessed here, and nothing
+   * unmounts.
+   */
   const send = useCallback(
     async (label: string, fields: ConfirmInstruction[]) => {
       if (!office) return;
       setSaving(label);
-      setError(null);
+      setFieldError(null);
       try {
-        await confirmFields(office, batchId, fields);
-        /*
-         * RE-READ rather than patching local state. The server derives whether a
-         * figure was confirmed or corrected, recomputes the outstanding count and
-         * re-runs the sum against the anchor — and a screen that guessed any of
-         * those would be a second opinion about which number is real, which is
-         * the whole thing this slice exists to prevent.
-         */
-        load();
+        const result = await confirmFields(office, batchId, fields);
+
+        // The server's own recomputation, swapped in under a tree that stays
+        // mounted. Every child is keyed by claim, line or field, so React
+        // reconciles the figures that changed and leaves the rest — and the
+        // viewer — alone.
+        setState((prev) => (prev.kind === "loaded" ? { ...prev, data: result.state } : prev));
+
         setTyping((prev) => {
           const next = { ...prev };
           for (const f of fields) delete next[addressOf(f.field, f.claimId ?? null, f.lineId ?? null)];
           return next;
         });
+
+        /*
+         * ON TO THE NEXT ONE — the server's `first`, not ours.
+         *
+         * `outstanding.first` is computed by the same accessor that produces the
+         * count beside it, walking the check in the order the remittance prints
+         * it. Picking the next row in the DOM instead would be a second ordering,
+         * and the two would disagree the first time a claim was added by a
+         * re-extraction.
+         */
+        const next = result.state.outstanding.first;
+        setFocus(next ? addressOf(next.field, next.claimId, next.lineId) : null);
+        // The document follows the work. It only moves the page when the stored
+        // read carries geometry for that line; until then this is the selection,
+        // and the panel stays where she left it.
+        if (next && next.lineId) setActiveLineId(next.lineId);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "That could not be saved.");
+        /*
+         * NOTHING MOVES. No state swap, no focus change, and the typed figure
+         * stays in its box so she can press Save again rather than retype it.
+         */
+        setFieldError({
+          address: label,
+          message: err instanceof Error ? err.message : "That could not be saved.",
+        });
       } finally {
         setSaving(null);
       }
     },
-    [batchId, load, office],
+    [batchId, office],
   );
 
   if (state.kind === "loading") {
@@ -352,6 +419,8 @@ export default function FieldConfirm() {
             claimId={null}
             lineId={null}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
@@ -378,16 +447,6 @@ export default function FieldConfirm() {
 
       {/* ── Does it add up? ──────────────────────────────────────────────── */}
       <SumLine sums={sums} outstanding={outstanding.outstanding} />
-
-      {error ? (
-        <div
-          className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
-          data-testid="rcm-confirm-save-error"
-        >
-          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
-          <span>{error}</span>
-        </div>
-      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* ── The document. Evidence, not a control. ───────────────────── */}
@@ -427,6 +486,8 @@ export default function FieldConfirm() {
               activeLineId={activeLineId}
               setActiveLineId={setActiveLineId}
               saving={saving}
+              focus={focus}
+              fieldError={fieldError}
               typing={typing}
               setTyping={setTyping}
               send={send}
@@ -533,6 +594,8 @@ function ClaimPanel({
   activeLineId,
   setActiveLineId,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
@@ -541,6 +604,8 @@ function ClaimPanel({
   activeLineId: string | null;
   setActiveLineId: (id: string) => void;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
@@ -563,6 +628,8 @@ function ClaimPanel({
         claimId={claim.claimId}
         lineId={null}
         saving={saving}
+        focus={focus}
+        fieldError={fieldError}
         typing={typing}
         setTyping={setTyping}
         send={send}
@@ -577,6 +644,8 @@ function ClaimPanel({
             active={line.lineId === activeLineId}
             onSelect={() => setActiveLineId(line.lineId)}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
@@ -593,6 +662,8 @@ function LinePanel({
   active,
   onSelect,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
@@ -602,6 +673,8 @@ function LinePanel({
   active: boolean;
   onSelect: () => void;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
@@ -648,6 +721,8 @@ function LinePanel({
             claimId={claimId}
             lineId={line.lineId}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
@@ -677,7 +752,31 @@ function LinePanel({
           {saving === label ? "Saving…" : `These ${unchecked.length} are right`}
         </button>
       ) : null}
+
+      {fieldError && fieldError.address === label ? (
+        <InlineFailure message={fieldError.message} testId={`rcm-confirm-line-error-${line.lineId}`} />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * A save that did not take, said where it was made.
+ *
+ * Inline rather than at the top of the page: a biller fifteen rows down a long
+ * EOB cannot see a banner above the fold, and a banner cannot tell her which of
+ * fifteen figures it is about.
+ */
+function InlineFailure({ message, testId }: { message: string; testId: string }) {
+  return (
+    <span
+      className="inline-flex items-start gap-1 text-xs text-destructive"
+      role="alert"
+      data-testid={testId}
+    >
+      <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+      {message}
+    </span>
   );
 }
 
@@ -687,6 +786,8 @@ function FieldRow({
   claimId,
   lineId,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
@@ -696,6 +797,8 @@ function FieldRow({
   claimId: string | null;
   lineId: string | null;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
@@ -706,15 +809,73 @@ function FieldRow({
   const raw = typing[address] ?? "";
   const parsed = centsFromTyped(raw);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  /** This row is where the work is. Set by the server's count, not by the DOM. */
+  const focused = focus === address;
+  const failed = fieldError && fieldError.address === address ? fieldError.message : null;
 
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
 
+  /*
+   * THE WORK ARRIVES HERE.
+   *
+   * Scrolled into view and then focused, so the next figure is both visible and
+   * ready to answer — Enter confirms it without reaching for the mouse.
+   *
+   * `block: "nearest"` on purpose: it moves the list the smallest amount that
+   * brings the row into view, so a row already on screen does not jump. Centring
+   * would scroll on every single confirm, which is a milder version of the
+   * defect this fixes.
+   *
+   * `?.()` on `scrollIntoView` because jsdom does not implement it. A guard
+   * rather than a test-only stub: this is a convenience, and a browser without it
+   * should still get a working screen.
+   */
+  useEffect(() => {
+    if (!focused) return;
+    rowRef.current?.scrollIntoView?.({ block: "nearest" });
+    confirmRef.current?.focus();
+  }, [focused]);
+
+  /** Confirm the figure AS READ — including "not stated" as a real answer. */
+  const confirmAsRead = () =>
+    send(address, [
+      { claimId, lineId, field: field.field, confirmedCents: field.stated ? field.cents : null },
+    ]);
+
+  const saveTyped = () => {
+    if (parsed === undefined) return;
+    return send(address, [{ claimId, lineId, field: field.field, confirmedCents: parsed }]);
+  };
+
   return (
     <div
-      className="flex flex-wrap items-center gap-2 text-sm"
+      ref={rowRef}
+      /*
+       * ENTER ANSWERS THE ROW.
+       *
+       * On the container rather than on the button, so it works wherever focus
+       * sits inside the row — the confirm button when the work arrives here, or
+       * the text box when she is partway through typing a figure. An explicit
+       * handler rather than relying on a focused button's native Enter, because
+       * "Enter saves what I typed" has to hold in the input too, where the native
+       * behaviour would be nothing at all.
+       */
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" || field.confirmed) return;
+        e.preventDefault();
+        if (open) void saveTyped();
+        else void confirmAsRead();
+      }}
+      className={`flex flex-wrap items-center gap-2 rounded-md text-sm ${
+        focused ? "bg-muted/60 ring-1 ring-foreground/30 px-1.5 py-1" : ""
+      }`}
       data-testid={`rcm-confirm-field-${address}`}
+      data-focused={focused ? "true" : undefined}
     >
       {hideLabel ? null : (
         <dt className="min-w-[7rem] text-muted-foreground">{CONFIRM_FIELD_LABELS[field.field]}</dt>
@@ -740,13 +901,10 @@ function FieldRow({
       ) : (
         <>
           <button
+            ref={confirmRef}
             type="button"
             disabled={saving === address}
-            onClick={() =>
-              send(address, [
-                { claimId, lineId, field: field.field, confirmedCents: field.stated ? field.cents : null },
-              ])
-            }
+            onClick={() => void confirmAsRead()}
             className="rounded-lg border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted"
             data-testid={`rcm-confirm-yes-${address}`}
           >
@@ -781,10 +939,7 @@ function FieldRow({
           <button
             type="button"
             disabled={parsed === undefined || saving === address}
-            onClick={() =>
-              parsed !== undefined &&
-              send(address, [{ claimId, lineId, field: field.field, confirmedCents: parsed }])
-            }
+            onClick={() => void saveTyped()}
             className="rounded-lg border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
             data-testid={`rcm-confirm-save-${address}`}
           >
@@ -806,6 +961,8 @@ function FieldRow({
           </button>
         </span>
       ) : null}
+
+      {failed ? <InlineFailure message={failed} testId={`rcm-confirm-error-${address}`} /> : null}
     </div>
   );
 }

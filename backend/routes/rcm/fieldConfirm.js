@@ -221,6 +221,144 @@ const LINE_FIELDS = rcmVocabulary.CONFIRMABLE_FIELDS.filter(
   (f) => rcmVocabulary.fieldScope(f) === 'line'
 );
 
+/**
+ * THE WHOLE SCREEN STATE, SHAPED ONCE — and the reason the GET and the POST
+ * cannot drift apart.
+ *
+ * Both responses are built here. The POST returns the same payload the GET
+ * would, recomputed after its writes, so a saving client has the server's own
+ * answer about every derived thing — `state`, `outstanding`, `sums` — without a
+ * second round trip.
+ *
+ * That is what makes an in-place save honest rather than a guess. The previous
+ * shape returned only the rows it wrote, which left the screen two bad options:
+ * re-fetch the page (which threw both panes back to the top, the defect this
+ * slice fixes) or recompute the derived state in the browser (a second opinion
+ * about which number is real, which is the thing the whole slice exists to
+ * prevent). Neither is necessary once the server simply says what it now holds.
+ */
+function shapeState({ office, loaded, actorNames }) {
+  const { batch, claims, linesByClaim, confirmations, provenance } = loaded;
+  const index = confirmedFigures.indexConfirmations(confirmations);
+
+  const wireClaims = claims.map((claim) => {
+    const claimId = String(claim.claim_id);
+    const lines = linesByClaim.get(claimId) || [];
+    return {
+      claimId,
+      patientName: claim.patient_name || null,
+      claimNumber: claim.claim_number || null,
+      serviceDate: claim.service_date ? String(claim.service_date).slice(0, 10) : null,
+      totalPaid: toWireField({
+        field: 'claim_total_paid',
+        claimId,
+        lineId: null,
+        index,
+        extracted: confirmedFigures.extractedFor('claim_total_paid', claim),
+        actorNames,
+      }),
+      lines: lines.map((line) => ({
+        lineId: String(line.line_id),
+        position: num(line.position),
+        code: line.code || '',
+        description: line.description || '',
+        /*
+         * PER-LINE GEOMETRY, for the cropped strip of the page beside each
+         * line (addendum item 1).
+         *
+         * Always null today, and deliberately so rather than omitted. The
+         * stored OCR result carries NO geometry: `documentOcr.summarize` keeps
+         * text, page count, word count and mean confidence, and discards the
+         * polygons Azure returns. Re-running OCR to recover them would spend
+         * money to redraw a box, which the addendum rules out.
+         *
+         * So the screen falls back to the whole page, scroll-synced to the
+         * selected row, and this field is the seam that a later slice fills
+         * once extraction STORES the regions. A null here is the honest "we do
+         * not know where on the page this came from".
+         */
+        region: null,
+        fields: LINE_FIELDS.map((field) =>
+          toWireField({
+            field,
+            claimId,
+            lineId: String(line.line_id),
+            index,
+            extracted: confirmedFigures.extractedFor(field, line),
+            actorNames,
+          })
+        ),
+      })),
+    };
+  });
+
+  const shape = wireClaims.map((c) => ({
+    claimId: c.claimId,
+    lines: c.lines.map((l) => ({ lineId: l.lineId })),
+  }));
+
+  return {
+    office,
+    batchId: String(batch.batch_id),
+    payer: batch.payer || null,
+    checkNumber: batch.check_number || null,
+    depositDate: batch.deposit_date ? String(batch.deposit_date).slice(0, 10) : null,
+    /**
+     * THE ANCHOR, as its own top-level field rather than one of the claims'.
+     * It is the screen's first line, and everything else reconciles to it.
+     */
+    checkTotal: toWireField({
+      field: 'check_total',
+      claimId: null,
+      lineId: null,
+      index,
+      extracted: confirmedFigures.extractedFor('check_total', batch),
+      actorNames,
+    }),
+    /**
+     * Whether this check needs the step at all. An 835 and a text-layer PDF
+     * return `false`, and the screen then says so rather than rendering an
+     * empty confirm list that looks broken.
+     */
+    required: confirmedFigures.isOcrSourced(provenance),
+    provenance,
+    claims: wireClaims,
+    outstanding: confirmedFigures.allConfirmed(index, shape),
+    sums: confirmedFigures.sumsToCheck(index, {
+      checkTotalCents: confirmedFigures.extractedFor('check_total', batch),
+      claims: wireClaims.map((c) => ({
+        claimId: c.claimId,
+        totalPaidCents: c.totalPaid.extractedCents,
+      })),
+    }),
+    /**
+     * THE CHECK SNAPSHOT SLOT (addendum item 2).
+     *
+     * Reserved beside the anchor and rendered only when an image exists on the
+     * record. Nothing in this slice uploads or captures one, so it is always
+     * null — the slot renders nothing until that separate slice lands. It is
+     * here now so the layout is built around it rather than retrofitted.
+     */
+    checkImage: null,
+  };
+}
+
+/**
+ * The names behind a set of confirmation rows, for the trail sentences.
+ *
+ * Its own read because `describeActors` is the module's one key→name resolver,
+ * and both the GET and the POST need it over whatever rows they are about to
+ * shape.
+ */
+function namesFor(req, confirmations) {
+  return tenantDb.withTenantDb(req, (pool) =>
+    describeActors(
+      pool,
+      confirmations.map((c) => c.confirmed_by).filter(Boolean)
+    )
+  );
+}
+
 // ─── GET — what the screen renders ───────────────────────────────────────────
 
 router.get(
@@ -245,117 +383,8 @@ router.get(
     // audits like one — before a byte of it is serialised.
     await auditRcmRead(req, 'rcm_eob_field_confirmation', { office, resourceId: batchId });
 
-    const { batch, claims, linesByClaim, confirmations, provenance } = loaded;
-    const index = confirmedFigures.indexConfirmations(confirmations);
-
-    const actorNames = await tenantDb.withTenantDb(req, (pool) =>
-      describeActors(
-        pool,
-        confirmations.map((c) => c.confirmed_by).filter(Boolean)
-      )
-    );
-
-    const wireClaims = claims.map((claim) => {
-      const claimId = String(claim.claim_id);
-      const lines = linesByClaim.get(claimId) || [];
-      return {
-        claimId,
-        patientName: claim.patient_name || null,
-        claimNumber: claim.claim_number || null,
-        serviceDate: claim.service_date ? String(claim.service_date).slice(0, 10) : null,
-        totalPaid: toWireField({
-          field: 'claim_total_paid',
-          claimId,
-          lineId: null,
-          index,
-          extracted: confirmedFigures.extractedFor('claim_total_paid', claim),
-          actorNames,
-        }),
-        lines: lines.map((line) => ({
-          lineId: String(line.line_id),
-          position: num(line.position),
-          code: line.code || '',
-          description: line.description || '',
-          /*
-           * PER-LINE GEOMETRY, for the cropped strip of the page beside each
-           * line (addendum item 1).
-           *
-           * Always null today, and deliberately so rather than omitted. The
-           * stored OCR result carries NO geometry: `documentOcr.summarize` keeps
-           * text, page count, word count and mean confidence, and discards the
-           * polygons Azure returns. Re-running OCR to recover them would spend
-           * money to redraw a box, which the addendum rules out.
-           *
-           * So the screen falls back to the whole page, scroll-synced to the
-           * selected row, and this field is the seam that a later slice fills
-           * once extraction STORES the regions. A null here is the honest "we do
-           * not know where on the page this came from".
-           */
-          region: null,
-          fields: LINE_FIELDS.map((field) =>
-            toWireField({
-              field,
-              claimId,
-              lineId: String(line.line_id),
-              index,
-              extracted: confirmedFigures.extractedFor(field, line),
-              actorNames,
-            })
-          ),
-        })),
-      };
-    });
-
-    const shape = wireClaims.map((c) => ({
-      claimId: c.claimId,
-      lines: c.lines.map((l) => ({ lineId: l.lineId })),
-    }));
-
-    return res.json({
-      success: true,
-      office,
-      batchId: String(batch.batch_id),
-      payer: batch.payer || null,
-      checkNumber: batch.check_number || null,
-      depositDate: batch.deposit_date ? String(batch.deposit_date).slice(0, 10) : null,
-      /**
-       * THE ANCHOR, as its own top-level field rather than one of the claims'.
-       * It is the screen's first line, and everything else reconciles to it.
-       */
-      checkTotal: toWireField({
-        field: 'check_total',
-        claimId: null,
-        lineId: null,
-        index,
-        extracted: confirmedFigures.extractedFor('check_total', batch),
-        actorNames,
-      }),
-      /**
-       * Whether this check needs the step at all. An 835 and a text-layer PDF
-       * return `false`, and the screen then says so rather than rendering an
-       * empty confirm list that looks broken.
-       */
-      required: confirmedFigures.isOcrSourced(provenance),
-      provenance,
-      claims: wireClaims,
-      outstanding: confirmedFigures.allConfirmed(index, shape),
-      sums: confirmedFigures.sumsToCheck(index, {
-        checkTotalCents: confirmedFigures.extractedFor('check_total', batch),
-        claims: wireClaims.map((c) => ({
-          claimId: c.claimId,
-          totalPaidCents: c.totalPaid.extractedCents,
-        })),
-      }),
-      /**
-       * THE CHECK SNAPSHOT SLOT (addendum item 2).
-       *
-       * Reserved beside the anchor and rendered only when an image exists on the
-       * record. Nothing in this slice uploads or captures one, so it is always
-       * null — the slot renders nothing until that separate slice lands. It is
-       * here now so the layout is built around it rather than retrofitted.
-       */
-      checkImage: null,
-    });
+    const actorNames = await namesFor(req, loaded.confirmations);
+    return res.json({ success: true, ...shapeState({ office, loaded, actorNames }) });
   })
 );
 
@@ -540,7 +569,25 @@ router.post(
         written.push(upserted.rows[0]);
       }
 
-      return { written, loaded };
+      /*
+       * RE-READ THE CONFIRMATIONS, INSIDE THE SAME TRANSACTION.
+       *
+       * So the response can carry the whole screen state as it now stands —
+       * which is what lets the client save in place instead of re-fetching the
+       * page and throwing both panes back to the top.
+       *
+       * The rows just written are not simply merged in: a request may confirm
+       * five fields of which two were already confirmed, and the upsert's
+       * RETURNING gives the new state of those five only. One indexed read gives
+       * the state of all of them, and it is the same query the GET uses, so the
+       * two responses cannot describe the check differently.
+       */
+      const refreshed = await client.query(confirmedFigures.QUERIES.readForBatch, [
+        office,
+        batchId,
+      ]);
+
+      return { written, loaded: { ...loaded, confirmations: refreshed.rows } };
     });
 
     if (result.notFound) {
@@ -582,10 +629,25 @@ router.post(
       });
     }
 
+    /*
+     * THE WHOLE STATE BACK, NOT JUST THE ROWS WRITTEN.
+     *
+     * `state` is the identical payload a GET would return, recomputed here. The
+     * screen replaces what it holds with it and re-renders in place: the
+     * document viewer and the figure list keep their scroll positions because
+     * neither unmounts, and nothing in the browser has to work out what the
+     * outstanding count or the sum against the anchor now is.
+     *
+     * `confirmed` stays — it names exactly what THIS request changed, which is
+     * what the screen needs to know where to move next and what to say it did.
+     */
+    const actorNames = await namesFor(req, result.loaded.confirmations);
+
     return res.json({
       success: true,
       office,
       batchId,
+      state: shapeState({ office, loaded: result.loaded, actorNames }),
       confirmed: result.written.map((row) => ({
         field: String(row.field),
         claimId: row.claim_id ? String(row.claim_id) : null,

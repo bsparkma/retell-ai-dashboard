@@ -681,3 +681,83 @@ test('a text-layer PDF is not confirmed either — only a scan is', async () => 
     await close();
   }
 });
+
+// ─── The POST answers with the whole state, so a save can happen in place ─────
+
+test('the POST returns the WHOLE recomputed state, not just the rows it wrote', async () => {
+  /*
+   * WHY THE RESPONSE IS THIS BIG.
+   *
+   * The screen used to re-fetch the page after every confirm, which threw the
+   * document viewer and the figure list back to the top — so a biller working
+   * thirty figures down a scanned EOB lost her place thirty times.
+   *
+   * The alternative to a re-fetch is NOT for the browser to work out the new
+   * state for itself: `confirmed` vs `corrected`, the outstanding count and the
+   * sum against the anchor are all decided by one accessor on the server, and a
+   * screen that recomputed them would be a second opinion about which number is
+   * real. So the POST says what it now holds, and the screen takes it verbatim.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const before = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    assert.equal(before.body.outstanding.outstanding, 7);
+
+    const res = await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ field: 'check_total', confirmedCents: 18400 }] }),
+    });
+    assert.equal(res.status, 200);
+
+    // The state is the same shape the GET returns, one field further on.
+    assert.equal(res.body.state.outstanding.outstanding, 6);
+    assert.deepEqual(res.body.state.outstanding.first, {
+      claimId: CLAIM,
+      lineId: null,
+      field: 'claim_total_paid',
+    });
+    assert.equal(res.body.state.checkTotal.confirmed, true);
+    assert.equal(res.body.state.checkTotal.source, 'confirmed');
+    assert.ok(res.body.state.checkTotal.confirmedBy, 'the trail sentence needs a name');
+    assert.equal(res.body.state.batchId, BATCH);
+    assert.ok(res.body.state.claims.length >= 1);
+    assert.ok(res.body.state.sums, 'the sum against the anchor is recomputed too');
+
+    // And it agrees with what a fresh GET would say, field for field. If these
+    // could differ, an in-place save would drift from the page it replaced.
+    const after = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    const { success, ...freshState } = after.body;
+    assert.equal(success, true);
+    assert.deepEqual(res.body.state, freshState);
+  } finally {
+    await close();
+  }
+});
+
+test('the POST state covers fields it did NOT write, not only the ones it did', async () => {
+  /*
+   * A request may confirm five figures of which two were already confirmed, and
+   * the upsert's RETURNING describes those five only. Merging the written rows
+   * into what the screen already held would therefore be right by accident on a
+   * fresh check and wrong on a resumed one. The state comes from one indexed
+   * read of every confirmation on the check instead.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ field: 'check_total', confirmedCents: 18400 }] }),
+    });
+    const res = await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ claimId: CLAIM, field: 'claim_total_paid', confirmedCents: 18400 }] }),
+    });
+
+    assert.equal(res.body.confirmed.length, 1, 'one row written');
+    assert.equal(
+      res.body.state.checkTotal.confirmed,
+      true,
+      'the earlier confirmation is still in the state this response carries'
+    );
+    assert.equal(res.body.state.outstanding.outstanding, 5);
+  } finally {
+    await close();
+  }
+});
