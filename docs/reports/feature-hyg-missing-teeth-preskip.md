@@ -248,4 +248,16 @@ and they are 19/19.
 
 ## 7. Push, PR, and the merge tree
 
-Filled in at push time.
+**PR #214**, `feature/hyg-missing-teeth-preskip` -> `develop`, tip `d0c7553`. Not merged.
+
+A branch-local green is not a result: CI builds `refs/pull/N/merge`, not the
+branch tip, which is how #207's red went undiagnosed for a round. So the trees
+were compared rather than assumed, and they are the same object:
+
+```
+git rev-parse HEAD^{tree}                         3c697c2cb98c0ad068b1374950639927a124b6f8
+git rev-parse refs/pull/214/merge^{tree}          3c697c2cb98c0ad068b1374950639927a124b6f8
+git rev-list --count HEAD..origin/develop         0
+```
+
+Every gate in section 5 was run on that tree.
