@@ -1796,7 +1796,22 @@ function LineTable({ claim }: { claim: RemittanceClaim }) {
                 {money(line.allowedCents)}
               </td>
               <td className="px-2 py-2 text-right font-mono text-xs font-semibold tabular-nums text-foreground">
-                {money(line.paidCents)}
+                {/*
+                  A payment the page never stated reads "not stated", never
+                  $0.00 — a zero here asserts the plan paid nothing for the
+                  line. Null arrives from category-subtotal layouts (#206).
+                */}
+                {line.paidCents === null ? (
+                  <span
+                    className="font-sans font-normal text-muted-foreground"
+                    title="The page states payment at a category subtotal, not for this line."
+                    data-testid={`paid-not-stated-${line.lineId}`}
+                  >
+                    not stated
+                  </span>
+                ) : (
+                  money(line.paidCents)
+                )}
               </td>
               <td className="px-2 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground">
                 {money(line.writeOffCents)}

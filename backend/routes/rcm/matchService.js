@@ -299,7 +299,16 @@ function toLineWire(line, adjustments) {
     allowedCents: num(line.allowed_cents),
     deductibleCents: num(line.deductible_cents),
     copayCents: num(line.copay_cents),
-    paidCents: num(line.paid_cents),
+    /*
+     * NULL STAYS NULL. Since #206 a stored NULL here means "the page prints
+     * payment only at a category subtotal — this line's payment is not stated",
+     * and the screen says exactly that. `num()`'s null-is-0 contract is right
+     * for every other money column on this row; on this one it manufactured
+     * "$0.00 paid" on every such line the night #206 reached prod — a
+     * fabricated zero in place of the fabricated covered amount #206 retired.
+     * Pinned by lineWireNotStated.test.js, both directions: a stated 0 is 0.
+     */
+    paidCents: line.paid_cents == null ? null : num(line.paid_cents),
     adjustmentCents: num(line.adjustment_cents),
     patientRespCents: num(line.patient_resp_cents),
     writeOffCents: num(line.write_off_cents),
@@ -334,6 +343,21 @@ function toLineWire(line, adjustments) {
       allowedCents: num(line.allowed_cents),
       paidCents: num(line.paid_cents),
     }),
+    /*
+     * …AND A REMAINDER DERIVED FROM AN UNSTATED PAYMENT IS NOT A FIGURE.
+     *
+     * R = allowed − paid is only arithmetic when the page stated a payment.
+     * When it did not, the spread above would have computed allowed − 0 and
+     * shipped the whole allowed amount as "what the patient owes on this line"
+     * — inviting a write-off decision over a number nobody read. W = billed −
+     * allowed involves no payment and stands. The subtraction itself still
+     * lives only in lineDecisions.js; this line withholds its OUTPUT when the
+     * input is absent, which is a statement about statedness, not arithmetic.
+     * (verdictFor is deliberately untouched: the approve gate's FIELDS_CONFIRMED
+     * condition is what protects an OCR check, and its projection reads the
+     * same 0 it always has until the figures are confirmed.)
+     */
+    ...(line.paid_cents == null ? { patientRemainderCents: null } : {}),
     adjustments: adjustments.map((a) => ({
       adjustmentId: a.adjustment_id,
       amountCents: num(a.amount_cents),
