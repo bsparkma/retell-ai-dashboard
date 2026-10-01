@@ -1139,6 +1139,33 @@ describe("item 27: a fresh chart opens with Open Dental's missing teeth skipped"
     expect(server.visitStarted).toBe(false);
   });
 
+  it("STAGING a pre-skip-only chart stores it FIRST — the stage composes from storage", async () => {
+    /*
+     * A skipped tooth makes `counts.empty` false, so the Stage button is live on
+     * a chart that holds nothing but the pre-skip. The stage composes from what
+     * the server has STORED, so the save must really happen here.
+     *
+     * An earlier version of this slice moved `lastSaved` to the pre-skipped
+     * chart, which suppressed the autosave as intended AND made `save()` itself
+     * a no-op -- so this path asked the server to stage a chart it had never
+     * been sent. The baseline now suppresses the autosave only.
+     */
+    odSaysMissing([1, 16]);
+    renderPerio();
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    expect(server.calls).not.toContain("SAVE");
+
+    const stage = screen.getByTestId("hyg-perio-stage");
+    expect((stage as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stage);
+
+    await waitFor(() => expect(server.calls).toContain("STAGE"));
+    // The save went first, and it carried the pre-skips.
+    expect(server.calls.indexOf("SAVE")).toBeGreaterThan(-1);
+    expect(server.calls.indexOf("SAVE")).toBeLessThan(server.calls.indexOf("STAGE"));
+    expect(countPerioChart(server.saves.at(-1) as PerioChart).teethSkipped).toEqual([1, 16]);
+  });
+
   it("ACCEPTANCE 2: a pre-skipped tooth can be un-skipped and then charted", async () => {
     odSaysMissing([19]);
     renderPerio();

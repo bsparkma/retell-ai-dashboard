@@ -110,18 +110,37 @@ including an empty chart. `chartStored` is that fact, and
 `hygPerioPreSkip.test.js` pins the pair that proves they are different questions:
 a chart that is **empty and stored**.
 
-### 2.3 The pre-skip is not saved on its own
+### 2.3 The pre-skip does not save itself
 
-`lastSaved` is moved to the pre-skipped chart, which makes the pre-skip a
-**baseline** rather than an unsaved change, so the autosave does not fire.
+`preSkipBaseline` holds the chart the pre-skip produced, and the debounced
+autosave stands down while the chart still equals it.
 
-The serious reason is that **saving a visit that has not been started starts
-it**: `save()` calls `openVisit` first. A pre-skip that persisted itself would
-open a visit and file a draft perio chart for every patient whose chart she
-merely glanced at — a write CareIN performed on its own initiative, visible on
+The reason is that **saving a visit that has not been started starts it**:
+`save()` calls `openVisit` first. A pre-skip that persisted itself would open a
+visit and file a draft perio chart for every patient whose chart she merely
+glanced at — a write CareIN performed on its own initiative, visible on
 worklists, for a visit that never happened. Nothing is lost by waiting: her first
-real reading or un-skip saves the whole chart, pre-skips included, which
-`her first reading saves the pre-skips along with it` asserts.
+real reading or un-skip moves the chart off the baseline and saves all of it,
+pre-skips included, which `her first reading saves the pre-skips along with it`
+asserts.
+
+**It suppresses the autosave only**, and a defect found reviewing this slice is
+why that distinction is spelled out. The first version moved `lastSaved` to the
+pre-skipped chart instead. That suppressed the autosave as intended, but
+`lastSaved` is also what `save()` compares against — so `save()` became a no-op
+too. Because a skipped tooth makes `counts.empty` false, the **Stage** button is
+live on a chart holding nothing but the pre-skip, and `onStage` saves before it
+stages precisely because the stage composes from what is **stored**. The
+pre-skip-only path would therefore have asked the server to stage a chart it had
+never been sent. `lastSaved` now goes on meaning what the server last answered
+with, and
+`STAGING a pre-skip-only chart stores it FIRST` pins it.
+
+A related observation left alone deliberately: staging a chart of only skips
+writes an exam with no readings to the chart of record. That was already
+reachable by skipping a tooth by hand, review-then-send puts the preview in front
+of her first, and narrowing the Stage guard is a change to existing behaviour
+rather than part of this slice. Flagging rather than quietly changing it.
 
 ### 2.4 It says CareIN did it
 
@@ -198,7 +217,7 @@ counts is a budget that grows.
 | 6 | Exactly one added OD request per chart open, asserted | `ACCEPTANCE 6` ×2 (fresh = +1, stored = +0) |
 | 7 | The report quotes the probe facts, including the unfiltered hazard | §1, and §1.4 for the hazard |
 
-Tests added: **18** reader unit tests, **15** route tests, **12** client tests.
+Tests added: **18** reader unit tests, **15** route tests, **14** client tests.
 
 ---
 

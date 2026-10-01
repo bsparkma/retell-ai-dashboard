@@ -411,18 +411,26 @@ export default function HygPerio() {
    * un-skipped every time she re-opened the chart. A stored row means she has
    * been here, and that settles this visit for good.
    *
-   * IT IS NOT SAVED ON ITS OWN. `lastSaved` is moved to the pre-skipped chart,
-   * which makes the pre-skip a BASELINE rather than an unsaved change. Two
-   * reasons, and the first is the serious one: saving a visit that has not been
-   * started STARTS it (see `save` below), so persisting a pre-skip would open a
-   * visit and file a draft chart for a patient whose chart she only glanced at.
-   * The second is that nothing is lost by waiting -- her first real reading or
-   * un-skip saves the whole chart, pre-skips included.
+   * IT DOES NOT SAVE ITSELF. `preSkipBaseline` holds the chart the pre-skip
+   * produced, and the debounced autosave stands down while the chart still
+   * equals it. The reason is that saving a visit which has not been started
+   * STARTS it (see `save` below), so a self-persisting pre-skip would open a
+   * visit and file a draft chart for every patient whose chart she merely
+   * glanced at. Nothing is lost by waiting: her first real reading or un-skip
+   * moves the chart off the baseline and saves all of it, pre-skips included.
+   *
+   * ⚠️ IT SUPPRESSES THE AUTOSAVE ONLY, and `lastSaved` goes on meaning what the
+   * server last answered with. An earlier version moved `lastSaved` here
+   * instead, which also made `save()` itself a no-op -- so pressing Stage on a
+   * pre-skip-only chart (`counts.empty` is false once a tooth is skipped, so the
+   * button is live) would have staged a chart the server had never been sent.
    *
    * Decided ONCE per mount, either way, so a reading typed while Open Dental
    * was still answering can never be overwritten by a late pre-skip.
    */
   const preSkipSettled = useRef(false);
+  /** The chart a pre-skip produced, while it is still untouched. */
+  const preSkipBaseline = useRef<string | null>(null);
   const [preSkipped, setPreSkipped] = useState<number[]>([]);
   useEffect(() => {
     if (preSkipSettled.current) return;
@@ -445,7 +453,7 @@ export default function HygPerio() {
     // baseline set here is the chart that is about to be on screen.
     let next = latestChart.current;
     for (const tooth of preSkip.teeth) next = withPerioSkipped(next, tooth, true);
-    lastSaved.current = chartKey(next);
+    preSkipBaseline.current = chartKey(next);
     dispatch({ type: "skipTeeth", teeth: preSkip.teeth });
     setPreSkipped(preSkip.teeth);
   }, [stored, prior]);
@@ -495,6 +503,14 @@ export default function HygPerio() {
   useEffect(() => {
     if (stored === null) return;
     if (chartKey(entry.chart) === lastSaved.current) return;
+    /*
+     * ITEM 27: a chart that is nothing but Open Dental's pre-skip is not a
+     * change she made, and storing it would start a visit she has not started.
+     * The moment she touches anything this stops matching and the save runs.
+     */
+    if (preSkipBaseline.current !== null && chartKey(entry.chart) === preSkipBaseline.current) {
+      return;
+    }
     setSaveState("saving");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
